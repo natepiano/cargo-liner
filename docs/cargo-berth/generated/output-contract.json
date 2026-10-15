@@ -3935,6 +3935,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -3979,6 +3986,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -4023,6 +4037,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -5991,6 +6012,24 @@
           ],
           "type": "object"
         },
+        "SiblingHeldScopes": {
+          "description": "The requested paths already protected by one active sibling in this run and worktree.",
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The sibling that already holds these paths."
+            },
+            "scopes": {
+              "$ref": "#/$defs/ReservationScopeSet",
+              "description": "Exact requested scopes covered by the sibling."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "scopes"
+          ],
+          "type": "object"
+        },
         "SkippedDeferral": {
           "description": "One unresolved symmetric deferral deliberately skipped by a forced integration.",
           "properties": {
@@ -6870,6 +6909,26 @@
                 "status",
                 "scopes",
                 "conflicts"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Repository policy prevents another phase reservation from being opened.",
+              "properties": {
+                "maximum": {
+                  "description": "The configured maximum live reservation count.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "status": {
+                  "const": "reservation_limit_reached",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "maximum"
               ],
               "type": "object"
             }
@@ -11864,6 +11923,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -11908,6 +11974,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -11952,6 +12025,13 @@
             {
               "description": "The complete durable identity and publication result of first-touch protection.",
               "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
                 "coordination_run_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
                   "description": "The coordination run that owns the reservation."
@@ -13780,6 +13860,24 @@
           ],
           "type": "object"
         },
+        "SiblingHeldScopes": {
+          "description": "The requested paths already protected by one active sibling in this run and worktree.",
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The sibling that already holds these paths."
+            },
+            "scopes": {
+              "$ref": "#/$defs/ReservationScopeSet",
+              "description": "Exact requested scopes covered by the sibling."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "scopes"
+          ],
+          "type": "object"
+        },
         "SkippedDeferral": {
           "description": "One unresolved symmetric deferral deliberately skipped by a forced integration.",
           "properties": {
@@ -14518,6 +14616,26 @@
                 "status",
                 "scopes",
                 "conflicts"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Repository policy prevents another phase reservation from being opened.",
+              "properties": {
+                "maximum": {
+                  "description": "The configured maximum live reservation count.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "status": {
+                  "const": "reservation_limit_reached",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "maximum"
               ],
               "type": "object"
             }

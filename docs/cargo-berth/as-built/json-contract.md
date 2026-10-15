@@ -768,6 +768,17 @@ path and opens nothing. Its `acquisition.session_mapping_publication` is
 `{"status": "left_unmapped"}`: the harness session remains unmapped, so a later
 bare check under it can open new work rather than joining that sibling.
 
+A mixed request under a fresh phase session reports sibling coverage in
+`acquisition.already_held`: an array of `{ "reservation_id", "scopes" }` entries,
+one per active sibling covering requested paths. The field is absent when no
+sibling paths were excluded. `payload.data.scopes` lists only the paths acquired
+for the new phase; its message also names the sibling-held paths and reservations.
+
+When opening a new phase would exceed `maximum_reservations`, `check` returns
+`status = "reservation_limit_reached"`, exit code `1`, and a check payload with
+`data: { "status": "reservation_limit_reached", "maximum": <limit> }`.
+It appends no claim and writes no mapping for the refused phase.
+
 `session_mapping_publication.status` has these values:
 
 - `published`: the mapping reflects the reservation, including when no harness session required an entry.

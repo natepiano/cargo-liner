@@ -138,7 +138,7 @@ fn ambiguous_reservation_recovery_command() -> String {
 }
 /// The one sentence a fail-open edit decision states, wherever it is rendered.
 pub(crate) const LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
-const CHECK_INVALID_INPUT_SUMMARY: &str =
+const CHECK_REJECTED_REQUEST_SUMMARY: &str =
     "cargo-berth rejected this edit because it could not accept the request.";
 const CHECK_CONTENTION_SUMMARY: &str = "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock.";
 /// The clause a hook-facing response states when the ledger could not be read at all.
@@ -1488,6 +1488,11 @@ enum CheckPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approver:  Option<OverlapApprover>,
     },
+    /// Repository policy prevents another phase reservation from being opened.
+    ReservationLimitReached {
+        /// The configured maximum live reservation count.
+        maximum: u32,
+    },
 }
 
 /// Typed outcomes returned when first-touch validation must select an active reservation.
@@ -2352,6 +2357,21 @@ impl OutputEnvelope {
         }
     }
 
+    /// Report the same reservation limit under the check command's typed payload.
+    pub(crate) fn check_reservation_limit_reached(maximum: u32) -> Self {
+        let mut output = Self::reservation_limit_reached(maximum);
+        output.verb = CommandVerb::Check;
+        output.payload =
+            OutputPayload::from_facts(OutputFacts::Check(CheckPayload::ReservationLimitReached {
+                maximum,
+            }));
+        output.presentation = engine_result_presentation(
+            CHECK_REJECTED_REQUEST_SUMMARY,
+            &format!("repository policy permits at most {maximum} live reservations"),
+        );
+        output
+    }
+
     /// Build a claim rejection naming each live edge the sequence answer contradicts.
     pub(crate) fn claim_contradicts_live_ordering(contradicted: Vec<ContradictedOrdering>) -> Self {
         let mut blocked_by = Vec::<ReservationId>::new();
@@ -2597,6 +2617,22 @@ impl OutputEnvelope {
             message.to_owned(),
             &acquisition.session_mapping_publication,
         );
+        let message = acquisition
+            .already_held
+            .iter()
+            .fold(message, |message, held| {
+                let paths = held
+                    .scopes
+                    .as_slice()
+                    .iter()
+                    .map(|scope| scope.path.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{message} Requested paths {paths} are already held by sibling reservation {}.",
+                    held.reservation_id
+                )
+            });
         let (message, presentation) = if let Some(answered) = &answered {
             let answered_list = answered
                 .as_slice()
@@ -3726,7 +3762,7 @@ fn pre_tool_use_check_presentation(condition: &HookFacingCondition<'_>) -> Envel
             presentation::engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into()
         },
         HookFacingCondition::InvalidInput { diagnostic } => {
-            presentation::engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into()
+            presentation::engine_message_block(CHECK_REJECTED_REQUEST_SUMMARY, diagnostic).into()
         },
     }
 }

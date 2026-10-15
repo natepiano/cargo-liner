@@ -242,6 +242,14 @@ impl ObservedDriftChanges {
         }
     }
 
+    /// Whether the full comparison ends at this already-protected checkpoint.
+    pub(super) fn compares_to_checkpoint(&self, checkpoint: &GitObjectId) -> bool {
+        matches!(self, Self::Full(changes) if matches!(
+            &changes.history,
+            FullPhaseHistoryObservation::Anchored { target, .. } if target == checkpoint
+        ))
+    }
+
     /// Whether a path reached this observation only through the reservation's phase range.
     ///
     /// A path still open in the working tree was written by the reader just now. A path

@@ -37,6 +37,7 @@ use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::DriftCoverageProbe;
 use crate::reservation::IncursionObservation;
 use crate::reservation::Reservation;
+use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
@@ -369,10 +370,13 @@ pub(super) fn classify_locked(
             match prior.blocking_coverage(&drift_coverage_probe, reservation, path) {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
-                    if !changes.carries_work(path)
-                        || changes.committed_only(*reservation_id, path)
-                            && !changes.head_commit_introduced(path)
-                    {
+                    if !unclaimed_path_can_widen(
+                        reservations,
+                        reservation,
+                        changes,
+                        path,
+                        path_case,
+                    ) {
                         return;
                     }
                     match widening_authorization {
@@ -443,6 +447,44 @@ pub(super) fn classify_locked(
     })
 }
 
+/// Unclaimed work can widen unless it is only inherited committed history.
+fn unclaimed_path_can_widen(
+    reservations: &RetainedReservationSet,
+    subject: &Reservation,
+    changes: &ObservedDriftChanges,
+    path: &ReservationScopePath,
+    path_case: PathCase,
+) -> bool {
+    changes.carries_work(path)
+        && (!changes.committed_only(subject.id(), path)
+            || changes.head_commit_introduced(path)
+                && !released_sibling_checkpoint_covers(
+                    reservations,
+                    subject,
+                    changes,
+                    path,
+                    path_case,
+                ))
+}
+
+/// A sibling's completed checkpoint remains its work, even inside this phase's range.
+/// Dirty paths and later commits are classified normally, so editing the path again can
+/// still widen the current phase.
+fn released_sibling_checkpoint_covers(
+    reservations: &RetainedReservationSet,
+    subject: &Reservation,
+    changes: &ObservedDriftChanges,
+    path: &ReservationScopePath,
+    path_case: PathCase,
+) -> bool {
+    reservations.iter().any(|sibling| {
+        sibling.actor().has_coordination_identity(subject.actor().worktree, subject.actor().run)
+            && reservation_covers_path(sibling, path, path_case)
+            && matches!(sibling.evidence_state(), Ok(ReservationEvidenceState::Released { protected_tip, .. })
+                if changes.compares_to_checkpoint(protected_tip.as_ref()))
+    })
+}
+
 /// Conflicting reservations that block `reservation_id`, excluding the acting widening
 /// reservation unless it is the subject itself.
 fn blocking_reservations(
@@ -465,7 +507,7 @@ pub(super) enum RefusedRunPathEntry {
     /// No holder protects any path this observation attributed to the refused run.
     NoHolderEntered,
     /// The refused run's observed writes entered paths these holders already protect.
-    HoldersEntered(DriftPathAttributionOutcome),
+    HoldersEntered(Box<DriftPathAttributionOutcome>),
 }
 
 /// Attribute a refused run's observed writes to every holder whose scopes they entered.
@@ -534,11 +576,13 @@ pub(super) fn attribute_refused_run_entry(
     UnattributedDriftPathSet::try_from(entered).map_or(
         RefusedRunPathEntry::NoHolderEntered,
         |paths| {
-            RefusedRunPathEntry::HoldersEntered(DriftPathAttributionOutcome::IncursionDetected {
-                paths,
-                conflicts,
-                protection: PostWriteFreePathProtection::NotAcquired,
-            })
+            RefusedRunPathEntry::HoldersEntered(Box::new(
+                DriftPathAttributionOutcome::IncursionDetected {
+                    paths,
+                    conflicts,
+                    protection: PostWriteFreePathProtection::NotAcquired,
+                },
+            ))
         },
     )
 }

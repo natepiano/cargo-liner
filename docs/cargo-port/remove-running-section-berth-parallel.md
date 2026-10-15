@@ -61,49 +61,25 @@ Read 2026-10-15 at 6d01f704.
 
 ### Phase 1 — One reservation per phase session, and the director's Bash calls fold nothing  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** the two engine changes, proved by one end-to-end test of the 2026-10-15 shape, then installed. The fast fix the user asked for first.
-
-**Spec:**
-
-1. **`CheckReservationSelection::SessionMappingOrNewReservation`.** New variant: "Use a valid harness-session mapping; a usable session id with no mapping opens a new reservation in the acting run; with no session id, the acting run's only active reservation." `CheckArguments::into_check_request` uses it when `--reservation` is absent. The pre-tool-use hook keeps `SessionMappingOrSingleActive`. `reported_session_mapping_publication` treats it as `SessionMappingOrSingleActive`.
-2. **`select_first_touch_reservation_reuse`.** Under the new selection, `AvailableSessionWithoutMapping` returns `AppendRequired` with the protected scopes left after removing every path an active sibling of the acting run and worktree holds (reuse the partition rule; factor a reservation-free form of `partition_first_touch_protected_scopes` if needed). When nothing is left, report `already_held` under the sibling that holds the first path, exactly as the existing reuse does, and publish no mapping move. `Mapped` and `HarnessSessionUnavailable` behave as today. The appended `Claim` publishes the phase session's mapping through `apply_journal_event`, unchanged.
-3. **`PostCommitWideningSelection::SoleRunCandidate`.** New variant: "Widen the acting run's only active reservation in this worktree; with several, attribute nothing and name them." `post_tool_use_drift_request` uses it. In `resolve_post_commit` it is `SessionMappingOrSingleCandidate` without the mapping arm: `[]` → `NotNeeded`, `[one]` → `Selected`, more → `Ambiguous(candidates)`; an unidentified run → `NotNeeded`. The post-commit git hook keeps `SessionMappingOrSingleCandidate`.
-4. **End-to-end test** `a_director_runs_two_phases_each_with_its_own_reservation` in a new `crates/cargo-berth/tests/parallel_phases.rs` (copy the small session and hook helpers it needs from `tests/lifecycle.rs` and `tests/hooks.rs`), under 1 s:
-   - Director session `dir-sid`. `check file:a.rs` under `CARGO_BERTH_SESSION_ID=dir-sid.phase-15` → reservation R15.
-   - `check file:b.rs` under `dir-sid.phase-16` → a different id R16, same coordination run; R15's scopes are still only `a.rs`.
-   - Map `dir-sid` onto R15 (a `check --reservation R15` under `dir-sid`), write unheld `c.rs`, run `hook post-tool-use` with a Bash payload whose `session_id` is `dir-sid`. No `widen` event; the drift answer names both R15 and R16 as candidates for `c.rs`.
-   - Release R15; R16 is still active and holds `b.rs`.
-5. **Docs.** `worktree-coordination.md` line 268: state the three selection cases of bare `check`. `json-contract.md` 721: the ambiguity now arises only with no usable session id. CHANGELOG `### Changed`: one entry for each change, in user terms.
+- A bare `check` parses to `CheckReservationSelection::SessionMappingOrNew` (`cli.rs`). A valid session mapping selects its reservation. A usable session id with no mapping opens a new reservation in the acting coordination run (`append_unheld_first_touch_scopes`, `verb/claim.rs`). Without a usable session id, the check still joins the run's only active reservation in the worktree. The edit hook keeps `SessionMappingOrSingleActive`.
+- A new phase reservation takes only paths no active same-run sibling holds (`partition_first_touch_protected_scopes`). When siblings hold every path, the check reports `already_held` under the sibling holding the first path and writes no mapping (`AlreadyHeldSessionMapping::PreserveUnmappedSession`). It then reports `session_mapping_publication = {"status": "left_unmapped"}` (`SessionIdentityMappingPublication::LeftUnmapped`), so a later bare check under that session opens new work. A mapped or explicit selection that reports `already_held` publishes its selected reservation.
+- The post-tool-use hook runs drift with `PostCommitWideningSelection::SoleRunCandidate`. It widens only the run's sole active reservation in the worktree. With several active, unheld changed paths come back ambiguous with the candidate ids, even when the hook session maps to one of them. Explicit drift and post-commit drift keep `SessionMappingOrSingleCandidate`, so a phase session's mapping still attributes its own files.
 
 **Files:**
-- `crates/cargo-berth/src/cli.rs` — bare `check` uses the new selection
-- `crates/cargo-berth/src/verb/claim.rs` — `CheckReservationSelection::SessionMappingOrNewReservation` and its locked selection
-- `crates/cargo-berth/src/drift/selection.rs` — `PostCommitWideningSelection::SoleRunCandidate`
-- `crates/cargo-berth/src/hook/post_tool_use.rs` — the hook's drift request uses it
-- `crates/cargo-berth/tests/parallel_phases.rs` — new end-to-end test
-- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md` — the selection rules
-- `crates/cargo-berth/CHANGELOG.md` — two Changed entries
+- `crates/cargo-berth/src/cli.rs` — bare `check` selection
+- `crates/cargo-berth/src/verb/claim.rs` — new-reservation selection, `AlreadyHeldSessionMapping`
+- `crates/cargo-berth/src/session/mod.rs`, `src/output.rs` — `LeftUnmapped` publication and its message
+- `crates/cargo-berth/src/drift/selection.rs`, `src/hook/post_tool_use.rs` — `SoleRunCandidate`
+- `crates/cargo-berth/tests/parallel_phases.rs` — two-phase end-to-end test and the `left_unmapped` test
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `json-contract.md`, `docs/cargo-berth/generated/output-contract.json` — the selection rules and the `left_unmapped` wire value
 
-Tests whose expectation was the old join (unmapped session joining the sole reservation through `check`) are updated to the new rule, each named in the phase report.
+**Binds later work:** `parallel_phases.rs` holds the helpers `initialized_repository`, `run_berth_with_session`, `run_post_tool_use` and `journal_events`.
 
-**Workers:** 1 writer + 1 tester. The new test is written from the Spec alone, beside the engine change.
-- `impl` — `src/cli.rs`, `src/verb/claim.rs`, `src/drift/selection.rs`, `src/hook/post_tool_use.rs`, the two as-built docs, `CHANGELOG.md`, and edits to existing tests the new rule breaks.
-- `test` — the new `crates/cargo-berth/tests/parallel_phases.rs` holding Spec item 4, run against the base tree first to show it fails.
+**Gotchas:** running one check per phase under `CARGO_BERTH_SESSION_ID=<sid>.phase-<N>`, and checkpointing with `drift --full --reservation <id>`, are director-skill changes owned outside this crate.
 
-**Constraints from prior phases:** none; this is the first phase.
-
-**Acceptance gate:**
-- The end-to-end test fails at the base commit and passes after (the writer shows the failing run first).
-- `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; the two drift tests at 2785 and 2814 unchanged and passing.
-- **Install.** After the showrunner merges the checkpoint, install cargo-berth from the merged commit on natedev and the Mac, as for berth-hook-hang, and confirm `cargo-berth --version` on both. The unit does it if the showrunner asks.
-
-### Phase 2 — Robust tests  · status: todo
+### Phase 2 — Robust tests  · status: done
 
 **Depends on:** Phase 1
 
@@ -113,7 +89,7 @@ Tests whose expectation was the old join (unmapped session joining the sole rese
 
 **Goal:** pin every neighbouring case of the two changes, and fix any defect they surface in this phase.
 
-**Spec — tests, each under 1 s, in the file that holds its neighbours:**
+**Spec:** tests, each under 1 s, in the file that holds its neighbours:
 
 1. `check` with no session id and one active reservation still joins it; with two, still returns `ambiguous_active_run_reservations` (`tests/lifecycle.rs`).
 2. `check --reservation R` under an unmapped phase session widens R and maps the session to R.
@@ -127,7 +103,8 @@ Tests whose expectation was the old join (unmapped session joining the sole rese
 10. The hook's ambiguous-attribution line reads correctly for the parallel case (names the candidates and the recovery `drift --reservation <id>`), stated once.
 
 **Files:**
-- `crates/cargo-berth/tests/parallel_phases.rs` — cases 1–4, 7–9
+- `crates/cargo-berth/tests/lifecycle.rs` — case 1
+- `crates/cargo-berth/tests/parallel_phases.rs` — cases 2–4, 7–9
 - `crates/cargo-berth/tests/hooks.rs` — cases 5, 6, 10
 - `crates/cargo-berth/src/` — only an engine file a failing test points at
 - `docs/cargo-berth/as-built/worktree-coordination.md` — any rule a fix adds
@@ -136,6 +113,39 @@ Tests whose expectation was the old join (unmapped session joining the sole rese
 - `impl` — any engine file a failing test points at, and the as-built docs for any rule a fix adds.
 - `test` — the ten tests, in `crates/cargo-berth/tests/parallel_phases.rs` and the neighbouring test files named per case.
 
-**Constraints from prior phases:** maintained by phase review after Phase 1.
+**Constraints from prior phases:**
+- Bare `check` parses to `CheckReservationSelection::SessionMappingOrNew` (`cli.rs`); the edit hook still uses `SessionMappingOrSingleActive`. The post-tool-use hook alone uses `PostCommitWideningSelection::SoleRunCandidate`; explicit and post-commit drift keep `SessionMappingOrSingleCandidate`.
+- A fresh session whose every path an active sibling holds reports `already_held` under the sibling holding the first path, writes no mapping, and reports `acquisition.session_mapping_publication = {"status": "left_unmapped"}`. `parallel_phases.rs::a_fresh_session_reports_left_unmapped_when_siblings_hold_every_requested_path` already pins case 4's "opens nothing" half; case 4 adds only the mixed held-plus-free check. A mapped or explicit selection reporting `already_held` publishes its selected reservation (`published`).
+- `parallel_phases.rs` already has the helpers `initialized_repository`, `run_berth_with_session`, `run_post_tool_use` and `journal_events`; reuse them. Its end-to-end test already covers the director's explicit `check --reservation` mapping and the two-phase ambiguous hook answer, so cases 2 and 6 test the neighbouring states, not those.
+- The showrunner installs cargo-berth on both machines after merging each checkpoint.
 
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s; the phase report lists each case with its test name. If an engine fix landed, install again as in Phase 1.
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s; the phase report lists each case with its test name. If an engine fix landed, the showrunner installs it after the merge.
+
+### Phase 3 — Answer an overlap for one named phase  · status: todo
+
+**Depends on:** Phase 2
+
+#### Work Order
+
+**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
+
+**Goal:** a director with two open phases answers an overlap for the phase it names, not whichever phase its session maps to.
+
+**Spec:**
+1. `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"` records the answer and the claimed paths on reservation `<id>`. `--reservation` means what it means on `check`: the id must be an active reservation of the acting run and worktree, or the claim is refused as on `check`. The harness-session mapping publishes onto `<id>` the way an explicit `check --reservation` does.
+2. Without `--reservation`, `claim` behaves as today.
+3. Tests, each under 1 s: with two active phase reservations and the director's session mapped to one, a `claim --reservation <other> … --after <holder>` attaches the answer and paths to `<other>` only; an unknown or inactive id is refused and records nothing; `claim` without the flag is unchanged.
+
+**Files:**
+- `crates/cargo-berth/src/cli.rs` — `ClaimArguments` (~526) gains `--reservation`
+- `crates/cargo-berth/src/verb/claim.rs` — claim reservation selection
+- `crates/cargo-berth/tests/parallel_phases.rs` — the Spec 3 tests
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `crates/cargo-berth/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — `cli.rs`, `verb/claim.rs`, the as-built docs and the CHANGELOG.
+- `test` — the Spec 3 tests in `crates/cargo-berth/tests/parallel_phases.rs`.
+
+**Constraints from prior phases:** maintained by phase review after Phase 2. The showrunner-fixer builds the director's side against this exact flag name.
+
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The showrunner merges, then installs on both machines.
