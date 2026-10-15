@@ -13,7 +13,7 @@
 - Setting `[census] hierarchy_command` in cargo-handler's config; empty means off. Each machine's census runs its own command; natedev's is `~/.claude/scripts/lib/py ~/.claude/scripts/production/production_tree.py --json`.
 - stdout, exit 0: `{"schema":1,"edges":[{"manager":"<sessionId>","member":"<sessionId>","role":"showrunner|unit|impl|test|review|fix"}]}`. `manager` is a Claude Code `sessionId` from the session records. `member` is a Claude `sessionId`, or for a Codex worker its Codex thread id from `mesh_roster.json` (Codex workers have no Claude session; ended, failed or server-down workers emit no edge). `role` is the member's role.
 - Each machine emits only the edges whose member is local. The manager may be on another machine; cargo-handler joins by `sessionId` across every machine it shows.
-- A unit whose showrunner is gone gets no edge and stays top level. A command that fails, times out (1 s) or prints malformed JSON yields no edges, and nesting falls back to today's launch match.
+- A unit whose showrunner is gone gets no edge and stays top level. A command that fails, times out (10 s) or prints malformed JSON keeps the last good edges for an unchanged command, still filtered so stale members drop, and is retried on the next tick; with no good answer yet, nesting falls back to today's launch match.
 
 ## Delegation Context
 
@@ -23,12 +23,12 @@
 - **Worktree:** `/home/natepiano/rust/cargo-liner-handler-enh`, branch `remove-running-section-handler-enh`.
 - **Key files** (under `crates/cargo-handler/src/`):
   - session records: `census/scan.rs` (`read_sessions` ≈645, path ≈198), `census/classify.rs` (`SessionRecord` ≈131, `claude_row` ≈295);
-  - rows: `census/mod.rs` (`AgentRow` ≈134, `is_top_level` ≈182, `MachineState::top_level` ≈324, `RemoteMachines` ≈433);
-  - probe: `census/probe.rs` (`ProbeAgentRow` ≈24, `ProbeReport` ≈62, `parse_report` ≈103), `constants.rs` (`PROBE_SCHEMA` = 3);
+  - rows: `census/mod.rs` (`AgentRow`, `RemoteMachines`); placement: `census/placement.rs` (`RoleLabel` ≈65, `AgentPlacement` ≈115, `role_label` ≈372); hierarchy: `census/hierarchy.rs` (`HierarchyAnswer` ≈253, `LastSuccessfulHierarchy` ≈276);
+  - probe: `census/probe.rs` (`ProbeAgentRow`, `ProbeReport`, `parse_answer` ≈176), `constants.rs` (`PROBE_SCHEMA` = 3, `HIERARCHY_TIMEOUT` ≈536, `PROBE_TIMEOUT` ≈572);
   - scheduler: `census/schedule.rs` (`spawn` ≈60, round loop ≈92); command-with-timeout pattern `census/remote.rs` (`SshRunner::probe` ≈152); TTL pattern `census/scan.rs` (`DesktopRead` ≈107);
   - config and settings: `config.rs` (`MachinesConfig` ≈103, `Config` ≈115), `settings.rs` (`AppSetting::RemoteMachines` ≈27), `app.rs` ≈144, `terminal.rs` ≈60;
-  - cells: `agent_cell.rs` (`cell_order` ≈150, `Placing::sessions_of` ≈228, `SessionEntry` ≈113, `above_tree` ≈467, `header_line` ≈497), `tiles.rs` (`AgentCell`), `render.rs` (`group_title` ≈181);
-  - summary: `summary/mod.rs` (uses `top_level()` at ≈65, 86, 152, 203, 316).
+  - cells: `agent_cell.rs` (`cell_order_placed` ≈236, `SessionEntry`, `above_tree`, `header_line`), `tiles.rs` (`AgentCell`), `render.rs` (`group_title`);
+  - summary: `summary/mod.rs` (`root_rows` ≈111: only placement roots are summary entries).
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler`
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler`
 - **Run/Smoke:** `cargo run -p cargo-handler` in a terminal, with `hierarchy_command` pointed at a fixture script printing edges for live session ids.
@@ -45,20 +45,23 @@
 **Goal:** `~/.claude/scripts/lib/py ~/.claude/scripts/production/production_tree.py --json` prints this machine's edges per the contract, in well under a second.
 
 **Spec:**
-1. natedev's showrunner-fixer builds it in `~/.claude` after the delegate → unit folder rename, from `showrunners.py` parent links and the unit marks, reading both folder names. This unit writes none of it.
-2. When natedev reports it landed, the unit director runs it on natedev and on the Mac, checks the output against the contract (ids resolve to live session records or live Codex threads; roles are from the set), and records the result here.
-3. Then set it as `hierarchy_command` on each machine and run `cargo-handler probe` there: the probe's `edges` must carry the same links, which shows the consumer receives them.
+1. natedev's showrunner-fixer builds it in `~/.claude`, from `showrunners.py` parent links and the unit marks, reading both folder names. This unit writes none of it. It is installed on natedev and, from `~/.claude` 384fb82d, on the Mac.
+2. The unit director runs it on natedev and on the Mac, checks the output against the contract (ids resolve to live session records or live Codex threads; roles are from the set), and records the result here.
+3. Cross-machine case: a local member whose manager runs on the other machine must still get its edge from the member's machine. If the producer drops it (it looks managers up among local sessions), send natedev the case before acceptance; the fix is natedev's.
+4. Then set it as `hierarchy_command` on each machine and run `cargo-handler probe` there: the probe's `edges` must carry the same links, and `hierarchy_failed` must be absent or false.
+5. Live check with the checkpoint binary on natedev, showing the Mac too: a showrunner title reads `· showrunner`, a nested unit reads `· unit`, live Codex workers carry their role, and only placement roots are summary entries. An edge whose member is an idle Codex thread with no row is an expected exception, recorded rather than required.
 
 **Constraints from prior phases:**
-- The census runs the command with a 1 s timeout and a 1 MiB stdout cap (`HIERARCHY_TIMEOUT`, `HIERARCHY_OUTPUT_LIMIT` in `constants.rs`); over either yields no edges. Schema must be `1`.
-- Each machine's probe loads its own config and runs its own command (`census/probe.rs` `print`), so a remote machine's edges come from the remote's own setting.
+- The census runs the command with a 10 s timeout and a 1 MiB stdout cap (`HIERARCHY_TIMEOUT`, `HIERARCHY_OUTPUT_LIMIT` in `constants.rs`); the probe deadline is `HIERARCHY_TIMEOUT` + `PROBE_SCAN_SSH_MARGIN` (20 s). A failed or timed-out run keeps the last good edges for an unchanged command and retries on the next tick; a changed command or Off clears them. Completed rows publish before discovery finishes. Schema must be `1`.
+- Each machine's probe loads its own config and runs its own command (`census/probe.rs` `print`), so a remote machine's edges come from the remote's own setting. A probe whose discovery failed reports `hierarchy_failed: true`, and the receiving census keeps that host's last good edges.
+- The config file comes from `dirs::config_dir()` (`SettingsFileSpec`): on Linux `$XDG_CONFIG_HOME/cargo-handler/`, and a scratch `XDG_CONFIG_HOME` must be absolute, because `dirs` ignores a relative value and reads `~/.config`, so a probe can pass against the wrong config; on macOS always `~/Library/Application Support/cargo-handler/`, which ignores `XDG_CONFIG_HOME`. Record which binary and which config file each probe used.
 
 **Files:**
 - `docs/cargo-port/remove-running-section-handler-hierarchy.md`
 
 **Workers:** none — natedev builds the command; the unit director checks it.
 
-**Acceptance gate:** the command's output on both machines matches the contract and names the live showrunner → unit links, and a configured `cargo-handler probe` on each machine reports those edges.
+**Acceptance gate:** the command's output on both machines matches the contract and names the live showrunner → unit links, including a cross-machine member; a configured `cargo-handler probe` on each machine reports those edges with no `hierarchy_failed`; and the live grid shows the role labels and nesting of step 5.
 
 ### Phase 2 — Each machine's census reads its hierarchy edges  · status: done
 
@@ -109,41 +112,25 @@
 
 ### Phase 4 — Role labels in the title  · status: done
 
-**Depends on:** Phase 3 (`crates/cargo-handler/src/agent_cell.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** each tile's title, and each nested member's tree line, names the agent's role.
-
-**Spec:**
-1. Roles come from the relationships phase 3's placement accepted, never raw edges: a dropped, stale or unresolved edge labels nothing. Placement does not keep the accepted edge's role yet: `Placement::Managed(RowIdentity)` and `ManagedThread { manager, .. }` (`census/placement.rs`) gain the accepted edge's `HierarchyRole`, set where `AgentPlacement::from_machines` resolves the manager. A member's role is its accepted edge's role. A manager's role, when no accepted edge names it, is `showrunner` if it manages a `unit` or `showrunner`, else `unit` if it manages workers. A member whose manager is absent keeps its own edge's role only while that edge is accepted. Hold the result in a semantic type (for example `RoleLabel::{Unlabeled, Stated(HierarchyRole), Inferred(HierarchyRole)}`), not a bare `Option<HierarchyRole>`; `HierarchyRole` gains its display text in `census/mod.rs`.
-2. Titles become styled segments: `TileCells::group_title` (`tui_pane/src/tiles/draw.rs` ≈243) returns a `Line` rather than one `Span`, and `GridLines::add_titled` (`tui_pane/src/pane/frame.rs` ≈484) takes `impl Into<Line>`, each segment's style patched over the chrome's title style as a span's is today, so existing span callers compile unchanged. Clipping, focus weight and title motion keep working per segment.
-3. `group_title` appends the role after the name, as `<name> · <role>`: the name in its rainbow hue, ` · <role>` in the label color; an unlabeled agent shows no suffix.
-4. A nested member's tree line, Claude row or Codex thread, shows its role after its name the same way.
-5. Tests: framework — a two-segment title keeps both styles, clips at the cell's width, takes focus weight, and moves with the title motion. Handler — explicit role beats inference; inferred showrunner and unit; an unlabeled launch-only group; labels follow a relationship change (an edge arriving, leaving); title and tree line text read back.
-6. Load keeps the hierarchy (showrunner add-on, 2026-10-15): at load 110–217 the command overran the 1 s `HIERARCHY_TIMEOUT` and `HierarchyCache` held the empty answer for a whole interval, flattening every tile and label. A failed or timed-out run keeps the last successful edges (placement still drops members that no longer resolve) and retries on the next scheduler tick rather than after a full interval; turning the command off still clears them. Raise `HIERARCHY_TIMEOUT` well above the 0.19 s measured cost — the run is off the UI thread. Test: a failed run after a good one keeps the nesting, and the next tick retries.
-
-**Constraints from prior phases:**
-- `HierarchyRole::{Showrunner, Unit, Impl, Test, Review, Fix}` parses the contract's role strings (`census/hierarchy.rs`).
-- Edges arrive and leave round by round (classified answers carry none; a failed or off command clears them), so labels must follow the current placement, not a first sighting.
-- Placement API (`census/placement.rs`): `RowIdentity { machine, pid }`, `Placement::{Root, Managed, Launched}`, `PlacedAgent { identity, row, placement }`, `ManagedThread { owner, owner_row, child_index, manager }`, `AgentPlacement::{from_machines, roots, is_root}`; `agent_cell.rs` `cell_order` and the summary both read one `AgentPlacement`.
-- `Agent::CodexThreadHost` rows are transport-only app servers: never drawn, never roots, skipped by `AgentRow::is_visible`; a label never lands on one, only on the Codex threads they carry.
-- About a quarter of real edges name idle Codex threads the census cannot see; they never resolve and label nothing.
-- `crates/tui_pane/` is shared, and tile-fixes owns it with uncommitted work there; its CHANGELOG notes the title API change. Before the framework writer starts, the unit director claims the title files through cargo-berth; if they overlap tile-fixes' reservation, the showrunner settles the order and nothing is written ahead of it.
+- Placement records each accepted edge's `HierarchyRole`, and `AgentPlacement::role_label` returns a `RoleLabel`: unlabeled, stated by an accepted edge, or inferred (`showrunner` for a manager of a unit or showrunner, `unit` for a manager of workers). An explicit edge role wins over inference; a dropped, stale or unresolved edge labels nothing.
+- Tile titles read `<name> · <role>` (name in its rainbow hue, ` · <role>` in the label color), and each nested Claude row or Codex thread tree line shows its role after its name; an unlabeled agent shows no suffix. Roles: showrunner, unit, impl, test, review, fix.
+- `tui_pane` titles are styled segments: `TileCells::group_title` returns `Option<Line<'static>>` and `GridLines::add_titled` takes `impl Into<Line<'a>>`; each segment's style patches over the chrome title style, clipping keeps segment styles, and the ellipsis takes the last visible grapheme's style.
+- `HierarchyAnswer`, `LastSuccessfulHierarchy` and `HierarchyRetry` keep the last good edges through a failed or timed-out run of an unchanged command, filtered to live members, and retry on the next scheduler tick; a source change or turning the command off clears them. Remote probes carry an optional `hierarchy_failed` field (absent means answered); `RemoteHierarchyAnswers` keeps a failing host's last good edges and discards a late answer for a removed host.
+- `HIERARCHY_TIMEOUT` is 10 s; `PROBE_TIMEOUT` is `HIERARCHY_TIMEOUT + PROBE_SCAN_SSH_MARGIN` (20 s). Completed census rows publish before hierarchy discovery finishes.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs`
-- `crates/tui_pane/src/pane/frame.rs`
-- `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-handler/src/render.rs`
-- `crates/cargo-handler/src/agent_cell.rs`
-- `crates/cargo-handler/src/census/mod.rs`
-- `crates/cargo-handler/src/census/placement.rs`
-- `crates/cargo-handler/src/census/hierarchy.rs` (step 6)
-- `crates/cargo-handler/src/constants.rs` (step 6)
+- `crates/cargo-handler/src/census/placement.rs` — accepted-edge roles, `RoleLabel`, inference
+- `crates/cargo-handler/src/census/hierarchy.rs` — discovery cache with last-good retention and next-tick retry
+- `crates/cargo-handler/src/census/probe.rs` — `hierarchy_failed` wire field and answer parsing
+- `crates/cargo-handler/src/census/schedule.rs` — rows first, then discovery; remote answers per host
+- `crates/cargo-handler/src/constants.rs` — `HIERARCHY_TIMEOUT`, `PROBE_TIMEOUT`
+- `crates/cargo-handler/src/agent_cell.rs`, `render.rs` — labels in tree lines and titles
+- `crates/tui_pane/src/pane/frame.rs`, `tiles/draw.rs`, `CHANGELOG.md` — styled title API
 
-**Workers:** 2 writers — framework title segments, then the handler's labels.
-- `impl` — `tui_pane/src/tiles/draw.rs`, `tui_pane/src/pane/frame.rs`, `tui_pane/CHANGELOG.md`; hub: `pane/frame.rs`; posts the title API on the board first
-- `test` opens as `impl` — `render.rs`, `agent_cell.rs`, `census/mod.rs`, `census/placement.rs`; hub: `census/placement.rs`
+**Binds later work:** the live check of natedev's hierarchy command on both machines relies on a 10 s `HIERARCHY_TIMEOUT`, the derived `PROBE_TIMEOUT`, last-good-edge retention after a failed run, `hierarchy_failed` absent on a good probe, and role labels visible in titles and tree lines.
 
-**Acceptance gate:** tests pass; suite and lint green; shots on the unit's port show the labels on a showrunner tile, its nested units and their Codex workers.
+**Gotchas:** a capture with a scratch config needs an absolute `XDG_CONFIG_HOME` on Linux (a relative one silently falls back to `~/.config`); macOS ignores `XDG_CONFIG_HOME`. Removing and re-adding a host within one probe's 20 s life can let the old probe's answer apply; this race is accepted.
+
+**Ruled out:** a user-facing indicator for a failed discovery run, since it gives the user nothing to act on.
