@@ -18,6 +18,7 @@ use crate::census::CensusUpdate;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::ServiceTier;
+use crate::census::SessionIdentity;
 
 #[test]
 fn the_staged_scan_sends_classified_rows_before_reading_details() {
@@ -50,6 +51,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         entrypoint: None,
     }];
     let classified = AgentRow {
+        session_id:      SessionIdentity::Claude("abcd1234".to_string()),
         agent:           Agent::Claude,
         service_tier:    ServiceTier::Unrecorded,
         name:            "handler".to_string(),
@@ -81,14 +83,17 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         Some(Path::new("/home/test")),
         |rows| {
             sender
-                .send(CensusUpdate::Local(rows))
+                .send(CensusUpdate::Local(
+                    rows,
+                    crate::census::HierarchyEdges::default(),
+                ))
                 .expect("the census receiver should remain open");
         },
         |_, rows| {
             let first = updates
                 .try_recv()
                 .expect("classified agents must be sent before any detail read begins");
-            let CensusUpdate::Local(first_rows) = first else {
+            let CensusUpdate::Local(first_rows, _) = first else {
                 panic!("a local scan must publish a local answer");
             };
             assert_eq!(first_rows.as_slice(), std::slice::from_ref(&classified));
@@ -101,7 +106,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
     let detailed = updates
         .try_recv()
         .expect("the enriched agents must be sent after their details are read");
-    let CensusUpdate::Local(detailed_rows) = detailed else {
+    let CensusUpdate::Local(detailed_rows, _) = detailed else {
         panic!("a local scan must publish a local answer");
     };
     assert_eq!(

@@ -18,6 +18,7 @@ mod branch;
 pub(crate) mod classify;
 pub(crate) mod codex;
 pub(crate) mod desktop;
+pub(crate) mod hierarchy;
 pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
@@ -126,6 +127,103 @@ impl From<&str> for ServiceTier {
     }
 }
 
+/// A Claude Code session's stable identity, absent for other agents or old probes.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum SessionIdentity {
+    /// No Claude Code session record identifies this row.
+    #[default]
+    Unrecorded,
+    /// The `sessionId` in a Claude Code session record.
+    Claude(String),
+}
+
+impl From<String> for SessionIdentity {
+    fn from(id: String) -> Self {
+        if id.is_empty() {
+            Self::Unrecorded
+        } else {
+            Self::Claude(id)
+        }
+    }
+}
+
+/// The member's responsibility under its manager.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum HierarchyRole {
+    /// Runs a production.
+    Showrunner,
+    /// Directs a unit.
+    Unit,
+    /// Implements a change.
+    Impl,
+    /// Tests a change.
+    Test,
+    /// Reviews a change.
+    Review,
+    /// Repairs a defect.
+    Fix,
+}
+
+/// A manager and its member, identified across machines by session id.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct HierarchyEdge {
+    /// The manager's Claude Code session id, possibly on another machine.
+    manager: String,
+    /// The local member's Claude Code session id.
+    member:  String,
+    /// What the member does for its manager.
+    role:    HierarchyRole,
+}
+
+/// The management links reported by one machine.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct HierarchyEdges(Vec<HierarchyEdge>);
+
+/// Where this machine obtains its management links.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum HierarchySource {
+    /// Hierarchy discovery is disabled.
+    #[default]
+    Off,
+    /// A shell command printing the schema-1 hierarchy contract.
+    Command(String),
+}
+
+impl From<String> for HierarchySource {
+    fn from(command: String) -> Self {
+        if command.trim().is_empty() {
+            Self::Off
+        } else {
+            Self::Command(command)
+        }
+    }
+}
+
+/// The hierarchy setting shared between the app and the scheduler.
+#[derive(Clone, Debug)]
+pub(crate) struct HierarchyCommand(Arc<RwLock<HierarchySource>>);
+
+impl HierarchyCommand {
+    /// Share the configured source with the scheduler.
+    pub(crate) fn new(source: HierarchySource) -> Self { Self(Arc::new(RwLock::new(source))) }
+
+    /// Set the source read at the next local scan.
+    pub(crate) fn replace(&self, source: HierarchySource) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = source;
+    }
+
+    /// The source as it stands for this round.
+    pub(crate) fn snapshot(&self) -> HierarchySource {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// One agent someone can talk to, as the summary lists it, as its own
 /// cell draws it, and as the probe prints it. The field order is the
 /// probe's JSON order.
@@ -134,6 +232,8 @@ impl From<&str> for ServiceTier {
 pub(crate) struct AgentRow {
     /// Claude Code or Codex.
     pub(crate) agent:           Agent,
+    /// Claude Code session identity, or unrecorded for other rows.
+    pub(crate) session_id:      SessionIdentity,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.
     pub(crate) service_tier:    ServiceTier,
@@ -304,7 +404,7 @@ pub(crate) enum MachineState {
     /// No answer yet.
     Scanning,
     /// Every agent someone can talk to, oldest first.
-    Answered(Vec<AgentRow>),
+    Answered(Vec<AgentRow>, HierarchyEdges),
     /// The machine gave no answer, and why.
     Failed(String),
 }
@@ -314,7 +414,7 @@ impl MachineState {
     /// after a failure.
     pub(crate) fn rows(&self) -> &[AgentRow] {
         match self {
-            Self::Answered(rows) => rows,
+            Self::Answered(rows, _) => rows,
             Self::Scanning | Self::Failed(_) => &[],
         }
     }
@@ -333,7 +433,7 @@ static SCANNING: MachineState = MachineState::Scanning;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CensusUpdate {
     /// This machine's agents.
-    Local(Vec<AgentRow>),
+    Local(Vec<AgentRow>, HierarchyEdges),
     /// A remote machine's answer, or why there was none.
     Remote {
         /// The ssh name the machine is configured under.
@@ -369,7 +469,9 @@ impl Census {
     /// Record `update`, answering whether anything it says changed.
     pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
         let (slot, state) = match update {
-            CensusUpdate::Local(rows) => (&mut self.local, MachineState::Answered(rows)),
+            CensusUpdate::Local(rows, edges) => {
+                (&mut self.local, MachineState::Answered(rows, edges))
+            },
             CensusUpdate::Remote { host, state } => (
                 self.remotes.entry(host).or_insert(MachineState::Scanning),
                 state,
@@ -474,6 +576,7 @@ mod tests {
     fn row(started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
             name: "enh/handler".to_string(),
             status: Some("busy".to_string()),
@@ -493,9 +596,9 @@ mod tests {
     #[test]
     fn only_a_changed_answer_counts_as_a_change() {
         let mut census = Census::new("natedev".to_string());
-        assert!(census.apply(CensusUpdate::Local(vec![row(1)])));
-        assert!(!census.apply(CensusUpdate::Local(vec![row(1)])));
-        assert!(census.apply(CensusUpdate::Local(vec![row(2)])));
+        assert!(census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
+        assert!(!census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
+        assert!(census.apply(CensusUpdate::Local(vec![row(2)], HierarchyEdges::default())));
 
         let failed = CensusUpdate::Remote {
             host:  "mac".to_string(),
@@ -512,7 +615,7 @@ mod tests {
         let mut census = Census::new("natedev".to_string());
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![row(1)]),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
         });
         let configured = ["studio".to_string(), "mac".to_string()];
 
@@ -534,14 +637,14 @@ mod tests {
         let configured = ["mac".to_string(), "studio".to_string()];
         assert!(!census.lists_an_agent(&configured));
 
-        census.apply(CensusUpdate::Local(Vec::new()));
+        census.apply(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()));
         census.apply(CensusUpdate::Remote {
             host:  "studio".to_string(),
             state: MachineState::Failed("timed out".to_string()),
         });
         census.apply(CensusUpdate::Remote {
             host:  "old".to_string(),
-            state: MachineState::Answered(vec![row(1)]),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
         });
         assert!(!census.lists_an_agent(&configured));
 
@@ -551,11 +654,11 @@ mod tests {
         };
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![idle]),
+            state: MachineState::Answered(vec![idle], HierarchyEdges::default()),
         });
         assert!(census.lists_an_agent(&configured));
 
-        census.apply(CensusUpdate::Local(vec![row(3)]));
+        census.apply(CensusUpdate::Local(vec![row(3)], HierarchyEdges::default()));
         assert!(census.lists_an_agent(&[]));
     }
 
@@ -566,7 +669,7 @@ mod tests {
         let mut census = Census::new("natedev".to_string());
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![row(1)]),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
         });
 
         census.retain_remotes(&[]);

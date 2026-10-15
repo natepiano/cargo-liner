@@ -559,6 +559,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::census::SessionIdentity;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -802,6 +803,7 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
             name: format!("pid {pid}"),

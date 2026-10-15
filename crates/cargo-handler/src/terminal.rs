@@ -57,7 +57,7 @@ pub(crate) fn run() -> ExitCode {
     };
     run_terminal(&mut app, &iterm2_profile, |app| {
         Ticker::new(
-            census::schedule::spawn(app.remote_machines.clone()),
+            census::schedule::spawn(app.remote_machines.clone(), app.hierarchy_command.clone()),
             appearance_updates,
         )
     })
@@ -103,7 +103,7 @@ impl Ticker {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
             match &update {
-                CensusUpdate::Local(rows) => {
+                CensusUpdate::Local(rows, _) => {
                     startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
                 },
                 CensusUpdate::Remote { host, .. } => {
@@ -187,7 +187,9 @@ mod tests {
 
     use super::*;
     use crate::census::Agent;
+    use crate::census::HierarchyEdges;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -225,6 +227,7 @@ mod tests {
         let now = Instant::now();
         let row = AgentRow {
             agent:           Agent::Claude,
+            session_id:      SessionIdentity::Unrecorded,
             service_tier:    ServiceTier::Unrecorded,
             name:            "enh/handler".to_string(),
             status:          Some("busy".to_string()),
@@ -238,7 +241,10 @@ mod tests {
             children:        Vec::new(),
         };
         sender
-            .send(CensusUpdate::Local(vec![row.clone()]))
+            .send(CensusUpdate::Local(
+                vec![row.clone()],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
 
         assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::Needed);
@@ -246,14 +252,20 @@ mod tests {
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
 
         sender
-            .send(CensusUpdate::Local(vec![row.clone()]))
+            .send(CensusUpdate::Local(
+                vec![row.clone()],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::NotNeeded);
         sender
-            .send(CensusUpdate::Local(vec![census::AgentRow {
-                status: None,
-                ..row
-            }]))
+            .send(CensusUpdate::Local(
+                vec![census::AgentRow {
+                    status: None,
+                    ..row
+                }],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
     }
