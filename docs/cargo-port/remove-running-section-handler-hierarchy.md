@@ -84,42 +84,28 @@
 
 ### Phase 3 — Managed agents nest in their manager's tile, and only top-level agents are summary entries  · status: done
 
-**Depends on:** Phase 2 (`crates/cargo-handler/src/census/mod.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** an agent named as a member of a live manager on any shown machine sits in that manager's tile, below it in the tree, and is not a summary entry; with no edges the grid and summary are as today.
-
-**Spec:**
-1. Open read access to each machine's edges (`MachineState` accessor; the edge fields and `HierarchyRole` crate-visible), which phase 2 kept private for want of a consumer.
-2. Keep each Codex app-server thread's id: `ThreadEntry` (`census/scan.rs` ≈615–670) gains a domain-typed thread id (for example `CodexThreadId`), carried on the probe as an optional field. A Codex worker is a thread on its app-server row, not a row of its own.
-3. Build one cross-machine placement before cells and summary, in `census/mod.rs` (the hub): resolve each edge's `manager` to a Claude row by `SessionIdentity`, and its `member` to a Claude row by `SessionIdentity` or to an app-server thread by thread id, across every machine. A member's parent is its edge's manager when that resolves, else its `launched_by` row on its own machine when listed, else none. Give each placed row a semantic state (for example `Placement::{Root, Managed(..), Launched(..)}`), not a bare `Option`.
-4. Normalize to a forest so every listed row is placed exactly once: drop self-links; when one member has several edges, keep the one whose manager resolves, ties broken by the lowest manager id; an edge that would close a cycle (through edges or launch fallback) is dropped and the member falls back to its launcher, the existing visible-root rescue in `cell_order` deciding what remains. Publish the placement API on the board before the summary writer starts.
-5. `cell_order` runs as one pass over every machine from that placement: a root is a row with no parent; sessions nest depth first, oldest first, as today. `SessionEntry` carries its machine, and hue, name and child lookups match on machine and pid. A placed member brings its running work exactly once: `group_children`/`nest` (`agent_cell.rs` ≈674–718) today pull another session's children only through a `ChildKind::Session` marker in the launch tree, so reconcile those markers after hierarchy overrides and carry the machine through child lookup, deduplication and coloring. A thread member nests as a line under its manager's tile. Keep `AgentCell`'s key and the hue order rules.
-6. The summary lists exactly the rows that are cell roots, through the same predicate, replacing `launched_by.is_none()`. This also puts a row whose launcher is not listed back in the summary, matching its cell.
-7. A member on another machine reads its machine in its tree line (the header already names machines).
-8. Bring the two `census/codex.rs` tests over a second (`reads_interactive_threads_created_in_the_span` ≈1.25 s, `reads_threads_by_id_whoever_started_them` ≈1.14 s) under one: find what they wait on and remove the wait, not the coverage.
-9. Tests: unit under showrunner on one machine; unit on `mac` under a showrunner on `natedev`, with running children, and a pid on `mac` equal to one on `natedev`; a Codex thread under its unit; showrunner under showrunner (the child is not a summary entry); an unresolved manager with a listed launcher nests under the launcher; an unresolved manager with no listed launcher leaves the member top level; an edge overrides a launch match; a self-link, a two-edge cycle and two edges for one member each place every row once; transitions: classified answers (no edges) then completed (edges) reparent, the command failing or turned off restores roots, a remote manager leaving and returning re-nests its member with no member id change; no edges reproduces today's order.
-
-**Constraints from prior phases:**
-- `MachineState::Answered(rows, edges)`: startup's classified answer carries no edges; the completed answer carries the cached edges (30 s, refreshed when the session set or the setting changes); a failed or off command gives no edges. Remote rows and each machine's edges change independently, round by round.
-- `AgentRow.session_id` is `SessionIdentity::{Unrecorded, Claude(String)}`; Codex and desktop rows are `Unrecorded`.
-- The settings row (`Census` / `hierarchy command`) is pinned by the `render.rs` settings golden; its config and handle tests stay as they are.
+- `census/placement.rs` builds one cross-machine forest per render from the current `MachineState`s, never persisted: `RowIdentity { machine, pid }`, `Placement::{Root, Managed(RowIdentity), Launched(RowIdentity)}` (`is_child_of`), `PlacedAgent { identity, row, placement }`, `ManagedThread { owner, owner_row, child_index, manager }`, `AgentPlacement { rows, threads, .. }` with `from_machines(&[Machine])`, `roots()` and `is_root(machine, pid)`, re-exported from `census/mod.rs`. Read access is `MachineState::edges()`; `HierarchyEdge`'s fields, `HierarchyEdges.0` and `HierarchyRole` are `pub(crate)`.
+- A row's parent is the manager of an edge whose member is its `SessionIdentity::Claude` id and whose manager resolves to a listed Claude row on any machine, else its `launched_by` row on its own machine when listed, else none. Edges are taken in manager-id order, so the lowest resolving manager wins; self-links are skipped. Cycle checks run in session-id order and repeat until stable: a cycle-closing edge reverts the member to its launcher placement, in any row order. Launcher-only cycles get the old visible-root rescue: rows unreached from ordinary roots are promoted and listed after them. `roots()` keeps per-machine order with groups before lone agents.
+- Codex threads carry `CodexThreadId::{Unrecorded, Recorded(String)}` (rollout id) on `ThreadEntry`, tree nodes and `ChildRow.thread_id` (omitted on the wire when unrecorded). A thread whose id is an edge member with a resolving manager becomes a `ManagedThread`, once per id, preferring a listed owner over a carrier; it leaves its owner's running work and nests as a tree line under its manager, showing its program and service tier.
+- `Agent::CodexThreadHost` (`codex_thread_host`, name `app-server`): an app server not under the Codex desktop app, or beneath an agent, is a transport-only carrier for its threads. `AgentRow::is_visible` excludes it from placement rows, roots, `Census::lists_an_agent`, age repaints and the first-agent startup milestone. The probe sends carriers in an optional `thread_hosts` list beside `rows` (`ProbeReport::{from_answer, into_answer}`, `PROBE_SCHEMA` stays 3), so older readers never count them.
+- `render.rs` builds one `AgentPlacement` and passes it to `agent_cell::cell_order_placed` and the summary's `height`/`width`/`draw`. Cells nest sessions depth first, oldest first; `SessionEntry` and `CellChild` carry their machine, and hue, name and child lookups match on machine and pid. `nest` reconciles `ChildKind::Session` markers with the forest so each member's work appears once, adding a marker for a hierarchy-only member. A member on another machine reads `<name> · <machine>` in its tree line.
+- Summary entries are exactly placement roots (`summary::root_rows` through `is_root`), replacing `launched_by.is_none()`; `MachineState::top_level` and `AgentRow::is_top_level` are gone.
+- The `census/codex.rs` fixture writer sets SQLite `synchronous=OFF`; its tests run in under a tenth of a second.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs`
-- `crates/cargo-handler/src/census/mod.rs`
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/render.rs`
-- `crates/cargo-handler/src/census/codex.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/census/probe.rs`
+- `crates/cargo-handler/src/census/placement.rs` — placement forest, `mesh_worker_fixture` (test)
+- `crates/cargo-handler/src/census/mod.rs` — `CodexThreadId`, `Agent::CodexThreadHost`, `is_visible`, `edges()`, placement re-exports
+- `crates/cargo-handler/src/census/{scan,tree,classify,probe,codex}.rs` — thread ids, carrier classification, `thread_hosts` wire list, fixture speed
+- `crates/cargo-handler/src/{agent_cell,summary/mod,render}.rs` — cell order, summary roots, shared placement
+- `crates/cargo-handler/src/{terminal,startup_log}.rs` — repaint and milestone gates on visible rows
 
-**Workers:** 2 writers — placement and cells; summary and the codex test speed.
-- `impl` — `agent_cell.rs`, `census/mod.rs`, `census/scan.rs`, `census/probe.rs`, `render.rs`; hub: `census/mod.rs`
-- `test` opens as `impl` — `summary/mod.rs`, `census/codex.rs`
+**Binds later work:** Role labels read the placement, not raw edges: `Placement::Managed(RowIdentity)` and `ManagedThread { manager, .. }` hold no role, so the accepted edge's `HierarchyRole` must be added where `AgentPlacement::from_machines` resolves the manager. `HierarchyRole` has no display text yet. `cell_order_placed` and the summary read one `AgentPlacement`. `Agent::CodexThreadHost` rows are never drawn and never roots (`AgentRow::is_visible`); a label lands only on the threads they carry.
 
-**Acceptance gate:** the tests pass, and no `census/codex.rs` test takes a second; suite and lint green; live on both machines with the real or fixture command, a showrunner's tile holds its units and their workers, and the summary lists only top-level agents. Shots on the unit's port: summary and grid with a nested showrunner, a unit, a cross-machine unit and a nested Codex worker; the settings overlay with the hierarchy command filled in, and emptied (nesting falls back).
+**Gotchas:** Idle Codex threads have no open rollout, so edges naming them (14 of 56 real edges) never resolve and those workers fall back to their launcher. `AgentPlacement` borrows the machine states, so it is rebuilt each render.
+
+**Ruled out:** a `thread_host` flag on ordinary probe rows (older readers would count carriers as agents).
 
 ### Phase 4 — Role labels in the title  · status: todo
 
@@ -130,7 +116,7 @@
 **Goal:** each tile's title, and each nested member's tree line, names the agent's role.
 
 **Spec:**
-1. Roles come from the relationships phase 3's placement accepted, never raw edges: a dropped, stale or unresolved edge labels nothing. A member's role is its accepted edge's role. A manager's role, when no accepted edge names it, is `showrunner` if it manages a `unit` or `showrunner`, else `unit` if it manages workers. A member whose manager is absent keeps its own edge's role only while that edge is accepted. Hold the result in a semantic type (for example `RoleLabel::{Unlabeled, Stated(HierarchyRole), Inferred(HierarchyRole)}`), not a bare `Option<HierarchyRole>`; `HierarchyRole` gains its display text in `census/mod.rs`.
+1. Roles come from the relationships phase 3's placement accepted, never raw edges: a dropped, stale or unresolved edge labels nothing. Placement does not keep the accepted edge's role yet: `Placement::Managed(RowIdentity)` and `ManagedThread { manager, .. }` (`census/placement.rs`) gain the accepted edge's `HierarchyRole`, set where `AgentPlacement::from_machines` resolves the manager. A member's role is its accepted edge's role. A manager's role, when no accepted edge names it, is `showrunner` if it manages a `unit` or `showrunner`, else `unit` if it manages workers. A member whose manager is absent keeps its own edge's role only while that edge is accepted. Hold the result in a semantic type (for example `RoleLabel::{Unlabeled, Stated(HierarchyRole), Inferred(HierarchyRole)}`), not a bare `Option<HierarchyRole>`; `HierarchyRole` gains its display text in `census/mod.rs`.
 2. Titles become styled segments: `TileCells::group_title` (`tui_pane/src/tiles/draw.rs` ≈243) returns a `Line` rather than one `Span`, and `GridLines::add_titled` (`tui_pane/src/pane/frame.rs` ≈484) takes `impl Into<Line>`, each segment's style patched over the chrome's title style as a span's is today, so existing span callers compile unchanged. Clipping, focus weight and title motion keep working per segment.
 3. `group_title` appends the role after the name, as `<name> · <role>`: the name in its rainbow hue, ` · <role>` in the label color; an unlabeled agent shows no suffix.
 4. A nested member's tree line, Claude row or Codex thread, shows its role after its name the same way.
@@ -139,6 +125,9 @@
 **Constraints from prior phases:**
 - `HierarchyRole::{Showrunner, Unit, Impl, Test, Review, Fix}` parses the contract's role strings (`census/hierarchy.rs`).
 - Edges arrive and leave round by round (classified answers carry none; a failed or off command clears them), so labels must follow the current placement, not a first sighting.
+- Placement API (`census/placement.rs`): `RowIdentity { machine, pid }`, `Placement::{Root, Managed, Launched}`, `PlacedAgent { identity, row, placement }`, `ManagedThread { owner, owner_row, child_index, manager }`, `AgentPlacement::{from_machines, roots, is_root}`; `agent_cell.rs` `cell_order` and the summary both read one `AgentPlacement`.
+- `Agent::CodexThreadHost` rows are transport-only app servers: never drawn, never roots, skipped by `AgentRow::is_visible`; a label never lands on one, only on the Codex threads they carry.
+- About a quarter of real edges name idle Codex threads the census cannot see; they never resolve and label nothing.
 - `crates/tui_pane/` is shared, and tile-fixes owns it with uncommitted work there; its CHANGELOG notes the title API change. Before the framework writer starts, the unit director claims the title files through cargo-berth; if they overlap tile-fixes' reservation, the showrunner settles the order and nothing is written ahead of it.
 
 **Files:**
@@ -148,9 +137,10 @@
 - `crates/cargo-handler/src/render.rs`
 - `crates/cargo-handler/src/agent_cell.rs`
 - `crates/cargo-handler/src/census/mod.rs`
+- `crates/cargo-handler/src/census/placement.rs`
 
 **Workers:** 2 writers — framework title segments, then the handler's labels.
 - `impl` — `tui_pane/src/tiles/draw.rs`, `tui_pane/src/pane/frame.rs`, `tui_pane/CHANGELOG.md`; hub: `pane/frame.rs`; posts the title API on the board first
-- `test` opens as `impl` — `render.rs`, `agent_cell.rs`, `census/mod.rs`
+- `test` opens as `impl` — `render.rs`, `agent_cell.rs`, `census/mod.rs`, `census/placement.rs`; hub: `census/placement.rs`
 
 **Acceptance gate:** tests pass; suite and lint green; shots on the unit's port show the labels on a showrunner tile, its nested units and their Codex workers.
