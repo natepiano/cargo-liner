@@ -1287,7 +1287,7 @@ mod hierarchy_publication_tests {
     }
 
     #[test]
-    fn classified_rows_publish_without_discovery_and_completed_rows_carry_edges() {
+    fn classified_and_completed_rows_publish_before_hierarchy_edges() {
         let runner = Arc::new(CountingRunner(AtomicUsize::new(0)));
         let observed = Arc::clone(&runner);
         let updates = schedule::spawn_with_test_source(
@@ -1324,6 +1324,12 @@ mod hierarchy_publication_tests {
             updates
                 .recv_timeout(Duration::from_millis(500))
                 .expect("completion should arrive"),
+            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("hierarchy should follow completed rows"),
             CensusUpdate::Local(
                 Vec::new(),
                 HierarchyEdges(vec![HierarchyEdge {

@@ -20,6 +20,7 @@ use super::HierarchySource;
 use super::SessionIdentity;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
+use super::hierarchy::HierarchyAnswer;
 use super::local_machine_name;
 use super::scan::LocalScanner;
 use crate::config::CargoHandler;
@@ -76,17 +77,20 @@ impl From<ProbeAgentRow> for AgentRow {
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    schema:       u32,
+    schema:           u32,
     /// The printing machine's short host name.
-    machine:      String,
+    machine:          String,
     /// Its agents, oldest first, each with what it is running.
-    rows:         Vec<AgentRow>,
+    rows:             Vec<AgentRow>,
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
-    edges:        HierarchyEdges,
+    edges:            HierarchyEdges,
+    /// A failed command must not erase the receiver's last successful links.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hierarchy_failed: bool,
     /// Transport-only worker carriers, ignored by older schema-3 peers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    thread_hosts: Vec<AgentRow>,
+    thread_hosts:     Vec<AgentRow>,
 }
 
 impl ProbeReport {
@@ -99,11 +103,12 @@ impl ProbeReport {
             rows,
             edges,
             thread_hosts,
+            hierarchy_failed: false,
         }
     }
 
     /// Restore transport-only identity before handing an answer to the census.
-    fn into_answer(self) -> (Vec<AgentRow>, HierarchyEdges) {
+    fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
         let rows = self
             .rows
             .into_iter()
@@ -112,7 +117,12 @@ impl ProbeReport {
                 host
             }))
             .collect();
-        (rows, self.edges)
+        let hierarchy = if self.hierarchy_failed {
+            HierarchyAnswer::Failed
+        } else {
+            HierarchyAnswer::Answered(self.edges)
+        };
+        (rows, hierarchy)
     }
 }
 
@@ -129,11 +139,15 @@ pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
     let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let report = ProbeReport::from_answer(
+    let mut report = ProbeReport::from_answer(
         local_machine_name(),
         LocalScanner::new().scan(),
-        hierarchy::read(&source, &CommandRunner),
+        HierarchyEdges::default(),
     );
+    match hierarchy::read(&source, &CommandRunner) {
+        HierarchyAnswer::Answered(edges) => report.edges = edges,
+        HierarchyAnswer::Failed => report.hierarchy_failed = true,
+    }
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -149,6 +163,17 @@ pub(crate) fn print() -> ExitCode {
 /// The rows of a report read back from `output`, or why there are none:
 /// output that is not a report, or a report from another version.
 pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdges), String> {
+    parse_answer(output).map(|(rows, hierarchy)| {
+        let edges = match hierarchy {
+            HierarchyAnswer::Answered(edges) => edges,
+            HierarchyAnswer::Failed => HierarchyEdges::default(),
+        };
+        (rows, edges)
+    })
+}
+
+/// Decode hierarchy failure separately from an authoritative empty answer.
+pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAnswer), String> {
     let header: SchemaHeader =
         serde_json::from_slice(output).map_err(|_| UNREADABLE_PROBE_REASON.to_string())?;
     if header.schema != PROBE_SCHEMA {
@@ -198,11 +223,12 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            schema:       PROBE_SCHEMA,
-            machine:      "mac".to_string(),
-            thread_hosts: Vec::new(),
-            edges:        HierarchyEdges::default(),
-            rows:         vec![
+            hierarchy_failed: false,
+            schema:           PROBE_SCHEMA,
+            machine:          "mac".to_string(),
+            thread_hosts:     Vec::new(),
+            edges:            HierarchyEdges::default(),
+            rows:             vec![
                 AgentRow {
                     agent:           Agent::Codex,
                     session_id:      SessionIdentity::Unrecorded,
@@ -396,6 +422,28 @@ mod tests {
         assert!(
             rows.iter()
                 .all(|row| row.session_id == SessionIdentity::Unrecorded)
+        );
+    }
+
+    /// A missing extension means success, while a failed discovery remains distinct from empty.
+    #[test]
+    fn old_probe_hierarchy_is_answered_and_failed_probe_keeps_fresh_rows() {
+        let mut report = report();
+        let old = serde_json::to_vec(&report).expect("serialize old-compatible answer");
+        assert!(!String::from_utf8_lossy(&old).contains("hierarchy_failed"));
+        assert_eq!(
+            parse_answer(&old),
+            Ok((
+                report.rows.clone(),
+                HierarchyAnswer::Answered(HierarchyEdges::default())
+            ))
+        );
+        report.hierarchy_failed = true;
+        report.rows[0].name = "fresh row".to_string();
+        let bytes = serde_json::to_vec(&report).expect("serialize failed discovery");
+        assert_eq!(
+            parse_answer(&bytes),
+            Ok((report.rows, HierarchyAnswer::Failed))
         );
     }
 

@@ -107,7 +107,7 @@
 
 **Ruled out:** a `thread_host` flag on ordinary probe rows (older readers would count carriers as agents).
 
-### Phase 4 — Role labels in the title  · status: todo
+### Phase 4 — Role labels in the title  · status: done
 
 **Depends on:** Phase 3 (`crates/cargo-handler/src/agent_cell.rs`)
 
@@ -121,6 +121,7 @@
 3. `group_title` appends the role after the name, as `<name> · <role>`: the name in its rainbow hue, ` · <role>` in the label color; an unlabeled agent shows no suffix.
 4. A nested member's tree line, Claude row or Codex thread, shows its role after its name the same way.
 5. Tests: framework — a two-segment title keeps both styles, clips at the cell's width, takes focus weight, and moves with the title motion. Handler — explicit role beats inference; inferred showrunner and unit; an unlabeled launch-only group; labels follow a relationship change (an edge arriving, leaving); title and tree line text read back.
+6. Load keeps the hierarchy (showrunner add-on, 2026-10-15): at load 110–217 the command overran the 1 s `HIERARCHY_TIMEOUT` and `HierarchyCache` held the empty answer for a whole interval, flattening every tile and label. A failed or timed-out run keeps the last successful edges (placement still drops members that no longer resolve) and retries on the next scheduler tick rather than after a full interval; turning the command off still clears them. Raise `HIERARCHY_TIMEOUT` well above the 0.19 s measured cost — the run is off the UI thread. Test: a failed run after a good one keeps the nesting, and the next tick retries.
 
 **Constraints from prior phases:**
 - `HierarchyRole::{Showrunner, Unit, Impl, Test, Review, Fix}` parses the contract's role strings (`census/hierarchy.rs`).
@@ -138,6 +139,8 @@
 - `crates/cargo-handler/src/agent_cell.rs`
 - `crates/cargo-handler/src/census/mod.rs`
 - `crates/cargo-handler/src/census/placement.rs`
+- `crates/cargo-handler/src/census/hierarchy.rs` (step 6)
+- `crates/cargo-handler/src/constants.rs` (step 6)
 
 **Workers:** 2 writers — framework title segments, then the handler's labels.
 - `impl` — `tui_pane/src/tiles/draw.rs`, `tui_pane/src/pane/frame.rs`, `tui_pane/CHANGELOG.md`; hub: `pane/frame.rs`; posts the title API on the board first
