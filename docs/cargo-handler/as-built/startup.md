@@ -68,6 +68,7 @@ With `tiles.widen_summary` on, the summary can span several column bands. `draw_
 
 - The slow first scan is two cold first reads in the details stage: `transcript_launchers` (4.4 s cold, 5 ms warm) and `codex_app_server_threads` (2.4 s cold, 3 ms warm). Under load 162 they made a 36 s first answer before staging.
 - Measured under load with staging: first frame ~11 ms, first agent rows ~118–228 ms, details seconds later.
+- A progress timer (`Walker::timer`, `sleep_timer` in `census/tree.rs`) is read from the one `sleep` leaf under a shell wrapper, never from a script name or folder. That is why the move of `~/.claude/scripts/delegate` and `/tmp/claude/delegate` to `unit` needed no matcher change; `a_timer_under_the_unit_folders_reads_as_under_the_delegate_folders` pins both names.
 - To record: `CARGO_HANDLER_FRAME_LOG=/path/to/log cargo-handler`. The file is appended to, never truncated; delete it between runs.
 - The local scan runs on the scheduler thread, so while a slow scan runs no remote round starts; remotes already dispatched keep running on their own threads.
 - `before_draw` calls `Attract::identify` only while the attract screen shows; `identify_start`/`identify_end` appear only then.
