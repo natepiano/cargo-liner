@@ -2123,6 +2123,22 @@ impl OutputEnvelope {
             ),
             (
                 CoordinationRunMarkerPublication::Published,
+                SessionIdentityMappingPublication::LeftUnmapped,
+            ) => message_with_session_mapping_publication(
+                format!("Claimed {scope_count} reservation scope(s) as {reservation_id}."),
+                &session_mapping_publication,
+            ),
+            (
+                CoordinationRunMarkerPublication::Unavailable { diagnostic },
+                SessionIdentityMappingPublication::LeftUnmapped,
+            ) => message_with_session_mapping_publication(
+                format!(
+                    "Claimed {scope_count} reservation scope(s) as {reservation_id}, but the coordination-run marker could not be published: {diagnostic}. Restore coordination run {coordination_run_id} through the process environment before subsequent commands."
+                ),
+                &session_mapping_publication,
+            ),
+            (
+                CoordinationRunMarkerPublication::Published,
                 SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
                     ..
                 },
@@ -3576,6 +3592,7 @@ fn claimed_presentation(
     let claimed_detail = format!("Reservation id: `{reservation_id}`.\n\n{message}");
     let detail = match session_mapping_publication {
         SessionIdentityMappingPublication::Published
+        | SessionIdentityMappingPublication::LeftUnmapped
         | SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
             ..
         } => claimed_detail,
@@ -4067,6 +4084,9 @@ fn message_with_session_mapping_publication(
 ) -> String {
     match publication {
         SessionIdentityMappingPublication::Published => message,
+        SessionIdentityMappingPublication::LeftUnmapped => format!(
+            "{message} Active sibling reservations already hold every requested path, so the harness session stays unmapped; a later bare check under it opens new work."
+        ),
         SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
             ..
         } => format!(
@@ -4083,7 +4103,10 @@ fn session_mapping_publication_presentation(
     publication: &SessionIdentityMappingPublication,
 ) -> EnvelopePresentation {
     match publication {
-        SessionIdentityMappingPublication::Published => EnvelopePresentation::nothing_to_show(),
+        SessionIdentityMappingPublication::Published
+        | SessionIdentityMappingPublication::LeftUnmapped => {
+            EnvelopePresentation::nothing_to_show()
+        },
         SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
             ..
         }

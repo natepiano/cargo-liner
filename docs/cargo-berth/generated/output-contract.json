@@ -5901,6 +5901,19 @@
               "type": "object"
             },
             {
+              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "properties": {
+                "status": {
+                  "const": "left_unmapped",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
               "description": "An explicit selection affected this command but could not become session state.",
               "properties": {
                 "reason": {
@@ -13677,6 +13690,19 @@
               "type": "object"
             },
             {
+              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "properties": {
+                "status": {
+                  "const": "left_unmapped",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
               "description": "An explicit selection affected this command but could not become session state.",
               "properties": {
                 "reason": {
@@ -18160,6 +18186,19 @@
               "properties": {
                 "status": {
                   "const": "published",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "properties": {
+                "status": {
+                  "const": "left_unmapped",
                   "type": "string"
                 }
               },

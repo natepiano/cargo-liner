@@ -412,7 +412,7 @@ mod integration_cover {
     }
 
     #[test]
-    fn cover_uses_existing_marker_and_unmapped_session_joins_its_run() {
+    fn cover_uses_existing_marker_and_unmapped_session_respects_its_held_paths() {
         for existing_marker in [false, true] {
             let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
             let lane = repo.lane("session-cover-lane", "integration");
@@ -451,11 +451,15 @@ mod integration_cover {
             assert_success(&checked);
             let response = json(&checked);
             assert_eq!(response["status"], "clear", "{response}");
+            assert_eq!(
+                response["payload"]["data"]["acquisition"]["kind"],
+                "already_held"
+            );
             assert!(
                 response["reservations"]
                     .as_array()
                     .is_some_and(|ids| ids.iter().any(|id| id == cover_id)),
-                "the session joins the cover reservation: {response}"
+                "the cover already holds the requested path: {response}"
             );
         }
     }
@@ -1584,7 +1588,7 @@ fn an_outstanding_holder_from_another_run_refuses_nothing() {
 /// Identity resolution creates a run only when nothing else names the caller, so the
 /// second session reads the worktree's own slot and continues the incumbent run.
 #[test]
-fn a_second_harness_session_adopts_the_incumbent_run_without_refusal() {
+fn a_second_harness_session_opens_its_own_reservation_in_the_incumbent_run() {
     let repository = initialized_repository();
     let incumbent = run_berth_with_session(
         repository.path(),
@@ -1608,20 +1612,24 @@ fn a_second_harness_session_adopts_the_incumbent_run_without_refusal() {
     );
     assert_eq!(adopted_json["status"], "clear");
     assert_eq!(
-        adopted_json["payload"]["data"]["acquisition"]["kind"], "widened",
-        "one run's own reservation grows rather than gaining a sibling"
+        adopted_json["payload"]["data"]["acquisition"]["kind"], "appended",
+        "a fresh session opens a sibling in the same run"
+    );
+    assert_ne!(
+        adopted_json["payload"]["data"]["acquisition"]["reservation_id"],
+        incumbent_id
     );
     assert_eq!(
-        adopted_json["reservations"],
-        serde_json::json!([incumbent_id])
+        adopted_json["payload"]["data"]["acquisition"]["coordination_run_id"],
+        FIRST_RUN
     );
     assert_eq!(
         journal_events(repository.path())
             .iter()
             .filter(|event| event["op"] == "claim")
             .count(),
-        1,
-        "the adopting session should grow the incumbent's reservation, not open a second"
+        2,
+        "each session should hold its own reservation"
     );
     assert_eq!(
         last_claim_event(repository.path())["actor"]["run"],

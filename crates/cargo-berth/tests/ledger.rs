@@ -467,7 +467,7 @@ fn clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line() {
 }
 
 #[test]
-fn init_preserves_session_mapping_and_an_unmapped_session_reuses_and_widens_enrollment() {
+fn init_preserves_session_mapping_and_an_unmapped_session_opens_work_beside_enrollment() {
     let repository = initialized_repository();
     let root = repository.path();
     let session_id = "existing-invoking-session";
@@ -505,6 +505,10 @@ fn init_preserves_session_mapping_and_an_unmapped_session_reuses_and_widens_enro
     let acquired = &json_output(&checked)["payload"]["data"]["acquisition"];
     assert_eq!(acquired["kind"], "already_held");
     assert_eq!(acquired["reservation_id"], reservation_id);
+    assert_eq!(
+        fs::read(&mapping_path).expect("mapping after covered check"),
+        mapping_before
+    );
     let acquisition_events = |events: Vec<serde_json::Value>| {
         events
             .into_iter()
@@ -521,27 +525,38 @@ fn init_preserves_session_mapping_and_an_unmapped_session_reuses_and_widens_enro
     )
     .expect("covered edit should write");
 
-    let widened = run_berth_with_session(
+    let opened = run_berth_with_session(
         &checkout,
         &["check", "file:new.txt", "--json"],
         "new-enrolled-session",
     );
 
-    assert!(widened.status.success(), "{}", json_output(&widened));
-    let acquired = &json_output(&widened)["payload"]["data"]["acquisition"];
-    assert_eq!(acquired["kind"], "widened");
-    assert_eq!(acquired["reservation_id"], reservation_id);
+    assert!(opened.status.success(), "{}", json_output(&opened));
+    let acquired = &json_output(&opened)["payload"]["data"]["acquisition"];
+    assert_eq!(acquired["kind"], "appended");
+    assert_ne!(acquired["reservation_id"], reservation_id);
     let events = journal_events(root);
     assert_eq!(
         events.iter().filter(|event| event["op"] == "claim").count(),
-        2
+        3
     );
-    let widens = events
+    let enrolled_claim = events
         .iter()
-        .filter(|event| event["op"] == "widen")
-        .collect::<Vec<_>>();
-    assert_eq!(widens.len(), 1);
-    assert_eq!(widens[0]["reservation_id"], reservation_id);
+        .find(|event| event["reservation_id"] == reservation_id)
+        .expect("enrolled claim");
+    assert_eq!(
+        acquired["coordination_run_id"],
+        enrolled_claim["actor"]["run"]
+    );
+    let new_claim = events
+        .iter()
+        .find(|event| event["reservation_id"] == acquired["reservation_id"])
+        .expect("new phase claim");
+    assert_eq!(
+        new_claim["scopes"],
+        serde_json::json!([{"kind": "file", "path": "new.txt"}])
+    );
+    assert!(!events.iter().any(|event| event["op"] == "widen"));
 }
 
 #[test]

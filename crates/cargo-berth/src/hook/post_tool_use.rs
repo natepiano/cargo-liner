@@ -287,7 +287,7 @@ const fn post_tool_use_drift_request() -> DriftRequest {
     DriftRequest {
         comparison:  DriftComparisonChoice::CheapDelta,
         reservation: DriftReservationSelection::EveryActiveForPostCommit {
-            widening: PostCommitWideningSelection::SessionMappingOrSingleCandidate,
+            widening: PostCommitWideningSelection::SoleRunCandidate,
         },
     }
 }

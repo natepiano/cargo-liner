@@ -45,8 +45,6 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
-/// The recovery command an ambiguity prints when no `CARGO_BERTH_SESSION_ID` named its session.
-const PLAIN_RECOVERY_COMMAND: &str = "cargo-berth check --reservation <reservation-id> <path>...";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const READY_WAIT_INTERVAL: Duration = Duration::from_millis(10);
 const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -449,7 +447,7 @@ fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
 }
 
 #[test]
-fn clear_check_creates_then_widens_one_exact_file_reservation() {
+fn clear_check_without_session_creates_then_widens_one_exact_file_reservation() {
     let repository = initialized_repository();
 
     let first = run_berth(
@@ -509,22 +507,14 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
     );
     assert_eq!(second_acquisition["phase_start_head"], phase_start_head);
     assert_publication_status(&second_acquisition, "marker_publication");
-    assert_publication_status(&second_acquisition, "session_mapping_publication");
-    assert_session_mapping(
-        repository.path(),
-        "already-held-first-touch",
-        coordination_run_id,
-        reservation_id,
+    assert_eq!(
+        second_acquisition["session_mapping_publication"]["status"],
+        "left_unmapped"
     );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
     assert_eq!(journal_events(repository.path()), first_events);
 
-    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
-        .expect("reuse session mapping should remove");
-    let widened = run_berth_with_session(
-        repository.path(),
-        &["check", "file:later.rs", "--json"],
-        "widened-first-touch",
-    );
+    let widened = run_berth(repository.path(), &["check", "file:later.rs", "--json"]);
     let widened_envelope = json_output(&widened);
     let widened_acquisition = &widened_envelope["payload"]["data"]["acquisition"];
     assert!(widened.status.success());
@@ -543,12 +533,7 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
     let widened_events = journal_events(repository.path());
     assert_eq!(widened_events.len(), 2);
     assert_first_touch_widen_event(&widened_events[1], reservation_id);
-    assert_session_mapping(
-        repository.path(),
-        "widened-first-touch",
-        coordination_run_id,
-        reservation_id,
-    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
 
     assert_board_contains_every_claim_source(repository.path());
 }
@@ -665,7 +650,7 @@ fn first_touch_does_not_widen_onto_a_path_a_sibling_declares() {
 }
 
 #[test]
-fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_mutation() {
+fn no_session_with_two_eligible_reservations_reports_ambiguity_without_mutation() {
     let repository = initialized_repository();
     let session_id = "ambiguous-overlapping-claim-session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
@@ -682,10 +667,9 @@ fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_muta
     let projection_before = fs::read(repository.path().join(PROJECTION_PATH))
         .expect("projection should read before ambiguous first touch");
 
-    let ambiguous = run_berth_with_session(
+    let ambiguous = run_berth(
         repository.path(),
         &["check", "file:shared/child.rs", "--json"],
-        session_id,
     );
     let envelope = json_output(&ambiguous);
     let mut expected_candidate_ids = vec![reservations.older, reservations.newer];
@@ -794,22 +778,17 @@ fn explicit_check_selection_republishes_mapping_for_subsequent_checks() {
 }
 
 #[test]
-fn the_rendered_recovery_command_resolves_the_ambiguity_that_printed_it() {
-    let rendered_command = rendered_recovery_command_resolving_its_ambiguity(
-        RecoverySession::CargoBerthEnvironment("recovery command's session"),
-    );
-    assert_eq!(
-        rendered_command,
-        format!("{SESSION_ENVIRONMENT}='recovery command'\\''s session' {PLAIN_RECOVERY_COMMAND}")
-    );
+fn a_new_cargo_berth_session_opens_a_reservation_with_several_active_siblings() {
+    assert_unmapped_session_opens_its_own_reservation(HarnessSession::CargoBerthEnvironment(
+        "new phase's session",
+    ));
 }
 
 #[test]
-fn a_claude_code_session_resolves_the_ambiguity_with_the_plain_recovery_command() {
-    let rendered_command = rendered_recovery_command_resolving_its_ambiguity(
-        RecoverySession::ClaudeCode("claude code recovery session"),
-    );
-    assert_eq!(rendered_command, PLAIN_RECOVERY_COMMAND);
+fn a_new_claude_code_session_opens_a_reservation_with_several_active_siblings() {
+    assert_unmapped_session_opens_its_own_reservation(HarnessSession::ClaudeCode(
+        "claude code phase session",
+    ));
 }
 
 #[test]
@@ -1592,25 +1571,20 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .expect("cargo-berth should run with a harness session")
 }
 
-/// Who names the session of an ambiguous check, which decides the shell its reader has.
+/// The two supported sources of a usable harness session id.
 #[derive(Clone, Copy)]
-enum RecoverySession {
-    /// `CARGO_BERTH_SESSION_ID` names it, and the reader runs the printed command from a
-    /// shell that names no session.
+enum HarnessSession {
     CargoBerthEnvironment(&'static str),
-    /// `CLAUDE_CODE_SESSION_ID` alone names it, and the reader runs the printed command
-    /// from a Bash call of the same Claude Code session.
     ClaudeCode(&'static str),
 }
 
-impl RecoverySession {
+impl HarnessSession {
     const fn session_id(self) -> &'static str {
         match self {
             Self::CargoBerthEnvironment(session_id) | Self::ClaudeCode(session_id) => session_id,
         }
     }
 
-    /// Name this session to `command` the way its source names it.
     fn bind(self, command: &mut Command) -> &mut Command {
         match self {
             Self::CargoBerthEnvironment(session_id) => command
@@ -1621,28 +1595,15 @@ impl RecoverySession {
                 .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id),
         }
     }
-
-    /// Give `command` the session environment of the shell the refusal's reader runs.
-    fn bind_reader_shell(self, command: &mut Command) -> &mut Command {
-        match self {
-            Self::CargoBerthEnvironment(_) => command
-                .env_remove(SESSION_ENVIRONMENT)
-                .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT),
-            Self::ClaudeCode(_) => self.bind(command),
-        }
-    }
 }
 
-/// Refuse an ambiguous first touch under `session`, run the recovery command it printed
-/// from the reader's shell, and require that command to select the reservation for the
-/// session. Returns the printed command.
-fn rendered_recovery_command_resolving_its_ambiguity(session: RecoverySession) -> String {
+fn assert_unmapped_session_opens_its_own_reservation(session: HarnessSession) {
     let repository = initialized_repository();
-    let reservations = claim_overlapping_reservations(repository.path(), session.session_id());
-    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
-        .expect("session mapping should be removed before ambiguous first touch");
-
-    let ambiguous = session
+    let siblings = claim_overlapping_reservations(repository.path(), "existing-phase-session");
+    let mapping_before = fs::read(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("existing session mapping should read");
+    let events_before = journal_events(repository.path());
+    let covered = session
         .bind(
             berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
                 .args(["check", "file:shared/child.rs", "--json"])
@@ -1650,73 +1611,69 @@ fn rendered_recovery_command_resolving_its_ambiguity(session: RecoverySession) -
                 .env_remove(RUN_ENVIRONMENT),
         )
         .output()
-        .expect("ambiguous check should run");
-    let envelope = json_output(&ambiguous);
-    assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
-    let message = envelope["message"]
-        .as_str()
-        .expect("ambiguity should carry a message");
-    let rendered_command = message
-        .split("Run `")
-        .nth(1)
-        .and_then(|rest| rest.split('`').next())
-        .expect("ambiguity should print its recovery command in backticks");
-    let command = format!(
-        "{} --json",
-        rendered_command
-            .replace("<reservation-id>", &reservations.older)
-            .replace("<path>...", "file:shared/child.rs")
-    );
-
-    let binary_directory = Path::new(env!("CARGO_BIN_EXE_cargo-berth"))
-        .parent()
-        .expect("built binary should sit in a directory");
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut search_path = std::env::split_paths(&path).collect::<Vec<_>>();
-    search_path.insert(0, binary_directory.to_path_buf());
-    let selected = session
-        .bind_reader_shell(
-            Command::new("sh")
-                .args(["-c", &command])
-                .current_dir(repository.path())
-                .env_remove(RUN_ENVIRONMENT)
-                .env(
-                    "PATH",
-                    std::env::join_paths(search_path).expect("search path should join"),
-                ),
-        )
-        .output()
-        .expect("rendered recovery command should run");
-    let selected_envelope = json_output(&selected);
-    assert!(
-        selected.status.success(),
-        "rendered recovery command `{command}` failed: {}",
-        String::from_utf8_lossy(&selected.stderr)
-    );
-    assert_eq!(selected_envelope["status"], "clear");
+        .expect("covered-only check should run");
+    assert!(covered.status.success());
+    let covered = json_output(&covered);
     assert_eq!(
-        selected_envelope["payload"]["data"]["acquisition"]["session_mapping_publication"]["status"],
-        "published"
+        covered["payload"]["data"]["acquisition"]["kind"],
+        "already_held"
     );
-    assert_session_mapping(
-        repository.path(),
-        session.session_id(),
-        FIRST_RUN,
-        &reservations.older,
+    assert_eq!(
+        covered["payload"]["data"]["acquisition"]["reservation_id"],
+        siblings.older
+    );
+    assert_eq!(journal_events(repository.path()), events_before);
+    assert_eq!(
+        fs::read(repository.path().join(SESSION_MAPPING_PATH)).expect("mapping should reread"),
+        mapping_before
     );
 
-    let ordinary = session
+    let opened = session
         .bind(
             berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-                .args(["check", "file:shared/child.rs", "--json"])
+                .args(["check", "file:shared/child.rs", "file:phase.rs", "--json"])
                 .current_dir(repository.path())
                 .env_remove(RUN_ENVIRONMENT),
         )
         .output()
-        .expect("ordinary check should run");
-    assert!(ordinary.status.success());
-    assert_eq!(json_output(&ordinary)["status"], "clear");
-    rendered_command.to_owned()
+        .expect("new phase check should run");
+    assert!(opened.status.success());
+    let opened = json_output(&opened);
+    let acquisition = &opened["payload"]["data"]["acquisition"];
+    assert_eq!(acquisition["kind"], "appended");
+    let id = acquisition["reservation_id"]
+        .as_str()
+        .expect("new phase id");
+    assert_ne!(id, siblings.older);
+    assert_ne!(id, siblings.newer);
+    assert_eq!(acquisition["coordination_run_id"], FIRST_RUN);
+    assert_session_mapping(repository.path(), session.session_id(), FIRST_RUN, id);
+    let events = journal_events(repository.path());
+    let claim = events.last().expect("new phase claim");
+    assert_eq!(claim["op"], "claim");
+    assert_eq!(claim["actor"]["run"], FIRST_RUN);
+    assert_eq!(claim["source"]["kind"], "first_touch");
+    assert_eq!(
+        claim["scopes"],
+        serde_json::json!([{"kind": "file", "path": "phase.rs"}])
+    );
+
+    let widened = session
+        .bind(
+            berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+                .args(["check", "file:phase-next.rs", "--json"])
+                .current_dir(repository.path())
+                .env_remove(RUN_ENVIRONMENT),
+        )
+        .output()
+        .expect("mapped phase check should run");
+    assert!(widened.status.success());
+    let widened = json_output(&widened);
+    assert_eq!(widened["payload"]["data"]["acquisition"]["kind"], "widened");
+    assert_eq!(
+        widened["payload"]["data"]["acquisition"]["reservation_id"],
+        id
+    );
 }
 
 fn assert_session_mapping(
