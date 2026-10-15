@@ -105,46 +105,53 @@ Read 2026-10-15 at 6d01f704.
 
 **Depends on:** Phase 2
 
+#### As-built
+
+- `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"` records the answer on reservation `<id>`, which must be an active reservation of the acting run and worktree. `ClaimRequest` carries `ClaimReservationSelection::{NewReservation, Existing(ReservationId)}`; without `--reservation`, `claim` opens a new reservation as before.
+- With `Existing`, `--before`, `--after` and `--override` widen the named reservation and attach the edge to it alone. `--defer`, or a request the named reservation already holds in full, records an answer-only `Answer` journal event (acquisition kind `answered`) that survives replay and maps the session to the named reservation. `--replace` retires only the named reservation's edges.
+- The selected reservation keeps its recorded target, phase-start head, purpose and plan/phase; creation-only arguments never overwrite them. Sibling-held paths report in `acquisition.already_held`, and widening at `maximum_reservations` succeeds.
+- An unknown, inactive or foreign-run id refuses with exit 5 and changes no journal entry or session mapping. A repeated same-direction `--after`/`--before` on the named reservation refuses with `duplicate_ordering_edge`, exit 2, before the journal write.
+- The board's replaced-edge view reads `Answer` events.
+
+**Files:**
+- `crates/cargo-berth/src/cli.rs` — `--reservation` on `ClaimArguments`
+- `crates/cargo-berth/src/verb/claim/mod.rs` — the claim verb (formerly `verb/claim.rs`)
+- `crates/cargo-berth/src/verb/claim/named.rs` — named-selection validate, acquire and consume
+- `crates/cargo-berth/src/output.rs`, `src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json` — widened and answered acquisition payloads
+- `crates/cargo-berth/src/board/answers.rs` — replaced edges from `Answer` events
+- `crates/cargo-berth/tests/parallel_phases.rs` — the named-claim tests
+- `docs/cargo-berth/as-built/json-contract.md` — `duplicate_ordering_edge`, the `answered` kind and the selection refusals
+
+**Gotchas:** replay rejects a `DuplicateEdge`, so a named claim must refuse a repeated edge before writing the journal. Named-claim fixtures ran 1–2.5 s under load until trimmed to at most 0.566 s.
+
+**Ruled out:** deduplicating repeats on a plain claim — each plain claim opens a distinct reservation, so no duplicate edge arises.
+
+### Phase 4 — An overlap refusal names only the holder  · status: todo
+
+**Depends on:** Phase 3
+
 #### Work Order
 
 **Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
 
-**Goal:** a director with two open phases answers an overlap for the phase it names, not whichever phase its session maps to.
+**Goal:** a blocked `check` or `claim` message names the holder's coordination run beside the holder, so nothing in it reads as the requester (showrunner, 2026-10-15).
 
 **Spec:**
-1. `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"` records the answer and the claimed paths on reservation `<id>`. `--reservation` means what it means on `check`: the id must be an active reservation of the acting run and worktree, or the claim is refused as on `check`. The harness-session mapping publishes onto `<id>` the way an explicit `check --reservation` does.
-2. Without `--reservation`, `claim` behaves as today.
-3. Selection is a domain type, `ClaimReservationSelection::{NewReservation, Existing(ReservationId)}`, never a bare `Option<ReservationId>` on `ClaimRequest`. With `Existing`, the selected reservation keeps its own recorded target, phase-start head, purpose and plan/phase; creation-only arguments (`--target`, `--head`, `--why`, `--plan/--phase`) are refused alongside `--reservation`.
-4. A named claim stays inside the named reservation (showrunner, 2026-10-15):
-   - `--defer` with `--reservation` stays answer-only: it reserves no paths and records the deferral against the named reservation, not the run's oldest active one.
-   - When the named reservation already holds every requested path, the answer is still recorded as an answer-only transaction, survives replay, and the session mapping points at the named reservation.
-   - `--replace` with `--reservation` retires only the named reservation's ordering edges, never a sibling's.
-5. Phase 2's outcomes carry over: a named claim reports sibling-held paths in `acquisition.already_held` the way check does, and widening an existing reservation at `maximum_reservations` succeeds because it uses no new slot.
-6. Tests, each under 1 s, with two active phase reservations and the director mapped to one:
-   - each of `--before`, `--after`, `--defer` and `--override` with `--reservation <other>` attaches the answer and any paths to `<other>` only;
-   - an unknown, inactive, foreign-run or foreign-worktree id is refused and records nothing;
-   - the all-held answer-only case survives replay;
-   - `--replace` leaves R15's edge alone when R16 is named;
-   - the selected reservation's target and baseline are preserved;
-   - a mixed sibling-held and free request is reported, and widening succeeds at the limit;
-   - `claim` without the flag is unchanged.
+1. One holder: `Reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry.` Today it ends `holds overlapping paths for <run>`, where `<run>` is the holder's own run id and reads as the asking reservation.
+2. Several holders: `<n> reservations hold paths that overlap the requested paths: reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>); …; reduce the requested scopes or coordinate with the holders, then retry.` The run id moves beside each holder the same way.
+3. Tests, each under 1 s: the one-holder `check` message equals the exact Spec 1 text for a real foreign holder (its reservation id, its run id, its branch), and the requester's run id appears nowhere in it; the several-holder `claim` message carries each holder's `(coordination run <run>)` beside its id. Update the existing assertion `2 reservations hold overlapping paths` in `tests/overlap.rs` to the new text.
 
 **Files:**
-- `crates/cargo-berth/src/cli.rs` — `ClaimArguments` (~526) gains `--reservation`
-- `crates/cargo-berth/src/verb/claim.rs` — claim reservation selection
-- `crates/cargo-berth/src/output.rs` — claim output for the named selection, if it changes
-- `crates/cargo-berth/tests/parallel_phases.rs` — the Spec 6 tests
-- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/src/output.rs` — `overlap_holder_description` (~4134)
+- `crates/cargo-berth/tests/overlap.rs` — the Spec 3 tests and the updated assertion (~1317)
+- `crates/cargo-berth/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — `cli.rs`, `verb/claim.rs`, `output.rs`, the as-built docs, the generated contract and the CHANGELOG.
-- `test` — the Spec 6 tests in `crates/cargo-berth/tests/parallel_phases.rs` (test owns this file alone).
+- `impl` — `output.rs` and the CHANGELOG.
+- `test` — the Spec 3 tests and the updated assertion in `crates/cargo-berth/tests/overlap.rs` (test owns this file alone).
 
 **Constraints from prior phases:**
-- Today an ordinary `claim` creates a new reservation, and an answer-only claim binds the oldest active reservation (`validate_answer` in `verb/claim.rs`). Explicit selection on `check` goes through `from_explicit_selection`; reuse it rather than writing a second validator. Claim transactions validate in `validate_claim_transaction`; `replaced_orderings` currently searches every nonterminal reservation of the run and worktree.
-- `widen_first_touch_reservation` returns `already_held` without appending, and `JournalOperation::Widen` requires nonempty additions, so the all-held answer needs its own answer-only transaction path.
-- Phase 2 added `acquisition.already_held: Vec<SiblingHeldScopes>` (`sibling_held_scopes` in `verb/claim.rs`) and the typed check `reservation_limit_reached` (exit 1, `CheckPayload::ReservationLimitReached`).
-- `parallel_phases.rs` already has the helpers `initialized_repository`, `run_berth_with_session`, `open_phase`, `phase_board`, `session_mappings`, `journal_events`, `SESSION_MAPPING_PATH` and `CONFIGURATION_PATH`.
-- The showrunner-fixer builds the director's side against this exact flag name.
+- `ReservationConflict` carries `reservation_id`, `holder_run_id`, `holder_branch()`, `source` and `purpose`; the description helpers are `source_description` and `purpose_description` in `output.rs`.
+- `tests/overlap.rs` already builds foreign holders with `foreign_worktree`, `make_dirty`, `reconcile_fixture` and `run_berth`, and reads the envelope with `json_output`.
 
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The showrunner merges, then installs on both machines.
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The checkpoint carries a `Change-Review:` line for the new wording.
