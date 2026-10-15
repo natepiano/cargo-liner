@@ -11,7 +11,7 @@ Where the code lives (paths relative to `crates/cargo-handler/src/`):
 - scheduler: `census/schedule.rs`
 - local scan and its stages: `census/scan.rs`
 - census state and rows: `census/mod.rs`; classification: `census/classify.rs`; wire format: `census/probe.rs`
-- cell identity: `tiles.rs` (`AgentCell`), `agent_cell.rs` (`cell_order`)
+- cell identity: `tiles.rs` (`AgentCell`), `agent_cell.rs` (`cell_order_placed`)
 - timing log: `startup_log.rs`; its variable name: `constants.rs` (`FRAME_LOG_VARIABLE`)
 - attract-screen identification hook: `app.rs` (`before_draw`)
 
@@ -19,35 +19,35 @@ Where the code lives (paths relative to `crates/cargo-handler/src/`):
 
 ### First frame
 
-- `terminal::run` calls `startup_log::init()`, loads the config, installs the theme, reads the system appearance (`spawn_appearance_watcher`, blocking), builds the `App`, then hands `run_terminal` a closure that builds the `Ticker` around `census::schedule::spawn(app.remote_machines.clone())`.
+- `terminal::run` calls `startup_log::init()`, loads the config, installs the theme, reads the system appearance (`spawn_appearance_watcher`, blocking), builds the `App`, then hands `run_terminal` a closure that builds the `Ticker` around `census::schedule::spawn(app.remote_machines.clone(), app.hierarchy_command.clone())`.
 - `spawn` returns its `Receiver<CensusUpdate>` at once; all scanning happens on the scheduler thread. The event loop's first pass drains whatever has arrived (normally nothing) and draws.
 - `Census::new(local_name)` starts with `local: MachineState::Scanning`, and `Census::machines` reports any configured remote with no answer as `Scanning`, so the first frame draws the summary frame with every machine heading reading `scanning`.
 - `Ticker::drain_census` folds each `CensusUpdate` into `Census::apply`, which returns `false` (no repaint) when the new state equals the old. An answer from a host removed from `machines.remote` since its probe left is dropped.
 
 ### Scheduler — `census/schedule.rs`
 
-- `spawn_staged_with(remotes, runner: Arc<dyn RemoteRunner>, scan_local: impl FnMut(&Sender<CensusUpdate>) -> ScanSchedule, cadence: Cadence)` runs one loop. In each pass, remotes that are due are dispatched first (`dispatch` spawns one thread per host and skips a host whose last probe is still in `InFlight`), then the local scan runs on the scheduler thread if due.
+- `spawn_staged_with(remotes, hierarchy: HierarchyCommand, hierarchy_runner: Arc<dyn HierarchyRunner>, runner: Arc<dyn RemoteRunner>, scan_local: impl FnMut(&mut LocalAnswers) -> ScanSchedule, cadence: Cadence)` runs one loop. In each pass, remotes that are due are dispatched first (`dispatch` spawns one thread per host and skips a host whose last probe is still in `InFlight`), then the local scan runs on the scheduler thread if due.
 - Cadence is `LOCAL_SCAN_INTERVAL` (2 s) and `REMOTE_PROBE_INTERVAL` (5 s). `remotes.snapshot()` is read every remote round, so a host added in settings is probed from the next round.
-- The local source receives the `Sender` itself and may send more than one `CensusUpdate::Local` per scan. It returns `ScanSchedule::Finished` once a send fails (the receiver is gone), which ends the thread.
+- The local source receives `LocalAnswers` (the `Sender`, the shared hierarchy setting, its runner and `HierarchyCache`) and publishes through `LocalAnswers::publish(stage, rows)`. Classified rows go out with no hierarchy edges; completed rows go out first with the cached edges, then again after hierarchy discovery (see `hierarchy.md`), so discovery never delays row detail. It returns `ScanSchedule::Finished` once a send fails (the receiver is gone), which ends the thread.
 - `spawn_with_test_source` runs one real scheduler round with a test-held source; `spawn_with` (test-only) adapts a `FnMut() -> Vec<AgentRow>` source for the cadence tests.
 
 ### Staged local scan — `census/scan.rs`
 
-- `LocalScanner::scan_staged(&mut self, publish: impl FnMut(Vec<AgentRow>))` reads `sessions`, `process_table` and `codex_sqlite`, then calls `scan_stages`.
-- `scan_stages` runs `classify::agent_rows(processes, sessions, codex_threads, home)`, publishes those rows if `self.publication` is `LocalPublication::FirstAnswerPending`, runs `attach_details` on the same rows, publishes the completed rows, and sets `CompletedAnswerPublished`.
+- `LocalScanner::scan_staged(&mut self, publish: impl FnMut(ScanStage, Vec<AgentRow>))` reads `sessions`, `process_table` and `codex_sqlite`, then calls `scan_stages_with`.
+- `scan_stages_with` runs `classify::agent_rows(processes, sessions, codex_threads, home)`, publishes those rows as `ScanStage::Classified` if `self.publication` is `LocalPublication::FirstAnswerPending`, runs `attach_details` on the same rows, publishes them as `ScanStage::Completed`, and sets `CompletedAnswerPublished`.
 - `attach_details` stages, in order: `codex_service_tiers`, `transcript_discovery`, `transcript_launchers`, `transcript_session_starts`, `transcript_subagents`, `transcript_shell_calls`, `codex_app_server_threads`, `attach_children`, `attach_desktops`, `attach_branches`. Each is wrapped in `startup_log::startup_stage(name, body)`.
 - `LocalScanner::scan()` keeps only the last publication; `probe::print` uses it, so a remote probe always prints the completed answer.
 
 ### Cell identity — `census/mod.rs`, `tiles.rs`, `census/probe.rs`
 
 - `AgentRow` carries `started` (the session's start: for Claude Code, the transcript's first line once `attach_session_starts` reads it, else the process start) and `process_started` (the process's own start). `classify::agent_rows` sets both from `ProcessEntry::started`; only `started` moves later in the scan.
-- `AgentCell { machine: String, pid: u32, process_started: u64 }` is the `TileGrid` key; `cell_order` builds it from `row.process_started`. A reused pid gets a new start time and so a new cell.
+- `AgentCell { machine: String, pid: u32, process_started: u64 }` is the `TileGrid` key; `cell_order_placed` builds it from each placement root's `row.process_started`. A reused pid gets a new start time and so a new cell.
 - `AgentRow` deserializes through `ProbeAgentRow`, whose `process_started: Option<u64>` falls back to `started` when a probe from an older build omits it. `PROBE_SCHEMA` stays `3`; the field is additive.
 
 ### Startup timing log — `startup_log.rs`
 
 - `init()` reads the env var named by `FRAME_LOG_VARIABLE` (`CARGO_HANDLER_FRAME_LOG`) into a `OnceLock<StartupTiming>`; unset means `Disabled`, and `startup_event` and `startup_stage` return without timing anything.
-- Each line is `<ms since start>ms <event>`, appended under a mutex. Milestones: `process_start`, `config_loaded`, `appearance_read_returned`, `alternate_screen_entered`, `first_frame_flushed`, `identify_start`/`identify_end`, `first_local_answer rows=N`, `first_agent_rows rows=N`, `local_applied rows=N`, `remote_answer <host>`, `remote_applied <host>`, and `scan_stage_start <stage>` / `scan_stage_end <stage> elapsed=Nms`.
+- Each line is `<ms since start>ms <event>`, appended under a mutex. Milestones: `process_start`, `config_loaded`, `appearance_read_returned`, `alternate_screen_entered`, `first_frame_flushed`, `identify_start`/`identify_end`, `first_local_answer rows=N`, `first_agent_rows rows=N` (visible rows only; `Agent::CodexThreadHost` carriers are not counted), `hierarchy_failed <reason>`, `local_applied rows=N`, `remote_answer <host>`, `remote_applied <host>`, and `scan_stage_start <stage>` / `scan_stage_end <stage> elapsed=Nms`.
 - `StartupProbe` is the `FrameProbe` for both the app and its `Attract` (`tui_pane::Attract<StartupProbe>`); its `timed` marks the first `FramePhase::Draw` and its `note` forwards tui_pane's notes.
 - `startup_local_answer` logs when the scanner publishes; `local_applied` logs when the UI drains it, so the gap between them is event-loop latency.
 
