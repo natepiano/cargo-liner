@@ -29,19 +29,13 @@ No production code in `crates/cargo-handler/src/census` names `progress_timer.sh
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** a test proves that a progress timer started from `scripts/unit/progress_timer.sh` under `/tmp/claude/unit/<run>` reads exactly as one under the old names.
-
-**Spec:**
-1. Make `shell_timer` take the timer's command line (the script path and its run folder), so one helper builds either name.
-2. Add a test that runs the existing timer case with `bash ~/.claude/scripts/unit/progress_timer.sh /tmp/claude/unit/5ea59d53 300` and asserts the same `Timer` as the old-name case.
-3. Change no production code unless the new test fails. If it fails, fix the matcher so it accepts both names.
+- The census's timer tests build their fixture through `shell_timer(installation, below)`, where the test-only `ProgressTimerInstallation` (`Delegate`, `Unit`) selects the script path and run folder: `~/.claude/scripts/<folder>/progress_timer.sh /tmp/claude/<folder>/5ea59d53 300`.
+- `a_timer_under_the_unit_folders_reads_as_under_the_delegate_folders` pins that a timer under the `unit` names reads the same `Timer` (start and deadline) as under `delegate`.
+- No production code changed: timer detection was already independent of folder names.
 
 **Files:**
-- `crates/cargo-handler/src/census/tree.rs`
+- `crates/cargo-handler/src/census/tree.rs` — timer fixture and tests
 
-**Workers:** 1 writer — one test module in one file; nothing splits.
-- `impl` — `crates/cargo-handler/src/census/tree.rs`
-
-**Acceptance gate:** the new test passes beside the old one; the cargo-handler suite and lint are green.
+**Gotchas:** timer detection (`Walker::timer`, `sleep_timer`) keys on the one `sleep` leaf under a shell wrapper, never on a script name or folder; keeping it that way is what lets a folder rename need no matcher change.
