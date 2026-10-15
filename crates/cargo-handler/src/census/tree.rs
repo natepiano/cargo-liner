@@ -24,6 +24,7 @@ use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
+use super::CodexThreadId;
 use super::ServiceTier;
 use super::Timer;
 use super::classify;
@@ -59,6 +60,8 @@ pub(super) struct ShellCall {
 /// One thread a Codex app server holds open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ThreadEntry {
+    /// The rollout thread id used by management links.
+    pub(super) thread_id:    CodexThreadId,
     /// The thread's label, else its id.
     pub(super) name:         String,
     /// When it was created, in unix seconds.
@@ -162,6 +165,8 @@ pub(super) fn thread_id(path: &Path) -> Option<String> {
 /// One row before it is laid out: what it is and the rows under it.
 #[derive(Debug)]
 struct Node {
+    /// The stable id when this node is an app-server thread.
+    thread_id:    CodexThreadId,
     /// What the row is.
     kind:         ChildKind,
     /// The tier a Codex thread or process asked for.
@@ -200,7 +205,9 @@ pub(super) fn attach_children(
         .map(|row| {
             let sessions: Vec<&AgentRow> = rows
                 .iter()
-                .filter(|other| other.launched_by == Some(row.pid))
+                .filter(|other| {
+                    other.agent != Agent::CodexThreadHost && other.launched_by == Some(row.pid)
+                })
                 .collect();
             // A session the Claude desktop app holds is also a process
             // under the app's row; the walk skips it, so it shows once,
@@ -213,6 +220,7 @@ pub(super) fn attach_children(
                 .map(|process| walker.agent_nodes(process, 0, &mut visited))
                 .unwrap_or_default();
             nodes.extend(sessions.iter().map(|session| Node {
+                thread_id:    CodexThreadId::Unrecorded,
                 kind:         ChildKind::Session(session.agent),
                 service_tier: session.service_tier,
                 pid:          Some(session.pid),
@@ -280,6 +288,7 @@ impl Walker<'_> {
                 .into_iter()
                 .flatten()
                 .map(|thread| Node {
+                    thread_id:    thread.thread_id.clone(),
                     kind:         ChildKind::Thread,
                     service_tier: thread.service_tier,
                     pid:          None,
@@ -304,6 +313,7 @@ impl Walker<'_> {
                     .and_then(|call| call.description.clone())
                     .unwrap_or_else(|| command.split_whitespace().collect::<Vec<_>>().join(" "));
                 let shell = Node {
+                    thread_id: CodexThreadId::Unrecorded,
                     kind: ChildKind::Shell,
                     service_tier: ServiceTier::Unrecorded,
                     pid: Some(child.pid),
@@ -440,6 +450,7 @@ impl Walker<'_> {
             )
         };
         Node {
+            thread_id: CodexThreadId::Unrecorded,
             kind: kind(agent),
             service_tier: self
                 .sources
@@ -474,6 +485,7 @@ fn subagent_node(
         );
     }
     Node {
+        thread_id: CodexThreadId::Unrecorded,
         kind: ChildKind::Subagent,
         service_tier: ServiceTier::Unrecorded,
         pid: None,
@@ -538,6 +550,7 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
+            thread_id: node.thread_id,
             depth,
             kind: node.kind,
             service_tier: node.service_tier,
@@ -559,6 +572,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::census::Machine;
+    use crate::census::MachineState;
+    use crate::census::SessionIdentity;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -681,6 +697,7 @@ mod tests {
     /// A thread an app server holds open.
     fn thread(name: &str, started: u64) -> ThreadEntry {
         ThreadEntry {
+            thread_id: CodexThreadId::Unrecorded,
             name: name.to_string(),
             started,
             service_tier: ServiceTier::Unrecorded,
@@ -802,11 +819,13 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
             name: format!("pid {pid}"),
             status: None,
             started,
+            process_started: started,
             pid,
             desktop: None,
             directory: HOME.to_string(),
@@ -1149,28 +1168,34 @@ mod tests {
     /// When the timer tests' `sleep` started, in unix seconds.
     const SLEEP_STARTED: u64 = 1_790_958_660;
 
+    /// The script and run folders used by a progress timer installation.
+    #[derive(Clone, Copy)]
+    enum ProgressTimerInstallation {
+        Delegate,
+        Unit,
+    }
+
     /// The timer of the one shell the agent [`TIMER_AGENT`] runs, with
     /// `below` the processes under its [`TIMER_SCRIPT`].
-    fn shell_timer(below: &[ProcessEntry]) -> Option<Timer> {
+    fn shell_timer(
+        installation: ProgressTimerInstallation,
+        below: &[ProcessEntry],
+    ) -> Option<Timer> {
+        let folder = match installation {
+            ProgressTimerInstallation::Delegate => "delegate",
+            ProgressTimerInstallation::Unit => "unit",
+        };
+        let run_folder = format!("/tmp/claude/{folder}/5ea59d53");
+        let command = format!("bash ~/.claude/scripts/{folder}/progress_timer.sh {run_folder} 300");
         let mut processes = vec![
             detailed(TIMER_AGENT, 1, "claude", SLEEP_STARTED - 600, &["claude"]),
-            wrapper(
-                TIMER_SHELL,
-                TIMER_AGENT,
-                SLEEP_STARTED,
-                "bash ~/.claude/scripts/delegate/progress_timer.sh /tmp/claude/delegate/5ea59d53 300",
-            ),
+            wrapper(TIMER_SHELL, TIMER_AGENT, SLEEP_STARTED, &command),
             detailed(
                 TIMER_SCRIPT,
                 TIMER_SHELL,
                 "bash",
                 SLEEP_STARTED,
-                &[
-                    "bash",
-                    "progress_timer.sh",
-                    "/tmp/claude/delegate/5ea59d53",
-                    "300",
-                ],
+                &["bash", "progress_timer.sh", &run_folder, "300"],
             ),
         ];
         processes.extend_from_slice(below);
@@ -1196,7 +1221,20 @@ mod tests {
     #[test]
     fn a_shell_waiting_on_one_sleep_is_a_timer() {
         assert_eq!(
-            shell_timer(&[sleep(630, &["300"])]),
+            shell_timer(ProgressTimerInstallation::Delegate, &[sleep(630, &["300"])]),
+            Some(Timer {
+                started:  SLEEP_STARTED,
+                deadline: SLEEP_STARTED + 300,
+            })
+        );
+    }
+
+    /// Moving the progress timer's script and run folder to `unit` keeps
+    /// the timer's start and deadline the same as under `delegate`.
+    #[test]
+    fn a_timer_under_the_unit_folders_reads_as_under_the_delegate_folders() {
+        assert_eq!(
+            shell_timer(ProgressTimerInstallation::Unit, &[sleep(630, &["300"])]),
             Some(Timer {
                 started:  SLEEP_STARTED,
                 deadline: SLEEP_STARTED + 300,
@@ -1209,7 +1247,11 @@ mod tests {
     #[test]
     fn sleep_arguments_add_up() {
         let deadline = |arguments: &[&str]| {
-            shell_timer(&[sleep(630, arguments)]).map(|timer| timer.deadline - timer.started)
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, arguments)],
+            )
+            .map(|timer| timer.deadline - timer.started)
         };
 
         assert_eq!(deadline(&["1m", "30s"]), Some(90));
@@ -1230,9 +1272,131 @@ mod tests {
             &["tail", "-f", "log"],
         );
 
-        assert_eq!(shell_timer(&[sleep(630, &["300"]), tail]), None);
-        assert_eq!(shell_timer(&[sleep(630, &["infinity"])]), None);
-        assert_eq!(shell_timer(&[sleep(630, &["5", "-1"])]), None);
-        assert_eq!(shell_timer(&[sleep(630, &[])]), None);
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["300"]), tail]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["infinity"])]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["5", "-1"])]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(ProgressTimerInstallation::Delegate, &[sleep(630, &[])]),
+            None
+        );
+    }
+    /// A launch match on a hidden app server never creates a visible opened-session marker.
+    #[test]
+    fn transport_only_servers_do_not_become_opened_session_markers() {
+        let processes = [
+            detailed(10, 1, "claude", 10, &["claude"]),
+            app_server(30, 1, 30, None),
+        ];
+        let sessions = [session(10, "unit")];
+        let mut rows = classify::agent_rows(&processes, &sessions, &[], None);
+        // The completed scan can find a tmux launcher even for a transport-only server.
+        for row in rows
+            .iter_mut()
+            .filter(|row| row.agent == Agent::CodexThreadHost)
+        {
+            row.launched_by = Some(10);
+        }
+        let sources = TreeSources {
+            threads: HashMap::from([(
+                30,
+                vec![ThreadEntry {
+                    thread_id: CodexThreadId::Recorded("mesh-worker".to_string()),
+                    ..thread("mesh worker", 40)
+                }],
+            )]),
+            ..TreeSources::default()
+        };
+        attach_children(&mut rows, &processes, &sources);
+        assert!(
+            rows[0].children.is_empty(),
+            "an unmanaged server stays out of the unit's work"
+        );
+        assert_eq!(rows[1].children.len(), 1);
+        assert_eq!(
+            rows[1].children[0].thread_id,
+            CodexThreadId::Recorded("mesh-worker".to_string())
+        );
+        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
+        let placement = super::super::AgentPlacement::from_machines(&[Machine {
+            name:  "local",
+            state: &state,
+        }]);
+        assert_eq!(placement.rows.len(), 1);
+        assert!(placement.threads.is_empty());
+    }
+
+    /// A renamed app-server thread retains the rollout id used to place it under a manager.
+    #[test]
+    fn app_server_thread_ids_survive_tree_flattening_independently_of_their_names() {
+        let (processes, sessions) = natedev();
+        let mut rows = classify::agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let mut sources = natedev_sources(&sessions);
+        for (pid, threads) in &mut sources.threads {
+            for thread in threads {
+                thread.thread_id = CodexThreadId::Recorded(format!("{pid}-{}", thread.started));
+                thread.name = "same display name".to_string();
+            }
+        }
+        attach_children(&mut rows, &processes, &sources);
+        let mut ids: Vec<_> = rows
+            .iter()
+            .filter(|row| row.agent != Agent::CodexThreadHost)
+            .flat_map(|row| &row.children)
+            .filter(|child| child.kind == ChildKind::Thread)
+            .map(|child| (child.thread_id.clone(), child.name.as_str()))
+            .collect();
+        ids.sort_by_key(|(id, _)| match id {
+            CodexThreadId::Recorded(id) => id.clone(),
+            CodexThreadId::Unrecorded => String::new(),
+        });
+        assert_eq!(
+            ids,
+            [
+                (
+                    CodexThreadId::Recorded("3769600-660".to_string()),
+                    "same display name"
+                ),
+                (
+                    CodexThreadId::Recorded("3900030-803".to_string()),
+                    "same display name"
+                ),
+                (
+                    CodexThreadId::Recorded("3900030-804".to_string()),
+                    "same display name"
+                ),
+            ]
+        );
+        let mut hosted_ids: Vec<_> = rows
+            .iter()
+            .filter(|row| row.agent == Agent::CodexThreadHost)
+            .flat_map(|row| &row.children)
+            .filter_map(|child| match &child.thread_id {
+                CodexThreadId::Recorded(id) => Some(id.as_str()),
+                CodexThreadId::Unrecorded => None,
+            })
+            .collect();
+        hosted_ids.sort_unstable();
+        assert_eq!(
+            hosted_ids,
+            ["3700000-601", "3769600-660", "3900030-803", "3900030-804"]
+        );
     }
 }

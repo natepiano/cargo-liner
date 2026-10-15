@@ -360,7 +360,7 @@ fn cached_status_for_project(
 /// from `history.jsonl`. A `Running` `latest.json` never counts as a terminal
 /// status, so the history fallback fires. When no process holds the project's
 /// run lock the marker belongs to a dead app and is cleared from disk, which
-/// stops external readers (the `/clippy` cache check) from waiting on a run
+/// lets cargo-port's own status read and displayed lint status discard a run
 /// that will never finish. A held lock means another cargo-port instance is
 /// running that lint now, so its marker stays.
 pub(crate) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> CachedLintStatus {

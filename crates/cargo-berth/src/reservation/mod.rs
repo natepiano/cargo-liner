@@ -58,6 +58,7 @@ pub(crate) use record::ReservationFreshness;
 pub(crate) use record::ReservationLifecycleSnapshot;
 pub(crate) use record::ReservationRunStatus;
 pub(crate) use replay::ReservationReplayError;
+pub(crate) use retention::DriftCoverageProbe;
 pub(crate) use retention::IncursionIncident;
 pub(crate) use retention::IncursionIncidentStatus;
 pub(crate) use retention::IncursionObservation;

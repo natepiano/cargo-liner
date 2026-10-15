@@ -13,6 +13,7 @@ use std::process::Stdio;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::claim_id;
@@ -43,6 +44,17 @@ const JOURNAL_BYTE_OFFSET: &str = "journal_byte_offset";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LAST_ACTIVITY_AT: &str = "last_activity_at";
 const SESSION: &str = "compaction";
+
+/// A committed policy with no journal records, before the holder/incursion scenario begins.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       EXECUTABLE,
+    name:             "compaction-main",
+    build:            |root| {
+        let built = build_initialized_repository(root);
+        assert!(built.is_ok(), "compaction base should build: {built:?}");
+    },
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -109,21 +121,10 @@ struct CompactionFixture {
 impl CompactionFixture {
     fn new() -> TestResult<Self> {
         let fixture = Self {
-            root:      tempfile::tempdir()?,
+            root:      INITIALIZED_REPOSITORY.instantiate(),
             worktrees: tempfile::tempdir()?,
         };
         let root = fixture.root.path();
-        GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        GIT.run(root, ["config", "user.name", "Berth Test"]);
-        GIT.run(root, ["config", "user.email", "berth@example.invalid"]);
-        GIT.run(root, ["config", "gc.auto", "0"]);
-        write_file(root, "README.md", "initial\n");
-        write_file(root, HELD_PATH, "held\n");
-        GIT.run(root, ["add", "README.md", HELD_PATH]);
-        commit(root, "initial");
-        assert_success(&run(root, &["init", "--json"])?);
-        GIT.run(root, ["add", ".claude/config/berth.toml"]);
-        commit(root, "track berth configuration");
         let holder = fixture.worktrees.path().join("holder");
         GIT.add_worktree_without_hooks(root, &holder, "holder", "main");
         let holder = std::fs::canonicalize(holder)?;
@@ -201,6 +202,21 @@ impl CompactionFixture {
             ),
         ])
     }
+}
+
+fn build_initialized_repository(root: &Path) -> TestResult {
+    GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
+    GIT.run(root, ["config", "user.name", "Berth Test"]);
+    GIT.run(root, ["config", "user.email", "berth@example.invalid"]);
+    GIT.run(root, ["config", "gc.auto", "0"]);
+    write_file(root, "README.md", "initial\n");
+    write_file(root, HELD_PATH, "held\n");
+    GIT.run(root, ["add", "README.md", HELD_PATH]);
+    commit(root, "initial");
+    assert_success(&run(root, &["init", "--json"])?);
+    GIT.run(root, ["add", ".claude/config/berth.toml"]);
+    commit(root, "track berth configuration");
+    Ok(())
 }
 
 /// Run `cargo-berth` in `checkout` without this process's coordination run or session.

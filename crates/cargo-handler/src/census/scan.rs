@@ -16,6 +16,12 @@ use std::process::Stdio;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use crate::startup_log;
+
+#[cfg(test)]
+#[path = "scan/staged_tests.rs"]
+mod staged_tests;
+
 use sysinfo::Pid;
 use sysinfo::Process;
 use sysinfo::ProcessRefreshKind;
@@ -25,6 +31,7 @@ use sysinfo::UpdateKind;
 
 use super::Agent;
 use super::AgentRow;
+use super::CodexThreadId;
 use super::ServiceTier;
 use super::branch;
 use super::classify;
@@ -74,6 +81,8 @@ type ProcessKey = (u32, u64);
 /// Scans this machine for its agents and what each is running.
 #[derive(Debug)]
 pub(super) struct LocalScanner {
+    /// Whether a completed answer has replaced the startup classification.
+    publication:      LocalPublication,
     /// This machine's home directory: where the session records live,
     /// and what a row's directory is written against.
     home:             Option<PathBuf>,
@@ -129,10 +138,69 @@ impl DesktopRead {
     fn is_stale(&self) -> bool { self.read_at.elapsed() >= DESKTOP_QUERY_INTERVAL }
 }
 
+/// Whether the first completed local answer has been published.
+#[derive(Clone, Copy, Debug)]
+enum LocalPublication {
+    FirstAnswerPending,
+    CompletedAnswerPublished,
+}
+
+/// Which work is complete when a local scan publishes its rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScanStage {
+    /// Ready for immediate display, before detail reads or hierarchy discovery.
+    Classified,
+    /// All local row detail sources have been read.
+    Completed,
+}
+
 impl LocalScanner {
+    /// Adapt existing row-only fixtures to the staged scan implementation.
+    #[cfg(test)]
+    fn scan_stages(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        codex_threads: &[CodexThread],
+        home: Option<&Path>,
+        mut publish: impl FnMut(Vec<AgentRow>),
+        read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
+    ) {
+        self.scan_stages_with(
+            processes,
+            sessions,
+            codex_threads,
+            home,
+            |_, rows| publish(rows),
+            read_details,
+        );
+    }
+
+    /// Classify synthetic or live inputs, publishing early only on startup.
+    fn scan_stages_with(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        codex_threads: &[CodexThread],
+        home: Option<&Path>,
+        mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
+        read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
+    ) {
+        let mut rows = startup_log::startup_stage("classify_agents", || {
+            classify::agent_rows(processes, sessions, codex_threads, home)
+        });
+        if matches!(self.publication, LocalPublication::FirstAnswerPending) {
+            publish(ScanStage::Classified, rows.clone());
+        }
+        startup_log::startup_stage("details", || read_details(self, &mut rows));
+        publish(ScanStage::Completed, rows);
+        self.publication = LocalPublication::CompletedAnswerPublished;
+    }
+
     /// A scanner of the user running this process.
     pub(super) fn new() -> Self {
         Self {
+            publication:      LocalPublication::FirstAnswerPending,
             home:             dirs::home_dir(),
             shell_calls:      HashMap::new(),
             launchers:        HashMap::new(),
@@ -144,73 +212,122 @@ impl LocalScanner {
     }
 
     /// Every agent running now, oldest first, with what it is running.
+    /// The wire probe consumes only the completed answer.
     ///
     /// Each scan reads a fresh process table, so a pid handed out again
     /// since the last scan cannot keep the command line or directory of
     /// the process that had it before.
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
+        let mut rows = Vec::new();
+        self.scan_staged(|_, answer| rows = answer);
+        rows
+    }
+
+    /// Publish classification early on startup; later scans publish completed rows only.
+    pub(super) fn scan_staged(&mut self, publish: impl FnMut(ScanStage, Vec<AgentRow>)) {
         let home = self.home.clone();
-        let sessions = home
-            .as_deref()
-            .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
-            .unwrap_or_default();
-        let processes = process_table(&sessions);
+        let sessions = startup_log::startup_stage("sessions", || {
+            home.as_deref()
+                .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
+                .unwrap_or_default()
+        });
+        let processes = startup_log::startup_stage("process_table", || process_table(&sessions));
         // Codex's database is opened only while an interactive Codex runs,
         // and read only for the span its threads could have been created in.
-        let codex_threads = home
-            .as_deref()
-            .zip(classify::codex_thread_window(&processes))
-            .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
-            .unwrap_or_default();
-        let mut rows = classify::agent_rows(&processes, &sessions, &codex_threads, home.as_deref());
+        let codex_threads = startup_log::startup_stage("codex_sqlite", || {
+            home.as_deref()
+                .zip(classify::codex_thread_window(&processes))
+                .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
+                .unwrap_or_default()
+        });
+        self.scan_stages_with(
+            &processes,
+            &sessions,
+            &codex_threads,
+            home.as_deref(),
+            publish,
+            |scanner, rows| {
+                scanner.attach_details(
+                    &processes,
+                    &sessions,
+                    &codex_threads,
+                    home.as_deref(),
+                    rows,
+                );
+            },
+        );
+    }
+
+    /// Read the detail sources after the classified rows have been published.
+    fn attach_details(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        codex_threads: &[CodexThread],
+        home: Option<&Path>,
+        rows: &mut [AgentRow],
+    ) {
         // The pacer's state is read only while some Codex runs.
         let pacer = home
-            .as_deref()
             .filter(|_| processes.iter().any(ProcessEntry::is_codex))
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
-        let service_tiers = self.codex_tiers(&processes, &codex_threads, &pacer);
-        for row in &mut rows {
+        let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
+            self.codex_tiers(processes, codex_threads, &pacer)
+        });
+        for row in rows.iter_mut() {
             if let Some(tier) = service_tiers.get(&row.pid) {
                 row.service_tier = *tier;
             }
         }
-        let transcripts = home
-            .as_deref()
-            .map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
-            .map(|projects| self.find_transcripts(&projects, &processes, &sessions))
-            .unwrap_or_default();
+        let transcripts = startup_log::startup_stage("transcript_discovery", || {
+            home.map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
+                .map(|projects| self.find_transcripts(&projects, processes, sessions))
+                .unwrap_or_default()
+        });
         let now = unix_now();
-        self.find_launchers(&processes, &sessions, &transcripts, &mut rows, now);
-        self.attach_session_starts(&transcripts, &mut rows);
-        let subagents: HashMap<u32, Vec<Subagent>> = transcripts
-            .iter()
-            .map(|(pid, path)| (*pid, transcript::running_subagents(path, SystemTime::now())))
-            .collect();
-        let shell_calls = self.find_shell_calls(&processes, &transcripts, &subagents, now);
-        let threads = home
-            .as_deref()
-            .map(|home| {
+        startup_log::startup_stage("transcript_launchers", || {
+            self.find_launchers(processes, sessions, &transcripts, rows, now);
+        });
+        startup_log::startup_stage("transcript_session_starts", || {
+            self.attach_session_starts(&transcripts, rows);
+        });
+        let subagents: HashMap<u32, Vec<Subagent>> =
+            startup_log::startup_stage("transcript_subagents", || {
+                transcripts
+                    .iter()
+                    .map(|(pid, path)| {
+                        (*pid, transcript::running_subagents(path, SystemTime::now()))
+                    })
+                    .collect()
+            });
+        let shell_calls = startup_log::startup_stage("transcript_shell_calls", || {
+            self.find_shell_calls(processes, &transcripts, &subagents, now)
+        });
+        let threads = startup_log::startup_stage("codex_app_server_threads", || {
+            home.map(|home| {
                 app_server_threads(
-                    &processes,
+                    processes,
                     &home.join(CODEX_DIRNAME),
                     &mut self.rollouts,
                     &pacer,
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+        });
         self.rollouts.forget_unread();
         let sources = TreeSources {
-            sessions: &sessions,
+            sessions,
             subagents,
             shell_calls,
             threads,
             service_tiers,
         };
-        tree::attach_children(&mut rows, &processes, &sources);
-        self.attach_desktops(&processes, &mut rows);
-        branch::attach_branches(&mut rows, home.as_deref());
-        rows
+        startup_log::startup_stage("attach_children", || {
+            tree::attach_children(rows, processes, &sources);
+        });
+        startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
+        startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
     }
 
     /// The tier each Codex among `processes` that is not an app server
@@ -268,20 +385,23 @@ impl LocalScanner {
         rows: &mut [AgentRow],
         now: u64,
     ) {
-        let listed: HashSet<ProcessKey> = rows.iter().map(|row| (row.pid, row.started)).collect();
+        let listed: HashSet<ProcessKey> = rows
+            .iter()
+            .map(|row| (row.pid, row.process_started))
+            .collect();
         let mut seen = HashSet::new();
         let mut found = Vec::new();
         for (index, row) in rows.iter().enumerate() {
             if !classify::held_by_tmux(processes, row.pid) {
                 continue;
             }
-            let key = (row.pid, row.started);
+            let key = (row.pid, row.process_started);
             seen.insert(key);
             let launcher = if let Some(cached) = self.launchers.get(&key) {
                 *cached
             } else {
                 let launcher = search_launcher(processes, sessions, transcripts, rows, row);
-                if launcher.is_some() || settled(row.started, now) {
+                if launcher.is_some() || settled(row.process_started, now) {
                     self.launchers.insert(key, launcher);
                 }
                 launcher
@@ -439,7 +559,7 @@ fn search_launcher(
                 session.name.as_deref().is_some_and(|name| !name.is_empty())
             }),
         directory:  directory.as_deref(),
-        started:    held.started,
+        started:    held.process_started,
     };
     let span = session.call_span();
     let calls: Vec<(u32, BashCall)> = rows
@@ -455,7 +575,7 @@ fn search_launcher(
     let launcher = classify::pick_launcher(&session, &calls)?;
     rows.iter()
         .find(|other| other.pid == launcher)
-        .map(|other| (other.pid, other.started))
+        .map(|other| (other.pid, other.process_started))
 }
 
 /// The call that started the shell wrapper `process`, running `command`,
@@ -532,13 +652,19 @@ fn app_server_threads(
             let threads = ids
                 .into_iter()
                 .map(|(id, rollout)| {
-                    let (name, started) = match named.get(&id) {
-                        Some(thread) => (thread.label().unwrap_or(id), thread.created_ms / 1_000),
-                        None => (id, process.started),
-                    };
+                    let (name, started) = named.get(&id).map_or_else(
+                        || (id.clone(), process.started),
+                        |thread| {
+                            (
+                                thread.label().unwrap_or_else(|| id.clone()),
+                                thread.created_ms / 1_000,
+                            )
+                        },
+                    );
                     let service_tier =
                         tier::requested(Some(rollouts.read(&rollout)), &[], pacer, started);
                     ThreadEntry {
+                        thread_id: CodexThreadId::Recorded(id),
                         name,
                         started,
                         service_tier,
@@ -579,33 +705,40 @@ fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
 /// process's environment is read.
 fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().without_tasks(),
-    );
-    let detailed = detailed_pids(&system, sessions);
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&detailed),
-        false,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_cmd(UpdateKind::OnlyIfNotSet)
-            .with_cwd(UpdateKind::OnlyIfNotSet),
-    );
+    startup_log::startup_stage("proc_ancestry", || {
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        )
+    });
+    let detailed =
+        startup_log::startup_stage("proc_detail_selection", || detailed_pids(&system, sessions));
+    startup_log::startup_stage("proc_commands_directories", || {
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&detailed),
+            false,
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_cmd(UpdateKind::OnlyIfNotSet)
+                .with_cwd(UpdateKind::OnlyIfNotSet),
+        )
+    });
     let codex: Vec<Pid> = system
         .processes()
         .values()
         .filter(|process| process.name() == CODEX_AGENT)
         .map(Process::pid)
         .collect();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&codex),
-        false,
-        ProcessRefreshKind::nothing()
-            .without_tasks()
-            .with_environ(UpdateKind::OnlyIfNotSet),
-    );
+    startup_log::startup_stage("proc_codex_environment", || {
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&codex),
+            false,
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_environ(UpdateKind::OnlyIfNotSet),
+        )
+    });
     system
         .processes()
         .values()
@@ -646,7 +779,9 @@ fn claude_pid(environment: &[OsString]) -> Option<u32> {
 /// not answer.
 #[cfg(target_os = "linux")]
 fn read_windows() -> Option<Vec<WindowEntry>> {
-    desktop::parse_windows(&tui_pane::kwin_evaluate(WINDOW_LIST_EXPRESSION)?)
+    startup_log::startup_stage("kwin_evaluate", || {
+        desktop::parse_windows(&tui_pane::kwin_evaluate(WINDOW_LIST_EXPRESSION)?)
+    })
 }
 
 /// No windows off Linux, where there is no `KWin` to ask.
@@ -656,8 +791,11 @@ const fn read_windows() -> Option<Vec<WindowEntry>> { None }
 /// The default tmux server's panes and clients, asked of `program`;
 /// none where either list fails.
 fn read_tmux(program: &str) -> Option<TmuxLayout> {
-    let panes = tmux_output(program, &TMUX_LIST_PANES)?;
-    let clients = tmux_output(program, &TMUX_LIST_CLIENTS)?;
+    let panes =
+        startup_log::startup_stage("tmux_list_panes", || tmux_output(program, &TMUX_LIST_PANES))?;
+    let clients = startup_log::startup_stage("tmux_list_clients", || {
+        tmux_output(program, &TMUX_LIST_CLIENTS)
+    })?;
     Some(TmuxLayout::parse(&panes, &clients))
 }
 
@@ -753,6 +891,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::SessionIdentity;
 
     /// Only `.json` files that parse are records: the key files beside
     /// them and a record caught half written are skipped.
@@ -843,6 +982,7 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
+            publication:      LocalPublication::FirstAnswerPending,
             home:             None,
             shell_calls:      HashMap::new(),
             launchers:        HashMap::new(),
@@ -882,10 +1022,12 @@ mod tests {
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: None,
             started,
+            process_started: started,
             pid,
             desktop: None,
             directory: "~".to_string(),
@@ -1104,5 +1246,98 @@ mod tests {
 
         scanner.find_shell_calls(&[boss], &transcripts, &subagents, LAUNCH + 40);
         assert!(scanner.shell_calls.is_empty());
+    }
+}
+
+/// Staged publication must remain fast even with hierarchy discovery enabled.
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod hierarchy_publication_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use super::LocalScanner;
+    use crate::census::CensusUpdate;
+    use crate::census::HierarchyCommand;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
+    use crate::census::HierarchySource;
+    use crate::census::hierarchy::HierarchyError;
+    use crate::census::hierarchy::HierarchyRunner;
+    use crate::census::schedule;
+
+    /// Counts discovery attempts independently of the scanner's stage callbacks.
+    struct CountingRunner(AtomicUsize);
+
+    impl HierarchyRunner for CountingRunner {
+        fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(HierarchyEdges(vec![HierarchyEdge {
+                manager: "boss".to_string(),
+                member:  "worker".to_string(),
+                role:    HierarchyRole::Impl,
+            }]))
+        }
+    }
+
+    #[test]
+    fn classified_and_completed_rows_publish_before_hierarchy_edges() {
+        let runner = Arc::new(CountingRunner(AtomicUsize::new(0)));
+        let observed = Arc::clone(&runner);
+        let updates = schedule::spawn_with_test_source(
+            HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
+            runner,
+            move |answers| {
+                LocalScanner::new().scan_stages_with(
+                    &[],
+                    &[],
+                    &[],
+                    None,
+                    |stage, rows| {
+                        answers
+                            .publish(stage, rows)
+                            .expect("the scan should publish");
+                    },
+                    |_, _| {
+                        assert_eq!(
+                            observed.0.load(Ordering::SeqCst),
+                            0,
+                            "classification must not run hierarchy discovery"
+                        );
+                    },
+                );
+            },
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("classification should arrive"),
+            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("completion should arrive"),
+            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("hierarchy should follow completed rows"),
+            CensusUpdate::Local(
+                Vec::new(),
+                HierarchyEdges(vec![HierarchyEdge {
+                    manager: "boss".to_string(),
+                    member:  "worker".to_string(),
+                    role:    HierarchyRole::Impl,
+                }])
+            )
+        );
     }
 }

@@ -24,7 +24,6 @@ use tui_pane::Keymap;
 use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
-use tui_pane::NoProbe;
 use tui_pane::NoToastAction;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
@@ -36,6 +35,10 @@ use crate::census;
 use crate::census::Census;
 #[cfg(test)]
 use crate::census::CensusUpdate;
+use crate::census::HierarchyCommand;
+#[cfg(test)]
+use crate::census::HierarchyEdges;
+use crate::census::HierarchySource;
 use crate::census::RemoteMachines;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
@@ -44,11 +47,13 @@ use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::render;
 use crate::settings;
+use crate::startup_log;
+use crate::startup_log::StartupProbe;
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 
-/// The attract screen, with no frame log behind it.
-pub(crate) type Attract = tui_pane::Attract<NoProbe>;
+/// The attract screen, sharing the handler's optional startup timing log.
+pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
@@ -109,6 +114,8 @@ pub(crate) struct App {
     pub(crate) census:            Census,
     /// `machines.remote` as the census scheduler reads it.
     pub(crate) remote_machines:   RemoteMachines,
+    /// `census.hierarchy_command` as the census scheduler reads it.
+    pub(crate) hierarchy_command: HierarchyCommand,
 }
 
 impl App {
@@ -141,6 +148,9 @@ impl App {
         census: Census,
     ) -> Result<Self, KeymapError> {
         let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
+        let hierarchy_command = HierarchyCommand::new(HierarchySource::from(
+            loaded_config.config.census.hierarchy_command.clone(),
+        ));
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
@@ -155,6 +165,7 @@ impl App {
             favorites_overlay: FavoritesOverlay::default(),
             census,
             remote_machines,
+            hierarchy_command,
         })
     }
 
@@ -172,7 +183,7 @@ impl App {
             None,
             {
                 let mut census = Census::new("natedev".to_string());
-                census.apply(CensusUpdate::Local(Vec::new()));
+                census.apply(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()));
                 census
             },
         )
@@ -227,7 +238,7 @@ impl KeymapEditContext for App {
 
 impl TerminalApp for App {
     type Identity = CargoHandler;
-    type Probe = NoProbe;
+    type Probe = StartupProbe;
 
     fn keymap(&self) -> Rc<Keymap<Self>> { Rc::clone(&self.keymap) }
 
@@ -240,7 +251,13 @@ impl TerminalApp for App {
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
     /// no place to spend them.
-    fn before_draw(&mut self) { self.attract.identify(); }
+    fn before_draw(&mut self) {
+        if self.attract.showing() {
+            startup_log::startup_event("identify_start");
+            self.attract.identify();
+            startup_log::startup_event("identify_end");
+        }
+    }
 
     fn visual_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
         self.favorites_overlay.visual_deadline(now, frame_period)
@@ -307,4 +324,37 @@ impl FavoritesHost for App {
     fn favorites_overlay(&self) -> &FavoritesOverlay { &self.favorites_overlay }
 
     fn favorites_overlay_mut(&mut self) -> &mut FavoritesOverlay { &mut self.favorites_overlay }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// Startup gives the scheduler the configured command before the
+    /// settings overlay has been opened or edited.
+    #[test]
+    fn the_hierarchy_handle_starts_with_the_loaded_command() {
+        let mut config = Config::default();
+        config.census.hierarchy_command = "production_tree --json".to_string();
+        let app = App::new_with_keymap_path(
+            LoadedConfig {
+                config,
+                error: None,
+            },
+            None,
+            None,
+            Census::new("natedev".to_string()),
+        )
+        .expect("test app should build");
+
+        assert_eq!(
+            app.hierarchy_command.snapshot(),
+            HierarchySource::Command("production_tree --json".to_string())
+        );
+    }
 }

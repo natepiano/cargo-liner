@@ -69,7 +69,9 @@ pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
         ProbeOutcome::Finished {
             status: Some(0),
             stdout,
-        } => probe::parse_report(&stdout).map_or_else(MachineState::Failed, MachineState::Answered),
+        } => probe::parse_report(&stdout).map_or_else(MachineState::Failed, |(rows, edges)| {
+            MachineState::Answered(rows, edges)
+        }),
         ProbeOutcome::Finished {
             status: Some(SSH_UNREACHABLE_STATUS),
             ..
@@ -232,19 +234,24 @@ mod tests {
         let report = r#"{"schema":3,"machine":"mac","rows":[{"agent":"claude","name":"natemccoy-30","status":"idle","started":5,"pid":80020,"directory":"~","launched_by":null,"children":[]}]}"#;
         assert_eq!(
             machine_state(finished(Some(0), report)),
-            MachineState::Answered(vec![AgentRow {
-                agent:        Agent::Claude,
-                service_tier: ServiceTier::Unrecorded,
-                name:         "natemccoy-30".to_string(),
-                status:       Some("idle".to_string()),
-                started:      5,
-                pid:          80_020,
-                desktop:      None,
-                directory:    "~".to_string(),
-                branch:       None,
-                launched_by:  None,
-                children:     Vec::new(),
-            }])
+            MachineState::Answered(
+                vec![AgentRow {
+                    session_id:      crate::census::SessionIdentity::Unrecorded,
+                    agent:           Agent::Claude,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "natemccoy-30".to_string(),
+                    status:          Some("idle".to_string()),
+                    started:         5,
+                    process_started: 5,
+                    pid:             80_020,
+                    desktop:         None,
+                    directory:       "~".to_string(),
+                    branch:          None,
+                    launched_by:     None,
+                    children:        Vec::new(),
+                }],
+                crate::census::HierarchyEdges::default()
+            )
         );
         assert_eq!(
             machine_state(finished(Some(0), r#"{"schema":7}"#)),

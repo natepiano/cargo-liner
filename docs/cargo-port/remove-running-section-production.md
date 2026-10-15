@@ -24,6 +24,10 @@
 | berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
 | tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | tile-fixes-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile-fixes | remove-running-section-tile-fixes | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
+| berth-hook-hang-unit | `docs/cargo-berth/as-built/hook-cost.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-hook-hang` (deleted) | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
+| berth-ceiling-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-ceiling` (deleted) | — | crates/cargo-berth/ |
+| handler-enh-unit | docs/cargo-handler/as-built/startup.md | /home/natepiano/rust/cargo-liner-handler-enh | remove-running-section-handler-enh | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
+| berth-parallel-unit | docs/cargo-port/remove-running-section-berth-parallel.md | /home/natepiano/rust/cargo-liner-berth-parallel | remove-running-section-berth-parallel | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 
 ## Hub files
 

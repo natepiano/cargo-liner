@@ -130,6 +130,8 @@ pub(crate) enum PostCommitWideningSelection {
     Explicit(ReservationId),
     /// Prefer the session mapping, then the only active local candidate.
     SessionMappingOrSingleCandidate,
+    /// Widen the acting run's only active local reservation; report several as ambiguous.
+    SoleRunCandidate,
 }
 
 impl PostCommitWideningSelection {
@@ -170,8 +172,8 @@ impl PostCommitWideningSelection {
             [] => PostWriteFirstTouchRequirement::Required,
             [_, ..] => PostWriteFirstTouchRequirement::NotRequired,
         };
-        let widening = match self {
-            Self::Explicit(reservation_id) => {
+        let widening = match (self, acting_identity.session_reservation()) {
+            (Self::Explicit(reservation_id), _) => {
                 let DriftActingRun::Identified(run) = acting_run else {
                     return Err(DriftSelectionError::UnidentifiedActingRun);
                 };
@@ -184,27 +186,21 @@ impl PostCommitWideningSelection {
                 }
                 DriftWideningSelection::Selected(reservation_id)
             },
-            Self::SessionMappingOrSingleCandidate
-                if matches!(acting_run, DriftActingRun::Unidentified) =>
-            {
-                DriftWideningSelection::NotNeeded
+            (
+                Self::SessionMappingOrSingleCandidate,
+                DriftSessionReservation::Mapped(reservation_id),
+            ) if candidates.as_slice().contains(&reservation_id) => {
+                DriftWideningSelection::Selected(reservation_id)
             },
-            Self::SessionMappingOrSingleCandidate => match acting_identity.session_reservation() {
-                DriftSessionReservation::Mapped(reservation_id)
-                    if candidates.as_slice().contains(&reservation_id) =>
-                {
-                    DriftWideningSelection::Selected(reservation_id)
-                },
-                DriftSessionReservation::Mapped(_) | DriftSessionReservation::Unavailable => {
-                    match candidates.as_slice() {
-                        [] => DriftWideningSelection::NotNeeded,
-                        [reservation_id] => DriftWideningSelection::Selected(*reservation_id),
-                        _ => DriftWideningSelection::Ambiguous(
-                            DriftAttributionCandidateSet::try_from(candidates.into_vec())
-                                .map_err(|_| DriftSelectionError::NoPostCommitCandidate)?,
-                        ),
-                    }
-                },
+            (Self::SessionMappingOrSingleCandidate | Self::SoleRunCandidate, _) => {
+                match candidates.as_slice() {
+                    [] => DriftWideningSelection::NotNeeded,
+                    [reservation_id] => DriftWideningSelection::Selected(*reservation_id),
+                    _ => DriftWideningSelection::Ambiguous(
+                        DriftAttributionCandidateSet::try_from(candidates.into_vec())
+                            .map_err(|_| DriftSelectionError::NoPostCommitCandidate)?,
+                    ),
+                }
             },
         };
         Ok(ResolvedDriftSubjects {

@@ -24,6 +24,8 @@ pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 pub(crate) const TEST_CONFIG_ROOT: &str = "/<config>";
 
 // lifecycle
+/// Environment variable naming the optional startup timing log.
+pub(crate) const FRAME_LOG_VARIABLE: &str = "CARGO_HANDLER_FRAME_LOG";
 /// The binary's own name: what the command line calls itself in help
 /// and in anything it reports going wrong, and the fallback executable
 /// name when the running binary's path cannot be resolved for a
@@ -46,8 +48,12 @@ pub(crate) const TILES_SETTINGS_SECTION: &str = "Tiles";
 /// Section heading the settings overlay puts the remote machine list
 /// under.
 pub(crate) const MACHINES_SETTINGS_SECTION: &str = "Machines";
+/// Section heading for the census settings.
+pub(crate) const CENSUS_SETTINGS_SECTION: &str = "Census";
 /// Label of the settings row holding `machines.remote`.
 pub(crate) const REMOTE_MACHINES_LABEL: &str = "remote";
+/// Label of the command reporting management links.
+pub(crate) const HIERARCHY_COMMAND_LABEL: &str = "hierarchy command";
 
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
@@ -513,6 +519,24 @@ pub(crate) const TMUX_LIST_PANES: [&str; 4] =
 pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
     ["list-clients", "-F", "#{client_pid} #{session_name}"];
 
+// hierarchy discovery
+/// Version of the hierarchy command's JSON contract.
+pub(crate) const HIERARCHY_SCHEMA: u32 = 1;
+/// Largest accepted hierarchy answer in bytes, before JSON decoding.
+pub(crate) const HIERARCHY_OUTPUT_LIMIT: usize = 1024 * 1024;
+/// The shell that evaluates a configured hierarchy command.
+pub(crate) const SHELL_PROGRAM: &str = "sh";
+/// The program that terminates a hierarchy command's process group.
+#[cfg(unix)]
+pub(crate) const KILL_PROGRAM: &str = "kill";
+/// Terminate the entire group, even when the shell has started child commands.
+#[cfg(unix)]
+pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
+/// Maximum runtime of the local hierarchy command.
+pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
+pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,
 /// which a remote cargo-handler runs over ssh.
@@ -542,8 +566,10 @@ pub(crate) const SSH_CONTROL_PERSIST: &str = "ControlPersist=60";
 /// Opens a shared connection when none is open, and uses it when one
 /// is.
 pub(crate) const SSH_CONTROL_MASTER: &str = "ControlMaster=auto";
-/// How long a probe runs before it is killed.
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time for scanning and ssh beyond hierarchy discovery's deadline.
+const PROBE_SCAN_SSH_MARGIN: Duration = Duration::from_secs(10);
+/// Allow hierarchy discovery its deadline plus time for scanning and ssh.
+pub(crate) const PROBE_TIMEOUT: Duration = HIERARCHY_TIMEOUT.saturating_add(PROBE_SCAN_SSH_MARGIN);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);

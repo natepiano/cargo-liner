@@ -277,7 +277,7 @@ impl Reservation {
     ///
     /// The **overlap chain** applies no acting-side term at all.
     /// [`Self::is_foreign_to_coordination_run_in_worktree`] reaches this predicate from
-    /// `conflicts_for_drift`, `blocking_coverage_for_drift`, `bind_widened_scopes`, and ---
+    /// `drift_coverage_probe`, `bind_widened_scopes`, and ---
     /// through `AuthorizedEditingIdentity::is_foreign` --- `conflicts_for_edit` and
     /// `conflicts_for_first_touch`, and every hop carries a bare `CoordinationRunId` with no
     /// provenance beside it. That asymmetry is deliberate and stays: a same-worktree holder

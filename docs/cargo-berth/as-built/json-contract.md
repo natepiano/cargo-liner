@@ -720,7 +720,7 @@ or alter reservation or journal state.
 
 ## Ambiguous first-touch reservation selection
 
-When `check` has no usable harness-session mapping and more than one active
+When bare `check` has no usable harness-session id and more than one active
 reservation is eligible for the acting coordination run and worktree, it
 returns `status = "ambiguous_active_run_reservations"` and exit code `1`
 without selecting one by replay order. Its payload is:
@@ -747,7 +747,9 @@ no harness-session mapping.
 
 The response names
 `cargo-berth check --reservation <reservation-id> <path>...` as the recovery
-command. When `CARGO_BERTH_SESSION_ID` named the refusing invocation's harness
+command. The pre-tool-use edit hook keeps its mapping-or-single-reservation
+selection and can also return this ambiguity under a usable, unmapped session.
+When `CARGO_BERTH_SESSION_ID` named the refusing invocation's harness
 session, the command is prefixed with `CARGO_BERTH_SESSION_ID=<session>`, quoted
 for `sh`, so it runs verbatim from a plain shell that names none. When Claude
 Code named the session, through a `cargo-berth hook` payload's `session_id` or
@@ -758,7 +760,23 @@ no harness session also prints it without the prefix. The user chooses an id
 from `candidate_reservation_ids`; the named reservation must already be active
 for the acting coordination run and worktree. A valid explicit selection
 publishes the harness-session mapping onto that reservation, so the next
-ordinary `check` selects it without returning this ambiguity.
+ordinary `check` under that session selects it without returning this ambiguity.
+A usable session id with no mapping instead opens a new reservation in the
+acting run for paths no active sibling holds. When siblings already hold every
+requested path, it reports `already_held` under the sibling holding the first
+path and opens nothing. Its `acquisition.session_mapping_publication` is
+`{"status": "left_unmapped"}`: the harness session remains unmapped, so a later
+bare check under it can open new work rather than joining that sibling.
+
+`session_mapping_publication.status` has these values:
+
+- `published`: the mapping reflects the reservation, including when no harness session required an entry.
+- `left_unmapped`: active siblings already hold every requested path, so the fresh harness session stays unmapped.
+- `explicit_selection_applies_only_to_current_invocation`: an explicit selection cannot persist because no usable harness session id was supplied; `reason` is `harness_session_unavailable`.
+- `unavailable`: the durable reservation's mapping update failed; `diagnostic` explains why.
+
+An explicit or mapped selection that reports `already_held` publishes its
+selected reservation and reports `published` when that publication succeeds.
 
 ## Contradicted ordering refusal
 

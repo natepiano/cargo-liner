@@ -51,6 +51,14 @@ impl PathCase {
             Self::Insensitive => left.to_lowercase() == right.to_lowercase(),
         }
     }
+
+    /// Spell a component so two components are `component_eq` exactly when their keys are equal.
+    pub(super) fn component_key(self, component: &str) -> String {
+        match self {
+            Self::Sensitive => component.to_owned(),
+            Self::Insensitive => component.to_lowercase(),
+        }
+    }
 }
 
 impl DeclaredReservationScopeSet {
@@ -138,6 +146,11 @@ impl ReservationScope {
     /// Return whether this scope contains all paths represented by another scope.
     pub(crate) fn contains(&self, other: &Self, path_case: PathCase) -> bool {
         antichain::contains(self, other, path_case)
+    }
+
+    /// Spell each path component so two scopes share a path exactly when their keys are equal.
+    pub(crate) fn component_keys(&self, path_case: PathCase) -> Vec<String> {
+        antichain::component_keys(self, path_case)
     }
 }
 

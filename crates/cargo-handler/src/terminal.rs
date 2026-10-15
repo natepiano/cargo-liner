@@ -17,21 +17,31 @@ use tui_pane::spawn_appearance_watcher;
 
 use crate::app::App;
 use crate::census;
+#[cfg(test)]
+use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
+use crate::startup_log;
 use crate::theme;
+
+#[cfg(test)]
+#[path = "terminal/startup_tests.rs"]
+mod startup_tests;
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
 pub(crate) fn run() -> ExitCode {
+    startup_log::init();
     let loaded_config = LoadedConfig::load::<CargoHandler>();
+    startup_log::startup_event("config_loaded");
     let mut startup_note = install_theme(&loaded_config.config.appearance, theme::builtins());
     let (appearance_sender, appearance_updates) = mpsc::channel();
     let startup_appearance = spawn_appearance_watcher(move |appearance| {
         let _ = appearance_sender.send(appearance);
     });
+    startup_log::startup_event("appearance_read_returned");
     if let Some(appearance) = startup_appearance {
         startup_note =
             tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance);
@@ -47,7 +57,7 @@ pub(crate) fn run() -> ExitCode {
     };
     run_terminal(&mut app, &iterm2_profile, |app| {
         Ticker::new(
-            census::schedule::spawn(app.remote_machines.clone()),
+            census::schedule::spawn(app.remote_machines.clone(), app.hierarchy_command.clone()),
             appearance_updates,
         )
     })
@@ -92,6 +102,14 @@ impl Ticker {
     fn drain_census(&self, app: &mut App) -> bool {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
+            match &update {
+                CensusUpdate::Local(rows, _) => {
+                    startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
+                },
+                CensusUpdate::Remote { host, .. } => {
+                    startup_log::startup_event(&format!("remote_applied {host}"));
+                },
+            }
             if let CensusUpdate::Remote { host, .. } = &update
                 && !app.loaded_config.config.machines.remote.contains(host)
             {
@@ -107,9 +125,7 @@ impl Ticker {
     fn ages_moved(&mut self, app: &App, unix_now: u64) -> bool {
         let shown = app
             .census
-            .machines(&app.loaded_config.config.machines.remote)
-            .iter()
-            .any(|machine| !machine.state.rows().is_empty());
+            .lists_an_agent(&app.loaded_config.config.machines.remote);
         if !shown || self.shown_second == Some(unix_now) {
             return false;
         }
@@ -169,8 +185,9 @@ mod tests {
 
     use super::*;
     use crate::census::Agent;
-    use crate::census::AgentRow;
+    use crate::census::HierarchyEdges;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -196,6 +213,34 @@ mod tests {
         assert_eq!(ticker.poll(&mut app, Instant::now()), Repaint::Needed);
     }
 
+    /// Carriers alone do not animate ages locally or on a configured remote.
+    #[test]
+    fn transport_hosts_do_not_request_age_repaints() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let (_sender, receiver) = mpsc::channel();
+        let (_appearance_sender, appearance_receiver) = mpsc::channel();
+        let mut ticker = Ticker::new(receiver, appearance_receiver);
+        let (manager, worker) = census::mesh_worker_fixture();
+        app.census.apply(CensusUpdate::Local(
+            worker.rows().to_vec(),
+            HierarchyEdges::default(),
+        ));
+        app.loaded_config.config.machines.remote = vec!["mac".to_string()];
+        app.census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: worker,
+        });
+        assert!(!ticker.ages_moved(&app, 100));
+        assert!(!ticker.ages_moved(&app, 101));
+        app.census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: manager,
+        });
+        assert!(ticker.ages_moved(&app, 101));
+        assert!(!ticker.ages_moved(&app, 101));
+        assert!(ticker.ages_moved(&app, 102));
+    }
+
     /// While a row is shown each new unix second repaints so the ages
     /// tick, and a census answer that changes something repaints at
     /// once.
@@ -207,20 +252,25 @@ mod tests {
         let mut ticker = Ticker::new(receiver, appearance_receiver);
         let now = Instant::now();
         let row = AgentRow {
-            agent:        Agent::Claude,
-            service_tier: ServiceTier::Unrecorded,
-            name:         "enh/handler".to_string(),
-            status:       Some("busy".to_string()),
-            started:      90,
-            pid:          428_044,
-            desktop:      None,
-            directory:    "~/rust/handler".to_string(),
-            branch:       None,
-            launched_by:  None,
-            children:     Vec::new(),
+            agent:           Agent::Claude,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            name:            "enh/handler".to_string(),
+            status:          Some("busy".to_string()),
+            started:         90,
+            process_started: 90,
+            pid:             428_044,
+            desktop:         None,
+            directory:       "~/rust/handler".to_string(),
+            branch:          None,
+            launched_by:     None,
+            children:        Vec::new(),
         };
         sender
-            .send(CensusUpdate::Local(vec![row.clone()]))
+            .send(CensusUpdate::Local(
+                vec![row.clone()],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
 
         assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::Needed);
@@ -228,14 +278,20 @@ mod tests {
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
 
         sender
-            .send(CensusUpdate::Local(vec![row.clone()]))
+            .send(CensusUpdate::Local(
+                vec![row.clone()],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::NotNeeded);
         sender
-            .send(CensusUpdate::Local(vec![census::AgentRow {
-                status: None,
-                ..row
-            }]))
+            .send(CensusUpdate::Local(
+                vec![census::AgentRow {
+                    status: None,
+                    ..row
+                }],
+                HierarchyEdges::default(),
+            ))
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
     }

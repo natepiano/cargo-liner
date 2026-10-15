@@ -112,6 +112,8 @@ Focus is logical throughout (`focused_cell`, `focus_at`, `focus_cell`, `cycle_fo
 
 A deeper summary widens over the columns its depth opens. A summary that fills column 0 cannot widen. `Turns::of` compares the spans of the two grids, so a step that changes both depth and span plays the widening or narrowing turns.
 
+A widened summary has no band divider through it: `draw_placements` (`crates/tui_pane/src/tiles/draw.rs`) adds every band and piece frame, then calls `GridLines::open` on each summary piece's rect, which clears the lines inside it and keeps `┬` on its bottom border where a column line continues below. See `docs/cargo-handler/as-built/startup.md`.
+
 Defaults: cargo-tile `DEFAULT_WIDEN_SUMMARY = false`, cargo-handler `true`.
 
 ### Why the loop settles

@@ -202,8 +202,8 @@ impl PhaseReporter {
 /// mid-command when the app shuts down. A completed run has already rewritten
 /// the marker to `Passed`/`Failed`, so the drop is a no-op for it. Without
 /// this, a run interrupted between the initial `Running` write and the
-/// terminal write strands the marker, and external readers (the `/clippy`
-/// cache check) wait on a run that will never finish.
+/// terminal write strands the marker for cargo-port's own status read
+/// (`read_status_from_disk`) and the lint status it shows.
 struct RunFinalizeGuard<'a> {
     cache_root:    &'a Path,
     project_root:  &'a Path,

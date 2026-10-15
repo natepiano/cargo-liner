@@ -7,6 +7,8 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
@@ -20,12 +22,14 @@ use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
+use tui_pane::label_color;
 use tui_pane::render_status_line;
 
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::app::App;
 use crate::census;
+use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
@@ -101,20 +105,24 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
 /// agents, and a cell for each agent.
 struct Cells<'a> {
     /// This machine, then each configured remote.
-    machines: Vec<Machine<'a>>,
+    machines:  Vec<Machine<'a>>,
     /// Every agent's cell, in grid order.
-    agents:   Vec<AgentEntry<'a>>,
+    agents:    Vec<AgentEntry<'a>>,
+    /// The forest shared by cell order and summary roots.
+    placement: AgentPlacement<'a>,
     /// The unix second the ages are measured to.
-    now:      u64,
+    now:       u64,
 }
 
 impl<'a> Cells<'a> {
     /// The cells for `machines`, with ages measured to `now`.
     fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
-        let agents = agent_cell::cell_order(&machines);
+        let placement = AgentPlacement::from_machines(&machines);
+        let agents = agent_cell::cell_order_placed(&placement);
         Self {
             machines,
             agents,
+            placement,
             now,
         }
     }
@@ -148,8 +156,8 @@ impl TileCells<AgentCell> for Cells<'_> {
                 .map_or(narrowest, |&(_, width)| width)
         };
         TileDemands {
-            summary:       summary::height(&self.machines),
-            summary_width: summary::width(&self.machines, self.now),
+            summary:       summary::height(&self.machines, &self.placement),
+            summary_width: summary::width(&self.machines, &self.placement, self.now),
             groups:        self
                 .agents
                 .iter()
@@ -164,7 +172,14 @@ impl TileCells<AgentCell> for Cells<'_> {
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
             TileContent::Summary => {
-                summary::draw(buffer, inner, &self.machines, &self.agents, self.now);
+                summary::draw(
+                    buffer,
+                    inner,
+                    &self.machines,
+                    &self.placement,
+                    &self.agents,
+                    self.now,
+                );
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
@@ -176,14 +191,20 @@ impl TileCells<AgentCell> for Cells<'_> {
         }
     }
 
-    /// An agent's cell is titled with the agent's name, in the hue the
-    /// summary draws that name in.
-    fn group_title(&self, id: &AgentCell) -> Option<Span<'static>> {
+    /// The name keeps its summary hue; the accepted or inferred role
+    /// follows in the label color.
+    fn group_title(&self, id: &AgentCell) -> Option<Line<'static>> {
         self.agent(id).map(|entry| {
-            Span::styled(
-                format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                Role::Rainbow(entry.hue).style(),
-            )
+            Line::from(vec![
+                Span::styled(
+                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                    Role::Rainbow(entry.hue).style(),
+                ),
+                Span::styled(
+                    entry.role_label.suffix(),
+                    Style::default().fg(label_color()),
+                ),
+            ])
         })
     }
 }
@@ -228,6 +249,14 @@ mod tests {
     use std::rc::Rc;
     use std::time::Instant;
 
+    use HierarchyRole::Fix;
+    use HierarchyRole::Review;
+    use HierarchyRole::Showrunner;
+    use HierarchyRole::Test;
+    use HierarchyRole::Unit;
+    use RoleLabel::Inferred;
+    use RoleLabel::Stated;
+    use RoleLabel::Unlabeled;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
@@ -243,8 +272,15 @@ mod tests {
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::CodexThreadId;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
     use crate::census::MachineState;
+    use crate::census::RoleLabel;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
+    use crate::constants::HEADING_SEPARATOR;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -356,31 +392,31 @@ fraying = "leading"
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
-    /// The settings overlay: Appearance, Tiles and Files, the paths under
+    /// The settings overlay: Appearance, Tiles, Machines, Census and Files; paths under
     /// the test build's stand-in config root.
     const SETTINGS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · no agents                                                          │",
-        "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
-        "│       │ ▶ mode           < auto >                                    │       │",
-        "│       │   light theme    < Default Light >                           │       │",
-        "│       │   dark theme     < Default Dark >                            │       │",
-        "│       │   transparent    < true >                                    │       │",
+        "│       │ ▶ mode               < auto >                                │       │",
+        "│       │   light theme        < Default Light >                       │       │",
+        "│       │   dark theme         < Default Dark >                        │       │",
+        "│       │   transparent        < true >                                │       │",
         "│       │ Tiles:                                                       │       │",
-        "│       │   initial rows   < 4 >                                       │       │",
-        "│       │   fill           < redistribute >                            │       │",
-        "│       │   view           < auto >                                    │       │",
-        "│       │   widen summary  < true >                                    │       │",
+        "│       │   initial rows       < 4 >                                   │       │",
+        "│       │   fill               < redistribute >                        │       │",
+        "│       │   view               < auto >                                │       │",
+        "│       │   widen summary      < true >                                │       │",
         "│       │ Machines:                                                    │       │",
-        "│       │   remote         none                                        │       │",
+        "│       │   remote             none                                    │       │",
+        "│       │ Census:                                                      │       │",
+        "│       │   hierarchy command                                          │       │",
         "│       │ Files:                                                       │       │",
-        "│       │   config         /<config>/cargo-handler/config.toml         │       │",
-        "│       │   themes         /<config>/cargo-handler/themes              │       │",
-        "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
-        "│       └──────────────────────────────────────────────────────────────┘       │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│       │   config             /<config>/cargo-handler/config.toml     │       │",
+        "│       │   themes             /<config>/cargo-handler/themes          │       │",
+        "│       │   keymap             /<config>/cargo-handler/keymap.toml     │       │",
+        "│       └──────────────────────────────────────────────────────────────┘ 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -663,6 +699,7 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
@@ -672,17 +709,19 @@ fraying = "leading"
             timer: None,
         };
         AgentRow {
-            agent:        Agent::Claude,
-            service_tier: ServiceTier::Unrecorded,
-            name:         "boss of bosses".to_string(),
-            status:       Some("idle".to_string()),
-            started:      NOW - age,
-            pid:          1_579_022,
-            desktop:      None,
-            directory:    "~/rust/hana_catalyst/docs/hana".to_string(),
-            branch:       None,
-            launched_by:  None,
-            children:     vec![
+            session_id:      SessionIdentity::Unrecorded,
+            agent:           Agent::Claude,
+            service_tier:    ServiceTier::Unrecorded,
+            name:            "boss of bosses".to_string(),
+            status:          Some("idle".to_string()),
+            started:         NOW - age,
+            process_started: NOW - age,
+            pid:             1_579_022,
+            desktop:         None,
+            directory:       "~/rust/hana_catalyst/docs/hana".to_string(),
+            branch:          None,
+            launched_by:     None,
+            children:        vec![
                 child(
                     0,
                     ChildKind::Shell,
@@ -719,6 +758,11 @@ fraying = "leading"
     /// measured to [`NOW`].
     fn drawn_buffer(app: &mut App) -> Buffer {
         let body = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
+        drawn_buffer_in(app, body)
+    }
+
+    /// The grid at a chosen body size with ages measured to [`NOW`].
+    fn drawn_buffer_in(app: &mut App, body: Rect) -> Buffer {
         let growth = app.loaded_config.config.tiles.growth();
         let cells = Cells::new(
             app.census
@@ -755,12 +799,174 @@ fraying = "leading"
     #[test]
     fn a_listed_agent_gets_a_cell_titled_with_its_name() {
         let mut app = laid_out_app();
-        app.census
-            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        app.census.apply(CensusUpdate::Local(
+            vec![boss(21 * 60 * 60)],
+            crate::census::HierarchyEdges::default(),
+        ));
         drawn_grid(&mut app);
         app.tiles.settle_for_test();
 
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
+    }
+
+    /// Tile titles and nested lines follow the current relationships, retaining name and label
+    /// colors.
+    #[test]
+    fn title_and_tree_role_labels_change_with_accepted_relationships() {
+        let mut app = laid_out_app();
+        let rows = vec![
+            AgentRow {
+                session_id: SessionIdentity::Claude("production".to_string()),
+                name: "production".to_string(),
+                pid: 1,
+                children: Vec::new(),
+                ..boss(3 * 60 * 60)
+            },
+            AgentRow {
+                session_id: SessionIdentity::Claude("member".to_string()),
+                name: "member".to_string(),
+                pid: 2,
+                launched_by: Some(1),
+                children: Vec::new(),
+                ..boss(2 * 60 * 60)
+            },
+        ];
+        for (role, manager_role_label, member_role_label) in [
+            (None, Unlabeled, Unlabeled),
+            (Some(Unit), Inferred(Showrunner), Stated(Unit)),
+            (Some(Test), Inferred(Unit), Stated(Test)),
+            (Some(Review), Inferred(Unit), Stated(Review)),
+            (Some(Fix), Inferred(Unit), Stated(Fix)),
+            (None, Unlabeled, Unlabeled),
+        ] {
+            let manager_label = manager_role_label.suffix();
+            let member_label = member_role_label.suffix();
+            let edges = HierarchyEdges(
+                role.into_iter()
+                    .map(|role| HierarchyEdge {
+                        manager: "production".to_string(),
+                        member: "member".to_string(),
+                        role,
+                    })
+                    .collect(),
+            );
+            app.census.apply(CensusUpdate::Local(rows.clone(), edges));
+            let body = Rect::new(0, 0, 160, 40);
+            drawn_buffer_in(&mut app, body);
+            app.tiles.settle_for_test();
+            let buffer = drawn_buffer_in(&mut app, body);
+            let rendered: Vec<String> = (0..body.height)
+                .map(|y| (0..body.width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let title_text = format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}");
+            let (title_y, title_line) = rendered
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.contains(&title_text) && line.contains('─'))
+                .expect("the grid draws the current title");
+            let prefix = title_line
+                .split_once(&title_text)
+                .expect("the title is present")
+                .0
+                .chars()
+                .count();
+            let title_x = u16::try_from(prefix).expect("the column fits");
+            let title_y = u16::try_from(title_y).expect("the row fits");
+            assert_eq!(
+                buffer[(title_x + 1, title_y)].fg,
+                Role::Rainbow(crate::theme::RainbowHue::Red)
+                    .style()
+                    .fg
+                    .expect("the title has a hue")
+            );
+            let after_name = title_x
+                + u16::try_from(format!("{AGENT_CELL_TITLE_LEAD}production").chars().count())
+                    .expect("the title fits");
+            if manager_label.is_empty() {
+                assert_eq!(
+                    buffer[(after_name, title_y)].symbol(),
+                    "─",
+                    "launch-only groups have no role suffix"
+                );
+            } else {
+                for offset in 0..manager_label.chars().count() {
+                    assert_eq!(
+                        buffer[(
+                            after_name + u16::try_from(offset).expect("the suffix fits"),
+                            title_y
+                        )]
+                            .fg,
+                        label_color()
+                    );
+                }
+            }
+            let member_line = rendered
+                .iter()
+                .find(|line| line.contains("└─ member"))
+                .expect("the child has a tree line");
+            assert!(member_line.contains(&format!("member{member_label}")));
+            if member_label.is_empty() {
+                assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
+            }
+        }
+    }
+
+    #[test]
+    fn the_live_width_summary_spans_bands_without_an_interior_divider() {
+        let body = Rect::new(0, 0, 429, 89);
+        let mut app = laid_out_app();
+        app.loaded_config.config.tiles.widen_summary = true;
+        let agents = (0..5)
+            .map(|index| AgentRow {
+                pid: 1_579_022 + index,
+                name: format!("agent {index}"),
+                directory: format!(
+                    "~/rust/cargo-liner-handler-enh/{}",
+                    "long-directory/".repeat(14)
+                ),
+                children: Vec::new(),
+                ..boss(21 * 60 * 60)
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local(
+            agents,
+            crate::census::HierarchyEdges::default(),
+        ));
+        drawn_buffer_in(&mut app, body);
+        app.tiles.settle_for_test();
+        let buffer = drawn_buffer_in(&mut app, body);
+
+        let (left, top) = (body.top()..body.bottom())
+            .find_map(|y| {
+                (body.left()..body.right()).find_map(|x| {
+                    let corner: String = (x..(x + 9).min(body.right()))
+                        .map(|column| buffer[(column, y)].symbol())
+                        .collect();
+                    (corner == "┌ summary").then_some((x, y))
+                })
+            })
+            .expect("summary's top-left corner is drawn");
+        let right = (left + 1..body.right())
+            .find(|&x| matches!(buffer[(x, top)].symbol(), "┐" | "┬"))
+            .expect("summary's top-right corner is drawn");
+        let bottom = (top + 1..body.bottom())
+            .find(|&y| matches!(buffer[(left, y)].symbol(), "├" | "└"))
+            .expect("summary's bottom border is drawn");
+        assert!(
+            (left + 1..right).any(|x| buffer[(x, bottom)].symbol() == "┬"),
+            "summary spans a column line that continues below it"
+        );
+        for y in top + 1..bottom {
+            for x in left + 1..right {
+                assert!(
+                    !buffer[(x, y)]
+                        .symbol()
+                        .chars()
+                        .any(|glyph| ('\u{2500}'..='\u{257f}').contains(&glyph)),
+                    "summary has a lattice glyph at ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// The agent's name in the summary and the title of its cell are
@@ -768,8 +974,10 @@ fraying = "leading"
     #[test]
     fn an_agent_name_and_its_cell_title_share_a_hue() {
         let mut app = laid_out_app();
-        app.census
-            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        app.census.apply(CensusUpdate::Local(
+            vec![boss(21 * 60 * 60)],
+            crate::census::HierarchyEdges::default(),
+        ));
         drawn_buffer(&mut app);
         app.tiles.settle_for_test();
 
@@ -787,16 +995,19 @@ fraying = "leading"
     /// takes at the narrowest width: the width its cell will open at.
     #[test]
     fn an_agent_cell_asks_for_its_rows_at_its_own_width() {
-        let natedev = MachineState::Answered(vec![
-            boss(21 * 60 * 60),
-            AgentRow {
-                pid: 428_044,
-                name: "enh/handler".to_string(),
-                directory: "~/rust/handler".to_string(),
-                children: Vec::new(),
-                ..boss(20 * 60 * 60)
-            },
-        ]);
+        let natedev = MachineState::Answered(
+            vec![
+                boss(21 * 60 * 60),
+                AgentRow {
+                    pid: 428_044,
+                    name: "enh/handler".to_string(),
+                    directory: "~/rust/handler".to_string(),
+                    children: Vec::new(),
+                    ..boss(20 * 60 * 60)
+                },
+            ],
+            crate::census::HierarchyEdges::default(),
+        );
         let cells = Cells::new(
             vec![Machine {
                 name:  "natedev",

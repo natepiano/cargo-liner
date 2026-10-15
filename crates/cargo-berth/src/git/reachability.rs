@@ -178,6 +178,15 @@ struct ResolvedTargetCommitHistory {
     graph:  CommitAncestryGraph,
 }
 
+/// Which pass of `first_parent_ancestry_boundary` a pending commit is waiting for.
+#[derive(Clone, Copy)]
+enum BoundaryVisit {
+    /// Its parents still have to be pushed and resolved.
+    ParentsPending,
+    /// Its parents are resolved, so its own boundary is their minimum.
+    ParentsVisited,
+}
+
 impl CommitAncestryGraph {
     /// Walk each ancestor once while advancing from the oldest first-parent commit.
     fn earliest_containing_matches(
@@ -216,6 +225,82 @@ impl CommitAncestryGraph {
     }
 
     fn contains(&self, commit: &GitObjectId) -> bool { self.parents_by_commit.contains_key(commit) }
+
+    /// Locate every exclusion boundary in one target chain and one shared ancestry traversal.
+    fn first_parent_intervals_after<'candidates>(
+        &self,
+        target: &GitObjectId,
+        candidates: impl Iterator<Item = &'candidates GitObjectId>,
+    ) -> HashMap<GitObjectId, Vec<GitObjectId>> {
+        let mut chain = Vec::new();
+        let mut current = target;
+        loop {
+            chain.push(current.clone());
+            let Some(parent) = self
+                .parents_by_commit
+                .get(current)
+                .and_then(|parents| parents.first())
+            else {
+                break;
+            };
+            current = parent;
+        }
+        // An ancestor on the chain excludes its entire suffix. Other commits inherit the
+        // earliest boundary of their parents; chain.len() means none of the chain is excluded.
+        let mut boundaries = chain
+            .iter()
+            .enumerate()
+            .map(|(index, commit)| (commit.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let mut intervals = HashMap::new();
+        for candidate in candidates {
+            if intervals.contains_key(candidate) {
+                continue;
+            }
+            let boundary =
+                self.first_parent_ancestry_boundary(candidate, chain.len(), &mut boundaries);
+            intervals.insert(candidate.clone(), chain[..boundary].to_vec());
+        }
+        intervals
+    }
+
+    /// Memoize boundaries after visiting parents, stopping whenever the chain is reached.
+    fn first_parent_ancestry_boundary(
+        &self,
+        candidate: &GitObjectId,
+        chain_length: usize,
+        boundaries: &mut HashMap<GitObjectId, usize>,
+    ) -> usize {
+        let mut pending = vec![(candidate, BoundaryVisit::ParentsPending)];
+        while let Some((commit, boundary_visit)) = pending.pop() {
+            if boundaries.contains_key(commit) {
+                continue;
+            }
+            let parents = self
+                .parents_by_commit
+                .get(commit)
+                .map_or(&[][..], Vec::as_slice);
+            match boundary_visit {
+                BoundaryVisit::ParentsVisited => {
+                    let boundary = parents
+                        .iter()
+                        .map(|parent| boundaries[parent])
+                        .min()
+                        .unwrap_or(chain_length);
+                    boundaries.insert(commit.clone(), boundary);
+                },
+                BoundaryVisit::ParentsPending => {
+                    pending.push((commit, BoundaryVisit::ParentsVisited));
+                    pending.extend(
+                        parents
+                            .iter()
+                            .map(|parent| (parent, BoundaryVisit::ParentsPending)),
+                    );
+                },
+            }
+        }
+        boundaries[candidate]
+    }
 
     fn ancestors_including(&self, tip: &GitObjectId) -> HashSet<GitObjectId> {
         let mut ancestors = HashSet::new();
@@ -723,21 +808,22 @@ fn classify_candidates_against_target(
     PhaseStartTargetFirstParentHistories,
     Vec<CommitCandidateReachability>,
 ) {
-    let intervals = candidate_resolutions
-        .iter()
-        .filter_map(|resolution| match resolution {
-            CommitObjectResolution::Resolved(candidate) if target_history.contains(candidate) => {
-                Some((
-                    candidate.clone(),
-                    target_history.first_parent_commits_after(target, candidate),
-                ))
-            },
-            CommitObjectResolution::Resolved(_)
-            | CommitObjectResolution::Missing
-            | CommitObjectResolution::Ambiguous
-            | CommitObjectResolution::WrongType { .. } => None,
-        })
-        .collect();
+    let intervals = target_history.first_parent_intervals_after(
+        target,
+        candidate_resolutions
+            .iter()
+            .filter_map(|resolution| match resolution {
+                CommitObjectResolution::Resolved(candidate)
+                    if target_history.contains(candidate) =>
+                {
+                    Some(candidate)
+                },
+                CommitObjectResolution::Resolved(_)
+                | CommitObjectResolution::Missing
+                | CommitObjectResolution::Ambiguous
+                | CommitObjectResolution::WrongType { .. } => None,
+            }),
+    );
     let candidates = candidate_resolutions
         .into_iter()
         .map(|resolution| match resolution {
@@ -1092,6 +1178,10 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::ProtectedTipSuccessorHeadClassification;
@@ -1113,6 +1203,140 @@ mod tests {
 
     /// The lane branch whose history criss-crosses with `main`.
     const CRISS_CROSS_LANE: &str = "lane";
+
+    #[test]
+    fn batched_first_parent_intervals_match_individual_walks() -> FixtureResult {
+        let ids = (1..=12)
+            .map(|index| format!("{index:040x}").parse::<GitObjectId>())
+            .collect::<Result<Vec<_>, _>>()?;
+        // Two merging side chains share ancestry; one is unrelated, and one parent is absent.
+        let links: &[(usize, &[usize])] = &[
+            (0, &[]),
+            (1, &[0]),
+            (2, &[1]),
+            (3, &[0]),
+            (4, &[3, 1]),
+            (5, &[2, 4]),
+            (6, &[5]),
+            (7, &[4, 2]),
+            (8, &[6, 7]),
+            (9, &[]),
+            (10, &[11]),
+        ];
+        let graph = super::CommitAncestryGraph {
+            parents_by_commit: links
+                .iter()
+                .map(|(commit, parents)| {
+                    (
+                        ids[*commit].clone(),
+                        parents.iter().map(|parent| ids[*parent].clone()).collect(),
+                    )
+                })
+                .collect(),
+        };
+        for target in [&ids[8], &ids[10], &ids[0]] {
+            let mut candidates = ids.clone();
+            candidates.extend([ids[4].clone(), target.clone()]);
+            let expected = candidates
+                .iter()
+                .filter(|candidate| graph.contains(candidate))
+                .map(|candidate| {
+                    (
+                        candidate.clone(),
+                        graph.first_parent_commits_after(target, candidate),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let resolutions = candidates
+                .iter()
+                .cloned()
+                .map(super::CommitObjectResolution::Resolved)
+                .chain([
+                    super::CommitObjectResolution::Missing,
+                    super::CommitObjectResolution::Ambiguous,
+                    super::CommitObjectResolution::WrongType {
+                        object_type: "tree".to_owned(),
+                    },
+                ])
+                .collect();
+            let (histories, classified) = super::classify_candidates_against_target(
+                target,
+                super::CommitAncestryGraph {
+                    parents_by_commit: graph.parents_by_commit.clone(),
+                },
+                resolutions,
+            );
+            assert_eq!(histories.intervals, expected);
+            let mut expected_classes = candidates
+                .iter()
+                .map(|candidate| {
+                    if graph.contains(candidate) {
+                        super::CommitCandidateReachability::Ancestor
+                    } else {
+                        super::CommitCandidateReachability::NotAncestor
+                    }
+                })
+                .collect::<Vec<_>>();
+            expected_classes.extend([
+                super::CommitCandidateReachability::Missing,
+                super::CommitCandidateReachability::Ambiguous,
+                super::CommitCandidateReachability::WrongType {
+                    object_type: "tree".to_owned(),
+                },
+            ]);
+            assert_eq!(classified, expected_classes);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batched_first_parent_intervals_of_large_merged_history_are_immediate() -> FixtureResult {
+        let started = Instant::now();
+        let ids = (1..=6000)
+            .map(|index| format!("{index:040x}").parse::<GitObjectId>())
+            .collect::<Result<Vec<_>, _>>()?;
+        let graph = super::CommitAncestryGraph {
+            parents_by_commit: ids
+                .iter()
+                .enumerate()
+                .map(|(index, commit)| {
+                    let parents = if index == 0 {
+                        Vec::new()
+                    } else if index % 3 == 0 {
+                        vec![ids[index - 3].clone(), ids[index - 1].clone()]
+                    } else {
+                        vec![ids[index - 1].clone()]
+                    };
+                    (commit.clone(), parents)
+                })
+                .collect(),
+        };
+        let target_index = 5997;
+        let candidates = (0..60)
+            .map(|index| super::CommitObjectResolution::Resolved(ids[index * 99 + 1].clone()))
+            .collect();
+        let (histories, classified) =
+            super::classify_candidates_against_target(&ids[target_index], graph, candidates);
+        assert_eq!(histories.intervals.len(), 60);
+        assert!(
+            classified
+                .iter()
+                .all(|answer| *answer == super::CommitCandidateReachability::Ancestor)
+        );
+        for index in 0..60 {
+            let candidate_index = index * 99;
+            let expected = (0..((target_index - candidate_index) / 3))
+                .map(|offset| ids[target_index - offset * 3].clone())
+                .collect::<Vec<_>>();
+            assert_eq!(histories.intervals[&ids[candidate_index + 1]], expected);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "batched ancestry took {elapsed:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn historical_candidate_history_survives_a_phase_start_outside_trunk_ancestry() -> FixtureResult

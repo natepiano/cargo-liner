@@ -235,12 +235,13 @@ pub trait TileCells<Id> {
     /// while the contents are hidden. None unless the app names its
     /// groups there.
     ///
-    /// The span's style is patched over the chrome's title style, so a
-    /// title that sets only a colour keeps the weight focus gives it,
-    /// and an unstyled one is drawn as the summary's title is.
+    /// The line's and each span's styles are patched over the chrome's
+    /// title style, so a title that sets only a colour keeps the weight
+    /// focus gives it, and an unstyled one is drawn as the summary's
+    /// title is.
     ///
     /// [`summary_title`]: Self::summary_title
-    fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
+    fn group_title(&self, _id: &Id) -> Option<Line<'static>> { None }
 }
 
 /// Draw `grid` into `area`, its columns laid out by `growth`, with
@@ -339,6 +340,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         buffer.set_style(area, Style::default().bg(ground));
     }
     let mut grid_lines = GridLines::new(area);
+    let mut summary_frames = Vec::new();
     for &column in &drawing.column_bands {
         grid_lines.add(PaneFrame::new(column));
     }
@@ -401,6 +403,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         }
         match &placement.content {
             TileContent::Summary => {
+                summary_frames.push(line_frame.rect());
                 if draws_name {
                     grid_lines.add_titled(line_frame, cells.summary_title());
                 } else {
@@ -423,6 +426,9 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
             },
             TileContent::Empty(_) => grid_lines.add(line_frame),
         }
+    }
+    for rect in summary_frames {
+        grid_lines.open(rect);
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
     // single tile. Focus is the background tint under a tile's contents,
@@ -962,8 +968,8 @@ mod tests {
                 .map_or(CellReadoutFade::Unfaded, |(_, fade)| *fade)
         }
 
-        fn group_title(&self, id: &u32) -> Option<Span<'static>> {
-            Some(Span::raw(group_title(*id)))
+        fn group_title(&self, id: &u32) -> Option<Line<'static>> {
+            Some(Line::raw(group_title(*id)))
         }
 
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
@@ -3931,6 +3937,61 @@ mod tests {
         grid
     }
 
+    struct SegmentedTitleCells;
+
+    impl TileCells<u32> for SegmentedTitleCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { title_demands(&[7]) }
+
+        fn group_title(&self, _: &u32) -> Option<Line<'static>> {
+            Some(Line::from(vec![
+                Span::styled("worker", Style::default().fg(Color::Blue)),
+                Span::styled(" · impl", Style::default().fg(Color::Yellow)),
+            ]))
+        }
+
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    #[test]
+    fn moving_tiles_keep_title_segments_together_and_inside_their_width() {
+        for (width, title) in [(18, "worker · impl"), (14, "worker · im…")] {
+            let area = Rect::new(0, 0, width, 8);
+            for y in [0_u16, 1, 2] {
+                let shift = i32::from(y);
+                let drawing = TileDrawing {
+                    pieces:       vec![tile_piece(
+                        TileContent::Group(7),
+                        PaneFrame::shifted(
+                            Rect::new(0, 0, width, 4),
+                            shift,
+                            Rect::new(0, y, width, 4),
+                        ),
+                        PieceName::Shown,
+                    )],
+                    column_bands: vec![area],
+                };
+                let mut buffer = Buffer::empty(area);
+                draw_placements(
+                    &mut buffer,
+                    area,
+                    &drawing,
+                    &title_demands(&[7]),
+                    &[(TileContent::Group(7), width - 2)],
+                    TileGridContents::Shown,
+                    &SegmentedTitleCells,
+                );
+
+                assert!(buffer_line(&buffer, y).contains(title));
+                assert_eq!(buffer_text(&buffer).matches(title).count(), 1);
+                assert_eq!(buffer[(1, y)].fg, Color::Blue);
+                assert_eq!(buffer[(8, y)].fg, Color::Yellow);
+                assert!(is_lattice_glyph(buffer[(width - 1, y)].symbol()));
+            }
+        }
+    }
+
     fn collapsed_title_motion(
         area: Rect,
         before: &[u32],
@@ -4822,6 +4883,58 @@ mod tests {
                 assert!(
                     !is_lattice_glyph(buffer[(x, y)].symbol()),
                     "summary-only frame has an interior divider at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_widened_summary_has_no_interior_band_divider() {
+        let growth = TileGrowth {
+            initial_rows:  4,
+            fill:          TileFill::Redistribute,
+            widen_summary: true,
+        };
+        let mut cells = StubCells::new(1..=5);
+        cells.demands.summary_width = 120;
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        let drawing = grid.drawing_at(TITLE_AREA, growth, PROGRESS_SCALE);
+        assert_eq!(drawing.column_bands.len(), 2);
+        let summary = drawing
+            .placements()
+            .find(|piece| piece.content == TileContent::Summary);
+        assert!(summary.is_some(), "the summary is drawn");
+        let Some(summary) = summary.map(|piece| piece.frame.clip()) else {
+            return;
+        };
+        assert!(summary.width > drawing.column_bands[0].width);
+        let inner = frame_inner(summary);
+        for y in inner.top()..inner.bottom() {
+            for x in inner.left()..inner.right() {
+                assert!(
+                    !is_lattice_glyph(buffer[(x, y)].symbol()),
+                    "widened summary has an interior divider at ({x}, {y})"
                 );
             }
         }

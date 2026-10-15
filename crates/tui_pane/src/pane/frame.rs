@@ -296,6 +296,9 @@ impl Sides {
     /// This set with `side` added.
     const fn with(self, side: Side) -> Self { Self(self.0 | side.bit()) }
 
+    /// This set with `side` removed.
+    const fn without(self, side: Side) -> Self { Self(self.0 & !side.bit()) }
+
     /// Every side either set holds.
     const fn merge(self, other: Self) -> Self { Self(self.0 | other.0) }
 
@@ -345,7 +348,7 @@ struct Overlay {
     /// Where it goes, before the pane's shift is applied.
     rect:  Rect,
     /// The text.
-    text:  String,
+    text:  Line<'static>,
     /// The shade to write it in.
     style: OverlayStyle,
 }
@@ -474,11 +477,11 @@ impl GridLines {
     /// The title goes where a ratatui [`Block`] puts a left-aligned one:
     /// the top border line, inset a cell at each end so it clears the
     /// corners. It is written in the chrome's title style under the
-    /// pane's focus with the span's own style patched over it, so plain
-    /// text takes the title style unchanged.
+    /// pane's focus with the line's and each span's styles patched over
+    /// it, so plain text takes the title style unchanged.
     ///
     /// [`Block`]: ratatui::widgets::Block
-    pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Span<'a>>) {
+    pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Line<'a>>) {
         self.add(frame);
         let title = title.into();
         let rect = frame.rect;
@@ -492,7 +495,13 @@ impl GridLines {
                     .saturating_sub(BORDER_LINE_WIDTH.saturating_mul(2)),
                 height: 1,
             },
-            text: title.content.into_owned(),
+            text: Line::from(
+                title
+                    .spans
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.into_owned(), span.style))
+                    .collect::<Vec<_>>(),
+            ),
             style: OverlayStyle::Title(title.style),
         });
     }
@@ -525,6 +534,45 @@ impl GridLines {
         }
     }
 
+    /// Open one pane spanning its neighbours' bands so nothing crosses it.
+    /// Interior cells lose every side; edge cells lose their inward side,
+    /// while corners keep their existing joins.
+    pub(crate) fn open(&mut self, rect: Rect) {
+        if rect.is_empty() {
+            return;
+        }
+        let (left, right) = (rect.left(), rect.right() - 1);
+        let (top, bottom) = (rect.top(), rect.bottom() - 1);
+        let visible = rect.intersection(self.area);
+        for y in visible.top()..visible.bottom() {
+            for x in visible.left()..visible.right() {
+                let on_column_edge = x == left || x == right;
+                let on_row_edge = y == top || y == bottom;
+                if on_column_edge && on_row_edge {
+                    continue;
+                }
+                let index = self.index(x, y);
+                let cell = &mut self.cells[index];
+                if !on_column_edge && !on_row_edge {
+                    cell.sides = Sides::none();
+                } else {
+                    if y == top {
+                        cell.sides = cell.sides.without(Side::Down);
+                    }
+                    if y == bottom {
+                        cell.sides = cell.sides.without(Side::Up);
+                    }
+                    if x == left {
+                        cell.sides = cell.sides.without(Side::Right);
+                    }
+                    if x == right {
+                        cell.sides = cell.sides.without(Side::Left);
+                    }
+                }
+            }
+        }
+    }
+
     /// Hold one label to be written over the finished lines.
     ///
     /// This is how anything that sits on a border survives the pass: a
@@ -539,7 +587,7 @@ impl GridLines {
         self.labels.push(Overlay {
             frame,
             rect: label.area,
-            text: label.text,
+            text: Line::raw(label.text),
             style: OverlayStyle::Label(label.style),
         });
     }
@@ -664,18 +712,39 @@ impl GridLines {
             OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
             OverlayStyle::Label(style) => style,
         };
+        let text = Line::from(
+            overlay
+                .text
+                .spans
+                .iter()
+                .map(|span| Span::styled(span.content.as_ref(), style.patch(span.style)))
+                .collect::<Vec<_>>(),
+        );
         if matches!(overlay.style, OverlayStyle::Title(_))
             && overlay.text.width() > row.width.into()
         {
             let text_width = row.width.saturating_sub(1);
-            Line::from(Span::styled(overlay.text.as_str(), style)).render(
+            let mut visible_width = 0;
+            let mut elision_style = style;
+            for grapheme in text.styled_graphemes(style) {
+                let next_width = visible_width + grapheme.symbol.width();
+                if next_width > usize::from(text_width) {
+                    if visible_width == 0 {
+                        elision_style = grapheme.style;
+                    }
+                    break;
+                }
+                visible_width = next_width;
+                elision_style = grapheme.style;
+            }
+            text.render(
                 Rect {
                     width: text_width,
                     ..row
                 },
                 buffer,
             );
-            Line::from(Span::styled(ELISION, style)).render(
+            Line::from(Span::styled(ELISION, elision_style)).render(
                 Rect {
                     x: row.x.saturating_add(text_width),
                     width: 1,
@@ -685,7 +754,7 @@ impl GridLines {
             );
             return;
         }
-        Line::from(Span::styled(overlay.text.as_str(), style)).render(row, buffer);
+        text.render(row, buffer);
     }
 
     /// Union `sides` into the cell the pane puts at (`x`, `y`).
@@ -805,6 +874,38 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
         buffer
+    }
+
+    #[test]
+    fn a_spanning_pane_opens_band_lines_and_keeps_border_joins() {
+        let area = Rect::new(3, 2, 11, 7);
+        let summary = Rect::new(3, 2, 11, 4);
+        let mut grid_lines = GridLines::new(area);
+        for rect in [
+            Rect::new(3, 2, 6, 7),
+            Rect::new(8, 2, 6, 7),
+            Rect::new(3, 5, 6, 4),
+            Rect::new(8, 5, 6, 4),
+            summary,
+        ] {
+            grid_lines.add(PaneFrame::new(rect));
+        }
+        grid_lines.open(summary);
+        let mut buffer = Buffer::empty(area);
+        grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
+
+        assert_eq!(
+            rows(&buffer, area),
+            [
+                "┌─────────┐",
+                "│         │",
+                "│         │",
+                "├────┬────┤",
+                "│    │    │",
+                "│    │    │",
+                "└────┴────┘",
+            ]
+        );
     }
 
     /// The same, for panes that each close their own box.
@@ -1141,6 +1242,122 @@ mod tests {
         assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(9, 0)].fg, Color::Red);
         assert!(!buffer[(9, 0)].modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn title_segments_keep_their_styles_and_focus_weight_when_clipped() {
+        for focused in [false, true] {
+            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha · …┐")]
+            {
+                let area = Rect::new(0, 0, width, 3);
+                let chrome = PaneChrome {
+                    active_title: Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    ..chrome()
+                };
+                let title = Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ])
+                .style(Style::default().add_modifier(Modifier::ITALIC));
+                let mut grid = GridLines::new(area);
+                grid.add_titled(PaneFrame::new(area).with_focus(focused), title);
+                let mut buffer = Buffer::empty(area);
+                grid.render(&mut buffer, chrome, PaneBorders::Shared);
+
+                assert_eq!(rows(&buffer, area)[0], expected);
+                for (x, color) in [(1, Color::Blue), (7, Color::Yellow)] {
+                    let cell = &buffer[(x, 0)];
+                    assert_eq!(cell.fg, color);
+                    assert_eq!(cell.modifier.contains(Modifier::BOLD), focused);
+                    assert!(cell.modifier.contains(Modifier::ITALIC));
+                }
+                assert_eq!(buffer[(width - 1, 0)].symbol(), "┐");
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_title_ellipsis_keeps_the_last_visible_segment_style() {
+        for (title, width, expected) in [
+            (
+                Line::from(Span::styled("alpha", Style::default().fg(Color::Blue))),
+                6,
+                Color::Blue,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ]),
+                11,
+                Color::Yellow,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ]),
+                6,
+                Color::Blue,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("abc", Style::default().fg(Color::Blue)),
+                    Span::styled("界unit", Style::default().fg(Color::Yellow)),
+                ]),
+                7,
+                Color::Blue,
+            ),
+            (
+                Line::from(Span::styled("alpha", Style::default().fg(Color::Blue))),
+                3,
+                Color::Blue,
+            ),
+        ] {
+            let area = Rect::new(0, 0, width, 3);
+            let chrome = PaneChrome {
+                active_title: Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                ..chrome()
+            };
+            let mut grid = GridLines::new(area);
+            grid.add_titled(
+                PaneFrame::new(area).with_focus(true),
+                title.style(Style::default().add_modifier(Modifier::ITALIC)),
+            );
+            let mut buffer = Buffer::empty(area);
+            grid.render(&mut buffer, chrome, PaneBorders::Shared);
+
+            let elision = &buffer[(width - 2, 0)];
+            assert_eq!(elision.symbol(), ELISION);
+            assert_eq!(elision.fg, expected);
+            assert!(elision.modifier.contains(Modifier::BOLD));
+            assert!(elision.modifier.contains(Modifier::ITALIC));
+        }
+    }
+
+    #[test]
+    fn shifted_titles_carry_every_segment_to_the_visible_border() {
+        let area = Rect::new(0, 0, 12, 5);
+        let mut grid = GridLines::new(area);
+        grid.add_titled(
+            PaneFrame::shifted(Rect::new(0, 0, 12, 3), 2, area),
+            Line::from(vec![
+                Span::styled("unit", Style::default().fg(Color::Blue)),
+                Span::styled(" · test", Style::default().fg(Color::Yellow)),
+            ]),
+        );
+        let mut buffer = Buffer::empty(area);
+        grid.render(&mut buffer, chrome(), PaneBorders::Shared);
+
+        assert_eq!(rows(&buffer, area)[0], "            ");
+        assert_eq!(rows(&buffer, area)[2], "┌unit · te…┐");
+        assert_eq!(buffer[(1, 2)].fg, Color::Blue);
+        assert_eq!(buffer[(7, 2)].fg, Color::Yellow);
+        assert!(!rows(&buffer, area)[4].contains("unit"));
     }
 
     /// The still path draws straight through to the target buffer, at

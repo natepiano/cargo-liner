@@ -16,6 +16,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.
 - Toast timing, activation, focus and tracked-item lifetimes use named public states while preserving their rendered output.
 - Cell foot readouts and summary foot spans follow the fade and ground of their contents.
 - Toast bodies retain styled runs with explicit line-break policies, words that fit move whole to a fresh line, and cards keep one cleared row above, below and between them.
@@ -32,6 +33,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 
 ### Fixed
+- A summary spanning column bands clears their dividers from its interior and keeps the border joins to the columns below.
 - The tile grid automatic view no longer drops every command cell when tall column mates leave the summary fewer rows than it draws alone.
 - Moving tile heights keep destination bounds ordered when a previous allocation falls outside the destination's permitted height range.
 - Panics restore raw mode, mouse reporting, the alternate screen and cursor visibility before printing the panic message, while retaining iTerm2 profile restoration.

@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"process_started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -13,22 +13,117 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::Agent;
 use super::AgentRow;
+use super::HierarchyEdges;
+use super::HierarchySource;
+use super::SessionIdentity;
+use super::hierarchy;
+use super::hierarchy::CommandRunner;
+use super::hierarchy::HierarchyAnswer;
 use super::local_machine_name;
 use super::scan::LocalScanner;
+use crate::config::CargoHandler;
+use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
+use crate::startup_log;
+
+/// A probe row before compatibility defaults are resolved into domain values.
+#[derive(Deserialize)]
+pub(super) struct ProbeAgentRow {
+    agent:           super::Agent,
+    #[serde(default)]
+    session_id:      Option<String>,
+    #[serde(default)]
+    service_tier:    super::ServiceTier,
+    name:            String,
+    status:          Option<String>,
+    started:         u64,
+    /// Older probes supply their identity through `started` instead.
+    process_started: Option<u64>,
+    pid:             u32,
+    desktop:         Option<String>,
+    directory:       String,
+    branch:          Option<String>,
+    launched_by:     Option<u32>,
+    children:        Vec<super::ChildRow>,
+}
+
+impl From<ProbeAgentRow> for AgentRow {
+    fn from(row: ProbeAgentRow) -> Self {
+        Self {
+            agent:           row.agent,
+            session_id:      row
+                .session_id
+                .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
+            service_tier:    row.service_tier,
+            name:            row.name,
+            status:          row.status,
+            started:         row.started,
+            process_started: row.process_started.unwrap_or(row.started),
+            pid:             row.pid,
+            desktop:         row.desktop,
+            directory:       row.directory,
+            branch:          row.branch,
+            launched_by:     row.launched_by,
+            children:        row.children,
+        }
+    }
+}
 
 /// What the probe prints.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    schema:  u32,
+    schema:           u32,
     /// The printing machine's short host name.
-    machine: String,
+    machine:          String,
     /// Its agents, oldest first, each with what it is running.
-    rows:    Vec<AgentRow>,
+    rows:             Vec<AgentRow>,
+    /// Optional for compatibility with older schema-3 probes.
+    #[serde(default)]
+    edges:            HierarchyEdges,
+    /// A failed command must not erase the receiver's last successful links.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hierarchy_failed: bool,
+    /// Transport-only worker carriers, ignored by older schema-3 peers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    thread_hosts:     Vec<AgentRow>,
+}
+
+impl ProbeReport {
+    /// Separate visible agents from carriers at the outgoing wire boundary.
+    fn from_answer(machine: String, rows: Vec<AgentRow>, edges: HierarchyEdges) -> Self {
+        let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
+        Self {
+            schema: PROBE_SCHEMA,
+            machine,
+            rows,
+            edges,
+            thread_hosts,
+            hierarchy_failed: false,
+        }
+    }
+
+    /// Restore transport-only identity before handing an answer to the census.
+    fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
+        let rows = self
+            .rows
+            .into_iter()
+            .chain(self.thread_hosts.into_iter().map(|mut host| {
+                host.agent = Agent::CodexThreadHost;
+                host
+            }))
+            .collect();
+        let hierarchy = if self.hierarchy_failed {
+            HierarchyAnswer::Failed
+        } else {
+            HierarchyAnswer::Answered(self.edges)
+        };
+        (rows, hierarchy)
+    }
 }
 
 /// The one field read before the rest, so a machine running another
@@ -41,11 +136,18 @@ struct SchemaHeader {
 
 /// Scan this machine once and print the report to stdout.
 pub(crate) fn print() -> ExitCode {
-    let report = ProbeReport {
-        schema:  PROBE_SCHEMA,
-        machine: local_machine_name(),
-        rows:    LocalScanner::new().scan(),
-    };
+    startup_log::init();
+    let loaded = LoadedConfig::load::<CargoHandler>();
+    let source = HierarchySource::from(loaded.config.census.hierarchy_command);
+    let mut report = ProbeReport::from_answer(
+        local_machine_name(),
+        LocalScanner::new().scan(),
+        HierarchyEdges::default(),
+    );
+    match hierarchy::read(&source, &CommandRunner) {
+        HierarchyAnswer::Answered(edges) => report.edges = edges,
+        HierarchyAnswer::Failed => report.hierarchy_failed = true,
+    }
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -60,7 +162,18 @@ pub(crate) fn print() -> ExitCode {
 
 /// The rows of a report read back from `output`, or why there are none:
 /// output that is not a report, or a report from another version.
-pub(super) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
+pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdges), String> {
+    parse_answer(output).map(|(rows, hierarchy)| {
+        let edges = match hierarchy {
+            HierarchyAnswer::Answered(edges) => edges,
+            HierarchyAnswer::Failed => HierarchyEdges::default(),
+        };
+        (rows, edges)
+    })
+}
+
+/// Decode hierarchy failure separately from an authoritative empty answer.
+pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAnswer), String> {
     let header: SchemaHeader =
         serde_json::from_slice(output).map_err(|_| UNREADABLE_PROBE_REASON.to_string())?;
     if header.schema != PROBE_SCHEMA {
@@ -70,7 +183,7 @@ pub(super) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
         ));
     }
     serde_json::from_slice::<ProbeReport>(output)
-        .map(|report| report.rows)
+        .map(ProbeReport::into_answer)
         .map_err(|_| UNREADABLE_PROBE_REASON.to_string())
 }
 
@@ -80,16 +193,21 @@ pub(super) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
     use crate::census::Agent;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::Machine;
+    use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::Timer;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
+            thread_id: crate::census::CodexThreadId::Unrecorded,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
@@ -105,34 +223,41 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            schema:  PROBE_SCHEMA,
-            machine: "mac".to_string(),
-            rows:    vec![
+            hierarchy_failed: false,
+            schema:           PROBE_SCHEMA,
+            machine:          "mac".to_string(),
+            thread_hosts:     Vec::new(),
+            edges:            HierarchyEdges::default(),
+            rows:             vec![
                 AgentRow {
-                    agent:        Agent::Codex,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "ChatGPT".to_string(),
-                    status:       None,
-                    started:      1_790_000_000,
-                    pid:          76_130,
-                    desktop:      None,
-                    directory:    "/".to_string(),
-                    branch:       None,
-                    launched_by:  None,
-                    children:     Vec::new(),
+                    agent:           Agent::Codex,
+                    session_id:      SessionIdentity::Unrecorded,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "ChatGPT".to_string(),
+                    status:          None,
+                    started:         1_790_000_000,
+                    process_started: 1_790_000_000,
+                    pid:             76_130,
+                    desktop:         None,
+                    directory:       "/".to_string(),
+                    branch:          None,
+                    launched_by:     None,
+                    children:        Vec::new(),
                 },
                 AgentRow {
-                    agent:        Agent::Claude,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "natemccoy-30".to_string(),
-                    status:       Some("idle".to_string()),
-                    started:      1_790_000_100,
-                    pid:          80_020,
-                    desktop:      None,
-                    directory:    "~".to_string(),
-                    branch:       Some("main".to_string()),
-                    launched_by:  None,
-                    children:     vec![
+                    agent:           Agent::Claude,
+                    session_id:      SessionIdentity::Unrecorded,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "natemccoy-30".to_string(),
+                    status:          Some("idle".to_string()),
+                    started:         1_790_000_100,
+                    process_started: 1_790_000_100,
+                    pid:             80_020,
+                    desktop:         None,
+                    directory:       "~".to_string(),
+                    branch:          Some("main".to_string()),
+                    launched_by:     None,
+                    children:        vec![
                         child(
                             0,
                             ChildKind::Shell,
@@ -175,17 +300,19 @@ mod tests {
                     ],
                 },
                 AgentRow {
-                    agent:        Agent::Claude,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "worker".to_string(),
-                    status:       Some("busy".to_string()),
-                    started:      1_790_000_130,
-                    pid:          81_020,
-                    desktop:      None,
-                    directory:    "~".to_string(),
-                    branch:       None,
-                    launched_by:  Some(80_020),
-                    children:     Vec::new(),
+                    agent:           Agent::Claude,
+                    session_id:      SessionIdentity::Unrecorded,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "worker".to_string(),
+                    status:          Some("busy".to_string()),
+                    started:         1_790_000_130,
+                    process_started: 1_790_000_130,
+                    pid:             81_020,
+                    desktop:         None,
+                    directory:       "~".to_string(),
+                    branch:          None,
+                    launched_by:     Some(80_020),
+                    children:        Vec::new(),
                 },
             ],
         }
@@ -201,26 +328,25 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
             )
         );
         assert_eq!(
             parse_report(format!("{json}\n").as_bytes()),
-            Ok(report().rows)
+            Ok((report().rows, report().edges))
         );
     }
 
-    /// A row printed before the desktop and the branch were read, with
-    /// neither field, reads back with neither, and a row naming them
-    /// keeps them.
+    /// Older rows omit desktop, branch and process birth; absent birth
+    /// uses the session start, while desktop and branch remain optional.
     #[test]
     fn a_row_without_a_desktop_or_branch_reads_back_with_none() {
         let output = concat!(
@@ -229,17 +355,95 @@ mod tests {
             r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","branch":"fix/berth","launched_by":null,"children":[]}]}"#,
         );
 
-        let read: Vec<(Option<String>, Option<String>)> = parse_report(output.as_bytes())
+        let read: Vec<(Option<String>, Option<String>, u64)> = parse_report(output.as_bytes())
             .expect("a report should parse")
+            .0
             .into_iter()
-            .map(|row| (row.desktop, row.branch))
+            .map(|row| (row.desktop, row.branch, row.process_started))
             .collect();
         assert_eq!(
             read,
             [
-                (None, None),
-                (Some("berth_fix".to_string()), Some("fix/berth".to_string())),
+                (None, None, 1_790_000_000),
+                (
+                    Some("berth_fix".to_string()),
+                    Some("fix/berth".to_string()),
+                    1_790_000_100
+                ),
             ]
+        );
+    }
+
+    /// Stable session identities and management links survive an optional schema-3 extension.
+    #[test]
+    fn hierarchy_and_session_ids_round_trip_while_old_probes_remain_readable() {
+        let mut report = report();
+        report.rows[1].children[2].thread_id =
+            super::super::CodexThreadId::Recorded("worker-thread".to_string());
+        report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
+        report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
+        report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
+            manager: "manager".to_string(),
+            member:  "member".to_string(),
+            role:    super::super::HierarchyRole::Review,
+        }]);
+        let output = serde_json::to_vec(&report).expect("the extended report should serialize");
+        assert_eq!(
+            parse_report(&output),
+            Ok((report.rows.clone(), report.edges.clone()))
+        );
+        let mut old = serde_json::to_value(&report).expect("the report should serialize");
+        old.as_object_mut()
+            .expect("report is an object")
+            .remove("edges");
+        for row in old["rows"].as_array_mut().expect("rows is an array") {
+            row.as_object_mut()
+                .expect("a row is an object")
+                .remove("session_id");
+            for child in row["children"]
+                .as_array_mut()
+                .expect("children is an array")
+            {
+                child
+                    .as_object_mut()
+                    .expect("a child is an object")
+                    .remove("thread_id");
+            }
+        }
+        let (rows, edges) =
+            parse_report(&serde_json::to_vec(&old).expect("old report should serialize"))
+                .expect("an old probe should parse");
+        assert_eq!(edges, HierarchyEdges::default());
+        assert!(
+            rows.iter()
+                .flat_map(|row| &row.children)
+                .all(|child| child.thread_id == super::super::CodexThreadId::Unrecorded)
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.session_id == SessionIdentity::Unrecorded)
+        );
+    }
+
+    /// A missing extension means success, while a failed discovery remains distinct from empty.
+    #[test]
+    fn old_probe_hierarchy_is_answered_and_failed_probe_keeps_fresh_rows() {
+        let mut report = report();
+        let old = serde_json::to_vec(&report).expect("serialize old-compatible answer");
+        assert!(!String::from_utf8_lossy(&old).contains("hierarchy_failed"));
+        assert_eq!(
+            parse_answer(&old),
+            Ok((
+                report.rows.clone(),
+                HierarchyAnswer::Answered(HierarchyEdges::default())
+            ))
+        );
+        report.hierarchy_failed = true;
+        report.rows[0].name = "fresh row".to_string();
+        let bytes = serde_json::to_vec(&report).expect("serialize failed discovery");
+        assert_eq!(
+            parse_answer(&bytes),
+            Ok((report.rows, HierarchyAnswer::Failed))
         );
     }
 
@@ -264,5 +468,74 @@ mod tests {
         assert_eq!(parse_report(b"bash: warning: setlocale\n"), unreadable);
         assert_eq!(parse_report(b""), unreadable);
         assert_eq!(parse_report(br#"{"schema":3,"machine":"mac"}"#), unreadable);
+    }
+    /// Old schema-3 readers see only real agents, even when a report carries workers.
+    #[test]
+    fn older_probe_readers_never_see_transport_hosts_as_agents() {
+        #[derive(Deserialize)]
+        struct OldReport {
+            rows: Vec<OldRow>,
+        }
+        #[derive(Deserialize)]
+        struct OldRow {
+            agent: OldAgent,
+            pid:   u32,
+        }
+        #[derive(Debug, Deserialize, Eq, PartialEq)]
+        #[serde(rename_all = "lowercase")]
+        enum OldAgent {
+            Claude,
+            Codex,
+        }
+
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let mut rows = manager.rows().to_vec();
+        rows.extend_from_slice(worker.rows());
+        for edges in [
+            HierarchyEdges::default(),
+            HierarchyEdges(worker.edges().to_vec()),
+        ] {
+            let report = ProbeReport::from_answer("mac".to_string(), rows.clone(), edges);
+            let bytes = serde_json::to_vec(&report).expect("serialize mixed answer");
+            let old: OldReport = serde_json::from_slice(&bytes).expect("old peer reads report");
+            assert_eq!(old.rows.len(), 1);
+            assert_eq!(old.rows[0].agent, OldAgent::Claude);
+            assert_eq!(old.rows[0].pid, manager.rows()[0].pid);
+        }
+    }
+
+    /// Separate carrier data round-trips and still places its worker under a remote manager.
+    #[test]
+    fn mesh_worker_hosts_round_trip_outside_visible_probe_rows() {
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let original = ProbeReport::from_answer(
+            "mac".to_string(),
+            worker.rows().to_vec(),
+            HierarchyEdges(worker.edges().to_vec()),
+        );
+        let bytes = serde_json::to_vec(&original).expect("serialize worker host");
+        let json: Value = serde_json::from_slice(&bytes).expect("wire answer");
+        assert_eq!(json["rows"].as_array().expect("visible rows").len(), 0);
+        assert_eq!(json["thread_hosts"].as_array().expect("carriers").len(), 1);
+        let (rows, edges) = parse_report(&bytes).expect("read worker host answer");
+        assert_eq!(rows, worker.rows());
+        assert_eq!(edges.0, worker.edges());
+        let received = MachineState::Answered(rows, edges);
+        let placement = crate::census::AgentPlacement::from_machines(&[
+            Machine {
+                name:  "natedev",
+                state: &manager,
+            },
+            Machine {
+                name:  "mac",
+                state: &received,
+            },
+        ]);
+        assert_eq!(placement.rows.len(), 1);
+        assert_eq!(placement.threads.len(), 1);
+        assert_eq!(
+            placement.threads[0].owner_row.children[0].name,
+            "mesh worker"
+        );
     }
 }
