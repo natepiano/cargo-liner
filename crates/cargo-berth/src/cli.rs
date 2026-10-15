@@ -117,6 +117,7 @@ use crate::verb::claim;
 use crate::verb::claim::CheckReservationSelection;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
+use crate::verb::claim::ClaimReservationSelection;
 use crate::verb::claim::PhaseStartSelection;
 use crate::verb::drift;
 use crate::verb::integrate;
@@ -524,6 +525,10 @@ struct CheckArguments {
         .multiple(true)
 ))]
 struct ClaimArguments {
+    /// Continue this active reservation of the acting run and worktree.
+    #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME,
+        conflicts_with_all = ["target", HEAD_ARGUMENT, WHY_ARGUMENT, PLAN_ARGUMENT, PHASE_ARGUMENT])]
+    reservation:          Option<ReservationId>,
     /// The local branch into which this reservation integrates.
     #[arg(long, value_name = "BRANCH")]
     target:               Option<String>,
@@ -1125,6 +1130,7 @@ impl InitArguments {
 impl ClaimArguments {
     fn into_claim_request(self) -> Result<ClaimRequest, String> {
         let Self {
+            reservation,
             target,
             paths,
             before,
@@ -1177,6 +1183,10 @@ impl ClaimArguments {
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
         Ok(ClaimRequest {
+            reservation_selection: reservation.map_or(
+                ClaimReservationSelection::NewReservation,
+                ClaimReservationSelection::Existing,
+            ),
             target,
             declared_scopes,
             source,

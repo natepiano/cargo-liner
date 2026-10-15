@@ -207,7 +207,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const FIRST_TOUCH_ACQUISITION_SCHEMA: &str = "FirstTouchReservationAcquisition";
+    const RESERVATION_ACQUISITION_SCHEMA: &str = "FirstTouchReservationAcquisition";
     const GENERATED_OUTPUT_CONTRACT: &str =
         include_str!("../../../docs/cargo-berth/generated/output-contract.json");
     const OUTPUT_ENVELOPE_SCHEMA: &str = "output_envelope";
@@ -225,8 +225,8 @@ mod tests {
 
         assert_selector_branches(
             definitions,
-            FIRST_TOUCH_ACQUISITION_SCHEMA,
-            &["already_held", "appended", "widened"],
+            RESERVATION_ACQUISITION_SCHEMA,
+            &["already_held", "answered", "appended", "widened"],
         )?;
         assert_selector_branches(definitions, RESERVATION_SCOPE_SCHEMA, &["file", "tree"])
     }

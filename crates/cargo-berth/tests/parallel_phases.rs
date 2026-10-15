@@ -421,6 +421,740 @@ fn the_reservation_limit_counts_each_parallel_phase() {
     assert_eq!(session_mappings(root), mappings_before);
 }
 
+#[test]
+fn named_claim_before_attaches_only_to_the_selected_phase() {
+    assert_named_answer("--before", "sequence", "requester_before_holder");
+}
+
+#[test]
+fn named_claim_after_attaches_only_to_the_selected_phase() {
+    assert_named_answer("--after", "sequence", "holder_before_requester");
+}
+
+#[test]
+fn named_claim_repeated_before_refuses_duplicate_ordering_without_mutation() {
+    assert_repeated_named_ordering_is_refused("--before");
+}
+
+#[test]
+fn named_claim_repeated_after_refuses_duplicate_ordering_without_mutation() {
+    assert_repeated_named_ordering_is_refused("--after");
+}
+
+#[test]
+fn ordinary_claim_repeated_ordering_uses_distinct_reservations() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let claimed = run_berth_with_session(
+            root,
+            &[
+                "claim",
+                "file:shared.rs",
+                "--after",
+                &fixture.holder,
+                "--overlap-why",
+                "ordinary repeated answer",
+                "--json",
+            ],
+            DIRECTOR_SESSION,
+        );
+        assert_success(&claimed);
+        ids.push(json(&claimed)["payload"]["data"]["reservation_id"].clone());
+    }
+    assert_ne!(ids[0], ids[1]);
+    fs::remove_file(root.join(".git/cargo-berth/reservations.json")).expect("force replay");
+    let board = phase_board(root);
+    let waiting = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("live ordering holds");
+    for id in ids {
+        assert!(
+            waiting
+                .iter()
+                .any(|entry| entry["predecessor"] == fixture.holder && entry["successor"] == id)
+        );
+    }
+}
+
+#[test]
+fn named_claim_defer_records_only_the_selected_phase_without_acquiring_paths() {
+    assert_named_answer("--defer", "defer", "");
+}
+
+#[test]
+fn named_claim_override_attaches_only_to_the_selected_phase() {
+    assert_named_answer("--override", "override", "");
+}
+
+#[test]
+fn named_claim_unknown_selection_is_mutation_free() {
+    let fixture = NamedPhaseOverlap::new();
+    fixture.assert_refused_selection("01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0aff");
+}
+
+#[test]
+fn named_claim_inactive_selection_is_mutation_free() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let ended = open_phase(root, "file:ended.rs", "ended-phase");
+    assert_success(&run_berth_with_session(
+        root,
+        &["release", &ended, "--json"],
+        "ended-phase",
+    ));
+    fixture.assert_refused_selection(&ended);
+}
+
+#[test]
+fn named_claim_foreign_run_selection_is_mutation_free() {
+    let fixture = NamedPhaseOverlap::new();
+    let mappings = session_mappings(fixture.root());
+    assert_ne!(
+        mappings["identities"]["holder-session"]["coordination_run_id"],
+        mappings["identities"][DIRECTOR_SESSION]["coordination_run_id"]
+    );
+    fixture.assert_refused_selection(&fixture.holder);
+}
+
+#[test]
+fn named_claim_foreign_worktree_selection_is_mutation_free() {
+    let fixture = NamedPhaseOverlap::new();
+    // The run matches, so only the worktree eligibility rule can reject this id.
+    let run =
+        session_mappings(fixture.root())["identities"][DIRECTOR_SESSION]["coordination_run_id"]
+            .as_str()
+            .expect("director run")
+            .to_owned();
+    let foreign_root = fixture.worktrees.path().join("same-run");
+    GIT.run_without_hooks(
+        fixture.root(),
+        [
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "same-run",
+            foreign_root.to_str().expect("foreign worktree path"),
+        ],
+    );
+    let foreign = run_berth_with_session(
+        &foreign_root,
+        &["claim", "file:foreign-tree.rs", "--run", &run, "--json"],
+        "same-run-other-worktree",
+    );
+    assert_success(&foreign);
+    let foreign = json(&foreign);
+    assert_eq!(
+        foreign["payload"]["data"]["coordination_run_id"], run,
+        "only the worktree should differ"
+    );
+    fs::write(
+        foreign_root.join("foreign-tree.rs"),
+        "// foreign worktree work\n",
+    )
+    .expect("foreign worktree work");
+    fixture.assert_refused_selection(
+        foreign["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("foreign worktree id"),
+    );
+}
+
+#[test]
+fn named_claim_all_held_answer_survives_replay_and_moves_the_director_mapping() {
+    let fixture = NamedPhaseOverlap::with_phase16_holding_overlap();
+    let root = fixture.root();
+    let before = journal_events(root);
+    let answered = fixture.answer(&fixture.r16, "--after", &[]);
+    assert_success(&answered);
+    let events = journal_events(root);
+    let appended = &events[before.len()..];
+    assert_eq!(appended.len(), 1);
+    assert_eq!(appended[0]["op"], "answer");
+    assert_eq!(appended[0]["reservation_id"], fixture.r16);
+    assert_eq!(appended[0]["authorizations"][0]["kind"], "sequence");
+    assert_eq!(
+        appended[0]["authorizations"][0]["direction"],
+        "holder_before_requester"
+    );
+    assert_director_mapping(root, &fixture.r16);
+    fs::remove_file(root.join(".git/cargo-berth/reservations.json"))
+        .expect("discard projection to require replay");
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &fixture.r16)["scopes"],
+        serde_json::json!([
+            {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}
+        ])
+    );
+    let waiting = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("live ordering holds");
+    assert!(
+        waiting.iter().any(
+            |entry| entry["edge_id"] == appended[0]["authorizations"][0]["edge_id"]
+                && entry["predecessor"] == fixture.holder
+                && entry["successor"] == fixture.r16
+        ),
+        "the answer-only ordering must survive replay: {board}"
+    );
+    assert_eq!(
+        journal_events(root)
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn named_claim_replace_keeps_the_siblings_ordering_edge() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    assert_success(&fixture.answer(&fixture.r15, "--before", &[]));
+    let before_edge =
+        journal_events(root).last().expect("R15 ordering")["authorization"]["edge_id"].clone();
+    assert_success(&fixture.answer(&fixture.r16, "--before", &[]));
+    let own_edge =
+        answer_authorization(journal_events(root).last().expect("R16 prior ordering"))["edge_id"]
+            .clone();
+    fixture.map_director_to_r15();
+    assert_success(&fixture.answer(&fixture.r16, "--after", &["--replace"]));
+    let events = journal_events(root);
+    let event = events.last().expect("R16 answer");
+    let authorization = answer_authorization(event);
+    let replaced = authorization["replaced"]
+        .as_array()
+        .expect("R16 replacement");
+    assert_eq!(
+        replaced.len(),
+        1,
+        "only R16's prior ordering may be retired: {event}"
+    );
+    assert_eq!(replaced[0]["reservation_id"], fixture.r16);
+    assert_eq!(replaced[0]["edge_id"], own_edge);
+    fs::remove_file(root.join(".git/cargo-berth/reservations.json")).expect("force replay");
+    let board = phase_board(root);
+    let waiting = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("live ordering holds");
+    assert!(
+        waiting.iter().any(|entry| entry["edge_id"] == before_edge
+            && entry["predecessor"] == fixture.r15
+            && entry["successor"] == fixture.holder),
+        "R15's edge must still hold its successor after replay: {board}"
+    );
+    assert!(
+        !waiting.iter().any(|entry| entry["edge_id"] == own_edge),
+        "R16's replaced edge must no longer hold integration"
+    );
+    assert_director_mapping(root, &fixture.r16);
+}
+
+#[test]
+fn named_claim_preserves_the_selected_target_baseline_purpose_and_plan() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let r15 = open_phase(root, "file:a.rs", "dir-sid.phase-15");
+    let baseline = GIT.stdout(root, ["rev-parse", "HEAD"]);
+    GIT.run(root, ["branch", "phase-target"]);
+    let claimed = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:b.rs",
+            "--target",
+            "phase-target",
+            "--head",
+            &baseline,
+            "--why",
+            "phase 16 purpose",
+            "--plan",
+            "docs/plan.md",
+            "--phase",
+            "16",
+            "--json",
+        ],
+        "dir-sid.phase-16",
+    );
+    assert_success(&claimed);
+    let claimed = json(&claimed);
+    let r16 = claimed["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("phase 16");
+    let original = reservation_row(&phase_board(root), r16).clone();
+    fs::write(root.join("a.rs"), "// keep phase 15 active\n").expect("phase 15 work");
+    fs::write(root.join("b.rs"), "// keep phase 16 active\n").expect("phase 16 work");
+    fs::write(root.join("later.txt"), "later head\n").expect("new commit");
+    GIT.run(root, ["add", "later.txt"]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "advance caller head"]);
+    assert_ne!(GIT.stdout(root, ["rev-parse", "HEAD"]), baseline);
+    assert_success(&run_berth_with_session(
+        root,
+        &["check", "--reservation", &r15, "file:a.rs", "--json"],
+        DIRECTOR_SESSION,
+    ));
+    let selected = run_berth_with_session(
+        root,
+        &["claim", "file:extra.rs", "--reservation", r16, "--json"],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&selected);
+    let after = reservation_row(&phase_board(root), r16).clone();
+    for field in ["target", "purpose", "source"] {
+        assert!(
+            !original[field].is_null(),
+            "fixture must expose {field}: {original}"
+        );
+        assert_eq!(
+            after[field], original[field],
+            "named claim must preserve {field}"
+        );
+    }
+    let checked = run_berth_with_session(
+        root,
+        &["check", "--reservation", r16, "file:extra.rs", "--json"],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&checked);
+    assert_eq!(
+        json(&checked)["payload"]["data"]["acquisition"]["phase_start_head"],
+        baseline
+    );
+    assert_director_mapping(root, r16);
+}
+
+#[test]
+fn named_claim_refuses_creation_only_arguments_without_mutation() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let head = GIT.stdout(root, ["rev-parse", "HEAD"]);
+    for creation in [
+        vec!["--target", "main"],
+        vec!["--head", head.as_str()],
+        vec!["--why", "new purpose"],
+        vec!["--plan", "docs/plan.md", "--phase", "16"],
+    ] {
+        let before = journal_events(root);
+        let mappings = session_mappings(root);
+        let mut arguments = vec![
+            "claim",
+            "file:new.rs",
+            "--reservation",
+            &fixture.r16,
+            "--json",
+        ];
+        arguments.extend(creation);
+        let refused = run_berth_with_session(root, &arguments, DIRECTOR_SESSION);
+        assert!(
+            !refused.status.success(),
+            "creation-only arguments must be refused"
+        );
+        assert_eq!(journal_events(root), before);
+        assert_eq!(session_mappings(root), mappings);
+    }
+}
+
+#[test]
+fn named_claim_reports_sibling_coverage_and_widens_at_the_reservation_limit() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    fs::write(
+        root.join(CONFIGURATION_PATH),
+        "trunk = \"main\"\nmaximum_reservations = 3\n",
+    )
+    .expect("limit configuration");
+    let refused = run_berth_with_session(
+        root,
+        &["check", "file:over-limit.rs", "--json"],
+        "dir-sid.phase-17",
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    assert_eq!(
+        json(&refused)["status"],
+        "reservation_limit_reached",
+        "fixture must reach the actual reservation cap"
+    );
+    let before = journal_events(root);
+    let selected = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:a.rs",
+            "file:shared.rs",
+            "--reservation",
+            &fixture.r16,
+            "--after",
+            &fixture.holder,
+            "--overlap-why",
+            "phase 16 follows the holder",
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&selected);
+    let selected = json(&selected);
+    assert_eq!(
+        selected["payload"]["data"]["acquisition"]["already_held"],
+        serde_json::json!([
+            {"reservation_id":fixture.r15, "scopes":[{"kind":"file", "path":"a.rs"}]}
+        ])
+    );
+    let events = journal_events(root);
+    assert!(
+        !events[before.len()..]
+            .iter()
+            .any(|event| event["op"] == "claim")
+    );
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &fixture.r16)["scopes"],
+        serde_json::json!([
+            {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}
+        ])
+    );
+    assert_eq!(
+        reservation_row(&board, &fixture.r15)["scopes"],
+        serde_json::json!([{"kind":"file", "path":"a.rs"}])
+    );
+    assert_director_mapping(root, &fixture.r16);
+}
+
+#[test]
+fn ordinary_claim_still_appends_and_legacy_defer_uses_the_oldest_phase() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let before = journal_events(root);
+    let claimed = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:shared.rs",
+            "--after",
+            &fixture.holder,
+            "--overlap-why",
+            "legacy acquisition",
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&claimed);
+    let claimed = json(&claimed);
+    let id = claimed["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("new ordinary claim");
+    assert_ne!(id, fixture.r15);
+    assert_ne!(id, fixture.r16);
+    let events = journal_events(root);
+    assert_eq!(events[before.len()]["op"], "claim");
+    assert_eq!(events[before.len()]["reservation_id"], id);
+    fixture.map_director_to_r15();
+    let deferred = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:shared.rs",
+            "--defer",
+            &fixture.holder,
+            "--overlap-why",
+            "legacy deferral",
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&deferred);
+    let events = journal_events(root);
+    assert_eq!(events.last().expect("legacy answer")["op"], "answer");
+    assert_eq!(
+        events.last().expect("legacy answer")["reservation_id"],
+        fixture.r15
+    );
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &fixture.r16)["scopes"],
+        serde_json::json!([{"kind":"file", "path":"b.rs"}])
+    );
+}
+
+/// Two active phases and a real foreign holder, with the director selecting phase 15.
+struct NamedPhaseOverlap {
+    repository: TempDir,
+    worktrees:  TempDir,
+    r15:        String,
+    r16:        String,
+    holder:     String,
+}
+
+/// Whether phase 16 already owns the requested overlap before the answer under test.
+#[derive(Clone, Copy)]
+enum Phase16InitialCoverage {
+    SeedOnly,
+    SeedAndOverlap,
+}
+
+impl NamedPhaseOverlap {
+    fn new() -> Self { Self::with_coverage(Phase16InitialCoverage::SeedOnly) }
+
+    fn with_phase16_holding_overlap() -> Self {
+        Self::with_coverage(Phase16InitialCoverage::SeedAndOverlap)
+    }
+
+    fn with_coverage(coverage: Phase16InitialCoverage) -> Self {
+        let repository = initialized_repository();
+        let root = repository.path();
+        let r15 = open_phase(root, "file:a.rs", "dir-sid.phase-15");
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let holder_root = worktrees.path().join("holder");
+        GIT.run_without_hooks(
+            root,
+            [
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "holder",
+                holder_root.to_str().expect("worktree path"),
+            ],
+        );
+        let claimed = run_berth_with_session(
+            &holder_root,
+            &["claim", "file:shared.rs", "--json"],
+            "holder-session",
+        );
+        assert_success(&claimed);
+        let holder = json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("holder id")
+            .to_owned();
+        fs::write(holder_root.join("shared.rs"), "// foreign holder work\n")
+            .expect("holder's real overlap");
+        let _ = phase_board(root);
+        let r16 = match coverage {
+            Phase16InitialCoverage::SeedOnly => open_phase(root, "file:b.rs", "dir-sid.phase-16"),
+            Phase16InitialCoverage::SeedAndOverlap => {
+                let claimed = run_berth_with_session(
+                    root,
+                    &[
+                        "claim",
+                        "file:b.rs",
+                        "file:shared.rs",
+                        "--override",
+                        &holder,
+                        "--overlap-why",
+                        "seed phase 16 overlap",
+                        "--json",
+                    ],
+                    "dir-sid.phase-16",
+                );
+                assert_success(&claimed);
+                json(&claimed)["payload"]["data"]["reservation_id"]
+                    .as_str()
+                    .expect("phase 16 id")
+                    .to_owned()
+            },
+        };
+        let fixture = Self {
+            repository,
+            worktrees,
+            r15,
+            r16,
+            holder,
+        };
+        fixture.map_director_to_r15();
+        fixture
+    }
+
+    fn root(&self) -> &Path { self.repository.path() }
+
+    fn map_director_to_r15(&self) {
+        assert_success(&run_berth_with_session(
+            self.root(),
+            &["check", "--reservation", &self.r15, "file:a.rs", "--json"],
+            DIRECTOR_SESSION,
+        ));
+        assert_director_mapping(self.root(), &self.r15);
+    }
+
+    fn answer(&self, selected: &str, flag: &str, extra: &[&str]) -> Output {
+        let mut arguments = vec![
+            "claim",
+            "file:shared.rs",
+            "--reservation",
+            selected,
+            flag,
+            &self.holder,
+            "--overlap-why",
+            "answer for the named phase",
+            "--json",
+        ];
+        arguments.extend_from_slice(extra);
+        run_berth_with_session(self.root(), &arguments, DIRECTOR_SESSION)
+    }
+
+    fn assert_refused_selection(&self, selected: &str) {
+        let _ = phase_board(self.root());
+        let events = journal_events(self.root());
+        let mappings = session_mappings(self.root());
+        let checked = run_berth_with_session(
+            self.root(),
+            &[
+                "check",
+                "file:selection-probe.rs",
+                "--reservation",
+                selected,
+                "--json",
+            ],
+            DIRECTOR_SESSION,
+        );
+        let claimed = self.answer(selected, "--after", &[]);
+        assert!(
+            !claimed.status.success(),
+            "invalid named selection must be refused"
+        );
+        assert_eq!(claimed.status.code(), checked.status.code());
+        let claimed = json(&claimed);
+        assert_eq!(claimed["verb"], "claim");
+        assert_eq!(
+            json(&checked)["status"],
+            "invalid_input",
+            "the clear path must reach check's selection validator"
+        );
+        assert_eq!(claimed["status"], json(&checked)["status"]);
+        assert_eq!(journal_events(self.root()), events);
+        assert_eq!(session_mappings(self.root()), mappings);
+    }
+}
+
+fn assert_director_mapping(root: &Path, selected: &str) {
+    assert_eq!(
+        session_mappings(root)["identities"][DIRECTOR_SESSION]["reservation_id"],
+        selected
+    );
+}
+
+fn assert_repeated_named_ordering_is_refused(flag: &str) {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let first = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:shared.rs",
+            "--reservation",
+            &fixture.r16,
+            flag,
+            &fixture.holder,
+            "--overlap-why",
+            "initial phase ordering",
+            "--json",
+        ],
+        "dir-sid.phase-16",
+    );
+    assert_success(&first);
+    let edge =
+        answer_authorization(journal_events(root).last().expect("first ordering"))["edge_id"]
+            .clone();
+    assert_director_mapping(root, &fixture.r15);
+    let events = journal_events(root);
+    let mappings = session_mappings(root);
+    // Refuse both a zero-growth repeat and a repeat that would otherwise widen.
+    for extra in [vec![], vec!["file:extra.rs"]] {
+        let refused = fixture.answer(&fixture.r16, flag, &extra);
+        assert_eq!(refused.status.code(), Some(2));
+        let refused = json(&refused);
+        assert_eq!(refused["verb"], "claim");
+        assert_eq!(refused["status"], "duplicate_ordering_edge");
+        let (before, after) = if flag == "--before" {
+            (&fixture.r16, &fixture.holder)
+        } else {
+            (&fixture.holder, &fixture.r16)
+        };
+        assert_eq!(
+            refused["message"],
+            format!("Ordering edge {before} before {after} already exists.")
+        );
+        assert_eq!(journal_events(root), events);
+        assert_eq!(session_mappings(root), mappings);
+    }
+    fs::remove_file(root.join(".git/cargo-berth/reservations.json")).expect("force replay");
+    let board = phase_board(root);
+    let waiting = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("live ordering holds");
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0]["edge_id"], edge);
+    assert_eq!(
+        reservation_row(&board, &fixture.r16)["scopes"],
+        serde_json::json!([
+            {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}
+        ])
+    );
+}
+
+fn answer_authorization(event: &Value) -> &Value {
+    if event["op"] == "answer" {
+        &event["authorizations"][0]
+    } else {
+        &event["authorization"]
+    }
+}
+
+fn assert_named_answer(flag: &str, kind: &str, direction: &str) {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    let before = journal_events(root);
+    let applied = fixture.answer(&fixture.r16, flag, &[]);
+    assert_success(&applied);
+    let events = journal_events(root);
+    let appended = &events[before.len()..];
+    assert_eq!(
+        appended.len(),
+        1,
+        "one atomic answer transaction: {appended:?}"
+    );
+    assert_eq!(appended[0]["reservation_id"], fixture.r16);
+    let authorization = answer_authorization(&appended[0]);
+    assert_eq!(authorization["kind"], kind);
+    assert_eq!(authorization["blocker"], fixture.holder);
+    if !direction.is_empty() {
+        assert_eq!(authorization["direction"], direction);
+    }
+    assert_eq!(
+        appended[0]["op"],
+        if flag == "--defer" { "answer" } else { "widen" }
+    );
+    assert_director_mapping(root, &fixture.r16);
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &fixture.r15)["scopes"],
+        serde_json::json!([{"kind":"file", "path":"a.rs"}])
+    );
+    let expected = if flag == "--defer" {
+        serde_json::json!([{"kind":"file", "path":"b.rs"}])
+    } else {
+        serde_json::json!([{"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}])
+    };
+    assert_eq!(reservation_row(&board, &fixture.r16)["scopes"], expected);
+    if flag == "--defer" {
+        let overlaps = board["payload"]["data"]["unresolved_overlaps"]["entries"]
+            .as_array()
+            .expect("live deferrals");
+        assert_eq!(overlaps.len(), 1);
+        assert_eq!(overlaps[0]["deferred"], fixture.r16);
+        assert_eq!(overlaps[0]["blocker"], fixture.holder);
+        assert_eq!(
+            overlaps[0]["consequence"],
+            "both_integrations_held_until_sequence"
+        );
+    }
+    assert_eq!(
+        events.iter().filter(|event| event["op"] == "claim").count(),
+        3
+    );
+}
+
 fn open_phase(root: &Path, path: &str, session_id: &str) -> String {
     let opened = run_berth_with_session(root, &["check", path, "--json"], session_id);
     assert_success(&opened);

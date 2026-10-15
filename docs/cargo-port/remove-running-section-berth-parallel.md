@@ -83,45 +83,25 @@ Read 2026-10-15 at 6d01f704.
 
 **Depends on:** Phase 1
 
-#### Work Order
+#### As-built
 
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** pin every neighbouring case of the two changes, and fix any defect they surface in this phase.
-
-**Spec:** tests, each under 1 s, in the file that holds its neighbours:
-
-1. `check` with no session id and one active reservation still joins it; with two, still returns `ambiguous_active_run_reservations` (`tests/lifecycle.rs`).
-2. `check --reservation R` under an unmapped phase session widens R and maps the session to R.
-3. A second `check` under the same phase session widens its own reservation, never the sibling.
-4. Overlap between phases: a phase-16 check naming a path R15 holds plus a free path → R16 holds only the free path, response states the held path under R15; a check naming only R15's paths opens nothing.
-5. The edit hook (`hook pre-tool-use`) under an unmapped session with one active reservation still joins it.
-6. Post-tool-use drift with one active reservation still widens it (regression of today's flow); with two and an unmapped session, ambiguous as before; with an unidentified run, nothing.
-7. Phase checkpoint flow: `drift --full --reservation R16` after R15's paths were committed and R15 released widens R16 only with its own unclaimed files, not R15's committed ones.
-8. Releasing R15 retires only the `<sid>.phase-15` mapping; `<sid>.phase-16` still selects R16.
-9. The reservation limit counts phase reservations: at `maximum_reservations`, a new phase check returns `reservation_limit_reached`.
-10. The hook's ambiguous-attribution line reads correctly for the parallel case (names the candidates and the recovery `drift --reservation <id>`), stated once.
+- Acceptance tests pin both phase-1 changes: `lifecycle.rs` holds the single-phase lifecycle case; `parallel_phases.rs` holds the CLI cases (mixed sibling-held requests, the reservation limit, checkpoint drift beside a released sibling); `hooks.rs` holds the post-tool-use cases.
+- A new phase reservation whose request includes paths an active same-run sibling holds reports them in `acquisition.already_held: Vec<SiblingHeldScopes>` (`sibling_held_scopes`, `append_first_touch_claim` in `verb/claim.rs`); the field is absent when empty.
+- A bare `check` that would open a reservation past `maximum_reservations` returns `CheckPayload::ReservationLimitReached { maximum }` through `OutputEnvelope::check_reservation_limit_reached`, exit 1, instead of claim's invalid-input refusal.
+- Full checkpoint drift never adopts a released sibling's committed paths: `unclaimed_path_can_widen` and `released_sibling_checkpoint_covers` (`drift/classification.rs`) with `compares_to_checkpoint` (`drift/observation.rs`) skip a path when the full comparison target equals the released sibling's protected tip. Dirty edits and later commits still widen.
+- `RefusedRunPathEntry::HoldersEntered` is boxed; the check refusal summary constant is `CHECK_REJECTED_REQUEST_SUMMARY`.
 
 **Files:**
-- `crates/cargo-berth/tests/lifecycle.rs` — case 1
-- `crates/cargo-berth/tests/parallel_phases.rs` — cases 2–4, 7–9
-- `crates/cargo-berth/tests/hooks.rs` — cases 5, 6, 10
-- `crates/cargo-berth/src/` — only an engine file a failing test points at
-- `docs/cargo-berth/as-built/worktree-coordination.md` — any rule a fix adds
+- `crates/cargo-berth/tests/lifecycle.rs`, `tests/parallel_phases.rs`, `tests/hooks.rs` — the acceptance cases
+- `crates/cargo-berth/src/verb/claim.rs`, `src/output.rs` — `already_held` and the typed limit refusal
+- `crates/cargo-berth/src/drift/classification.rs`, `src/drift/observation.rs` — the released-sibling guard
+- `docs/cargo-berth/as-built/json-contract.md`, `worktree-coordination.md`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/CHANGELOG.md` — the wire contract
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — any engine file a failing test points at, and the as-built docs for any rule a fix adds.
-- `test` — the ten tests, in `crates/cargo-berth/tests/parallel_phases.rs` and the neighbouring test files named per case.
+**Binds later work:** `parallel_phases.rs` also holds `open_phase`, `phase_board`, `session_mappings`, `SESSION_MAPPING_PATH` and `CONFIGURATION_PATH`. A named claim reports `already_held` and the limit the way check does.
 
-**Constraints from prior phases:**
-- Bare `check` parses to `CheckReservationSelection::SessionMappingOrNew` (`cli.rs`); the edit hook still uses `SessionMappingOrSingleActive`. The post-tool-use hook alone uses `PostCommitWideningSelection::SoleRunCandidate`; explicit and post-commit drift keep `SessionMappingOrSingleCandidate`.
-- A fresh session whose every path an active sibling holds reports `already_held` under the sibling holding the first path, writes no mapping, and reports `acquisition.session_mapping_publication = {"status": "left_unmapped"}`. `parallel_phases.rs::a_fresh_session_reports_left_unmapped_when_siblings_hold_every_requested_path` already pins case 4's "opens nothing" half; case 4 adds only the mixed held-plus-free check. A mapped or explicit selection reporting `already_held` publishes its selected reservation (`published`).
-- `parallel_phases.rs` already has the helpers `initialized_repository`, `run_berth_with_session`, `run_post_tool_use` and `journal_events`; reuse them. Its end-to-end test already covers the director's explicit `check --reservation` mapping and the two-phase ambiguous hook answer, so cases 2 and 6 test the neighbouring states, not those.
-- The showrunner installs cargo-berth on both machines after merging each checkpoint.
+**Gotchas:** hooks-band test times swing from about 0.3 s to 2–3 s under machine load, unchanged tests included.
 
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s; the phase report lists each case with its test name. If an engine fix landed, the showrunner installs it after the merge.
-
-### Phase 3 — Answer an overlap for one named phase  · status: todo
+### Phase 3 — Answer an overlap for one named phase  · status: done
 
 **Depends on:** Phase 2
 
@@ -134,18 +114,37 @@ Read 2026-10-15 at 6d01f704.
 **Spec:**
 1. `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"` records the answer and the claimed paths on reservation `<id>`. `--reservation` means what it means on `check`: the id must be an active reservation of the acting run and worktree, or the claim is refused as on `check`. The harness-session mapping publishes onto `<id>` the way an explicit `check --reservation` does.
 2. Without `--reservation`, `claim` behaves as today.
-3. Tests, each under 1 s: with two active phase reservations and the director's session mapped to one, a `claim --reservation <other> … --after <holder>` attaches the answer and paths to `<other>` only; an unknown or inactive id is refused and records nothing; `claim` without the flag is unchanged.
+3. Selection is a domain type, `ClaimReservationSelection::{NewReservation, Existing(ReservationId)}`, never a bare `Option<ReservationId>` on `ClaimRequest`. With `Existing`, the selected reservation keeps its own recorded target, phase-start head, purpose and plan/phase; creation-only arguments (`--target`, `--head`, `--why`, `--plan/--phase`) are refused alongside `--reservation`.
+4. A named claim stays inside the named reservation (showrunner, 2026-10-15):
+   - `--defer` with `--reservation` stays answer-only: it reserves no paths and records the deferral against the named reservation, not the run's oldest active one.
+   - When the named reservation already holds every requested path, the answer is still recorded as an answer-only transaction, survives replay, and the session mapping points at the named reservation.
+   - `--replace` with `--reservation` retires only the named reservation's ordering edges, never a sibling's.
+5. Phase 2's outcomes carry over: a named claim reports sibling-held paths in `acquisition.already_held` the way check does, and widening an existing reservation at `maximum_reservations` succeeds because it uses no new slot.
+6. Tests, each under 1 s, with two active phase reservations and the director mapped to one:
+   - each of `--before`, `--after`, `--defer` and `--override` with `--reservation <other>` attaches the answer and any paths to `<other>` only;
+   - an unknown, inactive, foreign-run or foreign-worktree id is refused and records nothing;
+   - the all-held answer-only case survives replay;
+   - `--replace` leaves R15's edge alone when R16 is named;
+   - the selected reservation's target and baseline are preserved;
+   - a mixed sibling-held and free request is reported, and widening succeeds at the limit;
+   - `claim` without the flag is unchanged.
 
 **Files:**
 - `crates/cargo-berth/src/cli.rs` — `ClaimArguments` (~526) gains `--reservation`
 - `crates/cargo-berth/src/verb/claim.rs` — claim reservation selection
-- `crates/cargo-berth/tests/parallel_phases.rs` — the Spec 3 tests
-- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/src/output.rs` — claim output for the named selection, if it changes
+- `crates/cargo-berth/tests/parallel_phases.rs` — the Spec 6 tests
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — `cli.rs`, `verb/claim.rs`, the as-built docs and the CHANGELOG.
-- `test` — the Spec 3 tests in `crates/cargo-berth/tests/parallel_phases.rs`.
+- `impl` — `cli.rs`, `verb/claim.rs`, `output.rs`, the as-built docs, the generated contract and the CHANGELOG.
+- `test` — the Spec 6 tests in `crates/cargo-berth/tests/parallel_phases.rs` (test owns this file alone).
 
-**Constraints from prior phases:** maintained by phase review after Phase 2. The showrunner-fixer builds the director's side against this exact flag name.
+**Constraints from prior phases:**
+- Today an ordinary `claim` creates a new reservation, and an answer-only claim binds the oldest active reservation (`validate_answer` in `verb/claim.rs`). Explicit selection on `check` goes through `from_explicit_selection`; reuse it rather than writing a second validator. Claim transactions validate in `validate_claim_transaction`; `replaced_orderings` currently searches every nonterminal reservation of the run and worktree.
+- `widen_first_touch_reservation` returns `already_held` without appending, and `JournalOperation::Widen` requires nonempty additions, so the all-held answer needs its own answer-only transaction path.
+- Phase 2 added `acquisition.already_held: Vec<SiblingHeldScopes>` (`sibling_held_scopes` in `verb/claim.rs`) and the typed check `reservation_limit_reached` (exit 1, `CheckPayload::ReservationLimitReached`).
+- `parallel_phases.rs` already has the helpers `initialized_repository`, `run_berth_with_session`, `open_phase`, `phase_board`, `session_mappings`, `journal_events`, `SESSION_MAPPING_PATH` and `CONFIGURATION_PATH`.
+- The showrunner-fixer builds the director's side against this exact flag name.
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The showrunner merges, then installs on both machines.

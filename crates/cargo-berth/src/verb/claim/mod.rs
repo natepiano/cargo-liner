@@ -63,6 +63,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
@@ -97,10 +98,14 @@ use crate::session::FirstTouchSessionReservationMapping;
 use crate::session::SessionIdentityMappingPublication;
 use crate::session::SessionReservationIdentity;
 
+mod named;
+
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
 /// A parsed claim whose provenance carries domain types rather than CLI options.
 pub(crate) struct ClaimRequest {
+    /// Open a reservation or continue explicitly named work.
+    pub(crate) reservation_selection:      ClaimReservationSelection,
     /// An explicit local branch to integrate this reservation into.
     pub(crate) target:                     Option<String>,
     /// Lexically valid scopes before repository-case antichain reduction.
@@ -115,6 +120,15 @@ pub(crate) struct ClaimRequest {
     pub(crate) phase_start:                PhaseStartSelection,
     /// The semantic overlap answer and its reason.
     pub(crate) overlap_authorization:      OverlapAuthorizationRequest,
+}
+
+/// The reservation receiving a claim's scopes and overlap answer.
+#[derive(Clone, Copy)]
+pub(crate) enum ClaimReservationSelection {
+    /// Open a separate reservation, preserving ordinary claim behavior.
+    NewReservation,
+    /// Continue one active reservation of the acting run and worktree.
+    Existing(ReservationId),
 }
 
 /// How a claim chooses the coordination run that will own its reservation.
@@ -245,7 +259,12 @@ pub(crate) fn execute(
             },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
+    let reservation_selection = claim_request.reservation_selection;
     let output_envelope = match acquire(claim_request, recovery_command_line) {
+        Ok(Enrollment::Enrolled(ClaimExecution::Selected {
+            acquisition,
+            scopes,
+        })) => OutputEnvelope::selected_claim(acquisition, scopes),
         Ok(Enrollment::Enrolled(ClaimExecution::Claimed {
             reservation_id,
             target,
@@ -287,8 +306,14 @@ pub(crate) fn execute(
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
                 &format!(
-                    "--replace found no live ordering edge between {} and an earlier reservation of this run in this worktree that points the other way, so it has nothing to replace. Claim the same paths again without --replace.",
-                    named_reservations(&blockers)
+                    "--replace found no live ordering edge between {} and {} that points the other way, so it has nothing to replace. Claim the same paths again without --replace.",
+                    named_reservations(&blockers),
+                    match reservation_selection {
+                        ClaimReservationSelection::NewReservation =>
+                            "an earlier reservation of this run in this worktree".to_owned(),
+                        ClaimReservationSelection::Existing(id) =>
+                            format!("selected reservation {id}"),
+                    }
                 ),
             )
         },
@@ -322,6 +347,10 @@ fn named_reservations(reservation_ids: &[ReservationId]) -> String {
 }
 
 enum ClaimExecution {
+    Selected {
+        acquisition: ReservationAcquisition,
+        scopes:      ReservationScopeSet,
+    },
     Claimed {
         reservation_id:              ReservationId,
         target:                      TargetView,
@@ -350,26 +379,28 @@ enum ClaimExecution {
     OrderingEdgeLimitReached(u32),
 }
 
-/// How one successful first-touch transaction established reservation coverage.
+/// How one successful transaction established coverage or recorded a named answer.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(inline)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum FirstTouchReservationAcquisitionKind {
+pub(crate) enum ReservationAcquisitionKind {
     /// The transaction appended a new first-touch reservation.
     Appended,
     /// The transaction enlarged the acting run's existing first-touch reservation.
     Widened,
     /// The acting run's reservations in this worktree already covered every claimable path.
     AlreadyHeld,
+    /// An explicit claim recorded an answer without acquiring paths.
+    Answered,
 }
 
-/// The complete durable identity and publication result of first-touch protection.
+/// The durable identity and publication result of reservation acquisition or a named answer.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(transform = crate::output::closed_value_serializes_as_object)]
-pub(crate) struct FirstTouchReservationAcquisition {
+#[schemars(rename = "FirstTouchReservationAcquisition", transform = crate::output::closed_value_serializes_as_object)]
+pub(crate) struct ReservationAcquisition {
     /// How the transaction established coverage.
-    pub(crate) kind:                        FirstTouchReservationAcquisitionKind,
-    /// The reservation that protects the paths.
+    pub(crate) kind:                        ReservationAcquisitionKind,
+    /// The reservation selected by the transaction.
     pub(crate) reservation_id:              ReservationId,
     /// The target retained by the acquired reservation.
     target:                                 Box<TargetView>,
@@ -449,7 +480,7 @@ pub(crate) enum FirstTouchClaimExecution {
     /// The acting run holds a first-touch reservation over every returned scope.
     Acquired {
         /// The durable reservation identity, baseline, and publication results.
-        acquisition: FirstTouchReservationAcquisition,
+        acquisition: ReservationAcquisition,
         /// The exact requested file scopes now protected by the reservation.
         scopes:      ReservationScopeSet,
         /// Any foreign-held paths excluded from a post-write acquisition.
@@ -566,8 +597,8 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
     }
 }
 
-struct CommittedFirstTouchAcquisition {
-    kind:             FirstTouchReservationAcquisitionKind,
+struct CommittedReservationAcquisition {
+    kind:             ReservationAcquisitionKind,
     reservation_id:   ReservationId,
     target:           Box<TargetView>,
     phase_start_head: ProtectedPhaseStartHead,
@@ -607,7 +638,7 @@ enum FirstTouchClaimRejection {
         conflicts: Vec<ReservationConflict>,
     },
     AlreadyHeld {
-        acquisition:     Box<CommittedFirstTouchAcquisition>,
+        acquisition:     Box<CommittedReservationAcquisition>,
         session_mapping: AlreadyHeldSessionMapping,
     },
     Replay(ReservationReplayError),
@@ -632,7 +663,22 @@ fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+    match claim_request.reservation_selection {
+        ClaimReservationSelection::Existing(reservation_id) => {
+            named::acquire(claim_request, reservation_id, recovery_command_line)
+        },
+        ClaimReservationSelection::NewReservation => {
+            acquire_new(claim_request, recovery_command_line)
+        },
+    }
+}
+
+fn acquire_new(
+    claim_request: ClaimRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
+        reservation_selection: _,
         target: target_argument,
         declared_scopes,
         source,
@@ -951,7 +997,10 @@ fn record_first_touch_default_answer(
 }
 
 fn first_touch_execution_from_outcome(
-    outcome: LedgerCommittedActionOutcome<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>,
+    outcome: LedgerCommittedActionOutcome<
+        FirstTouchClaimRejection,
+        CommittedReservationAcquisition,
+    >,
     coordination_run_id: CoordinationRunId,
     reservation_selection: CheckReservationSelection,
     worktree_context: &WorktreeContext,
@@ -1052,12 +1101,12 @@ impl CheckReservationSelection {
 }
 
 fn first_touch_acquired_execution(
-    committed: CommittedFirstTouchAcquisition,
+    committed: CommittedReservationAcquisition,
     coordination_run_id: CoordinationRunId,
     marker_publication: CoordinationRunMarkerPublication,
     session_mapping_publication: SessionIdentityMappingPublication,
 ) -> FirstTouchClaimExecution {
-    let CommittedFirstTouchAcquisition {
+    let CommittedReservationAcquisition {
         kind,
         reservation_id,
         target,
@@ -1067,7 +1116,7 @@ fn first_touch_acquired_execution(
         already_held,
     } = committed;
     FirstTouchClaimExecution::Acquired {
-        acquisition: FirstTouchReservationAcquisition {
+        acquisition: ReservationAcquisition {
             kind,
             reservation_id,
             target,
@@ -1136,37 +1185,48 @@ fn claim_execution_from_outcome(
                 session_mapping_publication,
             })
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
-            Ok(ClaimExecution::Blocked {
-                conflicts,
-                approver,
-            })
+        LedgerTransactionOutcome::Rejected(rejection) => {
+            claim_rejection_execution(rejection, approver)
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blockers)) => {
+    }
+}
+
+fn claim_rejection_execution(
+    rejection: ClaimRejection,
+    approver: Option<OverlapApprover>,
+) -> Result<ClaimExecution, ClaimError> {
+    match rejection {
+        ClaimRejection::IneligibleExplicitReservation(id) => {
+            Err(ClaimError::IneligibleExplicitReservation(id))
+        },
+        ClaimRejection::Conflict(conflicts) => Ok(ClaimExecution::Blocked {
+            conflicts,
+            approver,
+        }),
+        ClaimRejection::AnsweredWithoutOverlap(blockers) => {
             Ok(ClaimExecution::AnsweredWithoutOverlap(blockers))
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::ContradictsLiveOrdering(
-            contradicted,
-        )) => Ok(ClaimExecution::ContradictsLiveOrdering(contradicted)),
-        LedgerTransactionOutcome::Rejected(ClaimRejection::NothingToReplace(blockers)) => {
+        ClaimRejection::ContradictsLiveOrdering(contradicted) => {
+            Ok(ClaimExecution::ContradictsLiveOrdering(contradicted))
+        },
+        ClaimRejection::NothingToReplace(blockers) => {
             Ok(ClaimExecution::NothingToReplace(blockers))
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
-            Err(ClaimError::ReservationReplay(error))
+        ClaimRejection::Replay(error) => Err(ClaimError::ReservationReplay(error)),
+        ClaimRejection::EdgeReplay(error) => Err(ClaimError::EdgeReplay(error)),
+        ClaimRejection::DuplicateOrdering { before, after } => {
+            Err(ClaimError::DuplicateOrdering { before, after })
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::EdgeReplay(error)) => {
-            Err(ClaimError::EdgeReplay(error))
-        },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::CoordinationIdentity(rejection)) => {
+        ClaimRejection::CoordinationIdentity(rejection) => {
             Err(ClaimError::CoordinationIdentity(rejection))
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::InvalidCanonicalWorktreeRoot) => {
+        ClaimRejection::InvalidCanonicalWorktreeRoot => {
             Err(ClaimError::InvalidCanonicalWorktreeRoot)
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::ReservationLimitReached(maximum)) => {
+        ClaimRejection::ReservationLimitReached(maximum) => {
             Ok(ClaimExecution::ReservationLimitReached(maximum))
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::OrderingEdgeLimitReached(maximum)) => {
+        ClaimRejection::OrderingEdgeLimitReached(maximum) => {
             Ok(ClaimExecution::OrderingEdgeLimitReached(maximum))
         },
     }
@@ -1256,6 +1316,7 @@ fn validate_claim_transaction(
                 ordering_graph: &ordering_graph,
                 reservations: &reservations,
                 answering_worktree,
+                reservation_selection: ClaimReservationSelection::NewReservation,
             },
             maximum_ordering_edges,
         ),
@@ -1345,18 +1406,10 @@ fn validate_answer(
     answering_worktree: AnsweringWorktree,
     scopes: ReservationScopeSet,
 ) -> TransactionValidation<ClaimRejection> {
-    let DeferAnswerRequest { blockers, reason } = request;
-    if conflicts.is_empty() {
-        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(blockers));
-    }
-    let named_blockers = blockers.into_iter().collect::<HashSet<_>>();
-    let holders = conflicts
-        .iter()
-        .map(|conflict| conflict.reservation_id)
-        .collect::<HashSet<_>>();
-    if named_blockers != holders {
-        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
-    }
+    let authorizations = match bind_answer_authorizations(answer_kind, request, conflicts) {
+        Ok(authorizations) => authorizations,
+        Err(rejection) => return TransactionValidation::Reject(rejection),
+    };
     let AnsweringWorktree {
         coordination_run_id,
         worktree_id,
@@ -1368,7 +1421,32 @@ fn validate_answer(
                 .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
         })
         .map(Reservation::id);
-    let authorizations = conflicts
+    TransactionValidation::Append(Box::new(JournalOperation::Answer {
+        reservation_id,
+        scopes,
+        authorizations,
+    }))
+}
+
+/// Validate the named holders and bind answer-only authorizations to the locked overlaps.
+fn bind_answer_authorizations(
+    answer_kind: AnswerKind,
+    request: DeferAnswerRequest,
+    conflicts: Vec<ReservationConflict>,
+) -> Result<Vec<ConflictAuthorization>, ClaimRejection> {
+    let DeferAnswerRequest { blockers, reason } = request;
+    if conflicts.is_empty() {
+        return Err(ClaimRejection::AnsweredWithoutOverlap(blockers));
+    }
+    let named_blockers = blockers.into_iter().collect::<HashSet<_>>();
+    let holders = conflicts
+        .iter()
+        .map(|conflict| conflict.reservation_id)
+        .collect::<HashSet<_>>();
+    if named_blockers != holders {
+        return Err(ClaimRejection::Conflict(conflicts));
+    }
+    Ok(conflicts
         .iter()
         .map(|conflict| {
             let overlaps = AuthorizedOverlap::from(conflict).into();
@@ -1387,12 +1465,7 @@ fn validate_answer(
                 },
             }
         })
-        .collect();
-    TransactionValidation::Append(Box::new(JournalOperation::Answer {
-        reservation_id,
-        scopes,
-        authorizations,
-    }))
+        .collect())
 }
 
 /// The holders a recorded [`JournalOperation::Answer`] named, by deferral or override.
@@ -1417,7 +1490,7 @@ fn validate_first_touch_transaction(
     state: &ReplayedLedgerState<'_>,
     prepared_claim: PreparedClaim,
     context: FirstTouchValidationContext,
-) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition> {
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     let FirstTouchValidationContext {
         run_validation,
         worktree_context,
@@ -1520,10 +1593,10 @@ fn append_first_touch_claim(
     protected_scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
     already_held: Vec<SiblingHeldScopes>,
-) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition> {
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     prepared_claim.scopes = protected_scopes.clone();
-    let acquisition = CommittedFirstTouchAcquisition {
-        kind: FirstTouchReservationAcquisitionKind::Appended,
+    let acquisition = CommittedReservationAcquisition {
+        kind: ReservationAcquisitionKind::Appended,
         reservation_id: prepared_claim.reservation_id,
         target: Box::new(TargetView::from_claim(
             &prepared_claim.target,
@@ -1627,7 +1700,7 @@ enum FirstTouchReservationReuse {
         conflicts:    FirstTouchConflictOutcome,
         already_held: Vec<SiblingHeldScopes>,
     },
-    Complete(CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>),
+    Complete(CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition>),
 }
 
 enum FirstTouchProtectedScopeOwnership<'reservation> {
@@ -1643,7 +1716,13 @@ fn append_unheld_first_touch_scopes(
     conflicts: FirstTouchConflictOutcome,
     context: FirstTouchReservationReuseContext,
 ) -> FirstTouchReservationReuse {
-    let already_held = sibling_held_scopes(reservations, &protected_scopes, context);
+    let already_held = sibling_held_scopes(
+        reservations,
+        &protected_scopes,
+        context.coordination_run_id,
+        context.worktree_id,
+        context.path_case,
+    );
     // Anchor the shared partition rule on the first requested path's holder when all
     // paths are covered. No reservation is selected for the new phase itself yet.
     let first_holder = protected_scopes.as_slice().iter().find_map(|candidate| {
@@ -1689,15 +1768,14 @@ fn append_unheld_first_touch_scopes(
 fn sibling_held_scopes(
     reservations: &RetainedReservationSet,
     protected_scopes: &ReservationScopeSet,
-    context: FirstTouchReservationReuseContext,
+    coordination_run_id: CoordinationRunId,
+    worktree_id: WorktreeId,
+    path_case: PathCase,
 ) -> Vec<SiblingHeldScopes> {
     reservations
         .iter()
         .filter(|sibling| {
-            sibling.is_active_for_coordination_run_and_worktree(
-                context.coordination_run_id,
-                context.worktree_id,
-            )
+            sibling.is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
         })
         .filter_map(|sibling| {
             let held = protected_scopes
@@ -1708,7 +1786,7 @@ fn sibling_held_scopes(
                         .scopes()
                         .as_slice()
                         .iter()
-                        .any(|scope| scope.contains(candidate, context.path_case))
+                        .any(|scope| scope.contains(candidate, path_case))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -1824,8 +1902,8 @@ fn widen_first_touch_reservation(
                 authorization,
                 edit_blocking_status: reservation.edit_blocking_status(),
             }),
-            action:    CommittedFirstTouchAcquisition {
-                kind: FirstTouchReservationAcquisitionKind::Widened,
+            action:    CommittedReservationAcquisition {
+                kind: ReservationAcquisitionKind::Widened,
                 reservation_id: reservation.id(),
                 target: Box::new(TargetView::from_recorded(
                     reservation.target(),
@@ -1899,8 +1977,8 @@ fn already_held_first_touch(
 ) -> FirstTouchReservationReuse {
     FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
         FirstTouchClaimRejection::AlreadyHeld {
-            acquisition: Box::new(CommittedFirstTouchAcquisition {
-                kind: FirstTouchReservationAcquisitionKind::AlreadyHeld,
+            acquisition: Box::new(CommittedReservationAcquisition {
+                kind: ReservationAcquisitionKind::AlreadyHeld,
                 reservation_id: reservation.id(),
                 target: Box::new(TargetView::from_recorded(
                     reservation.target(),
@@ -2032,6 +2110,21 @@ fn validate_authorization(
     ordering_context: &OrderingContext<'_>,
     maximum_ordering_edges: u32,
 ) -> TransactionValidation<ClaimRejection> {
+    match bind_claim_authorization(request, conflicts, ordering_context, maximum_ordering_edges) {
+        Ok(authorization) => {
+            TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
+        },
+        Err(rejection) => TransactionValidation::Reject(rejection),
+    }
+}
+
+/// Bind an overlap answer independently of whether it appends or widens a reservation.
+fn bind_claim_authorization(
+    request: PermissiveOverlapAuthorizationRequest,
+    conflicts: Vec<ReservationConflict>,
+    ordering_context: &OrderingContext<'_>,
+    maximum_ordering_edges: u32,
+) -> Result<ConflictAuthorization, ClaimRejection> {
     let PermissiveOverlapAuthorizationRequest { answer, reason } = request;
     let Ok(overlaps) = AuthorizedOverlapSet::try_from(
         conflicts
@@ -2039,9 +2132,7 @@ fn validate_authorization(
             .map(AuthorizedOverlap::from)
             .collect::<Vec<_>>(),
     ) else {
-        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
-            answer.blockers(),
-        ));
+        return Err(ClaimRejection::AnsweredWithoutOverlap(answer.blockers()));
     };
     let named_blockers = answer.blockers().into_iter().collect::<HashSet<_>>();
     let holders = conflicts
@@ -2049,12 +2140,25 @@ fn validate_authorization(
         .map(|conflict| conflict.reservation_id)
         .collect::<HashSet<_>>();
     if named_blockers != holders {
-        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
+        return Err(ClaimRejection::Conflict(conflicts));
     }
-    let replaced = match replaced_orderings(&answer, ordering_context) {
-        Ok(replaced) => replaced,
-        Err(rejection) => return TransactionValidation::Reject(rejection),
-    };
+    if let (
+        ClaimReservationSelection::Existing(requester),
+        PermissiveOverlapAnswer::Sequence { blockers, .. },
+    ) = (ordering_context.reservation_selection, &answer)
+        && let Some(blocker) = blockers.iter().find(|blocker| {
+            ordering_context
+                .ordering_graph
+                .contains_sequence(requester, **blocker)
+        })
+    {
+        let (before, after) = match blocker.direction {
+            OrderingDirection::RequesterBeforeHolder => (requester, blocker.blocker),
+            OrderingDirection::HolderBeforeRequester => (blocker.blocker, requester),
+        };
+        return Err(ClaimRejection::DuplicateOrdering { before, after });
+    }
+    let replaced = replaced_orderings(&answer, ordering_context)?;
     if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
         && additions_exceed_limit(
             ordering_context
@@ -2065,19 +2169,21 @@ fn validate_authorization(
             maximum_ordering_edges,
         )
     {
-        return TransactionValidation::Reject(ClaimRejection::OrderingEdgeLimitReached(
+        return Err(ClaimRejection::OrderingEdgeLimitReached(
             maximum_ordering_edges,
         ));
     }
-    let authorization = ConflictAuthorization::answered(&answer, overlaps, reason, replaced);
-    TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
+    Ok(ConflictAuthorization::answered(
+        &answer, overlaps, reason, replaced,
+    ))
 }
 
 /// The locked facts a sequence answer is checked against for contradicted live edges.
 struct OrderingContext<'state> {
-    ordering_graph:     &'state OrderingGraph,
-    reservations:       &'state RetainedReservationSet,
-    answering_worktree: AnsweringWorktree,
+    reservation_selection: ClaimReservationSelection,
+    ordering_graph:        &'state OrderingGraph,
+    reservations:          &'state RetainedReservationSet,
+    answering_worktree:    AnsweringWorktree,
 }
 
 /// Return the live edges a sequence answer retires, or the rejection that stops it.
@@ -2106,6 +2212,10 @@ fn replaced_orderings(
     let requesters = ordering_context
         .reservations
         .iter()
+        .filter(|reservation| {
+            matches!(ordering_context.reservation_selection, ClaimReservationSelection::NewReservation)
+                || matches!(ordering_context.reservation_selection, ClaimReservationSelection::Existing(id) if reservation.id() == id)
+        })
         .filter(|reservation| {
             !reservation.is_terminal()
                 && reservation.actor().run == coordination_run_id
@@ -2549,6 +2659,7 @@ fn read_packed_reference(
 }
 
 enum ClaimRejection {
+    IneligibleExplicitReservation(ReservationId),
     Conflict(Vec<ReservationConflict>),
     /// An overlap answer named these blockers while nothing overlapped the requested scopes.
     AnsweredWithoutOverlap(Vec<ReservationId>),
@@ -2562,6 +2673,10 @@ enum ClaimRejection {
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
     EdgeReplay(EdgeReplayError),
+    DuplicateOrdering {
+        before: ReservationId,
+        after:  ReservationId,
+    },
 }
 
 #[derive(Debug)]
@@ -2576,6 +2691,10 @@ pub(crate) enum ClaimError {
     Transaction(LedgerTransactionError),
     ReservationReplay(ReservationReplayError),
     EdgeReplay(EdgeReplayError),
+    DuplicateOrdering {
+        before: ReservationId,
+        after:  ReservationId,
+    },
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidGitObjectId(InvalidGitObjectId),
     InvalidHeadReference,
@@ -2609,6 +2728,12 @@ impl Display for ClaimError {
                 write!(formatter, "reservation replay failed: {error}")
             },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
+            Self::DuplicateOrdering { before, after } => {
+                write!(
+                    formatter,
+                    "Ordering edge {before} before {after} already exists."
+                )
+            },
             Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
             Self::InvalidHeadReference => {
@@ -2666,6 +2791,9 @@ impl ClaimError {
             },
             Self::InvalidRepositoryTrunk(error) => {
                 OutputEnvelope::invalid_input(command_verb, &error)
+            },
+            Self::DuplicateOrdering { before, after } => {
+                OutputEnvelope::claim_duplicate_ordering(before, after)
             },
             Self::Transaction(error) => match error {
                 LedgerTransactionError::CorrectableInput(error) => {
