@@ -125,9 +125,7 @@ impl Ticker {
     fn ages_moved(&mut self, app: &App, unix_now: u64) -> bool {
         let shown = app
             .census
-            .machines(&app.loaded_config.config.machines.remote)
-            .iter()
-            .any(|machine| !machine.state.rows().is_empty());
+            .lists_an_agent(&app.loaded_config.config.machines.remote);
         if !shown || self.shown_second == Some(unix_now) {
             return false;
         }
@@ -213,6 +211,34 @@ mod tests {
         dispatch_key(&mut app, key(KeyCode::Char('+')));
 
         assert_eq!(ticker.poll(&mut app, Instant::now()), Repaint::Needed);
+    }
+
+    /// Carriers alone do not animate ages locally or on a configured remote.
+    #[test]
+    fn transport_hosts_do_not_request_age_repaints() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let (_sender, receiver) = mpsc::channel();
+        let (_appearance_sender, appearance_receiver) = mpsc::channel();
+        let mut ticker = Ticker::new(receiver, appearance_receiver);
+        let (manager, worker) = census::mesh_worker_fixture();
+        app.census.apply(CensusUpdate::Local(
+            worker.rows().to_vec(),
+            HierarchyEdges::default(),
+        ));
+        app.loaded_config.config.machines.remote = vec!["mac".to_string()];
+        app.census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: worker,
+        });
+        assert!(!ticker.ages_moved(&app, 100));
+        assert!(!ticker.ages_moved(&app, 101));
+        app.census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: manager,
+        });
+        assert!(ticker.ages_moved(&app, 101));
+        assert!(!ticker.ages_moved(&app, 101));
+        assert!(ticker.ages_moved(&app, 102));
     }
 
     /// While a row is shown each new unix second repaints so the ages

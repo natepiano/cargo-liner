@@ -4,7 +4,7 @@
 //! they all run, each child indented under the one that started it and
 //! each session's own children nested under the row that names it.
 //!
-//! [`cell_order`] lays the cells out across the machines, and
+//! [`cell_order_placed`] lays the cells out across the machines, and
 //! [`height`] and [`draw`] fill one in.
 //!
 //! A cell draws its full view only where it lies flat at the cell's
@@ -19,8 +19,10 @@
 //! asks the grid for the rows of the view the cell draws at its width.
 //! Every agent's name is drawn in its own hue wherever it shows.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::iter;
+use std::ops::Deref;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -41,10 +43,12 @@ use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
+use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
-use crate::census::Machine;
+use crate::census::CodexThreadId;
+use crate::census::RowIdentity;
 use crate::census::Timer;
 use crate::constants::AGENT_HEADER_GAP_HEIGHT;
 use crate::constants::CHILD_AGE_COLUMN;
@@ -94,18 +98,24 @@ pub(crate) struct AgentEntry<'a> {
     /// The sessions the agent opened, each followed by the sessions it
     /// opened in turn: the tree the cell draws, top to bottom.
     sessions:       Vec<SessionEntry<'a>>,
+    /// Running work after session markers and thread ownership are reconciled.
+    children:       Vec<CellChild<'a>>,
 }
 
 impl AgentEntry<'_> {
     /// The hue of the agent with process `pid` in this cell: the cell's
     /// own agent, or one of its sessions.
-    fn hue_of(&self, pid: u32) -> Option<RainbowHue> {
-        if self.row.pid == pid {
+    fn hue_of(&self, machine: &str, pid: u32) -> Option<RainbowHue> {
+        if self.machine == machine && self.row.pid == pid {
             return Some(self.hue);
         }
         self.sessions
             .iter()
-            .find(|session| session.row.pid == pid)
+            .find(|session| {
+                session.machine == machine
+                    && session.row.pid == pid
+                    && matches!(session.subject, SessionSubject::Agent)
+            })
             .map(|session| session.hue)
     }
 }
@@ -113,20 +123,81 @@ impl AgentEntry<'_> {
 /// One session in a cell's tree.
 #[derive(Clone, Debug)]
 struct SessionEntry<'a> {
-    /// The session.
-    row:   &'a AgentRow,
+    /// The machine this agent or thread runs on.
+    machine:  &'a str,
+    /// Where the member runs relative to the cell's heading.
+    location: SessionLocation,
+    /// A session row or one Codex thread held by its app server.
+    subject:  SessionSubject<'a>,
+    /// The session's row, or the owning row for a Codex thread.
+    row:      &'a AgentRow,
     /// The hue its name is drawn in, in the tree and in the table.
-    hue:   RainbowHue,
+    hue:      RainbowHue,
     /// For each level between the cell's agent and the session's
     /// launcher, top down, whether the tree's line carries on down past
     /// the session there: whether that level's session has a later one
     /// beside it.
-    rails: Vec<bool>,
+    rails:    Vec<bool>,
     /// Whether the session is the last its launcher opened.
-    last:  bool,
+    last:     bool,
+}
+
+/// Where a tree member runs relative to the cell's root.
+#[derive(Clone, Copy, Debug)]
+enum SessionLocation {
+    /// The cell heading already identifies the member's machine.
+    SameMachine,
+    /// The tree line must name the member's machine.
+    AnotherMachine,
+}
+
+/// What a line of the placement tree represents.
+#[derive(Clone, Copy, Debug)]
+enum SessionSubject<'a> {
+    /// A listed agent with its own running work.
+    Agent,
+    /// One thread, displayed independently of its app server's other threads.
+    Thread(&'a ChildRow),
 }
 
 impl SessionEntry<'_> {
+    /// The visible name, with a machine for a member on another host.
+    fn name(&self) -> String {
+        let name = match self.subject {
+            SessionSubject::Agent => &self.row.name,
+            SessionSubject::Thread(thread) => &thread.name,
+        };
+        if matches!(self.location, SessionLocation::AnotherMachine) {
+            format!("{name}{HEADING_SEPARATOR}{}", self.machine)
+        } else {
+            name.clone()
+        }
+    }
+
+    /// A thread's own creation time rather than its app server's.
+    const fn started(&self) -> u64 {
+        match self.subject {
+            SessionSubject::Agent => self.row.started,
+            SessionSubject::Thread(thread) => thread.started,
+        }
+    }
+
+    /// Sessions report their status; threads retain their program and requested tier.
+    fn status(&self) -> Cow<'_, str> {
+        match self.subject {
+            SessionSubject::Agent => Cow::Borrowed(summary::status_text(self.row)),
+            SessionSubject::Thread(thread) => thread.runs_label(),
+        }
+    }
+
+    /// The status color appropriate to this line.
+    fn status_role(&self) -> Role {
+        match self.subject {
+            SessionSubject::Agent => summary::status_role(self.row),
+            SessionSubject::Thread(_) => Role::Codex,
+        }
+    }
+
     /// The glyphs before the session's name: the lines carried down from
     /// the levels above, then its own branch off its launcher's line.
     fn lead(&self) -> String {
@@ -147,104 +218,114 @@ impl SessionEntry<'_> {
 /// at it: its line carried down, or blank.
 const fn rail_glyphs(rail: bool) -> &'static str { if rail { TREE_RAIL } else { TREE_SPACE } }
 
-/// Every cell across `machines`, in the order the grid shows them:
-/// machine by machine, one for each top-level agent, holding the
-/// sessions it opened, depth first and oldest first. The agents that
-/// opened sessions come first, then the rest, each oldest first. A
-/// session whose launcher is not listed stands as a top-level agent.
-/// Each agent takes the next hue of the rainbow in that order, a
-/// session as much as the agent titling its cell.
-pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
+/// Cells from the same placement the summary uses.
+pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<AgentEntry<'a>> {
     let mut cells = Vec::new();
     let mut agents = 0;
-    for machine in machines {
-        let rows = machine.state.rows();
-        let listed: HashSet<u32> = rows.iter().map(|row| row.pid).collect();
-        let mut placed = HashSet::new();
-        let (groups, lone): (Vec<&AgentRow>, Vec<&AgentRow>) = rows
-            .iter()
-            .filter(|row| {
-                row.launched_by
-                    .is_none_or(|launcher| launcher == row.pid || !listed.contains(&launcher))
-            })
-            .partition(|row| {
-                rows.iter()
-                    .any(|other| other.pid != row.pid && other.launched_by == Some(row.pid))
-            });
-        // Rows that only name one another as launcher reach no root, so
-        // the first of them not yet placed stands as one rather than
-        // going without a cell.
-        for row in groups.into_iter().chain(lone).chain(rows) {
-            if !placed.insert(row.pid) {
-                continue;
-            }
-            let hue = RainbowHue::of_agent(agents);
-            agents += 1;
-            let mut sessions = Vec::new();
-            let mut placing = Placing {
-                rows,
-                placed: &mut placed,
-                agents: &mut agents,
-                sessions: &mut sessions,
-            };
-            placing.sessions_of(row.pid, &mut Vec::new());
-            let launcher = row.launched_by.and_then(|launcher| {
-                rows.iter()
-                    .find(|other| other.pid == launcher)
-                    .map(|other| other.name.as_str())
-            });
-            cells.push(AgentEntry {
-                id: AgentCell {
-                    machine:         machine.name.to_string(),
-                    pid:             row.pid,
-                    process_started: row.process_started,
-                },
-                row,
-                launcher,
-                machine: machine.name,
-                hue,
-                sessions,
-            });
-        }
+    for root in placement.roots() {
+        let machine = root.identity.machine;
+        let hue = RainbowHue::of_agent(agents);
+        agents += 1;
+        let mut sessions = Vec::new();
+        sessions_of(
+            placement,
+            root.identity,
+            machine,
+            &mut Vec::new(),
+            &mut agents,
+            hue,
+            &mut sessions,
+        );
+        let launcher = root.row.launched_by.and_then(|pid| {
+            placement
+                .rows
+                .iter()
+                .find(|row| row.identity.machine == machine && row.identity.pid == pid)
+                .map(|row| row.row.name.as_str())
+        });
+        let children = placed_children(placement, root.identity);
+        cells.push(AgentEntry {
+            id: AgentCell {
+                machine:         machine.to_string(),
+                pid:             root.row.pid,
+                process_started: root.row.process_started,
+            },
+            row: root.row,
+            launcher,
+            machine,
+            hue,
+            sessions,
+            children,
+        });
     }
     cells
 }
 
-/// Where [`cell_order`] stands while it gathers one cell's sessions.
-struct Placing<'a, 'p> {
-    /// The machine's rows.
-    rows:     &'a [AgentRow],
-    /// The rows given a place, in this cell or an earlier one.
-    placed:   &'p mut HashSet<u32>,
-    /// Agents given a hue so far, across every machine.
-    agents:   &'p mut usize,
-    /// The cell's sessions so far.
-    sessions: &'p mut Vec<SessionEntry<'a>>,
-}
-
-impl Placing<'_, '_> {
-    /// Put the sessions `launcher` opened among the rows into the cell,
-    /// each followed by the sessions it opened, skipping any row already
-    /// placed. `rails` says for each level above whether the tree's line
-    /// carries on down past it.
-    fn sessions_of(&mut self, launcher: u32, rails: &mut Vec<bool>) {
-        let rows = self.rows;
-        let opened: Vec<&AgentRow> = rows
-            .iter()
-            .filter(|row| row.launched_by == Some(launcher))
-            .filter(|row| self.placed.insert(row.pid))
-            .collect();
-        for (index, row) in opened.iter().enumerate() {
-            let last = index + 1 == opened.len();
-            self.sessions.push(SessionEntry {
-                row,
-                hue: RainbowHue::of_agent(*self.agents),
-                rails: rails.clone(),
-                last,
-            });
-            *self.agents += 1;
+/// Place siblings oldest first, then recurse depth first through the forest.
+fn sessions_of<'a>(
+    placement: &AgentPlacement<'a>,
+    parent: RowIdentity<'a>,
+    machine: &'a str,
+    rails: &mut Vec<bool>,
+    agents: &mut usize,
+    parent_hue: RainbowHue,
+    sessions: &mut Vec<SessionEntry<'a>>,
+) {
+    let mut opened: Vec<_> = placement
+        .rows
+        .iter()
+        .filter(|row| row.placement.is_child_of(parent))
+        .map(|row| {
+            (
+                row.row.started,
+                row.identity,
+                row.row,
+                SessionSubject::Agent,
+            )
+        })
+        .chain(
+            placement
+                .threads
+                .iter()
+                .filter(|thread| thread.manager == parent)
+                .map(|thread| {
+                    let child = &thread.owner_row.children[thread.child_index];
+                    (
+                        child.started,
+                        thread.owner,
+                        thread.owner_row,
+                        SessionSubject::Thread(child),
+                    )
+                }),
+        )
+        .collect();
+    opened.sort_by_key(|(started, identity, _, _)| (*started, identity.machine, identity.pid));
+    for (index, (_, identity, row, subject)) in opened.iter().enumerate() {
+        let last = index + 1 == opened.len();
+        let hue = match subject {
+            SessionSubject::Agent => {
+                let hue = RainbowHue::of_agent(*agents);
+                *agents += 1;
+                hue
+            },
+            SessionSubject::Thread(_) => parent_hue,
+        };
+        sessions.push(SessionEntry {
+            row,
+            machine: identity.machine,
+            location: if identity.machine == machine {
+                SessionLocation::SameMachine
+            } else {
+                SessionLocation::AnotherMachine
+            },
+            subject: *subject,
+            hue,
+            rails: rails.clone(),
+            last,
+        });
+        if matches!(subject, SessionSubject::Agent) {
             rails.push(!last);
-            self.sessions_of(row.pid, rails);
+            sessions_of(placement, *identity, machine, rails, agents, hue, sessions);
             rails.pop();
         }
     }
@@ -310,7 +391,7 @@ impl FlatColumns {
         }
         Some(Self {
             tree:  tree_columns(&entry.sessions, header_width(width), now)?,
-            table: table_columns(&group_children(entry), children_width(width), now)?,
+            table: table_columns(&entry.children, children_width(width), now)?,
         })
     }
 }
@@ -330,8 +411,8 @@ pub(crate) fn height(entry: &AgentEntry<'_>, width: u16, now: u64) -> usize {
 /// how many lines [`above_tree`] gives, so none are passed.
 fn view_height(entry: &AgentEntry<'_>, width: u16, now: u64, view: CellView) -> usize {
     let above = above_tree(entry, &[], width, now, view).len();
-    let children = group_children(entry);
-    children_top(entry, above) + Children::in_view(&children, view).height(children.len())
+    let children = &entry.children;
+    children_top(entry, above) + Children::in_view(children, view).height(children.len())
 }
 
 /// Rows from the top of `entry`'s cell to what its agent runs, below
@@ -355,8 +436,7 @@ fn children_top(entry: &AgentEntry<'_>, above: usize) -> usize {
 pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> Style {
     cells
         .iter()
-        .filter(|cell| cell.machine == machine)
-        .find_map(|cell| cell.hue_of(pid))
+        .find_map(|cell| cell.hue_of(machine, pid))
         .map_or_else(
             || Style::default().fg(text_default()),
             |hue| Role::Rainbow(hue).style(),
@@ -423,14 +503,14 @@ fn draw_view(
     if area.is_empty() {
         return;
     }
-    let children = group_children(entry);
-    let child_name_style = |child: &ChildRow| {
+    let children = &entry.children;
+    let child_name_style = |child: &CellChild<'_>| {
         child.pid.map_or_else(
             || Style::default().fg(text_default()),
-            |pid| name_style(cells, entry.machine, pid),
+            |pid| name_style(cells, child.machine, pid),
         )
     };
-    match Children::in_view(&children, view) {
+    match Children::in_view(children, view) {
         Children::Nothing => {
             Paragraph::new(Line::from(Span::styled(
                 NOTHING_RUNNING_NOTE,
@@ -472,7 +552,7 @@ fn above_tree(
     view: CellView,
 ) -> Vec<Line<'static>> {
     let row = entry.row;
-    if view == CellView::Compressed && row.is_top_level() {
+    if view == CellView::Compressed && row.launched_by.is_none() {
         return Vec::new();
     }
     let mut lines = vec![header_line(row, entry.machine, now), place_line(row)];
@@ -582,13 +662,13 @@ fn tree_columns(
 fn tree_cells(session: &SessionEntry<'_>, now: u64) -> [String; TREE_COLUMNS] {
     let row = session.row;
     [
-        format!("{}{}", session.lead(), row.name),
-        summary::status_text(row).to_string(),
+        format!("{}{}", session.lead(), session.name()),
+        session.status().to_string(),
         row.branch
             .clone()
             .unwrap_or_else(|| MISSING_VALUE.to_string()),
         row.directory.clone(),
-        age::age_label(now.saturating_sub(row.started)),
+        age::age_label(now.saturating_sub(session.started())),
     ]
 }
 
@@ -615,11 +695,11 @@ fn draw_tree(
                 Row::new([
                     Cell::from(Line::from(vec![
                         Span::styled(session.lead(), text),
-                        Span::styled(row.name.clone(), Role::Rainbow(session.hue).style()),
+                        Span::styled(session.name(), Role::Rainbow(session.hue).style()),
                     ])),
                     Cell::from(Span::styled(
-                        summary::status_text(row).to_string(),
-                        summary::status_role(row).style(),
+                        session.status().to_string(),
+                        session.status_role().style(),
                     )),
                     Cell::from(Span::styled(
                         row.branch
@@ -629,7 +709,7 @@ fn draw_tree(
                     )),
                     Cell::from(Span::styled(row.directory.clone(), text)),
                     Cell::from(Span::styled(
-                        age::age_label(now.saturating_sub(row.started)),
+                        age::age_label(now.saturating_sub(session.started())),
                         text,
                     )),
                 ])
@@ -653,64 +733,129 @@ fn draw_tree(
 /// in its role, as the tree's table spaces its columns, cut by
 /// [`cut_line`] where it would not fit.
 fn compressed_session(session: &SessionEntry<'_>, width: u16) -> Line<'static> {
-    let row = session.row;
     cut_line(
         vec![
             Span::styled(session.lead(), Style::default().fg(text_default())),
-            Span::styled(row.name.clone(), Role::Rainbow(session.hue).style()),
+            Span::styled(session.name(), Role::Rainbow(session.hue).style()),
             gap(),
-            Span::styled(
-                summary::status_text(row).to_string(),
-                summary::status_role(row).style(),
-            ),
+            Span::styled(session.status().to_string(), session.status_role().style()),
         ],
         width,
     )
 }
 
-/// What `entry`'s agent runs, in the order its table draws it, with
-/// each session's own children nested under the row that names the
-/// session, one level below it, as far down as the sessions go.
-fn group_children(entry: &AgentEntry<'_>) -> Vec<ChildRow> {
+/// One line of running work with the machine that owns its process.
+#[derive(Clone, Debug)]
+struct CellChild<'a> {
+    /// Process ids and their hues are meaningful only on this machine.
+    machine: &'a str,
+    /// The reconciled line, at its depth in the tile.
+    row:     ChildRow,
+}
+
+impl Deref for CellChild<'_> {
+    type Target = ChildRow;
+    fn deref(&self) -> &Self::Target { &self.row }
+}
+
+/// Reconcile launch markers with the forest, retaining every member's work once.
+fn placed_children<'a>(
+    placement: &AgentPlacement<'a>,
+    root: RowIdentity<'a>,
+) -> Vec<CellChild<'a>> {
     let mut children = Vec::new();
-    let mut nested = HashSet::from([entry.row.pid]);
-    nest(entry, entry.row, 0, &mut nested, &mut children);
+    let mut nested = HashSet::new();
+    nest(placement, root, 0, &mut nested, &mut children);
     children
 }
 
-/// Put `agent`'s children into `children`, `below` levels deeper than
-/// the agent puts them, each session among `entry`'s followed by its
-/// own unless they are already `nested`.
-fn nest(
-    entry: &AgentEntry<'_>,
-    agent: &AgentRow,
+/// Follow only the forest's session links, adding markers for hierarchy-only members.
+fn nest<'a>(
+    placement: &AgentPlacement<'a>,
+    identity: RowIdentity<'a>,
     below: u8,
-    nested: &mut HashSet<u32>,
-    children: &mut Vec<ChildRow>,
+    nested: &mut HashSet<RowIdentity<'a>>,
+    children: &mut Vec<CellChild<'a>>,
 ) {
-    for child in &agent.children {
-        let depth = child.depth.saturating_add(below);
-        children.push(ChildRow {
-            depth,
-            ..child.clone()
-        });
+    if !nested.insert(identity) {
+        return;
+    }
+    let Some(agent) = placement.rows.iter().find(|row| row.identity == identity) else {
+        return;
+    };
+    let mut skipped_subtree = None;
+    for (index, child) in agent.row.children.iter().enumerate() {
+        if let Some(depth) = skipped_subtree {
+            if child.depth > depth {
+                continue;
+            }
+            skipped_subtree = None;
+        }
+        if placement
+            .threads
+            .iter()
+            .any(|thread| thread.owner == identity && thread.child_index == index)
+        {
+            continue;
+        }
         let session = match (child.kind, child.pid) {
-            (ChildKind::Session(_), Some(pid)) => {
-                entry.sessions.iter().find(|session| session.row.pid == pid)
-            },
+            (ChildKind::Session(_), Some(pid)) => placement
+                .rows
+                .iter()
+                .find(|row| row.identity.machine == identity.machine && row.identity.pid == pid),
             _ => None,
         };
         if let Some(session) = session
-            && nested.insert(session.row.pid)
+            && (!session.placement.is_child_of(identity) || nested.contains(&session.identity))
         {
+            skipped_subtree = Some(child.depth);
+            continue;
+        }
+        let depth = child.depth.saturating_add(below);
+        children.push(CellChild {
+            machine: identity.machine,
+            row:     ChildRow {
+                depth,
+                ..child.clone()
+            },
+        });
+        if let Some(session) = session {
             nest(
-                entry,
-                session.row,
+                placement,
+                session.identity,
                 depth.saturating_add(1),
                 nested,
                 children,
             );
         }
+    }
+    let mut missing: Vec<_> = placement
+        .rows
+        .iter()
+        .filter(|row| row.placement.is_child_of(identity) && !nested.contains(&row.identity))
+        .collect();
+    missing.sort_by_key(|row| (row.row.started, row.identity.machine, row.identity.pid));
+    for member in missing {
+        children.push(CellChild {
+            machine: member.identity.machine,
+            row:     ChildRow {
+                thread_id:    CodexThreadId::Unrecorded,
+                depth:        below,
+                kind:         ChildKind::Session(member.row.agent),
+                service_tier: member.row.service_tier,
+                pid:          Some(member.identity.pid),
+                name:         member.row.name.clone(),
+                started:      member.row.started,
+                timer:        None,
+            },
+        });
+        nest(
+            placement,
+            member.identity,
+            below.saturating_add(1),
+            nested,
+            children,
+        );
     }
 }
 
@@ -734,7 +879,7 @@ enum Children {
 impl Children {
     /// The way `children` are drawn in `view`: the note where there are
     /// none, else the view's table or lines.
-    const fn in_view(children: &[ChildRow], view: CellView) -> Self {
+    const fn in_view(children: &[CellChild<'_>], view: CellView) -> Self {
         if children.is_empty() {
             return Self::Nothing;
         }
@@ -889,7 +1034,7 @@ const fn runs_role(kind: ChildKind) -> Role {
 /// Every column fits its widest cell. When the five and the spacing
 /// between them come to more than `width`, the table would have to cut
 /// a name, and the cell draws its compressed view instead.
-fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constraint; 5]> {
+fn table_columns(children: &[CellChild<'_>], width: u16, now: u64) -> Option<[Constraint; 5]> {
     let mut widths = ColumnWidths::new(
         CHILD_HEADERS
             .iter()
@@ -937,10 +1082,27 @@ mod tests {
 
     use super::*;
     use crate::census::Agent;
+    use crate::census::Census;
+    use crate::census::CensusUpdate;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
+    use crate::census::Machine;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::constants::TRUNCATION_MARK;
+
+    /// Every cell across `machines`, in the order the grid shows them:
+    /// machine by machine, one for each top-level agent, holding the
+    /// sessions it opened, depth first and oldest first. The agents that
+    /// opened sessions come first, then the rest, each oldest first. A
+    /// session whose launcher is not listed stands as a top-level agent.
+    /// Each agent takes the next hue of the rainbow in that order, a
+    /// session as much as the agent titling its cell.
+    fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
+        cell_order_placed(&AgentPlacement::from_machines(machines))
+    }
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_790_372_800;
@@ -992,6 +1154,7 @@ mod tests {
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
+            thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
@@ -1079,6 +1242,15 @@ mod tests {
             machine: "natedev",
             hue: RainbowHue::Red,
             sessions: Vec::new(),
+            children: row
+                .children
+                .iter()
+                .cloned()
+                .map(|row| CellChild {
+                    machine: "natedev",
+                    row,
+                })
+                .collect(),
         }
     }
 
@@ -2248,6 +2420,451 @@ mod tests {
         assert_eq!(
             compressed_lines[compressed_lines.len() - 2..],
             [" command  Run lint then the full suite", " timer  ◔ 3:48"]
+        );
+    }
+    /// Named management edges for placement fixtures, without running a command.
+    fn links(pairs: &[(&str, &str)]) -> HierarchyEdges {
+        HierarchyEdges(
+            pairs
+                .iter()
+                .map(|(manager, member)| HierarchyEdge {
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
+                })
+                .collect(),
+        )
+    }
+
+    /// A recorded Claude session, with its own stable cross-machine id.
+    fn identified(pid: u32, name: &str, age: u64, launcher: Option<u32>) -> AgentRow {
+        AgentRow {
+            session_id: SessionIdentity::Claude(name.to_string()),
+            ..agent(pid, name, age, launcher)
+        }
+    }
+
+    /// Unit links across hosts carry running work, and equal pids never share a hue or a child
+    /// lookup.
+    #[test]
+    fn a_cross_machine_unit_brings_its_work_and_uses_its_own_process_identity() {
+        let natedev = MachineState::Answered(
+            vec![
+                identified(1, "production", 3 * HOUR, None),
+                AgentRow {
+                    children: vec![child(0, ChildKind::Shell, Some(99), "local work", MINUTE)],
+                    ..identified(7, "local unit", HOUR, None)
+                },
+            ],
+            links(&[("production", "local unit")]),
+        );
+        let mac = MachineState::Answered(
+            vec![AgentRow {
+                children: vec![child(0, ChildKind::Shell, Some(99), "remote work", MINUTE)],
+                ..identified(7, "remote unit", 2 * HOUR, None)
+            }],
+            links(&[("production", "remote unit")]),
+        );
+        let cells = natedev_and_mac_cells(&natedev, &mac);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(
+            cells[0]
+                .sessions
+                .iter()
+                .map(|session| (session.machine, session.row.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("mac", "remote unit"), ("natedev", "local unit")]
+        );
+        let work: Vec<_> = cells[0]
+            .children
+            .iter()
+            .map(|child| (child.machine, child.name.as_str(), child.depth))
+            .collect();
+        assert_eq!(
+            work,
+            [
+                ("mac", "remote unit", 0),
+                ("mac", "remote work", 1),
+                ("natedev", "local unit", 0),
+                ("natedev", "local work", 1),
+            ]
+        );
+        assert_ne!(
+            name_style(&cells, "mac", 7).fg,
+            name_style(&cells, "natedev", 7).fg
+        );
+        let full = drawn_among(&cells[0], &cells, 160);
+        let compressed = drawn_into(&cells[0], &cells, 80, 8);
+        for buffer in [&full, &compressed] {
+            assert!(
+                lines(buffer)
+                    .iter()
+                    .any(|line| line.contains("remote unit · mac"))
+            );
+            assert!(
+                lines(buffer)
+                    .iter()
+                    .any(|line| line.contains("local unit")
+                        && !line.contains("local unit · natedev"))
+            );
+        }
+        for (name, host) in [("remote unit", "mac"), ("local unit", "natedev")] {
+            for at in find_all(&full, name) {
+                assert_eq!(
+                    full[at].fg,
+                    name_style(&cells, host, 7)
+                        .fg
+                        .expect("the member has a hue")
+                );
+            }
+        }
+    }
+
+    /// A management override removes stale launch markers and adds the member's work to its
+    /// manager.
+    #[test]
+    fn a_hierarchy_override_moves_the_member_and_work_out_of_its_launcher() {
+        let state = MachineState::Answered(
+            vec![
+                AgentRow {
+                    children: vec![child(
+                        0,
+                        ChildKind::Session(Agent::Claude),
+                        Some(3),
+                        "worker",
+                        HOUR,
+                    )],
+                    ..identified(1, "launcher", 3 * HOUR, None)
+                },
+                identified(2, "manager", 2 * HOUR, None),
+                AgentRow {
+                    children: vec![child(0, ChildKind::Shell, Some(99), "member work", MINUTE)],
+                    ..identified(3, "worker", HOUR, Some(1))
+                },
+            ],
+            links(&[("manager", "worker")]),
+        );
+        let cells = natedev_cells(&state);
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell.row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["manager", "launcher"]
+        );
+        assert_eq!(
+            cells[0]
+                .sessions
+                .iter()
+                .map(|session| session.row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["worker"]
+        );
+        assert_eq!(
+            cells[0]
+                .children
+                .iter()
+                .map(|child| (child.name.as_str(), child.depth))
+                .collect::<Vec<_>>(),
+            [("worker", 0), ("member work", 1)]
+        );
+        assert!(cells[1].children.is_empty());
+    }
+
+    /// An app server keeps its other work while one identified worker thread moves under its unit.
+    #[test]
+    fn a_codex_thread_nests_under_its_unit_once_without_moving_its_app_server() {
+        let thread = ChildRow {
+            thread_id: CodexThreadId::Recorded("thread-id".to_string()),
+            ..child(0, ChildKind::Thread, None, "implementation worker", MINUTE)
+        };
+        let natedev = MachineState::Answered(vec![identified(1, "unit", HOUR, None)], links(&[]));
+        let mac = MachineState::Answered(
+            vec![AgentRow {
+                agent: Agent::Codex,
+                children: vec![
+                    thread,
+                    child(0, ChildKind::Thread, None, "unmanaged thread", MINUTE),
+                ],
+                ..agent(1, "app-server", HOUR, None)
+            }],
+            links(&[("unit", "thread-id")]),
+        );
+        let cells = natedev_and_mac_cells(&natedev, &mac);
+        assert_eq!(cells.len(), 2);
+        let session = &cells[0].sessions[0];
+        assert!(matches!(session.subject, SessionSubject::Thread(_)));
+        assert_eq!(session.name(), "implementation worker · mac");
+        assert_eq!(session.started(), NOW - MINUTE);
+        assert!(cells[0].children.is_empty());
+        assert_eq!(
+            cells[1]
+                .children
+                .iter()
+                .map(|child| child.name.as_str())
+                .collect::<Vec<_>>(),
+            ["unmanaged thread"]
+        );
+        let full = lines(&drawn_among(&cells[0], &cells, 160));
+        assert_eq!(
+            full.iter()
+                .filter(|line| line.contains("implementation worker"))
+                .count(),
+            1
+        );
+    }
+
+    /// Managed threads retain their requested tiers when rendered in either tree view.
+    #[test]
+    fn managed_codex_threads_show_their_tiers_in_full_and_compressed_views() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "unit", HOUR, None),
+                AgentRow {
+                    agent: Agent::Codex,
+                    children: vec![
+                        ChildRow {
+                            thread_id: CodexThreadId::Recorded("fast-id".to_string()),
+                            service_tier: ServiceTier::Fast,
+                            ..child(0, ChildKind::Thread, None, "fast worker", MINUTE)
+                        },
+                        ChildRow {
+                            thread_id: CodexThreadId::Recorded("standard-id".to_string()),
+                            service_tier: ServiceTier::Standard,
+                            ..child(0, ChildKind::Thread, None, "standard worker", MINUTE)
+                        },
+                    ],
+                    ..agent(2, "app-server", HOUR, None)
+                },
+            ],
+            links(&[("unit", "fast-id"), ("unit", "standard-id")]),
+        );
+        let cells = natedev_cells(&state);
+        let manager = &cells[0];
+        assert!(matches!(
+            CellView::at_width(manager, 160, NOW),
+            CellView::Full(_)
+        ));
+        assert_eq!(
+            CellView::fitted(manager, area(160, 2), NOW),
+            CellView::Compressed
+        );
+        for buffer in [
+            drawn_among(manager, &cells, 160),
+            drawn_into(manager, &cells, 160, 2),
+        ] {
+            let rendered = lines(&buffer);
+            for (name, tier) in [
+                ("fast worker", "codex fast"),
+                ("standard worker", "codex --"),
+            ] {
+                let worker_lines: Vec<_> =
+                    rendered.iter().filter(|line| line.contains(name)).collect();
+                assert_eq!(worker_lines.len(), 1, "each managed worker appears once");
+                assert!(
+                    worker_lines[0].contains(tier),
+                    "{name} retains {tier}: {}",
+                    worker_lines[0]
+                );
+            }
+        }
+    }
+
+    /// A worker discovered on a transport-only mesh server renders under its remote unit.
+    #[test]
+    fn a_mesh_worker_from_production_classification_renders_without_an_app_server_cell() {
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let cells = natedev_and_mac_cells(&manager, &worker);
+        assert_eq!(
+            cells.len(),
+            1,
+            "the transport-only app server titles no cell"
+        );
+        let manager = &cells[0];
+        assert!(matches!(
+            CellView::at_width(manager, 160, NOW),
+            CellView::Full(_)
+        ));
+        assert_eq!(
+            CellView::fitted(manager, area(160, 1), NOW),
+            CellView::Compressed
+        );
+        for buffer in [
+            drawn_among(manager, &cells, 160),
+            drawn_into(manager, &cells, 160, 1),
+        ] {
+            let rendered = lines(&buffer);
+            let workers: Vec<_> = rendered
+                .iter()
+                .filter(|line| line.contains("mesh worker"))
+                .collect();
+            assert_eq!(workers.len(), 1, "the classified mesh worker appears once");
+            assert!(workers[0].contains("mesh worker · mac"));
+            assert!(workers[0].contains("codex fast"));
+        }
+    }
+
+    /// Missing managers fall back to a listed launcher; missing launchers leave visible roots.
+    #[test]
+    fn unresolved_managers_preserve_listed_launchers_and_rescue_unlisted_ones() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "launcher", 3 * HOUR, None),
+                identified(2, "launched", 2 * HOUR, Some(1)),
+                identified(3, "orphan", HOUR, Some(99)),
+            ],
+            links(&[("absent", "launched"), ("absent", "orphan")]),
+        );
+        let cells = natedev_cells(&state);
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell.row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["launcher", "orphan"]
+        );
+        assert_eq!(cells[0].sessions[0].row.name, "launched");
+    }
+
+    /// Self links, conflicting managers and cycles still place every listed agent exactly once.
+    #[test]
+    fn conflicting_and_cyclic_edges_form_one_deterministic_forest() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "a", 3 * HOUR, None),
+                identified(2, "b", 2 * HOUR, None),
+                identified(3, "worker", HOUR, None),
+            ],
+            links(&[
+                ("a", "a"),
+                ("b", "a"),
+                ("a", "b"),
+                ("missing", "worker"),
+                ("b", "worker"),
+                ("a", "worker"),
+            ]),
+        );
+        let cells = natedev_cells(&state);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].row.name, "a");
+        assert_eq!(
+            cells[0]
+                .sessions
+                .iter()
+                .map(|session| (session.lead(), session.row.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("├─ ".to_string(), "b"), ("└─ ".to_string(), "worker")]
+        );
+        let mut identities: Vec<_> = cells
+            .iter()
+            .flat_map(|cell| {
+                iter::once((cell.machine, cell.row.pid)).chain(
+                    cell.sessions
+                        .iter()
+                        .map(|session| (session.machine, session.row.pid)),
+                )
+            })
+            .collect();
+        identities.sort_unstable();
+        assert_eq!(identities, [("natedev", 1), ("natedev", 2), ("natedev", 3)]);
+        let reversed = MachineState::Answered(
+            state.rows().to_vec(),
+            HierarchyEdges(state.edges().iter().rev().cloned().collect()),
+        );
+        assert_eq!(
+            natedev_cells(&reversed)[0]
+                .sessions
+                .iter()
+                .map(|session| session.row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "worker"]
+        );
+    }
+
+    /// Completed links reparent without changing member identity; failure/off and a departed
+    /// manager restore roots.
+    #[test]
+    fn census_answer_transitions_reparent_and_restore_cell_roots() {
+        let mut census = crate::census::Census::new("natedev".to_string());
+        let configured = ["mac".to_string()];
+        let member = identified(7, "unit", HOUR, None);
+        let manager = identified(7, "production", 2 * HOUR, None);
+        let roots = |census: &Census| {
+            cell_order(&census.machines(&configured))
+                .iter()
+                .map(|cell| {
+                    (
+                        cell.machine.to_string(),
+                        cell.row.name.clone(),
+                        cell.sessions.len(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        census.apply(CensusUpdate::Local(vec![member.clone()], links(&[])));
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(vec![manager.clone()], links(&[])),
+        });
+        assert_eq!(
+            roots(&census),
+            [
+                ("natedev".to_string(), "unit".to_string(), 0),
+                ("mac".to_string(), "production".to_string(), 0)
+            ]
+        );
+        census.apply(CensusUpdate::Local(
+            vec![member.clone()],
+            links(&[("production", "unit")]),
+        ));
+        assert_eq!(
+            roots(&census),
+            [("mac".to_string(), "production".to_string(), 1)]
+        );
+        census.apply(CensusUpdate::Local(vec![member.clone()], links(&[])));
+        assert_eq!(roots(&census).len(), 2);
+        census.apply(CensusUpdate::Local(
+            vec![member],
+            links(&[("production", "unit")]),
+        ));
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Failed("offline".to_string()),
+        });
+        assert_eq!(
+            roots(&census),
+            [("natedev".to_string(), "unit".to_string(), 0)]
+        );
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(vec![manager], links(&[])),
+        });
+        assert_eq!(
+            roots(&census),
+            [("mac".to_string(), "production".to_string(), 1)]
+        );
+    }
+
+    /// A management edge cannot make a launcher its own descendant through the launch fallback.
+    #[test]
+    fn management_edges_cannot_close_a_cycle_through_a_listed_launcher() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "launcher", 2 * HOUR, None),
+                identified(2, "launched manager", HOUR, Some(1)),
+            ],
+            links(&[("launched manager", "launcher")]),
+        );
+        let cells = natedev_cells(&state);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].row.name, "launcher");
+        assert_eq!(
+            cells[0]
+                .sessions
+                .iter()
+                .map(|session| session.row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["launched manager"]
         );
     }
 }

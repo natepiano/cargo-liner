@@ -82,7 +82,7 @@
 
 **Ruled out:** a read accessor on edges before any consumer exists.
 
-### Phase 3 — Managed agents nest in their manager's tile, and only top-level agents are summary entries  · status: todo
+### Phase 3 — Managed agents nest in their manager's tile, and only top-level agents are summary entries  · status: done
 
 **Depends on:** Phase 2 (`crates/cargo-handler/src/census/mod.rs`)
 
@@ -139,7 +139,7 @@
 **Constraints from prior phases:**
 - `HierarchyRole::{Showrunner, Unit, Impl, Test, Review, Fix}` parses the contract's role strings (`census/hierarchy.rs`).
 - Edges arrive and leave round by round (classified answers carry none; a failed or off command clears them), so labels must follow the current placement, not a first sighting.
-- `crates/tui_pane/` is shared; its CHANGELOG notes the title API change, and berth orders this unit's `tui_pane` work before tile-fixes.
+- `crates/tui_pane/` is shared, and tile-fixes owns it with uncommitted work there; its CHANGELOG notes the title API change. Before the framework writer starts, the unit director claims the title files through cargo-berth; if they overlap tile-fixes' reservation, the showrunner settles the order and nothing is written ahead of it.
 
 **Files:**
 - `crates/tui_pane/src/tiles/draw.rs`

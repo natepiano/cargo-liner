@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::Agent;
 use super::AgentRow;
 use super::HierarchyEdges;
 use super::HierarchySource;
@@ -75,14 +76,44 @@ impl From<ProbeAgentRow> for AgentRow {
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    schema:  u32,
+    schema:       u32,
     /// The printing machine's short host name.
-    machine: String,
+    machine:      String,
     /// Its agents, oldest first, each with what it is running.
-    rows:    Vec<AgentRow>,
+    rows:         Vec<AgentRow>,
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
-    edges:   HierarchyEdges,
+    edges:        HierarchyEdges,
+    /// Transport-only worker carriers, ignored by older schema-3 peers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    thread_hosts: Vec<AgentRow>,
+}
+
+impl ProbeReport {
+    /// Separate visible agents from carriers at the outgoing wire boundary.
+    fn from_answer(machine: String, rows: Vec<AgentRow>, edges: HierarchyEdges) -> Self {
+        let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
+        Self {
+            schema: PROBE_SCHEMA,
+            machine,
+            rows,
+            edges,
+            thread_hosts,
+        }
+    }
+
+    /// Restore transport-only identity before handing an answer to the census.
+    fn into_answer(self) -> (Vec<AgentRow>, HierarchyEdges) {
+        let rows = self
+            .rows
+            .into_iter()
+            .chain(self.thread_hosts.into_iter().map(|mut host| {
+                host.agent = Agent::CodexThreadHost;
+                host
+            }))
+            .collect();
+        (rows, self.edges)
+    }
 }
 
 /// The one field read before the rest, so a machine running another
@@ -98,12 +129,11 @@ pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
     let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let report = ProbeReport {
-        schema:  PROBE_SCHEMA,
-        machine: local_machine_name(),
-        rows:    LocalScanner::new().scan(),
-        edges:   hierarchy::read(&source, &CommandRunner),
-    };
+    let report = ProbeReport::from_answer(
+        local_machine_name(),
+        LocalScanner::new().scan(),
+        hierarchy::read(&source, &CommandRunner),
+    );
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -128,7 +158,7 @@ pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdg
         ));
     }
     serde_json::from_slice::<ProbeReport>(output)
-        .map(|report| (report.rows, report.edges))
+        .map(ProbeReport::into_answer)
         .map_err(|_| UNREADABLE_PROBE_REASON.to_string())
 }
 
@@ -138,16 +168,21 @@ pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdg
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
     use crate::census::Agent;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::Machine;
+    use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::Timer;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
+            thread_id: crate::census::CodexThreadId::Unrecorded,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
@@ -163,10 +198,11 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            schema:  PROBE_SCHEMA,
-            machine: "mac".to_string(),
-            edges:   HierarchyEdges::default(),
-            rows:    vec![
+            schema:       PROBE_SCHEMA,
+            machine:      "mac".to_string(),
+            thread_hosts: Vec::new(),
+            edges:        HierarchyEdges::default(),
+            rows:         vec![
                 AgentRow {
                     agent:           Agent::Codex,
                     session_id:      SessionIdentity::Unrecorded,
@@ -316,6 +352,8 @@ mod tests {
     #[test]
     fn hierarchy_and_session_ids_round_trip_while_old_probes_remain_readable() {
         let mut report = report();
+        report.rows[1].children[2].thread_id =
+            super::super::CodexThreadId::Recorded("worker-thread".to_string());
         report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
         report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
         report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
@@ -336,11 +374,25 @@ mod tests {
             row.as_object_mut()
                 .expect("a row is an object")
                 .remove("session_id");
+            for child in row["children"]
+                .as_array_mut()
+                .expect("children is an array")
+            {
+                child
+                    .as_object_mut()
+                    .expect("a child is an object")
+                    .remove("thread_id");
+            }
         }
         let (rows, edges) =
             parse_report(&serde_json::to_vec(&old).expect("old report should serialize"))
                 .expect("an old probe should parse");
         assert_eq!(edges, HierarchyEdges::default());
+        assert!(
+            rows.iter()
+                .flat_map(|row| &row.children)
+                .all(|child| child.thread_id == super::super::CodexThreadId::Unrecorded)
+        );
         assert!(
             rows.iter()
                 .all(|row| row.session_id == SessionIdentity::Unrecorded)
@@ -368,5 +420,74 @@ mod tests {
         assert_eq!(parse_report(b"bash: warning: setlocale\n"), unreadable);
         assert_eq!(parse_report(b""), unreadable);
         assert_eq!(parse_report(br#"{"schema":3,"machine":"mac"}"#), unreadable);
+    }
+    /// Old schema-3 readers see only real agents, even when a report carries workers.
+    #[test]
+    fn older_probe_readers_never_see_transport_hosts_as_agents() {
+        #[derive(Deserialize)]
+        struct OldReport {
+            rows: Vec<OldRow>,
+        }
+        #[derive(Deserialize)]
+        struct OldRow {
+            agent: OldAgent,
+            pid:   u32,
+        }
+        #[derive(Debug, Deserialize, Eq, PartialEq)]
+        #[serde(rename_all = "lowercase")]
+        enum OldAgent {
+            Claude,
+            Codex,
+        }
+
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let mut rows = manager.rows().to_vec();
+        rows.extend_from_slice(worker.rows());
+        for edges in [
+            HierarchyEdges::default(),
+            HierarchyEdges(worker.edges().to_vec()),
+        ] {
+            let report = ProbeReport::from_answer("mac".to_string(), rows.clone(), edges);
+            let bytes = serde_json::to_vec(&report).expect("serialize mixed answer");
+            let old: OldReport = serde_json::from_slice(&bytes).expect("old peer reads report");
+            assert_eq!(old.rows.len(), 1);
+            assert_eq!(old.rows[0].agent, OldAgent::Claude);
+            assert_eq!(old.rows[0].pid, manager.rows()[0].pid);
+        }
+    }
+
+    /// Separate carrier data round-trips and still places its worker under a remote manager.
+    #[test]
+    fn mesh_worker_hosts_round_trip_outside_visible_probe_rows() {
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let original = ProbeReport::from_answer(
+            "mac".to_string(),
+            worker.rows().to_vec(),
+            HierarchyEdges(worker.edges().to_vec()),
+        );
+        let bytes = serde_json::to_vec(&original).expect("serialize worker host");
+        let json: Value = serde_json::from_slice(&bytes).expect("wire answer");
+        assert_eq!(json["rows"].as_array().expect("visible rows").len(), 0);
+        assert_eq!(json["thread_hosts"].as_array().expect("carriers").len(), 1);
+        let (rows, edges) = parse_report(&bytes).expect("read worker host answer");
+        assert_eq!(rows, worker.rows());
+        assert_eq!(edges.0, worker.edges());
+        let received = MachineState::Answered(rows, edges);
+        let placement = crate::census::AgentPlacement::from_machines(&[
+            Machine {
+                name:  "natedev",
+                state: &manager,
+            },
+            Machine {
+                name:  "mac",
+                state: &received,
+            },
+        ]);
+        assert_eq!(placement.rows.len(), 1);
+        assert_eq!(placement.threads.len(), 1);
+        assert_eq!(
+            placement.threads[0].owner_row.children[0].name,
+            "mesh worker"
+        );
     }
 }

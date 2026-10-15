@@ -16,6 +16,8 @@
 //! in its directory from its start until [`CODEX_THREAD_START_WINDOW`]
 //! later, and before the next one started there. The one app server
 //! that counts is the macOS desktop app's, which stands for the app.
+//! Other app servers are retained as transport-only thread hosts so
+//! cross-machine management can place their workers without listing the server.
 //!
 //! A session the Claude desktop app started runs under a process of the
 //! app's: on a machine the app reaches over ssh, the app's server there.
@@ -344,7 +346,8 @@ fn desktop_app_row(process: &ProcessEntry, home: Option<&Path>) -> AgentRow {
 }
 
 /// The row for `process`, when it is an interactive Codex under no other
-/// agent or the desktop app's app server. An interactive Codex is named for
+/// agent, the desktop app's app server, or an unlisted app-server thread host.
+/// An interactive Codex is named for
 /// `thread`, the one it started with, else for its command line after
 /// `codex`, else for its pid.
 fn codex_row(
@@ -353,15 +356,31 @@ fn codex_row(
     thread: Option<&CodexThread>,
     home: Option<&Path>,
 ) -> Option<AgentRow> {
-    if !process.is_codex() || under_an_agent(table, process) {
+    if !process.is_codex() {
         return None;
     }
-    let name = if process.is_app_server() {
-        let parent = process.parent.and_then(|parent| table.get(&parent))?;
-        if parent.name != CODEX_DESKTOP_APP {
-            return None;
+    let agent = if process.is_app_server() {
+        if !under_an_agent(table, process)
+            && process
+                .parent
+                .and_then(|parent| table.get(&parent))
+                .is_some_and(|parent| parent.name == CODEX_DESKTOP_APP)
+        {
+            Agent::Codex
+        } else {
+            Agent::CodexThreadHost
         }
-        CODEX_DESKTOP_APP.to_string()
+    } else if under_an_agent(table, process) {
+        return None;
+    } else {
+        Agent::Codex
+    };
+    let name = if process.is_app_server() {
+        if agent == Agent::CodexThreadHost {
+            crate::constants::CODEX_APP_SERVER_LABEL.to_string()
+        } else {
+            CODEX_DESKTOP_APP.to_string()
+        }
     } else if let Some(label) = thread.and_then(CodexThread::label) {
         label
     } else {
@@ -370,7 +389,7 @@ fn codex_row(
             .unwrap_or_else(|| format!("pid {}", process.pid))
     };
     Some(AgentRow {
-        agent: Agent::Codex,
+        agent,
         session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Unrecorded,
         name,
@@ -535,6 +554,8 @@ fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::census::Machine;
+    use crate::census::MachineState;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -723,6 +744,10 @@ mod tests {
         let (processes, sessions) = natedev();
 
         let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|row| row.agent != Agent::CodexThreadHost)
+            .collect();
 
         assert_eq!(
             names(&rows),
@@ -912,6 +937,33 @@ mod tests {
         assert_eq!(desktop.started, 1_005);
         assert_eq!(desktop.directory, "/");
         assert_eq!(rows[1].directory, "~");
+    }
+
+    /// A desktop server started beneath an agent still transports threads without a new row.
+    #[test]
+    fn a_desktop_app_server_beneath_an_agent_remains_a_transport_only_host() {
+        let processes = [
+            detailed(10, 1, "claude", 10, &["claude"], HOME),
+            process(20, 10, CODEX_DESKTOP_APP, 20),
+            detailed(30, 20, "codex", 30, &["codex", "app-server"], HOME),
+        ];
+        let sessions = [session(10, "unit", "busy", HOME)];
+        let rows = agent_rows(&processes, &sessions, &[], None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].agent, Agent::CodexThreadHost);
+        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
+        let placement = super::super::AgentPlacement::from_machines(&[Machine {
+            name:  "local",
+            state: &state,
+        }]);
+        assert_eq!(
+            placement
+                .roots()
+                .iter()
+                .map(|row| row.identity.pid)
+                .collect::<Vec<_>>(),
+            [10]
+        );
     }
 
     /// The Claude desktop app reaching natedev over ssh: the app's server

@@ -26,6 +26,7 @@ use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::app::App;
 use crate::census;
+use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
@@ -101,20 +102,24 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
 /// agents, and a cell for each agent.
 struct Cells<'a> {
     /// This machine, then each configured remote.
-    machines: Vec<Machine<'a>>,
+    machines:  Vec<Machine<'a>>,
     /// Every agent's cell, in grid order.
-    agents:   Vec<AgentEntry<'a>>,
+    agents:    Vec<AgentEntry<'a>>,
+    /// The forest shared by cell order and summary roots.
+    placement: AgentPlacement<'a>,
     /// The unix second the ages are measured to.
-    now:      u64,
+    now:       u64,
 }
 
 impl<'a> Cells<'a> {
     /// The cells for `machines`, with ages measured to `now`.
     fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
-        let agents = agent_cell::cell_order(&machines);
+        let placement = AgentPlacement::from_machines(&machines);
+        let agents = agent_cell::cell_order_placed(&placement);
         Self {
             machines,
             agents,
+            placement,
             now,
         }
     }
@@ -148,8 +153,8 @@ impl TileCells<AgentCell> for Cells<'_> {
                 .map_or(narrowest, |&(_, width)| width)
         };
         TileDemands {
-            summary:       summary::height(&self.machines),
-            summary_width: summary::width(&self.machines, self.now),
+            summary:       summary::height(&self.machines, &self.placement),
+            summary_width: summary::width(&self.machines, &self.placement, self.now),
             groups:        self
                 .agents
                 .iter()
@@ -164,7 +169,14 @@ impl TileCells<AgentCell> for Cells<'_> {
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
             TileContent::Summary => {
-                summary::draw(buffer, inner, &self.machines, &self.agents, self.now);
+                summary::draw(
+                    buffer,
+                    inner,
+                    &self.machines,
+                    &self.placement,
+                    &self.agents,
+                    self.now,
+                );
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
@@ -243,6 +255,7 @@ mod tests {
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::CodexThreadId;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
@@ -664,6 +677,7 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,

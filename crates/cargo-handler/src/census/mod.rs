@@ -19,6 +19,7 @@ pub(crate) mod classify;
 pub(crate) mod codex;
 pub(crate) mod desktop;
 pub(crate) mod hierarchy;
+mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
@@ -36,6 +37,13 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+pub(crate) use placement::AgentPlacement;
+pub(crate) use placement::ManagedThread;
+pub(crate) use placement::PlacedAgent;
+pub(crate) use placement::Placement;
+pub(crate) use placement::RowIdentity;
+#[cfg(test)]
+pub(crate) use placement::mesh_worker_fixture;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
@@ -55,7 +63,7 @@ use crate::constants::SUBAGENT_VIA;
 use crate::constants::THREAD_VIA;
 use crate::constants::TIMER_RUNS;
 
-/// Which program an agent row is.
+/// The program a census row represents, including transport-only worker hosts.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Agent {
@@ -63,6 +71,9 @@ pub(crate) enum Agent {
     Claude,
     /// A Codex session, or the Codex desktop app.
     Codex,
+    /// A non-desktop app server retained only to transport its workers.
+    #[serde(rename = "codex_thread_host")]
+    CodexThreadHost,
 }
 
 impl Agent {
@@ -70,7 +81,7 @@ impl Agent {
     const fn label(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_AGENT,
-            Self::Codex => CODEX_AGENT,
+            Self::Codex | Self::CodexThreadHost => CODEX_AGENT,
         }
     }
 }
@@ -151,7 +162,7 @@ impl From<String> for SessionIdentity {
 /// The member's responsibility under its manager.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum HierarchyRole {
+pub(crate) enum HierarchyRole {
     /// Runs a production.
     Showrunner,
     /// Directs a unit.
@@ -168,19 +179,35 @@ enum HierarchyRole {
 
 /// A manager and its member, identified across machines by session id.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct HierarchyEdge {
+pub(crate) struct HierarchyEdge {
     /// The manager's Claude Code session id, possibly on another machine.
-    manager: String,
-    /// The local member's Claude Code session id.
-    member:  String,
+    pub(crate) manager: String,
+    /// The member's Claude session id or Codex app-server thread id.
+    pub(crate) member:  String,
     /// What the member does for its manager.
-    role:    HierarchyRole,
+    pub(crate) role:    HierarchyRole,
 }
 
 /// The management links reported by one machine.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct HierarchyEdges(Vec<HierarchyEdge>);
+pub(crate) struct HierarchyEdges(pub(crate) Vec<HierarchyEdge>);
+
+/// A Codex app-server thread's stable identity, absent in older probes.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum CodexThreadId {
+    /// The thread has no recorded identity.
+    #[default]
+    Unrecorded,
+    /// The id in its rollout filename.
+    Recorded(String),
+}
+
+impl CodexThreadId {
+    /// Whether the wire can omit this identity.
+    const fn is_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+}
 
 /// Where this machine obtains its management links.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -224,13 +251,14 @@ impl HierarchyCommand {
     }
 }
 
-/// One agent someone can talk to, as the summary lists it, as its own
-/// cell draws it, and as the probe prints it. The field order is the
+/// One agent someone can talk to, or an app server transporting workers
+/// for placement without appearing in the summary or its own cell.
+/// The field order is the
 /// probe's JSON order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "probe::ProbeAgentRow")]
 pub(crate) struct AgentRow {
-    /// Claude Code or Codex.
+    /// Claude Code, Codex, or an app server retained only for worker placement.
     pub(crate) agent:           Agent,
     /// Claude Code session identity, or unrecorded for other rows.
     pub(crate) session_id:      SessionIdentity,
@@ -277,9 +305,8 @@ pub(crate) struct AgentRow {
 }
 
 impl AgentRow {
-    /// Whether a person started this agent outside the Claude desktop
-    /// app rather than another agent opening it.
-    pub(crate) const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
+    /// Whether this row represents an agent someone can talk to, rather than a carrier.
+    pub(crate) const fn is_visible(&self) -> bool { !matches!(self.agent, Agent::CodexThreadHost) }
 
     /// The `agent` cell: the program, marked with its tier.
     pub(crate) fn agent_label(&self) -> Cow<'static, str> {
@@ -362,6 +389,9 @@ pub(crate) struct Timer {
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ChildRow {
+    /// The Codex thread this child represents, when recorded.
+    #[serde(default, skip_serializing_if = "CodexThreadId::is_unrecorded")]
+    pub(crate) thread_id:    CodexThreadId,
     /// How many levels below the agent the row sits; the rows directly
     /// under the agent are at 0.
     pub(crate) depth:        u8,
@@ -419,10 +449,12 @@ impl MachineState {
         }
     }
 
-    /// The rows a person started, oldest first: the ones the summary
-    /// lists.
-    pub(crate) fn top_level(&self) -> impl Iterator<Item = &AgentRow> {
-        self.rows().iter().filter(|row| row.is_top_level())
+    /// Management links from this machine's latest completed answer.
+    pub(crate) fn edges(&self) -> &[HierarchyEdge] {
+        match self {
+            Self::Answered(_, edges) => &edges.0,
+            Self::Scanning | Self::Failed(_) => &[],
+        }
     }
 }
 
@@ -509,11 +541,11 @@ impl Census {
     /// Whether any machine the summary draws lists an agent, idle ones
     /// included: an idle agent is one waiting on its reader.
     pub(crate) fn lists_an_agent(&self, configured: &[String]) -> bool {
-        !self.local.rows().is_empty()
+        self.local.rows().iter().any(AgentRow::is_visible)
             || configured.iter().any(|host| {
                 self.remotes
                     .get(host)
-                    .is_some_and(|state| !state.rows().is_empty())
+                    .is_some_and(|state| state.rows().iter().any(AgentRow::is_visible))
             })
     }
 }
