@@ -208,6 +208,42 @@ fn silent_allow_emits_nothing() -> TestResult {
 }
 
 #[test]
+fn pre_tool_use_under_an_unmapped_session_joins_the_only_active_reservation() -> TestResult {
+    let repository = initialized_repository()?;
+    let root = repository.path();
+    let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
+    require_success(&claimed, "the sole reservation")?;
+    let reservation_id = claimed_reservation_id(&claimed)?;
+    let before = journal_events(root)?;
+
+    let output = run_pre_tool_use(
+        root,
+        &edit_payload(root, "next.rs", Some("fresh-edit-session")),
+    )?;
+
+    assert_hook_output(&output, 0, b"", b"")?;
+    let events = journal_events(root)?;
+    let appended = &events[before.len()..];
+    assert_eq!(
+        appended.len(),
+        1,
+        "the edit must reuse the sole reservation"
+    );
+    assert_eq!(appended[0]["op"], "widen");
+    assert_eq!(appended[0]["reservation_id"], reservation_id);
+    assert_eq!(
+        appended[0]["added_scopes"],
+        serde_json::json!([{"kind": "file", "path": "next.rs"}])
+    );
+    let mappings: Value = serde_json::from_slice(&fs::read(root.join(SESSION_MAPPING_PATH))?)?;
+    assert_eq!(
+        mappings["identities"]["fresh-edit-session"]["reservation_id"],
+        reservation_id
+    );
+    Ok(())
+}
+
+#[test]
 fn allow_with_notice_emits_the_engine_presentation_object() -> TestResult {
     let repository = initialized_repository()?;
     fs::create_dir(repository.path().join(SESSION_MAPPING_PATH))?;
@@ -2087,6 +2123,13 @@ fn json_output(output: &Output) -> TestResult<Value> {
     serde_json::from_slice(&output.stdout).map_err(Into::into)
 }
 
+fn journal_events(repository_root: &Path) -> TestResult<Vec<Value>> {
+    fs::read_to_string(repository_root.join(JOURNAL_PATH))?
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(Into::into))
+        .collect()
+}
+
 fn required_string<'value>(
     value: &'value Value,
     pointer: &str,
@@ -3001,6 +3044,122 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
             frozen:   "reservation-widened".to_owned(),
         }],
     )
+}
+
+#[test]
+fn post_tool_use_under_an_unmapped_session_widens_the_only_active_reservation() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let root = repository.path();
+    let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
+    require_success(&claimed, "the sole reservation")?;
+    let reservation_id = claimed_reservation_id(&claimed)?;
+    let before = journal_events(root)?;
+    fs::write(root.join("bash-write.rs"), "// written by Bash\n")?;
+
+    let output = run_post_tool_use(root, &bash_payload(root, "fresh-bash-session"))?;
+
+    let feedback = hook_feedback(
+        &output,
+        HookResponseEvent::PostToolUse,
+        "sole reservation widening",
+    )?;
+    let added = format!("cargo-berth added bash-write.rs to reservation {reservation_id}");
+    assert_eq!(feedback.system_message, added);
+    assert_eq!(feedback.additional_context, added);
+    let events = journal_events(root)?;
+    let widens = events[before.len()..]
+        .iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(widens.len(), 1);
+    assert_eq!(widens[0]["reservation_id"], reservation_id);
+    assert_eq!(
+        widens[0]["added_scopes"],
+        serde_json::json!([{"kind": "file", "path": "bash-write.rs"}])
+    );
+    assert!(
+        !events[before.len()..]
+            .iter()
+            .any(|event| event["op"] == "claim")
+    );
+    Ok(())
+}
+
+#[test]
+fn post_tool_use_under_an_unmapped_session_states_parallel_attribution_once() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let root = repository.path();
+    let older = run_berth_with_session(root, &["claim", "file:a.rs", "--json"], "phase-15")?;
+    require_success(&older, "phase 15 reservation")?;
+    let newer = run_berth_with_session(root, &["claim", "file:b.rs", "--json"], "phase-16")?;
+    require_success(&newer, "phase 16 reservation")?;
+    let mut candidates = [
+        claimed_reservation_id(&older)?,
+        claimed_reservation_id(&newer)?,
+    ];
+    candidates.sort();
+    let before = journal_events(root)?;
+    fs::write(root.join("unheld.rs"), "// unattributed Bash write\n")?;
+    let payload = bash_payload(root, "unmapped-director");
+
+    let output = run_post_tool_use(root, &payload)?;
+
+    let feedback = hook_feedback(
+        &output,
+        HookResponseEvent::PostToolUse,
+        "parallel attribution",
+    )?;
+    let expected = format!(
+        "DRIFT ATTRIBUTION REQUIRED: Changed paths unheld.rs were not widened because attribution is ambiguous among reservations {}. Run `cargo-berth drift --reservation <id>` with one listed reservation.",
+        candidates.join(", ")
+    );
+    assert_eq!(feedback.additional_context, expected);
+    assert_eq!(feedback.additional_context.lines().count(), 1);
+    let events = journal_events(root)?;
+    assert!(
+        !events[before.len()..]
+            .iter()
+            .any(|event| event["op"] == "widen" || event["op"] == "claim")
+    );
+    let repeated = run_post_tool_use(root, &payload)?;
+    assert_hook_output(&repeated, 0, b"", b"")?;
+    assert_eq!(journal_events(root)?, events);
+    Ok(())
+}
+
+#[test]
+fn post_tool_use_without_an_identified_run_does_not_widen_an_incumbent() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let root = repository.path();
+    let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
+    require_success(&claimed, "the incumbent reservation")?;
+    let incumbent_id = claimed_reservation_id(&claimed)?;
+    fs::remove_file(root.join(".git/cargo-berth-run-id"))?;
+    let before = journal_events(root)?;
+    fs::write(root.join("unheld.rs"), "// unidentified Bash write\n")?;
+
+    let output = run_post_tool_use(root, &bash_payload(root, "unidentified-director"))?;
+
+    require_success(&output, "the unidentified director's hook")?;
+    let events = journal_events(root)?;
+    let appended = &events[before.len()..];
+    assert!(
+        !appended.iter().any(|event| event["op"] == "widen"),
+        "an unidentified run must select no incumbent for widening"
+    );
+    // Widening selects nothing; the independent first-touch path still protects free work.
+    let claims = appended
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .collect::<Vec<_>>();
+    assert_eq!(claims.len(), 1);
+    assert_ne!(claims[0]["reservation_id"], incumbent_id);
+    assert_ne!(claims[0]["actor"]["run"], before[0]["actor"]["run"]);
+    assert_eq!(
+        claims[0]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "unheld.rs"}])
+    );
+    Ok(())
 }
 
 /// A Bash call that writes the worktree's first file states one line naming the path and the

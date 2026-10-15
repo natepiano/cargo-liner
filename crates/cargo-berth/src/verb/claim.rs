@@ -382,6 +382,18 @@ pub(crate) struct FirstTouchReservationAcquisition {
     marker_publication:                     CoordinationRunMarkerPublication,
     /// Whether the harness session mapping records the reservation.
     pub(crate) session_mapping_publication: SessionIdentityMappingPublication,
+    /// Requested paths that active siblings already protect instead of this reservation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) already_held:                Vec<SiblingHeldScopes>,
+}
+
+/// The requested paths already protected by one active sibling in this run and worktree.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct SiblingHeldScopes {
+    /// The sibling that already holds these paths.
+    pub(crate) reservation_id: ReservationId,
+    /// Exact requested scopes covered by the sibling.
+    pub(crate) scopes:         ReservationScopeSet,
 }
 
 /// Whether a first-touch transaction may protect the nonconflicting part of a post-write request.
@@ -561,6 +573,7 @@ struct CommittedFirstTouchAcquisition {
     phase_start_head: ProtectedPhaseStartHead,
     scopes:           ReservationScopeSet,
     conflicts:        FirstTouchConflictOutcome,
+    already_held:     Vec<SiblingHeldScopes>,
 }
 
 #[derive(Clone)]
@@ -1051,6 +1064,7 @@ fn first_touch_acquired_execution(
         phase_start_head,
         scopes,
         conflicts,
+        already_held,
     } = committed;
     FirstTouchClaimExecution::Acquired {
         acquisition: FirstTouchReservationAcquisition {
@@ -1061,6 +1075,7 @@ fn first_touch_acquired_execution(
             phase_start_head,
             marker_publication,
             session_mapping_publication,
+            already_held,
         },
         scopes,
         conflicts,
@@ -1400,7 +1415,7 @@ fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedRes
 
 fn validate_first_touch_transaction(
     state: &ReplayedLedgerState<'_>,
-    mut prepared_claim: PreparedClaim,
+    prepared_claim: PreparedClaim,
     context: FirstTouchValidationContext,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition> {
     let FirstTouchValidationContext {
@@ -1476,8 +1491,12 @@ fn validate_first_touch_transaction(
             path_case,
         },
     );
-    let (protected_scopes, conflict_outcome) = match reuse {
-        FirstTouchReservationReuse::AppendRequired { scopes, conflicts } => (scopes, conflicts),
+    let (protected_scopes, conflict_outcome, already_held) = match reuse {
+        FirstTouchReservationReuse::AppendRequired {
+            scopes,
+            conflicts,
+            already_held,
+        } => (scopes, conflicts, already_held),
         FirstTouchReservationReuse::Complete(validation) => {
             return validation;
         },
@@ -1487,17 +1506,33 @@ fn validate_first_touch_transaction(
             FirstTouchClaimRejection::ReservationLimitReached(maximum_reservations),
         );
     }
+    append_first_touch_claim(
+        prepared_claim,
+        protected_scopes,
+        conflict_outcome,
+        already_held,
+    )
+}
+
+/// Construct the claim and its acquisition report from the locked coverage decision.
+fn append_first_touch_claim(
+    mut prepared_claim: PreparedClaim,
+    protected_scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    already_held: Vec<SiblingHeldScopes>,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition> {
     prepared_claim.scopes = protected_scopes.clone();
     let acquisition = CommittedFirstTouchAcquisition {
-        kind:             FirstTouchReservationAcquisitionKind::Appended,
-        reservation_id:   prepared_claim.reservation_id,
-        target:           Box::new(TargetView::from_claim(
+        kind: FirstTouchReservationAcquisitionKind::Appended,
+        reservation_id: prepared_claim.reservation_id,
+        target: Box::new(TargetView::from_claim(
             &prepared_claim.target,
             &prepared_claim.trunk_at_claim,
         )),
         phase_start_head: prepared_claim.phase_start_head.clone(),
-        scopes:           protected_scopes,
-        conflicts:        conflict_outcome,
+        scopes: protected_scopes,
+        conflicts,
+        already_held,
     };
     CommittedActionValidation::Append {
         operation: Box::new(prepared_claim.into_operation(ConflictAuthorization::NoConflict)),
@@ -1588,8 +1623,9 @@ fn select_first_touch_reservation_reuse(
 
 enum FirstTouchReservationReuse {
     AppendRequired {
-        scopes:    ReservationScopeSet,
-        conflicts: FirstTouchConflictOutcome,
+        scopes:       ReservationScopeSet,
+        conflicts:    FirstTouchConflictOutcome,
+        already_held: Vec<SiblingHeldScopes>,
     },
     Complete(CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>),
 }
@@ -1607,6 +1643,7 @@ fn append_unheld_first_touch_scopes(
     conflicts: FirstTouchConflictOutcome,
     context: FirstTouchReservationReuseContext,
 ) -> FirstTouchReservationReuse {
+    let already_held = sibling_held_scopes(reservations, &protected_scopes, context);
     // Anchor the shared partition rule on the first requested path's holder when all
     // paths are covered. No reservation is selected for the new phase itself yet.
     let first_holder = protected_scopes.as_slice().iter().find_map(|candidate| {
@@ -1641,7 +1678,48 @@ fn append_unheld_first_touch_scopes(
         },
         None => protected_scopes,
     };
-    FirstTouchReservationReuse::AppendRequired { scopes, conflicts }
+    FirstTouchReservationReuse::AppendRequired {
+        scopes,
+        conflicts,
+        already_held,
+    }
+}
+
+/// Report the exact requested paths each active sibling already protects.
+fn sibling_held_scopes(
+    reservations: &RetainedReservationSet,
+    protected_scopes: &ReservationScopeSet,
+    context: FirstTouchReservationReuseContext,
+) -> Vec<SiblingHeldScopes> {
+    reservations
+        .iter()
+        .filter(|sibling| {
+            sibling.is_active_for_coordination_run_and_worktree(
+                context.coordination_run_id,
+                context.worktree_id,
+            )
+        })
+        .filter_map(|sibling| {
+            let held = protected_scopes
+                .as_slice()
+                .iter()
+                .filter(|candidate| {
+                    sibling
+                        .scopes()
+                        .as_slice()
+                        .iter()
+                        .any(|scope| scope.contains(candidate, context.path_case))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            ReservationScopeSet::try_from(held)
+                .ok()
+                .map(|scopes| SiblingHeldScopes {
+                    reservation_id: sibling.id(),
+                    scopes,
+                })
+        })
+        .collect()
 }
 
 fn reuse_first_touch_reservation(
@@ -1666,6 +1744,7 @@ fn reuse_first_touch_reservation(
             return FirstTouchReservationReuse::AppendRequired {
                 scopes: protected_scopes,
                 conflicts,
+                already_held: Vec::new(),
             };
         },
         FirstTouchReservationSelection::AmbiguousActiveRunReservations {
@@ -1756,6 +1835,7 @@ fn widen_first_touch_reservation(
                 phase_start_head: reservation.phase_start_head().clone(),
                 scopes: protected_scopes,
                 conflicts,
+                already_held: Vec::new(),
             },
         },
         WidenScopeBinding::Blocked(conflicts) => {
@@ -1830,6 +1910,7 @@ fn already_held_first_touch(
                 phase_start_head: reservation.phase_start_head().clone(),
                 scopes,
                 conflicts,
+                already_held: Vec::new(),
             }),
             session_mapping,
         },

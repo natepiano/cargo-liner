@@ -274,10 +274,7 @@ fn render_acquisition(
             | FirstTouchClaimExecution::Blocked { scopes, conflicts },
         )) => OutputEnvelope::blocked_check(scopes, conflicts, approver),
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum))) => {
-            OutputEnvelope::invalid_input(
-                CommandVerb::Check,
-                &format!("repository policy permits at most {maximum} live reservations"),
-            )
+            OutputEnvelope::check_reservation_limit_reached(maximum)
         },
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,

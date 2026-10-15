@@ -1637,6 +1637,53 @@ fn a_second_harness_session_opens_its_own_reservation_in_the_incumbent_run() {
     );
 }
 
+#[test]
+fn a_check_without_a_session_joins_one_reservation_but_refuses_to_choose_between_two() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let first = run_berth_with_session(root, &["check", "file:first.rs", "--json"], "phase-15");
+    assert_success(&first);
+    let first_id = json_output(&first)["payload"]["data"]["acquisition"]["reservation_id"]
+        .as_str()
+        .expect("first phase reservation")
+        .to_owned();
+
+    let joined = run_berth(root, &["check", "file:joined.rs", "--json"]);
+    assert_success(&joined);
+    let joined = json_output(&joined);
+    assert_eq!(joined["payload"]["data"]["acquisition"]["kind"], "widened");
+    assert_eq!(
+        joined["payload"]["data"]["acquisition"]["reservation_id"],
+        first_id
+    );
+
+    let second = run_berth_with_session(root, &["check", "file:second.rs", "--json"], "phase-16");
+    assert_success(&second);
+    let second_id = json_output(&second)["payload"]["data"]["acquisition"]["reservation_id"]
+        .as_str()
+        .expect("second phase reservation")
+        .to_owned();
+    assert_ne!(first_id, second_id);
+    let events_before = journal_events(root);
+    let mappings_before = fs::read(root.join(SESSION_MAPPING_PATH)).expect("session mappings");
+
+    let ambiguous = run_berth(root, &["check", "file:unselected.rs", "--json"]);
+    assert_eq!(ambiguous.status.code(), Some(1));
+    let ambiguous = json_output(&ambiguous);
+    assert_eq!(ambiguous["status"], "ambiguous_active_run_reservations");
+    let candidates = ambiguous["payload"]["data"]["candidate_reservation_ids"]
+        .as_array()
+        .expect("ambiguity candidates");
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.contains(&serde_json::json!(first_id)));
+    assert!(candidates.contains(&serde_json::json!(second_id)));
+    assert_eq!(journal_events(root), events_before);
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("session mappings"),
+        mappings_before
+    );
+}
+
 /// Add a real worktree beside the repository, the second party berth has always refused.
 ///
 /// A distinct `--run` inside one worktree now names a second party too, but only a real

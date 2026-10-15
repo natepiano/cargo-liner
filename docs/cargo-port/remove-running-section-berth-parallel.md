@@ -79,7 +79,7 @@ Read 2026-10-15 at 6d01f704.
 
 **Gotchas:** running one check per phase under `CARGO_BERTH_SESSION_ID=<sid>.phase-<N>`, and checkpointing with `drift --full --reservation <id>`, are director-skill changes owned outside this crate.
 
-### Phase 2 — Robust tests  · status: todo
+### Phase 2 — Robust tests  · status: done
 
 **Depends on:** Phase 1
 
@@ -120,3 +120,32 @@ Read 2026-10-15 at 6d01f704.
 - The showrunner installs cargo-berth on both machines after merging each checkpoint.
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s; the phase report lists each case with its test name. If an engine fix landed, the showrunner installs it after the merge.
+
+### Phase 3 — Answer an overlap for one named phase  · status: todo
+
+**Depends on:** Phase 2
+
+#### Work Order
+
+**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
+
+**Goal:** a director with two open phases answers an overlap for the phase it names, not whichever phase its session maps to.
+
+**Spec:**
+1. `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"` records the answer and the claimed paths on reservation `<id>`. `--reservation` means what it means on `check`: the id must be an active reservation of the acting run and worktree, or the claim is refused as on `check`. The harness-session mapping publishes onto `<id>` the way an explicit `check --reservation` does.
+2. Without `--reservation`, `claim` behaves as today.
+3. Tests, each under 1 s: with two active phase reservations and the director's session mapped to one, a `claim --reservation <other> … --after <holder>` attaches the answer and paths to `<other>` only; an unknown or inactive id is refused and records nothing; `claim` without the flag is unchanged.
+
+**Files:**
+- `crates/cargo-berth/src/cli.rs` — `ClaimArguments` (~526) gains `--reservation`
+- `crates/cargo-berth/src/verb/claim.rs` — claim reservation selection
+- `crates/cargo-berth/tests/parallel_phases.rs` — the Spec 3 tests
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `crates/cargo-berth/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — `cli.rs`, `verb/claim.rs`, the as-built docs and the CHANGELOG.
+- `test` — the Spec 3 tests in `crates/cargo-berth/tests/parallel_phases.rs`.
+
+**Constraints from prior phases:** maintained by phase review after Phase 2. The showrunner-fixer builds the director's side against this exact flag name.
+
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The showrunner merges, then installs on both machines.

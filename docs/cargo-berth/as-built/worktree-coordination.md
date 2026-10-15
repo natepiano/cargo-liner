@@ -269,6 +269,10 @@ A bare `check` uses a valid harness-session mapping when one exists. A usable se
 
 The post-tool-use hook widens only the acting run's sole active reservation in the worktree. With several, it leaves unheld paths unattributed and reports the candidate reservations, even when the hook session maps to one of them. Explicit drift and post-commit drift still honor the session mapping.
 
+A mixed check under a fresh phase session reports the paths already protected by siblings in `acquisition.already_held`, with each sibling's reservation id and its requested scopes; the new reservation holds only the remaining paths. At `maximum_reservations`, opening another phase returns `reservation_limit_reached` without appending a claim or publishing that phase's mapping.
+
+An explicit phase checkpoint does not adopt committed paths from a released sibling whose protected checkpoint is the current comparison head. Working-tree edits to those paths, or a later commit that changes them, remain eligible for the acting phase to acquire.
+
 ### Lifecycle and git evidence
 
 `reservation/lifecycle.rs` keeps four orthogonal types rather than one fused stage enum: `ReservationLifecycle`, `IntegrationEvidenceStatus`, `EditBlockingStatus`, and `ReleaseDisposition`. Neither `lifecycle.rs` nor `evidence.rs` uses `Option` in these types — every state that could be "not known yet" is a named variant instead.
