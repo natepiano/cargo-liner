@@ -36,7 +36,7 @@
 
 ## Phases
 
-### Phase 1 — natedev's `production_tree.py --json` prints the edges  · status: todo
+### Phase 1 — natedev's `production_tree.py --json` prints the edges  · status: done
 
 **Depends on:** none
 
@@ -62,6 +62,8 @@
 **Workers:** none — natedev builds the command; the unit director checks it.
 
 **Acceptance gate:** the command's output on both machines matches the contract and names the live showrunner → unit links, including a cross-machine member; a configured `cargo-handler probe` on each machine reports those edges with no `hierarchy_failed`; and the live grid shows the role labels and nesting of step 5.
+
+**Result (2026-10-15):** natedev prints 50–62 edges in about 1 s under load; a configured probe carries the same edges with no `hierarchy_failed`, and every unresolved member is an idle Codex thread. The Mac prints no edges, correct with no managed agents running there. The producer names a showrunner on the other machine from its update-timer record (`~/.claude` 30795ad8). The live grid shows `· showrunner`, nested `· unit` and Codex worker roles, with only placement roots in the summary.
 
 ### Phase 2 — Each machine's census reads its hierarchy edges  · status: done
 
