@@ -939,6 +939,7 @@ mod tests {
     use crate::census::Agent;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
     use crate::constants::TRUNCATION_MARK;
 
     /// The unix second every age in these tests is measured to.
@@ -971,6 +972,7 @@ mod tests {
     /// seconds before [`NOW`] and opened by `launched_by`.
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
+            session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
@@ -1221,6 +1223,7 @@ mod tests {
     #[test]
     fn a_codex_tier_follows_its_program() {
         let codex = AgentRow {
+            session_id: SessionIdentity::Unrecorded,
             agent: Agent::Codex,
             service_tier: ServiceTier::Fast,
             status: None,
@@ -1487,64 +1490,67 @@ mod tests {
         let session = |pid, name: &str, age| {
             child(0, ChildKind::Session(Agent::Claude), Some(pid), name, age)
         };
-        MachineState::Answered(vec![
-            AgentRow {
-                branch: Some("main".to_string()),
-                directory: "~/rust/cargo-liner".to_string(),
-                children: vec![
-                    child(
+        MachineState::Answered(
+            vec![
+                AgentRow {
+                    branch: Some("main".to_string()),
+                    directory: "~/rust/cargo-liner".to_string(),
+                    children: vec![
+                        child(
+                            0,
+                            ChildKind::Shell,
+                            Some(4_000_001),
+                            "Run the tests",
+                            2 * MINUTE,
+                        ),
+                        session(TRUNK, "tool-based-ui-trunk", 21 * HOUR),
+                        session(ARRANGE, "tool-based-ui-arrange", 3 * HOUR),
+                    ],
+                    ..agent(BOSS, "boss of bosses", 23 * HOUR, None)
+                },
+                AgentRow {
+                    branch: Some("enh/trunk".to_string()),
+                    directory: "~/rust/ui-trunk".to_string(),
+                    children: vec![
+                        child(
+                            0,
+                            ChildKind::Subagent,
+                            None,
+                            "Review the permission queue",
+                            5 * MINUTE + 3,
+                        ),
+                        child(
+                            1,
+                            ChildKind::Shell,
+                            Some(2_424_763),
+                            "cargo nextest run -p hana_video",
+                            45,
+                        ),
+                        session(TRUNK_IMPL, "trunk-impl", 2 * HOUR),
+                    ],
+                    ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
+                },
+                AgentRow {
+                    status: Some("idle".to_string()),
+                    branch: Some("enh/arrange".to_string()),
+                    directory: "~/rust/ui-arrange".to_string(),
+                    children: vec![child(
                         0,
-                        ChildKind::Shell,
-                        Some(4_000_001),
-                        "Run the tests",
-                        2 * MINUTE,
-                    ),
-                    session(TRUNK, "tool-based-ui-trunk", 21 * HOUR),
-                    session(ARRANGE, "tool-based-ui-arrange", 3 * HOUR),
-                ],
-                ..agent(BOSS, "boss of bosses", 23 * HOUR, None)
-            },
-            AgentRow {
-                branch: Some("enh/trunk".to_string()),
-                directory: "~/rust/ui-trunk".to_string(),
-                children: vec![
-                    child(
-                        0,
-                        ChildKind::Subagent,
-                        None,
-                        "Review the permission queue",
-                        5 * MINUTE + 3,
-                    ),
-                    child(
-                        1,
-                        ChildKind::Shell,
-                        Some(2_424_763),
-                        "cargo nextest run -p hana_video",
-                        45,
-                    ),
-                    session(TRUNK_IMPL, "trunk-impl", 2 * HOUR),
-                ],
-                ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
-            },
-            AgentRow {
-                status: Some("idle".to_string()),
-                branch: Some("enh/arrange".to_string()),
-                directory: "~/rust/ui-arrange".to_string(),
-                children: vec![child(
-                    0,
-                    ChildKind::Detached(Agent::Codex),
-                    Some(468_060),
-                    "app-server",
-                    HOUR,
-                )],
-                ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
-            },
-            AgentRow {
-                status: Some("idle".to_string()),
-                directory: "~/scratch/impl".to_string(),
-                ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
-            },
-        ])
+                        ChildKind::Detached(Agent::Codex),
+                        Some(468_060),
+                        "app-server",
+                        HOUR,
+                    )],
+                    ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
+                },
+                AgentRow {
+                    status: Some("idle".to_string()),
+                    directory: "~/scratch/impl".to_string(),
+                    ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
+                },
+            ],
+            crate::census::HierarchyEdges::default(),
+        )
     }
 
     /// The cells `natedev` answers with.
@@ -1574,8 +1580,8 @@ mod tests {
         let reused = older_row(NOW);
         assert_eq!(first.process_started, first.started);
         assert_eq!(reused.process_started, reused.started);
-        let first = MachineState::Answered(vec![first]);
-        let reused = MachineState::Answered(vec![reused]);
+        let first = MachineState::Answered(vec![first], crate::census::HierarchyEdges::default());
+        let reused = MachineState::Answered(vec![reused], crate::census::HierarchyEdges::default());
         assert_ne!(natedev_cells(&first)[0].id, natedev_cells(&reused)[0].id);
     }
 
@@ -1583,11 +1589,15 @@ mod tests {
     fn a_resumed_claude_session_keeps_its_cell_key_when_its_age_moves_earlier() {
         let row = agent(BOSS, "resumed", HOUR, None);
         let process_started = row.process_started;
-        let classified = MachineState::Answered(vec![row.clone()]);
-        let detailed = MachineState::Answered(vec![AgentRow {
-            started: process_started - HOUR,
-            ..row.clone()
-        }]);
+        let classified =
+            MachineState::Answered(vec![row.clone()], crate::census::HierarchyEdges::default());
+        let detailed = MachineState::Answered(
+            vec![AgentRow {
+                started: process_started - HOUR,
+                ..row.clone()
+            }],
+            crate::census::HierarchyEdges::default(),
+        );
         let classified_cells = natedev_cells(&classified);
         let detailed_cells = natedev_cells(&detailed);
         assert_ne!(
@@ -1597,10 +1607,13 @@ mod tests {
         assert_eq!(classified_cells[0].id.process_started, process_started);
         assert_eq!(classified_cells[0].id, detailed_cells[0].id);
 
-        let reused_pid = MachineState::Answered(vec![AgentRow {
-            process_started: process_started + 1,
-            ..row
-        }]);
+        let reused_pid = MachineState::Answered(
+            vec![AgentRow {
+                process_started: process_started + 1,
+                ..row
+            }],
+            crate::census::HierarchyEdges::default(),
+        );
         assert_ne!(classified_cells[0].id, natedev_cells(&reused_pid)[0].id);
     }
 
@@ -2010,17 +2023,23 @@ mod tests {
     /// another, then a session whose launcher is not listed and two rows
     /// naming only each other, then the mac's one agent.
     fn natedev_and_mac() -> (MachineState, MachineState) {
-        let natedev = MachineState::Answered(vec![
-            agent(428_044, "enh/handler", 24 * HOUR, None),
-            agent(BOSS, "boss of bosses", 23 * HOUR, None),
-            agent(3_266_367, "trunk", 21 * HOUR, Some(BOSS)),
-            agent(3_337_048, "arrange", 3 * HOUR, Some(BOSS)),
-            agent(3_400_000, "under trunk", 2 * HOUR, Some(3_266_367)),
-            agent(3_500_000, "orphan", HOUR, Some(999)),
-            agent(3_600_000, "left", 30 * MINUTE, Some(3_700_000)),
-            agent(3_700_000, "right", 20 * MINUTE, Some(3_600_000)),
-        ]);
-        let mac = MachineState::Answered(vec![agent(12_055, "natemccoy-30", HOUR, None)]);
+        let natedev = MachineState::Answered(
+            vec![
+                agent(428_044, "enh/handler", 24 * HOUR, None),
+                agent(BOSS, "boss of bosses", 23 * HOUR, None),
+                agent(3_266_367, "trunk", 21 * HOUR, Some(BOSS)),
+                agent(3_337_048, "arrange", 3 * HOUR, Some(BOSS)),
+                agent(3_400_000, "under trunk", 2 * HOUR, Some(3_266_367)),
+                agent(3_500_000, "orphan", HOUR, Some(999)),
+                agent(3_600_000, "left", 30 * MINUTE, Some(3_700_000)),
+                agent(3_700_000, "right", 20 * MINUTE, Some(3_600_000)),
+            ],
+            crate::census::HierarchyEdges::default(),
+        );
+        let mac = MachineState::Answered(
+            vec![agent(12_055, "natemccoy-30", HOUR, None)],
+            crate::census::HierarchyEdges::default(),
+        );
         (natedev, mac)
     }
 

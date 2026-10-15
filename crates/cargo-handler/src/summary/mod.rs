@@ -199,7 +199,7 @@ fn heading<'a>(machine: &Machine<'a>) -> Line<'a> {
     ];
     match machine.state {
         MachineState::Scanning => heading.push(Span::styled(SCANNING_NOTE, note)),
-        MachineState::Answered(_) => heading.push(Span::styled(
+        MachineState::Answered(_, _) => heading.push(Span::styled(
             count_note(machine.state.top_level().count()),
             note,
         )),
@@ -353,6 +353,7 @@ mod tests {
 
     use super::*;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -377,6 +378,7 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            session_id: SessionIdentity::Unrecorded,
             agent,
             service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
@@ -419,50 +421,53 @@ mod tests {
             launched_by: Some(1_579_022),
             ..row(3_266_367, Agent::Claude, "trunk", None, HOUR, "~")
         };
-        MachineState::Answered(vec![
-            on(
-                "boss",
-                row(
-                    1_579_022,
-                    Agent::Claude,
-                    "boss of bosses",
-                    Some("idle"),
-                    21 * HOUR,
-                    "~/rust/hana_catalyst/docs/hana",
+        MachineState::Answered(
+            vec![
+                on(
+                    "boss",
+                    row(
+                        1_579_022,
+                        Agent::Claude,
+                        "boss of bosses",
+                        Some("idle"),
+                        21 * HOUR,
+                        "~/rust/hana_catalyst/docs/hana",
+                    ),
                 ),
-            ),
-            launched,
-            on(
-                "berth_fix",
-                row(
-                    2_747_564,
-                    Agent::Claude,
-                    "tmp cleanup then merge to berth and handler",
-                    Some("shell"),
-                    2 * HOUR + 29 * MINUTE,
-                    "~/rust/cargo-handler",
+                launched,
+                on(
+                    "berth_fix",
+                    row(
+                        2_747_564,
+                        Agent::Claude,
+                        "tmp cleanup then merge to berth and handler",
+                        Some("shell"),
+                        2 * HOUR + 29 * MINUTE,
+                        "~/rust/cargo-handler",
+                    ),
                 ),
-            ),
-            on(
-                "cargo handler",
+                on(
+                    "cargo handler",
+                    row(
+                        428_044,
+                        Agent::Claude,
+                        "enh/handler",
+                        Some("busy"),
+                        HOUR + 36 * MINUTE,
+                        "~/rust/handler",
+                    ),
+                ),
                 row(
-                    428_044,
-                    Agent::Claude,
-                    "enh/handler",
-                    Some("busy"),
-                    HOUR + 36 * MINUTE,
+                    4_039_085,
+                    Agent::Codex,
+                    "--model gpt-5",
+                    None,
+                    12 * MINUTE,
                     "~/rust/handler",
                 ),
-            ),
-            row(
-                4_039_085,
-                Agent::Codex,
-                "--model gpt-5",
-                None,
-                12 * MINUTE,
-                "~/rust/handler",
-            ),
-        ])
+            ],
+            crate::census::HierarchyEdges::default(),
+        )
     }
 
     /// Four machines: this one with a name past the column's cap, a busy
@@ -476,14 +481,17 @@ mod tests {
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
         let natedev = natedev();
-        let mac = MachineState::Answered(vec![row(
-            12_055,
-            Agent::Claude,
-            "natemccoy-30",
-            Some("idle"),
-            23 * HOUR,
-            "~",
-        )]);
+        let mac = MachineState::Answered(
+            vec![row(
+                12_055,
+                Agent::Claude,
+                "natemccoy-30",
+                Some("idle"),
+                23 * HOUR,
+                "~",
+            )],
+            crate::census::HierarchyEdges::default(),
+        );
         let studio = MachineState::Failed("unreachable".to_string());
         let pi = MachineState::Scanning;
         let machines = [
@@ -577,27 +585,30 @@ mod tests {
     /// in the Codex color, and the column widens to hold it.
     #[test]
     fn a_codex_tier_follows_its_program() {
-        let natedev = MachineState::Answered(vec![
-            row(
-                428_044,
-                Agent::Claude,
-                "enh/handler",
-                Some("busy"),
-                HOUR,
-                "~/rust/handler",
-            ),
-            AgentRow {
-                service_tier: ServiceTier::Fast,
-                ..row(
-                    4_039_085,
-                    Agent::Codex,
-                    "--model gpt-5",
-                    None,
-                    12 * MINUTE,
+        let natedev = MachineState::Answered(
+            vec![
+                row(
+                    428_044,
+                    Agent::Claude,
+                    "enh/handler",
+                    Some("busy"),
+                    HOUR,
                     "~/rust/handler",
-                )
-            },
-        ]);
+                ),
+                AgentRow {
+                    service_tier: ServiceTier::Fast,
+                    ..row(
+                        4_039_085,
+                        Agent::Codex,
+                        "--model gpt-5",
+                        None,
+                        12 * MINUTE,
+                        "~/rust/handler",
+                    )
+                },
+            ],
+            crate::census::HierarchyEdges::default(),
+        );
         let machines = [Machine {
             name:  "natedev",
             state: &natedev,
@@ -677,7 +688,7 @@ mod tests {
             MINUTE,
             LONG_DIRECTORY,
         ));
-        let longer = MachineState::Answered(rows);
+        let longer = MachineState::Answered(rows, crate::census::HierarchyEdges::default());
         let machines = [Machine {
             name:  "natedev",
             state: &longer,
@@ -688,7 +699,7 @@ mod tests {
             "the table widens by what the long directory adds"
         );
 
-        let quiet = MachineState::Answered(Vec::new());
+        let quiet = MachineState::Answered(Vec::new(), crate::census::HierarchyEdges::default());
         let studio = MachineState::Failed("unreachable".to_string());
         let machines = [
             Machine {

@@ -37,6 +37,7 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentRow;
 use super::ServiceTier;
+use super::SessionIdentity;
 use super::codex::CodexThread;
 use super::tmux;
 use super::transcript::BashCall;
@@ -305,6 +306,7 @@ fn claude_row(
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
         agent:           Agent::Claude,
+        session_id:      session.session_id.clone().into(),
         service_tier:    ServiceTier::Unrecorded,
         name:            session.label(),
         status:          session.status.clone(),
@@ -326,6 +328,7 @@ fn claude_row(
 fn desktop_app_row(process: &ProcessEntry, home: Option<&Path>) -> AgentRow {
     AgentRow {
         agent:           Agent::Claude,
+        session_id:      SessionIdentity::Unrecorded,
         service_tier:    ServiceTier::Unrecorded,
         name:            CLAUDE_DESKTOP_APP.to_string(),
         status:          None,
@@ -368,6 +371,7 @@ fn codex_row(
     };
     Some(AgentRow {
         agent: Agent::Codex,
+        session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Unrecorded,
         name,
         status: None,
@@ -738,6 +742,10 @@ mod tests {
         assert!(rows.iter().all(|row| row.launched_by.is_none()));
         let handler = &rows[6];
         assert_eq!(handler.agent, Agent::Claude);
+        assert_eq!(
+            handler.session_id,
+            super::super::SessionIdentity::Claude(sessions[1].session_id.clone())
+        );
         assert_eq!(handler.status.as_deref(), Some("busy"));
         assert_eq!(handler.started, 800);
         assert_eq!(handler.pid, 428_044);
@@ -746,6 +754,7 @@ mod tests {
         assert_eq!(rows[0].directory, "/etc/nixos");
         let codex = &rows[9];
         assert_eq!(codex.agent, Agent::Codex);
+        assert_eq!(codex.session_id, super::super::SessionIdentity::Unrecorded);
         assert_eq!(codex.status, None);
         assert_eq!(codex.directory, "~/rust/handler");
     }
@@ -956,6 +965,7 @@ mod tests {
         let app = &rows[0];
         assert_eq!(app.pid, 500);
         assert_eq!(app.agent, Agent::Claude);
+        assert_eq!(app.session_id, super::super::SessionIdentity::Unrecorded);
         assert_eq!(app.status, None);
         assert_eq!(app.directory, HOME_ABBREVIATION);
     }

@@ -144,8 +144,18 @@ enum LocalPublication {
     CompletedAnswerPublished,
 }
 
+/// Which work is complete when a local scan publishes its rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScanStage {
+    /// Ready for immediate display, before detail reads or hierarchy discovery.
+    Classified,
+    /// All local row detail sources have been read.
+    Completed,
+}
+
 impl LocalScanner {
-    /// Classify synthetic or live inputs, publishing early only on startup.
+    /// Adapt existing row-only fixtures to the staged scan implementation.
+    #[cfg(test)]
     fn scan_stages(
         &mut self,
         processes: &[ProcessEntry],
@@ -155,14 +165,34 @@ impl LocalScanner {
         mut publish: impl FnMut(Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
+        self.scan_stages_with(
+            processes,
+            sessions,
+            codex_threads,
+            home,
+            |_, rows| publish(rows),
+            read_details,
+        );
+    }
+
+    /// Classify synthetic or live inputs, publishing early only on startup.
+    fn scan_stages_with(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        codex_threads: &[CodexThread],
+        home: Option<&Path>,
+        mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
+        read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
+    ) {
         let mut rows = startup_log::startup_stage("classify_agents", || {
             classify::agent_rows(processes, sessions, codex_threads, home)
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
-            publish(rows.clone());
+            publish(ScanStage::Classified, rows.clone());
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
-        publish(rows);
+        publish(ScanStage::Completed, rows);
         self.publication = LocalPublication::CompletedAnswerPublished;
     }
 
@@ -188,12 +218,12 @@ impl LocalScanner {
     /// the process that had it before.
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
         let mut rows = Vec::new();
-        self.scan_staged(|answer| rows = answer);
+        self.scan_staged(|_, answer| rows = answer);
         rows
     }
 
     /// Publish classification early on startup; later scans publish completed rows only.
-    pub(super) fn scan_staged(&mut self, publish: impl FnMut(Vec<AgentRow>)) {
+    pub(super) fn scan_staged(&mut self, publish: impl FnMut(ScanStage, Vec<AgentRow>)) {
         let home = self.home.clone();
         let sessions = startup_log::startup_stage("sessions", || {
             home.as_deref()
@@ -209,7 +239,7 @@ impl LocalScanner {
                 .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
                 .unwrap_or_default()
         });
-        self.scan_stages(
+        self.scan_stages_with(
             &processes,
             &sessions,
             &codex_threads,
@@ -854,6 +884,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::SessionIdentity;
 
     /// Only `.json` files that parse are records: the key files beside
     /// them and a record caught half written are skipped.
@@ -984,6 +1015,7 @@ mod tests {
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: None,
@@ -1207,5 +1239,92 @@ mod tests {
 
         scanner.find_shell_calls(&[boss], &transcripts, &subagents, LAUNCH + 40);
         assert!(scanner.shell_calls.is_empty());
+    }
+}
+
+/// Staged publication must remain fast even with hierarchy discovery enabled.
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod hierarchy_publication_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use super::LocalScanner;
+    use crate::census::CensusUpdate;
+    use crate::census::HierarchyCommand;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
+    use crate::census::HierarchySource;
+    use crate::census::hierarchy::HierarchyError;
+    use crate::census::hierarchy::HierarchyRunner;
+    use crate::census::schedule;
+
+    /// Counts discovery attempts independently of the scanner's stage callbacks.
+    struct CountingRunner(AtomicUsize);
+
+    impl HierarchyRunner for CountingRunner {
+        fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(HierarchyEdges(vec![HierarchyEdge {
+                manager: "boss".to_string(),
+                member:  "worker".to_string(),
+                role:    HierarchyRole::Impl,
+            }]))
+        }
+    }
+
+    #[test]
+    fn classified_rows_publish_without_discovery_and_completed_rows_carry_edges() {
+        let runner = Arc::new(CountingRunner(AtomicUsize::new(0)));
+        let observed = Arc::clone(&runner);
+        let updates = schedule::spawn_with_test_source(
+            HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
+            runner,
+            move |answers| {
+                LocalScanner::new().scan_stages_with(
+                    &[],
+                    &[],
+                    &[],
+                    None,
+                    |stage, rows| {
+                        answers
+                            .publish(stage, rows)
+                            .expect("the scan should publish");
+                    },
+                    |_, _| {
+                        assert_eq!(
+                            observed.0.load(Ordering::SeqCst),
+                            0,
+                            "classification must not run hierarchy discovery"
+                        );
+                    },
+                );
+            },
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("classification should arrive"),
+            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("completion should arrive"),
+            CensusUpdate::Local(
+                Vec::new(),
+                HierarchyEdges(vec![HierarchyEdge {
+                    manager: "boss".to_string(),
+                    member:  "worker".to_string(),
+                    role:    HierarchyRole::Impl,
+                }])
+            )
+        );
     }
 }

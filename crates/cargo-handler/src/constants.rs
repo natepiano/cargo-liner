@@ -48,8 +48,12 @@ pub(crate) const TILES_SETTINGS_SECTION: &str = "Tiles";
 /// Section heading the settings overlay puts the remote machine list
 /// under.
 pub(crate) const MACHINES_SETTINGS_SECTION: &str = "Machines";
+/// Section heading for the census settings.
+pub(crate) const CENSUS_SETTINGS_SECTION: &str = "Census";
 /// Label of the settings row holding `machines.remote`.
 pub(crate) const REMOTE_MACHINES_LABEL: &str = "remote";
+/// Label of the command reporting management links.
+pub(crate) const HIERARCHY_COMMAND_LABEL: &str = "hierarchy command";
 
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
@@ -514,6 +518,24 @@ pub(crate) const TMUX_LIST_PANES: [&str; 4] =
 /// its pid and the name of the session it shows.
 pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
     ["list-clients", "-F", "#{client_pid} #{session_name}"];
+
+// hierarchy discovery
+/// Version of the hierarchy command's JSON contract.
+pub(crate) const HIERARCHY_SCHEMA: u32 = 1;
+/// Largest accepted hierarchy answer in bytes, before JSON decoding.
+pub(crate) const HIERARCHY_OUTPUT_LIMIT: usize = 1024 * 1024;
+/// The shell that evaluates a configured hierarchy command.
+pub(crate) const SHELL_PROGRAM: &str = "sh";
+/// The program that terminates a hierarchy command's process group.
+#[cfg(unix)]
+pub(crate) const KILL_PROGRAM: &str = "kill";
+/// Terminate the entire group, even when the shell has started child commands.
+#[cfg(unix)]
+pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
+/// Maximum runtime of the local hierarchy command.
+pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(1);
+/// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
+pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,

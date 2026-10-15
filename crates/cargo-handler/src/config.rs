@@ -109,6 +109,15 @@ pub(crate) struct MachinesConfig {
     pub(crate) remote: Vec<String>,
 }
 
+/// How this machine discovers relationships between its agents.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct CensusConfig {
+    /// One line of shell that prints this machine's hierarchy edges;
+    /// empty disables hierarchy discovery.
+    pub(crate) hierarchy_command: String,
+}
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -120,6 +129,8 @@ pub(crate) struct Config {
     pub(crate) tiles:      TilesConfig,
     /// `[machines]` — the remote machines the summary lists.
     pub(crate) machines:   MachinesConfig,
+    /// `[census]` — discovery of this machine's agent hierarchy.
+    pub(crate) census:     CensusConfig,
 }
 
 impl AppConfig for Config {
@@ -178,6 +189,9 @@ widen_summary = true
 
 [machines]
 remote = []
+
+[census]
+hierarchy_command = \"\"
 ";
         let written =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
@@ -199,6 +213,22 @@ remote = []
     fn summary_tile_view_round_trips() {
         let restated = round_trip("[tiles]\nview = \"summary\"\n");
         assert!(restated.contains("view = \"summary\""));
+        assert_eq!(round_trip(&restated), restated);
+    }
+
+    /// Shell quoting and separators survive a config save and reload.
+    #[test]
+    fn the_hierarchy_command_round_trips_as_one_shell_line() {
+        let text =
+            "[census]\nhierarchy_command = '''printf '%s' '{\"schema\":1,\"edges\":[]}' | cat'''\n";
+        let restated = round_trip(text);
+        let reloaded: Config =
+            toml::from_str(&restated).expect("the saved shell command should parse");
+
+        assert_eq!(
+            reloaded.census.hierarchy_command,
+            "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat"
+        );
         assert_eq!(round_trip(&restated), restated);
     }
 

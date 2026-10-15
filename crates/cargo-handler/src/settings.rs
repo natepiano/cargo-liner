@@ -1,12 +1,13 @@
 //! cargo-handler's rows in the framework settings overlay, and the
 //! stepping that edits them.
 //!
-//! The framework owns every row here but `remote`: the `[appearance]`
-//! steppers, `initial rows`, `fill`, `view`, `widen summary`, the Files
-//! paths and the Notices section. This module places them. Every
+//! The framework owns every row here but the remote list and hierarchy
+//! command: the `[appearance]` steppers, `initial rows`, `fill`, `view`,
+//! `widen summary`, the Files paths and the Notices section. This
+//! module places them. Every
 //! stepper walks its allowed values on Left/Right/Enter, writes
-//! `config.toml`, and swaps the active theme in place. Every other row reports state
-//! and is inert.
+//! `config.toml`, and swaps the active theme in place. Text rows replace
+//! their scheduler settings when committed; the remaining rows report state.
 
 use tui_pane::SettingStep;
 use tui_pane::SettingTarget;
@@ -18,7 +19,10 @@ use tui_pane::parse_list;
 use tui_pane::step_framework_setting;
 
 use crate::app::App;
+use crate::census::HierarchySource;
 use crate::config::CargoHandler;
+use crate::constants::CENSUS_SETTINGS_SECTION;
+use crate::constants::HIERARCHY_COMMAND_LABEL;
 use crate::constants::MACHINES_SETTINGS_SECTION;
 use crate::constants::REMOTE_MACHINES_LABEL;
 use crate::constants::TILES_SETTINGS_SECTION;
@@ -28,6 +32,8 @@ use crate::constants::TILES_SETTINGS_SECTION;
 pub(crate) enum AppSetting {
     /// `machines.remote`, typed in as a list of ssh host names.
     RemoteMachines,
+    /// `census.hierarchy_command`, typed in as one line of shell.
+    HierarchyCommand,
 }
 
 /// Build the settings rows for the current frame.
@@ -50,6 +56,13 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
         list_display(&config.machines.remote),
     );
 
+    out.section(CENSUS_SETTINGS_SECTION);
+    out.text(
+        AppSetting::HierarchyCommand,
+        HIERARCHY_COMMAND_LABEL,
+        config.census.hierarchy_command.clone(),
+    );
+
     out.files::<CargoHandler>();
 
     out.notices(&notices(app));
@@ -67,7 +80,7 @@ pub(crate) fn cycle(app: &mut App, step: SettingStep) {
             step_framework_setting(setting, step, &mut app.loaded_config, &mut app.startup_note);
         },
         Some(
-            SettingTarget::App(AppSetting::RemoteMachines)
+            SettingTarget::App(AppSetting::RemoteMachines | AppSetting::HierarchyCommand)
             | SettingTarget::AppText(_)
             | SettingTarget::ReadOnly,
         )
@@ -75,19 +88,33 @@ pub(crate) fn cycle(app: &mut App, step: SettingStep) {
     }
 }
 
-/// The remote list as the text its editor opens on, when the selection
-/// is the typed `remote` row.
+/// The selected text row's value as its editor opens on it.
 pub(crate) fn selected_text(app: &App) -> Option<String> {
-    remote_row_selected(app).then(|| join_list(&app.loaded_config.config.machines.remote))
+    let selection = app.framework.settings_pane.viewport().pos();
+    match rows(app).target(selection) {
+        Some(SettingTarget::AppText(AppSetting::RemoteMachines)) => {
+            Some(join_list(&app.loaded_config.config.machines.remote))
+        },
+        Some(SettingTarget::AppText(AppSetting::HierarchyCommand)) => {
+            Some(app.loaded_config.config.census.hierarchy_command.clone())
+        },
+        _ => None,
+    }
 }
 
-/// Replace the remote list with what was typed, write `config.toml`,
-/// and apply it: the scheduler probes the new list from its next round.
+/// Replace the selected text setting, write `config.toml`, and apply
+/// it to the scheduler's next round.
 pub(crate) fn commit_text(app: &mut App, text: &str) {
-    if !remote_row_selected(app) {
-        return;
+    let selection = app.framework.settings_pane.viewport().pos();
+    match rows(app).target(selection) {
+        Some(SettingTarget::AppText(AppSetting::RemoteMachines)) => {
+            set_remote_machines(app, parse_list(text));
+        },
+        Some(SettingTarget::AppText(AppSetting::HierarchyCommand)) => {
+            set_hierarchy_command(app, text);
+        },
+        _ => return,
     }
-    set_remote_machines(app, parse_list(text));
     apply_settings(&mut app.loaded_config, &mut app.startup_note);
 }
 
@@ -99,10 +126,12 @@ fn set_remote_machines(app: &mut App, hosts: Vec<String>) {
     app.loaded_config.config.machines.remote = hosts;
 }
 
-/// Whether the settings selection is on the typed `remote` row.
-fn remote_row_selected(app: &App) -> bool {
-    let selection = app.framework.settings_pane.viewport().pos();
-    rows(app).target(selection) == Some(SettingTarget::AppText(AppSetting::RemoteMachines))
+/// Keep the stored shell line and the scheduler's enabled or off state
+/// in sync without running the command on the UI thread.
+fn set_hierarchy_command(app: &mut App, text: &str) {
+    app.hierarchy_command
+        .replace(HierarchySource::from(text.to_string()));
+    app.loaded_config.config.census.hierarchy_command = text.to_string();
 }
 
 /// Outstanding startup notices, kept visible after their toasts
@@ -166,6 +195,50 @@ mod tests {
             app.census.machines(&configured)[1].state,
             &MachineState::Scanning
         );
+    }
+
+    /// Committing preserves shell syntax, updates the scheduler, and
+    /// lets an empty edit disable hierarchy discovery again.
+    #[test]
+    fn committing_the_hierarchy_command_updates_the_config_and_scheduler() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let settings = rows(&app);
+        let selection = (0..settings.rows().len())
+            .find(|&selection| {
+                settings.target(selection)
+                    == Some(SettingTarget::AppText(AppSetting::HierarchyCommand))
+            })
+            .expect("the settings list a hierarchy command row");
+        app.framework
+            .settings_pane
+            .viewport_mut()
+            .set_pos(selection);
+        let command = "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat";
+        let row_value = |app: &App| {
+            rows(app)
+                .rows()
+                .iter()
+                .find(|row| row.label == HIERARCHY_COMMAND_LABEL)
+                .map(|row| row.value.clone())
+                .expect("the settings list a hierarchy command row")
+        };
+
+        commit_text(&mut app, command);
+
+        assert_eq!(app.loaded_config.config.census.hierarchy_command, command);
+        assert_eq!(
+            app.hierarchy_command.snapshot(),
+            HierarchySource::Command(command.to_string())
+        );
+        assert_eq!(selected_text(&app).as_deref(), Some(command));
+        assert_eq!(row_value(&app), command);
+
+        commit_text(&mut app, "");
+
+        assert_eq!(app.loaded_config.config.census.hierarchy_command, "");
+        assert_eq!(app.hierarchy_command.snapshot(), HierarchySource::Off);
+        assert_eq!(selected_text(&app).as_deref(), Some(""));
+        assert_eq!(row_value(&app), "");
     }
 
     /// The value the `fill` row shows.

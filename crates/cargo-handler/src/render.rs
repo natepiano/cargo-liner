@@ -245,6 +245,7 @@ mod tests {
     use crate::census::ChildRow;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
+    use crate::census::SessionIdentity;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -356,31 +357,31 @@ fraying = "leading"
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
-    /// The settings overlay: Appearance, Tiles and Files, the paths under
+    /// The settings overlay: Appearance, Tiles, Machines, Census and Files; paths under
     /// the test build's stand-in config root.
     const SETTINGS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · no agents                                                          │",
-        "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
-        "│       │ ▶ mode           < auto >                                    │       │",
-        "│       │   light theme    < Default Light >                           │       │",
-        "│       │   dark theme     < Default Dark >                            │       │",
-        "│       │   transparent    < true >                                    │       │",
+        "│       │ ▶ mode               < auto >                                │       │",
+        "│       │   light theme        < Default Light >                       │       │",
+        "│       │   dark theme         < Default Dark >                        │       │",
+        "│       │   transparent        < true >                                │       │",
         "│       │ Tiles:                                                       │       │",
-        "│       │   initial rows   < 4 >                                       │       │",
-        "│       │   fill           < redistribute >                            │       │",
-        "│       │   view           < auto >                                    │       │",
-        "│       │   widen summary  < true >                                    │       │",
+        "│       │   initial rows       < 4 >                                   │       │",
+        "│       │   fill               < redistribute >                        │       │",
+        "│       │   view               < auto >                                │       │",
+        "│       │   widen summary      < true >                                │       │",
         "│       │ Machines:                                                    │       │",
-        "│       │   remote         none                                        │       │",
+        "│       │   remote             none                                    │       │",
+        "│       │ Census:                                                      │       │",
+        "│       │   hierarchy command                                          │       │",
         "│       │ Files:                                                       │       │",
-        "│       │   config         /<config>/cargo-handler/config.toml         │       │",
-        "│       │   themes         /<config>/cargo-handler/themes              │       │",
-        "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
-        "│       └──────────────────────────────────────────────────────────────┘       │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│       │   config             /<config>/cargo-handler/config.toml     │       │",
+        "│       │   themes             /<config>/cargo-handler/themes          │       │",
+        "│       │   keymap             /<config>/cargo-handler/keymap.toml     │       │",
+        "│       └──────────────────────────────────────────────────────────────┘ 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -672,6 +673,7 @@ fraying = "leading"
             timer: None,
         };
         AgentRow {
+            session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,
             service_tier:    ServiceTier::Unrecorded,
             name:            "boss of bosses".to_string(),
@@ -761,8 +763,10 @@ fraying = "leading"
     #[test]
     fn a_listed_agent_gets_a_cell_titled_with_its_name() {
         let mut app = laid_out_app();
-        app.census
-            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        app.census.apply(CensusUpdate::Local(
+            vec![boss(21 * 60 * 60)],
+            crate::census::HierarchyEdges::default(),
+        ));
         drawn_grid(&mut app);
         app.tiles.settle_for_test();
 
@@ -786,7 +790,10 @@ fraying = "leading"
                 ..boss(21 * 60 * 60)
             })
             .collect();
-        app.census.apply(CensusUpdate::Local(agents));
+        app.census.apply(CensusUpdate::Local(
+            agents,
+            crate::census::HierarchyEdges::default(),
+        ));
         drawn_buffer_in(&mut app, body);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer_in(&mut app, body);
@@ -829,8 +836,10 @@ fraying = "leading"
     #[test]
     fn an_agent_name_and_its_cell_title_share_a_hue() {
         let mut app = laid_out_app();
-        app.census
-            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        app.census.apply(CensusUpdate::Local(
+            vec![boss(21 * 60 * 60)],
+            crate::census::HierarchyEdges::default(),
+        ));
         drawn_buffer(&mut app);
         app.tiles.settle_for_test();
 
@@ -848,16 +857,19 @@ fraying = "leading"
     /// takes at the narrowest width: the width its cell will open at.
     #[test]
     fn an_agent_cell_asks_for_its_rows_at_its_own_width() {
-        let natedev = MachineState::Answered(vec![
-            boss(21 * 60 * 60),
-            AgentRow {
-                pid: 428_044,
-                name: "enh/handler".to_string(),
-                directory: "~/rust/handler".to_string(),
-                children: Vec::new(),
-                ..boss(20 * 60 * 60)
-            },
-        ]);
+        let natedev = MachineState::Answered(
+            vec![
+                boss(21 * 60 * 60),
+                AgentRow {
+                    pid: 428_044,
+                    name: "enh/handler".to_string(),
+                    directory: "~/rust/handler".to_string(),
+                    children: Vec::new(),
+                    ..boss(20 * 60 * 60)
+                },
+            ],
+            crate::census::HierarchyEdges::default(),
+        );
         let cells = Cells::new(
             vec![Machine {
                 name:  "natedev",
