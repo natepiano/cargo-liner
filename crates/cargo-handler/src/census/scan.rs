@@ -31,6 +31,7 @@ use sysinfo::UpdateKind;
 
 use super::Agent;
 use super::AgentRow;
+use super::CodexThreadId;
 use super::ServiceTier;
 use super::branch;
 use super::classify;
@@ -651,13 +652,19 @@ fn app_server_threads(
             let threads = ids
                 .into_iter()
                 .map(|(id, rollout)| {
-                    let (name, started) = match named.get(&id) {
-                        Some(thread) => (thread.label().unwrap_or(id), thread.created_ms / 1_000),
-                        None => (id, process.started),
-                    };
+                    let (name, started) = named.get(&id).map_or_else(
+                        || (id.clone(), process.started),
+                        |thread| {
+                            (
+                                thread.label().unwrap_or_else(|| id.clone()),
+                                thread.created_ms / 1_000,
+                            )
+                        },
+                    );
                     let service_tier =
                         tier::requested(Some(rollouts.read(&rollout)), &[], pacer, started);
                     ThreadEntry {
+                        thread_id: CodexThreadId::Recorded(id),
                         name,
                         started,
                         service_tier,

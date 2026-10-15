@@ -25,8 +25,29 @@ enum StartupTiming {
 static STARTUP_TIMING: OnceLock<StartupTiming> = OnceLock::new();
 static LOG_WRITE: Mutex<()> = Mutex::new(());
 static FIRST_FRAME: AtomicBool = AtomicBool::new(false);
-static FIRST_LOCAL: AtomicBool = AtomicBool::new(false);
-static FIRST_AGENT: AtomicBool = AtomicBool::new(false);
+static ANSWER_MILESTONES: StartupAnswerMilestones = StartupAnswerMilestones {
+    first_local: AtomicBool::new(false),
+    first_agent: AtomicBool::new(false),
+};
+
+/// One-time milestones for local answers and the first visible agents.
+struct StartupAnswerMilestones {
+    first_local: AtomicBool,
+    first_agent: AtomicBool,
+}
+
+impl StartupAnswerMilestones {
+    /// Emit milestones without counting transport-only carriers as agents.
+    fn record(&self, rows: &[AgentRow], mut emit: impl FnMut(&str)) {
+        if !self.first_local.swap(true, Ordering::Relaxed) {
+            emit(&format!("first_local_answer rows={}", rows.len()));
+        }
+        let visible = rows.iter().filter(|row| row.is_visible()).count();
+        if visible > 0 && !self.first_agent.swap(true, Ordering::Relaxed) {
+            emit(&format!("first_agent_rows rows={visible}"));
+        }
+    }
+}
 
 /// Record a startup milestone in milliseconds since the app began starting.
 pub(crate) fn startup_event(event: &str) {
@@ -59,12 +80,7 @@ pub(crate) fn startup_stage<T>(stage: &str, body: impl FnOnce() -> T) -> T {
 
 /// Record when a local answer is ready, independently of when the UI drains it.
 pub(crate) fn startup_local_answer(rows: &[AgentRow]) {
-    if !FIRST_LOCAL.swap(true, Ordering::Relaxed) {
-        startup_event(&format!("first_local_answer rows={}", rows.len()));
-    }
-    if !rows.is_empty() && !FIRST_AGENT.swap(true, Ordering::Relaxed) {
-        startup_event(&format!("first_agent_rows rows={}", rows.len()));
-    }
+    ANSWER_MILESTONES.record(rows, startup_event);
 }
 
 /// Startup milestones supplied by the terminal runner's existing probe hooks.
@@ -101,4 +117,30 @@ pub(crate) fn init() {
     });
     let _ = STARTUP_TIMING.set(timing);
     startup_event("process_start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transport-only answer must not consume the first visible-agent milestone.
+    #[test]
+    fn transport_hosts_do_not_record_the_first_agent_milestone() {
+        let milestones = StartupAnswerMilestones {
+            first_local: AtomicBool::new(false),
+            first_agent: AtomicBool::new(false),
+        };
+        let (manager, worker) = crate::census::mesh_worker_fixture();
+        let mut events = Vec::new();
+        milestones.record(worker.rows(), |event| events.push(event.to_string()));
+        assert_eq!(events, ["first_local_answer rows=1"]);
+        let mut mixed = worker.rows().to_vec();
+        mixed.extend_from_slice(manager.rows());
+        milestones.record(&mixed, |event| events.push(event.to_string()));
+        milestones.record(manager.rows(), |event| events.push(event.to_string()));
+        assert_eq!(
+            events,
+            ["first_local_answer rows=1", "first_agent_rows rows=1"]
+        );
+    }
 }

@@ -17,6 +17,7 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
+use crate::census::CodexThreadId;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 
@@ -66,6 +67,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         children:        Vec::new(),
     };
     let child = ChildRow {
+        thread_id:    CodexThreadId::Unrecorded,
         depth:        0,
         kind:         ChildKind::Shell,
         service_tier: ServiceTier::Unrecorded,

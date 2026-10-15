@@ -29,6 +29,7 @@ use self::age::age_label;
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::census::Agent;
+use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::Machine;
 use crate::census::MachineState;
@@ -58,11 +59,11 @@ use crate::theme::Role;
 
 /// Rows the summary draws for `machines`: each machine's heading and
 /// table, and a gap between one machine and the next.
-pub(crate) fn height(machines: &[Machine<'_>]) -> usize {
+pub(crate) fn height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> usize {
     let groups: usize = machines
         .iter()
         .map(|machine| {
-            usize::from(GROUP_HEADER_HEIGHT) + table_height(machine.state.top_level().count())
+            usize::from(GROUP_HEADER_HEIGHT) + table_height(root_rows(*machine, placement).count())
         })
         .sum();
     let gaps = machines.len().saturating_sub(1) * usize::from(GROUP_GAP_HEIGHT);
@@ -75,19 +76,19 @@ pub(crate) fn height(machines: &[Machine<'_>]) -> usize {
 ///
 /// This is what the summary asks the grid for across, so a directory is
 /// only cut short once the summary has reached the right edge.
-pub(crate) fn width(machines: &[Machine<'_>], now: u64) -> u16 {
+pub(crate) fn width(machines: &[Machine<'_>], placement: &AgentPlacement<'_>, now: u64) -> u16 {
     let headings = machines
         .iter()
-        .map(|machine| heading(machine).width())
+        .map(|machine| heading(machine, root_rows(*machine, placement).count()).width())
         .max()
         .map_or(0, |widest| u16::try_from(widest).unwrap_or(u16::MAX));
     if machines
         .iter()
-        .all(|machine| machine.state.top_level().next().is_none())
+        .all(|machine| root_rows(*machine, placement).next().is_none())
     {
         return headings;
     }
-    let widths = column_widths(machines, now);
+    let widths = column_widths(machines, placement, now);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
     let table = (0..SUMMARY_HEADERS.len())
         .map(|column| widths.get(column))
@@ -106,24 +107,45 @@ fn table_height(rows: usize) -> usize {
     }
 }
 
+/// The rows titling cells on this machine, in the census's oldest-first order.
+fn root_rows<'a>(
+    machine: Machine<'a>,
+    placement: &AgentPlacement<'_>,
+) -> impl Iterator<Item = &'a AgentRow> {
+    machine
+        .state
+        .rows()
+        .iter()
+        .filter(move |row| placement.is_root(machine.name, row.pid))
+}
+
 /// Draw `machines` into `area`, with each agent's name in the hue of its
 /// cell among `cells` and ages measured to `now` in unix seconds.
 pub(crate) fn draw(
     buffer: &mut Buffer,
     area: Rect,
     machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
     cells: &[AgentEntry<'_>],
     now: u64,
 ) {
     // Every machine's table is laid out with the same constraints and
     // indent, so its columns line up with every other machine's.
-    let constraints = fitted_constraints(machines, now);
+    let constraints = fitted_constraints(machines, placement, now);
     let mut remaining = area;
     for machine in machines {
         if remaining.height == 0 {
             break;
         }
-        let used = draw_machine(buffer, remaining, machine, cells, &constraints, now);
+        let used = draw_machine(
+            buffer,
+            remaining,
+            machine,
+            placement,
+            cells,
+            &constraints,
+            now,
+        );
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -136,12 +158,14 @@ fn draw_machine(
     buffer: &mut Buffer,
     area: Rect,
     machine: &Machine<'_>,
+    placement: &AgentPlacement<'_>,
     cells: &[AgentEntry<'_>],
     constraints: &[Constraint],
     now: u64,
 ) -> u16 {
+    let rows: Vec<&AgentRow> = root_rows(*machine, placement).collect();
     let label = Style::default().fg(label_color());
-    Paragraph::new(heading(machine)).render(
+    Paragraph::new(heading(machine, rows.len())).render(
         Rect {
             height: GROUP_HEADER_HEIGHT.min(area.height),
             ..area
@@ -149,7 +173,6 @@ fn draw_machine(
         buffer,
     );
 
-    let rows: Vec<&AgentRow> = machine.state.top_level().collect();
     let drawn = area
         .height
         .saturating_sub(GROUP_HEADER_HEIGHT)
@@ -185,7 +208,7 @@ fn draw_machine(
 /// lists, that it is still being scanned, or why it could not be. The
 /// note is plain text, never the label color the table's column
 /// headers use.
-fn heading<'a>(machine: &Machine<'a>) -> Line<'a> {
+fn heading<'a>(machine: &Machine<'a>, roots: usize) -> Line<'a> {
     let note = Style::default().fg(text_default());
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
@@ -199,10 +222,7 @@ fn heading<'a>(machine: &Machine<'a>) -> Line<'a> {
     ];
     match machine.state {
         MachineState::Scanning => heading.push(Span::styled(SCANNING_NOTE, note)),
-        MachineState::Answered(_, _) => heading.push(Span::styled(
-            count_note(machine.state.top_level().count()),
-            note,
-        )),
+        MachineState::Answered(_, _) => heading.push(Span::styled(count_note(roots), note)),
         MachineState::Failed(reason) => {
             heading.push(Span::styled(reason.as_str(), Role::Unreachable.style()));
         },
@@ -247,7 +267,7 @@ fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
 pub(crate) const fn agent_role(agent: Agent) -> Role {
     match agent {
         Agent::Claude => Role::Claude,
-        Agent::Codex => Role::Codex,
+        Agent::Codex | Agent::CodexThreadHost => Role::Codex,
     }
 }
 
@@ -283,8 +303,12 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
 /// Column widths fitted to the widest cell across every machine's rows.
 /// `name` stops at [`NAME_COLUMN_MAX`], and `directory` takes whatever
 /// the fitted columns leave.
-fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
-    column_widths(machines, now)
+fn fitted_constraints(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    now: u64,
+) -> Vec<Constraint> {
+    column_widths(machines, placement, now)
         .to_constraints()
         .into_iter()
         .enumerate()
@@ -300,7 +324,11 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
 
 /// The widest cell in each column across every machine's rows, `name`
 /// stopping at [`NAME_COLUMN_MAX`] and `directory` written out in full.
-fn column_widths(machines: &[Machine<'_>], now: u64) -> ColumnWidths {
+fn column_widths(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    now: u64,
+) -> ColumnWidths {
     let mut widths = ColumnWidths::new(
         SUMMARY_HEADERS
             .iter()
@@ -313,7 +341,7 @@ fn column_widths(machines: &[Machine<'_>], now: u64) -> ColumnWidths {
     );
     for row in machines
         .iter()
-        .flat_map(|machine| machine.state.top_level())
+        .flat_map(|machine| root_rows(*machine, placement))
     {
         widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
         widths.observe_cell_usize(AGENT_COLUMN, row.agent_label().chars().count());
@@ -352,6 +380,11 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::census::Census;
+    use crate::census::CensusUpdate;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
 
@@ -470,6 +503,239 @@ mod tests {
         )
     }
 
+    /// A named Claude session with a stable hierarchy identity.
+    fn session(pid: u32, id: &str) -> AgentRow {
+        AgentRow {
+            session_id: SessionIdentity::Claude(id.to_string()),
+            ..row(pid, Agent::Claude, id, None, HOUR, "~")
+        }
+    }
+
+    /// Management links emitted by the machine owning these members.
+    fn links(pairs: &[(&str, &str)]) -> HierarchyEdges {
+        HierarchyEdges(
+            pairs
+                .iter()
+                .map(|(manager, member)| HierarchyEdge {
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
+                })
+                .collect(),
+        )
+    }
+
+    /// Check actual rendered table membership against both the expected
+    /// roots and the grid's cell identities, including machine-qualified pids.
+    fn assert_summary_roots(machines: &[Machine<'_>], expected: &[(&str, u32)]) -> Vec<String> {
+        let placement = AgentPlacement::from_machines(machines);
+        let cells = agent_cell::cell_order_placed(&placement);
+        let area = Rect::new(
+            0,
+            0,
+            width(machines, &placement, NOW),
+            u16::try_from(height(machines, &placement)).expect("the summary height should fit"),
+        );
+        let mut buffer = Buffer::empty(area);
+        draw(&mut buffer, area, machines, &placement, &cells, NOW);
+        let drawn = lines(&buffer);
+        let mut machine = "";
+        let mut actual = Vec::new();
+        for line in &drawn {
+            if let Some((name, _)) = line.trim_start().split_once(HEADING_SEPARATOR) {
+                machine = name;
+            } else if let Some(pid) = line
+                .split_whitespace()
+                .next()
+                .and_then(|text| text.parse::<u32>().ok())
+            {
+                actual.push((machine, pid));
+            }
+        }
+        assert_eq!(actual, expected, "the rendered summary rows");
+        let mut grid_roots: Vec<_> = cells
+            .iter()
+            .map(|cell| (cell.id.machine.as_str(), cell.id.pid))
+            .collect();
+        let mut expected_roots = expected.to_vec();
+        grid_roots.sort_unstable();
+        expected_roots.sort_unstable();
+        assert_eq!(
+            grid_roots, expected_roots,
+            "the same roots title grid cells"
+        );
+        drawn
+    }
+
+    /// Managed showrunners and units disappear from the table, while a
+    /// session whose launcher is missing stays visible with its own cell.
+    #[test]
+    fn the_summary_lists_cell_roots_including_orphans_but_no_managed_descendants() {
+        let state = MachineState::Answered(
+            vec![
+                session(10, "showrunner"),
+                session(20, "nested-showrunner"),
+                session(30, "unit"),
+                AgentRow {
+                    launched_by: Some(999),
+                    ..session(40, "orphan")
+                },
+            ],
+            links(&[
+                ("showrunner", "nested-showrunner"),
+                ("nested-showrunner", "unit"),
+            ]),
+        );
+        let machines = [Machine {
+            name:  "natedev",
+            state: &state,
+        }];
+        let drawn = assert_summary_roots(&machines, &[("natedev", 10), ("natedev", 40)]);
+
+        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn.len(), 4);
+        assert!(!drawn.iter().any(|line| line.contains("nested-showrunner")));
+    }
+
+    /// A remote member with the same pid as a local root must not hide
+    /// that root or produce a table under its own machine's heading.
+    #[test]
+    fn cross_machine_membership_uses_both_machine_and_pid() {
+        let local = MachineState::Answered(
+            vec![session(7, "showrunner"), session(9, "local-root")],
+            HierarchyEdges::default(),
+        );
+        let remote =
+            MachineState::Answered(vec![session(9, "unit")], links(&[("showrunner", "unit")]));
+        let machines = [
+            Machine {
+                name:  "natedev",
+                state: &local,
+            },
+            Machine {
+                name:  "mac",
+                state: &remote,
+            },
+        ];
+        let drawn = assert_summary_roots(&machines, &[("natedev", 7), ("natedev", 9)]);
+
+        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn[5], " mac · no agents");
+        assert_eq!(drawn.len(), 6);
+    }
+
+    /// An unresolved manager preserves a live launch relationship, and
+    /// an unresolved launcher gives the member back its summary entry.
+    #[test]
+    fn unresolved_managers_fall_back_to_listed_launchers_or_visible_roots() {
+        let state = MachineState::Answered(
+            vec![
+                session(1, "launcher"),
+                AgentRow {
+                    launched_by: Some(1),
+                    ..session(2, "launched")
+                },
+                AgentRow {
+                    launched_by: Some(999),
+                    ..session(3, "orphan")
+                },
+            ],
+            links(&[("missing", "launched"), ("missing", "orphan")]),
+        );
+        assert_summary_roots(
+            &[Machine {
+                name:  "natedev",
+                state: &state,
+            }],
+            &[("natedev", 1), ("natedev", 3)],
+        );
+    }
+
+    /// Classification shows both roots, completed links hide the member
+    /// and its long directory, and absent links restore both table and sizing.
+    #[test]
+    fn completed_and_cleared_links_update_summary_membership_counts_and_width() {
+        let manager = session(1, "showrunner");
+        let member = AgentRow {
+            directory: format!("~/{}", "long/".repeat(30)),
+            ..session(2, "unit")
+        };
+        let manager_only = MachineState::Answered(vec![manager.clone()], HierarchyEdges::default());
+        let machines = [Machine {
+            name:  "natedev",
+            state: &manager_only,
+        }];
+        let root_width = width(&machines, &AgentPlacement::from_machines(&machines), NOW);
+        let mut census = Census::new("natedev".to_string());
+
+        for (edges, expected, count) in [
+            (
+                HierarchyEdges::default(),
+                vec![("natedev", 1), ("natedev", 2)],
+                "2 agents",
+            ),
+            (
+                links(&[("showrunner", "unit")]),
+                vec![("natedev", 1)],
+                "1 agent",
+            ),
+            (
+                HierarchyEdges::default(),
+                vec![("natedev", 1), ("natedev", 2)],
+                "2 agents",
+            ),
+        ] {
+            census.apply(CensusUpdate::Local(
+                vec![manager.clone(), member.clone()],
+                edges,
+            ));
+            let machines = census.machines(&[]);
+            let drawn = assert_summary_roots(&machines, &expected);
+            assert_eq!(drawn[0], format!(" natedev · {count}"));
+            let measured = width(&machines, &AgentPlacement::from_machines(&machines), NOW);
+            if expected.len() == 1 {
+                assert_eq!(
+                    measured, root_width,
+                    "a managed directory takes no summary width"
+                );
+            } else {
+                assert!(
+                    measured > root_width,
+                    "a root's full directory contributes width"
+                );
+            }
+        }
+    }
+
+    /// A remote manager may leave and return without any change to the
+    /// local member's identity or links; its summary entry follows that liveness.
+    #[test]
+    fn a_remote_manager_leaving_and_returning_restores_and_hides_the_member() {
+        let mut census = Census::new("natedev".to_string());
+        census.apply(CensusUpdate::Local(
+            vec![session(5, "unit")],
+            links(&[("showrunner", "unit")]),
+        ));
+        let configured = ["mac".to_string()];
+        assert_summary_roots(&census.machines(&configured), &[("natedev", 5)]);
+        let manager =
+            MachineState::Answered(vec![session(5, "showrunner")], HierarchyEdges::default());
+        for (state, expected) in [
+            (manager.clone(), vec![("mac", 5)]),
+            (
+                MachineState::Failed("unreachable".to_string()),
+                vec![("natedev", 5)],
+            ),
+            (manager, vec![("mac", 5)]),
+        ] {
+            census.apply(CensusUpdate::Remote {
+                host: "mac".to_string(),
+                state,
+            });
+            assert_summary_roots(&census.machines(&configured), &expected);
+        }
+    }
+
     /// Four machines: this one with a name past the column's cap, a busy
     /// session, a Codex with no status and a session another agent
     /// launched, which is left out of the list and the count; a remote
@@ -512,12 +778,14 @@ mod tests {
                 state: &pi,
             },
         ];
-        let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
+        let placement = AgentPlacement::from_machines(&machines);
+        let height =
+            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
-        let cells = agent_cell::cell_order(&machines);
+        let cells = agent_cell::cell_order_placed(&placement);
 
-        draw(&mut buffer, area, &machines, &cells, NOW);
+        draw(&mut buffer, area, &machines, &placement, &cells, NOW);
 
         assert_eq!(
             lines(&buffer),
@@ -613,7 +881,9 @@ mod tests {
             name:  "natedev",
             state: &natedev,
         }];
-        let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
+        let placement = AgentPlacement::from_machines(&machines);
+        let height =
+            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
 
@@ -621,7 +891,8 @@ mod tests {
             &mut buffer,
             area,
             &machines,
-            &agent_cell::cell_order(&machines),
+            &placement,
+            &agent_cell::cell_order_placed(&placement),
             NOW,
         );
 
@@ -656,15 +927,18 @@ mod tests {
             name:  "natedev",
             state: &natedev,
         }];
-        let fitted = width(&machines, NOW);
-        let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
+        let placement = AgentPlacement::from_machines(&machines);
+        let fitted = width(&machines, &placement, NOW);
+        let height =
+            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
         draw(
             &mut buffer,
             area,
             &machines,
-            &agent_cell::cell_order(&machines),
+            &placement,
+            &agent_cell::cell_order_placed(&placement),
             NOW,
         );
         let widest = lines(&buffer)
@@ -694,7 +968,11 @@ mod tests {
             state: &longer,
         }];
         assert_eq!(
-            usize::from(width(&machines, NOW)),
+            usize::from(width(
+                &machines,
+                &AgentPlacement::from_machines(&machines),
+                NOW
+            )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
         );
@@ -712,7 +990,11 @@ mod tests {
             },
         ];
         assert_eq!(
-            usize::from(width(&machines, NOW)),
+            usize::from(width(
+                &machines,
+                &AgentPlacement::from_machines(&machines),
+                NOW
+            )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
         );

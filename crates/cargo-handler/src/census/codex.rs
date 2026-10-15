@@ -225,6 +225,11 @@ mod tests {
     fn write_database(directory: &Path, name: &str, threads: &[StoredThread<'_>]) {
         let connection =
             Connection::open(directory.join(name)).expect("the fixture database should open");
+        // These disposable databases need visibility to the reader, not
+        // crash durability. Avoid waiting for a disk sync after every insert.
+        connection
+            .pragma_update(None, "synchronous", "OFF")
+            .expect("fixture writes should skip durability waits");
         connection
             .execute(THREADS_TABLE, [])
             .expect("the fixture table should create");
