@@ -1150,28 +1150,34 @@ mod tests {
     /// When the timer tests' `sleep` started, in unix seconds.
     const SLEEP_STARTED: u64 = 1_790_958_660;
 
+    /// The script and run folders used by a progress timer installation.
+    #[derive(Clone, Copy)]
+    enum ProgressTimerInstallation {
+        Delegate,
+        Unit,
+    }
+
     /// The timer of the one shell the agent [`TIMER_AGENT`] runs, with
     /// `below` the processes under its [`TIMER_SCRIPT`].
-    fn shell_timer(below: &[ProcessEntry]) -> Option<Timer> {
+    fn shell_timer(
+        installation: ProgressTimerInstallation,
+        below: &[ProcessEntry],
+    ) -> Option<Timer> {
+        let folder = match installation {
+            ProgressTimerInstallation::Delegate => "delegate",
+            ProgressTimerInstallation::Unit => "unit",
+        };
+        let run_folder = format!("/tmp/claude/{folder}/5ea59d53");
+        let command = format!("bash ~/.claude/scripts/{folder}/progress_timer.sh {run_folder} 300");
         let mut processes = vec![
             detailed(TIMER_AGENT, 1, "claude", SLEEP_STARTED - 600, &["claude"]),
-            wrapper(
-                TIMER_SHELL,
-                TIMER_AGENT,
-                SLEEP_STARTED,
-                "bash ~/.claude/scripts/delegate/progress_timer.sh /tmp/claude/delegate/5ea59d53 300",
-            ),
+            wrapper(TIMER_SHELL, TIMER_AGENT, SLEEP_STARTED, &command),
             detailed(
                 TIMER_SCRIPT,
                 TIMER_SHELL,
                 "bash",
                 SLEEP_STARTED,
-                &[
-                    "bash",
-                    "progress_timer.sh",
-                    "/tmp/claude/delegate/5ea59d53",
-                    "300",
-                ],
+                &["bash", "progress_timer.sh", &run_folder, "300"],
             ),
         ];
         processes.extend_from_slice(below);
@@ -1197,7 +1203,20 @@ mod tests {
     #[test]
     fn a_shell_waiting_on_one_sleep_is_a_timer() {
         assert_eq!(
-            shell_timer(&[sleep(630, &["300"])]),
+            shell_timer(ProgressTimerInstallation::Delegate, &[sleep(630, &["300"])]),
+            Some(Timer {
+                started:  SLEEP_STARTED,
+                deadline: SLEEP_STARTED + 300,
+            })
+        );
+    }
+
+    /// Moving the progress timer's script and run folder to `unit` keeps
+    /// the timer's start and deadline the same as under `delegate`.
+    #[test]
+    fn a_timer_under_the_unit_folders_reads_as_under_the_delegate_folders() {
+        assert_eq!(
+            shell_timer(ProgressTimerInstallation::Unit, &[sleep(630, &["300"])]),
             Some(Timer {
                 started:  SLEEP_STARTED,
                 deadline: SLEEP_STARTED + 300,
@@ -1210,7 +1229,11 @@ mod tests {
     #[test]
     fn sleep_arguments_add_up() {
         let deadline = |arguments: &[&str]| {
-            shell_timer(&[sleep(630, arguments)]).map(|timer| timer.deadline - timer.started)
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, arguments)],
+            )
+            .map(|timer| timer.deadline - timer.started)
         };
 
         assert_eq!(deadline(&["1m", "30s"]), Some(90));
@@ -1231,9 +1254,30 @@ mod tests {
             &["tail", "-f", "log"],
         );
 
-        assert_eq!(shell_timer(&[sleep(630, &["300"]), tail]), None);
-        assert_eq!(shell_timer(&[sleep(630, &["infinity"])]), None);
-        assert_eq!(shell_timer(&[sleep(630, &["5", "-1"])]), None);
-        assert_eq!(shell_timer(&[sleep(630, &[])]), None);
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["300"]), tail]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["infinity"])]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(
+                ProgressTimerInstallation::Delegate,
+                &[sleep(630, &["5", "-1"])]
+            ),
+            None
+        );
+        assert_eq!(
+            shell_timer(ProgressTimerInstallation::Delegate, &[sleep(630, &[])]),
+            None
+        );
     }
 }
