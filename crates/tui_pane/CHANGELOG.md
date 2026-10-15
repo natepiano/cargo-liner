@@ -16,6 +16,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.
 - Toast timing, activation, focus and tracked-item lifetimes use named public states while preserving their rendered output.
 - Cell foot readouts and summary foot spans follow the fade and ground of their contents.
 - Toast bodies retain styled runs with explicit line-break policies, words that fit move whole to a fresh line, and cards keep one cleared row above, below and between them.

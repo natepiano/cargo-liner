@@ -37,10 +37,12 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use hierarchy::HierarchyAnswer;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
 pub(crate) use placement::Placement;
+pub(crate) use placement::RoleLabel;
 pub(crate) use placement::RowIdentity;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
@@ -175,6 +177,20 @@ pub(crate) enum HierarchyRole {
     Review,
     /// Repairs a defect.
     Fix,
+}
+
+impl HierarchyRole {
+    /// The role value the hierarchy command reports, shown in titles and member tree lines.
+    const fn text(self) -> &'static str {
+        match self {
+            Self::Showrunner => "showrunner",
+            Self::Unit => "unit",
+            Self::Impl => "impl",
+            Self::Test => "test",
+            Self::Review => "review",
+            Self::Fix => "fix",
+        }
+    }
 }
 
 /// A manager and its member, identified across machines by session id.
@@ -458,6 +474,38 @@ impl MachineState {
     }
 }
 
+/// Last successful links for each remote, independent of its fresh row answers.
+#[derive(Default)]
+struct RemoteHierarchyAnswers {
+    /// Cleared when a host leaves the configured set.
+    edges: HashMap<String, HierarchyEdges>,
+}
+
+impl RemoteHierarchyAnswers {
+    /// Apply a probe answer, retaining successful hierarchy through discovery failures.
+    fn apply(
+        &mut self,
+        host: &str,
+        answer: Result<(Vec<AgentRow>, HierarchyAnswer), String>,
+    ) -> MachineState {
+        match answer {
+            Ok((rows, HierarchyAnswer::Answered(edges))) => {
+                self.edges.insert(host.to_string(), edges.clone());
+                MachineState::Answered(rows, edges)
+            },
+            Ok((rows, HierarchyAnswer::Failed)) => {
+                MachineState::Answered(rows, self.edges.get(host).cloned().unwrap_or_default())
+            },
+            Err(reason) => MachineState::Failed(reason),
+        }
+    }
+
+    /// A removed host must not recover links from its previous configuration.
+    fn retain(&mut self, configured: &[String]) {
+        self.edges.retain(|host, _| configured.contains(host));
+    }
+}
+
 /// A remote machine before its first answer.
 static SCANNING: MachineState = MachineState::Scanning;
 
@@ -602,6 +650,8 @@ pub(crate) fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use hierarchy::HierarchyAnswer;
+
     use super::*;
 
     /// A claude row started at `started`.
@@ -621,6 +671,65 @@ mod tests {
             launched_by: None,
             children: Vec::new(),
         }
+    }
+
+    /// Remote hierarchy failures retain that host's links while its row details keep changing.
+    #[test]
+    fn failed_remote_hierarchy_preserves_links_and_updates_rows_until_answered_empty() {
+        let mut answers = RemoteHierarchyAnswers::default();
+        let mut census = Census::new("local".to_string());
+        let edges = HierarchyEdges(vec![HierarchyEdge {
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
+        }]);
+        for (host, started, hierarchy, expected) in [
+            (
+                "remote",
+                1,
+                HierarchyAnswer::Answered(edges.clone()),
+                edges.clone(),
+            ),
+            ("remote", 2, HierarchyAnswer::Failed, edges.clone()),
+            (
+                "other",
+                3,
+                HierarchyAnswer::Failed,
+                HierarchyEdges::default(),
+            ),
+            (
+                "remote",
+                4,
+                HierarchyAnswer::Answered(HierarchyEdges::default()),
+                HierarchyEdges::default(),
+            ),
+            (
+                "remote",
+                5,
+                HierarchyAnswer::Failed,
+                HierarchyEdges::default(),
+            ),
+        ] {
+            let state = answers.apply(host, Ok((vec![row(started)], hierarchy)));
+            assert!(census.apply(CensusUpdate::Remote {
+                host: host.to_string(),
+                state
+            }));
+            let configured = vec![host.to_string()];
+            assert_eq!(
+                census.machines(&configured)[1].state,
+                &MachineState::Answered(vec![row(started)], expected)
+            );
+        }
+        answers.apply("removed", Ok((vec![], HierarchyAnswer::Answered(edges))));
+        answers.retain(&["remote".to_string()]);
+        assert_eq!(
+            answers.apply(
+                "removed",
+                Ok((vec![row(6)], hierarchy::HierarchyAnswer::Failed))
+            ),
+            MachineState::Answered(vec![row(6)], HierarchyEdges::default())
+        );
     }
 
     /// An update that repeats what the census already holds changes

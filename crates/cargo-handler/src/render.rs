@@ -7,6 +7,8 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
@@ -20,6 +22,7 @@ use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
+use tui_pane::label_color;
 use tui_pane::render_status_line;
 
 use crate::agent_cell;
@@ -188,14 +191,20 @@ impl TileCells<AgentCell> for Cells<'_> {
         }
     }
 
-    /// An agent's cell is titled with the agent's name, in the hue the
-    /// summary draws that name in.
-    fn group_title(&self, id: &AgentCell) -> Option<Span<'static>> {
+    /// The name keeps its summary hue; the accepted or inferred role
+    /// follows in the label color.
+    fn group_title(&self, id: &AgentCell) -> Option<Line<'static>> {
         self.agent(id).map(|entry| {
-            Span::styled(
-                format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                Role::Rainbow(entry.hue).style(),
-            )
+            Line::from(vec![
+                Span::styled(
+                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                    Role::Rainbow(entry.hue).style(),
+                ),
+                Span::styled(
+                    entry.role_label.suffix(),
+                    Style::default().fg(label_color()),
+                ),
+            ])
         })
     }
 }
@@ -240,6 +249,14 @@ mod tests {
     use std::rc::Rc;
     use std::time::Instant;
 
+    use HierarchyRole::Fix;
+    use HierarchyRole::Review;
+    use HierarchyRole::Showrunner;
+    use HierarchyRole::Test;
+    use HierarchyRole::Unit;
+    use RoleLabel::Inferred;
+    use RoleLabel::Stated;
+    use RoleLabel::Unlabeled;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
@@ -256,9 +273,14 @@ mod tests {
     use crate::census::ChildKind;
     use crate::census::ChildRow;
     use crate::census::CodexThreadId;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
     use crate::census::MachineState;
+    use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::constants::HEADING_SEPARATOR;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -785,6 +807,108 @@ fraying = "leading"
         app.tiles.settle_for_test();
 
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
+    }
+
+    /// Tile titles and nested lines follow the current relationships, retaining name and label
+    /// colors.
+    #[test]
+    fn title_and_tree_role_labels_change_with_accepted_relationships() {
+        let mut app = laid_out_app();
+        let rows = vec![
+            AgentRow {
+                session_id: SessionIdentity::Claude("production".to_string()),
+                name: "production".to_string(),
+                pid: 1,
+                children: Vec::new(),
+                ..boss(3 * 60 * 60)
+            },
+            AgentRow {
+                session_id: SessionIdentity::Claude("member".to_string()),
+                name: "member".to_string(),
+                pid: 2,
+                launched_by: Some(1),
+                children: Vec::new(),
+                ..boss(2 * 60 * 60)
+            },
+        ];
+        for (role, manager_role_label, member_role_label) in [
+            (None, Unlabeled, Unlabeled),
+            (Some(Unit), Inferred(Showrunner), Stated(Unit)),
+            (Some(Test), Inferred(Unit), Stated(Test)),
+            (Some(Review), Inferred(Unit), Stated(Review)),
+            (Some(Fix), Inferred(Unit), Stated(Fix)),
+            (None, Unlabeled, Unlabeled),
+        ] {
+            let manager_label = manager_role_label.suffix();
+            let member_label = member_role_label.suffix();
+            let edges = HierarchyEdges(
+                role.into_iter()
+                    .map(|role| HierarchyEdge {
+                        manager: "production".to_string(),
+                        member: "member".to_string(),
+                        role,
+                    })
+                    .collect(),
+            );
+            app.census.apply(CensusUpdate::Local(rows.clone(), edges));
+            let body = Rect::new(0, 0, 160, 40);
+            drawn_buffer_in(&mut app, body);
+            app.tiles.settle_for_test();
+            let buffer = drawn_buffer_in(&mut app, body);
+            let rendered: Vec<String> = (0..body.height)
+                .map(|y| (0..body.width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let title_text = format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}");
+            let (title_y, title_line) = rendered
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.contains(&title_text) && line.contains('─'))
+                .expect("the grid draws the current title");
+            let prefix = title_line
+                .split_once(&title_text)
+                .expect("the title is present")
+                .0
+                .chars()
+                .count();
+            let title_x = u16::try_from(prefix).expect("the column fits");
+            let title_y = u16::try_from(title_y).expect("the row fits");
+            assert_eq!(
+                buffer[(title_x + 1, title_y)].fg,
+                Role::Rainbow(crate::theme::RainbowHue::Red)
+                    .style()
+                    .fg
+                    .expect("the title has a hue")
+            );
+            let after_name = title_x
+                + u16::try_from(format!("{AGENT_CELL_TITLE_LEAD}production").chars().count())
+                    .expect("the title fits");
+            if manager_label.is_empty() {
+                assert_eq!(
+                    buffer[(after_name, title_y)].symbol(),
+                    "─",
+                    "launch-only groups have no role suffix"
+                );
+            } else {
+                for offset in 0..manager_label.chars().count() {
+                    assert_eq!(
+                        buffer[(
+                            after_name + u16::try_from(offset).expect("the suffix fits"),
+                            title_y
+                        )]
+                            .fg,
+                        label_color()
+                    );
+                }
+            }
+            let member_line = rendered
+                .iter()
+                .find(|line| line.contains("└─ member"))
+                .expect("the child has a tree line");
+            assert!(member_line.contains(&format!("member{member_label}")));
+            if member_label.is_empty() {
+                assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
+            }
+        }
     }
 
     #[test]

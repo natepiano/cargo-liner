@@ -21,11 +21,14 @@ use std::time::Instant;
 use super::AgentRow;
 use super::CensusUpdate;
 use super::HierarchyCommand;
+use super::RemoteHierarchyAnswers;
 use super::RemoteMachines;
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyCache;
 use super::hierarchy::HierarchyRunner;
+use super::probe;
 use super::remote;
+use super::remote::ProbeOutcome;
 use super::remote::RemoteRunner;
 use super::remote::SshRunner;
 use super::scan::LocalScanner;
@@ -84,7 +87,12 @@ impl LocalAnswers {
             ScanStage::Classified => self
                 .sender
                 .send(CensusUpdate::Local(rows, super::HierarchyEdges::default())),
-            ScanStage::Completed => self.send(rows),
+            ScanStage::Completed => {
+                // Row detail is ready even when discovery takes its entire deadline.
+                let edges = self.cache.cached(self.hierarchy.snapshot()).edges();
+                self.sender.send(CensusUpdate::Local(rows.clone(), edges))?;
+                self.send(rows)
+            },
         }
     }
 
@@ -150,13 +158,26 @@ fn spawn_staged_with(
             cache: HierarchyCache::default(),
         };
         let in_flight = InFlight::default();
+        let remote_answers = Arc::new(Mutex::new(RemoteHierarchyAnswers::default()));
         let mut next_local = Instant::now();
         let mut next_remote = next_local;
         loop {
             let now = Instant::now();
             if now >= next_remote {
-                for host in remotes.snapshot() {
-                    dispatch(host, &runner, &in_flight, &sender);
+                let configured = remotes.snapshot();
+                remote_answers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(&configured);
+                for host in configured {
+                    dispatch(
+                        host,
+                        &remotes,
+                        &runner,
+                        &in_flight,
+                        &remote_answers,
+                        &sender,
+                    );
                 }
                 next_remote = now + cadence.remote;
             }
@@ -224,8 +245,10 @@ pub(crate) fn spawn_with_test_source(
 /// out.
 fn dispatch(
     host: String,
+    remotes: &RemoteMachines,
     runner: &Arc<dyn RemoteRunner>,
     in_flight: &InFlight,
+    answers: &Arc<Mutex<RemoteHierarchyAnswers>>,
     sender: &Sender<CensusUpdate>,
 ) {
     if !in_flight
@@ -238,8 +261,28 @@ fn dispatch(
     let runner = Arc::clone(runner);
     let in_flight = Arc::clone(in_flight);
     let sender = sender.clone();
+    let answers = Arc::clone(answers);
+    let remotes = remotes.clone();
     thread::spawn(move || {
-        let state = remote::machine_state(runner.probe(&host));
+        let outcome = runner.probe(&host);
+        let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+        let configured = remotes.snapshot();
+        answers.retain(&configured);
+        if !configured.contains(&host) {
+            in_flight
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&host);
+            return;
+        }
+        let state = match outcome {
+            ProbeOutcome::Finished {
+                status: Some(0),
+                stdout,
+            } => answers.apply(&host, probe::parse_answer(&stdout)),
+            outcome => remote::machine_state(outcome),
+        };
+        drop(answers);
         in_flight
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -258,6 +301,7 @@ fn dispatch(
 )]
 mod tests {
     use std::collections::HashMap;
+    use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
@@ -270,7 +314,6 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::hierarchy::HierarchyError;
-    use crate::census::remote::ProbeOutcome;
 
     /// The host whose probe waits until the test lets it finish.
     const BLOCKED: &str = "blocked";
@@ -441,6 +484,292 @@ mod tests {
             assert!(
                 !status.success(),
                 "the timed-out child must be killed and reaped"
+            );
+        }
+    }
+
+    /// A pending hierarchy run cannot withhold completed row details already scanned.
+    #[test]
+    fn completed_rows_arrive_before_a_blocked_hierarchy_run_finishes() {
+        struct BlockedHierarchy {
+            entered:  Sender<Duration>,
+            release:  Mutex<Receiver<()>>,
+            attempts: AtomicUsize,
+        }
+        impl HierarchyRunner for BlockedHierarchy {
+            fn run(&self, _: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
+                if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(HierarchyEdges::default());
+                }
+                self.entered
+                    .send(timeout)
+                    .expect("record the discovery deadline");
+                self.release
+                    .lock()
+                    .expect("release lock")
+                    .recv()
+                    .expect("release discovery");
+                Err(HierarchyError::TimedOut)
+            }
+        }
+        let (entered, waiting) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let runner = Arc::new(BlockedHierarchy {
+            entered,
+            release: Mutex::new(released),
+            attempts: AtomicUsize::new(0),
+        });
+        let rows = vec![session_row("worker", 2)];
+        let expected = rows.clone();
+        let updates = spawn_with_test_source(
+            HierarchyCommand::new(super::super::HierarchySource::Command(
+                "fixture".to_string(),
+            )),
+            runner,
+            move |answers| {
+                answers
+                    .send(vec![session_row("previous", 1)])
+                    .expect("prime a successful answer");
+                answers
+                    .publish(ScanStage::Completed, rows.clone())
+                    .expect("publish rows");
+            },
+        );
+        let timeout = waiting
+            .recv_timeout(Duration::from_millis(200))
+            .expect("discovery starts");
+        let initial = updates.try_recv();
+        let answer = updates.try_recv();
+        release
+            .send(())
+            .expect("release the command before assertions");
+        assert_eq!(timeout, Duration::from_secs(10));
+        assert_eq!(
+            initial.expect("initial successful answer"),
+            CensusUpdate::Local(vec![session_row("previous", 1)], HierarchyEdges::default())
+        );
+        assert_eq!(
+            answer.expect("rows precede hierarchy completion"),
+            CensusUpdate::Local(expected, HierarchyEdges::default())
+        );
+        assert!(updates.recv_timeout(Duration::from_millis(200)).is_ok());
+    }
+
+    /// First completed details must precede discovery even without an earlier success.
+    #[test]
+    fn uncached_completed_rows_arrive_before_hierarchy_discovery_is_released() {
+        struct GatedHierarchy {
+            entered: Sender<()>,
+            release: Mutex<Receiver<()>>,
+        }
+        impl HierarchyRunner for GatedHierarchy {
+            fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+                self.entered.send(()).expect("signal discovery");
+                self.release
+                    .lock()
+                    .expect("release lock")
+                    .recv()
+                    .expect("release discovery");
+                Err(HierarchyError::TimedOut)
+            }
+        }
+        let (entered, waiting) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let expected = vec![session_row("worker", 2)];
+        let rows = expected.clone();
+        let updates = spawn_with_test_source(
+            HierarchyCommand::new(super::super::HierarchySource::Command(
+                "fixture".to_string(),
+            )),
+            Arc::new(GatedHierarchy {
+                entered,
+                release: Mutex::new(released),
+            }),
+            move |answers| {
+                answers
+                    .publish(ScanStage::Completed, rows.clone())
+                    .expect("publish completion");
+            },
+        );
+        waiting
+            .recv_timeout(Duration::from_millis(200))
+            .expect("discovery starts");
+        let early = updates.try_recv();
+        release
+            .send(())
+            .expect("release discovery before assertions");
+        assert_eq!(
+            early.expect("uncached completed rows precede discovery"),
+            CensusUpdate::Local(expected.clone(), HierarchyEdges::default())
+        );
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(200))
+                .expect("failed discovery answers"),
+            CensusUpdate::Local(expected, HierarchyEdges::default())
+        );
+    }
+
+    /// An answer from a removed host cannot restore its hierarchy cache.
+    #[test]
+    fn removed_host_late_answer_cannot_supply_links_after_readding_it() {
+        struct GatedReports {
+            entered: Sender<()>,
+            reports: Mutex<Receiver<Vec<u8>>>,
+        }
+        impl RemoteRunner for GatedReports {
+            fn probe(&self, _: &str) -> ProbeOutcome {
+                self.entered.send(()).expect("signal probe");
+                ProbeOutcome::Finished {
+                    status: Some(0),
+                    stdout: self
+                        .reports
+                        .lock()
+                        .expect("reports lock")
+                        .recv()
+                        .expect("release report"),
+                }
+            }
+        }
+        let (entered, waiting) = mpsc::channel();
+        let (release, reports) = mpsc::channel();
+        let runner: Arc<dyn RemoteRunner> = Arc::new(GatedReports {
+            entered,
+            reports: Mutex::new(reports),
+        });
+        let remotes = RemoteMachines::new(vec!["remote".to_string()]);
+        let in_flight = InFlight::default();
+        let answers = Arc::new(Mutex::new(RemoteHierarchyAnswers::default()));
+        let (sender, receiver) = mpsc::channel();
+        dispatch(
+            "remote".to_string(),
+            &remotes,
+            &runner,
+            &in_flight,
+            &answers,
+            &sender,
+        );
+        drop(sender);
+        waiting
+            .recv_timeout(Duration::from_millis(200))
+            .expect("probe started");
+        remotes.replace(Vec::new());
+        release
+            .send(
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": crate::constants::PROBE_SCHEMA, "machine": "remote", "rows": [],
+                    "edges": [{ "manager": "boss", "member": "worker", "role": "unit" }],
+                }))
+                .expect("serialize successful report"),
+            )
+            .expect("release removed host");
+        let removed_answer = receiver.recv_timeout(Duration::from_millis(200));
+        remotes.replace(vec!["remote".to_string()]);
+        let (sender, receiver) = mpsc::channel();
+        dispatch(
+            "remote".to_string(),
+            &remotes,
+            &runner,
+            &in_flight,
+            &answers,
+            &sender,
+        );
+        waiting
+            .recv_timeout(Duration::from_millis(200))
+            .expect("readded host starts probe");
+        let rows = vec![session_row("worker", 2)];
+        release
+            .send(
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": crate::constants::PROBE_SCHEMA, "machine": "remote", "rows": rows,
+                    "hierarchy_failed": true,
+                }))
+                .expect("serialize failed hierarchy"),
+            )
+            .expect("release readded host");
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_millis(200))
+                .expect("fresh row answer"),
+            CensusUpdate::Remote {
+                host:  "remote".to_string(),
+                state: MachineState::Answered(rows, HierarchyEdges::default()),
+            }
+        );
+        assert_eq!(removed_answer, Err(mpsc::RecvTimeoutError::Disconnected));
+    }
+
+    /// The production remote dispatch preserves successful links, not failed empty output.
+    #[test]
+    fn remote_probe_hierarchy_failure_updates_rows_without_flattening_links() {
+        struct Reports(Mutex<VecDeque<Vec<u8>>>);
+        impl RemoteRunner for Reports {
+            fn probe(&self, _: &str) -> ProbeOutcome {
+                ProbeOutcome::Finished {
+                    status: Some(0),
+                    stdout: self
+                        .0
+                        .lock()
+                        .expect("reports lock")
+                        .pop_front()
+                        .expect("queued report"),
+                }
+            }
+        }
+        let edges = HierarchyEdges(vec![super::super::HierarchyEdge {
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    super::super::HierarchyRole::Unit,
+        }]);
+        let reports = [
+            (false, edges.clone()),
+            (true, HierarchyEdges::default()),
+            (false, HierarchyEdges::default()),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (failed, edges))| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema": crate::constants::PROBE_SCHEMA, "machine": "remote",
+                "rows": [session_row("worker", u32::try_from(index).expect("small index"))],
+                "edges": edges, "hierarchy_failed": failed,
+            }))
+            .expect("serialize report")
+        })
+        .collect();
+        let runner: Arc<dyn RemoteRunner> = Arc::new(Reports(Mutex::new(reports)));
+        let in_flight = InFlight::default();
+        let answers = Arc::new(Mutex::new(RemoteHierarchyAnswers::default()));
+        let (sender, receiver) = mpsc::channel();
+        let mut census = super::super::Census::new("local".to_string());
+        let configured = vec!["remote".to_string()];
+        let remotes = RemoteMachines::new(configured.clone());
+        for (pid, expected) in [edges.clone(), edges, HierarchyEdges::default()]
+            .into_iter()
+            .enumerate()
+        {
+            dispatch(
+                "remote".to_string(),
+                &remotes,
+                &runner,
+                &in_flight,
+                &answers,
+                &sender,
+            );
+            census.apply(
+                receiver
+                    .recv_timeout(Duration::from_millis(200))
+                    .expect("remote answer"),
+            );
+            assert_eq!(
+                census.machines(&configured)[1].state,
+                &MachineState::Answered(
+                    vec![session_row(
+                        "worker",
+                        u32::try_from(pid).expect("small pid")
+                    )],
+                    expected
+                )
             );
         }
     }

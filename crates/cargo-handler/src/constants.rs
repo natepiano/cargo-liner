@@ -533,7 +533,7 @@ pub(crate) const KILL_PROGRAM: &str = "kill";
 #[cfg(unix)]
 pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
 /// Maximum runtime of the local hierarchy command.
-pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(1);
+pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -566,8 +566,10 @@ pub(crate) const SSH_CONTROL_PERSIST: &str = "ControlPersist=60";
 /// Opens a shared connection when none is open, and uses it when one
 /// is.
 pub(crate) const SSH_CONTROL_MASTER: &str = "ControlMaster=auto";
-/// How long a probe runs before it is killed.
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time for scanning and ssh beyond hierarchy discovery's deadline.
+const PROBE_SCAN_SSH_MARGIN: Duration = Duration::from_secs(10);
+/// Allow hierarchy discovery its deadline plus time for scanning and ssh.
+pub(crate) const PROBE_TIMEOUT: Duration = HIERARCHY_TIMEOUT.saturating_add(PROBE_SCAN_SSH_MARGIN);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);

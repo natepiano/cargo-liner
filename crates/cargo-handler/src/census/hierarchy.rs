@@ -248,41 +248,89 @@ fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
         .map(HierarchyEdges)
 }
 
-/// Run one configured discovery, logging a single line for a failed command.
-pub(super) fn read(source: &HierarchySource, runner: &dyn HierarchyRunner) -> HierarchyEdges {
+/// Whether discovery answered or must preserve the last successful links.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HierarchyAnswer {
+    /// A successful command, or discovery explicitly turned off.
+    Answered(HierarchyEdges),
+    /// Discovery failed; absence of edges is not an authoritative answer.
+    Failed,
+}
+
+/// Run one configured discovery, logging a single line for each failed command.
+pub(super) fn read(source: &HierarchySource, runner: &dyn HierarchyRunner) -> HierarchyAnswer {
     let HierarchySource::Command(command) = source else {
-        return HierarchyEdges::default();
+        return HierarchyAnswer::Answered(HierarchyEdges::default());
     };
     match runner.run(command, HIERARCHY_TIMEOUT) {
-        Ok(edges) => edges,
+        Ok(edges) => HierarchyAnswer::Answered(edges),
         Err(reason) => {
             startup_log::startup_event(&format!("hierarchy_failed {reason}"));
-            HierarchyEdges::default()
+            HierarchyAnswer::Failed
         },
     }
 }
 
-/// Edges reused until their source, local sessions, or freshness changes.
+/// The last success for one source, retained across unsuccessful attempts.
 #[derive(Default)]
-pub(super) enum HierarchyCache {
-    /// The scheduler has not yet requested management links.
+pub(super) enum LastSuccessfulHierarchy {
+    /// This source has never answered successfully.
     #[default]
-    Unread,
-    /// The latest attempt, successful or failed, and what invalidates it.
-    Current {
-        /// The setting used for this answer.
-        source:    HierarchySource,
-        /// Local Claude session ids, independent of row order and process ids.
-        sessions:  BTreeSet<String>,
-        /// When the attempt began.
+    Unanswered,
+    /// The last authoritative links and the time they were obtained.
+    Answered {
+        /// When discovery successfully answered.
         refreshed: Instant,
-        /// Its answer, empty after a failure or when discovery is off.
+        /// Links from that successful answer.
         edges:     HierarchyEdges,
     },
 }
 
+impl LastSuccessfulHierarchy {
+    /// Links usable while the next attempt is running or has failed.
+    pub(super) fn edges(&self) -> HierarchyEdges {
+        match self {
+            Self::Unanswered => HierarchyEdges::default(),
+            Self::Answered { edges, .. } => edges.clone(),
+        }
+    }
+}
+
+/// Whether the next scheduler tick must retry discovery.
+#[derive(Default)]
+enum HierarchyRetry {
+    /// A successful answer may be reused until its normal expiration.
+    #[default]
+    OnExpiration,
+    /// The latest attempt failed; retry on the next tick.
+    NextTick,
+}
+
+/// Edges reused until their source, local sessions, or freshness changes.
+#[derive(Default)]
+pub(super) struct HierarchyCache {
+    /// Source to which the retained success belongs.
+    source:   HierarchySource,
+    /// Local Claude session ids, independent of row order and process ids.
+    sessions: BTreeSet<String>,
+    /// Last successful answer from this source, never a failed empty answer.
+    success:  LastSuccessfulHierarchy,
+    /// Failure invalidates the ordinary refresh interval.
+    retry:    HierarchyRetry,
+}
+
 impl HierarchyCache {
-    /// Current edges, refreshing at most once per interval unless inputs change.
+    /// Cached links, cleared immediately when the setting changes or turns off.
+    pub(super) fn cached(&mut self, source: HierarchySource) -> &LastSuccessfulHierarchy {
+        if self.source != source || matches!(source, HierarchySource::Off) {
+            self.source = source;
+            self.success = LastSuccessfulHierarchy::Unanswered;
+            self.retry = HierarchyRetry::OnExpiration;
+        }
+        &self.success
+    }
+
+    /// Refresh expired links; unsuccessful attempts retain success and retry next tick.
     pub(super) fn edges(
         &mut self,
         source: HierarchySource,
@@ -290,6 +338,10 @@ impl HierarchyCache {
         runner: &dyn HierarchyRunner,
         now: Instant,
     ) -> HierarchyEdges {
+        self.cached(source);
+        if matches!(self.source, HierarchySource::Off) {
+            return HierarchyEdges::default();
+        }
         let sessions: BTreeSet<_> = rows
             .iter()
             .filter_map(|row| match &row.session_id {
@@ -297,26 +349,25 @@ impl HierarchyCache {
                 SessionIdentity::Unrecorded => None,
             })
             .collect();
-        if let Self::Current {
-            source: previous,
-            sessions: previous_sessions,
-            refreshed,
-            edges,
-        } = self
-            && *previous == source
-            && *previous_sessions == sessions
+        if let LastSuccessfulHierarchy::Answered { refreshed, edges } = &self.success
+            && matches!(self.retry, HierarchyRetry::OnExpiration)
+            && self.sessions == sessions
             && now.saturating_duration_since(*refreshed) < HIERARCHY_REFRESH_INTERVAL
         {
             return edges.clone();
         }
-        let edges = read(&source, runner);
-        *self = Self::Current {
-            source,
-            sessions,
-            refreshed: now,
-            edges: edges.clone(),
-        };
-        edges
+        self.sessions = sessions;
+        match read(&self.source, runner) {
+            HierarchyAnswer::Answered(edges) => {
+                self.success = LastSuccessfulHierarchy::Answered {
+                    refreshed: now,
+                    edges,
+                };
+                self.retry = HierarchyRetry::OnExpiration;
+            },
+            HierarchyAnswer::Failed => self.retry = HierarchyRetry::NextTick,
+        }
+        self.success.edges()
     }
 }
 
@@ -326,6 +377,7 @@ impl HierarchyCache {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use super::*;
@@ -451,9 +503,72 @@ mod tests {
         }
     }
 
+    /// Failures preserve links for an unchanged source and retry on the very next tick.
+    #[test]
+    fn hierarchy_failures_keep_success_and_retry_next_tick_until_disabled() {
+        struct ScriptedRunner(Mutex<VecDeque<Result<HierarchyEdges, HierarchyError>>>);
+        impl HierarchyRunner for ScriptedRunner {
+            fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+                self.0
+                    .lock()
+                    .expect("answer queue")
+                    .pop_front()
+                    .expect("unexpected extra discovery")
+            }
+        }
+        let first = HierarchyEdges(vec![HierarchyEdge {
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
+        }]);
+        let replacement = HierarchyEdges(vec![HierarchyEdge {
+            manager: "new-boss".to_string(),
+            ..first.0[0].clone()
+        }]);
+        let runner = ScriptedRunner(Mutex::new(std::collections::VecDeque::from([
+            Ok(first.clone()),
+            Err(HierarchyError::TimedOut),
+            Err(HierarchyError::ExitedUnsuccessfully),
+            Ok(replacement.clone()),
+        ])));
+        let source = HierarchySource::Command("unchanged".to_string());
+        let mut cache = HierarchyCache::default();
+        let start = Instant::now();
+        assert_eq!(cache.edges(source.clone(), &[], &runner, start), first);
+        let expired = start + HIERARCHY_REFRESH_INTERVAL;
+        assert_eq!(cache.edges(source.clone(), &[], &runner, expired), first);
+        assert_eq!(
+            cache.edges(
+                source.clone(),
+                &[],
+                &runner,
+                expired + Duration::from_millis(1)
+            ),
+            first
+        );
+        assert_eq!(
+            cache.edges(
+                source.clone(),
+                &[],
+                &runner,
+                expired + Duration::from_millis(2)
+            ),
+            replacement
+        );
+        assert_eq!(
+            cache.edges(source, &[], &runner, expired + Duration::from_millis(3)),
+            replacement
+        );
+        assert!(runner.0.lock().expect("answer queue").is_empty());
+        assert_eq!(
+            cache.edges(HierarchySource::Off, &[], &runner, expired),
+            HierarchyEdges::default()
+        );
+    }
+
     /// Time, identities and configuration invalidate cached success and failure alike.
     #[test]
-    fn cache_expires_and_configuration_changes_replace_success_with_failure_or_off() {
+    fn hierarchy_cache_expires_and_configuration_changes_clear_previous_success() {
         let runner = RecordingRunner(Mutex::new(Vec::new()));
         let mut cache = HierarchyCache::default();
         let now = Instant::now();
@@ -487,12 +602,12 @@ mod tests {
             ),
             HierarchyEdges::default()
         );
-        assert_eq!(runner.0.lock().expect("calls should lock").len(), 3);
+        assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
             cache.edges(HierarchySource::Off, &[], &runner, now),
             HierarchyEdges::default()
         );
-        assert_eq!(runner.0.lock().expect("calls should lock").len(), 3);
+        assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
             cache.edges(
                 HierarchySource::Command("good".to_string()),
@@ -502,6 +617,6 @@ mod tests {
             ),
             initial
         );
-        assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
+        assert_eq!(runner.0.lock().expect("calls should lock").len(), 5);
     }
 }

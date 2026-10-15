@@ -48,6 +48,7 @@ use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
+use crate::census::RoleLabel;
 use crate::census::RowIdentity;
 use crate::census::Timer;
 use crate::constants::AGENT_HEADER_GAP_HEIGHT;
@@ -84,22 +85,24 @@ use crate::tiles::AgentCell;
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEntry<'a> {
     /// The cell's id in the grid.
-    pub(crate) id:  AgentCell,
+    pub(crate) id:         AgentCell,
     /// The agent the cell is titled with.
-    pub(crate) row: &'a AgentRow,
+    pub(crate) row:        &'a AgentRow,
     /// The name of the agent that opened this one in tmux, where that
     /// agent is listed on the same machine.
-    launcher:       Option<&'a str>,
+    launcher:              Option<&'a str>,
     /// The heading of the machine the agent runs on.
-    machine:        &'a str,
+    machine:               &'a str,
     /// The hue the cell's title and the agent's name in the summary are
     /// drawn in.
-    pub(crate) hue: RainbowHue,
+    pub(crate) hue:        RainbowHue,
+    /// Role from this round's accepted management relationships.
+    pub(crate) role_label: RoleLabel,
     /// The sessions the agent opened, each followed by the sessions it
     /// opened in turn: the tree the cell draws, top to bottom.
-    sessions:       Vec<SessionEntry<'a>>,
+    sessions:              Vec<SessionEntry<'a>>,
     /// Running work after session markers and thread ownership are reconciled.
-    children:       Vec<CellChild<'a>>,
+    children:              Vec<CellChild<'a>>,
 }
 
 impl AgentEntry<'_> {
@@ -124,22 +127,24 @@ impl AgentEntry<'_> {
 #[derive(Clone, Debug)]
 struct SessionEntry<'a> {
     /// The machine this agent or thread runs on.
-    machine:  &'a str,
+    machine:    &'a str,
     /// Where the member runs relative to the cell's heading.
-    location: SessionLocation,
+    location:   SessionLocation,
     /// A session row or one Codex thread held by its app server.
-    subject:  SessionSubject<'a>,
+    subject:    SessionSubject<'a>,
     /// The session's row, or the owning row for a Codex thread.
-    row:      &'a AgentRow,
+    row:        &'a AgentRow,
     /// The hue its name is drawn in, in the tree and in the table.
-    hue:      RainbowHue,
+    hue:        RainbowHue,
+    /// Role stated or inferred by the accepted placement.
+    role_label: RoleLabel,
     /// For each level between the cell's agent and the session's
     /// launcher, top down, whether the tree's line carries on down past
     /// the session there: whether that level's session has a later one
     /// beside it.
-    rails:    Vec<bool>,
+    rails:      Vec<bool>,
     /// Whether the session is the last its launcher opened.
-    last:     bool,
+    last:       bool,
 }
 
 /// Where a tree member runs relative to the cell's root.
@@ -172,6 +177,15 @@ impl SessionEntry<'_> {
         } else {
             name.clone()
         }
+    }
+
+    /// Return the name in its `RainbowHue`, followed by the `RoleLabel`
+    /// suffix in `label_color`.
+    fn name_spans(&self) -> Vec<Span<'static>> {
+        vec![
+            Span::styled(self.name(), Role::Rainbow(self.hue).style()),
+            Span::styled(self.role_label.suffix(), Style::default().fg(label_color())),
+        ]
     }
 
     /// A thread's own creation time rather than its app server's.
@@ -251,6 +265,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
                 process_started: root.row.process_started,
             },
             row: root.row,
+            role_label: placement.role_label(root.identity),
             launcher,
             machine,
             hue,
@@ -281,6 +296,7 @@ fn sessions_of<'a>(
                 row.identity,
                 row.row,
                 SessionSubject::Agent,
+                placement.role_label(row.identity),
             )
         })
         .chain(
@@ -295,12 +311,13 @@ fn sessions_of<'a>(
                         thread.owner,
                         thread.owner_row,
                         SessionSubject::Thread(child),
+                        RoleLabel::Stated(thread.role),
                     )
                 }),
         )
         .collect();
-    opened.sort_by_key(|(started, identity, _, _)| (*started, identity.machine, identity.pid));
-    for (index, (_, identity, row, subject)) in opened.iter().enumerate() {
+    opened.sort_by_key(|(started, identity, _, _, _)| (*started, identity.machine, identity.pid));
+    for (index, (_, identity, row, subject, role_label)) in opened.iter().enumerate() {
         let last = index + 1 == opened.len();
         let hue = match subject {
             SessionSubject::Agent => {
@@ -319,6 +336,7 @@ fn sessions_of<'a>(
                 SessionLocation::AnotherMachine
             },
             subject: *subject,
+            role_label: *role_label,
             hue,
             rails: rails.clone(),
             last,
@@ -662,7 +680,12 @@ fn tree_columns(
 fn tree_cells(session: &SessionEntry<'_>, now: u64) -> [String; TREE_COLUMNS] {
     let row = session.row;
     [
-        format!("{}{}", session.lead(), session.name()),
+        format!(
+            "{}{}{}",
+            session.lead(),
+            session.name(),
+            session.role_label.suffix()
+        ),
         session.status().to_string(),
         row.branch
             .clone()
@@ -676,7 +699,7 @@ fn tree_cells(session: &SessionEntry<'_>, now: u64) -> [String; TREE_COLUMNS] {
 /// measured to `now`: in the full view a line to each session in the
 /// tree's columns, and in the compressed view a line to each cut where
 /// it would not fit. The glyphs are plain text and each name takes its
-/// session's hue.
+/// session's hue while role suffixes take the label color.
 fn draw_tree(
     buffer: &mut Buffer,
     area: Rect,
@@ -693,10 +716,11 @@ fn draw_tree(
             sessions.iter().map(|session| {
                 let row = session.row;
                 Row::new([
-                    Cell::from(Line::from(vec![
-                        Span::styled(session.lead(), text),
-                        Span::styled(session.name(), Role::Rainbow(session.hue).style()),
-                    ])),
+                    Cell::from(Line::from(
+                        iter::once(Span::styled(session.lead(), text))
+                            .chain(session.name_spans())
+                            .collect::<Vec<_>>(),
+                    )),
                     Cell::from(Span::styled(
                         session.status().to_string(),
                         session.status_role().style(),
@@ -734,12 +758,16 @@ fn draw_tree(
 /// [`cut_line`] where it would not fit.
 fn compressed_session(session: &SessionEntry<'_>, width: u16) -> Line<'static> {
     cut_line(
-        vec![
-            Span::styled(session.lead(), Style::default().fg(text_default())),
-            Span::styled(session.name(), Role::Rainbow(session.hue).style()),
+        iter::once(Span::styled(
+            session.lead(),
+            Style::default().fg(text_default()),
+        ))
+        .chain(session.name_spans())
+        .chain([
             gap(),
             Span::styled(session.status().to_string(), session.status_role().style()),
-        ],
+        ])
+        .collect(),
         width,
     )
 }
@@ -1241,6 +1269,7 @@ mod tests {
             launcher,
             machine: "natedev",
             hue: RainbowHue::Red,
+            role_label: RoleLabel::Unlabeled,
             sessions: Vec::new(),
             children: row
                 .children
@@ -2670,6 +2699,65 @@ mod tests {
         }
     }
 
+    /// Explicit member labels keep their own color and survive both tree layouts.
+    #[test]
+    fn managed_agent_roles_render_after_names_in_full_and_compressed_trees() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "production", 3 * HOUR, None),
+                identified(2, "unit", 2 * HOUR, None),
+                identified(3, "nested", HOUR, None),
+            ],
+            HierarchyEdges(vec![
+                HierarchyEdge {
+                    manager: "production".to_string(),
+                    member:  "unit".to_string(),
+                    role:    HierarchyRole::Impl,
+                },
+                HierarchyEdge {
+                    manager: "unit".to_string(),
+                    member:  "nested".to_string(),
+                    role:    HierarchyRole::Showrunner,
+                },
+            ]),
+        );
+        let cells = natedev_cells(&state);
+        assert!(matches!(
+            CellView::at_width(&cells[0], 160, NOW),
+            CellView::Full(_)
+        ));
+        assert_eq!(
+            CellView::fitted(&cells[0], area(160, 2), NOW),
+            CellView::Compressed
+        );
+        for buffer in [
+            drawn_among(&cells[0], &cells, 160),
+            drawn_into(&cells[0], &cells, 160, 2),
+        ] {
+            for (name, role_label, pid) in [
+                ("unit", RoleLabel::Stated(HierarchyRole::Impl), 2),
+                ("nested", RoleLabel::Stated(HierarchyRole::Showrunner), 3),
+            ] {
+                let suffix = role_label.suffix();
+                let text = format!("{name}{suffix}");
+                let (x, y) =
+                    find(&buffer, &text).expect("the accepted role follows its member's name");
+                assert_eq!(
+                    buffer[(x, y)].fg,
+                    name_style(&cells, "natedev", pid)
+                        .fg
+                        .expect("the member has a hue")
+                );
+                for offset in name.chars().count()..text.chars().count() {
+                    assert_eq!(
+                        buffer[(x + u16::try_from(offset).expect("the label fits"), y)].fg,
+                        label_color()
+                    );
+                }
+            }
+        }
+    }
+
     /// A worker discovered on a transport-only mesh server renders under its remote unit.
     #[test]
     fn a_mesh_worker_from_production_classification_renders_without_an_app_server_cell() {
@@ -2699,7 +2787,10 @@ mod tests {
                 .filter(|line| line.contains("mesh worker"))
                 .collect();
             assert_eq!(workers.len(), 1, "the classified mesh worker appears once");
-            assert!(workers[0].contains("mesh worker · mac"));
+            let suffix = RoleLabel::Stated(HierarchyRole::Impl).suffix();
+            assert!(workers[0].contains(&format!("mesh worker{HEADING_SEPARATOR}mac{suffix}")));
+            let at = find(&buffer, &suffix).expect("the managed thread shows its accepted role");
+            assert_eq!(buffer[at].fg, label_color());
             assert!(workers[0].contains("codex fast"));
         }
     }
