@@ -38,32 +38,16 @@
 
 ### Phase 1 — natedev's `production_tree.py --json` prints the edges  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** `~/.claude/scripts/lib/py ~/.claude/scripts/production/production_tree.py --json` prints this machine's edges per the contract, in well under a second.
-
-**Spec:**
-1. natedev's showrunner-fixer builds it in `~/.claude`, from `showrunners.py` parent links and the unit marks, reading both folder names. This unit writes none of it. It is installed on natedev and, from `~/.claude` 384fb82d, on the Mac.
-2. The unit director runs it on natedev and on the Mac, checks the output against the contract (ids resolve to live session records or live Codex threads; roles are from the set), and records the result here.
-3. Cross-machine case: a local member whose manager runs on the other machine must still get its edge from the member's machine. If the producer drops it (it looks managers up among local sessions), send natedev the case before acceptance; the fix is natedev's.
-4. Then set it as `hierarchy_command` on each machine and run `cargo-handler probe` there: the probe's `edges` must carry the same links, and `hierarchy_failed` must be absent or false.
-5. Live check with the checkpoint binary on natedev, showing the Mac too: a showrunner title reads `· showrunner`, a nested unit reads `· unit`, live Codex workers carry their role, and only placement roots are summary entries. An edge whose member is an idle Codex thread with no row is an expected exception, recorded rather than required.
-
-**Constraints from prior phases:**
-- The census runs the command with a 10 s timeout and a 1 MiB stdout cap (`HIERARCHY_TIMEOUT`, `HIERARCHY_OUTPUT_LIMIT` in `constants.rs`); the probe deadline is `HIERARCHY_TIMEOUT` + `PROBE_SCAN_SSH_MARGIN` (20 s). A failed or timed-out run keeps the last good edges for an unchanged command and retries on the next tick; a changed command or Off clears them. Completed rows publish before discovery finishes. Schema must be `1`.
-- Each machine's probe loads its own config and runs its own command (`census/probe.rs` `print`), so a remote machine's edges come from the remote's own setting. A probe whose discovery failed reports `hierarchy_failed: true`, and the receiving census keeps that host's last good edges.
-- The config file comes from `dirs::config_dir()` (`SettingsFileSpec`): on Linux `$XDG_CONFIG_HOME/cargo-handler/`, and a scratch `XDG_CONFIG_HOME` must be absolute, because `dirs` ignores a relative value and reads `~/.config`, so a probe can pass against the wrong config; on macOS always `~/Library/Application Support/cargo-handler/`, which ignores `XDG_CONFIG_HOME`. Record which binary and which config file each probe used.
+- natedev's `~/.claude/scripts/lib/py ~/.claude/scripts/production/production_tree.py --json` (built in `~/.claude`, not this repository) prints this machine's edges in about 1 s under load: 50–62 on natedev, none on the Mac, where no managed agents run. A member whose showrunner runs on the other machine gets its edge from the showrunner's update-timer record (`~/.claude` 30795ad8).
+- `hierarchy_command` is set to that command on both machines: natedev in `~/.config/cargo-handler/config.toml`, the Mac in `~/Library/Application Support/cargo-handler/config.toml`. A configured `cargo-handler probe` carries the same edges with `hierarchy_failed` absent; every unresolved member is an idle Codex thread with no row, the expected exception.
+- The live grid shows `· showrunner` titles, nested `· unit` rows and Codex worker roles, and only placement roots are summary entries.
 
 **Files:**
-- `docs/cargo-port/remove-running-section-handler-hierarchy.md`
+- `docs/cargo-port/remove-running-section-handler-hierarchy.md` — this record
 
-**Workers:** none — natedev builds the command; the unit director checks it.
-
-**Acceptance gate:** the command's output on both machines matches the contract and names the live showrunner → unit links, including a cross-machine member; a configured `cargo-handler probe` on each machine reports those edges with no `hierarchy_failed`; and the live grid shows the role labels and nesting of step 5.
-
-**Result (2026-10-15):** natedev prints 50–62 edges in about 1 s under load; a configured probe carries the same edges with no `hierarchy_failed`, and every unresolved member is an idle Codex thread. The Mac prints no edges, correct with no managed agents running there. The producer names a showrunner on the other machine from its update-timer record (`~/.claude` 30795ad8). The live grid shows `· showrunner`, nested `· unit` and Codex worker roles, with only placement roots in the summary.
+**Gotchas:** the cross-machine edge could only be checked by code path, since the Mac runs no managed agents.
 
 ### Phase 2 — Each machine's census reads its hierarchy edges  · status: done
 
