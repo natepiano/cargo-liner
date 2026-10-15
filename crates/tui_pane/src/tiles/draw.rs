@@ -3954,6 +3954,35 @@ mod tests {
         fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
     }
 
+    /// An entering tile may extend below the terminal while its title is already visible.
+    #[test]
+    fn an_entering_tile_keeps_its_title_on_the_last_terminal_row() {
+        let area = Rect::new(0, 0, 18, 5);
+        let drawing = TileDrawing {
+            pieces:       vec![tile_piece(
+                TileContent::Group(7),
+                PaneFrame::shifted(Rect::new(0, 0, 18, 4), 4, Rect::new(0, 4, 18, 6)),
+                PieceName::Shown,
+            )],
+            column_bands: vec![area],
+        };
+        let mut buffer = Buffer::empty(area);
+        draw_placements(
+            &mut buffer,
+            area,
+            &drawing,
+            &title_demands(&[7]),
+            &[(TileContent::Group(7), 16)],
+            TileGridContents::Shown,
+            &SegmentedTitleCells,
+        );
+
+        assert!(buffer_line(&buffer, 4).contains("worker · impl"));
+        assert_eq!(buffer[(1, 4)].fg, Color::Blue);
+        assert_eq!(buffer[(8, 4)].fg, Color::Yellow);
+        assert_eq!(buffer_text(&buffer).matches("worker · impl").count(), 1);
+    }
+
     #[test]
     fn moving_tiles_keep_title_segments_together_and_inside_their_width() {
         for (width, title) in [(18, "worker · impl"), (14, "worker · im…")] {

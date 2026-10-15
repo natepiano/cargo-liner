@@ -745,7 +745,7 @@ fn transact_classification(
                                 context.path_case,
                             )
                     {
-                        report.path_attribution = attribution;
+                        report.path_attribution = *attribution;
                     }
                     report.scope_acquisition = acquisition;
                     ReconciliationValidation::Apply {

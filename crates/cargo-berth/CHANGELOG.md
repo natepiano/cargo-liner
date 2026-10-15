@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Parallel phase checks name sibling-held paths and their reservations in `acquisition.already_held` while reserving only the free paths.
+- A new phase check at the reservation limit reports `reservation_limit_reached` with the configured maximum instead of `invalid_input`.
+- A phase checkpoint leaves a released sibling's completed checkpoint paths alone while still acquiring new edits.
 - `check` under a new harness session opens its own reservation in the same run, keeping parallel phases separate. It reserves only paths no active sibling holds; mapped sessions keep their reservation, and a check without a usable session still joins the run's sole active reservation.
 - A fresh session checking paths active siblings already hold reports `left_unmapped` for its session mapping: the session stays unmapped, so a later bare check under it can open new work.
 - The post-tool-use hook widens a reservation only when it is the run's sole active reservation in the worktree. With several active phases, unheld changed paths report the candidate reservations instead of joining the hook session's mapped phase; explicit drift and post-commit drift retain session attribution.

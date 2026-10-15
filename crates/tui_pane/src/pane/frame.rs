@@ -182,9 +182,8 @@ pub const fn frame_inner(rect: Rect) -> Rect {
 /// Draw a pane's contents through `draw`, displaced and cut off the way
 /// its [`PaneFrame`] says.
 ///
-/// A pane standing still inside its clip goes straight to `buffer`,
-/// which is both the common case and the only path a pane that never
-/// moves takes. A pane in mid-flight is drawn into a scratch buffer
+/// A pane standing still inside its clip and `buffer` draws directly,
+/// which is the common case. Other panes draw into a scratch buffer
 /// instead. On an opaque screen the scratch buffer starts on the same
 /// screen ground as the target, then only the rows still inside the
 /// clip are copied across. That is what makes a pane leaving a column
@@ -195,13 +194,52 @@ pub const fn frame_inner(rect: Rect) -> Rect {
 /// moving. No border is drawn here; [`GridLines`] lays every line down
 /// afterwards.
 pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mut Buffer, Rect)) {
+    draw_at_destination(ClippedPaneDestination::new(buffer, frame), draw);
+}
+
+/// A pane's destination, bounded by both its motion clip and the borrowed buffer.
+///
+/// The buffer cannot change area while borrowed here. Only the intersection
+/// constructed by `new` supplies destination coordinates for copying.
+struct ClippedPaneDestination<'a> {
+    /// The buffer whose area bounds every destination cell.
+    buffer:  &'a mut Buffer,
+    /// Original geometry, preserving the pane's source rows and clip borders.
+    frame:   PaneFrame,
+    /// The portion of the motion clip inside the destination buffer.
+    visible: Rect,
+}
+
+impl<'a> ClippedPaneDestination<'a> {
+    /// Bind a pane to the intersection of its clip and this buffer's area.
+    fn new(buffer: &'a mut Buffer, frame: PaneFrame) -> Self {
+        let visible = frame.clip.intersection(buffer.area);
+        let visible = visible.intersection(Rect {
+            y: visible.y,
+            height: visible.height,
+            ..frame.rect
+        });
+        Self {
+            buffer,
+            frame,
+            visible,
+        }
+    }
+}
+
+/// Draw directly only when the entire stationary pane fits its destination.
+fn draw_at_destination(
+    destination: ClippedPaneDestination<'_>,
+    draw: impl FnOnce(&mut Buffer, Rect),
+) {
+    let frame = destination.frame;
     let inner = frame.inner();
     if inner.is_empty() {
         return;
     }
-    if frame.is_still() {
-        fill_pane(buffer, frame, inner);
-        draw(buffer, inner);
+    if frame.is_still() && within(frame.rect, destination.visible) {
+        fill_pane(destination.buffer, frame, inner);
+        draw(destination.buffer, inner);
         return;
     }
     let mut scratch = Buffer::empty(frame.rect);
@@ -210,7 +248,7 @@ pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mu
     }
     fill_pane(&mut scratch, frame, inner);
     draw(&mut scratch, inner);
-    blit(buffer, &scratch, frame);
+    blit(destination, &scratch);
 }
 
 /// Lay a pane's tint down under its contents.
@@ -233,11 +271,15 @@ fn fill_pane(buffer: &mut Buffer, frame: PaneFrame, inner: Rect) {
     }
 }
 
-/// Copy a drawn pane onto `target` displaced by its shift, keeping only
-/// what lands inside its clip.
-fn blit(target: &mut Buffer, scratch: &Buffer, frame: PaneFrame) {
+/// Copy a drawn pane only into its destination's bounded visible cells.
+fn blit(destination: ClippedPaneDestination<'_>, scratch: &Buffer) {
+    let ClippedPaneDestination {
+        buffer,
+        frame,
+        visible,
+    } = destination;
     let (rect, clip) = (frame.rect, frame.clip);
-    for y in clip.top()..clip.bottom() {
+    for y in visible.top()..visible.bottom() {
         let Some(source) = i32::from(y)
             .checked_sub(frame.shift)
             .and_then(|row| u16::try_from(row).ok())
@@ -254,8 +296,8 @@ fn blit(target: &mut Buffer, scratch: &Buffer, frame: PaneFrame) {
         if source_is_inside && target_is_clip_border {
             continue;
         }
-        for x in rect.left().max(clip.left())..rect.right().min(clip.right()) {
-            target[(x, y)] = scratch[(x, source)].clone();
+        for x in visible.left()..visible.right() {
+            buffer[(x, y)] = scratch[(x, source)].clone();
         }
     }
 }
@@ -1389,6 +1431,53 @@ mod tests {
         );
         assert_eq!(buffer[(1, 1)].symbol(), " ");
         assert_eq!(buffer[(1, 3)].symbol(), "x");
+    }
+
+    /// A column's motion clip can extend beyond the terminal's last row.
+    #[test]
+    fn an_overhanging_pane_draws_the_last_destination_row_without_overrunning_it() {
+        let area = Rect::new(0, 0, 6, 5);
+        let mut buffer = Buffer::empty(area);
+        draw_clipped(
+            &mut buffer,
+            PaneFrame::shifted(Rect::new(0, 0, 6, 6), 1, Rect::new(0, 0, 6, 8)),
+            |target, inner| {
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        target[(x, y)].set_symbol("x");
+                    }
+                }
+            },
+        );
+
+        assert_eq!(rows(&buffer, area)[4], " xxxx ");
+        assert_eq!(rows(&buffer, area)[0], "      ");
+    }
+
+    /// The destination intersection applies on every side, including the still path.
+    #[test]
+    fn overhanging_panes_preserve_source_coordinates_in_an_offset_destination() {
+        let area = Rect::new(3, 4, 5, 4);
+        for frame in [
+            PaneFrame::new(Rect::new(1, 1, 9, 9)),
+            PaneFrame::shifted(Rect::new(1, 1, 9, 9), 2, Rect::new(0, 0, 12, 12)),
+        ] {
+            let mut buffer = Buffer::empty(area);
+            draw_clipped(&mut buffer, frame, |target, inner| {
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        target[(x, y)].set_symbol(&y.to_string());
+                    }
+                }
+            });
+
+            for y in area.top()..area.bottom() {
+                let source = i32::from(y) - frame.shift();
+                for x in area.left()..area.right() {
+                    assert_eq!(buffer[(x, y)].symbol(), source.to_string());
+                }
+            }
+        }
     }
 
     #[test]
