@@ -127,7 +127,13 @@ impl Ticker {
             {
                 continue;
             }
-            changed |= app.census.apply(update);
+            match update {
+                CensusUpdate::Local(_, _) => changed |= app.census.apply(update),
+                CensusUpdate::LocalScanCompleted(_, _) | CensusUpdate::Remote { .. } => {
+                    changed |= app.census.apply(update);
+                    app.prune_tree_sorts();
+                },
+            }
         }
         changed
     }
@@ -196,11 +202,15 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::agent_cell::TreeColumn;
     use crate::census::Account;
     use crate::census::Agent;
     use crate::census::HierarchyEdges;
+    use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::sort::TreeSort;
+    use crate::tiles::AgentCell;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -246,6 +256,81 @@ mod tests {
             assert!(!ticker.drain_census(&mut app));
             assert_eq!(app.footer_colors.revision_checks(), before + 1);
         }
+    }
+
+    /// Interim answers preserve preferences; completed scans prune departed roots.
+    #[test]
+    fn the_ticker_prunes_tree_sorts_after_completed_census_answers() {
+        let mut app = App::new_for_test().expect("a test app");
+        let row: AgentRow = serde_json::from_value(serde_json::json!({
+            "agent":"claude", "name":"root", "pid":10,
+            "started":100, "process_started":100, "directory":"/fixture",
+            "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
+        }))
+        .expect("a fixture agent");
+        let id = AgentCell {
+            machine:         "natedev".to_string(),
+            pid:             10,
+            process_started: 100,
+        };
+        let (sender, updates) = mpsc::channel();
+        let (_appearance_sender, appearances) = mpsc::channel();
+        let ticker = Ticker::new(updates, appearances);
+        sender
+            .send(CensusUpdate::LocalScanCompleted(
+                vec![row.clone()],
+                HierarchyEdges::default(),
+            ))
+            .expect("publish a completed scan");
+        ticker.drain_census(&mut app);
+        let mut sort = TreeSort::default();
+        sort.select(TreeColumn::Role);
+        app.tree_sorts.insert(id.clone(), sort);
+
+        sender
+            .send(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()))
+            .expect("publish an interim answer");
+        ticker.drain_census(&mut app);
+        assert_eq!(app.tree_sorts.get(&id), Some(&sort));
+
+        sender
+            .send(CensusUpdate::LocalScanCompleted(
+                Vec::new(),
+                HierarchyEdges::default(),
+            ))
+            .expect("publish a completed scan");
+        ticker.drain_census(&mut app);
+        assert!(app.tree_sorts.is_empty());
+
+        app.loaded_config.config.machines.remote = vec!["mac".to_string()];
+        sender
+            .send(CensusUpdate::Remote {
+                host:  "mac".to_string(),
+                state: MachineState::Answered(vec![row], HierarchyEdges::default()),
+            })
+            .expect("publish a remote answer");
+        ticker.drain_census(&mut app);
+        let remote_id = AgentCell {
+            machine: "mac".to_string(),
+            ..id
+        };
+        app.tree_sorts.insert(remote_id.clone(), sort);
+        sender
+            .send(CensusUpdate::Remote {
+                host:  "unconfigured".to_string(),
+                state: MachineState::Failed("fixture failure".to_string()),
+            })
+            .expect("publish an unconfigured answer");
+        ticker.drain_census(&mut app);
+        assert_eq!(app.tree_sorts.get(&remote_id), Some(&sort));
+        sender
+            .send(CensusUpdate::Remote {
+                host:  "mac".to_string(),
+                state: MachineState::Answered(Vec::new(), HierarchyEdges::default()),
+            })
+            .expect("publish a completed remote answer");
+        ticker.drain_census(&mut app);
+        assert!(app.tree_sorts.is_empty());
     }
 
     /// An idle app with a settled grid costs the loop nothing, and `+`

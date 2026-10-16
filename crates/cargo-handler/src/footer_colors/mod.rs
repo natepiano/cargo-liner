@@ -8,6 +8,11 @@ use std::time::SystemTime;
 use ratatui::style::Color;
 use ratatui::style::Style;
 
+/// Footer configuration relative to the user's home directory.
+const FOOTER_CONFIG_PATH: &str = ".claude/config/statusline.conf";
+/// Footer keys that name account labels.
+const ACCOUNT_KEY_PREFIX: &str = "account.";
+
 /// A color name understood by the Claude Code footer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FooterColor {
@@ -147,7 +152,7 @@ impl FooterColors {
                 "role.worker" => FooterRole::Worker,
                 "role.unassigned" => FooterRole::Unassigned,
                 key => {
-                    if let Some(account) = key.strip_prefix("account.") {
+                    if let Some(account) = key.strip_prefix(ACCOUNT_KEY_PREFIX) {
                         match color {
                             Ok(color) => {
                                 colors.accounts.insert(account.to_string(), color);
@@ -219,7 +224,7 @@ impl FooterColorFile {
     /// Load `$HOME/.claude/config/statusline.conf`, or an uncolored palette.
     pub(crate) fn load() -> Self {
         let source = std::env::var_os("HOME").map_or(FooterColorSource::Disabled, |home| {
-            FooterColorSource::File(PathBuf::from(home).join(".claude/config/statusline.conf"))
+            FooterColorSource::File(PathBuf::from(home).join(FOOTER_CONFIG_PATH))
         });
         let mut file = Self {
             source,

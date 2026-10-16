@@ -147,21 +147,6 @@ pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
     "desktop",
     "directory",
 ];
-/// Index of the `pid` column in [`SUMMARY_HEADERS`].
-pub(crate) const PID_COLUMN: usize = 0;
-/// Index of the `agent` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGENT_COLUMN: usize = 1;
-/// Index of the `name` column in [`SUMMARY_HEADERS`].
-pub(crate) const NAME_COLUMN: usize = 2;
-/// Index of the `status` column in [`SUMMARY_HEADERS`].
-pub(crate) const STATUS_COLUMN: usize = 3;
-/// Index of the `age` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGE_COLUMN: usize = 4;
-/// Index of the `desktop` column in [`SUMMARY_HEADERS`].
-pub(crate) const DESKTOP_COLUMN: usize = 5;
-/// Index of the `directory` column in [`SUMMARY_HEADERS`], the one
-/// column that takes whatever the fitted columns leave.
-pub(crate) const DIRECTORY_COLUMN: usize = 6;
 /// Cells the `name` column grows to at most. A longer name is cut to
 /// fit and ends in [`TRUNCATION_MARK`].
 pub(crate) const NAME_COLUMN_MAX: u16 = 36;

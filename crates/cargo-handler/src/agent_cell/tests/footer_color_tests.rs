@@ -23,7 +23,7 @@ fn rendered_with_colors(
 ) -> Buffer {
     let rect = area(width, height(cell, width, NOW, account_column));
     let mut buffer = Buffer::empty(rect);
-    draw_with_footer_colors(
+    draw(
         &mut buffer,
         rect,
         cell,
@@ -295,16 +295,15 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
 }
 
 #[test]
-fn footer_colors_leave_shell_roles_missing_and_other_unmanaged_work_plain() {
+fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
     let colors = FooterColors::parse(
         "role.unassigned=purple\nrole.worker=orange\n\
          role.shell=red\nrole.subagent=green\nrole.thread=blue",
     );
     let root = trunk();
     let buffer = rendered_with_colors(&entry(&root, None), 220, AccountColumn::Shown, &colors);
-    for role in ["subagent", "thread"] {
-        assert_color(&buffer, role, text_default());
-    }
+    assert_color(&buffer, "subagent", text_default());
+    assert_color(&buffer, "worker", Color::Indexed(208));
     let role_x = find(&buffer, "role").expect("the role header is drawn").0;
     let branch_x = find(&buffer, "branch")
         .expect("the branch header is drawn")
@@ -342,5 +341,44 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
         Role::Claude.style().fg.expect("program color"),
     );
     assert_color(&buffer, "codex1", text_default());
-    assert_color(&buffer, "thread", text_default());
+    assert_color(
+        &buffer,
+        "worker task",
+        Role::Rainbow(RainbowHue::Red)
+            .style()
+            .fg
+            .expect("parent hue"),
+    );
+    let role_x = find(&buffer, TREE_ROLE_HEADER).expect("role header").0;
+    let row = find(&buffer, "worker task").expect("worker name").1;
+    assert_eq!(buffer[(role_x, row)].fg, text_default());
+}
+
+/// Unroled Codex workers share their parent session's hue in either tree view.
+#[test]
+fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
+    let root = AgentRow {
+        children: vec![
+            child(0, ChildKind::Thread, None, "unroled task", MINUTE),
+            child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),
+            child(0, ChildKind::Subagent, None, "subagent task", MINUTE),
+        ],
+        ..agent(10, "root", HOUR, None)
+    };
+    let cell = entry(&root, None);
+    let colors = FooterColors::parse("role.worker=bright-cyan");
+    for width in [60, 220] {
+        let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
+        assert_color(
+            &buffer,
+            "unroled task",
+            Role::Rainbow(cell.hue).style().fg.expect("parent hue"),
+        );
+        assert_color(&buffer, "shell task", text_default());
+        assert_color(&buffer, "subagent task", text_default());
+        let y = find(&buffer, "unroled task").expect("worker row").1;
+        assert_eq!(tree_column(&buffer, "role", y), "worker");
+        let x = find(&buffer, "role").expect("role header").0;
+        assert_eq!(buffer[(x, y)].fg, Color::LightCyan);
+    }
 }
