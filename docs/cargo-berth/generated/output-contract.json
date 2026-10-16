@@ -9461,6 +9461,39 @@
               "type": "object"
             },
             {
+              "description": "An outstanding reservation replaced its checkpoint without observing pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The replacement fixed commit."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "status": {
+                  "const": "resnapshotted_pending_paths_unavailable",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed with the replacement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A point-in-time git result was appended for hook-safe replay.",
               "properties": {
                 "evidence": {
@@ -16674,6 +16707,39 @@
               "required": [
                 "status",
                 "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An outstanding reservation replaced its checkpoint without observing pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The replacement fixed commit."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "status": {
+                  "const": "resnapshotted_pending_paths_unavailable",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed with the replacement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
                 "reservation_id",
                 "protected_tip",
                 "trunk_oid",

@@ -4602,6 +4602,56 @@ fn assert_scoped_patch_proof_at(data: &serde_json::Value, reservation_id: &str, 
 }
 
 #[test]
+fn release_reports_unavailable_pending_paths_after_a_trunk_rewrite() {
+    let fixture =
+        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Outstanding);
+    let root = fixture.repository.path();
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": fixture.reservation_id,
+            "status": {"status": "trunk_rewritten"},
+            "edit_blocking_status": "blocking",
+        }),
+    );
+    // Fail only the holder's pending-path observation; commit ancestry remains readable.
+    let wrapper = TRACING_GIT_WRAPPER.replace(
+        "exec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\"",
+        "for argument in \"$@\"; do\n    if [ \"$2\" = \"status\" ] && [ \"$argument\" = \"--porcelain\" ]; then\n        printf '%s\\n' 'pending-path observation unavailable' >&2\n        exit 128\n    fi\ndone\nexec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\"",
+    );
+    let observed = run_board_with_git_wrapper(root, &wrapper);
+    assert_success(&observed.output);
+    let observed = json(&observed.output);
+    let snapshot =
+        board_reservation_snapshot(&observed["payload"]["data"], &fixture.reservation_id);
+    assert_eq!(snapshot["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        snapshot["integration_evidence"]["status"]["status"],
+        "trunk_rewritten"
+    );
+
+    let released = run_berth_with_git_wrapper(
+        root,
+        &["release", &fixture.reservation_id, "--json"],
+        &wrapper,
+    );
+    assert_success(&released.output);
+    let answer = json(&released.output);
+    assert_eq!(answer["status"], "outstanding", "{answer}");
+    let payload = &answer["payload"]["data"];
+    assert_eq!(
+        payload["status"], "resnapshotted_pending_paths_unavailable",
+        "{answer}"
+    );
+    assert!(payload.get("pending_paths").is_none(), "{answer}");
+    assert_eq!(payload["protected_tip"], fixture.target);
+    let message = answer["message"].as_str().expect("release explanation");
+    assert!(message.ends_with("pending paths unavailable."), "{message}");
+    assert!(!message.ends_with("pending paths: ."), "{message}");
+}
+
+#[test]
 fn release_names_pending_paths_when_trunk_was_rewritten() {
     let fixture =
         rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Outstanding);
@@ -5415,6 +5465,128 @@ fn assert_historical_candidate_subject_budget(
             },
         }
     }
+}
+
+#[test]
+fn an_orphan_whose_work_landed_suggests_verifying_resolved_trunk() {
+    let fixture = orphan_alert_fixture();
+    let root = fixture.repository.path();
+    GIT.run_without_hooks(root, ["merge", "--quiet", "--ff-only", "orphan-alert"]);
+    let trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    let output = run_berth(root, &["board", "--json"]);
+    assert_success(&output);
+    let answer = json(&output);
+    let data = &answer["payload"]["data"];
+    let id = &fixture.reservation_id;
+    let tip = &fixture.protected_tip;
+    let snapshot = board_reservation_snapshot(data, id);
+    assert_eq!(snapshot["holder"]["liveness"], "orphaned", "{answer}");
+    assert_eq!(snapshot["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        snapshot["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    let alert = orphan_alert(data, id);
+    assert_eq!(
+        alert["resolution"]["recovery"],
+        serde_json::json!({
+            "kind": "verify_resolved_trunk",
+            "trunk_oid": trunk,
+            "action": {"action": "resolve_integrated_as", "reservation_id": id},
+        })
+    );
+    assert_orphan_alert_text(
+        &answer,
+        &format!(
+            "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --integrated-as {trunk}` after reviewing the work. Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since integration target commit {trunk} carries the work."
+        ),
+    );
+}
+
+#[test]
+fn an_orphan_whose_work_did_not_land_keeps_the_unproven_alert() {
+    let fixture = orphan_alert_fixture();
+    let root = fixture.repository.path();
+    let trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    let output = run_berth(root, &["board", "--json"]);
+    assert_success(&output);
+    let answer = json(&output);
+    let data = &answer["payload"]["data"];
+    let id = &fixture.reservation_id;
+    let tip = &fixture.protected_tip;
+    let snapshot = board_reservation_snapshot(data, id);
+    assert_eq!(snapshot["holder"]["liveness"], "orphaned", "{answer}");
+    assert_eq!(snapshot["merge_extent"]["status"], "unavailable");
+    assert_ne!(
+        snapshot["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    assert_eq!(
+        orphan_alert(data, id)["resolution"]["recovery"]["kind"],
+        "name_carrying_trunk_commit"
+    );
+    assert_orphan_alert_text(
+        &answer,
+        &format!(
+            "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --retire-orphan --why <reason>` or `cargo-berth resolve {id} --abandon --why <reason>` after reviewing the work. The reservation's integration target at {trunk} does not contain protected tip {tip}; --integrated-as needs an integration target commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target."
+        ),
+    );
+}
+
+struct OrphanAlertFixture {
+    repository:     TempDir,
+    reservation_id: String,
+    protected_tip:  String,
+}
+
+fn orphan_alert_fixture() -> OrphanAlertFixture {
+    let repository = initialized_repository();
+    let root = repository.path();
+    GIT.run(root, ["add", CONFIGURATION_PATH]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "configure berth"]);
+    let worktrees = tempdir().expect("orphan worktree parent");
+    let holder = add_worktree(root, worktrees.path(), "orphan-alert");
+    let id = reservation_id(&claim(&holder, "file:src/lib.rs", FIRST_RUN));
+    fs::write(holder.join("src/lib.rs"), "pub fn protected_orphan() {}\n")
+        .expect("orphan work should write");
+    GIT.run(&holder, ["add", "src/lib.rs"]);
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "orphan work"]);
+    let protected_tip = git_stdout(&holder, &["rev-parse", "HEAD"]);
+    let checkpoint = run_berth_with_run(&holder, &["release", &id, "--json"], FIRST_RUN);
+    assert_success(&checkpoint);
+    assert_eq!(
+        json(&checkpoint)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    fs::remove_dir_all(&holder).expect("orphan checkout should remove");
+    GIT.run(root, ["worktree", "prune", "--expire", "now"]);
+    OrphanAlertFixture {
+        repository,
+        reservation_id: id,
+        protected_tip,
+    }
+}
+
+fn orphan_alert<'report>(data: &'report serde_json::Value, id: &str) -> &'report serde_json::Value {
+    data["alerts"]["entries"]
+        .as_array()
+        .expect("board alerts")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding" && alert["reservation_id"] == id)
+        .expect("orphan recovery alert")
+}
+
+fn assert_orphan_alert_text(answer: &serde_json::Value, expected: &str) {
+    assert!(
+        answer["presentation"]["blocks"]
+            .as_array()
+            .expect("board presentation")
+            .iter()
+            .filter_map(|block| block["detail"].as_str())
+            .flat_map(str::lines)
+            .any(|line| line == expected),
+        "missing exact orphan guidance {expected:?}: {answer}"
+    );
 }
 
 #[test]
@@ -7114,6 +7286,14 @@ fn run_board_with_git_trace(repository_root: &Path) -> TracedBoard {
 
 /// Run a board process with a traceable, narrowly injected Git failure.
 fn run_board_with_git_wrapper(repository_root: &Path, wrapper: &str) -> TracedBoard {
+    run_berth_with_git_wrapper(repository_root, &["board", "--json"], wrapper)
+}
+
+fn run_berth_with_git_wrapper(
+    repository_root: &Path,
+    arguments: &[&str],
+    wrapper: &str,
+) -> TracedBoard {
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
@@ -7130,7 +7310,7 @@ fn run_board_with_git_wrapper(repository_root: &Path, wrapper: &str) -> TracedBo
     )
     .expect("wrapped PATH should join");
     let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["board", "--json"])
+        .args(arguments)
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
         .env(REAL_GIT_ENVIRONMENT, git_binary())
