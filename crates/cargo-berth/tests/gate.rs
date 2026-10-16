@@ -2219,6 +2219,23 @@ fn session_mapping_selects_its_reservation_while_marker_only_check_is_ambiguous(
         marker_envelope["status"],
         "ambiguous_active_run_reservations"
     );
+    let candidates = expected_candidate_ids
+        .iter()
+        .map(|id| {
+            if id == &first_reservation_id {
+                format!("`{id}` (session {session_id})")
+            } else {
+                format!("`{id}` (no session)")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        marker_envelope["message"],
+        format!(
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+        )
+    );
     assert_eq!(
         marker_envelope["payload"]["data"]["candidate_reservation_ids"],
         serde_json::json!(expected_candidate_ids)

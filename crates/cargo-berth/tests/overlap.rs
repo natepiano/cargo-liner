@@ -691,6 +691,17 @@ fn no_session_with_two_eligible_reservations_reports_ambiguity_without_mutation(
         envelope["payload"]["data"]["candidate_reservation_ids"],
         expected_candidates
     );
+    let candidates = expected_candidate_ids
+        .iter()
+        .map(|id| format!("`{id}` (no session)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        envelope["message"],
+        format!(
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+        )
+    );
     assert_eq!(envelope["reservations"], expected_candidates);
     assert_eq!(envelope["blocked_by"], serde_json::json!([]));
     assert_eq!(
@@ -704,6 +715,176 @@ fn no_session_with_two_eligible_reservations_reports_ambiguity_without_mutation(
         projection_before
     );
     assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+}
+
+/// The director can choose a phase directly from the refusal, without looking up sessions.
+#[test]
+fn ambiguous_phase_refusal_names_each_candidates_session() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let mut phases = Vec::new();
+    for (session, path) in [
+        ("director-sid.phase-A", "file:phase-a.rs"),
+        ("director-sid.phase-B", "file:phase-b.rs"),
+    ] {
+        let opened = run_berth_with_session(root, &["check", path, "--json"], session);
+        let opened = json_output(&opened);
+        assert_eq!(opened["status"], "clear", "{opened:#}");
+        let acquisition = &opened["payload"]["data"]["acquisition"];
+        assert_eq!(acquisition["kind"], "appended");
+        phases.push((
+            acquisition["reservation_id"]
+                .as_str()
+                .expect("phase reservation")
+                .to_owned(),
+            session,
+            acquisition["coordination_run_id"].clone(),
+        ));
+    }
+    assert_ne!(phases[0].0, phases[1].0);
+    assert_eq!(phases[0].2, phases[1].2, "both phases share one run");
+    phases.sort_by(|left, right| left.0.cmp(&right.0));
+    let journal_before = fs::read(root.join(JOURNAL_PATH)).expect("journal before refusal");
+    let mappings_before = fs::read(root.join(SESSION_MAPPING_PATH)).expect("phase mappings");
+
+    // A usable unmapped session opens a new phase; ambiguity is the sessionless check.
+    let refused = run_berth(root, &["check", "file:director-edit.rs", "--json"]);
+    let envelope = json_output(&refused);
+    let candidates = phases
+        .iter()
+        .map(|(id, session, _)| format!("`{id}` (session {session})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
+    assert_eq!(
+        envelope["message"],
+        format!(
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+        )
+    );
+    assert!(
+        !envelope["message"]
+            .as_str()
+            .expect("refusal message")
+            .contains("harness-session")
+    );
+
+    // The director's edit hook selects existing work even for an unmapped usable session.
+    let mut hook = berth_command(BERTH_EXECUTABLE)
+        .args(["hook", "pre-tool-use"])
+        .current_dir(root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("director edit hook should start");
+    let input = hook.stdin.take().expect("hook stdin");
+    serde_json::to_writer(
+        input,
+        &serde_json::json!({
+            "cwd": root,
+            "session_id": "director-sid",
+            "tool_name": "Edit",
+            "tool_input": { "file_path": root.join("director-edit.rs") },
+        }),
+    )
+    .expect("director edit payload should write");
+    let hook = hook
+        .wait_with_output()
+        .expect("director edit hook should finish");
+    assert_eq!(hook.status.code(), Some(2), "{hook:?}");
+    assert!(hook.stdout.is_empty(), "{hook:?}");
+    let hook_text = String::from_utf8(hook.stderr).expect("hook refusal text");
+    let (_, hook_detail) = hook_text
+        .split_once("\n\n")
+        .expect("hook summary before detail");
+    assert!(
+        hook_detail.starts_with(envelope["message"].as_str().expect("refusal message")),
+        "{hook_detail}"
+    );
+    for (id, session, _) in &phases {
+        assert!(
+            hook_detail.contains(&format!("- `{id}` (session {session})")),
+            "{hook_detail}"
+        );
+    }
+    assert_eq!(
+        envelope["payload"]["data"]["candidate_reservation_ids"],
+        serde_json::json!(phases.iter().map(|(id, _, _)| id).collect::<Vec<_>>())
+    );
+    assert_eq!(
+        fs::read(root.join(JOURNAL_PATH)).expect("journal after refusal"),
+        journal_before
+    );
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings after refusal"),
+        mappings_before
+    );
+}
+
+/// An unreadable disposable session index cannot establish that a candidate has no session.
+#[test]
+fn ambiguous_refusal_does_not_claim_no_sessions_when_the_index_is_unreadable() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let reservations = claim_overlapping_reservations(root, "mapped-phase");
+    let mut candidates = vec![reservations.older, reservations.newer];
+    candidates.sort();
+    let labels = candidates
+        .iter()
+        .map(|id| format!("`{id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let journal_before = fs::read(root.join(JOURNAL_PATH)).expect("journal before refusal");
+    let mapping_path = root.join(SESSION_MAPPING_PATH);
+    fs::write(&mapping_path, b"not a session index").expect("corrupted session index");
+    for directory_index in [false, true] {
+        if directory_index {
+            fs::remove_file(&mapping_path).expect("remove corrupted index");
+            fs::create_dir(&mapping_path).expect("directory cannot be read as a session index");
+        }
+        let refused = run_berth(root, &["check", "file:shared/child.rs", "--json"]);
+        let envelope = json_output(&refused);
+        assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+        assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
+        assert_eq!(
+            envelope["payload"]["data"]["candidate_reservation_ids"],
+            serde_json::json!(candidates)
+        );
+        assert_eq!(
+            envelope["message"],
+            format!(
+                "No session names one phase's reservation among {labels}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+            )
+        );
+        let detail = envelope["presentation"]["blocks"][0]["detail"]
+            .as_str()
+            .expect("ambiguity detail");
+        assert!(!detail.contains("(no session)"), "{detail}");
+        for candidate in &candidates {
+            assert!(
+                detail
+                    .lines()
+                    .any(|line| line == format!("- `{candidate}`")),
+                "{detail}"
+            );
+        }
+        assert_eq!(
+            fs::read(root.join(JOURNAL_PATH)).expect("journal after refusal"),
+            journal_before
+        );
+        if directory_index {
+            assert!(mapping_path.is_dir());
+        } else {
+            assert_eq!(
+                fs::read(&mapping_path).expect("corrupted index remains"),
+                b"not a session index"
+            );
+        }
+    }
 }
 
 #[test]

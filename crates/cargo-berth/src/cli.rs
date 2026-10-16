@@ -116,6 +116,8 @@ use crate::verb::check::CheckRequest;
 use crate::verb::claim;
 use crate::verb::claim::CheckReservationSelection;
 use crate::verb::claim::ClaimCoordinationRunSelection;
+use crate::verb::claim::ClaimRecoveryCommand;
+use crate::verb::claim::ClaimRecoverySelector;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::ClaimReservationSelection;
 use crate::verb::claim::PhaseStartSelection;
@@ -1128,7 +1130,57 @@ impl InitArguments {
 }
 
 impl ClaimArguments {
+    /// Retain the typed CLI selections before domain validation consumes them.
+    fn answer_recovery(&self) -> ClaimRecoveryCommand {
+        let Self {
+            reservation,
+            target,
+            paths,
+            before: _,
+            after: _,
+            defer: _,
+            override_reservation: _,
+            replace,
+            why,
+            overlap_why: _,
+            plan,
+            phase,
+            run,
+            head,
+            json_output,
+        } = self;
+        let mut selectors = Vec::new();
+        if let Some(id) = reservation {
+            selectors.push(ClaimRecoverySelector::Reservation(*id));
+        }
+        if let Some(target) = target {
+            selectors.push(ClaimRecoverySelector::Target(target.clone()));
+        }
+        if let Some(reason) = why {
+            selectors.push(ClaimRecoverySelector::Purpose(reason.clone()));
+        }
+        if let Some(plan) = plan {
+            selectors.push(ClaimRecoverySelector::Plan(plan.clone()));
+        }
+        if let Some(phase) = phase {
+            selectors.push(ClaimRecoverySelector::Phase(phase.clone()));
+        }
+        if let Some(run) = run {
+            selectors.push(ClaimRecoverySelector::Run(*run));
+        }
+        if let Some(head) = head {
+            selectors.push(ClaimRecoverySelector::Head(head.clone()));
+        }
+        ClaimRecoveryCommand {
+            paths: paths.clone(),
+            selectors,
+            replacement: OrderingReplacement::from(*replace),
+            output: json_output.output_format(),
+        }
+    }
+
     fn into_claim_request(self) -> Result<ClaimRequest, String> {
+        let answer_recovery = self.answer_recovery();
         let Self {
             reservation,
             target,
@@ -1183,6 +1235,7 @@ impl ClaimArguments {
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
         Ok(ClaimRequest {
+            answer_recovery,
             reservation_selection: reservation.map_or(
                 ClaimReservationSelection::NewReservation,
                 ClaimReservationSelection::Existing,

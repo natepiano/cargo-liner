@@ -98,6 +98,7 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::HarnessSessionIdentity;
 use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
+use crate::verb::claim::PhaseReservationCandidate;
 use crate::verb::claim::ReservationAcquisition;
 use crate::verb::claim::ReservationAcquisitionKind;
 use crate::worktree::WorktreeEnrollmentReport;
@@ -2647,6 +2648,23 @@ impl OutputEnvelope {
         }
     }
 
+    /// Keep the blocked claim contract while leading its detail with an actionable answer repair.
+    pub(crate) fn blocked_claim_with_answer_recovery(
+        conflicts: Vec<ReservationConflict>,
+        approver: Option<OverlapApprover>,
+        message: String,
+    ) -> Self {
+        let detail = format!(
+            "{message}\n\n{}\n\n{}",
+            claim_holder_facts(&conflicts),
+            overlap_answer_chooser(approver.as_ref()),
+        );
+        let mut envelope = Self::blocked_claim(conflicts, approver);
+        envelope.message = message;
+        envelope.presentation = presentation::blocked_edit_refusal_block(&detail).into();
+        envelope
+    }
+
     /// Build a successful edit check whose locked transaction established protection, after the
     /// repository's default answer authorized the edit against `answered` when it names any
     /// holder.
@@ -2733,26 +2751,24 @@ impl OutputEnvelope {
     /// Build a mutation-free rejection when no mapping selects one active reservation.
     pub(crate) fn ambiguous_active_run_reservations(
         command_verb: CommandVerb,
-        candidate_reservation_ids: WireOrderedReservationIds,
+        candidates: &[PhaseReservationCandidate],
     ) -> Self {
-        let rendered_candidates = candidate_reservation_ids
-            .as_slice()
+        let candidate_reservation_ids = WireOrderedReservationIds::sorted(
+            candidates
+                .iter()
+                .map(|candidate| candidate.reservation_id)
+                .collect(),
+        );
+        let rendered_candidates = candidates
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
         let recovery_command = ambiguous_reservation_recovery_command();
         let message = format!(
-            "No usable harness-session mapping selects one active reservation among {rendered_candidates}. Run `{recovery_command}` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published."
+            "No session names one phase's reservation among {rendered_candidates}. Run `{recovery_command}` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
         );
-        let candidate_reservation_id_strings = candidate_reservation_ids
-            .as_slice()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let presentation =
-            presentation::ambiguous_first_touch_block(&message, &candidate_reservation_id_strings)
-                .into();
+        let presentation = presentation::ambiguous_first_touch_block(&message, candidates).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: command_verb,

@@ -341,6 +341,27 @@ pub(crate) enum SessionIdentityStoreError {
 #[derive(Debug)]
 pub(crate) struct InvalidHarnessSessionId;
 
+/// Read candidate session labels while the caller holds the selection's ledger lock.
+/// A missing index contains no mappings; unreadable or invalid indexes remain an error.
+pub(crate) fn phase_reservation_sessions(
+    ledger_directory: &Path,
+    coordination_run_id: CoordinationRunId,
+) -> Result<BTreeMap<ReservationId, Vec<HarnessSessionId>>, SessionIdentityStoreError> {
+    let store = SessionIdentityStore::read_for_removal(
+        &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+    )?;
+    let mut sessions: BTreeMap<ReservationId, Vec<HarnessSessionId>> = BTreeMap::new();
+    for (session, identity) in store.identities {
+        if identity.coordination_run_id() == coordination_run_id {
+            sessions
+                .entry(identity.reservation_id())
+                .or_default()
+                .push(session);
+        }
+    }
+    Ok(sessions)
+}
+
 /// Resolve the current process's harness session from the mapping beside the journal.
 pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
     match resolve_first_touch_mapping(ledger_directory) {

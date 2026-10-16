@@ -1677,6 +1677,22 @@ fn a_check_without_a_session_joins_one_reservation_but_refuses_to_choose_between
     assert_eq!(candidates.len(), 2);
     assert!(candidates.contains(&serde_json::json!(first_id)));
     assert!(candidates.contains(&serde_json::json!(second_id)));
+    let mut named_candidates = [
+        (first_id.as_str(), "phase-15"),
+        (second_id.as_str(), "phase-16"),
+    ];
+    named_candidates.sort_unstable();
+    let candidates = named_candidates
+        .iter()
+        .map(|(id, session)| format!("`{id}` (session {session})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        ambiguous["message"],
+        format!(
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+        )
+    );
     assert_eq!(journal_events(root), events_before);
     assert_eq!(
         fs::read(root.join(SESSION_MAPPING_PATH)).expect("session mappings"),
