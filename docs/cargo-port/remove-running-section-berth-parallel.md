@@ -114,7 +114,7 @@ Mapped 2026-10-16 at `834cffba` (main).
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, including the C3 proving test.
 
-### Phase 10 — Overview shows reservations  · status: todo
+### Phase 10 — Overview shows reservations  · status: done
 
 **Depends on:** none
 
