@@ -147,37 +147,23 @@ FULL VIEW:
 
 **Depends on:** Phase 2
 
-#### Work Order
+#### As-built
 
-**Goal:** on natedev and the Mac the hanadocs showrunner tile shows the header row, the role and account columns with the right labels, shells and subagents as tree lines, and no list below the tree, in both views.
-
-**Spec:**
-1. The unit director sets each machine's `[accounts]` table in cargo-handler's `config.toml`. natedev: `"~/.claude" = "claude2"`, `"~/.codex" = "codex2"`. The Mac (`ssh mac`): read each home's account-label file (e.g. `~/.claude/account-label`, `~/.claude1/account-label`) and the Codex login of each Codex home, and write one pair per home that differs from its default label.
-2. Install the checkpoint binary on both machines and run cargo-handler on natedev with the Mac shown.
-3. Check the hanadocs showrunner tile in the full and compressed views: the header row sits between the header lines (or the title) and the tree, in the label color; `session` lines up over the top-level names; each unit and worker line shows its role, status and account label; the header line and the summary's `agent` column read the account labels; shells and subagents are tree lines with role `shell` or `subagent` and `—` in the account column (and in `branch` and `directory` in the full view); the tree keeps one blank indent before the right border as on the left; nothing is drawn below the tree.
-4. Send the shots to the showrunner, and record the result here.
+- `[accounts]` in each machine's `<os config dir>/cargo-handler/config.toml`: natedev `"~/.claude" = "claude2"`, `"~/.codex" = "codex2"`; the Mac `"~/.claude" = "claude2"` (its label file reads `claude 2`), `"~/.codex" = "codex2"` (the same Codex login as natedev's `~/.codex`). Both machines run the binary this plan built.
+- Live shots of the hanadocs showrunner tile with the Mac shown, at 429×90 (full view), 200×60 (compressed view) and 700×140 (full-view work lines), show:
+  - the header row in the label color (`96beb4`, the same as the summary's column headers);
+  - `session` over the top-level names;
+  - units and workers reading `claude4`, `codex1` and `claude1` as their agents run, and the Mac's Codex rows reading `codex2`;
+  - the header line and the summary's `agent` column reading the labels;
+  - shell, subagent and thread lines with `—` in `account` (and in `branch` and `directory` in the full view);
+  - one blank column before the right border;
+  - no list below the tree.
+- From code outside this plan: the `content rows: N  r/c: …` readout at each tile's foot (tui_pane) and the `codex1 --` standard-tier mark. A long tree, such as the hana tile's, is cut at the tile's foot; that is the overflow plan's work.
 
 **Files:**
-- `docs/cargo-port/remove-running-section-handler-accounts.md`
+- `docs/cargo-port/remove-running-section-handler-accounts.md` — this record; the `[accounts]` tables live outside the repo
 
-**Workers:** none — the unit director runs the live check and edits only machine config outside the repo.
-
-**Constraints from prior phases:**
-- Phase 1: `[accounts]` lives in `<os config dir>/cargo-handler/config.toml` (`~/.config/cargo-handler/config.toml` on natedev), keys written with `~`, and is read at startup: restart cargo-handler after each edit. A home with no entry is labelled by its last path component without one leading dot (`~/.claude1` → `claude1`, `~/.claude` → `claude`).
-- Phase 1: labels resolve on the machine that ran the agent, so the Mac's rows carry the Mac's own `[accounts]` labels and need the checkpoint binary installed there; a probe from an older Mac binary has no `account` field and its rows draw `—`.
-- Phase 2: the account column, and the account labels in the header line and the summary's `agent` column, show only when one program has two distinct labels across the whole frame, both machines together (Codex and its thread host count as one program; one label on two machines is one label). Otherwise there is no `account` column and those values read `claude` or `codex`, by design. A Codex fast row reads `<label> fast`.
-- Phase 2: role column values are the hierarchy role (`unit`, `worker`, …), `session` for an agent with no stated or inferred role, and `shell`, `subagent` or `thread` for work lines. A Codex thread line shows its app server's account. MCP servers and app-server processes draw no line; a thread an app server runs under a shell draws under that shell. An agent with nothing running draws `nothing running` and no header row.
-- Phase 2: both views keep `SECTION_HEADER_INDENT` on the left and before the right border. The full view is chosen only when every name fits whole and its rows fit the tile's height; otherwise the compressed view cuts names in the `session` column. At very narrow widths the compressed view narrows the gaps between columns below two cells.
-
-**Acceptance gate:** shots of both views show every check in Spec item 3 with natedev's and the Mac's labels correct, and the showrunner has the shots.
-
-**Result (2026-10-16):** passed. Both machines run the checkpoint binary (36baad81). The `[accounts]` tables are natedev `"~/.claude" = "claude2"`, `"~/.codex" = "codex2"`; and the Mac `"~/.claude" = "claude2"` (its label file reads `claude 2`), `"~/.codex" = "codex2"` (the same Codex login as natedev's `~/.codex`). The captures ran natedev's installed binary with a scratch config that adds `mac` to `[machines] remote`, because natedev's own config lists no remote. The shots are at 429×90 (the hanadocs tile in the full view), 200×60 (the compressed view) and 700×140 (full-view work lines). Every Spec 3 check holds:
-- The header row is drawn in the label color (`96beb4`, the same as the summary's column headers).
-- `session` lines up over the top-level names.
-- Units and workers read `claude4`, `codex1` and `claude1` as their agents run, and the Mac's Codex rows read `codex2`.
-- The header line and the summary's `agent` column read the labels.
-- Shell, subagent and thread lines read `—` in `account` (and in `branch` and `directory` in the full view).
-- There is one blank column before the right border.
-- No list is drawn below the tree.
-
-Two things in the shots come from code outside this plan: the `content rows: N  r/c: …` readout at each tile's foot (from tui_pane) and the `codex1 --` standard-tier mark. A long tree, such as the hana tile's, is cut at the tile's foot; that is the overflow work, which is on hold.
+**Gotchas:**
+- `[accounts]` is read at startup: restart cargo-handler after an edit.
+- natedev's config lists no remote; a capture with the Mac shown runs with a config that adds `mac` to `[machines] remote`.
+- A Mac install through `cargo install --git` does not read the checkout's `.cargo/config.toml`: pass its macOS RUSTFLAGS (the Swift `-L` and rpath link args) and `MACOSX_DEPLOYMENT_TARGET=14.0`.
