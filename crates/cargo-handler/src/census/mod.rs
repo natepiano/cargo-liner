@@ -25,6 +25,7 @@ pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+mod thread_state;
 pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
@@ -53,6 +54,7 @@ pub(crate) use placement::mesh_worker_fixture;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
+pub(crate) use thread_state::ThreadState;
 use worker_dispatch::WorkerDispatch;
 
 use crate::constants::CLAUDE_AGENT;
@@ -140,34 +142,6 @@ impl From<&str> for ServiceTier {
     }
 }
 
-/// The most recent turn event in a live Codex thread's rollout.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ThreadState {
-    /// A turn has started and has not completed or aborted.
-    Busy,
-    /// The last turn finished, aborted, or no turn has started yet.
-    #[default]
-    Idle,
-}
-
-impl ThreadState {
-    /// The same activity words used for Claude sessions.
-    pub(crate) const fn text(self) -> &'static str {
-        match self {
-            Self::Busy => crate::constants::BUSY_STATUS,
-            Self::Idle => "idle",
-        }
-    }
-
-    /// Old probes and non-thread children need no extra idle field.
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde skip_serializing_if predicates receive a reference"
-    )]
-    const fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
-}
-
 /// A Claude Code session's stable identity, absent for other agents or old probes.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -209,7 +183,7 @@ pub(crate) enum HierarchyRole {
 
 impl HierarchyRole {
     /// The role value the hierarchy command reports, shown in titles and member tree lines.
-    pub(crate) const fn text(self) -> &'static str {
+    const fn text(self) -> &'static str {
         match self {
             Self::Showrunner => "showrunner",
             Self::Unit => "unit",

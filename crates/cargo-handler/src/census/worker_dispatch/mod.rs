@@ -8,8 +8,122 @@ use std::path::PathBuf;
 use std::str::Chars;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
-use serde_json::Value;
+use serde::de::IgnoredAny;
+
+use super::HierarchyRole;
+
+/// The roster filename inside a dispatch's session directory.
+const ROSTER_FILE: &str = "mesh_roster.json";
+/// The launcher interpreter, including when it is given as an absolute path.
+const LAUNCHER_INTERPRETER: &str = "bash";
+/// The launcher path suffix shared by literal commands and process argv.
+const LAUNCHER_SCRIPT: &str = ".claude/scripts/delegate/implement.sh";
+
+/// The responsibilities a mesh worker seat can carry.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerRole {
+    /// Write the implementation.
+    Impl,
+    /// Exercise the specification.
+    Test,
+    /// Inspect a proposed change.
+    Review,
+    /// Repair a finding.
+    Fix,
+}
+
+impl WorkerRole {
+    /// The role text shared by folded and managed worker rows.
+    const fn text(self) -> &'static str {
+        match self {
+            Self::Impl => "impl",
+            Self::Test => "test",
+            Self::Review => "review",
+            Self::Fix => "fix",
+        }
+    }
+}
+
+/// A seat's known worker responsibility, or an ordinary thread's role.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DispatchRole {
+    /// The roster or short seat name identifies a worker role.
+    Worker(WorkerRole),
+    /// No supported worker role was recorded or inferred.
+    #[default]
+    Unroled,
+}
+
+impl DispatchRole {
+    /// The first role token wins after removing each token's trailing seat digits.
+    fn from_short_seat(seat: &str) -> Self {
+        seat.split(['-', '_'])
+            .find_map(|token| {
+                match token.trim_end_matches(|character: char| character.is_ascii_digit()) {
+                    "impl" => Some(Self::Worker(WorkerRole::Impl)),
+                    "test" => Some(Self::Worker(WorkerRole::Test)),
+                    "review" => Some(Self::Worker(WorkerRole::Review)),
+                    "fix" => Some(Self::Worker(WorkerRole::Fix)),
+                    _ => None,
+                }
+            })
+            .unwrap_or(Self::Unroled)
+    }
+}
+
+/// The available authority for a Codex worker's role.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum WorkerRoleInput<'a> {
+    /// A management edge is authoritative over any dispatch seat.
+    Hierarchy(HierarchyRole),
+    /// An unmanaged worker may carry a resolved dispatch seat.
+    Dispatch(DispatchLabel<'a>),
+}
+
+/// The authoritative source of one visible Codex worker's responsibility.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkerRoleSource {
+    /// A management edge outranks every seat source.
+    Hierarchy(HierarchyRole),
+    /// The session roster or its seat token resolved the dispatch's role.
+    Dispatch(WorkerRole),
+    /// An unroled dispatch still has a recognizable seat token.
+    SeatToken(WorkerRole),
+    /// No hierarchy or dispatch seat names a supported role.
+    Unroled,
+}
+
+impl WorkerRoleSource {
+    /// Resolve hierarchy first, then the session's dispatch role and seat token.
+    pub(crate) fn resolve(input: WorkerRoleInput<'_>) -> Self {
+        match input {
+            WorkerRoleInput::Hierarchy(role) => Self::Hierarchy(role),
+            WorkerRoleInput::Dispatch(DispatchLabel::Worker(dispatch)) => match dispatch.role {
+                DispatchRole::Worker(role) => Self::Dispatch(role),
+                DispatchRole::Unroled => {
+                    match DispatchRole::from_short_seat(&dispatch.short_seat) {
+                        DispatchRole::Worker(role) => Self::SeatToken(role),
+                        DispatchRole::Unroled => Self::Unroled,
+                    }
+                },
+            },
+            WorkerRoleInput::Dispatch(DispatchLabel::Original) => Self::Unroled,
+        }
+    }
+
+    /// Every Codex row is a worker, including one with no recorded responsibility.
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Hierarchy(role) => role.text(),
+            Self::SeatToken(role) | Self::Dispatch(role) => role.text(),
+            Self::Unroled => "worker",
+        }
+    }
+}
 
 /// A shell either remains ordinary work or names a roster-backed worker.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -29,6 +143,7 @@ impl WorkerDispatch {
 
 /// A worker seat with the thread identity needed to join its shell and row.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "ProbedWorkerDispatch")]
 pub(crate) struct ResolvedWorkerDispatch {
     /// The complete seat key in the mesh roster.
     seat:                 String,
@@ -38,6 +153,56 @@ pub(crate) struct ResolvedWorkerDispatch {
     job:                  String,
     /// The seat with its worktree directory prefix removed.
     short_seat:           String,
+    /// The roster responsibility, falling back to the short seat's role stem.
+    role:                 DispatchRole,
+}
+
+/// Probe compatibility boundary: old payloads did not record a seat role.
+#[derive(Deserialize)]
+struct ProbedWorkerDispatch {
+    /// The full seat key preserved by the probe.
+    seat:       String,
+    /// The thread joined with the dispatch shell.
+    thread_id:  String,
+    /// The dispatched responsibility text.
+    job:        String,
+    /// The role stem source when an older probe omitted its role.
+    short_seat: String,
+    /// Absence exists only at this external boundary; explicit unroled stays unroled.
+    #[serde(default)]
+    role:       ProbedRole,
+}
+
+/// Only an omitted probe field triggers inference; explicit values must parse.
+#[derive(Default)]
+enum ProbedRole {
+    /// The sender predates role metadata.
+    #[default]
+    Unrecorded,
+    /// The sender supplied an authoritative role, including unroled.
+    Recorded(DispatchRole),
+}
+
+impl<'de> Deserialize<'de> for ProbedRole {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        DispatchRole::deserialize(deserializer).map(Self::Recorded)
+    }
+}
+
+impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
+    fn from(probe: ProbedWorkerDispatch) -> Self {
+        let role = match probe.role {
+            ProbedRole::Unrecorded => DispatchRole::from_short_seat(&probe.short_seat),
+            ProbedRole::Recorded(role) => role,
+        };
+        Self {
+            seat: probe.seat,
+            thread_id: probe.thread_id,
+            job: probe.job,
+            short_seat: probe.short_seat,
+            role,
+        }
+    }
 }
 
 impl ResolvedWorkerDispatch {
@@ -86,12 +251,12 @@ impl ParsedDispatch {
         let program = args.next().ok_or(NotWorkerDispatch)?;
         if Path::new(program)
             .file_name()
-            .is_none_or(|name| name != "bash")
+            .is_none_or(|name| name != LAUNCHER_INTERPRETER)
         {
             return Err(NotWorkerDispatch);
         }
         let script = args.next().ok_or(NotWorkerDispatch)?;
-        if !Path::new(script).ends_with(".claude/scripts/delegate/implement.sh") {
+        if !Path::new(script).ends_with(LAUNCHER_SCRIPT) {
             return Err(NotWorkerDispatch);
         }
         let mut args = args.peekable();
@@ -179,6 +344,10 @@ impl ParsedDispatch {
             seat: seat.clone(),
             thread_id: entry.thread_id.clone(),
             job: self.job.clone(),
+            role: match entry.role {
+                DispatchRole::Unroled => DispatchRole::from_short_seat(&short_seat),
+                role @ DispatchRole::Worker(_) => role,
+            },
             short_seat,
         })
     }
@@ -200,6 +369,45 @@ struct RosterWorker {
     thread_id: String,
     /// The dispatch pid, where the roster records it.
     launcher:  LauncherIdentity,
+    /// The supported worker responsibility, if the roster records one.
+    role:      DispatchRole,
+}
+
+/// A typed JSON boundary that ignores an absent or malformed field.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RosterField<T> {
+    /// A field with the type expected by this reader.
+    Recorded(T),
+    /// Unknown values do not invalidate the seat's other fields.
+    Unrecorded(IgnoredAny),
+}
+
+impl<T> Default for RosterField<T> {
+    fn default() -> Self { Self::Unrecorded(IgnoredAny) }
+}
+
+/// The fields read from a seat, independent of unrelated roster metadata.
+#[derive(Debug, Deserialize)]
+struct RosterRecord {
+    /// A thread is required before the seat can participate in a fold.
+    thread_id:    String,
+    /// Some completed seats no longer have a launcher process.
+    #[serde(default)]
+    launcher_pid: RosterField<u32>,
+    /// Older rosters may omit a worker responsibility.
+    #[serde(default)]
+    role:         RosterField<WorkerRole>,
+}
+
+/// A malformed seat must not hide valid neighbours in the same roster.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RosterEntry {
+    /// A seat with the expected thread identity field.
+    Worker(RosterRecord),
+    /// Unrelated or malformed entries contribute no worker identity.
+    Invalid(IgnoredAny),
 }
 
 /// The seat entries read once per session directory during a scan.
@@ -212,27 +420,31 @@ pub(super) struct WorkerRoster {
 impl WorkerRoster {
     /// Malformed or unavailable rosters provide no worker identities.
     pub(super) fn parse(text: &str) -> Self {
-        let entries: BTreeMap<String, Value> = serde_json::from_str(text).unwrap_or_default();
+        let entries: BTreeMap<String, RosterEntry> = serde_json::from_str(text).unwrap_or_default();
         let seats = entries
             .into_iter()
-            .filter_map(|(seat, value)| {
-                if seat.is_empty() {
+            .filter_map(|(seat, entry)| {
+                let RosterEntry::Worker(record) = entry else {
+                    return None;
+                };
+                let thread_id = record.thread_id.trim();
+                if seat.is_empty() || thread_id.is_empty() {
                     return None;
                 }
-                let thread_id = value.get("thread_id")?.as_str()?.trim();
-                if thread_id.is_empty() {
-                    return None;
-                }
-                let launcher = value
-                    .get("launcher_pid")
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .map_or(LauncherIdentity::Unrecorded, LauncherIdentity::Recorded);
+                let launcher = match record.launcher_pid {
+                    RosterField::Recorded(pid) => LauncherIdentity::Recorded(pid),
+                    RosterField::Unrecorded(_) => LauncherIdentity::Unrecorded,
+                };
+                let role = match record.role {
+                    RosterField::Recorded(role) => DispatchRole::Worker(role),
+                    RosterField::Unrecorded(_) => DispatchRole::Unroled,
+                };
                 Some((
                     seat,
                     RosterWorker {
                         thread_id: thread_id.to_owned(),
                         launcher,
+                        role,
                     },
                 ))
             })
@@ -242,7 +454,7 @@ impl WorkerRoster {
 
     /// Read the roster only during census scanning.
     pub(super) fn read(session_dir: &Path) -> Self {
-        fs::read_to_string(session_dir.join("mesh_roster.json"))
+        fs::read_to_string(session_dir.join(ROSTER_FILE))
             .map(|text| Self::parse(&text))
             .unwrap_or_default()
     }

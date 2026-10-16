@@ -91,19 +91,28 @@ fn rendered_with_colors(
     let area = Rect::new(
         0,
         0,
-        width(&machines, &placement, NOW, account_column),
+        width(
+            &machines,
+            &placement,
+            NOW,
+            account_column,
+            SummarySort::default(),
+        ),
         u16::try_from(height(&machines, &placement)).expect("fixture height"),
     );
     let mut buffer = Buffer::empty(area);
-    draw_with_footer_colors(
+    draw(
         &mut buffer,
         area,
-        &machines,
-        &placement,
-        &agent_cell::cell_order_placed(&placement),
-        NOW,
-        account_column,
-        colors,
+        &SummaryFrame {
+            machines: &machines,
+            placement: &placement,
+            cells: &agent_cell::cell_order_placed(&placement),
+            now: NOW,
+            account_column,
+            footer_colors: colors,
+            sort: SummarySort::default(),
+        },
     );
     buffer
 }
