@@ -29,6 +29,7 @@ use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::app::App;
 use crate::census;
+use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
@@ -105,13 +106,15 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
 /// agents, and a cell for each agent.
 struct Cells<'a> {
     /// This machine, then each configured remote.
-    machines:  Vec<Machine<'a>>,
+    machines:       Vec<Machine<'a>>,
     /// Every agent's cell, in grid order.
-    agents:    Vec<AgentEntry<'a>>,
+    agents:         Vec<AgentEntry<'a>>,
+    /// The account columns and agent labels shared by every cell.
+    account_column: AccountColumn,
     /// The forest shared by cell order and summary roots.
-    placement: AgentPlacement<'a>,
+    placement:      AgentPlacement<'a>,
     /// The unix second the ages are measured to.
-    now:       u64,
+    now:            u64,
 }
 
 impl<'a> Cells<'a> {
@@ -119,9 +122,11 @@ impl<'a> Cells<'a> {
     fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
         let placement = AgentPlacement::from_machines(&machines);
         let agents = agent_cell::cell_order_placed(&placement);
+        let account_column = agent_cell::account_column(&agents);
         Self {
             machines,
             agents,
+            account_column,
             placement,
             now,
         }
@@ -157,13 +162,23 @@ impl TileCells<AgentCell> for Cells<'_> {
         };
         TileDemands {
             summary:       summary::height(&self.machines, &self.placement),
-            summary_width: summary::width(&self.machines, &self.placement, self.now),
+            summary_width: summary::width(
+                &self.machines,
+                &self.placement,
+                self.now,
+                self.account_column,
+            ),
             groups:        self
                 .agents
                 .iter()
                 .map(|entry| TileDemand {
                     id:   entry.id.clone(),
-                    rows: agent_cell::height(entry, width_of(&entry.id), self.now),
+                    rows: agent_cell::height(
+                        entry,
+                        width_of(&entry.id),
+                        self.now,
+                        self.account_column,
+                    ),
                 })
                 .collect(),
         }
@@ -179,11 +194,19 @@ impl TileCells<AgentCell> for Cells<'_> {
                     &self.placement,
                     &self.agents,
                     self.now,
+                    self.account_column,
                 );
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
-                    agent_cell::draw(buffer, inner, entry, &self.agents, self.now);
+                    agent_cell::draw(
+                        buffer,
+                        inner,
+                        entry,
+                        &self.agents,
+                        self.now,
+                        self.account_column,
+                    );
                 }
             },
             // The grid draws an empty cell's number itself.
@@ -521,16 +544,16 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                  content rows: 3  r/c: 10/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
-        "│ pid 1579022 · claude · idle · 21h · natedev · —                              │",
-        "│ ~/rust/hana_catalyst/docs/hana                                               │",
+        "│    session                                          role      status   age   │",
+        "│ ├─ Launch the Phase 2 implementation seat           shell     command  12m   │",
+        "│ │  └─ tool-based-ui-geometry-material-impl          thread    codex    12m   │",
+        "│ └─ Survey the tile grid                             subagent  claude   5m 3s │",
         "│                                                                              │",
-        "│ pid      via         runs     name                                    age    │",
-        "│ 2406969  shell       command  Launch the Phase 2 implementation seat  12m    │",
-        "│ 2407001    shell     codex    app-server                              12m    │",
-        "│ —            thread  codex    tool-based-ui-geometry-material-impl    12m    │",
-        "│ —        subagent    claude   Survey the tile grid                    5m 3s  │",
         "│                                                                              │",
-        "│                                                  content rows: 8  r/c: 10/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 4  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -843,7 +866,6 @@ fraying = "leading"
             (None, Unlabeled, Unlabeled),
         ] {
             let manager_label = manager_role_label.suffix();
-            let member_label = member_role_label.suffix();
             let edges = HierarchyEdges(
                 role.into_iter()
                     .map(|role| HierarchyEdge {
@@ -907,10 +929,8 @@ fraying = "leading"
                 .iter()
                 .find(|line| line.contains("└─ member"))
                 .expect("the child has a tree line");
-            assert!(member_line.contains(&format!("member{member_label}")));
-            if member_label.is_empty() {
-                assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
-            }
+            assert!(member_line.contains(member_role_label.column_text()));
+            assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
         }
     }
 
@@ -1030,12 +1050,12 @@ fraying = "leading"
         assert_eq!(
             rows,
             [
-                agent_cell::height(boss, narrow, NOW),
-                agent_cell::height(handler, narrow, NOW),
+                agent_cell::height(boss, narrow, NOW, AccountColumn::Hidden),
+                agent_cell::height(handler, narrow, NOW, AccountColumn::Hidden),
             ]
         );
         assert!(
-            rows[0] < agent_cell::height(boss, WIDTH - 2, NOW),
+            rows[0] < agent_cell::height(boss, 160, NOW, AccountColumn::Hidden),
             "boss compresses narrow and asks for fewer rows than wide"
         );
     }

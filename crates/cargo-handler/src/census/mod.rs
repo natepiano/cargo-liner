@@ -39,6 +39,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 pub(crate) use account::Account;
+pub(crate) use account::AccountColumn;
 use hierarchy::HierarchyAnswer;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
@@ -56,15 +57,9 @@ use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_FAST_TIERS;
 use crate::constants::COMMAND_RUNS;
-use crate::constants::DETACHED_VIA;
-use crate::constants::DIRECT_VIA;
 use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
-use crate::constants::SESSION_VIA;
-use crate::constants::SHELL_VIA;
 use crate::constants::STANDARD_TIER_LABEL;
-use crate::constants::SUBAGENT_VIA;
-use crate::constants::THREAD_VIA;
 use crate::constants::TIMER_RUNS;
 
 /// The program a census row represents, including transport-only worker hosts.
@@ -120,11 +115,12 @@ impl ServiceTier {
     /// `program` marked with this tier, as an `agent` or `runs` cell shows
     /// it: `codex fast`, `codex --`, or `program` alone when
     /// [`Self::Unrecorded`].
-    fn mark(self, program: &'static str) -> Cow<'static, str> {
+    fn mark(self, program: impl Into<Cow<'static, str>>) -> Cow<'static, str> {
+        let program = program.into();
         match self {
             Self::Fast => Cow::Owned(format!("{program} {FAST_TIER_LABEL}")),
             Self::Standard => Cow::Owned(format!("{program} {STANDARD_TIER_LABEL}")),
-            Self::Unrecorded => Cow::Borrowed(program),
+            Self::Unrecorded => program,
         }
     }
 }
@@ -183,7 +179,7 @@ pub(crate) enum HierarchyRole {
 
 impl HierarchyRole {
     /// The role value the hierarchy command reports, shown in titles and member tree lines.
-    const fn text(self) -> &'static str {
+    pub(crate) const fn text(self) -> &'static str {
         match self {
             Self::Showrunner => "showrunner",
             Self::Unit => "unit",
@@ -329,13 +325,17 @@ impl AgentRow {
     pub(crate) const fn is_visible(&self) -> bool { !matches!(self.agent, Agent::CodexThreadHost) }
 
     /// The `agent` cell: the program, marked with its tier.
-    pub(crate) fn agent_label(&self) -> Cow<'static, str> {
-        self.service_tier.mark(self.agent.label())
+    pub(crate) fn agent_label(&self, account_column: AccountColumn) -> Cow<'static, str> {
+        match (account_column, &self.account) {
+            (AccountColumn::Shown, Account::Home(home)) => {
+                self.service_tier.mark(home.label().to_owned())
+            },
+            _ => self.service_tier.mark(self.agent.label()),
+        }
     }
 }
 
-/// What one row of an agent's cell is: how the agent holds it, its
-/// `via`, and what it runs.
+/// How an agent holds a child, including the work kinds shown in tree role columns.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
@@ -359,20 +359,8 @@ pub(crate) enum ChildKind {
 }
 
 impl ChildKind {
-    /// The row's `via` cell: how the agent holds it.
-    pub(crate) const fn via(self) -> &'static str {
-        match self {
-            Self::Shell | Self::UnderShell(_) => SHELL_VIA,
-            Self::Subagent => SUBAGENT_VIA,
-            Self::Session(_) => SESSION_VIA,
-            Self::Direct(_) => DIRECT_VIA,
-            Self::Detached(_) => DETACHED_VIA,
-            Self::Thread => THREAD_VIA,
-        }
-    }
-
     /// The agent the row runs: none for a shell, which runs a command.
-    pub(crate) const fn agent(self) -> Option<Agent> {
+    const fn agent(self) -> Option<Agent> {
         match self {
             Self::Shell => None,
             Self::Subagent => Some(Agent::Claude),

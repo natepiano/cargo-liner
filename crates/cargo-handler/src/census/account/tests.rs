@@ -12,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::Account;
+use super::AccountColumn;
 use super::AccountHome;
 use super::AccountLabels;
 use super::ConfigHome;
@@ -239,6 +240,82 @@ fn account_of_a_named_environment_resolves_its_configured_label() {
 
     assert_eq!(recorded(&account).home, "~/.codex3");
     assert_eq!(recorded(&account).label, "work");
+}
+
+#[test]
+fn account_column_is_hidden_for_one_claude_label() {
+    assert_eq!(
+        AccountColumn::of([(Agent::Claude, &account("/home/u/.claude1"))]),
+        AccountColumn::Hidden,
+    );
+}
+
+#[test]
+fn account_column_is_shown_for_two_claude_labels() {
+    assert_eq!(
+        AccountColumn::of([
+            (Agent::Claude, &account("/home/u/.claude1")),
+            (Agent::Claude, &account("/home/u/.claude2")),
+        ]),
+        AccountColumn::Shown,
+    );
+}
+
+#[test]
+fn account_column_compares_labels_only_within_the_same_program() {
+    assert_eq!(
+        AccountColumn::of([
+            (Agent::Claude, &account("/home/u/.claude2")),
+            (Agent::Codex, &account("/home/u/.codex1")),
+        ]),
+        AccountColumn::Hidden,
+    );
+}
+
+#[test]
+fn account_column_counts_codex_and_thread_hosts_as_the_same_program() {
+    assert_eq!(
+        AccountColumn::of([
+            (Agent::Codex, &account("/home/u/.codex1")),
+            (Agent::CodexThreadHost, &account("/home/u/.codex2")),
+        ]),
+        AccountColumn::Shown,
+    );
+}
+
+#[test]
+fn account_column_ignores_unrecorded_accounts() {
+    assert_eq!(
+        AccountColumn::of([
+            (Agent::Claude, &Account::Unrecorded),
+            (Agent::Claude, &Account::Unrecorded),
+            (Agent::Codex, &Account::Unrecorded),
+        ]),
+        AccountColumn::Hidden,
+    );
+    assert_eq!(
+        AccountColumn::of([
+            (Agent::Claude, &Account::Unrecorded),
+            (Agent::Claude, &account("/home/u/.claude1")),
+        ]),
+        AccountColumn::Hidden,
+    );
+}
+
+#[test]
+fn account_column_counts_the_same_label_on_two_machines_once() {
+    let configured = labels(&[("~/.claude", "work"), ("~/.claude7", "work")]);
+    let first =
+        Account::Home(configured.resolve(Path::new("/home/u/.claude"), Some(Path::new("/home/u"))));
+    let second = Account::Home(configured.resolve(
+        Path::new("/Users/remote/.claude7"),
+        Some(Path::new("/Users/remote")),
+    ));
+
+    assert_eq!(
+        AccountColumn::of([(Agent::Claude, &first), (Agent::Claude, &second)]),
+        AccountColumn::Hidden,
+    );
 }
 
 /// An agent fixture serialized by the public row type, not a duplicate wire struct.

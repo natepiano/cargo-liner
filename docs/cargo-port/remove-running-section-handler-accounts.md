@@ -109,7 +109,7 @@ FULL VIEW:
 
 **Ruled out:** `From<&AccountsConfig>` reading `dirs::home_dir()` (a `From` takes no external context; the machine home is a parameter); patching accounts onto classified rows through a second pid table; an `AccountHome::home()` getter (no consumer).
 
-### Phase 2 — Tile tree  · status: todo
+### Phase 2 — Tile tree  · status: done
 
 **Depends on:** Phase 1
 

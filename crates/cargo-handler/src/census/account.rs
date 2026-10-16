@@ -1,6 +1,7 @@
 //! Configuration homes and the labels that identify accounts in the census.
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::Agent;
 use super::classify;
 use super::classify::ProcessEntry;
 use crate::config::AccountsConfig;
@@ -25,6 +27,11 @@ pub(crate) struct AccountHome {
     home:  String,
     /// The configured label, else the last component without its leading dot.
     label: String,
+}
+
+impl AccountHome {
+    /// The account label shown in tiles and the summary.
+    pub(crate) fn label(&self) -> &str { &self.label }
 }
 
 /// The configuration home an agent process runs under, with the label it shows as.
@@ -71,7 +78,7 @@ pub(super) enum ConfigHome {
 }
 
 /// The program whose environment names a configuration home.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Program {
     /// Claude Code reads `CLAUDE_CONFIG_DIR`.
     Claude,
@@ -94,6 +101,47 @@ impl Program {
             Self::Claude => CLAUDE_DIRNAME,
             Self::Codex => CODEX_DIRNAME,
         }
+    }
+}
+
+impl From<Agent> for Program {
+    fn from(agent: Agent) -> Self {
+        match agent {
+            Agent::Claude => Self::Claude,
+            Agent::Codex | Agent::CodexThreadHost => Self::Codex,
+        }
+    }
+}
+
+/// Whether a frame names accounts in its tree columns and agent values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountColumn {
+    /// Each program has at most one account label in the frame.
+    Hidden,
+    /// A program has two or more account labels in the frame.
+    Shown,
+}
+
+impl AccountColumn {
+    /// Show accounts when one program has two distinct labels.
+    pub(crate) fn of<'a>(accounts: impl IntoIterator<Item = (Agent, &'a Account)>) -> Self {
+        let mut labels = HashSet::new();
+        for (agent, account) in accounts {
+            if let Account::Home(home) = account {
+                labels.insert((Program::from(agent), home.label()));
+            }
+        }
+        for program in [Program::Claude, Program::Codex] {
+            if labels
+                .iter()
+                .filter(|(candidate, _)| *candidate == program)
+                .count()
+                > 1
+            {
+                return Self::Shown;
+            }
+        }
+        Self::Hidden
     }
 }
 

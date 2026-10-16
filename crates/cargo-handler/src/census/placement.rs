@@ -79,6 +79,14 @@ pub(crate) enum RoleLabel {
 }
 
 impl RoleLabel {
+    /// The role column of an agent line, including an unlabeled session.
+    pub(crate) const fn column_text(self) -> &'static str {
+        match self {
+            Self::Unlabeled => "session",
+            Self::Stated(role) | Self::Inferred(role) => role.text(),
+        }
+    }
+
     /// A suffix for the agent's name; `RoleLabel::Unlabeled` has none.
     pub(crate) fn suffix(self) -> String {
         match self {

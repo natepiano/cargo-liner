@@ -28,6 +28,7 @@ use tui_pane::text_default;
 use self::age::age_label;
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
+use crate::census::AccountColumn;
 use crate::census::Agent;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
@@ -76,7 +77,12 @@ pub(crate) fn height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -
 ///
 /// This is what the summary asks the grid for across, so a directory is
 /// only cut short once the summary has reached the right edge.
-pub(crate) fn width(machines: &[Machine<'_>], placement: &AgentPlacement<'_>, now: u64) -> u16 {
+pub(crate) fn width(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    now: u64,
+    account_column: AccountColumn,
+) -> u16 {
     let headings = machines
         .iter()
         .map(|machine| heading(machine, root_rows(*machine, placement).count()).width())
@@ -88,7 +94,7 @@ pub(crate) fn width(machines: &[Machine<'_>], placement: &AgentPlacement<'_>, no
     {
         return headings;
     }
-    let widths = column_widths(machines, placement, now);
+    let widths = column_widths(machines, placement, now, account_column);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
     let table = (0..SUMMARY_HEADERS.len())
         .map(|column| widths.get(column))
@@ -119,6 +125,12 @@ fn root_rows<'a>(
         .filter(move |row| placement.is_root(machine.name, row.pid))
 }
 
+/// Shared column widths and the account labels those widths accommodate.
+struct SummaryColumns {
+    constraints:    Vec<Constraint>,
+    account_column: AccountColumn,
+}
+
 /// Draw `machines` into `area`, with each agent's name in the hue of its
 /// cell among `cells` and ages measured to `now` in unix seconds.
 pub(crate) fn draw(
@@ -128,24 +140,20 @@ pub(crate) fn draw(
     placement: &AgentPlacement<'_>,
     cells: &[AgentEntry<'_>],
     now: u64,
+    account_column: AccountColumn,
 ) {
     // Every machine's table is laid out with the same constraints and
     // indent, so its columns line up with every other machine's.
-    let constraints = fitted_constraints(machines, placement, now);
+    let columns = SummaryColumns {
+        constraints: fitted_constraints(machines, placement, now, account_column),
+        account_column,
+    };
     let mut remaining = area;
     for machine in machines {
         if remaining.height == 0 {
             break;
         }
-        let used = draw_machine(
-            buffer,
-            remaining,
-            machine,
-            placement,
-            cells,
-            &constraints,
-            now,
-        );
+        let used = draw_machine(buffer, remaining, machine, placement, cells, &columns, now);
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -160,7 +168,7 @@ fn draw_machine(
     machine: &Machine<'_>,
     placement: &AgentPlacement<'_>,
     cells: &[AgentEntry<'_>],
-    constraints: &[Constraint],
+    columns: &SummaryColumns,
     now: u64,
 ) -> u16 {
     let rows: Vec<&AgentRow> = root_rows(*machine, placement).collect();
@@ -183,9 +191,10 @@ fn draw_machine(
                 row,
                 agent_cell::name_style(cells, machine.name, row.pid),
                 now,
+                columns.account_column,
             )
         }),
-        constraints.iter().copied(),
+        columns.constraints.iter().copied(),
     )
     .header(Row::new(
         SUMMARY_HEADERS.map(|header| Span::styled(header, label)),
@@ -247,11 +256,19 @@ fn count_note(count: usize) -> String {
 }
 
 /// One agent's table row, its name drawn in `name_style`.
-fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
+fn agent_row(
+    row: &AgentRow,
+    name_style: Style,
+    now: u64,
+    account_column: AccountColumn,
+) -> Row<'static> {
     let text = Style::default().fg(text_default());
     Row::new([
         Span::styled(row.pid.to_string(), text),
-        Span::styled(row.agent_label(), agent_role(row.agent).style()),
+        Span::styled(
+            row.agent_label(account_column),
+            agent_role(row.agent).style(),
+        ),
         Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
@@ -307,8 +324,9 @@ fn fitted_constraints(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
     now: u64,
+    account_column: AccountColumn,
 ) -> Vec<Constraint> {
-    column_widths(machines, placement, now)
+    column_widths(machines, placement, now, account_column)
         .to_constraints()
         .into_iter()
         .enumerate()
@@ -328,6 +346,7 @@ fn column_widths(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
     now: u64,
+    account_column: AccountColumn,
 ) -> ColumnWidths {
     let mut widths = ColumnWidths::new(
         SUMMARY_HEADERS
@@ -344,7 +363,10 @@ fn column_widths(
         .flat_map(|machine| root_rows(*machine, placement))
     {
         widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
-        widths.observe_cell_usize(AGENT_COLUMN, row.agent_label().chars().count());
+        widths.observe_cell_usize(
+            AGENT_COLUMN,
+            row.agent_label(account_column).chars().count(),
+        );
         widths.observe_cell_usize(NAME_COLUMN, row.name.chars().count());
         widths.observe_cell_usize(STATUS_COLUMN, status_text(row).chars().count());
         let age = age_label(now.saturating_sub(row.started));
@@ -357,7 +379,7 @@ fn column_widths(
 
 /// `area` indented one level, where every machine's label row and rows
 /// sit, under headings at the outer level.
-pub(crate) fn indented(area: Rect) -> Rect {
+fn indented(area: Rect) -> Rect {
     let indent = cell_width(SECTION_ITEM_INDENT);
     Rect {
         x: area.x.saturating_add(indent),
@@ -535,11 +557,19 @@ mod tests {
         let area = Rect::new(
             0,
             0,
-            width(machines, &placement, NOW),
+            width(machines, &placement, NOW, AccountColumn::Hidden),
             u16::try_from(height(machines, &placement)).expect("the summary height should fit"),
         );
         let mut buffer = Buffer::empty(area);
-        draw(&mut buffer, area, machines, &placement, &cells, NOW);
+        draw(
+            &mut buffer,
+            area,
+            machines,
+            &placement,
+            &cells,
+            NOW,
+            AccountColumn::Hidden,
+        );
         let drawn = lines(&buffer);
         let mut machine = "";
         let mut actual = Vec::new();
@@ -667,7 +697,12 @@ mod tests {
             name:  "natedev",
             state: &manager_only,
         }];
-        let root_width = width(&machines, &AgentPlacement::from_machines(&machines), NOW);
+        let root_width = width(
+            &machines,
+            &AgentPlacement::from_machines(&machines),
+            NOW,
+            AccountColumn::Hidden,
+        );
         let mut census = Census::new("natedev".to_string());
 
         for (edges, expected, count) in [
@@ -694,7 +729,12 @@ mod tests {
             let machines = census.machines(&[]);
             let drawn = assert_summary_roots(&machines, &expected);
             assert_eq!(drawn[0], format!(" natedev · {count}"));
-            let measured = width(&machines, &AgentPlacement::from_machines(&machines), NOW);
+            let measured = width(
+                &machines,
+                &AgentPlacement::from_machines(&machines),
+                NOW,
+                AccountColumn::Hidden,
+            );
             if expected.len() == 1 {
                 assert_eq!(
                     measured, root_width,
@@ -763,23 +803,12 @@ mod tests {
         let studio = MachineState::Failed("unreachable".to_string());
         let pi = MachineState::Scanning;
         let machines = [
-            Machine {
-                name:  "natedev",
-                state: &natedev,
-            },
-            Machine {
-                name:  "mac",
-                state: &mac,
-            },
-            Machine {
-                name:  "studio",
-                state: &studio,
-            },
-            Machine {
-                name:  "pi",
-                state: &pi,
-            },
-        ];
+            ("natedev", &natedev),
+            ("mac", &mac),
+            ("studio", &studio),
+            ("pi", &pi),
+        ]
+        .map(|(name, state)| Machine { name, state });
         let placement = AgentPlacement::from_machines(&machines);
         let height =
             u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
@@ -787,7 +816,15 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         let cells = agent_cell::cell_order_placed(&placement);
 
-        draw(&mut buffer, area, &machines, &placement, &cells, NOW);
+        draw(
+            &mut buffer,
+            area,
+            &machines,
+            &placement,
+            &cells,
+            NOW,
+            AccountColumn::Hidden,
+        );
 
         assert_eq!(
             lines(&buffer),
@@ -897,6 +934,7 @@ mod tests {
             &placement,
             &agent_cell::cell_order_placed(&placement),
             NOW,
+            AccountColumn::Hidden,
         );
 
         assert_eq!(
@@ -931,7 +969,7 @@ mod tests {
             state: &natedev,
         }];
         let placement = AgentPlacement::from_machines(&machines);
-        let fitted = width(&machines, &placement, NOW);
+        let fitted = width(&machines, &placement, NOW, AccountColumn::Hidden);
         let height =
             u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
@@ -943,6 +981,7 @@ mod tests {
             &placement,
             &agent_cell::cell_order_placed(&placement),
             NOW,
+            AccountColumn::Hidden,
         );
         let widest = lines(&buffer)
             .iter()
@@ -974,7 +1013,8 @@ mod tests {
             usize::from(width(
                 &machines,
                 &AgentPlacement::from_machines(&machines),
-                NOW
+                NOW,
+                AccountColumn::Hidden
             )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
@@ -996,7 +1036,8 @@ mod tests {
             usize::from(width(
                 &machines,
                 &AgentPlacement::from_machines(&machines),
-                NOW
+                NOW,
+                AccountColumn::Hidden
             )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
