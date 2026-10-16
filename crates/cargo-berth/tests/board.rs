@@ -2812,7 +2812,8 @@ fn transaction_only_post_commit_actor_never_becomes_a_holder_or_orphan() {
 #[test]
 fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
     // Replay records incidents but no refused-or-unneeded widening outcome, so the answer rows
-    // before and after these two incident reports must be identical.
+    // before and after these two incident reports must be identical. The subject has an empty
+    // scoped extent, so the incidents resolve while its siblings protect their own dirt.
     let repository = initialized_repository();
     // Three reservations, one run: the subject is the answer rows the board renders, and the
     // incursions below name reservation ids rather than runs.
@@ -2854,7 +2855,7 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
         data["outstanding_incursions"]["entries"]
             .as_array()
             .map(Vec::len),
-        Some(2)
+        Some(0)
     );
     assert_eq!(data["live_overlap_answers"]["entries"], before);
     assert!(!data.to_string().contains("ambiguous"));
@@ -2956,12 +2957,12 @@ fn board_git_cost_separates_each_scaling_dimension() {
 }
 
 #[test]
-fn historical_candidate_settles_without_a_rewrite_marker() {
+fn historical_candidate_proof_retains_a_pending_merge_extent_without_a_rewrite_marker() {
     let fixture = historical_integration_fixture();
     let reservation = &fixture.reservation;
     let root = reservation.repository.path();
     let settled = run_board_with_git_trace(root);
-    assert_historical_settlement(&fixture, &settled);
+    assert_historical_proof_retains_pending_extent(&fixture, &settled);
     assert_eq!(historical_candidate_queries(&settled), 1);
     assert_eq!(
         historical_candidate_certifications(&settled, &fixture.witness),
@@ -2995,7 +2996,7 @@ fn discovered_historical_witness_survives_reserved_dirt_and_restart() {
     assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
     assert_eq!(
         snapshot["integration_evidence"]["status"],
-        historical_evidence(&fixture)
+        serde_json::json!({"status": "not_integrated"})
     );
     assert_eq!(historical_candidate_queries(&dirty), 1);
     assert_eq!(journal_operation_count(root, "release"), 0);
@@ -3010,7 +3011,7 @@ fn discovered_historical_witness_survives_reserved_dirt_and_restart() {
     );
     invalidate_projection(root);
     let restarted = run_board_with_git_trace(root);
-    assert_historical_settlement(&fixture, &restarted);
+    assert_historical_proof_retains_pending_extent(&fixture, &restarted);
     assert_eq!(historical_candidate_queries(&restarted), 0);
     assert_eq!(
         historical_candidate_certifications(&restarted, &fixture.witness),
@@ -3023,7 +3024,7 @@ fn discovered_historical_witness_survives_reserved_dirt_and_restart() {
 }
 
 #[test]
-fn explicit_release_settles_with_the_discovered_historical_witness_while_reserved_dirt_remains() {
+fn explicit_release_retains_reserved_dirt_despite_a_discovered_historical_witness() {
     let fixture = historical_integration_fixture();
     let reservation = &fixture.reservation;
     let root = reservation.repository.path();
@@ -3040,24 +3041,22 @@ fn explicit_release_settles_with_the_discovered_historical_witness_while_reserve
     assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
     assert_eq!(
         snapshot["integration_evidence"]["status"],
-        historical_evidence(&fixture)
+        serde_json::json!({"status": "not_integrated"})
     );
     assert_eq!(historical_candidate_queries(&dirty), 1);
     assert_eq!(journal_operation_count(root, "release"), 0);
 
-    let expected_evidence = serde_json::json!({
-        "status": "integrated", "trunk_oid": reservation.target,
-        "proof": "rewritten_witness_ancestor",
-        "witness": {"kind": "historical", "commit": fixture.witness},
-    });
     let release = run_berth_with_run(
         &fixture.holder_root,
         &["release", &reservation.reservation_id, "--json"],
         FIRST_RUN,
     );
     assert!(release.status.success(), "{}", json_output(&release));
-    // The command ends integrated work although reserved dirt remains, and its disposition
-    // names the witness the board discovered.
+    assert_eq!(json_output(&release)["status"], "outstanding");
+    assert_eq!(
+        json_output(&release)["payload"]["data"]["pending_paths"],
+        serde_json::json!(["src/lib.rs"])
+    );
     assert_eq!(
         git_stdout(&fixture.holder_root, &["diff", "--name-only"]),
         "src/lib.rs"
@@ -3072,28 +3071,13 @@ fn explicit_release_settles_with_the_discovered_historical_witness_while_reserve
     let board = json_output(&restarted.output);
     let snapshot =
         board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
-    assert_eq!(snapshot["lifecycle"]["stage"], "released");
-    assert_eq!(
-        snapshot["lifecycle"]["disposition"],
-        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
-    );
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
     assert_eq!(
         snapshot["integration_evidence"]["status"],
-        expected_evidence
+        serde_json::json!({"status": "not_integrated"})
     );
     assert_eq!(historical_candidate_queries(&restarted), 0);
-    assert_eq!(journal_operation_count(root, "release"), 1);
-    let release = fs::read_to_string(root.join(JOURNAL_PATH))
-        .expect("released journal should read")
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
-        .find(|event| event["op"] == "release")
-        .expect("the release command should write the release");
-    assert_eq!(
-        release["disposition"],
-        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
-    );
-    assert_eq!(release["source"], "command");
+    assert_eq!(journal_operation_count(root, "release"), 0);
 }
 
 #[test]
@@ -3237,7 +3221,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@""#,
 
     invalidate_projection(root);
     let restarted = run_board_with_git_trace(root);
-    assert_historical_settlement(&fixture, &restarted);
+    assert_historical_proof_retains_pending_extent(&fixture, &restarted);
     assert_eq!(historical_candidate_queries(&restarted), 1);
     assert_eq!(
         historical_candidate_certifications(&restarted, &fixture.witness),
@@ -3356,8 +3340,11 @@ fn historical_evidence(fixture: &HistoricalIntegrationFixture) -> serde_json::Va
     })
 }
 
-/// A clean ordinary reconciliation settles the historical proof without an orphan alert.
-fn assert_historical_settlement(fixture: &HistoricalIntegrationFixture, traced: &TracedBoard) {
+/// Historical certification survives while current pending paths prevent settlement.
+fn assert_historical_proof_retains_pending_extent(
+    fixture: &HistoricalIntegrationFixture,
+    traced: &TracedBoard,
+) {
     assert!(
         traced.output.status.success(),
         "{}",
@@ -3367,14 +3354,15 @@ fn assert_historical_settlement(fixture: &HistoricalIntegrationFixture, traced: 
     let reservation = &fixture.reservation;
     let snapshot =
         board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
-    assert_eq!(snapshot["lifecycle"]["stage"], "released", "{board}");
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding", "{board}");
+    assert_eq!(snapshot["merge_extent"]["status"], "protected");
     assert_eq!(
-        snapshot["lifecycle"]["disposition"],
-        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
+        snapshot["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
     );
     assert_eq!(
         snapshot["integration_evidence"]["status"],
-        historical_evidence(fixture)
+        serde_json::json!({"status": "not_integrated"})
     );
     assert!(
         board["payload"]["data"]["alerts"]["entries"]
@@ -3396,12 +3384,7 @@ fn assert_historical_settlement(fixture: &HistoricalIntegrationFixture, traced: 
             "release",
             &reservation.reservation_id
         ),
-        1
-    );
-    assert_historical_witness_settlement_journal(
-        reservation,
-        &historical_evidence(fixture),
-        &fixture.witness,
+        0
     );
 }
 
@@ -3471,7 +3454,7 @@ fn retained_historical_witness_survives_dirty_settlement_and_process_restart() {
     assert_eq!(outstanding["lifecycle"]["stage"], "outstanding");
     assert_eq!(
         outstanding["integration_evidence"]["status"],
-        expected_evidence
+        serde_json::json!({"status": "not_integrated"})
     );
     assert_eq!(journal_operation_count(root, "release"), 0);
     assert_eq!(git_stdout(root, &["diff", "--name-only"]), "src/lib.rs");
@@ -4531,6 +4514,151 @@ fn assert_scoped_patch_proof_at(data: &serde_json::Value, reservation_id: &str, 
 }
 
 #[test]
+fn release_names_pending_paths_when_trunk_was_rewritten() {
+    let fixture =
+        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Outstanding);
+    fs::write(
+        fixture.repository.path().join("src/lib.rs"),
+        "// pending own work\n",
+    )
+    .expect("pending work should write");
+    let output = run_berth(
+        fixture.repository.path(),
+        &["release", &fixture.reservation_id, "--json"],
+    );
+    assert_success(&output);
+    let answer = json(&output);
+    assert_eq!(answer["status"], "outstanding", "{answer}");
+    assert_eq!(
+        answer["payload"]["data"]["pending_paths"],
+        serde_json::json!(["src/lib.rs"]),
+        "{answer}"
+    );
+    assert!(
+        answer["message"]
+            .as_str()
+            .expect("release message")
+            .contains("src/lib.rs")
+    );
+}
+
+#[test]
+fn release_names_pending_paths_when_integration_objects_are_unknown() {
+    let fixture = rewritten_reservation_fixture(
+        TargetRewrite::Equivalent,
+        ReservationCompletion::Outstanding,
+    );
+    let root = fixture.repository.path();
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "resnapshot", "reservation_id": fixture.reservation_id,
+            "snapshot": {"stage":"outstanding", "phase_start_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "protected_tip":fixture.protected_tip, "trunk_oid":fixture.target}
+        }),
+    );
+    fs::write(root.join("src/lib.rs"), "// pending own work\n").expect("pending work should write");
+    let output = run_berth(root, &["release", &fixture.reservation_id, "--json"]);
+    assert_success(&output);
+    let answer = json(&output);
+    assert_eq!(answer["status"], "outstanding", "{answer}");
+    assert_eq!(
+        answer["payload"]["data"]["pending_paths"],
+        serde_json::json!(["src/lib.rs"]),
+        "{answer}"
+    );
+    assert!(
+        answer["message"]
+            .as_str()
+            .expect("release message")
+            .contains("src/lib.rs")
+    );
+    let data = board_data(root);
+    assert_eq!(
+        board_reservation_snapshot(&data, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["status"],
+        "object_unknown"
+    );
+}
+
+#[test]
+fn release_records_a_budget_deferred_proof_before_its_integrated_disposition() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let base = git_stdout(root, &["rev-parse", "HEAD"]);
+    let first = reservation_id(&claim(root, "file:src/lib.rs", FIRST_RUN));
+    let second = reservation_id(&claim(root, "file:src/second.rs", FIRST_RUN));
+    fs::write(root.join("src/lib.rs"), "pub fn first_phase() {}\n").expect("first phase work");
+    fs::write(root.join("src/second.rs"), "pub fn second_phase() {}\n").expect("second phase work");
+    git(root, &["add", "src"]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "both phases",
+        ],
+    );
+    let protected_tip = git_stdout(root, &["rev-parse", "HEAD"]);
+    for id in [&first, &second] {
+        append_journal_operation(
+            root,
+            &serde_json::json!({
+                "op":"checkpoint", "reservation_id":id,
+                "protected_tip":protected_tip, "trunk_snapshot":base
+            }),
+        );
+    }
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "squashed phases",
+        ],
+    );
+    let id = &second;
+    let output = run_berth(root, &["release", id, "--json"]);
+    assert_success(&output);
+    let answer = json(&output);
+    assert_eq!(answer["payload"]["data"]["status"], "released", "{answer}");
+    assert_eq!(
+        answer["payload"]["data"]["disposition"]["kind"], "integrated",
+        "{answer}"
+    );
+    let events = fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("journal event"))
+        .collect::<Vec<_>>();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["op"] == "scoped_patch_equivalence_checked"
+                && event["reservation_id"] == *id),
+        "the reconciliation comparison must have been budget deferred"
+    );
+    let release = events
+        .iter()
+        .position(|event| event["op"] == "release" && event["reservation_id"] == *id)
+        .expect("release event");
+    assert_eq!(events[release - 1]["op"], "evidence_revalidated");
+    assert_eq!(events[release - 1]["reservation_id"], *id);
+    assert_eq!(events[release - 1]["status"]["status"], "integrated");
+    assert_eq!(
+        board_reservation_snapshot(&board_data(root), id)["lifecycle"]["stage"],
+        "released"
+    );
+}
+
+#[test]
 fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     let fixture =
         rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
@@ -5038,7 +5166,7 @@ fn assert_mapped_acceptance_defers_historical_subjects(fixture: &HistoricalInteg
 
     invalidate_projection(root);
     let second = run_board_with_git_trace(root);
-    assert_historical_settlement(fixture, &second);
+    assert_historical_proof_retains_pending_extent(fixture, &second);
     assert_eq!(historical_candidate_queries(&second), 1);
     assert_eq!(
         historical_candidate_certifications(&second, &fixture.witness),
@@ -5048,7 +5176,7 @@ fn assert_mapped_acceptance_defers_historical_subjects(fixture: &HistoricalInteg
     let duplicate = board_reservation_snapshot(&second_board["payload"]["data"], &duplicates[0]);
     assert_eq!(
         duplicate["integration_evidence"]["status"],
-        historical_evidence(fixture)
+        serde_json::json!({"status": "not_integrated"})
     );
 }
 
@@ -5157,7 +5285,7 @@ fn assert_historical_candidate_subject_budget(
             ReservationCompletion::Outstanding,
         );
         let traced = run_board_with_git_trace(reservation.repository.path());
-        assert_historical_settlement(fixture, &traced);
+        assert_historical_proof_retains_pending_extent(fixture, &traced);
         assert_eq!(historical_candidate_queries(&traced), 1);
         assert_eq!(
             historical_candidate_certifications(&traced, &fixture.witness),
@@ -5177,7 +5305,7 @@ fn assert_historical_candidate_subject_budget(
             ProofSubjectSimilarity::Duplicate => {
                 assert_eq!(
                     snapshot["integration_evidence"]["status"],
-                    historical_evidence(fixture)
+                    serde_json::json!({"status": "not_integrated"})
                 );
                 let verdicts = reservation_verdicts(reservation.repository.path(), &extra[0]);
                 assert_eq!(verdicts.len(), 1);
@@ -5814,7 +5942,7 @@ fn assert_proof_subject_change_rechecks(
         usize::from(!witness_replacement)
     );
     let expected_status = match (target_rewrite, witness_replacement) {
-        (TargetRewrite::Equivalent, false) => "integrated",
+        (TargetRewrite::Equivalent, false) => "not_integrated",
         (TargetRewrite::Different, _) | (TargetRewrite::Equivalent, true) => "trunk_rewritten",
     };
     assert_eq!(
@@ -5966,9 +6094,28 @@ fn reverted_scoped_patch_proof_fixture() -> RevertedScopedPatchProofFixture {
         &warmed_board["payload"]["data"],
         &reservation_id,
     )["integration_evidence"]["status"];
-    assert_eq!(warmed_status["status"], "integrated");
-    assert_eq!(warmed_status["proof"], "scoped_patch_equivalent");
-    assert_eq!(warmed_status["trunk_oid"], earlier_proof_target);
+    assert_eq!(warmed_status["status"], "not_integrated");
+    let verdicts = reservation_verdicts(repository.path(), &reservation_id);
+    let verdict = verdicts
+        .last()
+        .expect("committed-work proof should be retained");
+    assert_eq!(verdict["verdict"], "integrated");
+    assert_eq!(verdict["target"], earlier_proof_target);
+    // Older ledgers could retain this proof as integrated despite dirty own paths. A deferred
+    // comparison must preserve that historical record without certifying the current extent.
+    append_journal_operation(
+        repository.path(),
+        &serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": reservation_id,
+            "status": {
+                "status": "integrated",
+                "trunk_oid": earlier_proof_target,
+                "proof": "scoped_patch_equivalent",
+            },
+            "edit_blocking_status": "clear",
+        }),
+    );
 
     let target = commit_library_target_from_base(
         repository.path(),

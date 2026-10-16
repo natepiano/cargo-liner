@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::drift::WorkingTreeFingerprint;
 use crate::ids::GitObjectId;
+use crate::ids::ReservationId;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 
@@ -14,12 +15,33 @@ use crate::ledger::ReservationScopeSet;
 pub(crate) struct MergeExtentKey {
     /// Movement of the reservation's target can integrate an otherwise unchanged holder.
     #[schemars(with = "String")]
-    pub(crate) trunk:        GitObjectId,
+    pub(crate) trunk:             GitObjectId,
     /// The branch tip whose net change will reach the reservation's target.
     #[schemars(with = "String")]
-    pub(crate) head:         GitObjectId,
+    pub(crate) head:              GitObjectId,
     /// Uncommitted paths independently extend that net change.
-    pub(crate) working_tree: WorkingTreeFingerprint,
+    pub(crate) working_tree:      WorkingTreeFingerprint,
+    /// The reservations whose shares together reconstruct this observation.
+    #[serde(
+        default,
+        skip_serializing_if = "HolderMergeExtentCoverage::is_full_holder"
+    )]
+    pub(crate) reservation_group: HolderMergeExtentCoverage,
+}
+
+/// Whether a cached extent covers the holder or depends on sibling shares.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum HolderMergeExtentCoverage {
+    /// A lone reservation, or a legacy observation, holds the complete surface.
+    #[default]
+    FullHolder,
+    /// Every named reservation must still contribute its share before the cache is reusable.
+    ReservationShares { reservation_ids: Vec<ReservationId> },
+}
+
+impl HolderMergeExtentCoverage {
+    const fn is_full_holder(&self) -> bool { matches!(self, Self::FullHolder) }
 }
 
 impl MergeExtentKey {

@@ -1171,7 +1171,7 @@ fn active_checkpoint_release_reconciles_outstanding_retention_refs() {
 }
 
 #[test]
-fn terminal_release_omits_the_orphan_alert_it_resolves() {
+fn release_retains_an_orphan_without_a_fresh_merge_extent() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let phase_worktree = worktree_parent.path().join("release-alert");
@@ -1207,36 +1207,33 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
     let settled = run_berth(repository.path(), &["board", "--json"]);
     assert!(settled.status.success());
     let settled_json = json_output(&settled);
-    let reservation = settled_json["payload"]["data"]["resolved"]["entries"]
-        .as_array()
-        .expect("resolved reservations should exist")
-        .iter()
-        .find(|reservation| reservation["reservation_id"] == reservation_id)
-        .expect("integrated orphan should settle on the same pass");
-    assert_eq!(reservation["lifecycle"]["stage"], "released");
+    let reservation = reservation_row(&settled_json, &reservation_id);
+    assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+    assert_eq!(reservation["merge_extent"]["status"], "unavailable");
     assert_eq!(
-        reservation["lifecycle"]["disposition"]["kind"],
-        "integrated"
+        reservation["integration_evidence"]["status"]["status"],
+        "object_unknown"
     );
     assert!(
         settled_json["payload"]["data"]["alerts"]["entries"]
             .as_array()
             .expect("board alerts should exist")
             .iter()
-            .all(|alert| alert["reservation_id"] != reservation_id)
+            .any(|alert| alert["reservation_id"] == reservation_id
+                && alert["kind"] == "orphaned_outstanding")
     );
     let repeated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     assert!(repeated.status.success());
     assert_eq!(
         json_output(&repeated)["payload"]["data"]["status"],
-        "already_settled"
+        "evidence_revalidated"
     );
     assert!(
         json_output(&repeated)["payload"]["alerts"]
             .as_array()
             .expect("release alerts should exist")
             .iter()
-            .all(|alert| alert["kind"] != "orphaned_outstanding")
+            .any(|alert| alert["kind"] == "orphaned_outstanding")
     );
 }
 

@@ -24,7 +24,6 @@ use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
 use super::merge_extent::MergeExtent;
 use super::merge_extent::ReservationProtection;
-use super::merge_extent::RetainedMergeEvidence;
 use super::partition;
 use super::partition::AuthorizedEditingIdentity;
 use super::partition::DriftBlockingCoverage;
@@ -54,7 +53,6 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
-use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 use crate::ledger::BlockedIncursionPath;
 use crate::ledger::BlockedIncursionPathSet;
@@ -77,81 +75,6 @@ use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
-
-impl Reservation {
-    /// Retained unions conservatively count every path as committed when a holder is unavailable.
-    /// This can delay settlement, but a dirty path never hides an unmerged committed path.
-    pub(crate) fn has_unproven_retained_merge_work(&self, extent: &MergeExtent) -> bool {
-        let (MergeExtent::Protected { scopes, .. }
-        | MergeExtent::Unavailable {
-            retained_evidence: RetainedMergeEvidence::Protected { scopes, .. },
-            ..
-        }) = extent
-        else {
-            return false;
-        };
-        let conservative_committed_paths = scopes
-            .as_slice()
-            .iter()
-            .map(|scope| scope.path.clone())
-            .collect::<Vec<_>>();
-        self.has_unproven_merge_work(extent, &conservative_committed_paths)
-    }
-
-    /// Keep known merge work beyond the checkpoint proof, including evidence retained on failure.
-    pub(crate) fn has_unproven_merge_work(
-        &self,
-        extent: &MergeExtent,
-        committed_paths: &[ReservationScopePath],
-    ) -> bool {
-        let ReservationLifecycle::Outstanding { protected_tip } = self.lifecycle() else {
-            return false;
-        };
-        let key = match extent {
-            MergeExtent::Protected { key, .. }
-            | MergeExtent::Unavailable {
-                retained_evidence: RetainedMergeEvidence::Protected { key, .. },
-                ..
-            } => key,
-            MergeExtent::Empty { .. }
-            | MergeExtent::NotDerived { .. }
-            | MergeExtent::Unavailable { .. } => return false,
-        };
-        // Net merge extents still list equivalent checkpoint changes. Only paths inside
-        // the proven scope can retire; later branch work keeps independent protection.
-        let dirty_paths = key
-            .working_tree
-            .tracked_paths
-            .iter()
-            .chain(&key.working_tree.untracked_paths)
-            .collect::<HashSet<_>>();
-        let outside_proof = committed_paths.iter().any(|path| {
-            let committed_scope = ReservationScope {
-                path: path.clone(),
-                kind: ScopeKind::File,
-            };
-            !self
-                .scopes()
-                .as_slice()
-                .iter()
-                .any(|declared| declared.contains(&committed_scope, PathCase::Sensitive))
-        });
-        let dirty_reserved_work = dirty_paths.iter().any(|path| {
-            self.scopes().as_slice().iter().any(|scope| {
-                scope.overlaps(
-                    &ReservationScope {
-                        path: (*path).clone(),
-                        kind: ScopeKind::File,
-                    },
-                    PathCase::Insensitive,
-                )
-            })
-        });
-        let committed_work_beyond_checkpoint =
-            key.head != *protected_tip.as_ref() && !committed_paths.is_empty();
-        committed_work_beyond_checkpoint || outside_proof || dirty_reserved_work
-    }
-}
 
 /// Overlap answers one [`JournalOperation::Answer`] recorded without acquiring a reservation.
 ///

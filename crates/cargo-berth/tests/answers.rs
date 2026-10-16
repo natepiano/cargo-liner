@@ -520,7 +520,7 @@ fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     assert!(revalidated.status.success());
     assert_eq!(
         json_output(&revalidated)["payload"]["data"]["status"],
-        "evidence_revalidated"
+        "outstanding"
     );
     assert!(
         check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
