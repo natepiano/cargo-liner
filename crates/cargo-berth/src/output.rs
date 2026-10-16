@@ -56,6 +56,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
+use crate::ids::ReservationScopePath;
 use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
@@ -1524,6 +1525,12 @@ enum FirstTouchReservationSelectionPayload {
 #[schemars(rename = "release_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReleasePayload {
+    /// Current reservation paths still contain uncommitted or unintegrated work.
+    Outstanding {
+        reservation_id: ReservationId,
+        pending_paths:  Vec<ReservationScopePath>,
+        marker:         CoordinationRunMarkerRetirement,
+    },
     /// Integration is proved, but the present target lacks a fresh cover.
     TargetUncovered {
         reservation_id: ReservationId,
@@ -1545,6 +1552,8 @@ pub(crate) enum ReleasePayload {
     },
     /// A rebased outstanding reservation replaced its protected checkpoint.
     Resnapshotted {
+        /// Paths still needing integration after replacing the checkpoint.
+        pending_paths:  Vec<ReservationScopePath>,
         /// The reservation that changed state.
         reservation_id: ReservationId,
         /// The replacement fixed commit.
@@ -1589,7 +1598,8 @@ pub(crate) enum ReleasePayload {
 impl ReleasePayload {
     const fn reservation_id(&self) -> ReservationId {
         match self {
-            Self::TargetUncovered { reservation_id, .. }
+            Self::Outstanding { reservation_id, .. }
+            | Self::TargetUncovered { reservation_id, .. }
             | Self::Checkpointed { reservation_id, .. }
             | Self::Resnapshotted { reservation_id, .. }
             | Self::EvidenceRevalidated { reservation_id, .. }
@@ -1600,7 +1610,8 @@ impl ReleasePayload {
 
     const fn output_status(&self) -> OutputStatus {
         match self {
-            Self::TargetUncovered { .. }
+            Self::Outstanding { .. }
+            | Self::TargetUncovered { .. }
             | Self::Checkpointed { .. }
             | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
             Self::EvidenceRevalidated { evidence, .. } | Self::AlreadySettled { evidence, .. } => {
@@ -2917,6 +2928,14 @@ impl OutputEnvelope {
         let reservation_id = release_payload.reservation_id();
         let status = release_payload.output_status();
         let message = match &release_payload {
+            ReleasePayload::Outstanding { pending_paths, .. } => format!(
+                "Reservation {reservation_id} remains outstanding; pending paths: {}.",
+                pending_paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ReleasePayload::TargetUncovered { target, .. } => format!(
                 "Target {} is uncovered; reservation {reservation_id} remains outstanding.",
                 target.short_name()
@@ -2931,8 +2950,19 @@ impl OutputEnvelope {
                 ),
                 session_mapping_publication,
             ),
-            ReleasePayload::Resnapshotted { protected_tip, .. } => {
-                format!("Reservation {reservation_id} now retains protected tip {protected_tip}.")
+            ReleasePayload::Resnapshotted {
+                protected_tip,
+                pending_paths,
+                ..
+            } => {
+                format!(
+                    "Reservation {reservation_id} now retains protected tip {protected_tip}; pending paths: {}.",
+                    pending_paths
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             },
             ReleasePayload::EvidenceRevalidated { evidence, .. } => match evidence {
                 IntegrationEvidenceStatus::NotIntegrated => format!(

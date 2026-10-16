@@ -177,6 +177,15 @@ pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
         /// The side effect authorized by the committed operation.
         action:    CommittedAction,
     },
+    /// Commit prerequisite evidence and its dependent operation under the same mutation lock.
+    AppendWithPrerequisites {
+        /// Evidence that must precede the dependent operation in replay order.
+        prerequisites: Vec<JournalOperation>,
+        /// The dependent operation whose append authorizes the action.
+        operation:     Box<JournalOperation>,
+        /// Work authorized only after all operations commit.
+        action:        CommittedAction,
+    },
     /// Return the semantic rejection without changing durable state.
     Reject(Rejection),
 }
@@ -426,35 +435,51 @@ impl Ledger {
                 generation:          transaction.replay.generation,
                 journal_end_offset:  transaction.replay.end_offset,
             };
-            let outcome = match validate(replayed_state) {
-                CommittedActionValidation::Append { operation, action } => {
-                    let journal_append = transaction
-                        .append(worktree_id, coordination_run_id, *operation)
-                        .map_err(LedgerCommittedActionError::Transaction)?;
-                    let action_output = commit_action(action);
-                    transaction
-                        .publish(&self.paths)
-                        .map_err(LedgerTransactionError::LedgerUnreadable)
-                        .map_err(LedgerCommittedActionError::Transaction)?;
-                    action_output.map_or_else(
-                        |error| Err(LedgerCommittedActionError::Action(error)),
-                        |output| {
-                            Ok(LedgerCommittedActionOutcome::Appended {
-                                output,
-                                session_mapping_publication: journal_append
-                                    .session_mapping_publication,
-                            })
-                        },
-                    )?
+            let mut prerequisite_publication = SessionIdentityMappingPublication::Published;
+            let (operation, action) = match validate(replayed_state) {
+                CommittedActionValidation::AppendWithPrerequisites {
+                    prerequisites,
+                    operation,
+                    action,
+                } => {
+                    for prerequisite in prerequisites {
+                        let appended = transaction
+                            .append(worktree_id, coordination_run_id, prerequisite)
+                            .map_err(LedgerCommittedActionError::Transaction)?;
+                        prerequisite_publication =
+                            prerequisite_publication.merge(appended.session_mapping_publication);
+                    }
+                    (operation, action)
                 },
+                CommittedActionValidation::Append { operation, action } => (operation, action),
                 CommittedActionValidation::Reject(rejection) => {
                     transaction
                         .publish_if_rebuild_required(&self.paths)
                         .map_err(LedgerTransactionError::LedgerUnreadable)
                         .map_err(LedgerCommittedActionError::Transaction)?;
-                    LedgerCommittedActionOutcome::Rejected(rejection)
+                    return Ok(consume_locked_outcome(
+                        LedgerCommittedActionOutcome::Rejected(rejection),
+                    ));
                 },
             };
+            let journal_append = transaction
+                .append(worktree_id, coordination_run_id, *operation)
+                .map_err(LedgerCommittedActionError::Transaction)?;
+            let action_output = commit_action(action);
+            transaction
+                .publish(&self.paths)
+                .map_err(LedgerTransactionError::LedgerUnreadable)
+                .map_err(LedgerCommittedActionError::Transaction)?;
+            let outcome = action_output.map_or_else(
+                |error| Err(LedgerCommittedActionError::Action(error)),
+                |output| {
+                    Ok(LedgerCommittedActionOutcome::Appended {
+                        output,
+                        session_mapping_publication: prerequisite_publication
+                            .merge(journal_append.session_mapping_publication),
+                    })
+                },
+            )?;
             Ok(consume_locked_outcome(outcome))
         })
     }
@@ -1073,6 +1098,7 @@ mod tests {
     use crate::ledger::journal;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
+    use crate::reservation::HolderMergeExtentCoverage;
     use crate::reservation::MergeExtent;
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReservationRunStatus;
@@ -1375,9 +1401,12 @@ mod tests {
     /// A key whose own path lists are empty, isolating the extent's scopes as what grows.
     fn empty_merge_extent_key() -> MergeExtentKey {
         MergeExtentKey {
-            trunk:        GitObjectId::from_str(&"a".repeat(40)).expect("trunk oid should parse"),
-            head:         GitObjectId::from_str(&"b".repeat(40)).expect("head oid should parse"),
-            working_tree: WorkingTreeFingerprint {
+            reservation_group: HolderMergeExtentCoverage::FullHolder,
+            trunk:             GitObjectId::from_str(&"a".repeat(40))
+                .expect("trunk oid should parse"),
+            head:              GitObjectId::from_str(&"b".repeat(40))
+                .expect("head oid should parse"),
+            working_tree:      WorkingTreeFingerprint {
                 tracked_paths:   Vec::new(),
                 untracked_paths: Vec::new(),
             },
