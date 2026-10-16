@@ -179,7 +179,7 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 ### Orphan notice
 
-`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &JudgedTargetTip)` (`src/alert.rs`) uses the already-observed tip of the orphan's judged branch and the alert's `OrphanIntegrationEvidence`, which reconciliation derives from the same snapshot row (`Outstanding` with `Integrated { trunk_oid, witness }` becomes `Proven(witness.resolve(trunk_oid))`, anything else `Unproven`):
+`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &JudgedTargetTip)` (`src/alert.rs`) uses the already-observed tip of the orphan's judged branch and the alert's `OrphanIntegrationEvidence`, which reconciliation derives from the same snapshot row (`Outstanding` with `Integrated { trunk_oid, witness }` becomes `Proven(witness.resolve(trunk_oid))`, anything else `Unproven`). `judge_live_integration` leaves an orphaned snapshot's `integration_status` as committed-work evidence computed it, so landed work arrives as `Proven` even though the orphan's unavailable extent keeps its journal judgment at `object_unknown`:
 
 - `Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. })`, for `Proven(commit)`, names that carrying commit and offers `resolve <id> --recovered` and `resolve <id> --integrated-as <commit>`.
 - `Recover(NameCarryingTrunkCommit { trunk_oid, .. })`, for `Unproven` with a resolved tip, offers `--recovered`, `--retire-orphan --why <reason>`, and `--abandon --why <reason>`, and states that `trunk_oid` does not contain the protected tip. That tip is never offered as the `--integrated-as` argument, because it does not carry the work.
@@ -209,7 +209,7 @@ Hook notices route these alerts through `AlertRouting` (`src/alert.rs`), built b
 - Settlement can happen in the prepared gate or the drift hook before `board` runs, so "a rerun appends nothing" counts from whichever pass settled. A release loop expects `released` on the settling call.
 - Every journal append republishes the session mapping, so a settled reservation's mapping entry disappears. Stale-mapping fixtures must restore stale bytes after the last append.
 - Projecting settlement in the committed audit silently drops forced-permit consumption, because `entering_reservations` in `src/gate/decision.rs` filters out released reservations.
-- A fixture that needs a reservation to stay outstanding after its work lands must dirty a reserved source. An orphan with no checkout never settles: its extent is `unavailable`, its integration judges as `object_unknown`, and it waits for `resolve`.
+- A fixture that needs a reservation to stay outstanding after its work lands must dirty a reserved source. An orphan with no checkout never settles: its extent is `unavailable`, its journal judgment is `object_unknown`, and it waits for `resolve`. Its board row and alert still show `integrated` / `VerifyResolvedTrunk` when its work landed.
 - After a re-anchor, settlement needs evidence for the resnapshotted protected tip and an empty share. The holder's HEAD need not equal the protected tip.
 - Share membership uses `PathCase::Sensitive`. An observed path whose case matches no declaration counts as unclaimed and stays in every sibling's share, which leans toward holding.
 - Git 2.54 `--update-refs` writes each branch in its own transaction, upper branch first. Every transaction sees the same `rebase-merge/onto` and the full rewritten list, which is why pairs are filtered per branch by created commits.

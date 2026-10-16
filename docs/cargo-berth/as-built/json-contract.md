@@ -313,7 +313,10 @@ offset. Reservation rows occur at
   is judged with its merge extent: it is `integrated` only while the extent is
   `empty`; a `protected` extent reads `not_integrated` (or `trunk_rewritten`,
   `object_unknown`), and a `not_derived` or `unavailable` extent reads
-  `object_unknown` (or `trunk_rewritten`). The witness is
+  `object_unknown` (or `trunk_rewritten`). An orphaned row is the exception:
+  it keeps its committed-work status, so it reads `integrated` when its work
+  is in the judged branch, while its lifecycle stays `outstanding` and its
+  orphan alert names the recovery. The witness is
   `{ "kind": "evaluated_trunk" }` or
   `{ "kind": "historical", "commit": "<oid>" }`; an absent witness defaults
   to the evaluated tip. Witness ancestry proves that the judged branch contains
@@ -937,7 +940,9 @@ A `release` response carries `payload.kind = "release"`. Every
   carries `pending_paths` and `marker`.
 - `resnapshotted`: the holder's HEAD moved past the protected tip, so the
   checkpoint moved to it. It carries `protected_tip`, `trunk_oid`, `marker`,
-  and `pending_paths`.
+  and `pending_paths` (`[]` when the observed extent is empty).
+- `resnapshotted_pending_paths_unavailable`: the same resnapshot when the
+  extent was not freshly observed. It has no `pending_paths` member.
 - `target_uncovered`: integration is proved but the present non-trunk target
   has no fresh cover. It carries `target`.
 - `evidence_revalidated`: the evidence changed without settling and no
@@ -948,7 +953,7 @@ A `release` response carries `payload.kind = "release"`. Every
   the reservation. It carries `disposition`, `marker`, and
   `session_mapping_publication`.
 
-The first five have envelope `status = "outstanding"`. `evidence_revalidated`
+The first six have envelope `status = "outstanding"`. `evidence_revalidated`
 and `already_settled` take the envelope status from `evidence` (`integrated`,
 `outstanding` for `not_integrated`, `trunk_rewritten`, or `object_unknown`).
 `released` has `integrated` for an `integrated` or `rewritten_integration`
