@@ -112,26 +112,19 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 ### Phase 8 — A busy ledger answers as busy  · status: done
 
-**Depends on:** Phase 7
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** when `check`'s reconcile fails, the answer names the real failure, never an overlap with no holder.
-
-**Spec:** Each test runs under 1 s.
-1. In `crates/cargo-berth/src/verb/check.rs` `reconcile_and_retry`, the `Err(_)` arm returns `OutputEnvelope::blocked_check(fallback.scopes, fallback.conflicts, fallback.approver)`: a lock deadline reads as `blocked_by_overlap`, exit 1, with an empty conflict list. Replace it with the reconcile error's own answer, `ReconcileError::into_output(CommandVerb::Check)` (`reconcile.rs`), so a lock deadline answers `contention`, exit 6, with the busy diagnostic, and every other reconcile failure answers as that failure. Drop `fallback` if nothing else reads it.
-2. Tighten `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`'s unheld control (`tests/lifecycle.rs`) to status `contention` and exit 6, and likewise every contended control that runs through `check_at_held_mutation_lock` and asserts only a failed status (the `fast_path_declines_*` tests, the explicit remap and the envelope reference).
-3. Add a test that the pre-tool-use hook (`tests/hooks.rs`), given a check that answers `contention`, tells the writer the ledger was busy and names no holder.
-4. CHANGELOG `Fixed` line: a busy ledger during an edit check now answers as busy, not as an overlap.
+- `reconcile_and_retry` (`src/verb/check.rs`) answers a reconcile failure with `ReconcileError::into_output(CommandVerb::Check)`, never an overlap with no holder. A lock deadline answers `contention`, exit 6, with the busy diagnostic ("another cargo-berth operation is still running") and empty `blocked_by` and `reservations`; missing git or a broken marker answers `ledger_unreadable`, exit 4. The `fallback` parameter is gone.
+- `assert_check_contention` (`tests/lifecycle.rs`) pins status `contention`, exit 6, verb `check`, no holder and the busy diagnostic for every contended control: the unheld control of `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`, `fast_path_declines_a_partially_covered_tree`, `fast_path_declines_an_unmapped_session_with_one_active_reservation`, the explicit remap and the envelope reference.
+- The pre-tool-use hook, given a check that answers `contention`, refuses with the engine's busy message and names neither the foreign reservation nor an overlap; journal and mappings stay unchanged.
+- CHANGELOG `Fixed`: a busy ledger during an edit check answers as busy instead of reporting an overlap with no holder.
 
 **Files:**
-- `crates/cargo-berth/src/verb/check.rs`
-- `crates/cargo-berth/tests/lifecycle.rs`
-- `crates/cargo-berth/tests/hooks.rs`
-- `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/src/verb/check.rs` — `reconcile_and_retry` returns the reconcile error's own envelope
+- `crates/cargo-berth/tests/lifecycle.rs` — `assert_check_contention` and the tightened contended controls
+- `crates/cargo-berth/tests/hooks.rs` — `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder`
+- `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/liveness.rs` — `check_reuses_its_runs_reservation_without_git_or_a_duplicate_append` and `marker_sweep_restores_the_marker_name_after_metadata_failure` pin `ledger_unreadable`, exit 4
+- `crates/cargo-berth/CHANGELOG.md` — the `Fixed` line
 
-**Workers:** 1 writer + 1 tester. `impl` owns `src/` and `CHANGELOG.md`; `test` owns `tests/`.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` are green, and every new test runs under 1 s. After the checkpoint, install on natedev and the Mac.
+**Gotchas:**
+- A released session mapping is not a contended control: identity validation answers `invalid_input` / `stale_session_mapping`, exit 5, before any lock; `fast_path_declines_a_released_session_mapping` pins that.
