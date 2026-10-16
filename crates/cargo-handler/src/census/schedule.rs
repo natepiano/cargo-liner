@@ -105,7 +105,8 @@ impl LocalAnswers {
             self.runner.as_ref(),
             Instant::now(),
         );
-        self.sender.send(CensusUpdate::Local(rows, edges))
+        self.sender
+            .send(CensusUpdate::LocalScanCompleted(rows, edges))
     }
 }
 
@@ -325,6 +326,42 @@ mod tests {
     /// How long the test waits for any one answer before failing.
     const PATIENCE: Duration = Duration::from_secs(5);
 
+    /// Startup classification and detailed rows precede one completion per scan.
+    #[test]
+    fn each_local_scan_publishes_one_completion_after_its_interim_rows() {
+        let updates = spawn_with_test_source(
+            HierarchyCommand::new(super::super::HierarchySource::Off),
+            Arc::new(CommandRunner),
+            |answers| {
+                answers
+                    .publish(ScanStage::Classified, vec![session_row("worker", 1)])
+                    .expect("publish startup classification");
+                for started in [2, 3] {
+                    answers
+                        .publish(ScanStage::Completed, vec![session_row("worker", started)])
+                        .expect("publish a completed scan");
+                }
+            },
+        );
+        let answers: Vec<_> = updates.into_iter().collect();
+        assert_eq!(
+            answers,
+            [
+                CensusUpdate::Local(vec![session_row("worker", 1)], HierarchyEdges::default()),
+                CensusUpdate::Local(vec![session_row("worker", 2)], HierarchyEdges::default()),
+                CensusUpdate::LocalScanCompleted(
+                    vec![session_row("worker", 2)],
+                    HierarchyEdges::default()
+                ),
+                CensusUpdate::Local(vec![session_row("worker", 3)], HierarchyEdges::default()),
+                CensusUpdate::LocalScanCompleted(
+                    vec![session_row("worker", 3)],
+                    HierarchyEdges::default()
+                ),
+            ]
+        );
+    }
+
     /// A runner whose [`BLOCKED`] probe waits on `release` and whose
     /// every other probe fails at once as unreachable, counting how
     /// often each host is probed.
@@ -450,7 +487,10 @@ mod tests {
                 updates
                     .recv_timeout(PATIENCE)
                     .expect("a failed hierarchy still answers"),
-                CensusUpdate::Local(Vec::new(), super::super::HierarchyEdges::default())
+                CensusUpdate::LocalScanCompleted(
+                    Vec::new(),
+                    super::super::HierarchyEdges::default()
+                )
             );
             assert!(started.elapsed() < Duration::from_millis(800));
         }
@@ -475,7 +515,10 @@ mod tests {
                 updates
                     .recv_timeout(PATIENCE)
                     .expect("a timed-out hierarchy still answers"),
-                CensusUpdate::Local(Vec::new(), super::super::HierarchyEdges::default())
+                CensusUpdate::LocalScanCompleted(
+                    Vec::new(),
+                    super::super::HierarchyEdges::default()
+                )
             );
             assert!(started.elapsed() < Duration::from_millis(800));
             let pid =
@@ -550,7 +593,10 @@ mod tests {
         assert_eq!(timeout, Duration::from_secs(10));
         assert_eq!(
             initial.expect("initial successful answer"),
-            CensusUpdate::Local(vec![session_row("previous", 1)], HierarchyEdges::default())
+            CensusUpdate::LocalScanCompleted(
+                vec![session_row("previous", 1)],
+                HierarchyEdges::default()
+            )
         );
         assert_eq!(
             answer.expect("rows precede hierarchy completion"),
@@ -610,7 +656,7 @@ mod tests {
             updates
                 .recv_timeout(Duration::from_millis(200))
                 .expect("failed discovery answers"),
-            CensusUpdate::Local(expected, HierarchyEdges::default())
+            CensusUpdate::LocalScanCompleted(expected, HierarchyEdges::default())
         );
     }
 
@@ -826,7 +872,7 @@ mod tests {
         let managers: Vec<_> = answers
             .iter()
             .filter_map(|update| match update {
-                CensusUpdate::Local(_, edges) => Some(
+                CensusUpdate::Local(_, edges) | CensusUpdate::LocalScanCompleted(_, edges) => Some(
                     edges
                         .0
                         .iter()
@@ -877,7 +923,7 @@ mod tests {
                 .recv_timeout(PATIENCE)
                 .expect("the census should keep answering")
             {
-                CensusUpdate::Local(rows, _) => {
+                CensusUpdate::Local(rows, _) | CensusUpdate::LocalScanCompleted(rows, _) => {
                     assert_eq!(rows, [] as [AgentRow; 0]);
                     local += 1;
                 },

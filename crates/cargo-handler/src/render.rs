@@ -38,6 +38,7 @@ use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
+use crate::footer_colors::FooterColors;
 use crate::globals::AppGlobalAction;
 use crate::settings;
 use crate::summary;
@@ -90,6 +91,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
+        app.footer_colors.colors(),
     );
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
@@ -115,11 +117,13 @@ struct Cells<'a> {
     placement:      AgentPlacement<'a>,
     /// The unix second the ages are measured to.
     now:            u64,
+    /// Footer colors already loaded by the app.
+    footer_colors:  &'a FooterColors,
 }
 
 impl<'a> Cells<'a> {
     /// The cells for `machines`, with ages measured to `now`.
-    fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
+    fn new(machines: Vec<Machine<'a>>, now: u64, footer_colors: &'a FooterColors) -> Self {
         let placement = AgentPlacement::from_machines(&machines);
         let agents = agent_cell::cell_order_placed(&placement);
         let account_column = agent_cell::account_column(&agents);
@@ -129,6 +133,7 @@ impl<'a> Cells<'a> {
             account_column,
             placement,
             now,
+            footer_colors,
         }
     }
 
@@ -187,7 +192,7 @@ impl TileCells<AgentCell> for Cells<'_> {
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
             TileContent::Summary => {
-                summary::draw(
+                summary::draw_with_footer_colors(
                     buffer,
                     inner,
                     &self.machines,
@@ -195,17 +200,19 @@ impl TileCells<AgentCell> for Cells<'_> {
                     &self.agents,
                     self.now,
                     self.account_column,
+                    self.footer_colors,
                 );
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
-                    agent_cell::draw(
+                    agent_cell::draw_with_footer_colors(
                         buffer,
                         inner,
                         entry,
                         &self.agents,
                         self.now,
                         self.account_column,
+                        self.footer_colors,
                     );
                 }
             },
@@ -304,6 +311,8 @@ mod tests {
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::ThreadState;
+    use crate::census::worker_dispatch::WorkerDispatch;
     use crate::constants::HEADING_SEPARATOR;
 
     /// Width of every frame the goldens draw.
@@ -533,7 +542,7 @@ fraying = "leading"
     /// server with one thread, and a subagent.
     const ONE_AGENT_CELL: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│ natedev · 1 agent                                                            │",
+        "│ natedev · 1 top-level agent                                                  │",
         "│ pid      agent   name            status  age  desktop  directory             │",
         "│ 1579022  claude  boss of bosses  idle    21h  —        ~/rust/hana_catalyst/d│",
         "│                                                                              │",
@@ -545,8 +554,8 @@ fraying = "leading"
         "│                                                  content rows: 3  r/c: 10/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
         "│    session                                          role      status   age   │",
-        "│ ├─ Launch the Phase 2 implementation seat           shell     command  12m   │",
-        "│ │  └─ tool-based-ui-geometry-material-impl          thread    codex    12m   │",
+        "│ ├─ Launch the Phase 2 implementation seat           —         command  12m   │",
+        "│ │  └─ tool-based-ui-geometry-material-impl          thread    idle     12m   │",
         "│ └─ Survey the tile grid                             subagent  claude   5m 3s │",
         "│                                                                              │",
         "│                                                                              │",
@@ -723,6 +732,8 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            dispatch: WorkerDispatch::Plain,
+            thread_state: ThreadState::Idle,
             thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
@@ -794,6 +805,7 @@ fraying = "leading"
             app.census
                 .machines(&app.loaded_config.config.machines.remote),
             NOW,
+            app.footer_colors.colors(),
         );
         let mut buffer = Buffer::empty(body);
         tui_pane::draw_tile_grid(
@@ -1031,12 +1043,14 @@ fraying = "leading"
             ],
             crate::census::HierarchyEdges::default(),
         );
+        let footer_colors = FooterColors::default();
         let cells = Cells::new(
             vec![Machine {
                 name:  "natedev",
                 state: &natedev,
             }],
             NOW,
+            &footer_colors,
         );
         let [boss, handler] = [&cells.agents[0], &cells.agents[1]];
         let narrow = 30;

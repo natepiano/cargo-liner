@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Codex thread rows show busy or idle from their rollout turn events. Their tier mark follows the tree account label.
+- Worker launcher shells fold into their matching thread within the same tile. The worker row shows its short seat name and dispatched job; unmatched launchers remain visible.
+- Role and account labels use the Claude Code footer colors from `~/.claude/config/statusline.conf`, reloaded on census scans when the file changes. Machine headings count top-level agents, and shell rows show `—` in the role column.
 
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 

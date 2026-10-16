@@ -43,6 +43,7 @@ use crate::census::RemoteMachines;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::render;
@@ -112,6 +113,8 @@ pub(crate) struct App {
     /// The agents on this machine and each remote, as of each one's
     /// latest answer.
     pub(crate) census:            Census,
+    /// Footer colors cached between census scans.
+    pub(crate) footer_colors:     FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
     pub(crate) remote_machines:   RemoteMachines,
     /// `census.hierarchy_command` as the census scheduler reads it.
@@ -125,12 +128,14 @@ impl App {
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
         let census = Census::new(census::local_machine_name());
-        Self::new_with_keymap_path(
+        let mut app = Self::new_with_keymap_path(
             loaded_config,
             startup_note,
             CargoHandler::keymap_path(),
             census,
-        )
+        )?;
+        app.footer_colors = FooterColorFile::load();
+        Ok(app)
     }
 
     /// Apply a system appearance reported by the background watcher.
@@ -166,6 +171,7 @@ impl App {
             census,
             remote_machines,
             hierarchy_command,
+            footer_colors: FooterColorFile::default(),
         })
     }
 

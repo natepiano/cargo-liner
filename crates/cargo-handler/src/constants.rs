@@ -185,9 +185,9 @@ pub(crate) const SCANNING_NOTE: &str = "scanning";
 /// What a machine heading says when the machine has no agents.
 pub(crate) const NO_AGENTS_NOTE: &str = "no agents";
 /// Counts one agent in a machine heading.
-pub(crate) const AGENT_SINGULAR: &str = "agent";
+pub(crate) const AGENT_SINGULAR: &str = "top-level agent";
 /// Counts any other number of agents in a machine heading.
-pub(crate) const AGENT_PLURAL: &str = "agents";
+pub(crate) const AGENT_PLURAL: &str = "top-level agents";
 /// Shown in a cell that has no value, such as the status of an agent
 /// that reports none.
 pub(crate) const MISSING_VALUE: &str = "—";
@@ -354,8 +354,12 @@ pub(crate) const SHELL_SNAPSHOT_MARKER: &str = "/shell-snapshots/snapshot-";
 /// What opens the command inside a shell tool script, which runs it
 /// quoted in single quotes.
 pub(crate) const SHELL_EVAL_OPEN: &str = "eval '";
-/// How a shell tool script writes one `'` inside the quoted command.
-pub(crate) const SHELL_QUOTED_QUOTE: &str = r"'\''";
+/// How a bash wrapper writes one `'` inside the quoted command.
+const SHELL_BASH_QUOTED_QUOTE: &str = r"'\''";
+/// How a zsh wrapper writes one `'` inside the quoted command.
+const SHELL_ZSH_QUOTED_QUOTE: &str = r#"'"'"'"#;
+/// The wrapper encodings that each decode to one apostrophe.
+pub(crate) const SHELL_QUOTE_ESCAPES: &[&str] = &[SHELL_BASH_QUOTED_QUOTE, SHELL_ZSH_QUOTED_QUOTE];
 /// How far before a process started the transcript is read for the
 /// call that started it.
 pub(crate) const CALL_LOOKBACK: Duration = Duration::from_mins(10);

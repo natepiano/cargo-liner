@@ -114,6 +114,10 @@ impl Ticker {
                 CensusUpdate::Local(rows, _) => {
                     startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
                 },
+                CensusUpdate::LocalScanCompleted(rows, _) => {
+                    changed |= app.footer_colors.refresh();
+                    startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
+                },
                 CensusUpdate::Remote { host, .. } => {
                     startup_log::startup_event(&format!("remote_applied {host}"));
                 },
@@ -202,6 +206,46 @@ mod tests {
 
     fn ctrl(character: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL)
+    }
+
+    /// Classification and cached links do not each trigger a footer file check.
+    #[test]
+    fn a_completed_local_scan_checks_the_footer_once() {
+        let directory = tempfile::tempdir().expect("a fixture footer directory");
+        let path = directory.path().join("statusline.conf");
+        std::fs::write(&path, "account.codex1=teal").expect("write a fixture footer");
+        let mut app = App::new_for_test().expect("test app should build");
+        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
+        let (sender, updates) = mpsc::channel();
+        let (_appearance_sender, appearances) = mpsc::channel();
+        let ticker = Ticker::new(updates, appearances);
+
+        for interim_answers in [2, 1] {
+            let before = app.footer_colors.revision_checks();
+            for _ in 0..interim_answers {
+                sender
+                    .send(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()))
+                    .expect("publish an interim local answer");
+            }
+            ticker.drain_census(&mut app);
+            assert_eq!(app.footer_colors.revision_checks(), before);
+
+            sender
+                .send(CensusUpdate::LocalScanCompleted(
+                    Vec::new(),
+                    HierarchyEdges::default(),
+                ))
+                .expect("publish the completed scan");
+            let changed = ticker.drain_census(&mut app);
+            assert_eq!(app.footer_colors.revision_checks(), before + 1);
+            assert_eq!(
+                app.footer_colors.colors().account("codex1"),
+                crate::footer_colors::FooterTint::Footer(crate::footer_colors::FooterColor::Teal)
+            );
+            assert_eq!(changed, before == 0, "only the first palette changes");
+            assert!(!ticker.drain_census(&mut app));
+            assert_eq!(app.footer_colors.revision_checks(), before + 1);
+        }
     }
 
     /// An idle app with a settled grid costs the loop nothing, and `+`

@@ -28,6 +28,7 @@ use tui_pane::text_default;
 use self::age::age_label;
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
+use crate::census::Account;
 use crate::census::AccountColumn;
 use crate::census::Agent;
 use crate::census::AgentPlacement;
@@ -56,6 +57,7 @@ use crate::constants::SUMMARY_HEADERS;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
+use crate::footer_colors::FooterColors;
 use crate::theme::Role;
 
 /// Rows the summary draws for `machines`: each machine's heading and
@@ -125,14 +127,15 @@ fn root_rows<'a>(
         .filter(move |row| placement.is_root(machine.name, row.pid))
 }
 
-/// Shared column widths and the account labels those widths accommodate.
-struct SummaryColumns {
+/// Shared column widths, account visibility and the footer palette.
+struct SummaryColumns<'a> {
+    footer_colors:  &'a FooterColors,
     constraints:    Vec<Constraint>,
     account_column: AccountColumn,
 }
 
-/// Draw `machines` into `area`, with each agent's name in the hue of its
-/// cell among `cells` and ages measured to `now` in unix seconds.
+/// Draw the theme alone for existing summary layout fixtures.
+#[cfg(test)]
 pub(crate) fn draw(
     buffer: &mut Buffer,
     area: Rect,
@@ -142,9 +145,38 @@ pub(crate) fn draw(
     now: u64,
     account_column: AccountColumn,
 ) {
+    draw_with_footer_colors(
+        buffer,
+        area,
+        machines,
+        placement,
+        cells,
+        now,
+        account_column,
+        &FooterColors::default(),
+    );
+}
+
+/// Draw `machines` into `area`, with each agent's name in the hue of its
+/// cell among `cells` and ages measured to `now` in unix seconds.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared footer palette accompanies the existing summary draw inputs"
+)]
+pub(crate) fn draw_with_footer_colors(
+    buffer: &mut Buffer,
+    area: Rect,
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    cells: &[AgentEntry<'_>],
+    now: u64,
+    account_column: AccountColumn,
+    footer_colors: &FooterColors,
+) {
     // Every machine's table is laid out with the same constraints and
     // indent, so its columns line up with every other machine's.
     let columns = SummaryColumns {
+        footer_colors,
         constraints: fitted_constraints(machines, placement, now, account_column),
         account_column,
     };
@@ -168,7 +200,7 @@ fn draw_machine(
     machine: &Machine<'_>,
     placement: &AgentPlacement<'_>,
     cells: &[AgentEntry<'_>],
-    columns: &SummaryColumns,
+    columns: &SummaryColumns<'_>,
     now: u64,
 ) -> u16 {
     let rows: Vec<&AgentRow> = root_rows(*machine, placement).collect();
@@ -192,6 +224,7 @@ fn draw_machine(
                 agent_cell::name_style(cells, machine.name, row.pid),
                 now,
                 columns.account_column,
+                columns.footer_colors,
             )
         }),
         columns.constraints.iter().copied(),
@@ -245,8 +278,7 @@ pub(crate) fn separator() -> Span<'static> {
     Span::styled(HEADING_SEPARATOR, Style::default().fg(text_default()))
 }
 
-/// What a heading says about a machine that answered with `count`
-/// agents.
+/// What a heading says about a machine with `count` top-level agents.
 fn count_note(count: usize) -> String {
     match count {
         0 => NO_AGENTS_NOTE.to_string(),
@@ -261,27 +293,54 @@ fn agent_row(
     name_style: Style,
     now: u64,
     account_column: AccountColumn,
+    footer_colors: &FooterColors,
 ) -> Row<'static> {
     let text = Style::default().fg(text_default());
     Row::new([
-        Span::styled(row.pid.to_string(), text),
-        Span::styled(
-            row.agent_label(account_column),
-            agent_role(row.agent).style(),
-        ),
-        Span::styled(
+        Line::from(Span::styled(row.pid.to_string(), text)),
+        agent_label(row, account_column, footer_colors),
+        Line::from(Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
-        ),
-        Span::styled(status_text(row).to_string(), status_role(row).style()),
-        Span::styled(age_label(now.saturating_sub(row.started)), text),
-        Span::styled(desktop_text(row).to_string(), text),
-        Span::styled(row.directory.clone(), text),
+        )),
+        Line::from(Span::styled(
+            status_text(row).to_string(),
+            status_role(row).style(),
+        )),
+        Line::from(Span::styled(
+            age_label(now.saturating_sub(row.started)),
+            text,
+        )),
+        Line::from(Span::styled(desktop_text(row).to_string(), text)),
+        Line::from(Span::styled(row.directory.clone(), text)),
     ])
 }
 
+/// An account label with its tier kept in the existing program style.
+pub(crate) fn agent_label(
+    row: &AgentRow,
+    account_column: AccountColumn,
+    footer_colors: &FooterColors,
+) -> Line<'static> {
+    let program_style = agent_role(row.agent).style();
+    let label = row.agent_label(account_column);
+    match (account_column, &row.account) {
+        (AccountColumn::Shown, Account::Home(home)) => {
+            let (account, tier) = label.split_at(home.label().len());
+            Line::from(vec![
+                Span::styled(
+                    account.to_string(),
+                    footer_colors.account(home.label()).style(program_style),
+                ),
+                Span::styled(tier.to_string(), program_style),
+            ])
+        },
+        _ => Line::from(Span::styled(label, program_style)),
+    }
+}
+
 /// The role an agent's program is drawn in.
-pub(crate) const fn agent_role(agent: Agent) -> Role {
+const fn agent_role(agent: Agent) -> Role {
     match agent {
         Agent::Claude => Role::Claude,
         Agent::Codex | Agent::CodexThreadHost => Role::Codex,
@@ -624,7 +683,7 @@ mod tests {
         }];
         let drawn = assert_summary_roots(&machines, &[("natedev", 10), ("natedev", 40)]);
 
-        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn[0], " natedev · 2 top-level agents");
         assert_eq!(drawn.len(), 4);
         assert!(!drawn.iter().any(|line| line.contains("nested-showrunner")));
     }
@@ -651,7 +710,7 @@ mod tests {
         ];
         let drawn = assert_summary_roots(&machines, &[("natedev", 7), ("natedev", 9)]);
 
-        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn[0], " natedev · 2 top-level agents");
         assert_eq!(drawn[5], " mac · no agents");
         assert_eq!(drawn.len(), 6);
     }
@@ -709,17 +768,17 @@ mod tests {
             (
                 HierarchyEdges::default(),
                 vec![("natedev", 1), ("natedev", 2)],
-                "2 agents",
+                "2 top-level agents",
             ),
             (
                 links(&[("showrunner", "unit")]),
                 vec![("natedev", 1)],
-                "1 agent",
+                "1 top-level agent",
             ),
             (
                 HierarchyEdges::default(),
                 vec![("natedev", 1), ("natedev", 2)],
-                "2 agents",
+                "2 top-level agents",
             ),
         ] {
             census.apply(CensusUpdate::Local(
@@ -829,14 +888,14 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " natedev · 4 agents",
+                " natedev · 4 top-level agents",
                 " pid      agent   name                                  status  age     desktop        directory",
                 " 1579022  claude  boss of bosses                        idle    21h     boss           ~/rust/hana_catalyst/docs/hana",
                 " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  berth_fix      ~/rust/cargo-handler",
                 " 428044   claude  enh/handler                           busy    1h 36m  cargo handler  ~/rust/handler",
                 " 4039085  codex   --model gpt-5                         —       12m     —              ~/rust/handler",
                 "",
-                " mac · 1 agent",
+                " mac · 1 top-level agent",
                 " pid      agent   name                                  status  age     desktop        directory",
                 " 12055    claude  natemccoy-30                          idle    23h     —              ~",
                 "",
@@ -940,7 +999,7 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " natedev · 2 agents",
+                " natedev · 2 top-level agents",
                 " pid      agent       name           status  age  desktop  directory",
                 " 428044   claude      enh/handler    busy    1h   —        ~/rust/handler",
                 " 4039085  codex fast  --model gpt-5  —       12m  —        ~/rust/handler",
@@ -1044,3 +1103,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "footer_tests.rs"]
+mod footer_tests;

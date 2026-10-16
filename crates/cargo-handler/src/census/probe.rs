@@ -212,12 +212,16 @@ mod tests {
     use crate::census::Machine;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
+    use crate::census::ThreadState;
     use crate::census::Timer;
+    use crate::census::worker_dispatch::WorkerDispatch;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
             thread_id: crate::census::CodexThreadId::Unrecorded,
+            dispatch: WorkerDispatch::Plain,
+            thread_state: ThreadState::Idle,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
