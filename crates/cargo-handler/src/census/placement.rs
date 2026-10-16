@@ -3,13 +3,20 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+#[cfg(test)]
+use super::Account;
 use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
 use super::CodexThreadId;
 use super::HierarchyEdge;
+use super::HierarchyRole;
 use super::Machine;
 use super::SessionIdentity;
+#[cfg(test)]
+use super::account::AccountLabels;
+#[cfg(test)]
+use super::account::ConfigHome;
 #[cfg(test)]
 use super::classify;
 #[cfg(test)]
@@ -22,6 +29,7 @@ use super::tree;
 use super::tree::ThreadEntry;
 #[cfg(test)]
 use super::tree::TreeSources;
+use crate::constants::HEADING_SEPARATOR;
 
 /// A listed agent's identity across the shown machines.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -38,7 +46,12 @@ pub(crate) enum Placement<'a> {
     /// The agent titles its own tile and appears in the summary.
     Root,
     /// A live Claude session manages the agent.
-    Managed(RowIdentity<'a>),
+    Managed {
+        /// The live manager selected by forest normalization.
+        manager: RowIdentity<'a>,
+        /// The responsibility stated by that accepted relationship.
+        role:    HierarchyRole,
+    },
     /// Its listed launcher holds the agent in the absence of a manager.
     Launched(RowIdentity<'a>),
 }
@@ -48,7 +61,39 @@ impl<'a> Placement<'a> {
     pub(crate) fn is_child_of(self, parent: RowIdentity<'a>) -> bool {
         match self {
             Self::Root => false,
-            Self::Managed(identity) | Self::Launched(identity) => identity == parent,
+            Self::Managed { manager, .. } | Self::Launched(manager) => manager == parent,
+        }
+    }
+}
+
+/// Why a role is shown, or why the agent has no label.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RoleLabel {
+    /// No accepted management relationship identifies this agent's role.
+    #[default]
+    Unlabeled,
+    /// The agent's accepted incoming edge states its role.
+    Stated(HierarchyRole),
+    /// Accepted outgoing relationships identify the manager's responsibility.
+    Inferred(HierarchyRole),
+}
+
+impl RoleLabel {
+    /// The role column of an agent line, including an unlabeled session.
+    pub(crate) const fn column_text(self) -> &'static str {
+        match self {
+            Self::Unlabeled => "session",
+            Self::Stated(role) | Self::Inferred(role) => role.text(),
+        }
+    }
+
+    /// A suffix for the agent's name; `RoleLabel::Unlabeled` has none.
+    pub(crate) fn suffix(self) -> String {
+        match self {
+            Self::Unlabeled => String::new(),
+            Self::Stated(role) | Self::Inferred(role) => {
+                format!("{HEADING_SEPARATOR}{}", role.text())
+            },
         }
     }
 }
@@ -75,6 +120,8 @@ pub(crate) struct ManagedThread<'a> {
     pub(crate) child_index: usize,
     /// The live Claude session managing the thread.
     pub(crate) manager:     RowIdentity<'a>,
+    /// The responsibility stated by the accepted thread relationship.
+    pub(crate) role:        HierarchyRole,
 }
 
 /// The one forest shared by tile ordering and summary membership.
@@ -136,6 +183,21 @@ impl<'a> AgentPlacement<'a> {
             .collect();
         Self::resolve_managers(&mut rows, &edges, &managers);
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
+        let threads = Self::resolve_threads(machines, &managers, &edges);
+        Self {
+            rows,
+            threads,
+            rescued_roots,
+        }
+    }
+
+    /// Resolve `ManagedThread` entries, preferring listed owners over
+    /// transport-only `Agent::CodexThreadHost` rows.
+    fn resolve_threads(
+        machines: &[Machine<'a>],
+        managers: &HashMap<&str, RowIdentity<'a>>,
+        edges: &[&HierarchyEdge],
+    ) -> Vec<ManagedThread<'a>> {
         let mut thread_ids = HashSet::new();
         let mut owners: Vec<_> = machines
             .iter()
@@ -150,11 +212,9 @@ impl<'a> AgentPlacement<'a> {
             // the process tree has already attached the same thread to an agent.
             .collect();
         owners.sort_by_key(|(_, row)| row.agent == Agent::CodexThreadHost);
-        let threads = owners
+        owners
             .into_iter()
             .flat_map(|(machine, row)| {
-                let managers = &managers;
-                let edges = &edges;
                 row.children
                     .iter()
                     .enumerate()
@@ -168,8 +228,12 @@ impl<'a> AgentPlacement<'a> {
                         edges
                             .iter()
                             .filter(|edge| edge.member == *id)
-                            .find_map(|edge| managers.get(edge.manager.as_str()).copied())
-                            .map(|manager| ManagedThread {
+                            .find_map(|edge| {
+                                managers
+                                    .get(edge.manager.as_str())
+                                    .map(|manager| (*manager, edge.role))
+                            })
+                            .map(|(manager, role)| ManagedThread {
                                 owner: RowIdentity {
                                     machine,
                                     pid: row.pid,
@@ -177,6 +241,7 @@ impl<'a> AgentPlacement<'a> {
                                 owner_row: row,
                                 child_index,
                                 manager,
+                                role,
                             })
                     })
             })
@@ -186,12 +251,7 @@ impl<'a> AgentPlacement<'a> {
                     CodexThreadId::Unrecorded => false,
                 },
             )
-            .collect();
-        Self {
-            rows,
-            threads,
-            rescued_roots,
-        }
+            .collect()
     }
 
     /// Select every management link before inspecting the combined parent graph.
@@ -208,13 +268,17 @@ impl<'a> AgentPlacement<'a> {
             let SessionIdentity::Claude(member) = &row.row.session_id else {
                 continue;
             };
-            if let Some(manager) = edges
+            if let Some((manager, role)) = edges
                 .iter()
                 .filter(|edge| edge.member == *member)
-                .filter_map(|edge| managers.get(edge.manager.as_str()).copied())
-                .find(|manager| *manager != row.identity)
+                .filter_map(|edge| {
+                    managers
+                        .get(edge.manager.as_str())
+                        .map(|manager| (*manager, edge.role))
+                })
+                .find(|(manager, _)| *manager != row.identity)
             {
-                row.placement = Placement::Managed(manager);
+                row.placement = Placement::Managed { manager, role };
             }
         }
         // Check candidates in session-id order, independent of machine/row order.
@@ -232,7 +296,7 @@ impl<'a> AgentPlacement<'a> {
         loop {
             let mut dropped = false;
             for &(_, index) in &candidates {
-                let Placement::Managed(manager) = rows[index].placement else {
+                let Placement::Managed { manager, .. } = rows[index].placement else {
                     continue;
                 };
                 let mut ancestor = manager;
@@ -248,7 +312,12 @@ impl<'a> AgentPlacement<'a> {
                         .find(|row| row.identity == ancestor)
                         .map(|row| row.placement)
                     {
-                        Some(Placement::Managed(parent) | Placement::Launched(parent)) => {
+                        Some(
+                            Placement::Managed {
+                                manager: parent, ..
+                            }
+                            | Placement::Launched(parent),
+                        ) => {
                             ancestor = parent;
                         },
                         Some(Placement::Root) | None => break,
@@ -313,6 +382,39 @@ impl<'a> AgentPlacement<'a> {
         roots
     }
 
+    /// The accepted incoming role wins over inference from managed members.
+    pub(crate) fn role_label(&self, identity: RowIdentity<'a>) -> RoleLabel {
+        if let Some(PlacedAgent {
+            placement: Placement::Managed { role, .. },
+            ..
+        }) = self.rows.iter().find(|row| row.identity == identity)
+        {
+            return RoleLabel::Stated(*role);
+        }
+        let roles = self
+            .rows
+            .iter()
+            .filter_map(|row| match row.placement {
+                Placement::Managed { manager, role } if manager == identity => Some(role),
+                Placement::Root | Placement::Managed { .. } | Placement::Launched(_) => None,
+            })
+            .chain(
+                self.threads
+                    .iter()
+                    .filter(|thread| thread.manager == identity)
+                    .map(|thread| thread.role),
+            );
+        roles.fold(RoleLabel::Unlabeled, |label, role| {
+            if matches!(role, HierarchyRole::Unit | HierarchyRole::Showrunner) {
+                RoleLabel::Inferred(HierarchyRole::Showrunner)
+            } else if label == RoleLabel::Unlabeled {
+                RoleLabel::Inferred(HierarchyRole::Unit)
+            } else {
+                label
+            }
+        })
+    }
+
     /// Whether a listed row titles a tile and belongs in the summary.
     pub(crate) fn is_root(&self, machine: &str, pid: u32) -> bool {
         self.rows.iter().any(|row| {
@@ -347,6 +449,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         started: u64::from(pid),
         arguments: arguments.iter().map(|arg| (*arg).to_string()).collect(),
         directory: None,
+        config_home: ConfigHome::Unread,
         claude_pid: None,
     };
     let manager_processes = [process(10, 1, "claude", &["claude"])];
@@ -358,7 +461,13 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         status:     Some("busy".to_string()),
         entrypoint: None,
     }];
-    let manager_rows = classify::agent_rows(&manager_processes, &sessions, &[], None);
+    let manager_rows = classify::agent_rows(
+        &manager_processes,
+        &sessions,
+        &[],
+        None,
+        &AccountLabels::default(),
+    );
     let processes = [
         process(20, 1, "python3", &["python3", "mesh_daemon.py"]),
         process(
@@ -368,7 +477,8 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
             &["codex", "app-server", "--listen", "stdio://"],
         ),
     ];
-    let mut worker_rows = classify::agent_rows(&processes, &[], &[], None);
+    let mut worker_rows =
+        classify::agent_rows(&processes, &[], &[], None, &AccountLabels::default());
     let sources = TreeSources {
         threads: HashMap::from([(
             30,
@@ -377,6 +487,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
                 name:         "mesh worker".to_string(),
                 started:      40,
                 service_tier: super::ServiceTier::Fast,
+                account:      Account::Unrecorded,
             }],
         )]),
         ..TreeSources::default()
@@ -398,6 +509,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::census::Account;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
@@ -409,6 +521,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Claude(id.to_string()),
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: id.to_string(),
             status: None,
             started: u64::from(pid),
@@ -420,6 +533,154 @@ mod tests {
             launched_by: None,
             children: Vec::new(),
         }
+    }
+
+    /// Accepted incoming roles beat inference, while launch and rejected edges label nothing.
+    #[test]
+    fn labels_use_only_accepted_links_and_explicit_roles_beat_inference() {
+        let state = MachineState::Answered(
+            vec![
+                agent(1, "production"),
+                agent(2, "unit"),
+                agent(3, "worker"),
+                AgentRow {
+                    launched_by: Some(1),
+                    ..agent(4, "launch-only")
+                },
+                agent(5, "unresolved"),
+                agent(6, "self-linked"),
+            ],
+            HierarchyEdges(vec![
+                edge("production", "unit", HierarchyRole::Impl),
+                edge("unit", "worker", HierarchyRole::Showrunner),
+                edge("absent", "unresolved", HierarchyRole::Review),
+                edge("self-linked", "self-linked", HierarchyRole::Fix),
+            ]),
+        );
+        let placement = AgentPlacement::from_machines(&[Machine {
+            name:  "local",
+            state: &state,
+        }]);
+        let labels: Vec<_> = placement
+            .rows
+            .iter()
+            .map(|row| (row.row.name.as_str(), placement.role_label(row.identity)))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("production", RoleLabel::Inferred(HierarchyRole::Unit)),
+                ("unit", RoleLabel::Stated(HierarchyRole::Impl)),
+                ("worker", RoleLabel::Stated(HierarchyRole::Showrunner)),
+                ("launch-only", RoleLabel::Unlabeled),
+                ("unresolved", RoleLabel::Unlabeled),
+                ("self-linked", RoleLabel::Unlabeled),
+            ]
+        );
+    }
+
+    fn edge(manager: &str, member: &str, role: HierarchyRole) -> HierarchyEdge {
+        HierarchyEdge {
+            manager: manager.to_string(),
+            member: member.to_string(),
+            role,
+        }
+    }
+
+    /// A rejected alternate manager contributes neither its stated role nor an inferred label.
+    #[test]
+    fn conflicting_roles_label_only_the_selected_manager_and_member() {
+        let state = MachineState::Answered(
+            vec![agent(1, "a"), agent(2, "b"), agent(3, "worker")],
+            HierarchyEdges(vec![
+                edge("missing", "worker", HierarchyRole::Fix),
+                edge("b", "worker", HierarchyRole::Unit),
+                edge("a", "worker", HierarchyRole::Test),
+            ]),
+        );
+        let placement = AgentPlacement::from_machines(&[Machine {
+            name:  "local",
+            state: &state,
+        }]);
+        assert_eq!(
+            placement
+                .rows
+                .iter()
+                .map(|row| placement.role_label(row.identity))
+                .collect::<Vec<_>>(),
+            [
+                RoleLabel::Inferred(HierarchyRole::Unit),
+                RoleLabel::Unlabeled,
+                RoleLabel::Stated(HierarchyRole::Test),
+            ]
+        );
+    }
+
+    /// Both agent and thread links infer manager roles; removing answers clears those labels.
+    #[test]
+    fn labels_follow_current_roles_and_relationship_liveness() {
+        let (manager, worker) = mesh_worker_fixture();
+        for (edges, expected_manager, expected_thread) in [
+            (
+                worker.edges().to_vec(),
+                RoleLabel::Inferred(HierarchyRole::Unit),
+                vec![HierarchyRole::Impl],
+            ),
+            (
+                vec![edge("unit", "mesh-worker", HierarchyRole::Unit)],
+                RoleLabel::Inferred(HierarchyRole::Showrunner),
+                vec![HierarchyRole::Unit],
+            ),
+            (
+                vec![edge("missing", "mesh-worker", HierarchyRole::Test)],
+                RoleLabel::Unlabeled,
+                vec![],
+            ),
+            (vec![], RoleLabel::Unlabeled, vec![]),
+        ] {
+            let worker = MachineState::Answered(worker.rows().to_vec(), HierarchyEdges(edges));
+            let placement = AgentPlacement::from_machines(&[
+                Machine {
+                    name:  "natedev",
+                    state: &manager,
+                },
+                Machine {
+                    name:  "mac",
+                    state: &worker,
+                },
+            ]);
+            assert_eq!(
+                placement.role_label(placement.rows[0].identity),
+                expected_manager
+            );
+            assert_eq!(
+                placement
+                    .threads
+                    .iter()
+                    .map(|thread| thread.role)
+                    .collect::<Vec<_>>(),
+                expected_thread
+            );
+        }
+        let state = MachineState::Answered(
+            vec![agent(1, "a"), agent(2, "b")],
+            HierarchyEdges(vec![
+                edge("b", "a", HierarchyRole::Review),
+                edge("a", "b", HierarchyRole::Unit),
+            ]),
+        );
+        let placement = AgentPlacement::from_machines(&[Machine {
+            name:  "local",
+            state: &state,
+        }]);
+        assert_eq!(
+            placement.role_label(placement.rows[0].identity),
+            RoleLabel::Inferred(HierarchyRole::Showrunner)
+        );
+        assert_eq!(
+            placement.role_label(placement.rows[1].identity),
+            RoleLabel::Stated(HierarchyRole::Unit)
+        );
     }
 
     /// Final management links replace transient launch links in every input order.
@@ -468,18 +729,24 @@ mod tests {
                 .collect();
             assert_eq!(
                 links[&1],
-                Placement::Managed(RowIdentity {
-                    machine: "local",
-                    pid:     2,
-                }),
+                Placement::Managed {
+                    manager: RowIdentity {
+                        machine: "local",
+                        pid:     2,
+                    },
+                    role:    HierarchyRole::Impl,
+                },
                 "{order:?}"
             );
             assert_eq!(
                 links[&2],
-                Placement::Managed(RowIdentity {
-                    machine: "local",
-                    pid:     3,
-                }),
+                Placement::Managed {
+                    manager: RowIdentity {
+                        machine: "local",
+                        pid:     3,
+                    },
+                    role:    HierarchyRole::Unit,
+                },
                 "{order:?}"
             );
             assert_eq!(
@@ -547,10 +814,13 @@ mod tests {
             );
             assert_eq!(
                 links[&2],
-                Placement::Managed(RowIdentity {
-                    machine: "local",
-                    pid:     1,
-                }),
+                Placement::Managed {
+                    manager: RowIdentity {
+                        machine: "local",
+                        pid:     1,
+                    },
+                    role:    HierarchyRole::Impl,
+                },
                 "{order:?}"
             );
             assert_eq!(

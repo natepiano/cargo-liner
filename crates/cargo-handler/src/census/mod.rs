@@ -14,6 +14,7 @@
 //! probes on threads of their own and hands each answer to the event
 //! loop as a [`CensusUpdate`].
 
+pub(crate) mod account;
 mod branch;
 pub(crate) mod classify;
 pub(crate) mod codex;
@@ -37,10 +38,14 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+pub(crate) use account::Account;
+pub(crate) use account::AccountColumn;
+use hierarchy::HierarchyAnswer;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
 pub(crate) use placement::Placement;
+pub(crate) use placement::RoleLabel;
 pub(crate) use placement::RowIdentity;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
@@ -52,15 +57,9 @@ use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_FAST_TIERS;
 use crate::constants::COMMAND_RUNS;
-use crate::constants::DETACHED_VIA;
-use crate::constants::DIRECT_VIA;
 use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
-use crate::constants::SESSION_VIA;
-use crate::constants::SHELL_VIA;
 use crate::constants::STANDARD_TIER_LABEL;
-use crate::constants::SUBAGENT_VIA;
-use crate::constants::THREAD_VIA;
 use crate::constants::TIMER_RUNS;
 
 /// The program a census row represents, including transport-only worker hosts.
@@ -116,11 +115,12 @@ impl ServiceTier {
     /// `program` marked with this tier, as an `agent` or `runs` cell shows
     /// it: `codex fast`, `codex --`, or `program` alone when
     /// [`Self::Unrecorded`].
-    fn mark(self, program: &'static str) -> Cow<'static, str> {
+    fn mark(self, program: impl Into<Cow<'static, str>>) -> Cow<'static, str> {
+        let program = program.into();
         match self {
             Self::Fast => Cow::Owned(format!("{program} {FAST_TIER_LABEL}")),
             Self::Standard => Cow::Owned(format!("{program} {STANDARD_TIER_LABEL}")),
-            Self::Unrecorded => Cow::Borrowed(program),
+            Self::Unrecorded => program,
         }
     }
 }
@@ -175,6 +175,20 @@ pub(crate) enum HierarchyRole {
     Review,
     /// Repairs a defect.
     Fix,
+}
+
+impl HierarchyRole {
+    /// The role value the hierarchy command reports, shown in titles and member tree lines.
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Showrunner => "showrunner",
+            Self::Unit => "unit",
+            Self::Impl => "impl",
+            Self::Test => "test",
+            Self::Review => "review",
+            Self::Fix => "fix",
+        }
+    }
 }
 
 /// A manager and its member, identified across machines by session id.
@@ -265,6 +279,8 @@ pub(crate) struct AgentRow {
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.
     pub(crate) service_tier:    ServiceTier,
+    /// The home the agent's process runs under. Missing from a probe printed before it existed.
+    pub(crate) account:         Account,
     /// The session's name, or what stands in for one.
     pub(crate) name:            String,
     /// What the session says it is doing: `idle`, `busy` or `shell`
@@ -309,13 +325,17 @@ impl AgentRow {
     pub(crate) const fn is_visible(&self) -> bool { !matches!(self.agent, Agent::CodexThreadHost) }
 
     /// The `agent` cell: the program, marked with its tier.
-    pub(crate) fn agent_label(&self) -> Cow<'static, str> {
-        self.service_tier.mark(self.agent.label())
+    pub(crate) fn agent_label(&self, account_column: AccountColumn) -> Cow<'static, str> {
+        match (account_column, &self.account) {
+            (AccountColumn::Shown, Account::Home(home)) => {
+                self.service_tier.mark(home.label().to_owned())
+            },
+            _ => self.service_tier.mark(self.agent.label()),
+        }
     }
 }
 
-/// What one row of an agent's cell is: how the agent holds it, its
-/// `via`, and what it runs.
+/// How an agent holds a child, including the work kinds shown in tree role columns.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
@@ -339,20 +359,8 @@ pub(crate) enum ChildKind {
 }
 
 impl ChildKind {
-    /// The row's `via` cell: how the agent holds it.
-    pub(crate) const fn via(self) -> &'static str {
-        match self {
-            Self::Shell | Self::UnderShell(_) => SHELL_VIA,
-            Self::Subagent => SUBAGENT_VIA,
-            Self::Session(_) => SESSION_VIA,
-            Self::Direct(_) => DIRECT_VIA,
-            Self::Detached(_) => DETACHED_VIA,
-            Self::Thread => THREAD_VIA,
-        }
-    }
-
     /// The agent the row runs: none for a shell, which runs a command.
-    pub(crate) const fn agent(self) -> Option<Agent> {
+    const fn agent(self) -> Option<Agent> {
         match self {
             Self::Shell => None,
             Self::Subagent => Some(Agent::Claude),
@@ -402,6 +410,10 @@ pub(crate) struct ChildRow {
     /// probe printed before it existed.
     #[serde(default)]
     pub(crate) service_tier: ServiceTier,
+    /// The app server's home, for a Codex thread; unrecorded for any other row.
+    /// Missing from a probe printed before it existed.
+    #[serde(default, skip_serializing_if = "Account::is_unrecorded")]
+    pub(crate) account:      Account,
     /// Its process; none for a subagent or a thread, which have none of
     /// their own.
     pub(crate) pid:          Option<u32>,
@@ -455,6 +467,38 @@ impl MachineState {
             Self::Answered(_, edges) => &edges.0,
             Self::Scanning | Self::Failed(_) => &[],
         }
+    }
+}
+
+/// Last successful links for each remote, independent of its fresh row answers.
+#[derive(Default)]
+struct RemoteHierarchyAnswers {
+    /// Cleared when a host leaves the configured set.
+    edges: HashMap<String, HierarchyEdges>,
+}
+
+impl RemoteHierarchyAnswers {
+    /// Apply a probe answer, retaining successful hierarchy through discovery failures.
+    fn apply(
+        &mut self,
+        host: &str,
+        answer: Result<(Vec<AgentRow>, HierarchyAnswer), String>,
+    ) -> MachineState {
+        match answer {
+            Ok((rows, HierarchyAnswer::Answered(edges))) => {
+                self.edges.insert(host.to_string(), edges.clone());
+                MachineState::Answered(rows, edges)
+            },
+            Ok((rows, HierarchyAnswer::Failed)) => {
+                MachineState::Answered(rows, self.edges.get(host).cloned().unwrap_or_default())
+            },
+            Err(reason) => MachineState::Failed(reason),
+        }
+    }
+
+    /// A removed host must not recover links from its previous configuration.
+    fn retain(&mut self, configured: &[String]) {
+        self.edges.retain(|host, _| configured.contains(host));
     }
 }
 
@@ -602,6 +646,8 @@ pub(crate) fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use hierarchy::HierarchyAnswer;
+
     use super::*;
 
     /// A claude row started at `started`.
@@ -610,6 +656,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: "enh/handler".to_string(),
             status: Some("busy".to_string()),
             started,
@@ -621,6 +668,65 @@ mod tests {
             launched_by: None,
             children: Vec::new(),
         }
+    }
+
+    /// Remote hierarchy failures retain that host's links while its row details keep changing.
+    #[test]
+    fn failed_remote_hierarchy_preserves_links_and_updates_rows_until_answered_empty() {
+        let mut answers = RemoteHierarchyAnswers::default();
+        let mut census = Census::new("local".to_string());
+        let edges = HierarchyEdges(vec![HierarchyEdge {
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
+        }]);
+        for (host, started, hierarchy, expected) in [
+            (
+                "remote",
+                1,
+                HierarchyAnswer::Answered(edges.clone()),
+                edges.clone(),
+            ),
+            ("remote", 2, HierarchyAnswer::Failed, edges.clone()),
+            (
+                "other",
+                3,
+                HierarchyAnswer::Failed,
+                HierarchyEdges::default(),
+            ),
+            (
+                "remote",
+                4,
+                HierarchyAnswer::Answered(HierarchyEdges::default()),
+                HierarchyEdges::default(),
+            ),
+            (
+                "remote",
+                5,
+                HierarchyAnswer::Failed,
+                HierarchyEdges::default(),
+            ),
+        ] {
+            let state = answers.apply(host, Ok((vec![row(started)], hierarchy)));
+            assert!(census.apply(CensusUpdate::Remote {
+                host: host.to_string(),
+                state
+            }));
+            let configured = vec![host.to_string()];
+            assert_eq!(
+                census.machines(&configured)[1].state,
+                &MachineState::Answered(vec![row(started)], expected)
+            );
+        }
+        answers.apply("removed", Ok((vec![], HierarchyAnswer::Answered(edges))));
+        answers.retain(&["remote".to_string()]);
+        assert_eq!(
+            answers.apply(
+                "removed",
+                Ok((vec![row(6)], hierarchy::HierarchyAnswer::Failed))
+            ),
+            MachineState::Answered(vec![row(6)], HierarchyEdges::default())
+        );
     }
 
     /// An update that repeats what the census already holds changes

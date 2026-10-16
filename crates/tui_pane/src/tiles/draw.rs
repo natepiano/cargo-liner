@@ -235,12 +235,13 @@ pub trait TileCells<Id> {
     /// while the contents are hidden. None unless the app names its
     /// groups there.
     ///
-    /// The span's style is patched over the chrome's title style, so a
-    /// title that sets only a colour keeps the weight focus gives it,
-    /// and an unstyled one is drawn as the summary's title is.
+    /// The line's and each span's styles are patched over the chrome's
+    /// title style, so a title that sets only a colour keeps the weight
+    /// focus gives it, and an unstyled one is drawn as the summary's
+    /// title is.
     ///
     /// [`summary_title`]: Self::summary_title
-    fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
+    fn group_title(&self, _id: &Id) -> Option<Line<'static>> { None }
 }
 
 /// Draw `grid` into `area`, its columns laid out by `growth`, with
@@ -967,8 +968,8 @@ mod tests {
                 .map_or(CellReadoutFade::Unfaded, |(_, fade)| *fade)
         }
 
-        fn group_title(&self, id: &u32) -> Option<Span<'static>> {
-            Some(Span::raw(group_title(*id)))
+        fn group_title(&self, id: &u32) -> Option<Line<'static>> {
+            Some(Line::raw(group_title(*id)))
         }
 
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
@@ -3934,6 +3935,90 @@ mod tests {
         grid.settle_for_test();
         grid.sync(&title_demands(after), growth);
         grid
+    }
+
+    struct SegmentedTitleCells;
+
+    impl TileCells<u32> for SegmentedTitleCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { title_demands(&[7]) }
+
+        fn group_title(&self, _: &u32) -> Option<Line<'static>> {
+            Some(Line::from(vec![
+                Span::styled("worker", Style::default().fg(Color::Blue)),
+                Span::styled(" · impl", Style::default().fg(Color::Yellow)),
+            ]))
+        }
+
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    /// An entering tile may extend below the terminal while its title is already visible.
+    #[test]
+    fn an_entering_tile_keeps_its_title_on_the_last_terminal_row() {
+        let area = Rect::new(0, 0, 18, 5);
+        let drawing = TileDrawing {
+            pieces:       vec![tile_piece(
+                TileContent::Group(7),
+                PaneFrame::shifted(Rect::new(0, 0, 18, 4), 4, Rect::new(0, 4, 18, 6)),
+                PieceName::Shown,
+            )],
+            column_bands: vec![area],
+        };
+        let mut buffer = Buffer::empty(area);
+        draw_placements(
+            &mut buffer,
+            area,
+            &drawing,
+            &title_demands(&[7]),
+            &[(TileContent::Group(7), 16)],
+            TileGridContents::Shown,
+            &SegmentedTitleCells,
+        );
+
+        assert!(buffer_line(&buffer, 4).contains("worker · impl"));
+        assert_eq!(buffer[(1, 4)].fg, Color::Blue);
+        assert_eq!(buffer[(8, 4)].fg, Color::Yellow);
+        assert_eq!(buffer_text(&buffer).matches("worker · impl").count(), 1);
+    }
+
+    #[test]
+    fn moving_tiles_keep_title_segments_together_and_inside_their_width() {
+        for (width, title) in [(18, "worker · impl"), (14, "worker · im…")] {
+            let area = Rect::new(0, 0, width, 8);
+            for y in [0_u16, 1, 2] {
+                let shift = i32::from(y);
+                let drawing = TileDrawing {
+                    pieces:       vec![tile_piece(
+                        TileContent::Group(7),
+                        PaneFrame::shifted(
+                            Rect::new(0, 0, width, 4),
+                            shift,
+                            Rect::new(0, y, width, 4),
+                        ),
+                        PieceName::Shown,
+                    )],
+                    column_bands: vec![area],
+                };
+                let mut buffer = Buffer::empty(area);
+                draw_placements(
+                    &mut buffer,
+                    area,
+                    &drawing,
+                    &title_demands(&[7]),
+                    &[(TileContent::Group(7), width - 2)],
+                    TileGridContents::Shown,
+                    &SegmentedTitleCells,
+                );
+
+                assert!(buffer_line(&buffer, y).contains(title));
+                assert_eq!(buffer_text(&buffer).matches(title).count(), 1);
+                assert_eq!(buffer[(1, y)].fg, Color::Blue);
+                assert_eq!(buffer[(8, y)].fg, Color::Yellow);
+                assert!(is_lattice_glyph(buffer[(width - 1, y)].symbol()));
+            }
+        }
     }
 
     fn collapsed_title_motion(

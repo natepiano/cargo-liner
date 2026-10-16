@@ -1,28 +1,10 @@
-//! One cell for each top-level agent and the sessions it opened in
-//! tmux: a header naming the agent, its branch and directory, the agent
-//! that opened it where one did, the tree of its sessions, then what
-//! they all run, each child indented under the one that started it and
-//! each session's own children nested under the row that names it.
-//!
-//! [`cell_order_placed`] lays the cells out across the machines, and
-//! [`height`] and [`draw`] fill one in.
-//!
-//! A cell draws its full view only where it lies flat at the cell's
-//! width -- the header on its one line, the branch and directory on
-//! theirs, a line to each session in the tree and a table holding every
-//! name whole, as [`FlatColumns::fitted`] finds -- and the grid gives
-//! the cell the rows that view takes. Otherwise the cell draws its
-//! compressed view: one line to each session in the tree -- its name
-//! and status -- and to each child in the table -- what it runs and its
-//! name -- cut where it would not fit, and for a top-level agent, which
-//! the summary lists, no header and no branch and directory. [`height`]
-//! asks the grid for the rows of the view the cell draws at its width.
-//! Every agent's name is drawn in its own hue wherever it shows.
+//! Agent tiles draw one tree of members, managed threads and running work.
+//! A label-colored header names each column. Full views keep the process
+//! heading, workplace and every tree value whole; compressed views reserve
+//! the fixed columns and truncate names. Heights count exactly these rows.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::iter;
-use std::ops::Deref;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -36,28 +18,21 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
-use tui_pane::ColumnSpec;
-use tui_pane::ColumnWidths;
 use tui_pane::SECTION_HEADER_INDENT;
-use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
+use crate::census::Account;
+use crate::census::AccountColumn;
+use crate::census::Agent;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
-use crate::census::CodexThreadId;
+use crate::census::HierarchyRole;
+use crate::census::RoleLabel;
 use crate::census::RowIdentity;
 use crate::census::Timer;
-use crate::constants::AGENT_HEADER_GAP_HEIGHT;
-use crate::constants::CHILD_AGE_COLUMN;
-use crate::constants::CHILD_HEADERS;
-use crate::constants::CHILD_NAME_COLUMN;
-use crate::constants::CHILD_PID_COLUMN;
-use crate::constants::CHILD_RUNS_COLUMN;
-use crate::constants::CHILD_VIA_COLUMN;
-use crate::constants::CHILD_VIA_INDENT;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::LAUNCHED_BY_LABEL;
 use crate::constants::MISSING_VALUE;
@@ -68,157 +43,401 @@ use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TIMER_PIE;
 use crate::constants::TIMER_PIE_FULL;
+use crate::constants::TREE_ACCOUNT_HEADER;
+use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH;
-use crate::constants::TREE_COLUMNS;
+use crate::constants::TREE_BRANCH_HEADER;
+use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_LAST_BRANCH;
 use crate::constants::TREE_RAIL;
+use crate::constants::TREE_ROLE_HEADER;
+use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_SPACE;
+use crate::constants::TREE_STATUS_HEADER;
 use crate::summary;
 use crate::summary::age;
 use crate::theme::RainbowHue;
 use crate::theme::Role;
 use crate::tiles::AgentCell;
 
-/// One cell, as the grid lays it out and draws it: an agent, and every
-/// session it opened in tmux.
+/// A top-level agent and the tree of members and work drawn in its tile.
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEntry<'a> {
-    /// The cell's id in the grid.
-    pub(crate) id:  AgentCell,
-    /// The agent the cell is titled with.
-    pub(crate) row: &'a AgentRow,
-    /// The name of the agent that opened this one in tmux, where that
-    /// agent is listed on the same machine.
-    launcher:       Option<&'a str>,
-    /// The heading of the machine the agent runs on.
-    machine:        &'a str,
-    /// The hue the cell's title and the agent's name in the summary are
-    /// drawn in.
-    pub(crate) hue: RainbowHue,
-    /// The sessions the agent opened, each followed by the sessions it
-    /// opened in turn: the tree the cell draws, top to bottom.
-    sessions:       Vec<SessionEntry<'a>>,
-    /// Running work after session markers and thread ownership are reconciled.
-    children:       Vec<CellChild<'a>>,
+    /// Stable grid identity of the root process.
+    pub(crate) id:         AgentCell,
+    /// The agent named by the tile title.
+    pub(crate) row:        &'a AgentRow,
+    /// The listed launcher, when its name is known.
+    launcher:              Option<&'a str>,
+    /// The root's machine heading.
+    machine:               &'a str,
+    /// The root's name color.
+    pub(crate) hue:        RainbowHue,
+    /// The accepted or inferred root role.
+    pub(crate) role_label: RoleLabel,
+    /// Members and work, in the depth-first order the tile draws.
+    lines:                 Vec<TreeLine<'a>>,
 }
 
 impl AgentEntry<'_> {
-    /// The hue of the agent with process `pid` in this cell: the cell's
-    /// own agent, or one of its sessions.
+    /// The name color of a listed agent in this tile.
     fn hue_of(&self, machine: &str, pid: u32) -> Option<RainbowHue> {
         if self.machine == machine && self.row.pid == pid {
             return Some(self.hue);
         }
-        self.sessions
+        self.lines
             .iter()
-            .find(|session| {
-                session.machine == machine
-                    && session.row.pid == pid
-                    && matches!(session.subject, SessionSubject::Agent)
+            .find(|line| {
+                line.machine == machine
+                    && line.row.pid == pid
+                    && matches!(line.subject, LineSubject::Agent(_))
             })
-            .map(|session| session.hue)
+            .map(|line| line.hue)
     }
 }
 
-/// One session in a cell's tree.
-#[derive(Clone, Debug)]
-struct SessionEntry<'a> {
-    /// The machine this agent or thread runs on.
-    machine:  &'a str,
-    /// Where the member runs relative to the cell's heading.
-    location: SessionLocation,
-    /// A session row or one Codex thread held by its app server.
-    subject:  SessionSubject<'a>,
-    /// The session's row, or the owning row for a Codex thread.
-    row:      &'a AgentRow,
-    /// The hue its name is drawn in, in the tree and in the table.
-    hue:      RainbowHue,
-    /// For each level between the cell's agent and the session's
-    /// launcher, top down, whether the tree's line carries on down past
-    /// the session there: whether that level's session has a later one
-    /// beside it.
-    rails:    Vec<bool>,
-    /// Whether the session is the last its launcher opened.
-    last:     bool,
-}
-
-/// Where a tree member runs relative to the cell's root.
+/// Where a line runs relative to the tile's machine heading.
 #[derive(Clone, Copy, Debug)]
 enum SessionLocation {
-    /// The cell heading already identifies the member's machine.
+    /// The heading already names the machine.
     SameMachine,
-    /// The tree line must name the member's machine.
+    /// The line includes its machine after the name.
     AnotherMachine,
 }
 
-/// What a line of the placement tree represents.
+/// The subject whose values a tree line draws.
 #[derive(Clone, Copy, Debug)]
-enum SessionSubject<'a> {
-    /// A listed agent with its own running work.
-    Agent,
-    /// One thread, displayed independently of its app server's other threads.
-    Thread(&'a ChildRow),
+enum LineSubject<'a> {
+    /// A listed agent opened or managed by a member of this tile.
+    Agent(RoleLabel),
+    /// A Codex thread held by a manager, with its stated responsibility.
+    ManagedThread(&'a ChildRow, HierarchyRole),
+    /// Work not represented by another member line.
+    Work(Work<'a>),
 }
 
-impl SessionEntry<'_> {
-    /// The visible name, with a machine for a member on another host.
+/// One member or work item, with the rails leading to it in the tree.
+#[derive(Clone, Debug)]
+struct TreeLine<'a> {
+    machine:  &'a str,
+    location: SessionLocation,
+    row:      &'a AgentRow,
+    hue:      RainbowHue,
+    rails:    Vec<Rail>,
+    branch:   Branch,
+    subject:  LineSubject<'a>,
+}
+
+/// Whether an ancestor's vertical rail continues past this line.
+#[derive(Clone, Copy, Debug)]
+enum Rail {
+    Continues,
+    Ended,
+}
+
+impl Rail {
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Continues => TREE_RAIL,
+            Self::Ended => TREE_SPACE,
+        }
+    }
+}
+
+/// Whether this child has a later sibling.
+#[derive(Clone, Copy, Debug)]
+enum Branch {
+    Middle,
+    Last,
+}
+
+impl Branch {
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Middle => TREE_BRANCH,
+            Self::Last => TREE_LAST_BRANCH,
+        }
+    }
+
+    const fn rail(self) -> Rail {
+        match self {
+            Self::Middle => Rail::Continues,
+            Self::Last => Rail::Ended,
+        }
+    }
+}
+
+/// The three kinds of work retained as tree lines.
+#[derive(Clone, Copy, Debug)]
+enum WorkKind {
+    Shell,
+    Subagent,
+    Thread,
+}
+
+impl WorkKind {
+    const fn role_text(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Subagent => "subagent",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+/// A work row paired with its classified role in the tree.
+#[derive(Clone, Copy, Debug)]
+struct Work<'a> {
+    child: &'a ChildRow,
+    kind:  WorkKind,
+}
+
+impl<'a> Work<'a> {
+    const fn account(self) -> &'a Account {
+        match self.kind {
+            WorkKind::Thread => &self.child.account,
+            WorkKind::Shell | WorkKind::Subagent => &Account::Unrecorded,
+        }
+    }
+
+    fn status(self, now: u64) -> String {
+        match self.kind {
+            WorkKind::Shell => self.child.timer.map_or_else(
+                || self.child.runs_label().into_owned(),
+                |timer| timer_label(timer, now),
+            ),
+            WorkKind::Subagent | WorkKind::Thread => self.child.runs_label().into_owned(),
+        }
+    }
+}
+
+/// How a process child participates in the visible work tree.
+enum ChildLine {
+    Work(WorkKind),
+    Carrier,
+    Session,
+}
+
+impl From<ChildKind> for ChildLine {
+    fn from(kind: ChildKind) -> Self {
+        match kind {
+            ChildKind::Shell => Self::Work(WorkKind::Shell),
+            ChildKind::Subagent => Self::Work(WorkKind::Subagent),
+            ChildKind::Thread => Self::Work(WorkKind::Thread),
+            ChildKind::Direct(_) | ChildKind::UnderShell(_) | ChildKind::Detached(_) => {
+                Self::Carrier
+            },
+            ChildKind::Session(_) => Self::Session,
+        }
+    }
+}
+
+/// A retained work item and the retained descendants nearest to it.
+struct WorkBranch<'a> {
+    work:     Work<'a>,
+    branches: Vec<Self>,
+}
+
+/// A column in the single tree table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TreeColumn {
+    Session,
+    Role,
+    Status,
+    Account,
+    Branch,
+    Directory,
+    Age,
+}
+
+impl TreeColumn {
+    /// The label above this column.
+    const fn header(self) -> &'static str {
+        match self {
+            Self::Session => TREE_SESSION_HEADER,
+            Self::Role => TREE_ROLE_HEADER,
+            Self::Status => TREE_STATUS_HEADER,
+            Self::Account => TREE_ACCOUNT_HEADER,
+            Self::Branch => TREE_BRANCH_HEADER,
+            Self::Directory => TREE_DIRECTORY_HEADER,
+            Self::Age => TREE_AGE_HEADER,
+        }
+    }
+
+    /// The header text, including the space over a session branch.
+    fn header_text(self) -> String {
+        match self {
+            Self::Session => format!(
+                "{}{}",
+                " ".repeat(usize::from(summary::cell_width(TREE_BRANCH))),
+                self.header()
+            ),
+            _ => self.header().to_string(),
+        }
+    }
+
+    /// The minimum column width required by its header.
+    fn header_width(self) -> u16 { summary::cell_width(&self.header_text()) }
+}
+
+/// The layout whose columns are selected for an account decision.
+enum TreeLayout {
+    Full,
+    Compressed,
+}
+
+impl TreeLayout {
+    const fn columns(self, account_column: AccountColumn) -> &'static [TreeColumn] {
+        match (self, account_column) {
+            (Self::Full, AccountColumn::Shown) => FULL_ACCOUNTS,
+            (Self::Full, AccountColumn::Hidden) => FULL,
+            (Self::Compressed, AccountColumn::Shown) => COMPRESSED_ACCOUNTS,
+            (Self::Compressed, AccountColumn::Hidden) => COMPRESSED,
+        }
+    }
+}
+
+impl TreeLine<'_> {
+    /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
         let name = match self.subject {
-            SessionSubject::Agent => &self.row.name,
-            SessionSubject::Thread(thread) => &thread.name,
+            LineSubject::Agent(_) => &self.row.name,
+            LineSubject::ManagedThread(child, _) => &child.name,
+            LineSubject::Work(work) => &work.child.name,
         };
-        if matches!(self.location, SessionLocation::AnotherMachine) {
-            format!("{name}{HEADING_SEPARATOR}{}", self.machine)
-        } else {
-            name.clone()
+        match self.location {
+            SessionLocation::SameMachine => name.clone(),
+            SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
         }
     }
 
-    /// A thread's own creation time rather than its app server's.
-    const fn started(&self) -> u64 {
-        match self.subject {
-            SessionSubject::Agent => self.row.started,
-            SessionSubject::Thread(thread) => thread.started,
-        }
-    }
-
-    /// Sessions report their status; threads retain their program and requested tier.
-    fn status(&self) -> Cow<'_, str> {
-        match self.subject {
-            SessionSubject::Agent => Cow::Borrowed(summary::status_text(self.row)),
-            SessionSubject::Thread(thread) => thread.runs_label(),
-        }
-    }
-
-    /// The status color appropriate to this line.
-    fn status_role(&self) -> Role {
-        match self.subject {
-            SessionSubject::Agent => summary::status_role(self.row),
-            SessionSubject::Thread(_) => Role::Codex,
-        }
-    }
-
-    /// The glyphs before the session's name: the lines carried down from
-    /// the levels above, then its own branch off its launcher's line.
+    /// Tree rails and the branch preceding this name.
     fn lead(&self) -> String {
-        let branch = if self.last {
-            TREE_LAST_BRANCH
-        } else {
-            TREE_BRANCH
-        };
         self.rails
             .iter()
-            .map(|&rail| rail_glyphs(rail))
-            .chain(iter::once(branch))
+            .map(|&rail| rail.glyph())
+            .chain(iter::once(self.branch.glyph()))
             .collect()
+    }
+
+    /// The start of this subject, rather than its carrier process.
+    const fn started(&self) -> u64 {
+        match self.subject {
+            LineSubject::Agent(_) => self.row.started,
+            LineSubject::ManagedThread(child, _) => child.started,
+            LineSubject::Work(work) => work.child.started,
+        }
+    }
+
+    /// The account belongs to an agent or thread, never its shell or subagent.
+    const fn account(&self) -> &Account {
+        match self.subject {
+            LineSubject::Agent(_) => &self.row.account,
+            LineSubject::ManagedThread(child, _) => &child.account,
+            LineSubject::Work(work) => work.account(),
+        }
+    }
+
+    /// The program whose account this line names.
+    const fn program(&self) -> Agent {
+        match self.subject {
+            LineSubject::Agent(_) => self.row.agent,
+            LineSubject::ManagedThread(_, _) | LineSubject::Work(_) => Agent::Codex,
+        }
+    }
+
+    /// Text in one active column.
+    fn value(&self, column: TreeColumn, now: u64) -> String {
+        match column {
+            TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
+            TreeColumn::Role => match self.subject {
+                LineSubject::Agent(role) => role.column_text(),
+                LineSubject::ManagedThread(_, role) => role.text(),
+                LineSubject::Work(work) => work.kind.role_text(),
+            }
+            .to_string(),
+            TreeColumn::Status => match self.subject {
+                LineSubject::Agent(_) => summary::status_text(self.row).to_string(),
+                LineSubject::ManagedThread(child, _) => child.runs_label().into_owned(),
+                LineSubject::Work(work) => work.status(now),
+            },
+            TreeColumn::Account => match self.account() {
+                Account::Unrecorded => MISSING_VALUE.to_string(),
+                Account::Home(home) => home.label().to_string(),
+            },
+            TreeColumn::Branch | TreeColumn::Directory
+                if matches!(self.subject, LineSubject::Work(_)) =>
+            {
+                MISSING_VALUE.to_string()
+            },
+            TreeColumn::Branch => self
+                .row
+                .branch
+                .clone()
+                .unwrap_or_else(|| MISSING_VALUE.to_string()),
+            TreeColumn::Directory => self.row.directory.clone(),
+            TreeColumn::Age => age::age_label(now.saturating_sub(self.started())),
+        }
+    }
+
+    /// The status color of the subject.
+    fn status_role(&self) -> Role {
+        match self.subject {
+            LineSubject::Agent(_) => summary::status_role(self.row),
+            LineSubject::ManagedThread(_, _) => Role::Codex,
+            LineSubject::Work(work) => runs_role(work.kind),
+        }
     }
 }
 
-/// The glyphs a level of the tree takes on a line that does not branch
-/// at it: its line carried down, or blank.
-const fn rail_glyphs(rail: bool) -> &'static str { if rail { TREE_RAIL } else { TREE_SPACE } }
+/// Decide once for all cells, including cells the grid cannot place.
+pub(crate) fn account_column(entries: &[AgentEntry<'_>]) -> AccountColumn {
+    AccountColumn::of(entries.iter().flat_map(|entry| {
+        iter::once((entry.row.agent, &entry.row.account)).chain(
+            entry
+                .lines
+                .iter()
+                .map(|line| (line.program(), line.account())),
+        )
+    }))
+}
 
-/// Cells from the same placement the summary uses.
+/// Promote work through carrier processes and discard complete session subtrees.
+fn work_branches<'a>(
+    children: &'a [ChildRow],
+    claimed: &HashSet<usize>,
+    offset: usize,
+) -> Vec<WorkBranch<'a>> {
+    let mut branches = Vec::new();
+    let mut index = 0;
+    while index < children.len() {
+        let child = &children[index];
+        let end = (index + 1..children.len())
+            .find(|&next| children[next].depth <= child.depth)
+            .unwrap_or(children.len());
+        let descendants = || work_branches(&children[index + 1..end], claimed, offset + index + 1);
+        match ChildLine::from(child.kind) {
+            ChildLine::Session => {},
+            ChildLine::Carrier => branches.extend(descendants()),
+            ChildLine::Work(kind) => {
+                let descendants = descendants();
+                if claimed.contains(&(offset + index)) {
+                    branches.extend(descendants);
+                } else {
+                    branches.push(WorkBranch {
+                        work:     Work { child, kind },
+                        branches: descendants,
+                    });
+                }
+            },
+        }
+        index = end;
+    }
+    branches.sort_by_key(|branch| (branch.work.child.started, branch.work.child.pid));
+    branches
+}
+
+/// Cells from the placement shared with the summary.
 pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<AgentEntry<'a>> {
     let mut cells = Vec::new();
     let mut agents = 0;
@@ -226,15 +445,15 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
         let machine = root.identity.machine;
         let hue = RainbowHue::of_agent(agents);
         agents += 1;
-        let mut sessions = Vec::new();
-        sessions_of(
+        let mut lines = Vec::new();
+        lines_of(
             placement,
             root.identity,
             machine,
             &mut Vec::new(),
             &mut agents,
             hue,
-            &mut sessions,
+            &mut lines,
         );
         let launcher = root.row.launched_by.and_then(|pid| {
             placement
@@ -243,7 +462,6 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
                 .find(|row| row.identity.machine == machine && row.identity.pid == pid)
                 .map(|row| row.row.name.as_str())
         });
-        let children = placed_children(placement, root.identity);
         cells.push(AgentEntry {
             id: AgentCell {
                 machine:         machine.to_string(),
@@ -254,33 +472,33 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
             launcher,
             machine,
             hue,
-            sessions,
-            children,
+            role_label: placement.role_label(root.identity),
+            lines,
         });
     }
     cells
 }
 
-/// Place siblings oldest first, then recurse depth first through the forest.
-fn sessions_of<'a>(
+/// Merge a member's own work with its listed members and managed threads.
+fn lines_of<'a>(
     placement: &AgentPlacement<'a>,
     parent: RowIdentity<'a>,
     machine: &'a str,
-    rails: &mut Vec<bool>,
+    rails: &mut Vec<Rail>,
     agents: &mut usize,
     parent_hue: RainbowHue,
-    sessions: &mut Vec<SessionEntry<'a>>,
+    lines: &mut Vec<TreeLine<'a>>,
 ) {
-    let mut opened: Vec<_> = placement
+    let mut siblings: Vec<_> = placement
         .rows
         .iter()
         .filter(|row| row.placement.is_child_of(parent))
         .map(|row| {
             (
-                row.row.started,
                 row.identity,
                 row.row,
-                SessionSubject::Agent,
+                LineSubject::Agent(placement.role_label(row.identity)),
+                Vec::new(),
             )
         })
         .chain(
@@ -291,74 +509,185 @@ fn sessions_of<'a>(
                 .map(|thread| {
                     let child = &thread.owner_row.children[thread.child_index];
                     (
-                        child.started,
                         thread.owner,
                         thread.owner_row,
-                        SessionSubject::Thread(child),
+                        LineSubject::ManagedThread(child, thread.role),
+                        Vec::new(),
                     )
                 }),
         )
         .collect();
-    opened.sort_by_key(|(started, identity, _, _)| (*started, identity.machine, identity.pid));
-    for (index, (_, identity, row, subject)) in opened.iter().enumerate() {
-        let last = index + 1 == opened.len();
-        let hue = match subject {
-            SessionSubject::Agent => {
-                let hue = RainbowHue::of_agent(*agents);
-                *agents += 1;
-                hue
+    if let Some(owner) = placement.rows.iter().find(|row| row.identity == parent) {
+        let claimed = placement
+            .threads
+            .iter()
+            .filter(|thread| thread.owner == parent)
+            .map(|thread| thread.child_index)
+            .collect();
+        siblings.extend(
+            work_branches(&owner.row.children, &claimed, 0)
+                .into_iter()
+                .map(|branch| {
+                    (
+                        parent,
+                        owner.row,
+                        LineSubject::Work(branch.work),
+                        branch.branches,
+                    )
+                }),
+        );
+    }
+    siblings.sort_by_key(|(identity, row, subject, _)| {
+        let (started, pid) = match subject {
+            LineSubject::Agent(_) => (row.started, row.pid),
+            LineSubject::ManagedThread(child, _) => {
+                (child.started, child.pid.unwrap_or(identity.pid))
             },
-            SessionSubject::Thread(_) => parent_hue,
+            LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
         };
-        sessions.push(SessionEntry {
-            row,
+        (started, identity.machine, pid)
+    });
+    let count = siblings.len();
+    for (index, (identity, row, subject, branches)) in siblings.into_iter().enumerate() {
+        let branch = if index + 1 == count {
+            Branch::Last
+        } else {
+            Branch::Middle
+        };
+        let hue = if matches!(subject, LineSubject::Agent(_)) {
+            let hue = RainbowHue::of_agent(*agents);
+            *agents += 1;
+            hue
+        } else {
+            parent_hue
+        };
+        lines.push(TreeLine {
             machine: identity.machine,
             location: if identity.machine == machine {
                 SessionLocation::SameMachine
             } else {
                 SessionLocation::AnotherMachine
             },
-            subject: *subject,
+            row,
             hue,
             rails: rails.clone(),
-            last,
+            branch,
+            subject,
         });
-        if matches!(subject, SessionSubject::Agent) {
-            rails.push(!last);
-            sessions_of(placement, *identity, machine, rails, agents, hue, sessions);
-            rails.pop();
+        rails.push(branch.rail());
+        match subject {
+            LineSubject::Agent(_) => {
+                lines_of(placement, identity, machine, rails, agents, hue, lines);
+            },
+            LineSubject::Work(_) => {
+                append_work(branches, row, identity.machine, machine, rails, hue, lines);
+            },
+            LineSubject::ManagedThread(_, _) => {},
         }
+        rails.pop();
     }
 }
 
-/// How [`draw`] lays a cell out in the rows the grid gives it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Append descendants under their nearest retained work ancestor.
+fn append_work<'a>(
+    branches: Vec<WorkBranch<'a>>,
+    row: &'a AgentRow,
+    machine: &'a str,
+    heading: &str,
+    rails: &mut Vec<Rail>,
+    hue: RainbowHue,
+    lines: &mut Vec<TreeLine<'a>>,
+) {
+    let count = branches.len();
+    for (index, work_branch) in branches.into_iter().enumerate() {
+        let branch = if index + 1 == count {
+            Branch::Last
+        } else {
+            Branch::Middle
+        };
+        lines.push(TreeLine {
+            machine,
+            location: if machine == heading {
+                SessionLocation::SameMachine
+            } else {
+                SessionLocation::AnotherMachine
+            },
+            row,
+            hue,
+            rails: rails.clone(),
+            branch,
+            subject: LineSubject::Work(work_branch.work),
+        });
+        rails.push(branch.rail());
+        append_work(
+            work_branch.branches,
+            row,
+            machine,
+            heading,
+            rails,
+            hue,
+            lines,
+        );
+        rails.pop();
+    }
+}
+
+/// Active full columns when accounts distinguish rows.
+const FULL_ACCOUNTS: &[TreeColumn] = &[
+    TreeColumn::Session,
+    TreeColumn::Role,
+    TreeColumn::Status,
+    TreeColumn::Account,
+    TreeColumn::Branch,
+    TreeColumn::Directory,
+    TreeColumn::Age,
+];
+/// Active full columns for one label per program.
+const FULL: &[TreeColumn] = &[
+    TreeColumn::Session,
+    TreeColumn::Role,
+    TreeColumn::Status,
+    TreeColumn::Branch,
+    TreeColumn::Directory,
+    TreeColumn::Age,
+];
+/// Active compressed columns when accounts distinguish rows.
+const COMPRESSED_ACCOUNTS: &[TreeColumn] = &[
+    TreeColumn::Session,
+    TreeColumn::Role,
+    TreeColumn::Status,
+    TreeColumn::Account,
+    TreeColumn::Age,
+];
+/// Active compressed columns for one label per program.
+const COMPRESSED: &[TreeColumn] = &[
+    TreeColumn::Session,
+    TreeColumn::Role,
+    TreeColumn::Status,
+    TreeColumn::Age,
+];
+
+/// A fitted full tree, or the compressed column set.
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum CellView {
-    /// Every part on its lines whole -- the header on its one line, the
-    /// branch and directory on theirs, a line to each session and a row
-    /// of the table to each child -- the tree and the table in the
-    /// [`FlatColumns`] found for the width.
     Full(FlatColumns),
-    /// One line to each session and to each child, cut where it would
-    /// not fit, and no header or branch and directory for an agent the
-    /// summary lists.
     Compressed,
 }
 
 impl CellView {
-    /// The view `entry`'s cell takes `width` cells across, with ages
-    /// measured to `now`, given the rows that view takes: full where
-    /// [`FlatColumns::fitted`] finds it lies flat there, else compressed.
-    fn at_width(entry: &AgentEntry<'_>, width: u16, now: u64) -> Self {
-        FlatColumns::fitted(entry, width, now).map_or(Self::Compressed, Self::Full)
+    /// Full only when the heading, workplace and all tree values fit.
+    fn at_width(
+        entry: &AgentEntry<'_>,
+        width: u16,
+        now: u64,
+        account_column: AccountColumn,
+    ) -> Self {
+        FlatColumns::fitted(entry, width, now, account_column).map_or(Self::Compressed, Self::Full)
     }
-
-    /// The view `entry`'s cell takes in `area`, with ages measured to
-    /// `now`: [`CellView::at_width`] at the area's width, or compressed
-    /// where the area has fewer rows than that view takes.
-    fn fitted(entry: &AgentEntry<'_>, area: Rect, now: u64) -> Self {
-        let view = Self::at_width(entry, area.width, now);
-        if view_height(entry, area.width, now, view) > usize::from(area.height) {
+    /// Compress when the tile has fewer rows than the full view needs.
+    fn fitted(entry: &AgentEntry<'_>, area: Rect, now: u64, account_column: AccountColumn) -> Self {
+        let view = Self::at_width(entry, area.width, now, account_column);
+        if view_height(entry, area.width, now, &view, account_column) > usize::from(area.height) {
             Self::Compressed
         } else {
             view
@@ -366,73 +695,75 @@ impl CellView {
     }
 }
 
-/// The columns a cell's full view draws its tree and its table in, each
-/// fitted to its widest cell.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Widths that hold every active full column's header and values whole.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct FlatColumns {
-    /// The tree's: a session's name after its glyphs, its status,
-    /// branch, directory and age.
-    tree:  [Constraint; TREE_COLUMNS],
-    /// The table's: a child's pid, `via`, `runs`, name and age.
-    table: [Constraint; 5],
+    columns: &'static [TreeColumn],
+    widths:  Vec<u16>,
 }
 
 impl FlatColumns {
-    /// The columns of `entry`'s full view `width` cells across, with ages
-    /// measured to `now`, where that view lies flat there: its
-    /// [`header_line`] and its [`place_line`] fit whole, [`tree_columns`]
-    /// fits every session's line and [`table_columns`] every name. None
-    /// where any of them would be cut.
-    fn fitted(entry: &AgentEntry<'_>, width: u16, now: u64) -> Option<Self> {
-        let row = entry.row;
-        let lines = [header_line(row, entry.machine, now), place_line(row)];
-        if lines.iter().any(|line| line.width() > usize::from(width)) {
+    /// Fit the full view without truncating any name.
+    fn fitted(
+        entry: &AgentEntry<'_>,
+        width: u16,
+        now: u64,
+        account_column: AccountColumn,
+    ) -> Option<Self> {
+        if [
+            header_line(entry.row, entry.machine, now, account_column),
+            place_line(entry.row),
+        ]
+        .iter()
+        .any(|line| line.width() > usize::from(width))
+        {
+            return None;
+        }
+        let columns = TreeLayout::Full.columns(account_column);
+        let tree = tree_widths(&entry.lines, columns, now);
+        if !entry.lines.is_empty() && table_width(&tree) > usize::from(header_width(width)) {
             return None;
         }
         Some(Self {
-            tree:  tree_columns(&entry.sessions, header_width(width), now)?,
-            table: table_columns(&entry.children, children_width(width), now)?,
+            columns,
+            widths: tree,
         })
     }
 }
 
-/// Rows `entry`'s cell asks the grid for at `width` cells across, with
-/// ages measured to `now`: the rows of the view [`CellView::at_width`]
-/// gives it there -- its full view where that lies flat, else its
-/// compressed view -- exactly the rows [`draw`] fills given them.
-pub(crate) fn height(entry: &AgentEntry<'_>, width: u16, now: u64) -> usize {
-    view_height(entry, width, now, CellView::at_width(entry, width, now))
+/// Rows requested for the exact view drawn at this width.
+pub(crate) fn height(
+    entry: &AgentEntry<'_>,
+    width: u16,
+    now: u64,
+    account_column: AccountColumn,
+) -> usize {
+    view_height(
+        entry,
+        width,
+        now,
+        &CellView::at_width(entry, width, now, account_column),
+        account_column,
+    )
 }
 
-/// Rows `entry`'s cell takes `width` cells across in `view`, with ages
-/// measured to `now`, counted from the parts [`draw_view`] draws: the
-/// lines [`above_tree`] gives it, down to [`children_top`], then the
-/// rows of its [`Children`]. The styles `cells` would set do not change
-/// how many lines [`above_tree`] gives, so none are passed.
-fn view_height(entry: &AgentEntry<'_>, width: u16, now: u64, view: CellView) -> usize {
-    let above = above_tree(entry, &[], width, now, view).len();
-    let children = &entry.children;
-    children_top(entry, above) + Children::in_view(children, view).height(children.len())
+/// Above-tree lines followed immediately by a header and lines, or the empty note.
+fn view_height(
+    entry: &AgentEntry<'_>,
+    width: u16,
+    now: u64,
+    view: &CellView,
+    account_column: AccountColumn,
+) -> usize {
+    above_tree(entry, &[], width, now, view, account_column).len()
+        + if entry.lines.is_empty() {
+            usize::from(NOTHING_RUNNING_HEIGHT)
+        } else {
+            usize::from(TABLE_HEADER_HEIGHT) + entry.lines.len()
+        }
 }
 
-/// Rows from the top of `entry`'s cell to what its agent runs, below
-/// `above` lines above its tree: those lines, a line to each session,
-/// then [`AGENT_HEADER_GAP_HEIGHT`] blank rows where either drew one, so
-/// a compressed top-level agent with no sessions starts with what it
-/// runs.
-fn children_top(entry: &AgentEntry<'_>, above: usize) -> usize {
-    let drawn = above + entry.sessions.len();
-    if drawn == 0 {
-        0
-    } else {
-        drawn + usize::from(AGENT_HEADER_GAP_HEIGHT)
-    }
-}
-
-/// The style the name of the agent with process `pid` on `machine` is
-/// drawn in wherever it shows: the hue that agent takes among `cells`,
-/// so the name pairs with its cell's title or its line in a cell's tree,
-/// or the default text color for a process that is not a listed agent.
+/// A listed agent's hue, or plain text for an unknown process.
 pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> Style {
     cells
         .iter()
@@ -443,16 +774,14 @@ pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> S
         )
 }
 
-/// Draw `entry`'s cell into `area`, with ages measured to `now` in unix
-/// seconds, in the view [`CellView::fitted`] gives it there. A listed
-/// agent's name among `cells` -- the launcher's, a session's -- is drawn
-/// in that agent's hue.
+/// Draw one tile with the account decision shared by the whole frame.
 pub(crate) fn draw(
     buffer: &mut Buffer,
     area: Rect,
     entry: &AgentEntry<'_>,
     cells: &[AgentEntry<'_>],
     now: u64,
+    account_column: AccountColumn,
 ) {
     draw_view(
         buffer,
@@ -460,25 +789,23 @@ pub(crate) fn draw(
         entry,
         cells,
         now,
-        CellView::fitted(entry, area, now),
+        &CellView::fitted(entry, area, now, account_column),
+        account_column,
     );
 }
 
-/// Draw `entry`'s cell into `area` in `view`, with ages measured to
-/// `now`: the lines [`above_tree`] gives it, the tree of its sessions,
-/// then what they all run, each as `view` lays it out, cut at the bottom
-/// where `area` is too short.
+/// Fill the heading lines and the one tree table with no intervening gap.
 fn draw_view(
     buffer: &mut Buffer,
     area: Rect,
     entry: &AgentEntry<'_>,
     cells: &[AgentEntry<'_>],
     now: u64,
-    view: CellView,
+    view: &CellView,
+    account_column: AccountColumn,
 ) {
-    let above = above_tree(entry, cells, area.width, now, view);
-    let above_rows = above.len();
-    let above_height = u16::try_from(above_rows).unwrap_or(u16::MAX);
+    let above = above_tree(entry, cells, area.width, now, view, account_column);
+    let above_height = u16::try_from(above.len()).unwrap_or(u16::MAX);
     Paragraph::new(above).render(
         Rect {
             height: above_height.min(area.height),
@@ -486,59 +813,118 @@ fn draw_view(
         },
         buffer,
     );
-
     let tree = header_indented(Rect {
         y: area.y.saturating_add(above_height),
         height: area.height.saturating_sub(above_height),
         ..area
     });
-    draw_tree(buffer, tree, &entry.sessions, now, view);
-
-    let skipped = u16::try_from(children_top(entry, above_rows)).unwrap_or(u16::MAX);
-    let area = Rect {
-        y: area.y.saturating_add(skipped),
-        height: area.height.saturating_sub(skipped),
-        ..summary::indented(area)
-    };
-    if area.is_empty() {
-        return;
-    }
-    let children = &entry.children;
-    let child_name_style = |child: &CellChild<'_>| {
-        child.pid.map_or_else(
-            || Style::default().fg(text_default()),
-            |pid| name_style(cells, child.machine, pid),
-        )
-    };
-    match Children::in_view(children, view) {
-        Children::Nothing => {
-            Paragraph::new(Line::from(Span::styled(
-                NOTHING_RUNNING_NOTE,
-                Style::default().fg(text_default()),
-            )))
-            .render(area, buffer);
-        },
-        Children::Compressed => {
-            let lines: Vec<Line<'static>> = children
-                .iter()
-                .map(|child| compressed_child(child, area.width, child_name_style(child), now))
-                .collect();
-            Paragraph::new(lines).render(area, buffer);
-        },
-        Children::Table(constraints) => Table::new(
-            children
-                .iter()
-                .map(|child| child_row(child, child_name_style(child), now)),
-            constraints,
-        )
-        .header(Row::new(CHILD_HEADERS.map(|header| {
-            Span::styled(header, Style::default().fg(label_color()))
-        })))
-        .column_spacing(TABLE_COLUMN_SPACING)
-        .render(area, buffer),
+    if entry.lines.is_empty() {
+        Paragraph::new(Span::styled(
+            NOTHING_RUNNING_NOTE,
+            Style::default().fg(text_default()),
+        ))
+        .render(tree, buffer);
+    } else {
+        draw_tree(buffer, tree, &entry.lines, now, view, account_column);
     }
 }
 
+/// Widest header or value in each active column.
+fn tree_widths(lines: &[TreeLine<'_>], columns: &[TreeColumn], now: u64) -> Vec<u16> {
+    columns
+        .iter()
+        .map(|&column| {
+            lines
+                .iter()
+                .map(|line| summary::cell_width(&line.value(column, now)))
+                .max()
+                .unwrap_or(0)
+                .max(column.header_width())
+        })
+        .collect()
+}
+
+/// Width of the fitted columns and the spaces between them.
+fn table_width(widths: &[u16]) -> usize {
+    widths
+        .iter()
+        .map(|&width| usize::from(width))
+        .sum::<usize>()
+        + widths.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING)
+}
+
+/// Draw both views with one table, preserving fixed columns when names compress.
+fn draw_tree(
+    buffer: &mut Buffer,
+    area: Rect,
+    lines: &[TreeLine<'_>],
+    now: u64,
+    view: &CellView,
+    account_column: AccountColumn,
+) {
+    if area.is_empty() {
+        return;
+    }
+    let (columns, widths, spacing) = match view {
+        CellView::Full(fitted) => (fitted.columns, fitted.widths.clone(), TABLE_COLUMN_SPACING),
+        CellView::Compressed => {
+            let columns = TreeLayout::Compressed.columns(account_column);
+            let mut widths = tree_widths(lines, columns, now);
+            // Keep at least one content cell when the normal gaps alone would fill the tile.
+            let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
+            let spacing = TABLE_COLUMN_SPACING.min(area.width.saturating_sub(1) / gaps);
+            let fixed = widths[1..]
+                .iter()
+                .map(|&width| usize::from(width))
+                .sum::<usize>()
+                + usize::from(spacing) * usize::from(gaps);
+            widths[0] = area
+                .width
+                .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX));
+            (columns, widths, spacing)
+        },
+    };
+    let text = Style::default().fg(text_default());
+    let rows = lines.iter().map(|line| {
+        Row::new(columns.iter().enumerate().map(|(index, &column)| {
+            if column == TreeColumn::Session {
+                let lead = line.lead();
+                let remaining = widths[index].saturating_sub(summary::cell_width(&lead));
+                let name = summary::truncated(&line.name(), usize::from(remaining));
+                let style = if matches!(line.subject, LineSubject::Work(_)) {
+                    text
+                } else {
+                    Role::Rainbow(line.hue).style()
+                };
+                Cell::from(Line::from(vec![
+                    Span::styled(lead, text),
+                    Span::styled(name, style),
+                ]))
+            } else {
+                Cell::from(Span::styled(
+                    line.value(column, now),
+                    if column == TreeColumn::Status {
+                        line.status_role().style()
+                    } else {
+                        text
+                    },
+                ))
+            }
+        }))
+    });
+    Table::new(rows, widths.iter().copied().map(Constraint::Length))
+        .header(
+            Row::new(columns.iter().map(|&column| {
+                Cell::from(Span::styled(
+                    column.header_text(),
+                    Style::default().fg(label_color()),
+                ))
+            }))
+            .height(TABLE_HEADER_HEIGHT),
+        )
+        .column_spacing(spacing)
+        .render(area, buffer);
+}
 /// The lines `entry`'s cell draws above its tree in `view`, `width`
 /// cells across: its [`header_line`], its [`place_line`], and the agent
 /// that opened it when one did, each one line cut by [`cut_line`] where
@@ -549,13 +935,17 @@ fn above_tree(
     cells: &[AgentEntry<'_>],
     width: u16,
     now: u64,
-    view: CellView,
+    view: &CellView,
+    account_column: AccountColumn,
 ) -> Vec<Line<'static>> {
     let row = entry.row;
-    if view == CellView::Compressed && row.launched_by.is_none() {
+    if *view == CellView::Compressed && row.launched_by.is_none() {
         return Vec::new();
     }
-    let mut lines = vec![header_line(row, entry.machine, now), place_line(row)];
+    let mut lines = vec![
+        header_line(row, entry.machine, now, account_column),
+        place_line(row),
+    ];
     if let Some(launcher) = row.launched_by {
         let name = entry
             .launcher
@@ -579,14 +969,22 @@ fn above_tree(
 /// <machine> · <desktop>`, colored as the summary colors the same
 /// values. No part of it takes the label color: `pid` reads as part of
 /// its value.
-fn header_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
+fn header_line(
+    row: &AgentRow,
+    machine: &str,
+    now: u64,
+    account_column: AccountColumn,
+) -> Line<'static> {
     let text = Style::default().fg(text_default());
     let separator = summary::separator;
     Line::from(vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(format!("{PID_LABEL} {}", row.pid), text),
         separator(),
-        Span::styled(row.agent_label(), summary::agent_role(row.agent).style()),
+        Span::styled(
+            row.agent_label(account_column),
+            summary::agent_role(row.agent).style(),
+        ),
         separator(),
         Span::styled(
             summary::status_text(row).to_string(),
@@ -620,310 +1018,19 @@ fn place_line(row: &AgentRow) -> Line<'static> {
 }
 
 /// Cells across the header's lines and the tree leave within a cell
-/// `width` cells across: what the header's indent leaves.
+/// `width` cells across: what equal left and right indents leave.
 fn header_width(width: u16) -> u16 {
-    width.saturating_sub(summary::cell_width(SECTION_HEADER_INDENT))
+    width.saturating_sub(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
 }
 
-/// `area` less the header's indent.
+/// The tree area with the heading indent reserved on both sides.
 fn header_indented(area: Rect) -> Rect {
     let indent = summary::cell_width(SECTION_HEADER_INDENT);
     Rect {
         x: area.x.saturating_add(indent),
-        width: area.width.saturating_sub(indent),
+        width: area.width.saturating_sub(indent.saturating_mul(2)),
         ..area
     }
-}
-
-/// The tree's column widths within `width` cells, with ages measured to
-/// `now`, or none where a session's line would not fit whole.
-///
-/// Every column fits its widest cell, [`TABLE_COLUMN_SPACING`] from the
-/// next.
-fn tree_columns(
-    sessions: &[SessionEntry<'_>],
-    width: u16,
-    now: u64,
-) -> Option<[Constraint; TREE_COLUMNS]> {
-    let mut widths = [0; TREE_COLUMNS];
-    for session in sessions {
-        for (widest, cell) in widths.iter_mut().zip(tree_cells(session, now)) {
-            *widest = (*widest).max(cell.chars().count());
-        }
-    }
-    let spacing = usize::from(TABLE_COLUMN_SPACING) * (TREE_COLUMNS - 1);
-    let needed = widths.iter().sum::<usize>() + spacing;
-    (needed <= usize::from(width))
-        .then(|| widths.map(|widest| Constraint::Length(u16::try_from(widest).unwrap_or(u16::MAX))))
-}
-
-/// The text of a session's line in the tree, column by column: its
-/// glyphs and name, its status, branch, directory and age.
-fn tree_cells(session: &SessionEntry<'_>, now: u64) -> [String; TREE_COLUMNS] {
-    let row = session.row;
-    [
-        format!("{}{}", session.lead(), session.name()),
-        session.status().to_string(),
-        row.branch
-            .clone()
-            .unwrap_or_else(|| MISSING_VALUE.to_string()),
-        row.directory.clone(),
-        age::age_label(now.saturating_sub(session.started())),
-    ]
-}
-
-/// Draw the tree of `sessions` into `area` in `view`, with ages
-/// measured to `now`: in the full view a line to each session in the
-/// tree's columns, and in the compressed view a line to each cut where
-/// it would not fit. The glyphs are plain text and each name takes its
-/// session's hue.
-fn draw_tree(
-    buffer: &mut Buffer,
-    area: Rect,
-    sessions: &[SessionEntry<'_>],
-    now: u64,
-    view: CellView,
-) {
-    if sessions.is_empty() || area.is_empty() {
-        return;
-    }
-    let text = Style::default().fg(text_default());
-    match view {
-        CellView::Full(columns) => Table::new(
-            sessions.iter().map(|session| {
-                let row = session.row;
-                Row::new([
-                    Cell::from(Line::from(vec![
-                        Span::styled(session.lead(), text),
-                        Span::styled(session.name(), Role::Rainbow(session.hue).style()),
-                    ])),
-                    Cell::from(Span::styled(
-                        session.status().to_string(),
-                        session.status_role().style(),
-                    )),
-                    Cell::from(Span::styled(
-                        row.branch
-                            .clone()
-                            .unwrap_or_else(|| MISSING_VALUE.to_string()),
-                        text,
-                    )),
-                    Cell::from(Span::styled(row.directory.clone(), text)),
-                    Cell::from(Span::styled(
-                        age::age_label(now.saturating_sub(session.started())),
-                        text,
-                    )),
-                ])
-            }),
-            columns.tree,
-        )
-        .column_spacing(TABLE_COLUMN_SPACING)
-        .render(area, buffer),
-        CellView::Compressed => {
-            let lines: Vec<Line<'static>> = sessions
-                .iter()
-                .map(|session| compressed_session(session, area.width))
-                .collect();
-            Paragraph::new(lines).render(area, buffer);
-        },
-    }
-}
-
-/// One session's line in the compressed view, `width` cells across: its
-/// name after its glyphs, drawn in its hue, then [`gap`] and its status
-/// in its role, as the tree's table spaces its columns, cut by
-/// [`cut_line`] where it would not fit.
-fn compressed_session(session: &SessionEntry<'_>, width: u16) -> Line<'static> {
-    cut_line(
-        vec![
-            Span::styled(session.lead(), Style::default().fg(text_default())),
-            Span::styled(session.name(), Role::Rainbow(session.hue).style()),
-            gap(),
-            Span::styled(session.status().to_string(), session.status_role().style()),
-        ],
-        width,
-    )
-}
-
-/// One line of running work with the machine that owns its process.
-#[derive(Clone, Debug)]
-struct CellChild<'a> {
-    /// Process ids and their hues are meaningful only on this machine.
-    machine: &'a str,
-    /// The reconciled line, at its depth in the tile.
-    row:     ChildRow,
-}
-
-impl Deref for CellChild<'_> {
-    type Target = ChildRow;
-    fn deref(&self) -> &Self::Target { &self.row }
-}
-
-/// Reconcile launch markers with the forest, retaining every member's work once.
-fn placed_children<'a>(
-    placement: &AgentPlacement<'a>,
-    root: RowIdentity<'a>,
-) -> Vec<CellChild<'a>> {
-    let mut children = Vec::new();
-    let mut nested = HashSet::new();
-    nest(placement, root, 0, &mut nested, &mut children);
-    children
-}
-
-/// Follow only the forest's session links, adding markers for hierarchy-only members.
-fn nest<'a>(
-    placement: &AgentPlacement<'a>,
-    identity: RowIdentity<'a>,
-    below: u8,
-    nested: &mut HashSet<RowIdentity<'a>>,
-    children: &mut Vec<CellChild<'a>>,
-) {
-    if !nested.insert(identity) {
-        return;
-    }
-    let Some(agent) = placement.rows.iter().find(|row| row.identity == identity) else {
-        return;
-    };
-    let mut skipped_subtree = None;
-    for (index, child) in agent.row.children.iter().enumerate() {
-        if let Some(depth) = skipped_subtree {
-            if child.depth > depth {
-                continue;
-            }
-            skipped_subtree = None;
-        }
-        if placement
-            .threads
-            .iter()
-            .any(|thread| thread.owner == identity && thread.child_index == index)
-        {
-            continue;
-        }
-        let session = match (child.kind, child.pid) {
-            (ChildKind::Session(_), Some(pid)) => placement
-                .rows
-                .iter()
-                .find(|row| row.identity.machine == identity.machine && row.identity.pid == pid),
-            _ => None,
-        };
-        if let Some(session) = session
-            && (!session.placement.is_child_of(identity) || nested.contains(&session.identity))
-        {
-            skipped_subtree = Some(child.depth);
-            continue;
-        }
-        let depth = child.depth.saturating_add(below);
-        children.push(CellChild {
-            machine: identity.machine,
-            row:     ChildRow {
-                depth,
-                ..child.clone()
-            },
-        });
-        if let Some(session) = session {
-            nest(
-                placement,
-                session.identity,
-                depth.saturating_add(1),
-                nested,
-                children,
-            );
-        }
-    }
-    let mut missing: Vec<_> = placement
-        .rows
-        .iter()
-        .filter(|row| row.placement.is_child_of(identity) && !nested.contains(&row.identity))
-        .collect();
-    missing.sort_by_key(|row| (row.row.started, row.identity.machine, row.identity.pid));
-    for member in missing {
-        children.push(CellChild {
-            machine: member.identity.machine,
-            row:     ChildRow {
-                thread_id:    CodexThreadId::Unrecorded,
-                depth:        below,
-                kind:         ChildKind::Session(member.row.agent),
-                service_tier: member.row.service_tier,
-                pid:          Some(member.identity.pid),
-                name:         member.row.name.clone(),
-                started:      member.row.started,
-                timer:        None,
-            },
-        });
-        nest(
-            placement,
-            member.identity,
-            below.saturating_add(1),
-            nested,
-            children,
-        );
-    }
-}
-
-/// Cells across what an agent runs is drawn in, within a cell `width`
-/// cells across: the width [`summary::indented`] leaves.
-fn children_width(width: u16) -> u16 {
-    width.saturating_sub(summary::cell_width(SECTION_ITEM_INDENT))
-}
-
-/// How an agent cell draws what the agent runs, in one view.
-enum Children {
-    /// The agent runs nothing, and a note says so.
-    Nothing,
-    /// The full view's table, its columns fitted to their widest cells.
-    Table([Constraint; 5]),
-    /// The compressed view's line to each child: what it runs, then its
-    /// name, indented by level and cut where it would not fit.
-    Compressed,
-}
-
-impl Children {
-    /// The way `children` are drawn in `view`: the note where there are
-    /// none, else the view's table or lines.
-    const fn in_view(children: &[CellChild<'_>], view: CellView) -> Self {
-        if children.is_empty() {
-            return Self::Nothing;
-        }
-        match view {
-            CellView::Full(columns) => Self::Table(columns.table),
-            CellView::Compressed => Self::Compressed,
-        }
-    }
-
-    /// Rows `count` children take drawn this way.
-    fn height(&self, count: usize) -> usize {
-        match self {
-            Self::Nothing => usize::from(NOTHING_RUNNING_HEIGHT),
-            Self::Table(_) => usize::from(TABLE_HEADER_HEIGHT) + count,
-            Self::Compressed => count,
-        }
-    }
-}
-
-/// One child's line in the compressed view, `width` cells across:
-/// indented as the table indents its `via`, what it `runs` in the role
-/// the table draws it in, then [`gap`] and its [`child_name`] at `now`
-/// in `name_style`, cut by [`cut_line`] where it would not fit.
-fn compressed_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> Line<'static> {
-    let text = Style::default().fg(text_default());
-    cut_line(
-        vec![
-            Span::styled(depth_indent(child), text),
-            Span::styled(child.runs_label(), runs_role(child.kind).style()),
-            gap(),
-            Span::styled(child_name(child, now), name_style),
-        ],
-        width,
-    )
-}
-
-/// The blank cells between the facts of a line in the compressed view:
-/// as many as [`TABLE_COLUMN_SPACING`] sets between the columns of the
-/// full view's tables.
-fn gap() -> Span<'static> {
-    Span::styled(
-        format!("{:width$}", "", width = usize::from(TABLE_COLUMN_SPACING)),
-        Style::default().fg(text_default()),
-    )
 }
 
 /// `spans` as one line cut to `width` cells as [`summary::truncated`]
@@ -942,31 +1049,6 @@ fn cut_line(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
             })
             .collect::<Vec<_>>(),
     )
-}
-
-/// One row of the table at `now`, its [`child_name`] drawn in
-/// `name_style`.
-fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
-    let text = Style::default().fg(text_default());
-    let pid = child.pid.map_or_else(
-        || Span::styled(MISSING_VALUE, text),
-        |pid| Span::styled(pid.to_string(), text),
-    );
-    Row::new([
-        pid,
-        Span::styled(via_text(child), text),
-        Span::styled(child.runs_label(), runs_role(child.kind).style()),
-        Span::styled(child_name(child, now), name_style),
-        Span::styled(age::age_label(now.saturating_sub(child.started)), text),
-    ])
-}
-
-/// What a row's `name` cell says at `now`: a timer's [`timer_label`],
-/// else the row's name.
-fn child_name(child: &ChildRow, now: u64) -> String {
-    child
-        .timer
-        .map_or_else(|| child.name.clone(), |timer| timer_label(timer, now))
 }
 
 /// A timer row's name at `now`: its [`timer_pie`], then the time left
@@ -1005,71 +1087,13 @@ fn time_left_label(left: u64) -> String {
     }
 }
 
-/// The `via` cell: how the agent holds the row, after its
-/// [`depth_indent`].
-fn via_text(child: &ChildRow) -> String { format!("{}{}", depth_indent(child), child.kind.via()) }
-
-/// The blank cells a row is indented by: [`CHILD_VIA_INDENT`] for each
-/// level it sits below the agent.
-fn depth_indent(child: &ChildRow) -> String {
-    format!(
-        "{:width$}",
-        "",
-        width = usize::from(child.depth) * CHILD_VIA_INDENT
-    )
-}
-
-/// The role a row's `runs` is drawn in: a command as a shell status,
-/// and an agent as its program.
-const fn runs_role(kind: ChildKind) -> Role {
-    match kind.agent() {
-        Some(agent) => summary::agent_role(agent),
-        None => Role::Shell,
+/// The program color of a retained work line's status.
+const fn runs_role(kind: WorkKind) -> Role {
+    match kind {
+        WorkKind::Shell => Role::Shell,
+        WorkKind::Subagent => Role::Claude,
+        WorkKind::Thread => Role::Codex,
     }
-}
-
-/// The table's column widths within `width` cells, or none when a name
-/// would not fit its column whole.
-///
-/// Every column fits its widest cell. When the five and the spacing
-/// between them come to more than `width`, the table would have to cut
-/// a name, and the cell draws its compressed view instead.
-fn table_columns(children: &[CellChild<'_>], width: u16, now: u64) -> Option<[Constraint; 5]> {
-    let mut widths = ColumnWidths::new(
-        CHILD_HEADERS
-            .iter()
-            .map(|header| ColumnSpec {
-                min: summary::cell_width(header),
-                max: None,
-            })
-            .collect(),
-    );
-    for child in children {
-        let pid = child.pid.map_or_else(
-            || MISSING_VALUE.chars().count(),
-            |pid| pid.to_string().chars().count(),
-        );
-        widths.observe_cell_usize(CHILD_PID_COLUMN, pid);
-        widths.observe_cell_usize(CHILD_VIA_COLUMN, via_text(child).chars().count());
-        widths.observe_cell_usize(CHILD_RUNS_COLUMN, child.runs_label().chars().count());
-        widths.observe_cell_usize(CHILD_NAME_COLUMN, child_name(child, now).chars().count());
-        let age = age::age_label(now.saturating_sub(child.started));
-        widths.observe_cell_usize(CHILD_AGE_COLUMN, age.chars().count());
-    }
-    let columns = [
-        CHILD_PID_COLUMN,
-        CHILD_VIA_COLUMN,
-        CHILD_RUNS_COLUMN,
-        CHILD_NAME_COLUMN,
-        CHILD_AGE_COLUMN,
-    ]
-    .map(|column| widths.get(column));
-    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let spacing = TABLE_COLUMN_SPACING.saturating_mul(gaps);
-    let needed = columns
-        .iter()
-        .fold(spacing, |total, &column| total.saturating_add(column));
-    (needed <= width).then(|| columns.map(Constraint::Length))
 }
 
 #[cfg(test)]
@@ -1081,6 +1105,11 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::census::Account;
+    use crate::census::CodexThreadId;
+
+    #[path = "tree_tests.rs"]
+    mod tree_tests;
     use crate::census::Agent;
     use crate::census::Census;
     use crate::census::CensusUpdate;
@@ -1119,16 +1148,13 @@ mod tests {
     /// trunk-impl, a session trunk opened.
     const TRUNK_IMPL: u32 = 3_400_000;
     /// A cell's width where everything fits on its line: the one-line
-    /// header, and trunk's table with every name whole.
+    /// header and the tree with every name whole.
     const WIDE: u16 = 104;
     /// A narrow cell's width, as a grid of many columns leaves each of
     /// them.
     const NARROW: u16 = 38;
     /// The directory of the narrow cells: longer than [`NARROW`] leaves.
     const LONG_DIRECTORY: &str = "~/rust/tool-based-ui-geometry-material-impl";
-    /// A cell's width that cuts lines of a compressed cell's tree and
-    /// of its table.
-    const CUTTING: u16 = 30;
 
     /// A Claude Code row with process `pid`, named `name`, started `age`
     /// seconds before [`NOW`] and opened by `launched_by`.
@@ -1137,6 +1163,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: name.to_string(),
             status: Some("busy".to_string()),
             started: NOW - age,
@@ -1150,7 +1177,7 @@ mod tests {
         }
     }
 
-    /// A row of a cell's table, `depth` levels down, started `age`
+    /// A work row, `depth` levels down, started `age`
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
@@ -1158,6 +1185,7 @@ mod tests {
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
@@ -1241,16 +1269,20 @@ mod tests {
             launcher,
             machine: "natedev",
             hue: RainbowHue::Red,
-            sessions: Vec::new(),
-            children: row
-                .children
-                .iter()
-                .cloned()
-                .map(|row| CellChild {
-                    machine: "natedev",
+            role_label: RoleLabel::Unlabeled,
+            lines: {
+                let mut lines = Vec::new();
+                append_work(
+                    work_branches(&row.children, &HashSet::new(), 0),
                     row,
-                })
-                .collect(),
+                    "natedev",
+                    "natedev",
+                    &mut Vec::new(),
+                    RainbowHue::Red,
+                    &mut lines,
+                );
+                lines
+            },
         }
     }
 
@@ -1274,14 +1306,39 @@ mod tests {
     ) -> Buffer {
         let area = area(width, rows);
         let mut buffer = Buffer::empty(area);
-        draw(&mut buffer, area, entry, cells, NOW);
+        draw(
+            &mut buffer,
+            area,
+            entry,
+            cells,
+            NOW,
+            account_column(if cells.is_empty() {
+                std::slice::from_ref(entry)
+            } else {
+                cells
+            }),
+        );
         buffer
     }
 
     /// `entry`'s cell among `cells`, drawn `width` cells across into
     /// exactly the rows [`height`] asks for there.
     fn drawn_among(entry: &AgentEntry<'_>, cells: &[AgentEntry<'_>], width: u16) -> Buffer {
-        drawn_into(entry, cells, width, height(entry, width, NOW))
+        drawn_into(
+            entry,
+            cells,
+            width,
+            height(
+                entry,
+                width,
+                NOW,
+                account_column(if cells.is_empty() {
+                    std::slice::from_ref(entry)
+                } else {
+                    cells
+                }),
+            ),
+        )
     }
 
     /// `row`'s cell, opened by the agent named `launcher`, drawn `width`
@@ -1317,61 +1374,63 @@ mod tests {
         })
     }
 
-    /// Where it all fits, a cell draws its agent's one-line header, its
-    /// directory, the agent that launched it, and a table
-    /// that indents each row's `via` under the row that started it,
-    /// draws its `runs` in the program's color, shows `—` for a row
-    /// with no process, and holds every name whole.
+    /// Full views retain the process heading, workplace and launcher,
+    /// then draw retained work with its role and program status colors.
     #[test]
     fn a_cell_draws_its_header_and_what_its_agent_runs() {
         let trunk = trunk();
-
-        let buffer = drawn(&trunk, Some("boss of bosses"), WIDE);
-
+        let buffer = drawn(&trunk, Some("boss of bosses"), 180);
         assert_eq!(
             lines(&buffer),
             [
                 " pid 3266367 · claude · busy · 23h · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
-                "",
-                " pid      via         runs     name                                                                age",
-                " 468060   detached    codex    app-server                                                          22h",
-                " 2371669  shell       command  Launch the Phase 1 implementation seat                              12m",
-                " 2372720    shell     codex    app-server                                                          12m",
-                " —            thread  codex    tool-based-ui-trunk-impl                                            11m",
-                " —        subagent    claude   Review the permission queue                                         5m 3s",
-                " 2424763    shell     command  cargo nextest run -p hana_video --no-fail-fast -- permission_queue  45s",
-                " 3337048  session     claude   tool-based-ui-arrange                                               30s",
+                "    session                                                                role      status   branch  directory  age",
+                " ├─ Launch the Phase 1 implementation seat                                 shell     command  —       —          12m",
+                " │  └─ tool-based-ui-trunk-impl                                            thread    codex    —       —          11m",
+                " └─ Review the permission queue                                            subagent  claude   —       —          5m 3s",
+                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  shell     command  —       —          45s",
             ]
         );
-        let role = |x, y| Some(buffer[(x, y)].fg);
-        assert_eq!(buffer[(5, 0)].fg, text_default());
-        assert_eq!(role(15, 0), Role::Claude.style().fg);
-        assert_eq!(role(24, 0), Role::Busy.style().fg);
-        assert_eq!(buffer[(1, 0)].fg, text_default(), "the pid marker");
-        assert_eq!(buffer[(13, 0)].fg, text_default(), "a separator");
-        assert_eq!(buffer[(37, 0)].fg, text_default(), "the machine");
-        assert_eq!(buffer[(10, 5)].fg, text_default(), "a via");
-        assert_eq!(role(22, 5), Role::Codex.style().fg);
-        assert_eq!(role(22, 6), Role::Shell.style().fg);
-        assert_eq!(buffer[(1, 8)].fg, text_default());
-        let header = buffer[(1, 4)].fg;
-        for y in 5..=11 {
-            for x in 0..buffer.area.width {
-                assert_ne!(
-                    buffer[(x, y)].fg,
-                    header,
-                    "row {y} draws column {x} in the header color"
+        let heading = " pid 3266367 · claude · busy · 23h · natedev · berth_fix";
+        for (index, character) in heading.chars().enumerate() {
+            if character == '·' {
+                assert_eq!(
+                    buffer[(u16::try_from(index).expect("heading column"), 0)].fg,
+                    text_default()
                 );
             }
         }
-        assert_eq!(buffer[(14, 8)].fg, text_default(), "an indented via");
-        assert_eq!(role(22, 8), Role::Codex.style().fg);
-        assert_eq!(role(22, 9), Role::Claude.style().fg);
+        for text in ["pid 3266367", "natedev", "berth_fix"] {
+            let (x, y) = find(&buffer, text).expect("heading value");
+            for offset in 0..summary::cell_width(text) {
+                assert_eq!(buffer[(x + offset, y)].fg, text_default(), "{text}");
+            }
+        }
+        for (text, role) in [
+            ("claude", Role::Claude),
+            ("busy", Role::Busy),
+            ("codex", Role::Codex),
+            ("command", Role::Shell),
+        ] {
+            let at = find(&buffer, text).expect("styled value");
+            assert_eq!(Some(buffer[at].fg), role.style().fg);
+        }
+        for column in FULL {
+            let (x, y) = find(&buffer, column.header()).expect("tree header");
+            for offset in 0..summary::cell_width(column.header()) {
+                assert_eq!(buffer[(x + offset, y)].fg, label_color());
+            }
+        }
+        for y in 4..buffer.area.height {
+            for x in 0..buffer.area.width {
+                assert_ne!(buffer[(x, y)].fg, label_color(), "value at {x},{y}");
+            }
+        }
     }
 
-    /// An agent running nothing says so in place of its table, and a
+    /// An agent running nothing says so beneath its heading, and a
     /// launcher that is not listed is named by its pid.
     #[test]
     fn an_agent_running_nothing_says_so() {
@@ -1383,7 +1442,6 @@ mod tests {
                 " pid 3337048 · claude · busy · 2h · natedev · —",
                 " ~/rust/tool-based-ui-arrange",
                 " launched by pid 1579022",
-                "",
                 " nothing running",
             ]
         );
@@ -1395,43 +1453,20 @@ mod tests {
     #[test]
     fn a_codex_tier_follows_its_program() {
         let codex = AgentRow {
-            session_id: SessionIdentity::Unrecorded,
             agent: Agent::Codex,
             service_tier: ServiceTier::Fast,
-            status: None,
-            children: vec![
-                child(
-                    0,
-                    ChildKind::Detached(Agent::Codex),
-                    Some(468_060),
-                    "app-server",
-                    11 * MINUTE,
-                ),
-                ChildRow {
-                    service_tier: ServiceTier::Standard,
-                    ..child(1, ChildKind::Thread, None, "trunk mesh", 10 * MINUTE)
-                },
-            ],
+            children: vec![ChildRow {
+                service_tier: ServiceTier::Standard,
+                ..child(0, ChildKind::Thread, None, "trunk mesh", 10 * MINUTE)
+            }],
             ..agent(4_039_085, "handler", 12 * MINUTE, None)
         };
-
         let buffer = drawn(&codex, None, WIDE);
-
-        assert_eq!(
-            lines(&buffer),
-            [
-                " pid 4039085 · codex fast · — · 12m · natedev · —",
-                " ~/rust/handler",
-                "",
-                " pid     via       runs      name        age",
-                " 468060  detached  codex     app-server  11m",
-                " —         thread  codex --  trunk mesh  10m",
-            ]
-        );
-        let role = |x, y| Some(buffer[(x, y)].fg);
-        for (x, y) in [(15, 0), (24, 0), (19, 5), (26, 5)] {
-            assert_eq!(role(x, y), Role::Codex.style().fg, "column {x} of row {y}");
+        for text in ["codex fast", "codex --"] {
+            let at = find(&buffer, text).expect("the tier is drawn");
+            assert_eq!(Some(buffer[at].fg), Role::Codex.style().fg);
         }
+        assert_eq!(find_all(&buffer, "trunk mesh").len(), 1);
     }
 
     /// A cell draws its full view at the width that holds its header's
@@ -1441,7 +1476,7 @@ mod tests {
     #[test]
     fn a_cell_compresses_where_its_header_would_be_cut() {
         let boss = agent(BOSS, "boss of bosses", 2 * 24 * HOUR, None);
-        let line = u16::try_from(header_line(&boss, "natedev", NOW).width())
+        let line = u16::try_from(header_line(&boss, "natedev", NOW, AccountColumn::Hidden).width())
             .expect("the line should fit a u16");
 
         let whole = drawn(&boss, None, line);
@@ -1452,7 +1487,6 @@ mod tests {
             [
                 " pid 1579022 · claude · busy · 2d · natedev · —",
                 " ~/rust/boss of bosses",
-                "",
                 " nothing running",
             ]
         );
@@ -1466,56 +1500,24 @@ mod tests {
     #[test]
     fn a_cell_compresses_where_its_directory_would_be_broken() {
         let arrange = AgentRow {
-            directory: "~/rust/hana_catalyst/crates/hana_video/src/permission_queue".to_string(),
-            children: vec![child(
-                0,
-                ChildKind::Shell,
-                Some(2_424_763),
-                "cargo nextest run",
-                45,
-            )],
-            ..agent(ARRANGE, "tool-based-ui-arrange", 2 * HOUR, Some(BOSS))
+            directory: "~/rust/hana_catalyst/crates/hana_video/src/permission_queue/deep/nested/module/source".to_string(),
+            children: vec![child(0, ChildKind::Shell, Some(2_424_763), "cargo nextest run", 45)],
+            ..agent(ARRANGE, "arrange", 2 * HOUR, Some(BOSS))
         };
-        let line = u16::try_from(place_line(&arrange).width()).expect("the line should fit a u16");
-        assert!(
-            usize::from(line) > header_line(&arrange, "natedev", NOW).width(),
-            "the directory's line is the cell's widest"
-        );
-
-        let whole = drawn(&arrange, None, line);
-        let cut = drawn(&arrange, None, line - 1);
-
-        assert_eq!(
-            lines(&whole),
-            [
-                " pid 3337048 · claude · busy · 2h · natedev · —",
-                " ~/rust/hana_catalyst/crates/hana_video/src/permission_queue",
-                " launched by pid 1579022",
-                "",
-                " pid      via    runs     name               age",
-                " 2424763  shell  command  cargo nextest run  45s",
-            ]
-        );
-        let gap = gap_text();
-        let mark = TRUNCATION_MARK;
-        assert_eq!(
-            lines(&cut),
-            [
-                " pid 3337048 · claude · busy · 2h · natedev · —".to_string(),
-                format!(" ~/rust/hana_catalyst/crates/hana_video/src/permission_que{mark}"),
-                " launched by pid 1579022".to_string(),
-                String::new(),
-                format!(" command{gap}cargo nextest run"),
-            ]
-        );
+        let width = u16::try_from(place_line(&arrange).width()).expect("directory width");
+        let whole = drawn(&arrange, None, width);
+        let cut = drawn(&arrange, None, width - 1);
+        assert_eq!(lines(&whole)[1], format!(" {}", arrange.directory));
+        assert!(lines(&cut)[1].ends_with(TRUNCATION_MARK));
+        assert!(find(&whole, "directory").is_some());
+        assert!(find(&cut, "directory").is_none());
+        assert!(find(&cut, "cargo nextest run").is_some());
     }
 
-    /// A cell draws what its agent runs as a table at the width that
-    /// holds every name whole, and one cell narrower, where the table
-    /// would cut a name, its compressed view: a line to each child, what
-    /// it runs in its role, then its name.
+    /// A tree whose widest name cannot fit switches to compressed columns;
+    /// statuses retain their program colors.
     #[test]
-    fn a_cell_compresses_where_its_table_would_cut_a_name() {
+    fn a_cell_compresses_where_its_tree_would_cut_a_name() {
         let arrange = AgentRow {
             children: vec![
                 child(
@@ -1535,32 +1537,32 @@ mod tests {
             ],
             ..agent(ARRANGE, "arrange", 2 * HOUR, None)
         };
-        // The indent, then pid, via, runs, name and age at their widest,
-        // two cells apart.
-        let table = 1 + 7 + 2 + 8 + 2 + 7 + 2 + 31 + 2 + 5;
-
-        let fits = drawn(&arrange, None, table);
-        let cut = drawn(&arrange, None, table - 1);
-
+        let entry = entry(&arrange, None);
+        let width = (1..180)
+            .find(|&width| {
+                matches!(
+                    CellView::at_width(&entry, width, NOW, AccountColumn::Hidden),
+                    CellView::Full(_)
+                )
+            })
+            .expect("full width");
+        let fits = drawn(&arrange, None, width);
+        let cut = drawn(&arrange, None, width - 1);
+        assert!(find(&fits, "cargo nextest run -p hana_video").is_some());
+        assert!(find(&fits, "Review the permission queue").is_some());
         assert_eq!(
-            lines(&fits)[3..],
-            [
-                " pid      via       runs     name                             age",
-                " 2424763  shell     command  cargo nextest run -p hana_video  45s",
-                " —        subagent  claude   Review the permission queue      5m 3s",
-            ]
+            CellView::at_width(&entry, width - 1, NOW, AccountColumn::Hidden),
+            CellView::Compressed
         );
-        let gap = gap_text();
+        assert!(find(&cut, "directory").is_none());
         assert_eq!(
-            lines(&cut),
-            [
-                format!(" command{gap}cargo nextest run -p hana_video"),
-                format!(" claude{gap}Review the permission queue"),
-            ]
+            Some(cut[find(&cut, "command").expect("shell status")].fg),
+            Role::Shell.style().fg
         );
-        assert_eq!(Some(cut[(1, 0)].fg), Role::Shell.style().fg);
-        assert_eq!(Some(cut[(1, 1)].fg), Role::Claude.style().fg);
-        assert_eq!(cut[(10, 0)].fg, text_default(), "a name");
+        assert_eq!(
+            Some(cut[find(&cut, "claude").expect("subagent status")].fg),
+            Role::Claude.style().fg
+        );
     }
 
     /// The text of each run of cells drawn in `color`, row by row,
@@ -1597,7 +1599,9 @@ mod tests {
         let idle = agent(ARRANGE, "tool-based-ui-arrange", 2 * HOUR, Some(BOSS));
         let natedev = boss_group();
         let group = natedev_cells(&natedev);
-        let labels: HashSet<&str> = iter::once(LAUNCHED_BY_LABEL).chain(CHILD_HEADERS).collect();
+        let labels: HashSet<&str> = iter::once(LAUNCHED_BY_LABEL)
+            .chain(FULL.iter().map(|column| column.header()))
+            .collect();
         let entries = [
             entry(&trunk, Some("boss of bosses")),
             entry(&idle, Some("boss of bosses")),
@@ -1640,7 +1644,7 @@ mod tests {
         ];
         for entry in &entries {
             for width in [12, 20, 30, NARROW, 57, 72, WIDE, 120] {
-                let rows = height(entry, width, NOW);
+                let rows = height(entry, width, NOW, AccountColumn::Hidden);
 
                 let drawn = lines(&drawn_into(entry, &group, width, rows + 3));
                 let last = drawn.iter().rposition(|line| !line.is_empty());
@@ -1792,39 +1796,33 @@ mod tests {
     /// Where it all fits, a top-level agent's cell hangs the tree of the
     /// sessions it opened from its header and its branch and directory:
     /// a line to each session, giving its status, branch, directory and
-    /// age, with `—` for a session outside a repository. Its table
-    /// nests what each session runs under the row naming the session.
+    /// age, with `—` for a session outside a repository. Each member's
+    /// work nests directly beneath it, without a duplicate member marker.
     #[test]
     fn a_cell_draws_its_sessions_as_a_tree_and_nests_what_they_run() {
         let natedev = boss_group();
         let cells = natedev_cells(&natedev);
-        assert_eq!(cells.len(), 1, "the sessions share their agent's cell");
-
-        let buffer = drawn_among(&cells[0], &cells, WIDE);
-
-        assert_eq!(
-            lines(&buffer),
-            [
-                " pid 1579022 · claude · busy · 23h · natedev · —",
-                " main · ~/rust/cargo-liner",
-                " ├─ tool-based-ui-trunk    busy  enh/trunk    ~/rust/ui-trunk    21h",
-                " │  └─ trunk-impl          idle  —            ~/scratch/impl     2h",
-                " └─ tool-based-ui-arrange  idle  enh/arrange  ~/rust/ui-arrange  3h",
-                "",
-                " pid      via         runs     name                             age",
-                " 4000001  shell       command  Run the tests                    2m",
-                " 3266367  session     claude   tool-based-ui-trunk              21h",
-                " —          subagent  claude   Review the permission queue      5m 3s",
-                " 2424763      shell   command  cargo nextest run -p hana_video  45s",
-                " 3400000    session   claude   trunk-impl                       2h",
-                " 3337048  session     claude   tool-based-ui-arrange            3h",
-                " 468060     detached  codex    app-server                       1h",
-            ]
-        );
-        let text = text_default();
-        assert_eq!(buffer[(1, 2)].fg, text, "a branch of the tree");
-        assert_eq!(buffer[(1, 3)].fg, text, "a line carried down");
-        assert_eq!(buffer[(1, 4)].fg, text, "the last branch");
+        assert_eq!(cells.len(), 1);
+        let buffer = drawn_among(&cells[0], &cells, 160);
+        let rendered = lines(&buffer);
+        assert!(rendered[0].contains("pid 1579022"));
+        assert_eq!(rendered[1], " main · ~/rust/cargo-liner");
+        assert!(rendered[2].contains("session") && rendered[2].contains("directory"));
+        for name in [
+            "tool-based-ui-trunk",
+            "trunk-impl",
+            "tool-based-ui-arrange",
+            "Run the tests",
+            "Review the permission queue",
+            "cargo nextest run -p hana_video",
+        ] {
+            assert_eq!(find_all(&buffer, name).len(), 1, "{name}");
+        }
+        assert!(find(&buffer, "app-server").is_none());
+        for line in &cells[0].lines {
+            let (x, y) = find(&buffer, &line.lead()).expect("tree glyphs");
+            assert_eq!(buffer[(x, y)].fg, text_default());
+        }
     }
 
     /// Every line of `buffer` holding `text`, at the first cell it
@@ -1846,7 +1844,7 @@ mod tests {
     }
 
     /// An agent's name is drawn in its hue wherever a cell shows it: a
-    /// session's in the tree and in the table, in either view, and a
+    /// session's in the tree, in either view, and a
     /// listed launcher's after `launched by`. A name that is no agent's
     /// keeps the default text color.
     #[test]
@@ -1854,7 +1852,7 @@ mod tests {
         let natedev = boss_group();
         let cells = natedev_cells(&natedev);
         let hue_of = |cells: &[AgentEntry<'_>], pid| name_style(cells, "natedev", pid).fg;
-        for width in [WIDE, NARROW] {
+        for width in [160, 80] {
             let buffer = drawn_among(&cells[0], &cells, width);
 
             for (name, pid) in [
@@ -1863,11 +1861,7 @@ mod tests {
                 ("tool-based-ui-arrange", ARRANGE),
             ] {
                 let found = find_all(&buffer, name);
-                assert_eq!(
-                    found.len(),
-                    2,
-                    "{name} in the tree and the table at {width}"
-                );
+                assert_eq!(found.len(), 1, "{name} in the tree at {width}");
                 for at in found {
                     assert_eq!(
                         Some(buffer[at].fg),
@@ -1892,63 +1886,36 @@ mod tests {
         assert_eq!(Some(buffer[right].fg), hue_of(&cells, 3_700_000));
     }
 
-    /// The blank cells between the facts of a compressed line.
-    fn gap_text() -> String { " ".repeat(usize::from(TABLE_COLUMN_SPACING)) }
-
     /// Too narrow to lie flat, a top-level agent's cell draws no header
     /// and no branch and directory, as the summary lists the agent: a
-    /// line to each session -- its glyphs, name and status -- then a line
-    /// to each child -- what it runs and its name, indented by level --
-    /// each cut where it would not fit, every name and status in the
-    /// color the full view gives it.
+    /// header row and one line per member or work item. Names truncate,
+    /// and statuses retain the colors they take in the full view.
     #[test]
     fn a_compressed_top_level_cell_cuts_each_line_to_its_width() {
-        let natedev = boss_group();
-        let cells = natedev_cells(&natedev);
-        let boss = &cells[0];
-
-        let buffer = drawn_into(boss, &cells, CUTTING, height(boss, CUTTING, NOW));
-
-        let gap = gap_text();
-        let mark = TRUNCATION_MARK;
+        let state = boss_group();
+        let cells = natedev_cells(&state);
+        let entry = &cells[0];
+        let buffer = drawn_among(entry, &cells, NARROW);
+        let rendered = lines(&buffer);
+        assert!(!rendered[0].contains("pid"));
+        assert!(rendered[0].contains("role"));
         assert_eq!(
-            lines(&buffer),
-            [
-                format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy"),
-                format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle"),
-                format!(" {TREE_LAST_BRANCH}tool-based-ui-arrange{gap}id{mark}"),
-                String::new(),
-                format!(" command{gap}Run the tests"),
-                format!(" claude{gap}tool-based-ui-trunk"),
-                format!("   claude{gap}Review the permiss{mark}"),
-                format!("     command{gap}cargo nextest r{mark}"),
-                format!("   claude{gap}trunk-impl"),
-                format!(" claude{gap}tool-based-ui-arrange"),
-                format!("   codex{gap}app-server"),
-            ]
+            rendered.len(),
+            entry.lines.len() + usize::from(TABLE_HEADER_HEIGHT)
         );
-        for (name, pid) in [
-            ("tool-based-ui-trunk", TRUNK),
-            ("trunk-impl", TRUNK_IMPL),
-            ("tool-based-ui-arrange", ARRANGE),
-        ] {
-            let found = find_all(&buffer, name);
-            assert_eq!(found.len(), 2, "{name} in the tree and the table");
-            for at in found {
-                assert_eq!(
-                    buffer[at].fg,
-                    name_style(&cells, "natedev", pid).fg.expect("a hue"),
-                    "{name} at {at:?}"
-                );
-            }
-        }
-        let fg = |text| buffer[find(&buffer, text).expect("the text is drawn")].fg;
-        assert_eq!(Some(fg("busy")), Role::Busy.style().fg);
-        assert_eq!(Some(fg("idle")), Role::Idle.style().fg);
-        assert_eq!(Some(fg("command")), Role::Shell.style().fg);
-        assert_eq!(Some(fg("claude")), Role::Claude.style().fg);
-        assert_eq!(Some(fg("codex")), Role::Codex.style().fg);
-        assert_eq!(fg("Run the tests"), text_default());
+        assert!(rendered.iter().any(|line| line.contains(TRUNCATION_MARK)));
+        assert_eq!(
+            Some(buffer[find(&buffer, "busy").expect("busy status")].fg),
+            Role::Busy.style().fg
+        );
+        assert_eq!(
+            Some(buffer[find(&buffer, "idle").expect("idle status")].fg),
+            Role::Idle.style().fg
+        );
+        assert_eq!(
+            Some(buffer[find(&buffer, "command").expect("shell status")].fg),
+            Role::Shell.style().fg
+        );
     }
 
     /// A wide cell, where every part of its full view lies flat, asks
@@ -1962,10 +1929,13 @@ mod tests {
         let cells = natedev_cells(&natedev);
         let boss = &cells[0];
         assert!(
-            matches!(CellView::at_width(boss, WIDE, NOW), CellView::Full(_)),
+            matches!(
+                CellView::at_width(boss, WIDE, NOW, AccountColumn::Hidden),
+                CellView::Full(_)
+            ),
             "boss lies flat {WIDE} across"
         );
-        let rows = height(boss, WIDE, NOW);
+        let rows = height(boss, WIDE, NOW, AccountColumn::Hidden);
         let header = format!("{SECTION_HEADER_INDENT}{PID_LABEL} {BOSS}");
         let workplace = workplace(boss.row);
 
@@ -1994,50 +1964,26 @@ mod tests {
 
     /// A narrow cell, where its header's line would be cut, draws its
     /// compressed view even given every row its full view takes at a
-    /// wide width: a line to each session -- its glyphs, name and status,
-    /// and no age -- then a line to each child -- what it runs and its
-    /// name, and no pid, `via` or age.
+    /// wide width. It keeps the role, status and age columns and omits
+    /// the branch and directory columns.
     #[test]
     fn a_narrow_cell_compresses_however_many_rows_it_has() {
-        let natedev = boss_group();
-        let cells = natedev_cells(&natedev);
+        let state = boss_group();
+        let cells = natedev_cells(&state);
         let boss = &cells[0];
-        assert!(
-            header_line(boss.row, boss.machine, NOW).width() > usize::from(NARROW),
-            "the header's line would be cut {NARROW} across"
+        let buffer = drawn_into(
+            boss,
+            &cells,
+            NARROW,
+            height(boss, 160, NOW, AccountColumn::Hidden),
         );
-
-        let drawn = lines(&drawn_into(boss, &cells, NARROW, height(boss, WIDE, NOW)));
-
-        let gap = gap_text();
-        let mark = TRUNCATION_MARK;
-        let compressed = [
-            format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy"),
-            format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle"),
-            format!(" {TREE_LAST_BRANCH}tool-based-ui-arrange{gap}idle"),
-            String::new(),
-            format!(" command{gap}Run the tests"),
-            format!(" claude{gap}tool-based-ui-trunk"),
-            format!("   claude{gap}Review the permission queue"),
-            format!("     command{gap}cargo nextest run -p ha{mark}"),
-            format!("   claude{gap}trunk-impl"),
-            format!(" claude{gap}tool-based-ui-arrange"),
-            format!("   codex{gap}app-server"),
-        ];
-        assert_eq!(drawn[..compressed.len()], compressed);
-        assert!(
-            drawn[compressed.len()..].iter().all(String::is_empty),
-            "{drawn:#?}"
-        );
-        let tree = &drawn[..boss.sessions.len()];
-        for session in &boss.sessions {
-            let age = age::age_label(NOW - session.row.started);
-            assert!(
-                !tree.iter().any(|line| line.contains(&age)),
-                "{} shows its age {age}: {tree:#?}",
-                session.row.name
-            );
-        }
+        let rendered = lines(&buffer);
+        assert!(find(&buffer, "directory").is_none());
+        assert!(!rendered[0].contains("pid"));
+        assert!(rendered[0].contains("age"));
+        let count = 1 + boss.lines.len();
+        assert!(rendered[count..].iter().all(String::is_empty));
+        assert!(rendered[..count].iter().all(|line| !line.is_empty()));
     }
 
     /// A launched session whose launcher is not listed is left out of the
@@ -2047,34 +1993,18 @@ mod tests {
     #[test]
     fn a_launched_cell_keeps_its_header_when_compressed() {
         let trunk = trunk();
-        let trunk_entry = entry(&trunk, None);
-        let full = lines(&drawn_among(&trunk_entry, &[], WIDE));
-
-        let compressed = lines(&drawn_into(
-            &trunk_entry,
+        let entry = entry(&trunk, None);
+        let full = lines(&drawn_among(&entry, &[], 180));
+        let short = lines(&drawn_into(
+            &entry,
             &[],
-            WIDE,
-            height(&trunk_entry, WIDE, NOW) - 1,
+            180,
+            height(&entry, 180, NOW, AccountColumn::Hidden) - 1,
         ));
-
-        assert!(full[2].contains(LAUNCHED_BY_LABEL), "{full:#?}");
-        assert_eq!(compressed[..3], full[..3]);
-        let gap = gap_text();
-        assert_eq!(
-            compressed[3..],
-            [
-                String::new(),
-                format!(" codex{gap}app-server"),
-                format!(" command{gap}Launch the Phase 1 implementation seat"),
-                format!("   codex{gap}app-server"),
-                format!("     codex{gap}tool-based-ui-trunk-impl"),
-                format!(" claude{gap}Review the permission queue"),
-                format!(
-                    "   command{gap}cargo nextest run -p hana_video --no-fail-fast -- permission_queue"
-                ),
-                format!(" claude{gap}tool-based-ui-arrange"),
-            ]
-        );
+        assert_eq!(short[..3], full[..3]);
+        assert!(short[2].contains(LAUNCHED_BY_LABEL));
+        assert!(short[3].contains("session"));
+        assert!(!short[3].contains("directory"));
     }
 
     /// A cell too narrow to lie flat asks for the rows of its compressed
@@ -2093,17 +2023,23 @@ mod tests {
         for entry in &entries {
             let name = &entry.row.name;
             assert_eq!(
-                CellView::at_width(entry, NARROW, NOW),
+                CellView::at_width(entry, NARROW, NOW, AccountColumn::Hidden),
                 CellView::Compressed,
                 "{name} lies flat {NARROW} across"
             );
-            let rows = height(entry, NARROW, NOW);
+            let rows = height(entry, NARROW, NOW, AccountColumn::Hidden);
 
             let drawn = lines(&drawn_into(entry, &cells, NARROW, rows + 1));
 
             assert_eq!(
                 rows,
-                view_height(entry, NARROW, NOW, CellView::Compressed),
+                view_height(
+                    entry,
+                    NARROW,
+                    NOW,
+                    &CellView::Compressed,
+                    AccountColumn::Hidden
+                ),
                 "{name}"
             );
             assert_eq!(
@@ -2128,7 +2064,12 @@ mod tests {
             ..trunk()
         };
         assert_eq!(
-            CellView::at_width(&entry(&trunk, Some("boss of bosses")), NARROW, NOW),
+            CellView::at_width(
+                &entry(&trunk, Some("boss of bosses")),
+                NARROW,
+                NOW,
+                AccountColumn::Hidden
+            ),
             CellView::Compressed
         );
 
@@ -2136,22 +2077,20 @@ mod tests {
 
         let mark = TRUNCATION_MARK;
         assert_eq!(
-            lines(&buffer)[..4],
+            lines(&buffer)[..3],
             [
                 format!(" pid 3266367 · claude · busy · 23h · {mark}"),
                 format!(" ~/rust/tool-based-ui-geometry-materi{mark}"),
                 " launched by boss of bosses".to_string(),
-                String::new(),
             ]
         );
-        assert_eq!(runs_in(&buffer, label_color()), [LAUNCHED_BY_LABEL]);
+        assert!(runs_in(&buffer, label_color()).contains(&LAUNCHED_BY_LABEL.to_string()));
     }
 
-    /// A compressed top-level agent with no sessions has nothing above
-    /// its children, so its first row holds the first child, not a
-    /// blank.
+    /// A compressed top-level agent begins with its tree header row,
+    /// immediately followed by the work lines.
     #[test]
-    fn a_compressed_cell_with_nothing_above_its_children_starts_with_them() {
+    fn a_compressed_cell_starts_with_its_tree_header() {
         let arrange = AgentRow {
             children: vec![
                 child(
@@ -2171,23 +2110,12 @@ mod tests {
             ],
             ..agent(ARRANGE, "arrange", 2 * HOUR, None)
         };
-        let arrange_entry = entry(&arrange, None);
-
-        let compressed = lines(&drawn_into(
-            &arrange_entry,
-            &[],
-            WIDE,
-            arrange.children.len(),
-        ));
-
-        let gap = gap_text();
-        assert_eq!(
-            compressed,
-            [
-                format!(" command{gap}cargo nextest run -p hana_video"),
-                format!(" claude{gap}Review the permission queue"),
-            ]
-        );
+        let entry = entry(&arrange, None);
+        let buffer = drawn_into(&entry, &[], 100, 3);
+        let rendered = lines(&buffer);
+        assert!(rendered[0].contains("session") && rendered[0].contains("status"));
+        assert!(rendered[1].contains("Review the permission queue"));
+        assert!(rendered[2].contains("cargo nextest run -p hana_video"));
     }
 
     /// natedev's answer and the mac's: two top-level agents, the older
@@ -2255,7 +2183,7 @@ mod tests {
                     cell.id.machine.as_str(),
                     cell.row.name.as_str(),
                     cell.launcher,
-                    cell.sessions
+                    cell.lines
                         .iter()
                         .map(|session| (session.lead(), session.row.name.as_str()))
                         .collect(),
@@ -2303,8 +2231,9 @@ mod tests {
             .iter()
             .flat_map(|cell| {
                 iter::once((cell.row.name.as_str(), cell.hue)).chain(
-                    cell.sessions
+                    cell.lines
                         .iter()
+                        .filter(|line| matches!(line.subject, LineSubject::Agent(_)))
                         .map(|session| (session.row.name.as_str(), session.hue)),
                 )
             })
@@ -2366,10 +2295,8 @@ mod tests {
         assert_eq!(timer_label(past, NOW), format!("{TIMER_PIE_FULL} 0:00"));
     }
 
-    /// A shell row that is only a timer reads `timer` in its `runs`, in
-    /// the color a command's takes, and its pie and the time left in
-    /// place of its description, in the table and in the compressed
-    /// view.
+    /// A timer shell retains its description as its name and draws the
+    /// pie and remaining time in its shell-colored status column.
     #[test]
     fn a_timer_row_shows_its_pie_and_time_left() {
         let seat = AgentRow {
@@ -2397,30 +2324,16 @@ mod tests {
             ],
             ..agent(3_500_000, "timer-seat", HOUR, Some(BOSS))
         };
-
-        let full = drawn(&seat, Some("boss of bosses"), WIDE);
-        let compressed = drawn(&seat, Some("boss of bosses"), NARROW);
-
-        assert_eq!(
-            lines(&full)[4..],
-            [
-                " pid      via    runs     name                          age",
-                " 2500000  shell  command  Run lint then the full suite  4m",
-                " 2500100  shell  timer    ◔ 3:48                        1m 32s",
-            ]
-        );
-        assert_eq!(
-            runs_in(
-                &full,
-                Role::Shell.style().fg.expect("the shell role has a color")
-            ),
-            ["command", "timer"]
-        );
-        let compressed_lines = lines(&compressed);
-        assert_eq!(
-            compressed_lines[compressed_lines.len() - 2..],
-            [" command  Run lint then the full suite", " timer  ◔ 3:48"]
-        );
+        for width in [160, 65] {
+            let buffer = drawn(&seat, Some("boss of bosses"), width);
+            let at = find(&buffer, "◔ 3:48").expect("timer status");
+            assert_eq!(Some(buffer[at].fg), Role::Shell.style().fg);
+            assert!(find(&buffer, "Re-arm the progress timer").is_some());
+            assert!(
+                runs_in(&buffer, Role::Shell.style().fg.expect("shell color"))
+                    .contains(&"command".to_string())
+            );
+        }
     }
     /// Named management edges for placement fixtures, without running a command.
     fn links(pairs: &[(&str, &str)]) -> HierarchyEdges {
@@ -2469,16 +2382,27 @@ mod tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(
             cells[0]
-                .sessions
+                .lines
                 .iter()
+                .filter(|line| matches!(line.subject, LineSubject::Agent(_)))
                 .map(|session| (session.machine, session.row.name.as_str()))
                 .collect::<Vec<_>>(),
             [("mac", "remote unit"), ("natedev", "local unit")]
         );
         let work: Vec<_> = cells[0]
-            .children
+            .lines
             .iter()
-            .map(|child| (child.machine, child.name.as_str(), child.depth))
+            .map(|line| {
+                (
+                    line.machine,
+                    match line.subject {
+                        LineSubject::Agent(_) => line.row.name.as_str(),
+                        LineSubject::Work(work) => work.child.name.as_str(),
+                        LineSubject::ManagedThread(child, _) => child.name.as_str(),
+                    },
+                    u8::try_from(line.rails.len()).expect("depth"),
+                )
+            })
             .collect();
         assert_eq!(
             work,
@@ -2554,21 +2478,29 @@ mod tests {
         );
         assert_eq!(
             cells[0]
-                .sessions
+                .lines
                 .iter()
+                .filter(|line| matches!(line.subject, LineSubject::Agent(_)))
                 .map(|session| session.row.name.as_str())
                 .collect::<Vec<_>>(),
             ["worker"]
         );
         assert_eq!(
             cells[0]
-                .children
+                .lines
                 .iter()
-                .map(|child| (child.name.as_str(), child.depth))
+                .map(|line| (
+                    match line.subject {
+                        LineSubject::Agent(_) => line.row.name.as_str(),
+                        LineSubject::Work(work) => work.child.name.as_str(),
+                        LineSubject::ManagedThread(child, _) => child.name.as_str(),
+                    },
+                    u8::try_from(line.rails.len()).expect("depth")
+                ))
                 .collect::<Vec<_>>(),
             [("worker", 0), ("member work", 1)]
         );
-        assert!(cells[1].children.is_empty());
+        assert!(cells[1].lines.is_empty());
     }
 
     /// An app server keeps its other work while one identified worker thread moves under its unit.
@@ -2592,16 +2524,21 @@ mod tests {
         );
         let cells = natedev_and_mac_cells(&natedev, &mac);
         assert_eq!(cells.len(), 2);
-        let session = &cells[0].sessions[0];
-        assert!(matches!(session.subject, SessionSubject::Thread(_)));
+        let session = &cells[0].lines[0];
+        assert!(matches!(session.subject, LineSubject::ManagedThread(_, _)));
         assert_eq!(session.name(), "implementation worker · mac");
         assert_eq!(session.started(), NOW - MINUTE);
-        assert!(cells[0].children.is_empty());
+        assert!(
+            cells[0]
+                .lines
+                .iter()
+                .all(|line| !matches!(line.subject, LineSubject::Work(_)))
+        );
         assert_eq!(
             cells[1]
-                .children
+                .lines
                 .iter()
-                .map(|child| child.name.as_str())
+                .map(TreeLine::name)
                 .collect::<Vec<_>>(),
             ["unmanaged thread"]
         );
@@ -2626,11 +2563,13 @@ mod tests {
                         ChildRow {
                             thread_id: CodexThreadId::Recorded("fast-id".to_string()),
                             service_tier: ServiceTier::Fast,
+                            account: Account::Unrecorded,
                             ..child(0, ChildKind::Thread, None, "fast worker", MINUTE)
                         },
                         ChildRow {
                             thread_id: CodexThreadId::Recorded("standard-id".to_string()),
                             service_tier: ServiceTier::Standard,
+                            account: Account::Unrecorded,
                             ..child(0, ChildKind::Thread, None, "standard worker", MINUTE)
                         },
                     ],
@@ -2642,16 +2581,16 @@ mod tests {
         let cells = natedev_cells(&state);
         let manager = &cells[0];
         assert!(matches!(
-            CellView::at_width(manager, 160, NOW),
+            CellView::at_width(manager, 160, NOW, AccountColumn::Hidden),
             CellView::Full(_)
         ));
         assert_eq!(
-            CellView::fitted(manager, area(160, 2), NOW),
+            CellView::fitted(manager, area(160, 2), NOW, AccountColumn::Hidden),
             CellView::Compressed
         );
         for buffer in [
             drawn_among(manager, &cells, 160),
-            drawn_into(manager, &cells, 160, 2),
+            drawn_into(manager, &cells, 160, 3),
         ] {
             let rendered = lines(&buffer);
             for (name, tier) in [
@@ -2670,6 +2609,60 @@ mod tests {
         }
     }
 
+    /// Member roles occupy their text-colored column in both tree layouts.
+    #[test]
+    fn managed_agent_roles_render_in_their_column_in_both_views() {
+        let state = MachineState::Answered(
+            vec![
+                identified(1, "production", 3 * HOUR, None),
+                identified(2, "unit", 2 * HOUR, None),
+                identified(3, "nested", HOUR, None),
+            ],
+            HierarchyEdges(vec![
+                HierarchyEdge {
+                    manager: "production".to_string(),
+                    member:  "unit".to_string(),
+                    role:    HierarchyRole::Impl,
+                },
+                HierarchyEdge {
+                    manager: "unit".to_string(),
+                    member:  "nested".to_string(),
+                    role:    HierarchyRole::Showrunner,
+                },
+            ]),
+        );
+        let cells = natedev_cells(&state);
+        assert!(matches!(
+            CellView::at_width(&cells[0], 160, NOW, AccountColumn::Hidden),
+            CellView::Full(_)
+        ));
+        assert_eq!(
+            CellView::fitted(&cells[0], area(160, 2), NOW, AccountColumn::Hidden),
+            CellView::Compressed
+        );
+        for buffer in [
+            drawn_among(&cells[0], &cells, 160),
+            drawn_into(&cells[0], &cells, 160, 3),
+        ] {
+            for (name, role_label, pid) in [
+                ("unit", RoleLabel::Stated(HierarchyRole::Impl), 2),
+                ("nested", RoleLabel::Stated(HierarchyRole::Showrunner), 3),
+            ] {
+                let (x, y) = find(&buffer, name).expect("member name");
+                assert_eq!(
+                    buffer[(x, y)].fg,
+                    name_style(&cells, "natedev", pid).fg.expect("member hue")
+                );
+                let row = &lines(&buffer)[usize::from(y)];
+                assert!(row.contains(role_label.column_text()));
+                assert!(!row.contains(&role_label.suffix()));
+                let role_byte = row.find(role_label.column_text()).expect("role column");
+                let role_x = summary::cell_width(&row[..role_byte]);
+                assert_eq!(buffer[(role_x, y)].fg, text_default());
+            }
+        }
+    }
+
     /// A worker discovered on a transport-only mesh server renders under its remote unit.
     #[test]
     fn a_mesh_worker_from_production_classification_renders_without_an_app_server_cell() {
@@ -2682,16 +2675,16 @@ mod tests {
         );
         let manager = &cells[0];
         assert!(matches!(
-            CellView::at_width(manager, 160, NOW),
+            CellView::at_width(manager, 160, NOW, AccountColumn::Hidden),
             CellView::Full(_)
         ));
         assert_eq!(
-            CellView::fitted(manager, area(160, 1), NOW),
+            CellView::fitted(manager, area(160, 1), NOW, AccountColumn::Hidden),
             CellView::Compressed
         );
         for buffer in [
             drawn_among(manager, &cells, 160),
-            drawn_into(manager, &cells, 160, 1),
+            drawn_into(manager, &cells, 160, 2),
         ] {
             let rendered = lines(&buffer);
             let workers: Vec<_> = rendered
@@ -2700,6 +2693,8 @@ mod tests {
                 .collect();
             assert_eq!(workers.len(), 1, "the classified mesh worker appears once");
             assert!(workers[0].contains("mesh worker · mac"));
+            let at = find(&buffer, "impl").expect("the managed thread shows its accepted role");
+            assert_eq!(buffer[at].fg, text_default());
             assert!(workers[0].contains("codex fast"));
         }
     }
@@ -2723,7 +2718,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["launcher", "orphan"]
         );
-        assert_eq!(cells[0].sessions[0].row.name, "launched");
+        assert_eq!(cells[0].lines[0].row.name, "launched");
     }
 
     /// Self links, conflicting managers and cycles still place every listed agent exactly once.
@@ -2749,7 +2744,7 @@ mod tests {
         assert_eq!(cells[0].row.name, "a");
         assert_eq!(
             cells[0]
-                .sessions
+                .lines
                 .iter()
                 .map(|session| (session.lead(), session.row.name.as_str()))
                 .collect::<Vec<_>>(),
@@ -2759,7 +2754,7 @@ mod tests {
             .iter()
             .flat_map(|cell| {
                 iter::once((cell.machine, cell.row.pid)).chain(
-                    cell.sessions
+                    cell.lines
                         .iter()
                         .map(|session| (session.machine, session.row.pid)),
                 )
@@ -2773,8 +2768,9 @@ mod tests {
         );
         assert_eq!(
             natedev_cells(&reversed)[0]
-                .sessions
+                .lines
                 .iter()
+                .filter(|line| matches!(line.subject, LineSubject::Agent(_)))
                 .map(|session| session.row.name.as_str())
                 .collect::<Vec<_>>(),
             ["b", "worker"]
@@ -2796,7 +2792,7 @@ mod tests {
                     (
                         cell.machine.to_string(),
                         cell.row.name.clone(),
-                        cell.sessions.len(),
+                        cell.lines.len(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -2860,8 +2856,9 @@ mod tests {
         assert_eq!(cells[0].row.name, "launcher");
         assert_eq!(
             cells[0]
-                .sessions
+                .lines
                 .iter()
+                .filter(|line| matches!(line.subject, LineSubject::Agent(_)))
                 .map(|session| session.row.name.as_str())
                 .collect::<Vec<_>>(),
             ["launched manager"]

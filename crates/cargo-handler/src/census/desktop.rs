@@ -220,9 +220,11 @@ fn desktop_label(window: &WindowEntry) -> Option<String> {
 )]
 mod tests {
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::account::ConfigHome;
 
     /// The single-instance terminal that owns several windows.
     const GHOSTTY: u32 = 44_122;
@@ -238,6 +240,7 @@ mod tests {
             arguments: Vec::new(),
             started: 0,
             directory: None,
+            config_home: ConfigHome::Unread,
             claude_pid: None,
         }
     }
@@ -261,6 +264,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: name.to_string(),
             status: None,
             started: 0,

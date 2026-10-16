@@ -7,6 +7,8 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
@@ -20,12 +22,14 @@ use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
+use tui_pane::label_color;
 use tui_pane::render_status_line;
 
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::app::App;
 use crate::census;
+use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
@@ -102,13 +106,15 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
 /// agents, and a cell for each agent.
 struct Cells<'a> {
     /// This machine, then each configured remote.
-    machines:  Vec<Machine<'a>>,
+    machines:       Vec<Machine<'a>>,
     /// Every agent's cell, in grid order.
-    agents:    Vec<AgentEntry<'a>>,
+    agents:         Vec<AgentEntry<'a>>,
+    /// The account columns and agent labels shared by every cell.
+    account_column: AccountColumn,
     /// The forest shared by cell order and summary roots.
-    placement: AgentPlacement<'a>,
+    placement:      AgentPlacement<'a>,
     /// The unix second the ages are measured to.
-    now:       u64,
+    now:            u64,
 }
 
 impl<'a> Cells<'a> {
@@ -116,9 +122,11 @@ impl<'a> Cells<'a> {
     fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
         let placement = AgentPlacement::from_machines(&machines);
         let agents = agent_cell::cell_order_placed(&placement);
+        let account_column = agent_cell::account_column(&agents);
         Self {
             machines,
             agents,
+            account_column,
             placement,
             now,
         }
@@ -154,13 +162,23 @@ impl TileCells<AgentCell> for Cells<'_> {
         };
         TileDemands {
             summary:       summary::height(&self.machines, &self.placement),
-            summary_width: summary::width(&self.machines, &self.placement, self.now),
+            summary_width: summary::width(
+                &self.machines,
+                &self.placement,
+                self.now,
+                self.account_column,
+            ),
             groups:        self
                 .agents
                 .iter()
                 .map(|entry| TileDemand {
                     id:   entry.id.clone(),
-                    rows: agent_cell::height(entry, width_of(&entry.id), self.now),
+                    rows: agent_cell::height(
+                        entry,
+                        width_of(&entry.id),
+                        self.now,
+                        self.account_column,
+                    ),
                 })
                 .collect(),
         }
@@ -176,11 +194,19 @@ impl TileCells<AgentCell> for Cells<'_> {
                     &self.placement,
                     &self.agents,
                     self.now,
+                    self.account_column,
                 );
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
-                    agent_cell::draw(buffer, inner, entry, &self.agents, self.now);
+                    agent_cell::draw(
+                        buffer,
+                        inner,
+                        entry,
+                        &self.agents,
+                        self.now,
+                        self.account_column,
+                    );
                 }
             },
             // The grid draws an empty cell's number itself.
@@ -188,14 +214,20 @@ impl TileCells<AgentCell> for Cells<'_> {
         }
     }
 
-    /// An agent's cell is titled with the agent's name, in the hue the
-    /// summary draws that name in.
-    fn group_title(&self, id: &AgentCell) -> Option<Span<'static>> {
+    /// The name keeps its summary hue; the accepted or inferred role
+    /// follows in the label color.
+    fn group_title(&self, id: &AgentCell) -> Option<Line<'static>> {
         self.agent(id).map(|entry| {
-            Span::styled(
-                format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                Role::Rainbow(entry.hue).style(),
-            )
+            Line::from(vec![
+                Span::styled(
+                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                    Role::Rainbow(entry.hue).style(),
+                ),
+                Span::styled(
+                    entry.role_label.suffix(),
+                    Style::default().fg(label_color()),
+                ),
+            ])
         })
     }
 }
@@ -240,6 +272,14 @@ mod tests {
     use std::rc::Rc;
     use std::time::Instant;
 
+    use HierarchyRole::Fix;
+    use HierarchyRole::Review;
+    use HierarchyRole::Showrunner;
+    use HierarchyRole::Test;
+    use HierarchyRole::Unit;
+    use RoleLabel::Inferred;
+    use RoleLabel::Stated;
+    use RoleLabel::Unlabeled;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
@@ -250,15 +290,21 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::AgentRow;
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
     use crate::census::CodexThreadId;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
     use crate::census::MachineState;
+    use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::constants::HEADING_SEPARATOR;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -498,16 +544,16 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                  content rows: 3  r/c: 10/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
-        "│ pid 1579022 · claude · idle · 21h · natedev · —                              │",
-        "│ ~/rust/hana_catalyst/docs/hana                                               │",
+        "│    session                                          role      status   age   │",
+        "│ ├─ Launch the Phase 2 implementation seat           shell     command  12m   │",
+        "│ │  └─ tool-based-ui-geometry-material-impl          thread    codex    12m   │",
+        "│ └─ Survey the tile grid                             subagent  claude   5m 3s │",
         "│                                                                              │",
-        "│ pid      via         runs     name                                    age    │",
-        "│ 2406969  shell       command  Launch the Phase 2 implementation seat  12m    │",
-        "│ 2407001    shell     codex    app-server                              12m    │",
-        "│ —            thread  codex    tool-based-ui-geometry-material-impl    12m    │",
-        "│ —        subagent    claude   Survey the tile grid                    5m 3s  │",
         "│                                                                              │",
-        "│                                                  content rows: 8  r/c: 10/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 4  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -681,6 +727,7 @@ fraying = "leading"
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
@@ -690,6 +737,7 @@ fraying = "leading"
             session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,
             service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
             name:            "boss of bosses".to_string(),
             status:          Some("idle".to_string()),
             started:         NOW - age,
@@ -785,6 +833,105 @@ fraying = "leading"
         app.tiles.settle_for_test();
 
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
+    }
+
+    /// Tile titles and nested lines follow the current relationships, retaining name and label
+    /// colors.
+    #[test]
+    fn title_and_tree_role_labels_change_with_accepted_relationships() {
+        let mut app = laid_out_app();
+        let rows = vec![
+            AgentRow {
+                session_id: SessionIdentity::Claude("production".to_string()),
+                name: "production".to_string(),
+                pid: 1,
+                children: Vec::new(),
+                ..boss(3 * 60 * 60)
+            },
+            AgentRow {
+                session_id: SessionIdentity::Claude("member".to_string()),
+                name: "member".to_string(),
+                pid: 2,
+                launched_by: Some(1),
+                children: Vec::new(),
+                ..boss(2 * 60 * 60)
+            },
+        ];
+        for (role, manager_role_label, member_role_label) in [
+            (None, Unlabeled, Unlabeled),
+            (Some(Unit), Inferred(Showrunner), Stated(Unit)),
+            (Some(Test), Inferred(Unit), Stated(Test)),
+            (Some(Review), Inferred(Unit), Stated(Review)),
+            (Some(Fix), Inferred(Unit), Stated(Fix)),
+            (None, Unlabeled, Unlabeled),
+        ] {
+            let manager_label = manager_role_label.suffix();
+            let edges = HierarchyEdges(
+                role.into_iter()
+                    .map(|role| HierarchyEdge {
+                        manager: "production".to_string(),
+                        member: "member".to_string(),
+                        role,
+                    })
+                    .collect(),
+            );
+            app.census.apply(CensusUpdate::Local(rows.clone(), edges));
+            let body = Rect::new(0, 0, 160, 40);
+            drawn_buffer_in(&mut app, body);
+            app.tiles.settle_for_test();
+            let buffer = drawn_buffer_in(&mut app, body);
+            let rendered: Vec<String> = (0..body.height)
+                .map(|y| (0..body.width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let title_text = format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}");
+            let (title_y, title_line) = rendered
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.contains(&title_text) && line.contains('─'))
+                .expect("the grid draws the current title");
+            let prefix = title_line
+                .split_once(&title_text)
+                .expect("the title is present")
+                .0
+                .chars()
+                .count();
+            let title_x = u16::try_from(prefix).expect("the column fits");
+            let title_y = u16::try_from(title_y).expect("the row fits");
+            assert_eq!(
+                buffer[(title_x + 1, title_y)].fg,
+                Role::Rainbow(crate::theme::RainbowHue::Red)
+                    .style()
+                    .fg
+                    .expect("the title has a hue")
+            );
+            let after_name = title_x
+                + u16::try_from(format!("{AGENT_CELL_TITLE_LEAD}production").chars().count())
+                    .expect("the title fits");
+            if manager_label.is_empty() {
+                assert_eq!(
+                    buffer[(after_name, title_y)].symbol(),
+                    "─",
+                    "launch-only groups have no role suffix"
+                );
+            } else {
+                for offset in 0..manager_label.chars().count() {
+                    assert_eq!(
+                        buffer[(
+                            after_name + u16::try_from(offset).expect("the suffix fits"),
+                            title_y
+                        )]
+                            .fg,
+                        label_color()
+                    );
+                }
+            }
+            let member_line = rendered
+                .iter()
+                .find(|line| line.contains("└─ member"))
+                .expect("the child has a tree line");
+            assert!(member_line.contains(member_role_label.column_text()));
+            assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
+        }
     }
 
     #[test]
@@ -903,12 +1050,12 @@ fraying = "leading"
         assert_eq!(
             rows,
             [
-                agent_cell::height(boss, narrow, NOW),
-                agent_cell::height(handler, narrow, NOW),
+                agent_cell::height(boss, narrow, NOW, AccountColumn::Hidden),
+                agent_cell::height(handler, narrow, NOW, AccountColumn::Hidden),
             ]
         );
         assert!(
-            rows[0] < agent_cell::height(boss, WIDTH - 2, NOW),
+            rows[0] < agent_cell::height(boss, 160, NOW, AccountColumn::Hidden),
             "boss compresses narrow and asks for fewer rows than wide"
         );
     }

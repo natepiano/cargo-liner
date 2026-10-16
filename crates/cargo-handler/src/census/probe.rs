@@ -13,13 +13,16 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::Account;
 use super::Agent;
 use super::AgentRow;
 use super::HierarchyEdges;
 use super::HierarchySource;
 use super::SessionIdentity;
+use super::account::AccountLabels;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
+use super::hierarchy::HierarchyAnswer;
 use super::local_machine_name;
 use super::scan::LocalScanner;
 use crate::config::CargoHandler;
@@ -37,6 +40,8 @@ pub(super) struct ProbeAgentRow {
     session_id:      Option<String>,
     #[serde(default)]
     service_tier:    super::ServiceTier,
+    #[serde(default)]
+    account:         Account,
     name:            String,
     status:          Option<String>,
     started:         u64,
@@ -58,6 +63,7 @@ impl From<ProbeAgentRow> for AgentRow {
                 .session_id
                 .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
             service_tier:    row.service_tier,
+            account:         row.account,
             name:            row.name,
             status:          row.status,
             started:         row.started,
@@ -76,17 +82,20 @@ impl From<ProbeAgentRow> for AgentRow {
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    schema:       u32,
+    schema:           u32,
     /// The printing machine's short host name.
-    machine:      String,
+    machine:          String,
     /// Its agents, oldest first, each with what it is running.
-    rows:         Vec<AgentRow>,
+    rows:             Vec<AgentRow>,
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
-    edges:        HierarchyEdges,
+    edges:            HierarchyEdges,
+    /// A failed command must not erase the receiver's last successful links.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hierarchy_failed: bool,
     /// Transport-only worker carriers, ignored by older schema-3 peers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    thread_hosts: Vec<AgentRow>,
+    thread_hosts:     Vec<AgentRow>,
 }
 
 impl ProbeReport {
@@ -99,11 +108,12 @@ impl ProbeReport {
             rows,
             edges,
             thread_hosts,
+            hierarchy_failed: false,
         }
     }
 
     /// Restore transport-only identity before handing an answer to the census.
-    fn into_answer(self) -> (Vec<AgentRow>, HierarchyEdges) {
+    fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
         let rows = self
             .rows
             .into_iter()
@@ -112,7 +122,12 @@ impl ProbeReport {
                 host
             }))
             .collect();
-        (rows, self.edges)
+        let hierarchy = if self.hierarchy_failed {
+            HierarchyAnswer::Failed
+        } else {
+            HierarchyAnswer::Answered(self.edges)
+        };
+        (rows, hierarchy)
     }
 }
 
@@ -129,11 +144,19 @@ pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
     let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let report = ProbeReport::from_answer(
+    let mut report = ProbeReport::from_answer(
         local_machine_name(),
-        LocalScanner::new().scan(),
-        hierarchy::read(&source, &CommandRunner),
+        LocalScanner::new(AccountLabels::new(
+            &loaded.config.accounts,
+            dirs::home_dir().as_deref(),
+        ))
+        .scan(),
+        HierarchyEdges::default(),
     );
+    match hierarchy::read(&source, &CommandRunner) {
+        HierarchyAnswer::Answered(edges) => report.edges = edges,
+        HierarchyAnswer::Failed => report.hierarchy_failed = true,
+    }
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -149,6 +172,17 @@ pub(crate) fn print() -> ExitCode {
 /// The rows of a report read back from `output`, or why there are none:
 /// output that is not a report, or a report from another version.
 pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdges), String> {
+    parse_answer(output).map(|(rows, hierarchy)| {
+        let edges = match hierarchy {
+            HierarchyAnswer::Answered(edges) => edges,
+            HierarchyAnswer::Failed => HierarchyEdges::default(),
+        };
+        (rows, edges)
+    })
+}
+
+/// Decode hierarchy failure separately from an authoritative empty answer.
+pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAnswer), String> {
     let header: SchemaHeader =
         serde_json::from_slice(output).map_err(|_| UNREADABLE_PROBE_REASON.to_string())?;
     if header.schema != PROBE_SCHEMA {
@@ -171,6 +205,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
@@ -186,6 +221,7 @@ mod tests {
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started,
@@ -198,15 +234,17 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            schema:       PROBE_SCHEMA,
-            machine:      "mac".to_string(),
-            thread_hosts: Vec::new(),
-            edges:        HierarchyEdges::default(),
-            rows:         vec![
+            hierarchy_failed: false,
+            schema:           PROBE_SCHEMA,
+            machine:          "mac".to_string(),
+            thread_hosts:     Vec::new(),
+            edges:            HierarchyEdges::default(),
+            rows:             vec![
                 AgentRow {
                     agent:           Agent::Codex,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "ChatGPT".to_string(),
                     status:          None,
                     started:         1_790_000_000,
@@ -222,6 +260,7 @@ mod tests {
                     agent:           Agent::Claude,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
                     status:          Some("idle".to_string()),
                     started:         1_790_000_100,
@@ -248,6 +287,7 @@ mod tests {
                         ),
                         ChildRow {
                             service_tier: ServiceTier::Fast,
+                            account: Account::Unrecorded,
                             ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                         },
                         child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
@@ -277,6 +317,7 @@ mod tests {
                     agent:           Agent::Claude,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "worker".to_string(),
                     status:          Some("busy".to_string()),
                     started:         1_790_000_130,
@@ -302,15 +343,15 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","account":null,"name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
             )
         );
         assert_eq!(
@@ -396,6 +437,28 @@ mod tests {
         assert!(
             rows.iter()
                 .all(|row| row.session_id == SessionIdentity::Unrecorded)
+        );
+    }
+
+    /// A missing extension means success, while a failed discovery remains distinct from empty.
+    #[test]
+    fn old_probe_hierarchy_is_answered_and_failed_probe_keeps_fresh_rows() {
+        let mut report = report();
+        let old = serde_json::to_vec(&report).expect("serialize old-compatible answer");
+        assert!(!String::from_utf8_lossy(&old).contains("hierarchy_failed"));
+        assert_eq!(
+            parse_answer(&old),
+            Ok((
+                report.rows.clone(),
+                HierarchyAnswer::Answered(HierarchyEdges::default())
+            ))
+        );
+        report.hierarchy_failed = true;
+        report.rows[0].name = "fresh row".to_string();
+        let bytes = serde_json::to_vec(&report).expect("serialize failed discovery");
+        assert_eq!(
+            parse_answer(&bytes),
+            Ok((report.rows, HierarchyAnswer::Failed))
         );
     }
 

@@ -182,9 +182,8 @@ pub const fn frame_inner(rect: Rect) -> Rect {
 /// Draw a pane's contents through `draw`, displaced and cut off the way
 /// its [`PaneFrame`] says.
 ///
-/// A pane standing still inside its clip goes straight to `buffer`,
-/// which is both the common case and the only path a pane that never
-/// moves takes. A pane in mid-flight is drawn into a scratch buffer
+/// A pane standing still inside its clip and `buffer` draws directly,
+/// which is the common case. Other panes draw into a scratch buffer
 /// instead. On an opaque screen the scratch buffer starts on the same
 /// screen ground as the target, then only the rows still inside the
 /// clip are copied across. That is what makes a pane leaving a column
@@ -195,13 +194,52 @@ pub const fn frame_inner(rect: Rect) -> Rect {
 /// moving. No border is drawn here; [`GridLines`] lays every line down
 /// afterwards.
 pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mut Buffer, Rect)) {
+    draw_at_destination(ClippedPaneDestination::new(buffer, frame), draw);
+}
+
+/// A pane's destination, bounded by both its motion clip and the borrowed buffer.
+///
+/// The buffer cannot change area while borrowed here. Only the intersection
+/// constructed by `new` supplies destination coordinates for copying.
+struct ClippedPaneDestination<'a> {
+    /// The buffer whose area bounds every destination cell.
+    buffer:  &'a mut Buffer,
+    /// Original geometry, preserving the pane's source rows and clip borders.
+    frame:   PaneFrame,
+    /// The portion of the motion clip inside the destination buffer.
+    visible: Rect,
+}
+
+impl<'a> ClippedPaneDestination<'a> {
+    /// Bind a pane to the intersection of its clip and this buffer's area.
+    fn new(buffer: &'a mut Buffer, frame: PaneFrame) -> Self {
+        let visible = frame.clip.intersection(buffer.area);
+        let visible = visible.intersection(Rect {
+            y: visible.y,
+            height: visible.height,
+            ..frame.rect
+        });
+        Self {
+            buffer,
+            frame,
+            visible,
+        }
+    }
+}
+
+/// Draw directly only when the entire stationary pane fits its destination.
+fn draw_at_destination(
+    destination: ClippedPaneDestination<'_>,
+    draw: impl FnOnce(&mut Buffer, Rect),
+) {
+    let frame = destination.frame;
     let inner = frame.inner();
     if inner.is_empty() {
         return;
     }
-    if frame.is_still() {
-        fill_pane(buffer, frame, inner);
-        draw(buffer, inner);
+    if frame.is_still() && within(frame.rect, destination.visible) {
+        fill_pane(destination.buffer, frame, inner);
+        draw(destination.buffer, inner);
         return;
     }
     let mut scratch = Buffer::empty(frame.rect);
@@ -210,7 +248,7 @@ pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mu
     }
     fill_pane(&mut scratch, frame, inner);
     draw(&mut scratch, inner);
-    blit(buffer, &scratch, frame);
+    blit(destination, &scratch);
 }
 
 /// Lay a pane's tint down under its contents.
@@ -233,11 +271,15 @@ fn fill_pane(buffer: &mut Buffer, frame: PaneFrame, inner: Rect) {
     }
 }
 
-/// Copy a drawn pane onto `target` displaced by its shift, keeping only
-/// what lands inside its clip.
-fn blit(target: &mut Buffer, scratch: &Buffer, frame: PaneFrame) {
+/// Copy a drawn pane only into its destination's bounded visible cells.
+fn blit(destination: ClippedPaneDestination<'_>, scratch: &Buffer) {
+    let ClippedPaneDestination {
+        buffer,
+        frame,
+        visible,
+    } = destination;
     let (rect, clip) = (frame.rect, frame.clip);
-    for y in clip.top()..clip.bottom() {
+    for y in visible.top()..visible.bottom() {
         let Some(source) = i32::from(y)
             .checked_sub(frame.shift)
             .and_then(|row| u16::try_from(row).ok())
@@ -254,8 +296,8 @@ fn blit(target: &mut Buffer, scratch: &Buffer, frame: PaneFrame) {
         if source_is_inside && target_is_clip_border {
             continue;
         }
-        for x in rect.left().max(clip.left())..rect.right().min(clip.right()) {
-            target[(x, y)] = scratch[(x, source)].clone();
+        for x in visible.left()..visible.right() {
+            buffer[(x, y)] = scratch[(x, source)].clone();
         }
     }
 }
@@ -348,7 +390,7 @@ struct Overlay {
     /// Where it goes, before the pane's shift is applied.
     rect:  Rect,
     /// The text.
-    text:  String,
+    text:  Line<'static>,
     /// The shade to write it in.
     style: OverlayStyle,
 }
@@ -477,11 +519,11 @@ impl GridLines {
     /// The title goes where a ratatui [`Block`] puts a left-aligned one:
     /// the top border line, inset a cell at each end so it clears the
     /// corners. It is written in the chrome's title style under the
-    /// pane's focus with the span's own style patched over it, so plain
-    /// text takes the title style unchanged.
+    /// pane's focus with the line's and each span's styles patched over
+    /// it, so plain text takes the title style unchanged.
     ///
     /// [`Block`]: ratatui::widgets::Block
-    pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Span<'a>>) {
+    pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Line<'a>>) {
         self.add(frame);
         let title = title.into();
         let rect = frame.rect;
@@ -495,7 +537,13 @@ impl GridLines {
                     .saturating_sub(BORDER_LINE_WIDTH.saturating_mul(2)),
                 height: 1,
             },
-            text: title.content.into_owned(),
+            text: Line::from(
+                title
+                    .spans
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.into_owned(), span.style))
+                    .collect::<Vec<_>>(),
+            ),
             style: OverlayStyle::Title(title.style),
         });
     }
@@ -581,7 +629,7 @@ impl GridLines {
         self.labels.push(Overlay {
             frame,
             rect: label.area,
-            text: label.text,
+            text: Line::raw(label.text),
             style: OverlayStyle::Label(label.style),
         });
     }
@@ -706,18 +754,39 @@ impl GridLines {
             OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
             OverlayStyle::Label(style) => style,
         };
+        let text = Line::from(
+            overlay
+                .text
+                .spans
+                .iter()
+                .map(|span| Span::styled(span.content.as_ref(), style.patch(span.style)))
+                .collect::<Vec<_>>(),
+        );
         if matches!(overlay.style, OverlayStyle::Title(_))
             && overlay.text.width() > row.width.into()
         {
             let text_width = row.width.saturating_sub(1);
-            Line::from(Span::styled(overlay.text.as_str(), style)).render(
+            let mut visible_width = 0;
+            let mut elision_style = style;
+            for grapheme in text.styled_graphemes(style) {
+                let next_width = visible_width + grapheme.symbol.width();
+                if next_width > usize::from(text_width) {
+                    if visible_width == 0 {
+                        elision_style = grapheme.style;
+                    }
+                    break;
+                }
+                visible_width = next_width;
+                elision_style = grapheme.style;
+            }
+            text.render(
                 Rect {
                     width: text_width,
                     ..row
                 },
                 buffer,
             );
-            Line::from(Span::styled(ELISION, style)).render(
+            Line::from(Span::styled(ELISION, elision_style)).render(
                 Rect {
                     x: row.x.saturating_add(text_width),
                     width: 1,
@@ -727,7 +796,7 @@ impl GridLines {
             );
             return;
         }
-        Line::from(Span::styled(overlay.text.as_str(), style)).render(row, buffer);
+        text.render(row, buffer);
     }
 
     /// Union `sides` into the cell the pane puts at (`x`, `y`).
@@ -1217,6 +1286,122 @@ mod tests {
         assert!(!buffer[(9, 0)].modifier.contains(Modifier::BOLD));
     }
 
+    #[test]
+    fn title_segments_keep_their_styles_and_focus_weight_when_clipped() {
+        for focused in [false, true] {
+            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha · …┐")]
+            {
+                let area = Rect::new(0, 0, width, 3);
+                let chrome = PaneChrome {
+                    active_title: Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    ..chrome()
+                };
+                let title = Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ])
+                .style(Style::default().add_modifier(Modifier::ITALIC));
+                let mut grid = GridLines::new(area);
+                grid.add_titled(PaneFrame::new(area).with_focus(focused), title);
+                let mut buffer = Buffer::empty(area);
+                grid.render(&mut buffer, chrome, PaneBorders::Shared);
+
+                assert_eq!(rows(&buffer, area)[0], expected);
+                for (x, color) in [(1, Color::Blue), (7, Color::Yellow)] {
+                    let cell = &buffer[(x, 0)];
+                    assert_eq!(cell.fg, color);
+                    assert_eq!(cell.modifier.contains(Modifier::BOLD), focused);
+                    assert!(cell.modifier.contains(Modifier::ITALIC));
+                }
+                assert_eq!(buffer[(width - 1, 0)].symbol(), "┐");
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_title_ellipsis_keeps_the_last_visible_segment_style() {
+        for (title, width, expected) in [
+            (
+                Line::from(Span::styled("alpha", Style::default().fg(Color::Blue))),
+                6,
+                Color::Blue,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ]),
+                11,
+                Color::Yellow,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("alpha", Style::default().fg(Color::Blue)),
+                    Span::styled(" · unit", Style::default().fg(Color::Yellow)),
+                ]),
+                6,
+                Color::Blue,
+            ),
+            (
+                Line::from(vec![
+                    Span::styled("abc", Style::default().fg(Color::Blue)),
+                    Span::styled("界unit", Style::default().fg(Color::Yellow)),
+                ]),
+                7,
+                Color::Blue,
+            ),
+            (
+                Line::from(Span::styled("alpha", Style::default().fg(Color::Blue))),
+                3,
+                Color::Blue,
+            ),
+        ] {
+            let area = Rect::new(0, 0, width, 3);
+            let chrome = PaneChrome {
+                active_title: Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                ..chrome()
+            };
+            let mut grid = GridLines::new(area);
+            grid.add_titled(
+                PaneFrame::new(area).with_focus(true),
+                title.style(Style::default().add_modifier(Modifier::ITALIC)),
+            );
+            let mut buffer = Buffer::empty(area);
+            grid.render(&mut buffer, chrome, PaneBorders::Shared);
+
+            let elision = &buffer[(width - 2, 0)];
+            assert_eq!(elision.symbol(), ELISION);
+            assert_eq!(elision.fg, expected);
+            assert!(elision.modifier.contains(Modifier::BOLD));
+            assert!(elision.modifier.contains(Modifier::ITALIC));
+        }
+    }
+
+    #[test]
+    fn shifted_titles_carry_every_segment_to_the_visible_border() {
+        let area = Rect::new(0, 0, 12, 5);
+        let mut grid = GridLines::new(area);
+        grid.add_titled(
+            PaneFrame::shifted(Rect::new(0, 0, 12, 3), 2, area),
+            Line::from(vec![
+                Span::styled("unit", Style::default().fg(Color::Blue)),
+                Span::styled(" · test", Style::default().fg(Color::Yellow)),
+            ]),
+        );
+        let mut buffer = Buffer::empty(area);
+        grid.render(&mut buffer, chrome(), PaneBorders::Shared);
+
+        assert_eq!(rows(&buffer, area)[0], "            ");
+        assert_eq!(rows(&buffer, area)[2], "┌unit · te…┐");
+        assert_eq!(buffer[(1, 2)].fg, Color::Blue);
+        assert_eq!(buffer[(7, 2)].fg, Color::Yellow);
+        assert!(!rows(&buffer, area)[4].contains("unit"));
+    }
+
     /// The still path draws straight through to the target buffer, at
     /// the rect inside the pane's borders.
     #[test]
@@ -1246,6 +1431,53 @@ mod tests {
         );
         assert_eq!(buffer[(1, 1)].symbol(), " ");
         assert_eq!(buffer[(1, 3)].symbol(), "x");
+    }
+
+    /// A column's motion clip can extend beyond the terminal's last row.
+    #[test]
+    fn an_overhanging_pane_draws_the_last_destination_row_without_overrunning_it() {
+        let area = Rect::new(0, 0, 6, 5);
+        let mut buffer = Buffer::empty(area);
+        draw_clipped(
+            &mut buffer,
+            PaneFrame::shifted(Rect::new(0, 0, 6, 6), 1, Rect::new(0, 0, 6, 8)),
+            |target, inner| {
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        target[(x, y)].set_symbol("x");
+                    }
+                }
+            },
+        );
+
+        assert_eq!(rows(&buffer, area)[4], " xxxx ");
+        assert_eq!(rows(&buffer, area)[0], "      ");
+    }
+
+    /// The destination intersection applies on every side, including the still path.
+    #[test]
+    fn overhanging_panes_preserve_source_coordinates_in_an_offset_destination() {
+        let area = Rect::new(3, 4, 5, 4);
+        for frame in [
+            PaneFrame::new(Rect::new(1, 1, 9, 9)),
+            PaneFrame::shifted(Rect::new(1, 1, 9, 9), 2, Rect::new(0, 0, 12, 12)),
+        ] {
+            let mut buffer = Buffer::empty(area);
+            draw_clipped(&mut buffer, frame, |target, inner| {
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        target[(x, y)].set_symbol(&y.to_string());
+                    }
+                }
+            });
+
+            for y in area.top()..area.bottom() {
+                let source = i32::from(y) - frame.shift();
+                for x in area.left()..area.right() {
+                    assert_eq!(buffer[(x, y)].symbol(), source.to_string());
+                }
+            }
+        }
     }
 
     #[test]
