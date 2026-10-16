@@ -4,6 +4,14 @@
 
 `cargo-berth hook post-tool-use` runs the drift check on every tool call. In one worktree it ran one thread at full CPU, with no output, until the 600 s hook timeout ended it. A foreign worktree there held 13 blocking reservations with 4,732 scopes, 364 of them distinct. Two costs were quadratic. Scope reduction compared every pair of scopes. Each holder's protection was worked out again for every changed path the check classified. The design below changes cost only. Every answer stays identical: the same conflicts, the same scopes in the same order, the same JSON. That hook now takes 1.79–2.47 s on a release build on a quiet machine.
 
+## Check under load
+
+Measurements on 2026-10-16 in `hana_catalyst-inspectors` (17 worktrees, natedev load average 63–127) found that every edit check reconciled while foreign reservations remained, even for an already-held path. One trace waited 2.6 s for `mutation.lock`, held it from 2.57 s to 12.74 s, and finished at 14.3 s. Eleven sequential `git status --porcelain -z` calls consumed 5.5 s (0.15–1.32 s each); `update-ref --stdin` took 1.2 s and revision walks about 1.5 s. Other runs finished at 5.8 s and 23 s, or reached the 10 s lock deadline. Queued reconciliations pushed edit hooks past their 25 s limit. A checkpoint decode measured 135 ms; that cost remains.
+
+`verb/check.rs` now returns `AlreadyHeld` from its first lock-free decision when no conflict exists and the caller selects an active reservation through a session mapping or explicit id whose run already covers the requested paths. It shares the locked acquisition's sibling-aware coverage rule and acquisition construction. Unmapped callers, single-active fallback, uncovered paths, and conflicts keep the locked path. An explicit selection also keeps the locked path when it must create or move the harness-session mapping, so subsequent checks continue the selected reservation. The fast path takes no mutation lock and publishes nothing; its successful envelope retains the locked path's scopes, identity, baseline, message, and publication fields. It uses retained foreign protection, so dirty work introduced by another holder since reconciliation is discovered on a later reconciliation.
+
+`reconcile.rs::derive_merge_extents` observes each distinct `(worktree, recorded target)` on its own scoped thread with its own Git cost counter. Keys retain first-seen order; the existing reservation-order fold runs after all observations finish, preserving journal operation order, retained failure evidence, and summed Git cost counts. Observations still occur under the mutation lock. The barrier unit test requires three observations to enter together and also checks sibling deduplication, operation order, and cost totals; the integration proof holds the mutation lock while an already-held check returns and an unheld check reaches its short lock deadline.
+
 ## How it works
 
 ### Keyed scope reduction

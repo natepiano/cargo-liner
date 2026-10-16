@@ -2259,6 +2259,10 @@ struct HolderMergeProtection {
     committed_paths: CommittedMergeEvidence,
 }
 
+/// One result per distinct holder and recorded target in a reconciliation pass.
+type HolderMergeExtentObservations =
+    HashMap<(WorktreeId, IntegrationTarget), Result<HolderMergeProtection, String>>;
+
 /// One holder's new merge extent and every reservation of that holder whose extent it replaces.
 struct HolderMergeExtentChange {
     holder:       (WorktreeId, IntegrationTarget),
@@ -2281,7 +2285,32 @@ fn derive_merge_extents(
     planned: &[JournalOperation],
     git_cost: &mut MergeExtentGitCost,
 ) -> Result<MergeExtentReconciliation, ReservationReplayError> {
-    let mut observed_by_worktree = HashMap::new();
+    derive_merge_extents_with_observer(
+        reservations,
+        snapshot,
+        planned,
+        git_cost,
+        observe_merge_extent,
+    )
+}
+
+/// Keep observation injectable within this module so concurrency can be proved without Git.
+fn derive_merge_extents_with_observer(
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+    planned: &[JournalOperation],
+    git_cost: &mut MergeExtentGitCost,
+    observe: impl Fn(
+        &Reservation,
+        &RetainedReservationSet,
+        &RepositorySnapshot,
+        &[JournalOperation],
+        &mut MergeExtentGitCost,
+    ) -> Result<HolderMergeProtection, String>
+    + Sync,
+) -> Result<MergeExtentReconciliation, ReservationReplayError> {
+    let observed_by_worktree =
+        observe_holder_merge_extents(reservations, snapshot, planned, git_cost, &observe);
     let mut changes: Vec<HolderMergeExtentChange> = Vec::new();
     for reservation in reservations.iter().filter(|reservation| {
         !matches!(
@@ -2293,11 +2322,9 @@ fn derive_merge_extents(
             reservation.actor().worktree,
             snapshot.recorded_target(reservation.id()).clone(),
         );
-        let observed = observed_by_worktree
-            .entry(holder.clone())
-            .or_insert_with(|| {
-                observe_merge_extent(reservation, reservations, snapshot, planned, git_cost)
-            });
+        let Some(observed) = observed_by_worktree.get(&holder) else {
+            continue;
+        };
         let extent = observed.as_ref().map_or_else(
             |failure| Cow::Owned(reservation.merge_extent().unavailable(failure.clone())),
             |observation| Cow::Borrowed(&observation.extent),
@@ -2365,6 +2392,70 @@ fn derive_merge_extents(
                 )
             })
             .collect(),
+    })
+}
+
+/// Observe distinct holder keys concurrently, then collect costs in first-seen order.
+fn observe_holder_merge_extents(
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+    planned: &[JournalOperation],
+    git_cost: &mut MergeExtentGitCost,
+    observe: &(
+         impl Fn(
+        &Reservation,
+        &RetainedReservationSet,
+        &RepositorySnapshot,
+        &[JournalOperation],
+        &mut MergeExtentGitCost,
+    ) -> Result<HolderMergeProtection, String>
+         + Sync
+     ),
+) -> HolderMergeExtentObservations {
+    let mut seen_holders = HashSet::new();
+    let holders = reservations
+        .iter()
+        .filter(|reservation| {
+            !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+        })
+        .filter_map(|reservation| {
+            let key = (
+                reservation.actor().worktree,
+                snapshot.recorded_target(reservation.id()).clone(),
+            );
+            seen_holders
+                .insert(key.clone())
+                .then_some((key, reservation))
+        })
+        .collect::<Vec<_>>();
+    std::thread::scope(|scope| {
+        // Start every observer before joining any of them; a lazy iterator serializes them.
+        let mut observers = Vec::with_capacity(holders.len());
+        for (key, reservation) in holders {
+            observers.push((
+                key,
+                scope.spawn(move || {
+                    let mut cost = MergeExtentGitCost::default();
+                    let observation =
+                        observe(reservation, reservations, snapshot, planned, &mut cost);
+                    (observation, cost)
+                }),
+            ));
+        }
+        observers
+            .into_iter()
+            .map(|(key, observer)| {
+                let (observation, cost) = observer
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                git_cost.worktree_status_queries += cost.worktree_status_queries;
+                git_cost.path_queries += cost.path_queries;
+                (key, observation)
+            })
+            .collect::<HashMap<_, _>>()
     })
 }
 
@@ -5466,6 +5557,7 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
+    use crate::ledger::JournalOperation;
     use crate::ledger::ReservationJudgingBranch;
     use crate::output::CommandVerb;
     use crate::reservation::IntegrationEvidenceObservation;
@@ -5485,6 +5577,91 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn merge_extent_observations_run_concurrently_in_holder_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, _] = checkpoint_events()?;
+        let mut events = Vec::new();
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            let mut event = serde_json::to_value(&claim)?;
+            let id = ReservationId::new();
+            event["reservation_id"] = json!(id);
+            event["actor"]["worktree"] = json!(crate::ids::WorktreeId::new());
+            event["projection_generation"] = json!(index + 1);
+            events.push(serde_json::from_value::<JournalEvent>(event)?);
+            ids.push(id);
+        }
+        // A sibling must share its holder's observation, without spawning a fourth observer.
+        let mut sibling = serde_json::to_value(&events[0])?;
+        let sibling_id = ReservationId::new();
+        sibling["reservation_id"] = json!(sibling_id);
+        sibling["projection_generation"] = json!(4);
+        events.push(serde_json::from_value(sibling)?);
+        let reservations = RetainedReservationSet::replay(&events)?;
+        let snapshot = crate::edge::RepositorySnapshot::new(
+            IntegrationTarget::from_branch_argument("main")?,
+            BTreeMap::new(),
+            std::collections::HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::edge::CrossTargetPredecessorEvidence::default(),
+        );
+        let extent = later_work_extent()?;
+        let expected_extent = extent.clone();
+        let barrier = std::sync::Barrier::new(3);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cost = super::MergeExtentGitCost::default();
+            let result = super::derive_merge_extents_with_observer(
+                &reservations,
+                &snapshot,
+                &[],
+                &mut cost,
+                |_, _, _, _, cost| {
+                    barrier.wait();
+                    cost.worktree_status_queries += 1;
+                    cost.path_queries += 2;
+                    Ok(super::HolderMergeProtection {
+                        extent:          extent.clone(),
+                        committed_paths: super::CommittedMergeEvidence::Unavailable,
+                    })
+                },
+            );
+            let _ = sender.send((result, cost));
+        });
+        let (result, cost) = receiver.recv_timeout(std::time::Duration::from_millis(400))?;
+        let reconciliation = result?;
+        assert_eq!(cost.worktree_status_queries, 3);
+        assert_eq!(cost.path_queries, 6);
+        let groups = reconciliation
+            .operations
+            .iter()
+            .map(|operation| {
+                let JournalOperation::HolderMergeExtentObserved {
+                    extent,
+                    reservations,
+                } = operation
+                else {
+                    return Err("expected a holder extent observation");
+                };
+                assert_eq!(extent, &expected_extent);
+                Ok(reservations
+                    .as_slice()
+                    .iter()
+                    .map(|reservation| reservation.reservation_id)
+                    .collect::<Vec<_>>())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            groups,
+            [vec![ids[0], sibling_id], vec![ids[1]], vec![ids[2]]]
+        );
+        assert_eq!(reconciliation.observed_by_holder.len(), 3);
+        assert_eq!(reconciliation.committed_by_holder.len(), 3);
+        Ok(())
+    }
 
     #[test]
     fn rewrite_target_tips_are_resolved_once_per_distinct_branch()
