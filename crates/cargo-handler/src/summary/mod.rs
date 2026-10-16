@@ -1227,3 +1227,7 @@ mod footer_tests;
 #[cfg(test)]
 #[path = "sort_tests.rs"]
 mod sort_tests;
+
+#[cfg(test)]
+#[path = "unassigned_summary_tests.rs"]
+mod unassigned_summary_tests;

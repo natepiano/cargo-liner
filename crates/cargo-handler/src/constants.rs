@@ -561,3 +561,6 @@ pub(crate) const UNREADABLE_PROBE_REASON: &str = "unreadable probe output";
 pub(crate) const SSH_NOT_STARTED_REASON: &str = "ssh could not start";
 /// Why a remote gave no answer: the probe was ended by a signal.
 pub(crate) const PROBE_SIGNALLED_REASON: &str = "probe ended by a signal";
+
+/// Title of a machine's pool of sessions without production roles.
+pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";

@@ -210,7 +210,7 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::sort::TreeSort;
-    use crate::tiles::AgentCell;
+    use crate::tiles::TileKey;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -268,10 +268,8 @@ mod tests {
             "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
         }))
         .expect("a fixture agent");
-        let id = AgentCell {
-            machine:         "natedev".to_string(),
-            pid:             10,
-            process_started: 100,
+        let id = TileKey::Unassigned {
+            machine: "natedev".to_string(),
         };
         let (sender, updates) = mpsc::channel();
         let (_appearance_sender, appearances) = mpsc::channel();
@@ -310,9 +308,8 @@ mod tests {
             })
             .expect("publish a remote answer");
         ticker.drain_census(&mut app);
-        let remote_id = AgentCell {
+        let remote_id = TileKey::Unassigned {
             machine: "mac".to_string(),
-            ..id
         };
         app.tree_sorts.insert(remote_id.clone(), sort);
         sender

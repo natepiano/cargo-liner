@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Top-level sessions without a production role share one sortable `unassigned` tile per machine, retaining their own name colors and nested work.
 - Click a tree or summary column header to sort its siblings or machine group; click again to reverse. The default `age ▼` keeps the existing order and name colors. Codex workers use hierarchy roles, then the folded dispatch’s session roster role or seat role token, or `worker`; every Codex worker name uses its parent session’s color.
 - Codex thread rows show busy or idle from their rollout turn events. Their tier mark follows the tree account label.
 - Worker launcher shells fold into their matching thread within the same tile. The worker row shows its short seat name and dispatched job; unmatched launchers remain visible.

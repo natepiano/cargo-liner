@@ -56,8 +56,10 @@ use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::startup_log;
 use crate::startup_log::StartupProbe;
+#[cfg(test)]
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
+use crate::tiles::TileKey;
 
 /// The attract screen, sharing the handler's optional startup timing log.
 pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
@@ -107,7 +109,7 @@ pub(crate) struct App {
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
     /// Per-root preferences, discarded when that root leaves the census.
-    pub(crate) tree_sorts:        HashMap<AgentCell, TreeSort>,
+    pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:      SummarySort,
     /// Message shown on the keymap overlay's selected row after a
@@ -132,15 +134,14 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Discard preferences for roots no longer represented by a tile.
+    /// Discard preferences for session or machine-pool tiles no longer present.
     pub(crate) fn prune_tree_sorts(&mut self) {
         let machines = self
             .census
             .machines(&self.loaded_config.config.machines.remote);
         let placement = AgentPlacement::from_machines(&machines);
-        let cells = agent_cell::cell_order_placed(&placement);
-        self.tree_sorts
-            .retain(|id, _| cells.iter().any(|entry| entry.id == *id));
+        let keys = agent_cell::tile_keys(&placement);
+        self.tree_sorts.retain(|id, _| keys.contains(id));
     }
 
     /// Build the app with the grid focused and the keymap loaded.
@@ -327,13 +328,13 @@ impl TerminalApp for App {
 
 /// The tile grid is the whole body, registered under [`AppPaneId::Main`].
 impl TileGridHost for App {
-    type TileId = AgentCell;
+    type TileId = TileKey;
 
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 
-    fn cell_clicked(&mut self, click: CellClick<AgentCell>) { render::cell_clicked(self, click); }
+    fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of
@@ -366,6 +367,9 @@ mod tests {
     use super::*;
     use crate::agent_cell::TreeColumn;
     use crate::census::AgentRow;
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyRole;
+    use crate::census::SessionIdentity;
     use crate::config::Config;
     use crate::sort::SummaryColumn;
 
@@ -380,23 +384,39 @@ mod tests {
             }))
             .expect("a fixture agent")
         };
+        let completed = |roots: Vec<AgentRow>| {
+            let mut rows = Vec::new();
+            let mut edges = Vec::new();
+            for mut root in roots {
+                let manager = format!("root-{}", root.pid);
+                let member = format!("member-{}", root.pid);
+                root.session_id = SessionIdentity::Claude(manager.clone());
+                let mut child = row(root.pid + 1000, root.started + 1);
+                child.session_id = SessionIdentity::Claude(member.clone());
+                edges.push(HierarchyEdge {
+                    manager,
+                    member,
+                    role: HierarchyRole::Impl,
+                });
+                rows.extend([root, child]);
+            }
+            CensusUpdate::LocalScanCompleted(rows, HierarchyEdges(edges))
+        };
         let mut app = App::new_for_test().expect("a test app");
         let first = row(10, 100);
         let second = row(20, 200);
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![first.clone(), second.clone()],
-            HierarchyEdges::default(),
-        ));
-        let first_id = AgentCell {
+        app.census
+            .apply(completed(vec![first.clone(), second.clone()]));
+        let first_id = TileKey::Agent(AgentCell {
             machine:         "natedev".to_string(),
             pid:             10,
             process_started: 100,
-        };
-        let second_id = AgentCell {
+        });
+        let second_id = TileKey::Agent(AgentCell {
             machine:         "natedev".to_string(),
             pid:             20,
             process_started: 200,
-        };
+        });
         let mut first_sort = TreeSort::default();
         first_sort.select(TreeColumn::Role);
         let mut second_sort = TreeSort::default();
@@ -406,18 +426,12 @@ mod tests {
         app.summary_sort.select(SummaryColumn::Status);
         let summary_sort = app.summary_sort;
 
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![second, first.clone()],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(completed(vec![second, first.clone()]));
         app.prune_tree_sorts();
         assert_eq!(app.tree_sorts.get(&first_id), Some(&first_sort));
         assert_eq!(app.tree_sorts.get(&second_id), Some(&second_sort));
 
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![first, row(20, 300)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(completed(vec![first, row(20, 300)]));
         app.prune_tree_sorts();
         assert_eq!(
             app.tree_sorts.len(),
