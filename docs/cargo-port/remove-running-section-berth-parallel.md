@@ -110,7 +110,7 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 **Ruled out:** restricting the fast path to the selected reservation's own scopes (the locked answer is identical, and the restriction would slow sibling-held edits).
 
-### Phase 8 — A busy ledger answers as busy  · status: pending
+### Phase 8 — A busy ledger answers as busy  · status: done
 
 **Depends on:** Phase 7
 

@@ -144,7 +144,6 @@ pub(crate) fn execute(
         return reconcile_and_retry(
             &invocation_directory,
             check_request.declared_scopes,
-            first_decision,
             check_request.reservation_selection,
             recovery_command_line,
         );
@@ -155,14 +154,10 @@ pub(crate) fn execute(
             check_request.reservation_selection,
             recovery_command_line,
         ) {
-            Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { conflicts, .. })) => {
+            Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { .. })) => {
                 reconcile_and_retry(
                     &invocation_directory,
                     check_request.declared_scopes,
-                    CheckDecision {
-                        conflicts,
-                        ..first_decision
-                    },
                     check_request.reservation_selection,
                     recovery_command_line,
                 )
@@ -173,17 +168,15 @@ pub(crate) fn execute(
     reconcile_and_retry(
         &invocation_directory,
         check_request.declared_scopes,
-        first_decision,
         check_request.reservation_selection,
         recovery_command_line,
     )
 }
 
-/// Reconcile, then decide again; `fallback` answers when reconciliation fails.
+/// Reconcile, then decide again; report reconciliation failures directly.
 fn reconcile_and_retry(
     invocation_directory: &Path,
     declared_scopes: DeclaredReservationScopeSet,
-    fallback: CheckDecision,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
@@ -198,13 +191,7 @@ fn reconcile_and_retry(
                     &expected_configuration_path,
                 );
             },
-            Err(_) => {
-                return OutputEnvelope::blocked_check(
-                    fallback.scopes,
-                    fallback.conflicts,
-                    fallback.approver,
-                );
-            },
+            Err(error) => return error.into_output(CommandVerb::Check),
         };
     let retried_decision = match decide(
         invocation_directory,

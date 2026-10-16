@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A busy ledger during an edit check now answers as busy instead of reporting an overlap with no holder.
+
 - Edit checks of paths already held by the caller's selected reservation return without locking or reconciliation; reconciliation observes distinct holder worktrees concurrently while preserving operation order and Git cost counts.
 
 - Discovery skips an empty or partial `.git` directory and honours `GIT_CEILING_DIRECTORIES` when searching for a worktree.
