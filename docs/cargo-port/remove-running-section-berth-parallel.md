@@ -45,7 +45,7 @@ Mapped 2026-10-16 at `834cffba` (main).
 - **Project:** `cargo-berth`, the worktree reservation ledger and hook engine.
 - **Project started:** 2026-10-16T18:20:00.000+00:00
 - **Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`. Every seat works only here, and every Work Order names it.
-- **Base commit:** `834cffba` (main, merged in at phase 9's start).
+- **Base commit:** `f3fbdef3` (main, merged in at phase 11's start as `5ad2908c`).
 - **Test lanes:** `crates/cargo-berth/tests/`.
 - **Stack:** Rust workspace, cargo-nextest. The crate has no lib target, so unit tests live in `cargo-berth::bin/cargo-berth` (`--bins`) and integration tests in `crates/cargo-berth/tests/`.
 - **Key files:**
@@ -73,102 +73,92 @@ Mapped 2026-10-16 at `834cffba` (main).
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** Two phase reservations in one worktree each get a merge extent of their own paths. Neither releases as integrated while its own paths hold uncommitted or unintegrated changes, and a release after the merge finishes in one call.
-
-**Spec:**
-- **Scoped merge extent** (`src/reconcile.rs`). Keep one worktree observation per `(worktree, target)` in `observe_holder_merge_extents` (~2399), with its concurrency and git cost unchanged. Replace the single `HolderMergeExtentObserved` fan-out (~2315–2359), which writes one extent to every unreleased reservation of that key, with a per-reservation share:
-  - each unreleased reservation gets the observed paths its own `scopes()` cover;
-  - observed paths no unreleased reservation of that key covers go to every one of them;
-  - a key with one unreleased reservation gets exactly today's extent.
-  Write the journal records this needs so replay of existing ledgers is unchanged. If one record per reservation is needed, keep the old record readable.
-- **Integration judged on own paths** (`src/reservation/evidence.rs` `integration_status` ~131, `outstanding_integration_status` ~168, `observe_integration_status` ~195). Integration needs the reservation's current scoped merge extent to be empty: none of its own paths dirty or committed outside trunk. `ProtectedTipAncestor` and `ScopedPatchEquivalence` stay the proofs of the committed work. Return a type that cannot say integrated while own paths are pending; for example `Outstanding { pending_paths }` beside `Integrated { proof }`. Callers must not check a flag. Both `release` (`src/verb/release.rs` `outstanding_operation` ~514: narrow the "whatever the holder committed or left dirty afterwards" rule at ~553 to paths outside the reservation's scopes) and reconcile settlement (`settlement_selection` ~4279, `append_merged_run_endings` ~4485, `has_unproven_merge_work` in `src/reservation/retention.rs` ~102) use that one judgment. A reservation held back answers outstanding and names its pending paths.
-- **One-call release** (`src/verb/release.rs` `execute` ~141–149, `evidence_operation` ~590–594 and ~843–862). When a `release` revalidates the evidence to integrated and nothing else holds the reservation, the same call appends `Release { disposition: Integrated }` and answers `released`. `evidence_revalidated` stays the answer only when the evidence changes without settling the reservation.
-- **The proving test** (`tests/parallel_phases.rs`, reuse `open_phase`, `phase_board`, `initialized_repository`, `run_berth_with_session`; the merge pattern is `tests/lifecycle.rs` `stored_integrated_evidence_is_revalidated_before_release` ~708). Use sessions `dir-sid.phase-1` on `file:a.rs` and `dir-sid.phase-2` on `file:b.rs` in one unit worktree on a branch, with b.rs dirty. Assert:
-  1. Before any release, each merge extent names only its own path.
-  2. Commit a.rs and `release` phase 1 (checkpointed). Merge the branch into trunk. Then one `release` of phase 1 answers `released`, disposition `integrated`.
-  3. `release` of phase 2 (checkpoint, then again after the merge) never answers integrated while b.rs is uncommitted. It stays outstanding and names b.rs.
-  4. Commit b.rs and merge into trunk. Then one `release` of phase 2 answers `released`, integrated.
-  Name tests for the behavior they pin. Each runs under a second.
-- CHANGELOG `## [Unreleased]` `### Fixed`: a phase reservation is no longer released as integrated while its own paths hold uncommitted or unmerged work, and a release after the merge finishes in one call.
+- Each unreleased reservation in a `(worktree, target)` group gets its own share of the one worktree observation (`reservation_merge_extent`, `holder_group` in `src/reconcile.rs`): the observed paths its scopes cover, plus every observed path no sibling covers. A lone reservation keeps the whole-worktree extent. The cache key carries `HolderMergeExtentCoverage` (`FullHolder` or `ReservationShares` with sorted ids, `src/reservation/merge_extent.rs`), so a sibling joining or leaving invalidates cached extents.
+- `reservation::judge_integration` (`src/reservation/evidence.rs`) returns `ReservationIntegrationJudgment`: `Integrated`, `Outstanding { pending_paths, evidence: PendingIntegrationEvidence }` (`Unproven`, `TrunkRewritten`, `ObjectUnknown`), `NotIntegrated`, `TrunkRewritten`, `ObjectUnknown`. Release and reconcile settlement (`judge_live_integration`) both use it. It replaced `retention.rs::has_unproven_merge_work`.
+- An integrated release appends `EvidenceRevalidated` and then `Release` in one locked transaction (`CommittedActionValidation::AppendWithPrerequisites`, `src/ledger/handle.rs`), so a release after the merge answers `released` in one call.
+- `ReleasePayload::Outstanding` and `Resnapshotted` carry `pending_paths`, and the message names them. `docs/cargo-berth/generated/output-contract.json` regenerated. CHANGELOG `Fixed` line.
 
 **Files:**
-- `crates/cargo-berth/src/reconcile.rs` — per-reservation merge extent share; settlement through the shared judgment
-- `crates/cargo-berth/src/reservation/evidence.rs` — integration judged on own paths, as a type
-- `crates/cargo-berth/src/reservation/retention.rs` — `has_unproven_merge_work` follows the shared judgment
-- `crates/cargo-berth/src/verb/release.rs` — outstanding rule narrowed; one-call release
-- `crates/cargo-berth/src/` — any journal or record type the scoped extent needs
-- `crates/cargo-berth/tests/parallel_phases.rs` — the C3 proving test
-- `crates/cargo-berth/tests/` — in existing tests, update only expectations this change rightly moves (a third-call `evidence_revalidated` becomes `released`)
-- `crates/cargo-berth/CHANGELOG.md` — `Fixed` line
+- `crates/cargo-berth/src/reconcile.rs` — per-reservation share, cache coverage, settlement through the judgment
+- `crates/cargo-berth/src/reservation/evidence.rs` — the judgment type and `judge_integration`
+- `crates/cargo-berth/src/reservation/merge_extent.rs` — `HolderMergeExtentCoverage`
+- `crates/cargo-berth/src/ledger/handle.rs` — `AppendWithPrerequisites`
+- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/output.rs` — one-call release, pending paths in answers
+- `crates/cargo-berth/tests/parallel_phases.rs` — `parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged`, the abandon/retarget unclaimed-path tests
+- `crates/cargo-berth/tests/board.rs` — trunk-rewritten, objects-unknown and budget-deferred release tests
 
-**Workers:** 1 writer + 1 tester
-- `impl` — every `src/` file and `CHANGELOG.md`; existing-test expectation updates in `tests/lifecycle.rs` and others
-- `test` — the C3 proving test in `tests/parallel_phases.rs`, written from the Spec alone
-
-**Constraints from prior phases:**
-- A phase's own berth session is `<session>.phase-<N>`; each phase holds its own reservation (as-built `docs/cargo-berth/as-built/phase-reservations.md`).
-- `derive_merge_extents` observes holders concurrently on scoped threads and folds in first-seen order (phase 6); keep that.
-- A busy ledger in `check` answers `contention`, exit 6 (phase 8).
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, including the C3 proving test.
+**Gotchas:**
+- Only a fresh `MergeExtent::Protected` names pending paths. An unobserved or unavailable extent answers through `PendingIntegrationEvidence` and never reports a clean phase.
+- The first, checkpointing release of a dirty phase does not name its pending paths; phase 11 fixes it.
 
 ### Phase 10 — Overview shows reservations  · status: done
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** The board TUI's Overview pane lists every non-terminal reservation.
-
-**Spec:**
-- `src/board/tui.rs` (~63–84) splits the model into panes. `OVERVIEW_FIELDS` holds journal position, recovered bypasses, integration order, targets and git cost. The reservation sections (`unconstrained_reservations` and the others) are only in `RESERVATION_FIELDS`. Add one reservation table to Overview, with one row per non-terminal reservation: short id, session, stage, blocking status and race paths. Build it from the rows `board_reservation_snapshots` (`src/board/rows.rs` ~879) already produces. Show an empty table with a one-line "no reservations" row when there are none.
-- The Reservations pane, `--json` output and the no-TTY pointer to `--json` stay unchanged.
-- Test: render Overview for a board with an active, unconstrained reservation, and assert its row (id and path) appears. Use the TUI's existing test rendering (ratatui `TestBackend` or whatever `tui.rs` tests use). Under a second.
-- No CHANGELOG edit here: phase 9 owns `CHANGELOG.md` while both run, and the as-built pass adds this phase's line.
+- The board TUI's Overview pane opens with a Reservations table: ID, Session, Stage, Blocking, Race paths, one row per non-terminal reservation, or a "no reservations" row. The Reservations pane, `--json` and the no-TTY pointer are unchanged.
+- `BoardReservationSession` (`src/board/rows.rs`) is `Mapped { primary, aliases }`, `RunOnly(CoordinationRunId)` or `Unavailable`. `board_reservation_sessions` reads `session::phase_reservation_sessions` once per run per coordination run. `overview_short_id` keeps the last `-` group plus any `.phase-N` suffix, for both the ID and Session columns; the fallback shows `run <short>`.
 
 **Files:**
-- `crates/cargo-berth/src/board/tui.rs` — Overview reservation table and its test
-- `crates/cargo-berth/src/board/rows.rs` — only if a row accessor is needed
+- `crates/cargo-berth/src/board/rows.rs` — session labels for reservation rows
+- `crates/cargo-berth/src/board/tui.rs` — the Overview table; tests `overview_distinguishes_sibling_phase_sessions_in_one_run`, `overview_phase_session_and_alias_leave_race_paths_visible_at_100_columns` at 100 columns
 
-**Workers:** 1 writer; nothing splits (one pane, one file)
-- `impl` — every file
+**Gotchas:**
+- A board deserialized from JSON carries no session identity and shows `unavailable`.
+- The raw `git_cost`/`journal_position` JSON still sits below the table; the TUI model rebuild next item removes it.
 
-**Constraints from prior phases:** none.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, including the Overview test.
-
-### Phase 11 — Robust tests  · status: todo
+### Phase 11 — The checkpoint names pending paths, and robust tests  · status: done
 
 **Depends on:** Phase 9
 
 #### Work Order
 
-**Goal:** Tests pin every edge of phase 9's per-path judgment; behavior unchanged.
+**Goal:** The first release of a phase, the one that checkpoints it, names the phase's own pending paths. Tests pin every edge of phase 9's per-path judgment.
 
-**Spec:** Tests only. Cover:
-- an unclaimed dirty file goes to every sibling's extent;
-- a lone reservation's extent equals today's;
-- reconcile settlement (`settlement_selection`, `append_merged_run_endings`) refuses integrated while own paths are dirty or committed outside trunk;
-- patch-equivalent integration of own paths;
-- `evidence_revalidated` is still answered when evidence changes without settling;
-- the hook and board answers for an outstanding phase name its pending paths.
-Each test under a second.
+**Spec:**
+- **The checkpoint names pending paths** (showrunner C19, 2026-10-16). A live check found a gap. Take a phase whose own path b.rs is dirty. Its first `release` checkpoints and answers envelope `outstanding`, payload `checkpointed`, with the message "Reservation … is outstanding at protected tip …". Neither the payload nor the message names b.rs. Only the next `release` answers `outstanding` with `pending_paths: ["b.rs"]`. The fix:
+  - `ReleasePayload::Checkpointed` (`src/output.rs` ~1540) carries `pending_paths: Vec<ReservationScopePath>`, like `Outstanding` and `Resnapshotted`.
+  - `checkpoint_operation` (`src/verb/release.rs` ~508) fills it from the reservation's current scoped merge extent (`release_repository_context.merge_extent`). Phase 9's rule applies: only a fresh `MergeExtent::Protected` names pending paths. An unobserved or unavailable extent must not report an empty list as if the phase were clean. Give that case its own variant under the Type Design Contract; never use an empty `Vec` to stand for it.
+  - The message (`output.rs` ~2943) ends "; pending paths: b.rs." whenever the list is non-empty. That covers own paths that are dirty and own paths committed but not yet in trunk.
+  - Regenerate `docs/cargo-berth/generated/output-contract.json` the way phase 9 did. The output-contract tests in `src/output_contract.rs`, `tests/board.rs` ~392 and `tests/overlap.rs` ~1123 must pass.
+  - CHANGELOG `## [Unreleased]` `### Fixed`: the checkpointing release now names the phase's pending paths.
+- **Test for the fix** (`tests/parallel_phases.rs`): two phases in one unit worktree, as in `parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged`. Phase 2's b.rs is dirty. Its first `release` answers payload `checkpointed` with `pending_paths: ["b.rs"]`, and the message names b.rs. A phase whose own a.rs is committed but not merged also names a.rs at checkpoint.
+- **Robust tests.** Before writing any of these, check the tests that already exist (see Constraints) and do not duplicate them. Cover:
+  - an unclaimed dirty file, c.rs, goes to both live siblings' extents;
+  - a lone reservation's extent equals the whole-worktree extent;
+  - reconcile settlement (`settlement_selection` `src/reconcile.rs` ~4338, `append_merged_run_endings` ~4467) refuses integrated while own paths are dirty or committed outside trunk;
+  - patch-equivalent integration of own paths;
+  - `evidence_revalidated` is still answered when evidence changes without settling;
+  - the hook and board answers for an outstanding phase name its pending paths.
+- Each test runs under a second.
 
 **Files:**
-- `crates/cargo-berth/tests/parallel_phases.rs`, `tests/lifecycle.rs`, `tests/hooks.rs`, `tests/board.rs` — new tests
+- `crates/cargo-berth/src/output.rs` — the `Checkpointed` pending paths and message
+- `crates/cargo-berth/src/verb/release.rs` — `checkpoint_operation` fills them
+- `docs/cargo-berth/generated/output-contract.json` — regenerated
+- `crates/cargo-berth/CHANGELOG.md` — the `Fixed` line
+- `crates/cargo-berth/tests/parallel_phases.rs`, `tests/lifecycle.rs`, `tests/hooks.rs`, `tests/board.rs` — new tests, plus expectations the `Checkpointed` change rightly moves
 
 **Workers:** 1 writer + 1 tester
-- `impl` — `tests/parallel_phases.rs`, `tests/lifecycle.rs`
-- `test` — `tests/hooks.rs`, `tests/board.rs`
+- `impl` owns every `src/` file, the contract JSON, `CHANGELOG.md`, `tests/parallel_phases.rs` and `tests/lifecycle.rs`.
+- `test` owns `tests/hooks.rs` and `tests/board.rs`.
 
-**Constraints from prior phases:** phase 9's as-built.
+**Constraints from prior phases:**
+- Phase 9 deleted `retention.rs::has_unproven_merge_work`. `reservation::judge_integration` (`src/reservation/evidence.rs` ~194) is now the one judgment. It returns `ReservationIntegrationJudgment` with the variants Integrated, `Outstanding{pending_paths, evidence: PendingIntegrationEvidence}`, NotIntegrated, TrunkRewritten and ObjectUnknown. Reconcile calls it through `judge_live_integration` (`src/reconcile.rs` ~2772).
+- The cache key carries `HolderMergeExtentCoverage` (FullHolder or ReservationShares), so a sibling joining or leaving invalidates cached extents.
+- An integrated release appends `EvidenceRevalidated` and then `Release` in one locked transaction (`CommittedActionValidation::AppendWithPrerequisites`, `src/ledger/handle.rs`).
+- These tests already exist; do not repeat them:
+  - `tests/parallel_phases.rs`: `abandoning_`/`retargeting_a_sibling_restores_its_unclaimed_paths_to_the_remaining_extent` and `parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged`;
+  - `tests/board.rs`: `release_names_pending_paths_when_trunk_was_rewritten`, `release_names_pending_paths_when_integration_objects_are_unknown` and `release_records_a_budget_deferred_proof_before_its_integrated_disposition`;
+  - `tests/lifecycle.rs`: `release_keeps_unclaimed_later_branch_work_outstanding` and `rebased_integrated_checkpoint_retains_unclaimed_dirt`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green.
 
 ## Next items
 
 - `init` leaves an untracked `.claude/` in trunk (showrunner, `next`).
-- The TUI board draws one model and never rebuilds it, so reservations created after it opens never appear.
+- The TUI board draws one model and never rebuilds it, so reservations created after it opens never appear. With the rebuild, take the raw `git_cost` and `journal_position` JSON out of the Overview, below its Reservations table: diagnostics are not Overview content (showrunner, from the phase 10 shot).
 - `board --reservation <id> --json` carries no ordering edges or overlap answers; add the reservation's edges and answers to it (showrunner, `next`, from C5).
