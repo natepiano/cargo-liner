@@ -44,36 +44,26 @@
 
 ### Phase 1 — Unknown paths are never an empty list, and the orphan alert sees landed work  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** A release never reports an empty pending-path list for an unavailable extent, an orphan whose work landed on trunk gets the verify-resolved-trunk suggestion again, and the README and CHANGELOG match the code.
-
-**Spec:**
-1. In `outstanding_operation` (`src/verb/release.rs`), the fallback that answers `Resnapshotted` builds its pending paths through the same observed/unavailable split the checkpoint uses. When the extent is not derived or unavailable, it answers a distinct unavailable payload (a `ReleasePayload` variant with no `pending_paths` member, envelope `outstanding`, message ending "pending paths unavailable."), following `CheckpointedPendingPathsUnavailable`. No release message may end "pending paths: .". Regenerate the output contract.
-2. Find where the orphan alert lost its landed-work case. An orphan with no checkout must still be judged on whether its protected tip (or its scoped work) is in trunk, so `OrphanIntegrationEvidence` can be the landed form and the alert suggests `VerifyResolvedTrunk`. Fix it at the cause (the evidence the orphan snapshot carries), not by special-casing the alert text.
-3. Tests: (a) the release fallback with an unavailable extent and `TrunkRewritten` evidence answers the unavailable form and never "pending paths: ."; (b) an orphan whose work landed on trunk gets the `VerifyResolvedTrunk` suggestion, with its alert text pinned; (c) an orphan whose work did not land keeps the unproven alert, with its alert text pinned.
-4. `crates/cargo-berth/README.md`: describe the one-call release after a merge (around lines 61–69, 86–93, 119), matching `docs/cargo-berth/as-built/parallel-phases.md`.
-5. `crates/cargo-berth/CHANGELOG.md`: rewrite the older `[Unreleased]` `Fixed` entry so it names no removed function and states current behavior; add a `Fixed` line for (1) and (2).
-6. `docs/cargo-berth/as-built/parallel-phases.md`: drop the known-defect note for (1) and state the fixed behavior; amend any as-built line about the orphan alert that (2) changes.
+- `ReleasePendingPaths` (`Observed` / `Unavailable`) feeds both the checkpoint and the `Resnapshotted` fallback in `outstanding_operation`. `Unavailable` answers `ReleasePayload::ResnapshottedPendingPathsUnavailable` (envelope `outstanding`, no `pending_paths` member, message ending "pending paths unavailable."); an observed-empty `Resnapshotted` omits the pending-paths clause, so no release message ends "pending paths: .".
+- Release message text is composed in `release_message`, outside `OutputEnvelope::released`.
+- `judge_live_integration` leaves an orphaned snapshot's `integration_status` untouched, so its protected-tip evidence reaches the orphan alert: an orphan whose work landed on trunk gets the `VerifyResolvedTrunk` suggestion, one whose work did not land keeps the unproven alert. An orphan released without a fresh merge extent reports `integrated`.
+- The README describes the one-call release after a merge; the CHANGELOG `[Unreleased]` `Fixed` entries name no removed function and state current behavior.
 
 **Files:**
-- `crates/cargo-berth/src/verb/release.rs` — release fallback pending-path split
-- `crates/cargo-berth/src/output.rs` — unavailable release payload and message
-- `crates/cargo-berth/src/reconcile.rs` — orphan integration evidence
-- `crates/cargo-berth/src/reservation/` — orphan judgment, if the cause lives there
-- `crates/cargo-berth/tests/` — the tests in Spec 3
-- `docs/cargo-berth/generated/output-contract.json` — regenerated contract
-- `docs/cargo-berth/as-built/parallel-phases.md` — known-defect note and orphan alert
-- `crates/cargo-berth/README.md` — one-call release
-- `crates/cargo-berth/CHANGELOG.md` — corrected entry and new Fixed line
+- `crates/cargo-berth/src/verb/release.rs` — `ReleasePendingPaths` and the fallback's observed/unavailable split
+- `crates/cargo-berth/src/output.rs` — `ResnapshottedPendingPathsUnavailable`, `release_message`
+- `crates/cargo-berth/src/reconcile.rs` — orphan skip in `judge_live_integration`
+- `crates/cargo-berth/tests/board.rs` — `release_reports_unavailable_pending_paths_after_a_trunk_rewrite`, `an_orphan_whose_work_landed_suggests_verifying_resolved_trunk`, `an_orphan_whose_work_did_not_land_keeps_the_unproven_alert` (alert text pinned)
+- `crates/cargo-berth/tests/liveness.rs` — `release_retains_an_orphan_without_a_fresh_merge_extent` expects `integrated`
+- `docs/cargo-berth/generated/output-contract.json` — the unavailable release payload
+- `docs/cargo-berth/as-built/parallel-phases.md` — fixed pending-path behavior and orphan alert
+- `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md` — one-call release, corrected `Fixed` entries
 
-**Workers:** 1 writer + 1 tester
-- writer: `src/`, generated contract, README, CHANGELOG, as-built doc, lint and full gate.
-- tester: the Spec 3 tests in `tests/`.
+**Gotchas:** An orphan's journal judgment stays conservative; only the live snapshot keeps its protected-tip evidence. `OutputEnvelope::released` sits near clippy's line limit, so new release message text belongs in `release_message`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; no release message ends "pending paths: ."; both orphan alert texts pinned.
+**Ruled out:** special-casing the orphan alert text instead of keeping the snapshot's evidence.
 
 ## Next items
 
