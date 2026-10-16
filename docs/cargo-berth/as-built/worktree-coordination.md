@@ -133,7 +133,7 @@ A reservation scope is a set of repo-relative paths. `scope/` validates them pur
 | --- | --- |
 | `init` | Creates the ledger, writes configuration at the main worktree root if absent, installs the managed hooks, and enrolls every live worktree that has work and no reservation history. `InitializationRequest::{Initialize, RepairProjection, CompactJournal, ReinitializeAfterReview}` selects between first setup, cache repair, journal compaction, and a deliberate re-run over an existing install. |
 | `check` | Asks whether paths are free, and on a clear answer claims them in the same transaction. |
-| `claim` | Creates a reservation explicitly, with a stated purpose. |
+| `claim` | Creates a reservation explicitly, with a stated purpose; with `--reservation <id>`, adds paths or an overlap answer to that active reservation of the acting run instead. |
 | `board` | Renders current state as a terminal view, plain text, or `--json`. |
 | `drift` | Compares recorded scope against what the worktree actually touched. |
 | `sequence` | Records an ordering edge between two overlapping reservations. |
@@ -525,7 +525,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - The six frozen envelope fields and the `kind`/`data` tagging of `OutputFacts` are wire contract.
 - `Enrollment` keeps "not configured" as a reported state, never an error.
 - Git is reached only through `git/`, as `std::process::Command`. No git library is introduced.
-- The session identity mapping is maintained only by `apply_journal_event`, and only `Claim`, `Widen`, `Checkpoint`, and `Release` move it. An enrolled or cover `Claim` publishes no mapping.
+- The session identity mapping moves through `apply_journal_event` — `Claim` and `Widen` publish, `Checkpoint`, `Release` and an ended empty merge extent retire — and through two direct publications of an invocation's explicit choice: an explicit or mapped `check` that reports `already_held`, and a named `claim --reservation` that records `Answer`, for which `apply_journal_event` publishes nothing. An enrolled or cover `Claim` publishes no mapping, and a fresh session reporting `left_unmapped` writes none.
 - A coordination-run marker belonging to a different run, or one that cannot be parsed, is preserved rather than removed.
 - The engine writes every byte of a harness hook response. A front end may decide whether the engine can be reached; it may not rebuild, reformat, or supplement what the engine said.
 - Every hook process binds its repository and harness session from the payload before any repository work starts. An absent or invalid payload session id publishes a no-session selection rather than falling through to `CARGO_BERTH_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`.

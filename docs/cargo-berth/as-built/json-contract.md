@@ -396,9 +396,12 @@ The sections mean:
   `enrollment` answer reports `deferred_integration_held_until_sequence` only
   once every counterpart it lists is released; a resolved pair appears
   as `ordering_created_from_deferral`, and the `defer` answer it resolved
-  leaves the list. `acquisition.origin` is `claim`, `enrollment`, or `widen`
-  (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen appears
-  here only when it recorded a new answer. A `sequence` entry carries
+  leaves the list. `acquisition.origin` is `claim`, `answer`, `enrollment`, or
+  `widen` (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen
+  appears here only when it recorded a new answer. `answer` marks an answer
+  recorded on the reservation without widening it: a `--defer`, a repository
+  default answer, or a `claim --reservation` whose paths the reservation or its
+  siblings already held. A `sequence` entry carries
   `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
   `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
   reservation whose later `claim --replace` retired this answer's edge to the
