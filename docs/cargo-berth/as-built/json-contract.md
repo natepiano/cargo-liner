@@ -309,7 +309,11 @@ offset. Reservation rows occur at
   `object_unknown`. Integrated `proof` is `protected_tip_ancestor`,
   `scoped_patch_equivalent`, or `rewritten_witness_ancestor`. `trunk_oid` is the
   evaluated tip of the reservation's judged branch: its recorded target, or the
-  repository trunk when that target ref is missing. The witness is
+  repository trunk when that target ref is missing. An outstanding row's status
+  is judged with its merge extent: it is `integrated` only while the extent is
+  `empty`; a `protected` extent reads `not_integrated` (or `trunk_rewritten`,
+  `object_unknown`), and a `not_derived` or `unavailable` extent reads
+  `object_unknown` (or `trunk_rewritten`). The witness is
   `{ "kind": "evaluated_trunk" }` or
   `{ "kind": "historical", "commit": "<oid>" }`; an absent witness defaults
   to the evaluated tip. Witness ancestry proves that the judged branch contains
@@ -323,7 +327,15 @@ offset. Reservation rows occur at
   `not_derived`, `empty`, or `protected` form) and `failure`. A released row
   carries `released` with `at_release`, which holds the extent last observed
   before release. That extent refuses nothing: released rows are always
-  `edit_blocking_status = clear`.
+  `edit_blocking_status = clear`. The extent is the reservation's share of
+  its holder checkout's observation: the observed paths its own scopes
+  contain, plus every observed path no other unreleased reservation of the
+  same worktree and target contains. A `key` carries `trunk`, `head`,
+  `working_tree`, and, when the reservation shares its holder with other
+  unreleased reservations, `reservation_group`:
+  `{ "kind": "reservation_shares", "reservation_ids": [<uuid-v7>, ...] }`,
+  ids sorted. A lone reservation's key omits `reservation_group`
+  (`full_holder`) and its extent covers the whole checkout.
 
 The remaining row enums are scalar strings:
 `edit_blocking_status = blocking | clear`, `visibility = active_constraint |
@@ -460,7 +472,9 @@ The sections mean:
   `--abandon --why <reason>`. A `recover` variant with a single `flag` still
   decodes. An outstanding reservation that settles during reconciliation raises
   no orphan alert; settlement needs its work proven at the actual tip of its
-  judged branch and, at a present non-trunk target, a cover of that branch. The stale action names the reservation for `renew`; the bypass alert names
+  judged branch, its own merge extent `empty`, and, at a present non-trunk
+  target, a cover of that branch. An orphan with no checkout has an
+  `unavailable` extent, so it never settles and keeps its orphan alert. The stale action names the reservation for `renew`; the bypass alert names
   the recovery step.
 - `git_cost`: exact Git-call counts used to build this board.
 
@@ -908,6 +922,41 @@ for `resolve --every-incursion` and carries `reservation_id` plus
 `reservation_id`'s run in its worktree. A one-incident `resolve` likewise
 accepts any reservation of the incident's run in its worktree.
 
+## Release outcomes
+
+A `release` response carries `payload.kind = "release"`. Every
+`payload.data` carries `reservation_id`, and `payload.data.status` is one of:
+
+- `checkpointed`: an active reservation recorded its checkpoint. It carries
+  `protected_tip`, `trunk_oid`, `marker`, `session_mapping_publication`, and
+  `pending_paths`, the paths in the reservation's freshly observed merge
+  extent (`[]` when that extent is empty).
+- `checkpointed_pending_paths_unavailable`: the same checkpoint when the
+  extent was not freshly observed. It has no `pending_paths` member.
+- `outstanding`: the reservation's own merge extent still holds work. It
+  carries `pending_paths` and `marker`.
+- `resnapshotted`: the holder's HEAD moved past the protected tip, so the
+  checkpoint moved to it. It carries `protected_tip`, `trunk_oid`, `marker`,
+  and `pending_paths`.
+- `target_uncovered`: integration is proved but the present non-trunk target
+  has no fresh cover. It carries `target`.
+- `evidence_revalidated`: the evidence changed without settling and no
+  pending paths are known. It carries `evidence` and `marker`.
+- `already_settled`: the reservation already carried its disposition. It
+  carries `disposition` and `evidence`.
+- `released`: a disposition was appended, or the leading reconcile settled
+  the reservation. It carries `disposition`, `marker`, and
+  `session_mapping_publication`.
+
+The first five have envelope `status = "outstanding"`. `evidence_revalidated`
+and `already_settled` take the envelope status from `evidence` (`integrated`,
+`outstanding` for `not_integrated`, `trunk_rewritten`, or `object_unknown`).
+`released` has `integrated` for an `integrated` or `rewritten_integration`
+disposition and `released` otherwise. An integrated release appends
+`evidence_revalidated` and then `release` in one locked transaction, so one
+call after the merge answers `released`. Messages and the judgment behind
+each outcome are in [parallel-phases.md](parallel-phases.md).
+
 ## The journal record
 
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
@@ -1076,7 +1125,8 @@ These operation fields use the following tagged values:
   holder checkout's merge extent. `extent` is a merge extent (`not_derived`,
   `empty`, `protected`, or `unavailable`), and `reservations` is a non-empty
   array of `{ "reservation_id": <uuid-v7>, "run_status": "editing" | "ended" }`
-  naming every reservation of that holder whose recorded extent it replaces.
+  naming the reservations of that holder whose new share equals `extent`.
+  Siblings in one checkout whose shares differ get one record each per pass.
   Replay applies `extent` to each listed reservation in array order. An
   observation does not advance the reservation's revision, so the
   `reservation_revision` in a payload's `conflicts` entries never counts a

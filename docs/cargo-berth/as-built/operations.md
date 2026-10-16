@@ -253,11 +253,18 @@ reinitializing that journal.
 An outstanding reservation needs no command once its work reaches its
 recorded target: ordinary reconciliation (`board`, `check`, the post-Bash hook,
 the prepared gate, or `release`) settles it when git proves the whole scoped
-phase is on that branch's current tip and no reserved work remains outside that
-proof, including after a rebase, amend, or reset. At a present non-trunk target
-it also waits for the target's cover, as above. An orphan notice names the
-dispositions that fit the orphan and the observed tip of the branch it is
-judged at.
+phase is on that branch's current tip and the reservation's own merge extent is
+empty, including after a rebase, amend, or reset. That extent holds the dirty,
+untracked, or unmerged paths in its checkout that the reservation declares,
+plus those no other unreleased reservation of the same worktree and target
+declares; [parallel-phases.md](parallel-phases.md) covers phases that share a
+worktree. At a present non-trunk target settlement also waits for the target's
+cover, as above. After the merge, one `release` answers `released`; while work
+remains, `release` answers `outstanding` and names the pending paths.
+
+An orphan with no checkout cannot be observed, so it never settles on its own.
+Its notice names the dispositions that fit it and the observed tip of the
+branch it is judged at.
 
 `resolve` records one of these explicit decisions for what reconciliation
 cannot prove:
@@ -293,9 +300,10 @@ wait.
 
 ## Journal compaction
 
-Reconciliation journals a merge extent observation whenever a holder checkout's
-merge extent changes, and each one replaces the extent recorded for every
-reservation it names. Once later observations have replaced an observation for
+Reconciliation journals a merge extent observation whenever a reservation's
+share of its holder checkout's merge extent changes. Reservations of one holder
+whose shares are equal share one record, and each record replaces the extent
+recorded for every reservation it names. Once later observations have replaced an observation for
 every reservation it names, compaction removes it. Every other record stays,
 byte for byte and in order.
 

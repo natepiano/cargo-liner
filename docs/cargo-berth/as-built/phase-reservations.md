@@ -10,7 +10,7 @@ One unit director can run several phases of a plan side by side in one worktree,
 
 - Open a phase: `CARGO_BERTH_SESSION_ID=<sid>.phase-<N> cargo-berth check <paths>`. The first check under that session opens a new reservation in the director's run; later checks under it widen that reservation.
 - Answer an overlap for one phase: `cargo-berth claim <paths> --reservation <id> --<before|after|defer|override> <holder> --overlap-why "<why>"`.
-- Checkpoint one phase: `cargo-berth drift --full --reservation <id>`, then release it.
+- Checkpoint one phase: `cargo-berth drift --full --reservation <id>`, then release it. The phase's merge extent and integration are judged on its own paths: `release` answers `outstanding` with the pending paths while its share of the worktree holds work, and `released` in one call once its work is merged and clean. [parallel-phases.md](parallel-phases.md) covers the share split, the judgment and the board's Overview table.
 - The director's own Bash calls go through the post-tool-use hook, which never widens one phase with another phase's files.
 
 The director skills (`/unit:direct`, `/unit:checkpoint`) carry this pattern; the crate only supplies the selections below.
