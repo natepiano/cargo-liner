@@ -1212,7 +1212,7 @@ fn release_retains_an_orphan_without_a_fresh_merge_extent() {
     assert_eq!(reservation["merge_extent"]["status"], "unavailable");
     assert_eq!(
         reservation["integration_evidence"]["status"]["status"],
-        "object_unknown"
+        "integrated"
     );
     assert!(
         settled_json["payload"]["data"]["alerts"]["entries"]

@@ -529,7 +529,7 @@ fn checkpoint_operation(
             reservation_id,
             protected_tip: protected_tip.clone(),
             trunk_oid,
-            pending_paths: CheckpointPendingPaths::from(release_repository_context.merge_extent),
+            pending_paths: ReleasePendingPaths::from(release_repository_context.merge_extent),
         },
         reservation_id,
         protected_tip,
@@ -592,26 +592,18 @@ fn outstanding_operation(
                 });
             return Ok(append);
         },
-        ReservationIntegrationJudgment::Outstanding { pending_paths, .. } => {
+        ReservationIntegrationJudgment::Outstanding { .. } => {
             // Advance a stale checkpoint when the holder has committed new pending work.
             if !matches!(evidence, IntegrationEvidenceStatus::ObjectUnknown)
                 && release_repository_context.holder_worktree == HolderWorktree::Invoking
                 && reservation::current_head(release_repository_context.repository_root)
                     .is_ok_and(|head| head != *protected_tip.as_ref())
             {
-                let mut append = resnapshot_operation(
+                return resnapshot_operation(
                     release_repository_context,
                     reservation_id,
                     &current_trunk,
-                )?;
-                if let ReleasePayloadSeed::Resnapshotted {
-                    pending_paths: paths,
-                    ..
-                } = &mut append.payload_seed
-                {
-                    paths.clone_from(pending_paths);
-                }
-                return Ok(append);
+                );
             }
             return Ok(judged_evidence_operation(
                 reservation,
@@ -753,7 +745,7 @@ fn resnapshot_operation(
             },
         },
         ReleasePayloadSeed::Resnapshotted {
-            pending_paths: Vec::new(),
+            pending_paths: ReleasePendingPaths::from(release_repository_context.merge_extent),
             reservation_id,
             protected_tip: replacement_tip.clone(),
             trunk_oid: current_trunk.clone(),
@@ -1051,15 +1043,15 @@ impl ReleasePayloadPreparation {
     }
 }
 
-/// Whether checkpointing has a current observation of the reservation's pending work.
-enum CheckpointPendingPaths {
+/// Whether release has a current observation of the reservation's pending work.
+enum ReleasePendingPaths {
     /// An observed empty extent has no pending paths; a protected extent names every path.
     Observed(Vec<ReservationScopePath>),
     /// An acquisition declaration or retained observation cannot describe current pending work.
     Unavailable,
 }
 
-impl From<&MergeExtent> for CheckpointPendingPaths {
+impl From<&MergeExtent> for ReleasePendingPaths {
     fn from(extent: &MergeExtent) -> Self {
         match extent {
             MergeExtent::Protected { scopes, .. } => Self::Observed(
@@ -1084,10 +1076,10 @@ enum ReleasePayloadSeed {
         reservation_id: ReservationId,
         protected_tip:  ProtectedReservationTip,
         trunk_oid:      GitObjectId,
-        pending_paths:  CheckpointPendingPaths,
+        pending_paths:  ReleasePendingPaths,
     },
     Resnapshotted {
-        pending_paths:  Vec<ReservationScopePath>,
+        pending_paths:  ReleasePendingPaths,
         reservation_id: ReservationId,
         protected_tip:  ProtectedReservationTip,
         trunk_oid:      GitObjectId,
@@ -1128,7 +1120,7 @@ impl ReleasePayloadSeed {
                 trunk_oid,
                 pending_paths,
             } => match pending_paths {
-                CheckpointPendingPaths::Observed(pending_paths) => ReleasePayload::Checkpointed {
+                ReleasePendingPaths::Observed(pending_paths) => ReleasePayload::Checkpointed {
                     reservation_id,
                     protected_tip,
                     trunk_oid,
@@ -1136,7 +1128,7 @@ impl ReleasePayloadSeed {
                     marker,
                     session_mapping_publication,
                 },
-                CheckpointPendingPaths::Unavailable => {
+                ReleasePendingPaths::Unavailable => {
                     ReleasePayload::CheckpointedPendingPathsUnavailable {
                         reservation_id,
                         protected_tip,
@@ -1151,12 +1143,22 @@ impl ReleasePayloadSeed {
                 reservation_id,
                 protected_tip,
                 trunk_oid,
-            } => ReleasePayload::Resnapshotted {
-                pending_paths,
-                reservation_id,
-                protected_tip,
-                trunk_oid,
-                marker,
+            } => match pending_paths {
+                ReleasePendingPaths::Observed(pending_paths) => ReleasePayload::Resnapshotted {
+                    pending_paths,
+                    reservation_id,
+                    protected_tip,
+                    trunk_oid,
+                    marker,
+                },
+                ReleasePendingPaths::Unavailable => {
+                    ReleasePayload::ResnapshottedPendingPathsUnavailable {
+                        reservation_id,
+                        protected_tip,
+                        trunk_oid,
+                        marker,
+                    }
+                },
             },
             Self::EvidenceRevalidated {
                 reservation_id,
@@ -1316,8 +1318,8 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::CheckpointPendingPaths;
     use super::ReleasePayloadSeed;
+    use super::ReleasePendingPaths;
     use super::ReleaseRetentionPlan;
     use super::integrated_release_operation;
     use super::revalidate_integrated_evidence;
@@ -1372,7 +1374,7 @@ mod tests {
                 reservation_id: ReservationId::new(),
                 protected_tip:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse()?,
                 trunk_oid:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
-                pending_paths:  CheckpointPendingPaths::from(&extent),
+                pending_paths:  ReleasePendingPaths::from(&extent),
             }
             .into_payload(
                 CoordinationRunMarkerRetirement::AlreadyAbsent,

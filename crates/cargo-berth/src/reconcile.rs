@@ -2768,7 +2768,7 @@ fn complete_reconciliation_plan(
     Ok(())
 }
 
-/// Apply the same live-path judgment to materialized evidence and repository consumers.
+/// Apply the live-path judgment while preserving an orphan's committed-work recovery evidence.
 fn judge_live_integration(
     reservations: &RetainedReservationSet,
     snapshots: &mut [RepositoryReservationSnapshot],
@@ -2789,7 +2789,12 @@ fn judge_live_integration(
         if status == *integration_status {
             continue;
         }
-        *integration_status = status.clone();
+        // An orphan has no checkout to observe. Its snapshot must retain the protected-tip
+        // ancestry or scoped-work proof for recovery, while the journal's full judgment stays
+        // conservative and cannot settle without a fresh empty extent.
+        if snapshot.worktree_liveness != WorktreeLiveness::Orphaned {
+            *integration_status = status.clone();
+        }
         let ReservationEvidenceState::Outstanding {
             integration_status: materialized,
             ..

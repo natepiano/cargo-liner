@@ -52,7 +52,7 @@ Rules, applied in order:
 Callers:
 
 - **reconcile.rs.** `complete_reconciliation_plan` runs these steps in order: `append_cover_claims`, `derive_merge_extents`, `judge_live_integration`, `append_evidence_operations`, `append_settlement_operations`, then `append_merged_run_endings` (only under `MergedRunEndings::End`).
-  - `judge_live_integration` judges each `Outstanding` repository snapshot again against the planned extent, or the stored one if none is planned. It rewrites the snapshot's `integration_status` so board and hook readers agree with the journal. It then replaces any planned `ReconciledEvidence` for that id, adding one only when the result differs from the materialized status.
+  - `judge_live_integration` judges each `Outstanding` repository snapshot again against the planned extent, or the stored one if none is planned. It rewrites a non-orphan snapshot's `integration_status` so board and hook readers agree with the journal. An orphan snapshot retains its protected-tip ancestry or scoped-work proof for recovery alerts, including the `VerifyResolvedTrunk` suggestion when that work landed. The journal still records the full judgment against the unavailable extent, so the orphan cannot settle automatically. It then replaces any planned `ReconciledEvidence` for that id, adding one only when the result differs from the materialized status.
   - `settlement_selection` returns `Release` only when all three hold: the lifecycle is `Outstanding`, the judgment is `Integrated`, and its `trunk_oid` equals the resolved actual target tip. A `ProtectedTipAncestor` proof becomes `Integrated`. `ScopedPatchEquivalent` and `RewrittenWitnessAncestor` become `RewrittenIntegration(witness.resolve(trunk))`. `append_settlement_operations` then appends `EvidenceRevalidated` and `Release` with source `Reconciliation`.
   - `append_merged_run_endings` handles an active run that did work, has an `Empty` extent, and has a head that is an ancestor of trunk. It appends `Checkpoint`, `EvidenceRevalidated` and `Release`, but only when `judge_integration` returns `Integrated`.
 - **`verb/release.rs`.** `outstanding_operation` calls it (see below).
@@ -70,10 +70,10 @@ Callers:
 
 `operation_for_state` builds `ReleaseRepositoryContext` with `merge_extent: reservation.merge_extent()`. That is the share the reconcile at the top of `execute` just wrote to the journal; release does not observe the worktree itself.
 
-- **Active reservation: `checkpoint_operation`.** It appends a `Checkpoint` operation. The payload seed is `Checkpointed` with `pending_paths: CheckpointPendingPaths::from(merge_extent)`.
+- **Active reservation: `checkpoint_operation`.** It appends a `Checkpoint` operation. The payload seed is `Checkpointed` with `pending_paths: ReleasePendingPaths::from(merge_extent)`.
 - **Outstanding reservation: `outstanding_operation`.** If the materialized evidence is integrated, it uses `revalidate_proven_integration`; otherwise `outstanding_integration_status`. An unreadable current trunk gives `ObjectUnknown` evidence. It then calls `judge_integration`, so `ObjectUnknown` evidence against a `Protected` extent still answers `outstanding` with pending paths:
   - `Integrated`: `integrated_release_operation` builds the `Release` with disposition `Integrated` and `RetainProtectedTip` for an `EvaluatedTrunk` witness, or `RewrittenIntegration` and `RetainIntegrationWitness` for a `Historical` witness. An `EvidenceRevalidated { status: judgment.evidence_status(), .. }` prerequisite is pushed ahead of it. The answer is `released`.
-  - `Outstanding { pending_paths }`: if the evidence is not `ObjectUnknown`, the call comes from the holder worktree, and HEAD has moved past the protected tip, it runs `resnapshot_operation`, whose seed carries these `pending_paths`. Otherwise `judged_evidence_operation` appends `EvidenceRevalidated` with the payload `Outstanding { pending_paths }`.
+  - `Outstanding { pending_paths }`: if the evidence is not `ObjectUnknown`, the call comes from the holder worktree, and HEAD has moved past the protected tip, it runs `resnapshot_operation`, whose seed derives `ReleasePendingPaths` from the observed extent. Otherwise `judged_evidence_operation` appends `EvidenceRevalidated` with the payload `Outstanding { pending_paths }`.
   - `NotIntegrated`, `TrunkRewritten` or `ObjectUnknown`: it resnapshots if the materialized evidence was not integrated, the call comes from the holder worktree, the evidence is `NotIntegrated` or `TrunkRewritten`, and HEAD moved. Otherwise it answers `evidence_revalidated`.
 - **Released reservation: `released_evidence_operation`** answers `AlreadySettled`.
 
@@ -81,14 +81,15 @@ Callers:
 
 ### Pending paths in release answers (`crates/cargo-berth/src/output.rs`)
 
-`CheckpointPendingPaths` (in `verb/release.rs`) is `Observed(Vec<ReservationScopePath>)` or `Unavailable`. `From<&MergeExtent>` maps `Protected` to `Observed(scopes)`, `Empty` to `Observed(vec![])`, and `NotDerived` or `Unavailable` to `Unavailable`. `ReleasePayloadSeed::into_payload` turns `Observed` into `Checkpointed` and `Unavailable` into `CheckpointedPendingPathsUnavailable`.
+`ReleasePendingPaths` (in `verb/release.rs`) is `Observed(Vec<ReservationScopePath>)` or `Unavailable`. `From<&MergeExtent>` maps `Protected` to `Observed(scopes)`, `Empty` to `Observed(vec![])`, and `NotDerived` or `Unavailable` to `Unavailable`. Both checkpoint and resnapshot seeds carry this type. `ReleasePayloadSeed::into_payload` turns `Observed` into `Checkpointed` or `Resnapshotted`, and `Unavailable` into `CheckpointedPendingPathsUnavailable` or `ResnapshottedPendingPathsUnavailable`.
 
 | `ReleasePayload` variant | `payload.data.status` | envelope `status` | `pending_paths` | message |
 |---|---|---|---|---|
 | `Checkpointed` | `checkpointed` | `outstanding` | yes, possibly `[]` | `checkpoint_release_message`: "Reservation <id> is outstanding at protected tip <tip>." plus "; pending paths: a, b." when the list is non-empty |
 | `CheckpointedPendingPathsUnavailable` | `checkpointed_pending_paths_unavailable` | `outstanding` | member absent | "...at protected tip <tip>; pending paths unavailable." |
 | `Outstanding` | `outstanding` | `outstanding` | yes | "Reservation <id> remains outstanding; pending paths: <paths>." |
-| `Resnapshotted` | `resnapshotted` | `outstanding` | yes | "Reservation <id> now retains protected tip <tip>; pending paths: <paths>." |
+| `Resnapshotted` | `resnapshotted` | `outstanding` | yes, possibly `[]` | "Reservation <id> now retains protected tip <tip>." plus "; pending paths: a, b." when the list is non-empty |
+| `ResnapshottedPendingPathsUnavailable` | `resnapshotted_pending_paths_unavailable` | `outstanding` | member absent | "Reservation <id> now retains protected tip <tip>; pending paths unavailable." |
 
 On both checkpoint variants, `message_with_session_mapping_publication` appends the session-mapping note after the pending-path clause. `docs/cargo-berth/generated/output-contract.json` is generated from the DTO schemas in the test binary (`src/output_contract.rs`), and tests require an exact byte match, so any payload change means regenerating it.
 
@@ -130,6 +131,9 @@ Key end-to-end tests:
   - `board_names_an_outstanding_phases_dirty_paths_after_its_sibling_settles`
   - `release_names_pending_paths_when_trunk_was_rewritten`
   - `…_when_integration_objects_are_unknown`
+  - `release_reports_unavailable_pending_paths_after_a_trunk_rewrite`
+  - `an_orphan_whose_work_landed_suggests_verifying_resolved_trunk`
+  - `an_orphan_whose_work_did_not_land_keeps_the_unproven_alert`
 - `src/board/tui.rs` unit tests:
   - `overview_distinguishes_sibling_phase_sessions_in_one_run`
   - `overview_phase_session_and_alias_leave_race_paths_visible_at_100_columns`
@@ -142,12 +146,11 @@ Key end-to-end tests:
 - **Share membership uses `PathCase::Sensitive`.**
 - **A cache hit still runs `git status` every pass.** The cache skips only the unmerged-branch path query. Any change in group membership forces the full query.
 - **With siblings, expect several `HolderMergeExtentObserved` records per holder per pass**, one per distinct changed share.
-- **A checkout-less orphan never settles on its own.** With no checkout its extent is `Unavailable`, so it judges `ObjectUnknown` and stays outstanding until `resolve`, even when its work reached trunk (`release_retains_an_orphan_without_a_fresh_merge_extent` in `tests/liveness.rs`).
-- **Known defect: `Resnapshotted` from the fallback branch of `outstanding_operation` carries `pending_paths: []`.** That branch runs when the judgment is `NotIntegrated` or `TrunkRewritten`; `resnapshot_operation` seeds `Vec::new()` and only the `Outstanding` branch overwrites it. The message then ends "; pending paths: .". The branch also runs when an unavailable extent meets `TrunkRewritten` evidence, which reports an empty list for unknown paths, the case the ruled-out item below forbids.
+- **A checkout-less orphan never settles on its own.** With no checkout its extent is `Unavailable`, so the complete judgment is `ObjectUnknown` and it stays outstanding until `resolve`, even when its work reached trunk (`release_retains_an_orphan_without_a_fresh_merge_extent` in `tests/liveness.rs`). Its repository snapshot separately preserves the committed-work proof: landed work suggests `VerifyResolvedTrunk`; work not shown to have landed retains the unproven alert.
 - **Session column fallbacks.** A board deserialized from JSON has no session identity and shows `unavailable`. A failed session-store read shows `run <short>`.
 - **The raw Overview metadata JSON still appears below the table** (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`; `BoardPaneDocuments::from_model`). The TUI draws one model and never rebuilds it (`event_loop`), so reservations created after the board opens do not appear.
 - **The Overview table must contain no blank line.** The test helper `reassembled_model_value` recovers the JSON by splitting the Overview text at the first `"\n\n"`.
-- **Ruled out: an empty `pending_paths` list for an unavailable extent.** It would read as nothing pending; `CheckpointedPendingPathsUnavailable` exists instead.
+- **Ruled out: an empty `pending_paths` list for an unavailable extent.** It would read as nothing pending; `CheckpointedPendingPathsUnavailable` and `ResnapshottedPendingPathsUnavailable` exist instead.
 
 ## Why
 
@@ -157,5 +160,5 @@ Key end-to-end tests:
 - **Group coverage is part of the cache key** because a share depends on who else is in the group. Trunk, HEAD and the working tree can all stay the same while a sibling leaves, and a reused share would then hide the departed sibling's paths.
 - **There is one judgment function** so that release and reconcile settlement cannot disagree about whether a reservation settles. Returning a type, not exposing a flag, means no caller can release without the clean-extent check.
 - **Integrated evidence and the `Release` go into one transaction** because the evidence must come before the release in replay order, and splitting them across calls is what made a post-merge release take three calls.
-- **An unavailable extent gets its own payload variant** because an empty `pending_paths` list would read as nothing pending. The distinct `checkpointed_pending_paths_unavailable` status keeps the envelope `outstanding` while saying that the paths are unknown.
+- **An unavailable extent gets its own payload variant** because an empty `pending_paths` list would read as nothing pending. The distinct `checkpointed_pending_paths_unavailable` and `resnapshotted_pending_paths_unavailable` statuses keep the envelope `outstanding` while saying that the paths are unknown. An observed empty list omits the pending-path clause from the message.
 - **The Overview table reuses `BoardReservationSnapshot` rows** so that its cells cannot drift from the Reservations pane and JSON. Session labels stay out of serialization because they are a display aid read from the session store, not ledger state.

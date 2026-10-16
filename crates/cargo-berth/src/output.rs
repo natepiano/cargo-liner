@@ -1580,6 +1580,18 @@ pub(crate) enum ReleasePayload {
         /// What happened to the worktree coordination-run marker.
         marker:         CoordinationRunMarkerRetirement,
     },
+    /// An outstanding reservation replaced its checkpoint without observing pending paths.
+    ResnapshottedPendingPathsUnavailable {
+        /// The reservation that changed state.
+        reservation_id: ReservationId,
+        /// The replacement fixed commit.
+        protected_tip:  ProtectedReservationTip,
+        /// The integration-target commit observed with the replacement.
+        #[schemars(with = "String")]
+        trunk_oid:      GitObjectId,
+        /// What happened to the worktree coordination-run marker.
+        marker:         CoordinationRunMarkerRetirement,
+    },
     /// A point-in-time git result was appended for hook-safe replay.
     EvidenceRevalidated {
         /// The reservation whose evidence was checked.
@@ -1619,6 +1631,7 @@ impl ReleasePayload {
             | Self::Checkpointed { reservation_id, .. }
             | Self::CheckpointedPendingPathsUnavailable { reservation_id, .. }
             | Self::Resnapshotted { reservation_id, .. }
+            | Self::ResnapshottedPendingPathsUnavailable { reservation_id, .. }
             | Self::EvidenceRevalidated { reservation_id, .. }
             | Self::AlreadySettled { reservation_id, .. }
             | Self::Released { reservation_id, .. } => *reservation_id,
@@ -1631,7 +1644,8 @@ impl ReleasePayload {
             | Self::TargetUncovered { .. }
             | Self::Checkpointed { .. }
             | Self::CheckpointedPendingPathsUnavailable { .. }
-            | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
+            | Self::Resnapshotted { .. }
+            | Self::ResnapshottedPendingPathsUnavailable { .. } => OutputStatus::Outstanding,
             Self::EvidenceRevalidated { evidence, .. } | Self::AlreadySettled { evidence, .. } => {
                 integration_evidence_status(evidence)
             },
@@ -2945,91 +2959,7 @@ impl OutputEnvelope {
     pub(crate) fn released(release_payload: ReleasePayload) -> Self {
         let reservation_id = release_payload.reservation_id();
         let status = release_payload.output_status();
-        let message = match &release_payload {
-            ReleasePayload::Outstanding { pending_paths, .. } => format!(
-                "Reservation {reservation_id} remains outstanding; pending paths: {}.",
-                pending_paths
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            ReleasePayload::TargetUncovered { target, .. } => format!(
-                "Target {} is uncovered; reservation {reservation_id} remains outstanding.",
-                target.short_name()
-            ),
-            ReleasePayload::Checkpointed {
-                protected_tip,
-                pending_paths,
-                session_mapping_publication,
-                ..
-            } => checkpoint_release_message(
-                reservation_id,
-                protected_tip,
-                pending_paths,
-                session_mapping_publication,
-            ),
-            ReleasePayload::CheckpointedPendingPathsUnavailable {
-                protected_tip,
-                session_mapping_publication,
-                ..
-            } => message_with_session_mapping_publication(
-                format!(
-                    "Reservation {reservation_id} is outstanding at protected tip {protected_tip}; pending paths unavailable."
-                ),
-                session_mapping_publication,
-            ),
-            ReleasePayload::Resnapshotted {
-                protected_tip,
-                pending_paths,
-                ..
-            } => {
-                format!(
-                    "Reservation {reservation_id} now retains protected tip {protected_tip}; pending paths: {}.",
-                    pending_paths
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            },
-            ReleasePayload::EvidenceRevalidated { evidence, .. } => match evidence {
-                IntegrationEvidenceStatus::NotIntegrated => format!(
-                    "Reservation {reservation_id} remains outstanding; its protected tip is not in its integration target."
-                ),
-                IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
-                    "Reservation {reservation_id} has integration evidence in integration target commit {trunk_oid}."
-                ),
-                IntegrationEvidenceStatus::TrunkRewritten => format!(
-                    "Reservation {reservation_id} is blocking again because its integration target no longer contains its verified evidence."
-                ),
-                IntegrationEvidenceStatus::ObjectUnknown => format!(
-                    "Reservation {reservation_id} is blocking because git could not resolve its integration evidence."
-                ),
-            },
-            ReleasePayload::AlreadySettled {
-                disposition,
-                evidence,
-                ..
-            } => match evidence {
-                IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
-                    "Reservation {reservation_id} was already released with disposition {disposition:?}; integration target commit {trunk_oid} still carries its integration evidence. This release changed nothing."
-                ),
-                IntegrationEvidenceStatus::NotIntegrated
-                | IntegrationEvidenceStatus::TrunkRewritten
-                | IntegrationEvidenceStatus::ObjectUnknown => format!(
-                    "Reservation {reservation_id} was already released with disposition {disposition:?}. This release changed nothing."
-                ),
-            },
-            ReleasePayload::Released {
-                disposition,
-                session_mapping_publication,
-                ..
-            } => message_with_session_mapping_publication(
-                format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
-                session_mapping_publication,
-            ),
-        };
+        let message = release_message(&release_payload);
         let summary = format!("cargo-berth updated reservation {reservation_id}.");
         let presentation = engine_result_presentation(&summary, &message);
         Self {
@@ -4242,6 +4172,105 @@ fn overlap_holder_description(conflicts: &[ReservationConflict]) -> String {
                 "{holder_count} reservations hold paths that overlap the requested paths: {holders}; reduce the requested scopes or coordinate with the holders, then retry.",
             )
         },
+    }
+}
+
+fn release_message(release_payload: &ReleasePayload) -> String {
+    let reservation_id = release_payload.reservation_id();
+    match release_payload {
+        ReleasePayload::Outstanding { pending_paths, .. } => format!(
+            "Reservation {reservation_id} remains outstanding; pending paths: {}.",
+            pending_paths
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ReleasePayload::TargetUncovered { target, .. } => format!(
+            "Target {} is uncovered; reservation {reservation_id} remains outstanding.",
+            target.short_name()
+        ),
+        ReleasePayload::Checkpointed {
+            protected_tip,
+            pending_paths,
+            session_mapping_publication,
+            ..
+        } => checkpoint_release_message(
+            reservation_id,
+            protected_tip,
+            pending_paths,
+            session_mapping_publication,
+        ),
+        ReleasePayload::CheckpointedPendingPathsUnavailable {
+            protected_tip,
+            session_mapping_publication,
+            ..
+        } => message_with_session_mapping_publication(
+            format!(
+                "Reservation {reservation_id} is outstanding at protected tip {protected_tip}; pending paths unavailable."
+            ),
+            session_mapping_publication,
+        ),
+        ReleasePayload::Resnapshotted {
+            protected_tip,
+            pending_paths,
+            ..
+        } if pending_paths.is_empty() => {
+            format!("Reservation {reservation_id} now retains protected tip {protected_tip}.")
+        },
+        ReleasePayload::Resnapshotted {
+            protected_tip,
+            pending_paths,
+            ..
+        } => {
+            format!(
+                "Reservation {reservation_id} now retains protected tip {protected_tip}; pending paths: {}.",
+                pending_paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        },
+        ReleasePayload::ResnapshottedPendingPathsUnavailable { protected_tip, .. } => format!(
+            "Reservation {reservation_id} now retains protected tip {protected_tip}; pending paths unavailable."
+        ),
+        ReleasePayload::EvidenceRevalidated { evidence, .. } => match evidence {
+            IntegrationEvidenceStatus::NotIntegrated => format!(
+                "Reservation {reservation_id} remains outstanding; its protected tip is not in its integration target."
+            ),
+            IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
+                "Reservation {reservation_id} has integration evidence in integration target commit {trunk_oid}."
+            ),
+            IntegrationEvidenceStatus::TrunkRewritten => format!(
+                "Reservation {reservation_id} is blocking again because its integration target no longer contains its verified evidence."
+            ),
+            IntegrationEvidenceStatus::ObjectUnknown => format!(
+                "Reservation {reservation_id} is blocking because git could not resolve its integration evidence."
+            ),
+        },
+        ReleasePayload::AlreadySettled {
+            disposition,
+            evidence,
+            ..
+        } => match evidence {
+            IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
+                "Reservation {reservation_id} was already released with disposition {disposition:?}; integration target commit {trunk_oid} still carries its integration evidence. This release changed nothing."
+            ),
+            IntegrationEvidenceStatus::NotIntegrated
+            | IntegrationEvidenceStatus::TrunkRewritten
+            | IntegrationEvidenceStatus::ObjectUnknown => format!(
+                "Reservation {reservation_id} was already released with disposition {disposition:?}. This release changed nothing."
+            ),
+        },
+        ReleasePayload::Released {
+            disposition,
+            session_mapping_publication,
+            ..
+        } => message_with_session_mapping_publication(
+            format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+            session_mapping_publication,
+        ),
     }
 }
 
