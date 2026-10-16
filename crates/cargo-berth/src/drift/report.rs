@@ -21,7 +21,7 @@ use crate::ledger::IncursionPathSet;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationScopeSet;
 use crate::reservation::ReservationConflict;
-use crate::verb::claim::FirstTouchReservationAcquisition;
+use crate::verb::claim::ReservationAcquisition;
 
 /// The comparison algorithm that actually produced one report.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -132,7 +132,7 @@ pub(crate) enum DriftPathAttributionOutcome {
     #[serde(rename = "first_touch_claimed")]
     FirstTouchReserved {
         /// The complete reservation identity, baseline, and publication results.
-        acquisition: FirstTouchReservationAcquisition,
+        acquisition: ReservationAcquisition,
         /// The exact file scopes protected after the write.
         scopes:      ReservationScopeSet,
     },
@@ -164,7 +164,7 @@ pub(crate) enum PostWriteFreePathProtection {
     /// The free subset is now protected by this first-touch reservation.
     Acquired {
         /// The complete reservation identity, baseline, and publication results.
-        acquisition: FirstTouchReservationAcquisition,
+        acquisition: ReservationAcquisition,
         /// The exact file scopes protected after the write.
         scopes:      ReservationScopeSet,
     },

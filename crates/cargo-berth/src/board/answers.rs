@@ -105,7 +105,7 @@ pub(super) struct BoardOverlapAnswers {
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub(super) enum AnswerAcquisition {
     Claim,
-    /// A `--defer` claim answered while the run held this reservation, without widening it.
+    /// A claim recorded an answer on this reservation without widening it.
     Answer,
     Enrollment,
     Widen {
@@ -349,18 +349,16 @@ const fn claim_acquisition(authorization: &ConflictAuthorization) -> AnswerAcqui
 fn replaced_edges(events: &[JournalEvent]) -> HashMap<EdgeId, ReservationId> {
     events
         .iter()
-        .filter_map(|event| match &event.operation {
-            JournalOperation::Claim {
-                reservation_id,
-                authorization,
-                ..
-            } => Some((*reservation_id, authorization.replaced())),
-            _ => None,
-        })
-        .flat_map(|(reservation_id, replaced)| {
-            replaced
-                .iter()
-                .map(move |contradicted_ordering| (contradicted_ordering.edge_id, reservation_id))
+        .filter_map(|event| reservation_answers(&event.operation))
+        .flat_map(|(reservation_id, authorizations)| {
+            authorizations.iter().flat_map(move |authorization| {
+                authorization
+                    .replaced()
+                    .iter()
+                    .map(move |contradicted_ordering| {
+                        (contradicted_ordering.edge_id, reservation_id)
+                    })
+            })
         })
         .collect()
 }

@@ -3,6 +3,7 @@
 //! `tui_pane` finds that file, the keymap file, the favorites file and
 //! the themes directory by.
 
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
@@ -118,6 +119,11 @@ pub(crate) struct CensusConfig {
     pub(crate) hierarchy_command: String,
 }
 
+/// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub(crate) struct AccountsConfig(pub(crate) BTreeMap<String, String>);
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -131,6 +137,8 @@ pub(crate) struct Config {
     pub(crate) machines:   MachinesConfig,
     /// `[census]` — discovery of this machine's agent hierarchy.
     pub(crate) census:     CensusConfig,
+    /// `[accounts]` — labels for this machine's agent configuration homes.
+    pub(crate) accounts:   AccountsConfig,
 }
 
 impl AppConfig for Config {
@@ -192,10 +200,38 @@ remote = []
 
 [census]
 hierarchy_command = \"\"
+
+[accounts]
 ";
         let written =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
         assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn configured_accounts_parse_and_survive_config_serialization() {
+        let config: Config = toml::from_str("[accounts]\n\"~/.claude\" = \"claude2\"\n")
+            .expect("accounts table parses");
+        assert_eq!(config.accounts.0.len(), 1);
+        assert_eq!(
+            config.accounts.0.get("~/.claude").map(String::as_str),
+            Some("claude2")
+        );
+
+        let saved = toml::to_string(&config).expect("config serializes");
+        let restored: Config = toml::from_str(&saved).expect("saved config parses");
+        assert_eq!(restored.accounts.0, config.accounts.0);
+        assert_eq!(
+            toml::to_string(&restored).expect("restored config serializes"),
+            saved
+        );
+    }
+
+    #[test]
+    fn config_without_an_accounts_table_has_no_labels() {
+        let config: Config = toml::from_str("[census]\nhierarchy_command = \"\"\n")
+            .expect("config from before accounts parses");
+        assert!(config.accounts.0.is_empty());
     }
 
     /// [`LoadedConfig::load`] writes the file back whenever it does not

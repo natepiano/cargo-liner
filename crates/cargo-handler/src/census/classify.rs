@@ -40,6 +40,9 @@ use super::Agent;
 use super::AgentRow;
 use super::ServiceTier;
 use super::SessionIdentity;
+use super::account;
+use super::account::AccountLabels;
+use super::account::ConfigHome;
 use super::codex::CodexThread;
 use super::tmux;
 use super::transcript::BashCall;
@@ -64,22 +67,24 @@ use crate::constants::TMUX_SERVER_NAMES;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ProcessEntry {
     /// The process id.
-    pub(super) pid:        u32,
+    pub(super) pid:         u32,
     /// The parent's process id; none for the first process.
-    pub(super) parent:     Option<u32>,
+    pub(super) parent:      Option<u32>,
     /// The process name: `/proc/<pid>/comm` on Linux, which a process
     /// may set for itself.
-    pub(super) name:       String,
+    pub(super) name:        String,
     /// The whole command line, program first. Empty where it was not
     /// read.
-    pub(super) arguments:  Vec<String>,
+    pub(super) arguments:   Vec<String>,
     /// When the process started, in unix seconds.
-    pub(super) started:    u64,
+    pub(super) started:     u64,
     /// The process's working directory, where it could be read.
-    pub(super) directory:  Option<PathBuf>,
+    pub(super) directory:   Option<PathBuf>,
     /// The Claude Code process named by the process's `CLAUDE_PID`,
     /// read for `codex` processes alone.
-    pub(super) claude_pid: Option<u32>,
+    pub(super) claude_pid:  Option<u32>,
+    /// The configuration home named by the process's environment, when read.
+    pub(super) config_home: ConfigHome,
 }
 
 impl ProcessEntry {
@@ -184,14 +189,21 @@ pub(super) fn agent_rows(
     sessions: &[SessionRecord],
     codex_threads: &[CodexThread],
     home: Option<&Path>,
+    account_labels: &AccountLabels,
 ) -> Vec<AgentRow> {
     let table = pid_table(processes);
     let threads = codex_startup_threads(processes, codex_threads);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
-        .filter_map(|session| claude_row(&table, session, home))
+        .filter_map(|session| claude_row(&table, session, home, account_labels))
         .chain(processes.iter().filter_map(|process| {
-            codex_row(&table, process, threads.get(&process.pid).copied(), home)
+            codex_row(
+                &table,
+                process,
+                threads.get(&process.pid).copied(),
+                home,
+                account_labels,
+            )
         }))
         .collect();
     // Only a session the desktop app started has a launcher yet: the
@@ -200,7 +212,7 @@ pub(super) fn agent_rows(
     rows.extend(
         apps.iter()
             .filter_map(|pid| table.get(pid))
-            .map(|process| desktop_app_row(process, home)),
+            .map(|process| desktop_app_row(process, home, account_labels)),
     );
     rows.sort_by_key(|row| (row.started, row.pid));
     rows
@@ -300,6 +312,7 @@ fn claude_row(
     table: &HashMap<u32, &ProcessEntry>,
     session: &SessionRecord,
     home: Option<&Path>,
+    account_labels: &AccountLabels,
 ) -> Option<AgentRow> {
     let process = table.get(&session.pid)?;
     if !process.is_claude() || under_an_agent(table, process) {
@@ -310,6 +323,7 @@ fn claude_row(
         agent:           Agent::Claude,
         session_id:      session.session_id.clone().into(),
         service_tier:    ServiceTier::Unrecorded,
+        account:         account::account_of(process, home, account_labels),
         name:            session.label(),
         status:          session.status.clone(),
         started:         process.started,
@@ -327,11 +341,16 @@ fn claude_row(
 
 /// The row standing for the Claude desktop app, at `process`: the
 /// process holding the sessions the app started on this machine.
-fn desktop_app_row(process: &ProcessEntry, home: Option<&Path>) -> AgentRow {
+fn desktop_app_row(
+    process: &ProcessEntry,
+    home: Option<&Path>,
+    account_labels: &AccountLabels,
+) -> AgentRow {
     AgentRow {
         agent:           Agent::Claude,
         session_id:      SessionIdentity::Unrecorded,
         service_tier:    ServiceTier::Unrecorded,
+        account:         account::account_of(process, home, account_labels),
         name:            CLAUDE_DESKTOP_APP.to_string(),
         status:          None,
         started:         process.started,
@@ -355,6 +374,7 @@ fn codex_row(
     process: &ProcessEntry,
     thread: Option<&CodexThread>,
     home: Option<&Path>,
+    account_labels: &AccountLabels,
 ) -> Option<AgentRow> {
     if !process.is_codex() {
         return None;
@@ -392,6 +412,7 @@ fn codex_row(
         agent,
         session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Unrecorded,
+        account: account::account_of(process, home, account_labels),
         name,
         status: None,
         started: process.started,
@@ -537,7 +558,7 @@ fn mentions(text: &str, word: &str) -> bool {
 /// `directory` as a row shows it: under `home` it starts with `~`, and
 /// the home directory itself is `~`. A directory that could not be read
 /// is [`MISSING_VALUE`].
-fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> String {
+pub(super) fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> String {
     let Some(directory) = directory else {
         return MISSING_VALUE.to_string();
     };
@@ -569,6 +590,7 @@ mod tests {
             arguments: Vec::new(),
             started,
             directory: None,
+            config_home: ConfigHome::Unread,
             claude_pid: None,
         }
     }
@@ -743,7 +765,13 @@ mod tests {
     fn natedev_lists_its_sessions_oldest_first() {
         let (processes, sessions) = natedev();
 
-        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
         let rows: Vec<_> = rows
             .into_iter()
             .filter(|row| row.agent != Agent::CodexThreadHost)
@@ -795,7 +823,13 @@ mod tests {
         let sessions = [session(500, "gone", "idle", HOME)];
 
         assert_eq!(
-            agent_rows(&processes, &sessions, &[], Some(Path::new(HOME))),
+            agent_rows(
+                &processes,
+                &sessions,
+                &[],
+                Some(Path::new(HOME)),
+                &AccountLabels::default()
+            ),
             [] as [AgentRow; 0]
         );
     }
@@ -813,7 +847,13 @@ mod tests {
             ..session(500, "", "", HOME)
         }];
 
-        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(names(&rows), ["00000500"]);
         assert_eq!(rows[0].status, None);
@@ -832,7 +872,13 @@ mod tests {
             session(600, "first", "idle", HOME),
         ];
 
-        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(names(&rows), ["first", "second"]);
     }
@@ -845,7 +891,13 @@ mod tests {
             detailed(900, 1, "codex", 10, &["codex"], "/tmp"),
         ];
 
-        let rows = agent_rows(&processes, &[], &[], Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &[],
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(names(&rows), ["pid 900"]);
         assert_eq!(rows[0].directory, "/tmp");
@@ -884,7 +936,13 @@ mod tests {
         ];
 
         assert_eq!(codex_thread_window(&processes), Some(99_000..=190_000));
-        let rows = agent_rows(&processes, &[], &threads, Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &[],
+            &threads,
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(
             names(&rows),
@@ -926,7 +984,13 @@ mod tests {
             session(81_020, "worker", "busy", home),
         ];
 
-        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(home)));
+        let rows = agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(home)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(names(&rows), ["ChatGPT", "natemccoy-30", "worker"]);
         assert!(held_by_tmux(&processes, 81_020));
@@ -948,7 +1012,7 @@ mod tests {
             detailed(30, 20, "codex", 30, &["codex", "app-server"], HOME),
         ];
         let sessions = [session(10, "unit", "busy", HOME)];
-        let rows = agent_rows(&processes, &sessions, &[], None);
+        let rows = agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].agent, Agent::CodexThreadHost);
         let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
@@ -1001,7 +1065,13 @@ mod tests {
             session(620, "natedev", "busy", HOME),
         ];
 
-        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
 
         assert_eq!(
             names(&rows),

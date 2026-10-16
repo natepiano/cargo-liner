@@ -396,9 +396,12 @@ The sections mean:
   `enrollment` answer reports `deferred_integration_held_until_sequence` only
   once every counterpart it lists is released; a resolved pair appears
   as `ordering_created_from_deferral`, and the `defer` answer it resolved
-  leaves the list. `acquisition.origin` is `claim`, `enrollment`, or `widen`
-  (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen appears
-  here only when it recorded a new answer. A `sequence` entry carries
+  leaves the list. `acquisition.origin` is `claim`, `answer`, `enrollment`, or
+  `widen` (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen
+  appears here only when it recorded a new answer. `answer` marks an answer
+  recorded on the reservation without widening it: a `--defer`, a repository
+  default answer, or a `claim --reservation` whose paths the reservation or its
+  siblings already held. A `sequence` entry carries
   `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
   `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
   reservation whose later `claim --replace` retired this answer's edge to the
@@ -601,7 +604,7 @@ Adding this payload kind does not change the serialized bytes of plain
 
 ## Recorded target fields
 
-A successful `claim` has `payload.data.target`; a first-touch `check` has `payload.data.acquisition.target`. The view contains `ref` (a full local branch ref), `short_name`, `source`, and `commit` (the selected target tip or `"unresolved"`). An automatic fallback adds `fallback: { "requested", "reason" }`, with `reason` equal to `own_branch` or `unresolved`. `source` is `claim_argument`, `branch_configuration`, `repository_trunk`, or `unrecorded` for an older replayed claim. `retarget` returns status `retargeted` and `payload.data: { "reservation_id", "target" }` with the same view.
+A successful new-reservation `claim` has `payload.data.target`; a first-touch `check` has `payload.data.acquisition.target`. The view contains `ref` (a full local branch ref), `short_name`, `source`, and `commit` (the selected target tip or `"unresolved"`). An automatic fallback adds `fallback: { "requested", "reason" }`, with `reason` equal to `own_branch` or `unresolved`. `source` is `claim_argument`, `branch_configuration`, `repository_trunk`, or `unrecorded` for an older replayed claim. `retarget` returns status `retargeted` and `payload.data: { "reservation_id", "target" }` with the same view.
 
 Journal `claim.target` is absent only on records written before claims recorded a target, which replay as `unrecorded`; every claim the engine appends carries it. The `retarget` operation records `reservation_id`, `target`, `source`, and `target_commit`; `unrecorded_targets_pinned` records one `target` for every unrecorded reservation then present.
 
@@ -789,6 +792,27 @@ It appends no claim and writes no mapping for the refused phase.
 An explicit or mapped selection that reports `already_held` publishes its
 selected reservation and reports `published` when that publication succeeds.
 
+## Explicit claim reservation selection
+
+`claim <paths> --reservation <id>` returns a claim payload with
+`data.status = "acquired"`, `data.acquisition`, and `data.scopes`.
+The acquisition carries the selected reservation's id, coordination run, recorded
+target, protected phase-start head, publication results, and optional
+`already_held` sibling coverage, using the same record as check. Its `kind` is
+`widened` when paths were added, `already_held` for a zero-growth permissive
+answer, or `answered` for a deferral or repository default answer.
+The envelope status is `widened` for additions and `answered` for answer-only
+transactions. Answer-only scopes are the requested scopes and indicate no new
+reservation coverage; widening scopes name the added paths.
+
+The selector must name active work of the acting coordination run and worktree.
+An unknown, inactive, foreign-run or foreign-worktree id returns `invalid_input`
+as explicit check does. Creation-only arguments `--target`, `--head`, `--why`,
+and `--plan/--phase` are refused with the selector. A successful explicit claim
+publishes the selected reservation's session mapping even for answer-only
+transactions; publication failures and absent session ids use the same status
+values as explicit check. Ordinary claims retain their existing payloads.
+
 ## Contradicted ordering refusal
 
 A `claim` whose `--before` or `--after` answer orders a holder opposite to a
@@ -816,8 +840,13 @@ Its payload names each contradicted edge:
 edge, and `holder` the holder the new answer named. `blocked_by` lists each
 earlier reservation once. The message says to re-run the claim with
 `--replace`, which records the same answer with the contradicted edges in the
-authorization's `replaced` array. An answer in the same direction as the live
-edge is no contradiction and records a second edge, as before.
+authorization's `replaced` array. Without `--reservation`, an answer in the same
+direction as the live edge records an edge on its new reservation, as before.
+With `--reservation`, repeating an existing directed endpoint pair returns
+`duplicate_ordering_edge` (exit 2), with message
+`Ordering edge <before> before <after> already exists.`, matching `sequence`.
+It records nothing and leaves the session mapping unchanged,
+even if the request also names paths that would otherwise widen the reservation.
 
 `--replace` with no contradicted edge returns `status = "invalid_input"` and
 exit code `5`, naming the holders, so a re-ruling that no longer applies never

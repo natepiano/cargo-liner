@@ -55,7 +55,7 @@
        - `phase_start_head` = merge base with the target
        - `coordination_identity_provenance: NotPresented`
    - `LedgerTransactionError::CorrectableInput` (the 16 KiB record limit) → `record_too_large`; other transaction errors → `git_failure`.
-   - After the append, `WorktreeContext::publish_coordination_run_marker(run)`. A session in that worktree then joins the run through the marker and reuses the reservation without appending anything.
+   - After the append, `WorktreeContext::publish_coordination_run_marker(run)`. A session in that worktree then joins the run through the marker: its edits through the edit hook reuse the reservation, appending nothing for covered paths, while a bare `check` under a fresh harness session id opens a separate reservation in the same run for paths the enrolled reservation does not hold.
 6. **Report.** `report.overlaps = unresolved_enrollment_overlaps(re-read events)`. This walks the journal in order: every `Claim` or `Widen` with an `Enrollment` authorization adds one `EnrollmentOverlap` per bound counterpart, and a `ResolveDefer` whose `(deferred, blocker)` equals `(first, second)` removes it. `sequence` writes the stored deferral's orientation into `ResolveDefer` (`prepare_edge` uses the endpoints `deferred_overlap_between` returns), so either command order clears the pair.
 
 ### Types
@@ -84,7 +84,7 @@
 - **Merge observation** (`drift/observation.rs` `observe_merge_working_tree`). Drops a staged, unstaged, or untracked path equal to `BerthConfig::relative_path()`: an uncommitted configuration edit is repository setup, not lane work, and counting a tracked edit kept a merged lane from ending its run. Committed changes to that file still count through `git::unmerged_branch_paths`.
 - **Branch paths** (`git/reachability.rs` `unmerged_branch_paths`). Runs `git merge-tree --write-tree --name-only --no-messages -z <base> <head>`, accepting exit 0 (clean) and 1 (conflicted). `<base>` is the selected target's commit for a footprint and the other worktree's HEAD for a mutual remainder. The first NUL field is the result tree; the rest are conflicted paths. The answer is `git diff --name-only -z --no-renames <base> <result tree>` plus those conflicted paths. `merge-tree` builds a virtual base when criss-cross merges leave several merge bases, where `git diff --merge-base` failed with "multiple merge bases found". A modify/delete conflict keeps the base's file in the result tree, so only the conflict list names it. When `<base>` and `<head>` are the same commit the answer is empty and no git starts. Every other read is two git invocations, counted by `UNMERGED_BRANCH_PATH_GIT_QUERIES` (via `unmerged_branch_path_queries`) in `merge_extent_path_queries`.
 - **Containment** (`reservation/containment.rs`). `ActingHeadContainment::observe_at_head` reuses a HEAD the caller already resolved, and `observe` delegates to it; both take the acting target and the repository trunk. For a foreign holder recorded against a different target, committed protection is limited to `unmerged_branch_paths(acting target tip, holder head)` intersected with the acting-HEAD remainder; its dirty paths always count. `MergeExtent` has no `protected_key()`; the `Protected` / `Unavailable { retained_evidence: Protected }` states are matched explicitly.
-- **Scope normalization.** `verb/claim.rs` treats `FirstTouch | Enrolled` with `into_exact_file_antichain`.
+- **Scope normalization.** `verb/claim/mod.rs` treats `FirstTouch | Enrolled` with `into_exact_file_antichain`.
 - **Text output** (`output.rs` `append_enrollment_message`). One line per enrolled worktree, overlap (with both commands) and failure. When all three lists are empty, only the original `init` line prints. `source_description` shows `enrolled worktree changes`.
 
 ### Constants
@@ -103,7 +103,7 @@
 - Wire changes are additive only. Older journals replay unchanged, `tests/fixtures/reader_compat` bytes stay the same, `InitializationPayload.enrollment` stays serde-default, and `docs/cargo-berth/generated/output-contract.json` must match the generator (regenerate with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1` on `generated_artifacts_are_reproducible_from_the_checked_in_contract`).
 - A journal record is at most 16 KiB. An enrolled claim that does not fit is reported as `record_too_large`, never split.
 - `AuthorizedOverlap` still requires `scope_revision` on the wire, even though edit coverage for `Enrollment` and the recorded answers ignores it. It is a fixed-size digest of the counterpart's scopes, so a counterpart with hundreds of scopes cannot push an answer or enrollment record past the 16 KiB limit; records written before the digest carry the scope array and decode unchanged.
-- Adding a variant to `ClaimSource` or `ConflictAuthorization` means updating its exhaustive match sites, including `verb/claim.rs` and `output.rs`.
+- Adding a variant to `ClaimSource` or `ConflictAuthorization` means updating its exhaustive match sites, including `verb/claim/mod.rs` and `output.rs`.
 
 ## Calibration / gotchas
 
@@ -134,7 +134,7 @@
 - **Why `Enrollment` is its own variant and not a `Defer`:** it binds every counterpart at once, with no single blocker and no user-written reason. `DeferralOrigin` lets the board tell engine-made deferrals from user answers without scanning the journal again.
 - **Why the config goes at the main worktree root:** every worktree without its own file reads it there. Linked worktrees added later need no copy.
 - **Why one transaction per candidate, with a history recheck under the lock:** one failure stays with its worktree, and a worktree that gains a reservation concurrently is skipped instead of claimed twice.
-- **Why the run marker is published:** so a session in the enrolled worktree joins that run and reuses the reservation, instead of taking a first-touch claim of its own.
+- **Why the run marker is published:** so a session's edits in the enrolled worktree join that run and reuse the reservation, instead of taking a first-touch claim in a run of their own.
 - **Why enrolled claims publish no session mapping:** `init` runs in one session but claims for every worktree. Mapping them would tie the invoking session to other worktrees' reservations.
 - **Why `ClaimSource::Enrolled` counts as work for automatic ending:** enrollment requires a non-empty footprint, and the immutable source keeps that fact even if a later drift or gate check has already recorded an empty extent.
 - **Why unresolved overlaps come from the journal and not the graph:** a pair has to keep being reported after one endpoint ends, while the other is still held, until the user orders it. The board drops the pair once both endpoints have ended.

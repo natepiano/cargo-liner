@@ -17,6 +17,7 @@
 mod action;
 mod constants;
 mod draw;
+mod flow_layout;
 mod grid;
 mod growth;
 mod host;

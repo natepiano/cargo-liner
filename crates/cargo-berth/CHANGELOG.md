@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ambiguous edit refusals list the sessions mapped to each candidate phase reservation, so the director can select its phase without a lookup.
+- Incomplete overlap answers name the holders left unanswered and print the complete claim to retry; mixed ordering flags leave the remaining direction to choose, and overrides explain how to narrow the scopes.
+- Blocked `check` and `claim` messages name each holder's coordination run beside its reservation id, making the holder distinct from the requester.
+- A repeated named `claim --before` or `--after` refuses an existing ordering edge without changing the journal or session mapping, preserving readable coordination state.
+- `claim --reservation <id>` directs overlap answers and added scopes to that active phase reservation, preserving its target and baseline and publishing its session mapping. Deferrals and all-held answers record without acquiring paths; `--replace` leaves sibling ordering edges alone, sibling-held paths are reported, and widening needs no new reservation slot.
 - Parallel phase checks name sibling-held paths and their reservations in `acquisition.already_held` while reserving only the free paths.
 - A new phase check at the reservation limit reports `reservation_limit_reached` with the configured maximum instead of `invalid_input`.
 - A phase checkpoint leaves a released sibling's completed checkpoint paths alone while still acquiring new edits.

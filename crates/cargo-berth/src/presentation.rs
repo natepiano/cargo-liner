@@ -10,6 +10,8 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
+use crate::verb::claim::PhaseReservationCandidate;
+
 /// Whether an envelope supplies render-ready output blocks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EnvelopePresentation {
@@ -164,11 +166,11 @@ pub(crate) fn engine_message_block(summary: &str, message: &str) -> RenderedOutp
 /// Render an ambiguity refusal with the candidate reservations kept visible.
 pub(crate) fn ambiguous_first_touch_block(
     message: &str,
-    candidate_reservation_ids: &[String],
+    candidates: &[PhaseReservationCandidate],
 ) -> RenderedOutputBlock {
-    let candidates = candidate_reservation_ids
+    let candidates = candidates
         .iter()
-        .map(|reservation_id| format!("- `{reservation_id}`"))
+        .map(|candidate| format!("- {candidate}"))
         .collect::<Vec<_>>()
         .join("\n");
     RenderedOutputBlock {
@@ -369,6 +371,7 @@ mod tests {
     use super::outstanding_incursion_block;
     use super::replay_failure_block;
     use super::unverifiable_incursion_block;
+    use crate::verb::claim::PhaseReservationCandidate;
 
     const FRONT_END_CORPUS: &str = include_str!("../tests/fixtures/front_end_corpus.json");
 
@@ -409,13 +412,29 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_first_touch_block_names_every_candidate() {
+    fn ambiguous_first_touch_block_names_every_candidate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let first = "01a054d8-6797-7ec2-8907-07a71169d947";
+        let second = "01a054d8-67f0-7d73-b6af-1c5016b1e9ef";
+        let third = "01a054d8-67f0-7d73-b6af-1c5016b1e9f0";
         let block = ambiguous_first_touch_block(
             "Choose one reservation.",
-            &["reservation-a".to_owned(), "reservation-b".to_owned()],
+            &[
+                PhaseReservationCandidate::from_sessions(first.parse()?, vec!["phase-A".parse()?]),
+                PhaseReservationCandidate::from_sessions(
+                    second.parse()?,
+                    vec!["phase-B".parse()?, "director".parse()?, "phase-B".parse()?],
+                ),
+                PhaseReservationCandidate::from_sessions(third.parse()?, Vec::new()),
+            ],
         );
-        assert!(block.detail.contains("- `reservation-a`"));
-        assert!(block.detail.contains("- `reservation-b`"));
+        assert_eq!(
+            block.detail,
+            format!(
+                "Choose one reservation.\n\nReservations named by this response:\n\n- `{first}` (session phase-A)\n- `{second}` (sessions director, phase-B)\n- `{third}` (no session)"
+            )
+        );
+        Ok(())
     }
 
     #[test]
@@ -598,8 +617,18 @@ mod tests {
             .as_str()
             .ok_or_else(|| "ambiguity corpus response should carry a message".to_owned())?;
         let candidates = vec![
-            "01a054d8-6797-7ec2-8907-07a71169d947".to_owned(),
-            "01a054d8-67f0-7d73-b6af-1c5016b1e9ef".to_owned(),
+            PhaseReservationCandidate::from_sessions(
+                "01a054d8-6797-7ec2-8907-07a71169d947"
+                    .parse()
+                    .map_err(|error| format!("{error}"))?,
+                Vec::new(),
+            ),
+            PhaseReservationCandidate::from_sessions(
+                "01a054d8-67f0-7d73-b6af-1c5016b1e9ef"
+                    .parse()
+                    .map_err(|error| format!("{error}"))?,
+                Vec::new(),
+            ),
         ];
         let block = ambiguous_first_touch_block(message, &candidates);
         let expected_stderr = entry["expected"]["stderr"]

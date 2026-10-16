@@ -259,7 +259,7 @@ are the binary's output from that repository.
 
 ```console
 requester$ cargo berth claim tree:crates/shared --run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c --plan docs/work.md --phase requester --why "consume the shared API"
-Reservation 01a0370c-860c-7d90-bd62-3497dd7063aa on refs/heads/holder (plan docs/work.md, phase holder, update the shared API) holds overlapping paths for 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b; reduce the requested scopes or coordinate with the holder, then retry.
+Reservation 01a0370c-860c-7d90-bd62-3497dd7063aa (coordination run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b) on refs/heads/holder (plan docs/work.md, phase holder, update the shared API) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry.
 [exit 1]
 
 requester$ cargo berth claim tree:crates/shared --run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c --plan docs/work.md --phase requester --why "consume the shared API" --after 01a0370c-860c-7d90-bd62-3497dd7063aa --overlap-why "the holder API must land first"

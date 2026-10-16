@@ -743,6 +743,389 @@ fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
     assert_eq!(journal_bytes(repository.path()), journal_before);
 }
 
+/// A partial answer prints a complete command that records an edge to each holder.
+#[test]
+fn incomplete_before_answer_prints_a_complete_executable_claim() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let reason = "-both holders build on this director's work";
+    let reason_argument = format!("--overlap-why={reason}");
+    let refused = run_berth(
+        &requester,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--before",
+            &holders[0],
+            &reason_argument,
+            "--json",
+        ],
+    );
+    let envelope = json_output(&refused);
+    let command = format!(
+        "cargo-berth claim file:src/lib.rs --before {} --before {} --overlap-why='-both holders build on this director'\\''s work' --json",
+        holders[0], holders[1],
+    );
+    let message = format!(
+        "The answer names {} but not {}, which also holds paths that overlap the requested paths; one claim answers every holder. Run: `{command}`",
+        holders[0], holders[1],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(envelope["payload"]["data"]["status"], "blocked");
+    assert_eq!(envelope["message"], message);
+    assert!(
+        refusal_detail(&envelope).starts_with(&message),
+        "{envelope:#}"
+    );
+    let chooser = "No approver is configured, so this session chooses the answer.";
+    let detail = refusal_detail(&envelope);
+    assert!(detail.ends_with(chooser), "{detail}");
+    let chooser_position = detail.find(chooser).expect("caller chooses the answer");
+    for holder in &holders {
+        let facts_position = detail
+            .find(&format!("Holder `{holder}`:"))
+            .expect("holder facts precede chooser");
+        assert!(
+            message.len() < facts_position && facts_position < chooser_position,
+            "{detail}"
+        );
+    }
+    assert_eq!(detail.matches(chooser).count(), 1, "{detail}");
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let completed = run_printed_claim(&requester, &envelope);
+    let completed_envelope = json_output(&completed);
+    assert!(completed.status.success(), "{completed_envelope:#}");
+    assert_before_edges(repository.path(), &holders, reason);
+}
+
+/// Repair guidance preserves the configured answer chooser after every holder's facts.
+#[test]
+fn incomplete_answer_keeps_the_configured_chooser_after_holder_facts() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    let approver_path = holder_root.to_str().expect("approver worktree path");
+    let mut configuration = fs::OpenOptions::new()
+        .append(true)
+        .open(repository.path().join(CONFIGURATION_PATH))
+        .expect("configuration should open");
+    writeln!(configuration, "approver = \"{approver_path}\"").expect("approver should write");
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let refused = run_berth(
+        &requester,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--before",
+            &holders[0],
+            "--overlap-why",
+            "both holders build on this claim",
+            "--json",
+        ],
+    );
+    let envelope = json_output(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(
+        envelope["payload"]["data"]["approver"],
+        serde_json::json!({"worktree": approver_path, "caller_is_approver": false})
+    );
+    let detail = refusal_detail(&envelope);
+    let message = envelope["message"].as_str().expect("repair message");
+    assert!(detail.starts_with(message), "{detail}");
+    let chooser = format!(
+        "The configured approver is the session working in `{approver_path}`. Send it this overlap: the holder ids, the shared paths, and answers 1-5. Then record the order it chooses by running that answer's claim command from this worktree."
+    );
+    assert!(detail.ends_with(&chooser), "{detail}");
+    let chooser_position = detail.find(&chooser).expect("configured chooser guidance");
+    for holder in &holders {
+        let facts_position = detail
+            .find(&format!("Holder `{holder}`:"))
+            .expect("holder facts precede chooser");
+        assert!(
+            message.len() < facts_position && facts_position < chooser_position,
+            "{detail}"
+        );
+    }
+    assert_eq!(detail.matches(&chooser).count(), 1, "{detail}");
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+}
+
+/// A partial defer answer names every holder in its executable recovery command.
+#[test]
+fn incomplete_defer_answer_prints_a_complete_executable_claim() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let reason = "the integration order remains open";
+    let refused = run_berth(
+        &requester,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--defer",
+            &holders[0],
+            "--overlap-why",
+            reason,
+            "--json",
+        ],
+    );
+    let envelope = json_output(&refused);
+    let command = format!(
+        "cargo-berth claim file:src/lib.rs --defer {} --defer {} --overlap-why='{reason}' --json",
+        holders[0], holders[1],
+    );
+    let message = format!(
+        "The answer names {} but not {}, which also holds paths that overlap the requested paths; one claim answers every holder. Run: `{command}`",
+        holders[0], holders[1],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(envelope["message"], message);
+    assert!(
+        refusal_detail(&envelope).starts_with(&message),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let completed = run_printed_claim(&requester, &envelope);
+    assert!(completed.status.success(), "{:#}", json_output(&completed));
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "answer");
+    let authorizations = recorded["authorizations"]
+        .as_array()
+        .expect("defer authorizations");
+    let mut blockers = authorizations
+        .iter()
+        .map(|authorization| {
+            assert_eq!(authorization["kind"], "defer");
+            assert_eq!(authorization["reason"], reason);
+            authorization["blocker"]
+                .as_str()
+                .expect("deferred holder")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    blockers.sort();
+    assert_eq!(blockers, holders);
+}
+
+/// A phase answer keeps its explicit reservation in the command and widens that phase.
+#[test]
+fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    let phase = run_berth_with_session(
+        &requester,
+        &["claim", "file:src/own.rs", "--json"],
+        "director.phase-A",
+    );
+    assert!(phase.status.success(), "{:#}", json_output(&phase));
+    let phase_id = reservation_id(&phase);
+    let phase_envelope = json_output(&phase);
+    let phase_run = phase_envelope["payload"]["data"]["coordination_run_id"]
+        .as_str()
+        .expect("phase coordination run");
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let reason = "both holders build on this phase";
+    let refused = run_berth_with_session(
+        &requester,
+        &[
+            "claim",
+            "--reservation",
+            &phase_id,
+            "--run",
+            phase_run,
+            "--before",
+            &holders[0],
+            "--overlap-why",
+            reason,
+            "--json",
+            "--",
+            "file:src/lib.rs",
+            "-director's notes.rs",
+        ],
+        "director",
+    );
+    let envelope = json_output(&refused);
+    let command = format!(
+        "cargo-berth claim --reservation {phase_id} --run {phase_run} --before {} --before {} --overlap-why='{reason}' --json -- file:src/lib.rs '-director'\\''s notes.rs'",
+        holders[0], holders[1],
+    );
+    let message = format!(
+        "The answer names {} but not {}, which also holds paths that overlap the requested paths; one claim answers every holder. Run: `{command}`",
+        holders[0], holders[1],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(envelope["message"], message);
+    assert!(
+        refusal_detail(&envelope).starts_with(&message),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let completed = run_printed_claim(&requester, &envelope);
+    let completed_envelope = json_output(&completed);
+    assert!(completed.status.success(), "{completed_envelope:#}");
+    assert_eq!(completed_envelope["status"], "widened");
+    assert_eq!(
+        completed_envelope["reservations"],
+        serde_json::json!([phase_id])
+    );
+    assert_eq!(
+        completed_envelope["payload"]["data"]["acquisition"]["coordination_run_id"],
+        phase_run
+    );
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "widen");
+    assert_eq!(recorded["reservation_id"], phase_id);
+    let scopes = recorded["added_scopes"].as_array().expect("widened scopes");
+    assert!(
+        scopes.contains(&serde_json::json!({"kind": "file", "path": "-director's notes.rs"})),
+        "{recorded:#}"
+    );
+    assert!(
+        scopes.contains(&serde_json::json!({"kind": "file", "path": "src/lib.rs"})),
+        "{recorded:#}"
+    );
+    assert_before_edges(repository.path(), &holders, reason);
+}
+
+/// Mixed directions leave the remaining holder's direction to the caller.
+#[test]
+fn incomplete_mixed_answer_prints_a_choice_for_the_missing_holder() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third-holder");
+    let mut holders = two_holders_of_the_library(repository.path(), &holder_root);
+    dirty_source(&third_root, "src/lib.rs");
+    let third = run_berth(
+        &third_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--before",
+            &holders[0],
+            "--before",
+            &holders[1],
+            "--overlap-why",
+            "third holder goes first",
+            "--json",
+        ],
+    );
+    assert!(third.status.success(), "{:#}", json_output(&third));
+    holders.push(reservation_id(&third));
+    holders.sort();
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let reason = "the remaining direction needs a decision";
+    let refused = run_berth(
+        &requester,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--before",
+            &holders[0],
+            "--after",
+            &holders[1],
+            "--overlap-why",
+            reason,
+            "--json",
+        ],
+    );
+    let envelope = json_output(&refused);
+    let command = format!(
+        "cargo-berth claim file:src/lib.rs --before {} --after {} --<before|after> {} --overlap-why='{reason}' --json",
+        holders[0], holders[1], holders[2],
+    );
+    let message = format!(
+        "The answer names {}, {} but not {}, which also holds paths that overlap the requested paths; one claim answers every holder. Run: `{command}`",
+        holders[0], holders[1], holders[2],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(envelope["message"], message);
+    assert!(
+        refusal_detail(&envelope).starts_with(&message),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+}
+
+/// Execute the shell command users copy, substituting only the tested binary's location.
+fn run_printed_claim(root: &Path, envelope: &serde_json::Value) -> Output {
+    let message = envelope["message"].as_str().expect("refusal message");
+    let command = message
+        .split("Run: `")
+        .nth(1)
+        .expect("complete command")
+        .strip_suffix('`')
+        .expect("command terminator");
+    let arguments = command.strip_prefix("cargo-berth ").expect("berth command");
+    berth_command(SHELL_BINARY)
+        .args([
+            SHELL_COMMAND_ARG,
+            &format!("exec \"$0\" {arguments}"),
+            BERTH_EXECUTABLE,
+        ])
+        .current_dir(root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("printed claim should execute")
+}
+
+fn assert_before_edges(repository: &Path, holders: &[String], reason: &str) {
+    let recorded = last_journal_event(repository);
+    let authorization = &recorded["authorization"];
+    assert_eq!(authorization["kind"], "sequence_per_holder");
+    assert_eq!(authorization["reason"], reason);
+    let recorded_holders = authorization["holders"]
+        .as_array()
+        .expect("per-holder edges");
+    assert_eq!(recorded_holders.len(), holders.len());
+    let mut blockers = recorded_holders
+        .iter()
+        .map(|holder| {
+            assert_eq!(holder["direction"], "requester_before_holder");
+            assert!(holder["edge_id"].as_str().is_some_and(|id| !id.is_empty()));
+            holder["blocker"].as_str().expect("edge holder").to_owned()
+        })
+        .collect::<Vec<_>>();
+    blockers.sort();
+    assert_eq!(blockers, holders);
+    let unique_edges = recorded_holders
+        .iter()
+        .map(|holder| &holder["edge_id"])
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        unique_edges.len(),
+        holders.len(),
+        "each holder has a distinct edge"
+    );
+}
+
 /// One claim names both holders of a path with one `--after` each: one `claim` record carries a
 /// `sequence_per_holder` authorization with an ordering edge per holder, and the board holds
 /// the requester behind both holders.
@@ -988,7 +1371,7 @@ fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
 }
 
 /// An answer naming both holders and also a reservation that shares nothing with the claim is
-/// refused as an unanswered claim is, and nothing records.
+/// refused with the obsolete answer identified, and nothing records.
 #[test]
 fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
     let repository = initialized_repository();
@@ -1015,6 +1398,27 @@ fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
     assert_eq!(blocked.status.code(), Some(1), "{blocked_envelope:#}");
     assert_eq!(blocked_envelope["status"], "blocked_by_overlap");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!(holders));
+    let message = blocked_envelope["message"]
+        .as_str()
+        .expect("incomplete answer message");
+    assert!(
+        message.contains(&format!(
+            "{unrelated_id} no longer overlaps the requested paths, so the command leaves it out."
+        )),
+        "{message}"
+    );
+    let command = message
+        .split("Run: `")
+        .nth(1)
+        .expect("corrected command")
+        .split('`')
+        .next()
+        .expect("command text");
+    assert!(!command.contains(&unrelated_id), "{command}");
+    assert!(
+        refusal_detail(&blocked_envelope).starts_with(message),
+        "{blocked_envelope:#}"
+    );
     assert_eq!(journal_bytes(repository.path()), journal_before);
 }
 
@@ -1047,7 +1451,88 @@ fn an_override_naming_one_of_two_holders_is_refused() {
     assert_eq!(blocked.status.code(), Some(1), "{blocked_envelope:#}");
     assert_eq!(blocked_envelope["status"], "blocked_by_overlap");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!(holders));
+    let message = format!(
+        "The answer names {} but not {}, which also holds paths that overlap the requested paths; one claim answers every holder. --override settles one holder; narrow the requested scopes until one holder remains, or answer every holder with --before, --after or --defer.",
+        holders[0], holders[1],
+    );
+    assert_eq!(blocked_envelope["message"], message);
+    assert!(
+        refusal_detail(&blocked_envelope).starts_with(&message),
+        "{blocked_envelope:#}"
+    );
     assert_eq!(journal_bytes(repository.path()), journal_before);
+}
+
+/// A stale override prints the sole current holder's id instead of asking to narrow scopes.
+#[test]
+fn stale_override_prints_an_executable_claim_for_the_current_holder() {
+    let repository = initialized_repository();
+    let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    let stale = &holders[0];
+    let current = &holders[1];
+    let abandoned = run_berth(
+        repository.path(),
+        [
+            "resolve",
+            stale,
+            "--abandon",
+            "--why",
+            "the holder discarded its work",
+            "--json",
+        ],
+    );
+    assert!(abandoned.status.success(), "{:#}", json_output(&abandoned));
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let reason = "the remaining overlap was reviewed";
+    let refused = run_berth(
+        &requester,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--override",
+            stale,
+            "--overlap-why",
+            reason,
+            "--json",
+        ],
+    );
+    let envelope = json_output(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(envelope["blocked_by"], serde_json::json!([current]));
+    let message = envelope["message"]
+        .as_str()
+        .expect("override recovery message");
+    let command = format!(
+        "cargo-berth claim file:src/lib.rs --override {current} --overlap-why='{reason}' --json"
+    );
+    assert!(
+        message.contains(&format!(
+            "{stale} no longer overlaps the requested paths, so the command leaves it out."
+        )),
+        "{message}"
+    );
+    assert!(message.ends_with(&format!("Run: `{command}`")), "{message}");
+    assert!(
+        !message.contains("narrow the requested scopes"),
+        "{message}"
+    );
+    assert!(
+        refusal_detail(&envelope).starts_with(message),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let completed = run_printed_claim(&requester, &envelope);
+    assert!(completed.status.success(), "{:#}", json_output(&completed));
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "claim");
+    assert_eq!(recorded["authorization"]["kind"], "override");
+    assert_eq!(recorded["authorization"]["blocker"], current.as_str());
+    assert_eq!(recorded["authorization"]["reason"], reason);
 }
 
 /// The refusal routes the answer choice: the calling session chooses when no approver is
