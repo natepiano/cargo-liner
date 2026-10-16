@@ -2,7 +2,7 @@
 
 ## What it is
 
-One unit director can run several phases of a plan side by side in one worktree, each with its own cargo-berth reservation and its own checkpoint. All of a director's reservations share one coordination run. Each phase runs its checks under its own harness session id, `CARGO_BERTH_SESSION_ID=<director sid>.phase-<N>`, so a phase's paths stay in that phase's reservation and release with that phase's checkpoint instead of folding into whichever phase opened first. Overlap answers can name the phase they belong to, and an overlap refusal names the holder's run so it never reads as the requester's.
+One unit director can run several phases of a plan side by side in one worktree, each with its own cargo-berth reservation and its own checkpoint. All of a director's reservations share one coordination run. Each phase runs its checks under its own harness session id, `CARGO_BERTH_SESSION_ID=<director sid>.phase-<N>`, so a phase's paths stay in that phase's reservation and release with that phase's checkpoint instead of folding into whichever phase opened first. Overlap answers can name the phase they belong to, and an overlap refusal names the holder's run so it never reads as the requester's. Refusals name what to run: an ambiguous edit labels each candidate reservation with its sessions, and an overlap answer that leaves a holder out prints the one claim that answers every holder.
 
 ## How it works
 
@@ -105,7 +105,7 @@ pub(crate) enum ClaimReservationSelection {
 
 Replay binds an `Answer` event's authorizations to its `reservation_id`, and the board's replaced-edge view (`replaced_edges`, `src/board/answers.rs`) reads `Answer` events through `reservation_answers`.
 
-Without `--reservation`, a permissive claim opens a new reservation and an ordinary `--defer` binds to the run's oldest active reservation in the worktree, as before.
+Without `--reservation`, a permissive claim opens a new reservation and an ordinary `--defer` binds to the run's oldest active reservation in the worktree.
 
 ### Overlap refusal text
 
@@ -116,24 +116,60 @@ Without `--reservation`, a permissive claim opens a new reservation and an ordin
 
 `ReservationConflict.holder_run_id` supplies the run. The README's collision example carries the same text.
 
-An incomplete answer keeps the blocked envelope and holder payload, but names every holder it left out and prints the caller's claim with a flag for each current holder. A uniform answer repeats its flag; mixed ordering answers print `--<before|after> <id>` for the caller to choose. Stale named holders are identified and omitted from the recovery command. The recovery command comes from the parsed CLI values, retains the caller’s selectors, and prints its reason as `--overlap-why=<quoted reason>`. The refusal detail retains the configured answer chooser after the holder facts. A stale override with one current holder prints an override command for that holder. An override with several holders asks the caller to narrow the scopes or answer every holder with ordering or deferral flags.
+### Incomplete overlap answer
 
-An ambiguous edit lists each candidate as `` `<id>` (session <sid>) ``, `` `<id>` (sessions <sid>, <sid>) `` or `` `<id>` (no session) ``. Sessions come from the disposable mapping read under the selection's ledger lock, sorted within each candidate. An unreadable or invalid mapping index leaves the candidate id bare rather than claiming no session maps to it; a missing index means no mappings. The message begins “No session names one phase's reservation among …” and ends “No reservation was appended or widened, and no session was mapped to one.” The `candidate_reservation_ids` payload stays unchanged.
+`bind_claim_authorization` (permissive answers) and `bind_answer_authorizations` (`--defer` and the default answer) in `src/verb/claim/mod.rs` compare the holders an answer names with the conflicts recomputed under the ledger lock. When the sets differ and some holder still overlaps, the claim is refused as `ClaimRejection::IncompleteAnswer`, carrying an `IncompleteClaimAnswerRejection` (`src/verb/claim/incomplete_answer.rs`). This holds for a plain claim and for `claim --reservation`. An answer whose holders no longer overlap at all stays `invalid_input`.
+
+`OutputEnvelope::blocked_claim_with_answer_recovery` (`src/output.rs`) keeps the `blocked_claim` contract: status `blocked_by_overlap`, exit 1, `blocked_by` and the `ClaimPayload::Blocked` payload. Its `message` is the repair text alone; the presentation detail is that text, then `claim_holder_facts`, then `overlap_answer_chooser`, so the configured chooser guidance follows the holder facts. The repair text, ids comma-joined in wire order:
+
+- Some holder left unnamed: `The answer names <named> but not <unnamed>, which also holds paths that overlap the requested paths; one claim answers every holder.` (`hold` when several are unnamed).
+- Every current holder named, plus ids that no longer overlap: `The answer names <named>, including reservations that no longer overlap the requested paths; one claim answers every holder.`
+- Each named id that no longer overlaps appends `<id> no longer overlaps the requested paths, so the command leaves it out.`
+- Then `` Run: `<command>` ``. A `--override` while more than one holder overlaps gets `--override settles one holder; narrow the requested scopes until one holder remains, or answer every holder with --before, --after or --defer.` and no command. A stale `--override` with one current holder gets a command overriding that holder.
+
+`complete_command` builds the claim to copy:
+
+```text
+cargo-berth claim <paths> <selectors> <named flags> <unnamed flags> --overlap-why=<quoted> [--replace] [--json] [-- <paths>]
+```
+
+- Each named holder that still overlaps keeps its own flag, in wire order. Each unnamed holder gets the flag every named holder shares (`--before`, `--after`, `--defer` or `--override`); when `--before` and `--after` are mixed it gets `--<before|after>` for the caller to choose.
+- The non-answer parts come from `ClaimRecoveryCommand` (`src/verb/claim/recovery_command.rs`), which `ClaimArguments::answer_recovery` (`src/cli.rs`) captures from clap's parsed values before `into_claim_request` consumes them. Process argv is never read. It keeps the paths, the selectors in the order `--reservation`, `--target`, `--why`, `--plan`, `--phase`, `--run`, `--head`, and `--replace` and `--json`.
+- Every value is quoted with `coordination_identity::shell_quote`. A selector value starting with `-` prints as `--flag=<quoted>`; when any path starts with `-`, every path moves after a trailing `--`. The reason always prints as `--overlap-why=<quoted>`.
+
+### Ambiguous edit
+
+With several active reservations and no selecting mapping, `from_unmapped_active_run_reservations` (`src/verb/claim/mod.rs`) calls `session::phase_reservation_sessions` under the selection's ledger lock. It reads the session store and groups the acting run's mappings by reservation. Each candidate becomes a `PhaseReservationCandidate` (`src/verb/claim/phase_candidate.rs`), rendered as:
+
+- `` `<id>` (session <sid>) ``
+- `` `<id>` (sessions <sid>, <sid>, …) ``, sorted and deduplicated
+- `` `<id>` (no session) ``
+- `` `<id>` `` bare, when the store cannot be read or decoded; `(no session)` would claim more than an unread store shows. A missing store reads as no mappings.
+
+`OutputEnvelope::ambiguous_active_run_reservations` (`src/output.rs`) writes the message, candidates comma-joined in wire order:
+
+`` No session names one phase's reservation among <candidates>. Run `<command>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one. ``
+
+`<command>` is `cargo-berth check --reservation <reservation-id> <path>...`, prefixed with `CARGO_BERTH_SESSION_ID=<quoted sid> ` when that variable named the refused session (`ambiguous_reservation_recovery_command`). The presentation detail appends `Reservations named by this response:` and one `- <candidate>` line per candidate, in the same forms. Status `ambiguous_active_run_reservations`, exit 1; `candidate_reservation_ids` and the envelope's `reservations` list the bare ids.
 
 ### Key files
 
 | File | Role |
 | --- | --- |
-| `src/cli.rs` | bare `check` selection; `--reservation` on `claim` |
+| `src/cli.rs` | bare `check` selection; `--reservation` on `claim`; `ClaimArguments::answer_recovery` |
 | `src/verb/claim/mod.rs` | `CheckReservationSelection`, `ClaimReservationSelection`, `ReservationAcquisition`, `SiblingHeldScopes`, `append_unheld_first_touch_scopes`, `partition_first_touch_protected_scopes`, `AlreadyHeldSessionMapping` |
 | `src/verb/claim/named.rs` | named claim: validate, coverage, mutation, consume |
-| `src/session/mod.rs` | `FirstTouchSessionReservationMapping`, `SessionIdentityMappingPublication::LeftUnmapped`, `apply_journal_event` |
+| `src/verb/claim/phase_candidate.rs` | `PhaseReservationCandidate`: ambiguity candidates and their session labels |
+| `src/verb/claim/incomplete_answer.rs` | `IncompleteClaimAnswerRejection`: the incomplete-answer refusal |
+| `src/verb/claim/recovery_command.rs` | `ClaimRecoveryCommand`: renders the claim to copy |
+| `src/session/mod.rs` | `FirstTouchSessionReservationMapping`, `SessionIdentityMappingPublication::LeftUnmapped`, `apply_journal_event`, `phase_reservation_sessions` |
 | `src/drift/selection.rs`, `src/hook/post_tool_use.rs` | `SoleRunCandidate` |
 | `src/drift/classification.rs`, `src/drift/observation.rs` | released-sibling checkpoint guard |
 | `src/edge/graph.rs` | `contains_sequence` |
-| `src/output.rs` | `overlap_holder_description`, `selected_claim`, `check_reservation_limit_reached`, `claim_duplicate_ordering` |
+| `src/output.rs` | `overlap_holder_description`, `selected_claim`, `check_reservation_limit_reached`, `claim_duplicate_ordering`, `blocked_claim_with_answer_recovery`, `ambiguous_active_run_reservations` |
 | `tests/parallel_phases.rs` | two-phase end-to-end, `left_unmapped`, sibling coverage, limit, released-sibling checkpoint, named claims |
-| `tests/hooks.rs`, `tests/lifecycle.rs`, `tests/overlap.rs` | hook selection, single-phase lifecycle, refusal text |
+| `tests/hooks.rs`, `tests/lifecycle.rs`, `tests/overlap.rs` | hook selection, single-phase lifecycle, refusal text, ambiguity session labels |
+| `tests/answers.rs` | incomplete answers: before, defer, named phase, mixed, chooser after holder facts |
 
 `tests/parallel_phases.rs` holds the shared helpers `initialized_repository`, `run_berth_with_session`, `run_post_tool_use`, `journal_events`, `open_phase`, `phase_board`, `session_mappings`, `SESSION_MAPPING_PATH` and `CONFIGURATION_PATH`.
 
@@ -148,13 +184,17 @@ An ambiguous edit lists each candidate as `` `<id>` (session <sid>) ``, `` `<id>
 - A named claim never changes the selected reservation's target, phase-start head, purpose or plan/phase, and touches no sibling's edges.
 - A refused named claim (ineligible id, duplicate edge) writes no journal record and moves no mapping.
 - A blocked overlap message names each holder's run beside the holder's id, and never names the requester's run.
+- An incomplete answer keeps `blocked_by_overlap`, exit 1 and the blocked payload, writes no journal record and moves no mapping.
+- The claim to copy is rendered from `ClaimArguments::answer_recovery`, never from process argv.
+- An unreadable session store leaves ambiguity candidates bare; only a read store can say `(no session)`.
 - `already_held` on the wire is additive and absent when empty; `answered` and `left_unmapped` are values in `docs/cargo-berth/generated/output-contract.json`.
 
 ## Gotchas
 
 - Replay rejects a `DuplicateEdge` (`EdgeReplayError::DuplicateEdge`). A named claim must refuse a repeated edge before writing the journal; a record that slipped through would make the journal unreplayable.
 - The director's real session gets mapped whenever a `Widen` or `Claim` is applied under it, including the post-tool-use hook's sole-candidate widen. That mapping no longer steers the post-tool-use hook, but a hand-run bare `drift` under `CLAUDE_CODE_SESSION_ID` and the edit hook still follow it. A director names the reservation with `--reservation` instead of relying on its own session.
-- With two phases active and the director's session unmapped, an Edit or Write under that session gets `ambiguous_active_run_reservations` from the edit hook; the recovery is `check --reservation <id>`.
+- With two phases active and the director's session unmapped, an Edit or Write under that session gets `ambiguous_active_run_reservations` from the edit hook; the refusal labels each candidate with its sessions and names `cargo-berth check --reservation <reservation-id> <path>...`.
+- A selector value with a leading hyphen must use the `--flag=value` form; clap rejects it space-separated. The claim to copy prints such values that way.
 - `left_unmapped` reports `already_held` under the sibling holding the first requested path only. Other siblings show up in `already_held` entries, not in `reservation_id`.
 - Timing under load misleads. Hook-band tests swing from about 0.3 s to 2–3 s, and the overlap message tests from under 0.1 s alone to 1.5–3.3 s in a loaded full run, unchanged tests included. Time a test alone before calling it slow. Named-claim fixtures were trimmed to at most 0.566 s.
 
@@ -169,5 +209,7 @@ An ambiguous edit lists each candidate as `` `<id>` (session <sid>) ``, `` `<id>
 - **`claim --reservation` exists** because an ordinary permissive claim opens a new reservation and an ordinary `--defer` binds to the oldest active reservation, so with two phases active neither could attach an answer to the phase that needs it.
 - **Answer-only records publish the mapping in `consume`.** `apply_journal_event` deliberately publishes nothing for `Answer`, since an ordinary answer has no session to map; the named claim is the one caller that knows the reservation the session meant.
 - **The holder's run sits beside the holder's id.** The earlier text, `holds overlapping paths for <run>`, put the run after "for", where it read as the requester's run.
+- **One claim answers every holder.** An answer must name exactly the holders that overlap, so a claim split per holder is refused each time; the refusal prints the complete claim instead of listing what was missing.
+- **The claim to copy comes from parsed values.** Argv carries the caller's incomplete flags and spelling; the typed snapshot lets the command replace the answer flags and quote every value.
 - **Ruled out: deduplicating repeated edges on a plain claim.** Each plain claim opens a distinct reservation, so its edge has a new endpoint and no duplicate arises; only the named claim can repeat a pair.
 - **Ruled out: making the post-tool-use hook choose among phases.** The hook runs under the director's real session and carries no phase identity, so no rule there can tell which phase wrote a file; the director names the reservation instead.
