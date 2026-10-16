@@ -55,7 +55,7 @@
        - `phase_start_head` = merge base with the target
        - `coordination_identity_provenance: NotPresented`
    - `LedgerTransactionError::CorrectableInput` (the 16 KiB record limit) → `record_too_large`; other transaction errors → `git_failure`.
-   - After the append, `WorktreeContext::publish_coordination_run_marker(run)`. A session in that worktree then joins the run through the marker and reuses the reservation without appending anything.
+   - After the append, `WorktreeContext::publish_coordination_run_marker(run)`. A session in that worktree then joins the run through the marker: its edits through the edit hook reuse the reservation, appending nothing for covered paths, while a bare `check` under a fresh harness session id opens a separate reservation in the same run for paths the enrolled reservation does not hold.
 6. **Report.** `report.overlaps = unresolved_enrollment_overlaps(re-read events)`. This walks the journal in order: every `Claim` or `Widen` with an `Enrollment` authorization adds one `EnrollmentOverlap` per bound counterpart, and a `ResolveDefer` whose `(deferred, blocker)` equals `(first, second)` removes it. `sequence` writes the stored deferral's orientation into `ResolveDefer` (`prepare_edge` uses the endpoints `deferred_overlap_between` returns), so either command order clears the pair.
 
 ### Types
@@ -134,7 +134,7 @@
 - **Why `Enrollment` is its own variant and not a `Defer`:** it binds every counterpart at once, with no single blocker and no user-written reason. `DeferralOrigin` lets the board tell engine-made deferrals from user answers without scanning the journal again.
 - **Why the config goes at the main worktree root:** every worktree without its own file reads it there. Linked worktrees added later need no copy.
 - **Why one transaction per candidate, with a history recheck under the lock:** one failure stays with its worktree, and a worktree that gains a reservation concurrently is skipped instead of claimed twice.
-- **Why the run marker is published:** so a session in the enrolled worktree joins that run and reuses the reservation, instead of taking a first-touch claim of its own.
+- **Why the run marker is published:** so a session's edits in the enrolled worktree join that run and reuse the reservation, instead of taking a first-touch claim in a run of their own.
 - **Why enrolled claims publish no session mapping:** `init` runs in one session but claims for every worktree. Mapping them would tie the invoking session to other worktrees' reservations.
 - **Why `ClaimSource::Enrolled` counts as work for automatic ending:** enrollment requires a non-empty footprint, and the immutable source keeps that fact even if a later drift or gate check has already recorded an empty extent.
 - **Why unresolved overlaps come from the journal and not the graph:** a pair has to keep being reported after one endpoint ends, while the other is still held, until the user orders it. The board drops the pair once both endpoints have ended.
