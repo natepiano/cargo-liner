@@ -114,48 +114,20 @@ Mapped 2026-10-16 at `834cffba` (main).
 
 **Depends on:** Phase 9
 
-#### Work Order
+#### As-built
 
-**Goal:** The first release of a phase, the one that checkpoints it, names the phase's own pending paths. Tests pin every edge of phase 9's per-path judgment.
-
-**Spec:**
-- **The checkpoint names pending paths** (showrunner C19, 2026-10-16). A live check found a gap. Take a phase whose own path b.rs is dirty. Its first `release` checkpoints and answers envelope `outstanding`, payload `checkpointed`, with the message "Reservation … is outstanding at protected tip …". Neither the payload nor the message names b.rs. Only the next `release` answers `outstanding` with `pending_paths: ["b.rs"]`. The fix:
-  - `ReleasePayload::Checkpointed` (`src/output.rs` ~1540) carries `pending_paths: Vec<ReservationScopePath>`, like `Outstanding` and `Resnapshotted`.
-  - `checkpoint_operation` (`src/verb/release.rs` ~508) fills it from the reservation's current scoped merge extent (`release_repository_context.merge_extent`). Phase 9's rule applies: only a fresh `MergeExtent::Protected` names pending paths. An unobserved or unavailable extent must not report an empty list as if the phase were clean. Give that case its own variant under the Type Design Contract; never use an empty `Vec` to stand for it.
-  - The message (`output.rs` ~2943) ends "; pending paths: b.rs." whenever the list is non-empty. That covers own paths that are dirty and own paths committed but not yet in trunk.
-  - Regenerate `docs/cargo-berth/generated/output-contract.json` the way phase 9 did. The output-contract tests in `src/output_contract.rs`, `tests/board.rs` ~392 and `tests/overlap.rs` ~1123 must pass.
-  - CHANGELOG `## [Unreleased]` `### Fixed`: the checkpointing release now names the phase's pending paths.
-- **Test for the fix** (`tests/parallel_phases.rs`): two phases in one unit worktree, as in `parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged`. Phase 2's b.rs is dirty. Its first `release` answers payload `checkpointed` with `pending_paths: ["b.rs"]`, and the message names b.rs. A phase whose own a.rs is committed but not merged also names a.rs at checkpoint.
-- **Robust tests.** Before writing any of these, check the tests that already exist (see Constraints) and do not duplicate them. Cover:
-  - an unclaimed dirty file, c.rs, goes to both live siblings' extents;
-  - a lone reservation's extent equals the whole-worktree extent;
-  - reconcile settlement (`settlement_selection` `src/reconcile.rs` ~4338, `append_merged_run_endings` ~4467) refuses integrated while own paths are dirty or committed outside trunk;
-  - patch-equivalent integration of own paths;
-  - `evidence_revalidated` is still answered when evidence changes without settling;
-  - the hook and board answers for an outstanding phase name its pending paths.
-- Each test runs under a second.
+- A phase's first checkpointing `cargo-berth release` returns `ReleasePayload::Checkpointed` with `pending_paths`: every dirty or not-yet-integrated path in the phase's merge extent. Its message reads "Reservation <id> is outstanding at protected tip <tip>; pending paths: <paths>." when any exist; the session-mapping note follows the pending-path clause.
+- When the extent is not derived or unavailable, the release returns `ReleasePayload::CheckpointedPendingPathsUnavailable` (status `checkpointed_pending_paths_unavailable`, envelope `outstanding`, no `pending_paths` member), and its message says "pending paths unavailable".
+- `CheckpointPendingPaths` (`Observed(Vec<ReservationScopePath>)` / `Unavailable`) in `verb/release.rs` is built with `From<&MergeExtent>`: a protected extent names its scopes, an empty extent is an observed empty list, a not-derived or unavailable extent is `Unavailable`.
+- Integration tests pin per-phase checkpoint paths, unclaimed dirty paths fanning out to both live phase extents, a lone phase's whole-worktree extent, reconciliation keeping a checkpoint outstanding while its own path is dirty or unmerged, patch-equivalent own-path settlement without adopting sibling work, the pre-tool-use hook naming only the outstanding phase's pending path after a sibling merges, and the board naming an outstanding phase's dirty paths and unmerged commit after its sibling settles.
 
 **Files:**
-- `crates/cargo-berth/src/output.rs` — the `Checkpointed` pending paths and message
-- `crates/cargo-berth/src/verb/release.rs` — `checkpoint_operation` fills them
-- `docs/cargo-berth/generated/output-contract.json` — regenerated
-- `crates/cargo-berth/CHANGELOG.md` — the `Fixed` line
-- `crates/cargo-berth/tests/parallel_phases.rs`, `tests/lifecycle.rs`, `tests/hooks.rs`, `tests/board.rs` — new tests, plus expectations the `Checkpointed` change rightly moves
+- `crates/cargo-berth/src/output.rs` — checkpoint release payload variants and `checkpoint_release_message`
+- `crates/cargo-berth/src/verb/release.rs` — `CheckpointPendingPaths`, checkpoint payload seed, payload/wire unit matrix
+- `crates/cargo-berth/tests/parallel_phases.rs`, `tests/hooks.rs`, `tests/board.rs`, `tests/lifecycle.rs` — the tests above
+- `docs/cargo-berth/generated/output-contract.json` — regenerated output contract
 
-**Workers:** 1 writer + 1 tester
-- `impl` owns every `src/` file, the contract JSON, `CHANGELOG.md`, `tests/parallel_phases.rs` and `tests/lifecycle.rs`.
-- `test` owns `tests/hooks.rs` and `tests/board.rs`.
-
-**Constraints from prior phases:**
-- Phase 9 deleted `retention.rs::has_unproven_merge_work`. `reservation::judge_integration` (`src/reservation/evidence.rs` ~194) is now the one judgment. It returns `ReservationIntegrationJudgment` with the variants Integrated, `Outstanding{pending_paths, evidence: PendingIntegrationEvidence}`, NotIntegrated, TrunkRewritten and ObjectUnknown. Reconcile calls it through `judge_live_integration` (`src/reconcile.rs` ~2772).
-- The cache key carries `HolderMergeExtentCoverage` (FullHolder or ReservationShares), so a sibling joining or leaving invalidates cached extents.
-- An integrated release appends `EvidenceRevalidated` and then `Release` in one locked transaction (`CommittedActionValidation::AppendWithPrerequisites`, `src/ledger/handle.rs`).
-- These tests already exist; do not repeat them:
-  - `tests/parallel_phases.rs`: `abandoning_`/`retargeting_a_sibling_restores_its_unclaimed_paths_to_the_remaining_extent` and `parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged`;
-  - `tests/board.rs`: `release_names_pending_paths_when_trunk_was_rewritten`, `release_names_pending_paths_when_integration_objects_are_unknown` and `release_records_a_budget_deferred_proof_before_its_integrated_disposition`;
-  - `tests/lifecycle.rs`: `release_keeps_unclaimed_later_branch_work_outstanding` and `rebased_integrated_checkpoint_retains_unclaimed_dirt`.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green.
+**Ruled out:** an empty `pending_paths` list for an unavailable extent — it would read as nothing pending.
 
 ## Next items
 
