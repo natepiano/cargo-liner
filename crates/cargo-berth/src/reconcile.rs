@@ -5535,9 +5535,11 @@ impl From<ReconciliationPlanningError> for ReconcileError {
 mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     use serde_json::Value;
     use serde_json::json;
+    use tempfile::TempDir;
 
     use super::HistoricalIntegrationCandidateDiscovery;
     use super::HistoricalIntegrationCandidateDiscovery as Discovery;
@@ -5549,6 +5551,10 @@ mod tests {
     use super::rewrite_target_judgment;
     use super::rewrite_target_tip;
     use crate::edge::JudgedTargetTip;
+    use crate::edge::RepositoryReservationEvidence;
+    use crate::edge::RepositoryReservationSnapshot;
+    use crate::edge::RepositorySnapshot;
+    use crate::edge::TargetObservation;
     use crate::gate::permit::PendingBranchRewriteMarker;
     use crate::git::Reachability;
     use crate::git::ScopedPatchComparison;
@@ -5558,6 +5564,7 @@ mod tests {
     use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+    use crate::ledger::ObservedReservation;
     use crate::ledger::ReservationJudgingBranch;
     use crate::output::CommandVerb;
     use crate::reservation::IntegrationEvidenceObservation;
@@ -5573,6 +5580,8 @@ mod tests {
     use crate::reservation::ScopedPatchComparisonObservation;
     use crate::reservation::ScopedPatchIntegrationEvaluation;
     use crate::reservation::ScopedPatchIntegrationEvaluation as Evaluation;
+    use crate::worktree::WorktreeHead;
+    use crate::worktree::WorktreeLiveness;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
@@ -5660,6 +5669,237 @@ mod tests {
         );
         assert_eq!(reconciliation.observed_by_holder.len(), 3);
         assert_eq!(reconciliation.committed_by_holder.len(), 3);
+        Ok(())
+    }
+
+    /// Real Git inputs for comparing serial and concurrent holder observations.
+    struct MergeExtentComparisonFixture {
+        worktree:     TempDir,
+        reservations: RetainedReservationSet,
+        snapshot:     RepositorySnapshot,
+    }
+
+    fn merge_extent_comparison_fixture()
+    -> Result<MergeExtentComparisonFixture, Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let git = |arguments: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+            let output = cargo_berth_test_support::fixture_git_command()
+                .args(arguments)
+                .current_dir(root)
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+        };
+        git(&["init", "--quiet", "--initial-branch=main"])?;
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "base",
+        ])?;
+        let base = git(&["rev-parse", "HEAD"])?.parse::<GitObjectId>()?;
+        std::fs::write(root.join("committed.rs"), "committed work\n")?;
+        git(&["add", "committed.rs"])?;
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "holder work",
+        ])?;
+        let head = git(&["rev-parse", "HEAD"])?.parse::<GitObjectId>()?;
+        std::fs::write(root.join("dirty.rs"), "dirty work\n")?;
+        let main = IntegrationTarget::from_branch_argument("main")?;
+        let other = IntegrationTarget::from_branch_argument("other")?;
+        let [claim, _] = checkpoint_events()?;
+        let mut events = Vec::new();
+        let mut facts = Vec::new();
+        let mut recorded_targets = HashMap::new();
+        for index in 0..3 {
+            let id = ReservationId::new();
+            let mut event = serde_json::to_value(&claim)?;
+            event["reservation_id"] = json!(id);
+            event["projection_generation"] = json!(index + 1);
+            event["worktree_root"] = json!(if index == 2 {
+                root.join("unavailable")
+            } else {
+                root.to_path_buf()
+            });
+            if index == 2 {
+                event["actor"]["worktree"] = json!(crate::ids::WorktreeId::new());
+            }
+            events.push(serde_json::from_value::<JournalEvent>(event)?);
+            recorded_targets.insert(
+                id,
+                if index == 1 {
+                    other.clone()
+                } else {
+                    main.clone()
+                },
+            );
+            facts.push(RepositoryReservationSnapshot {
+                reservation_id:    id,
+                worktree_liveness: if index == 2 {
+                    WorktreeLiveness::Unavailable
+                } else {
+                    WorktreeLiveness::Live
+                },
+                worktree_head:     WorktreeHead::Resolved(head.clone()),
+                evidence:          RepositoryReservationEvidence::Active,
+            });
+        }
+        let reservations = RetainedReservationSet::replay(&events)?;
+        let snapshot = RepositorySnapshot::new(
+            main.clone(),
+            BTreeMap::from([
+                (main, TargetObservation::Resolved(base)),
+                (other, TargetObservation::Resolved(head)),
+            ]),
+            recorded_targets,
+            facts,
+            Vec::new(),
+            crate::edge::CrossTargetPredecessorEvidence::default(),
+        );
+        Ok(MergeExtentComparisonFixture {
+            worktree: directory,
+            reservations,
+            snapshot,
+        })
+    }
+
+    fn serial_merge_extent_reference(
+        reservations: &RetainedReservationSet,
+        snapshot: &RepositorySnapshot,
+    ) -> (super::MergeExtentReconciliation, super::MergeExtentGitCost) {
+        // This reference invokes the real observer serially, with the same accumulated counter.
+        // Each fixture reservation has a distinct (worktree, target), so none may be deduplicated.
+        let mut serial_cost = super::MergeExtentGitCost::default();
+        let mut serial_operations = Vec::new();
+        let mut serial_observed = HashMap::new();
+        let mut serial_committed = HashMap::new();
+        for reservation in reservations.iter() {
+            let key = (
+                reservation.actor().worktree,
+                snapshot.recorded_target(reservation.id()).clone(),
+            );
+            let observed = super::observe_merge_extent(
+                reservation,
+                reservations,
+                snapshot,
+                &[],
+                &mut serial_cost,
+            );
+            let (extent, committed) = match observed {
+                Ok(protection) => {
+                    serial_observed.insert(key.clone(), protection.extent.clone());
+                    (protection.extent, protection.committed_paths)
+                },
+                Err(failure) => (
+                    reservation.merge_extent().unavailable(failure),
+                    super::CommittedMergeEvidence::Unavailable,
+                ),
+            };
+            serial_committed.insert(key, committed);
+            serial_operations.push(JournalOperation::HolderMergeExtentObserved {
+                extent,
+                reservations: ObservedReservation {
+                    reservation_id: reservation.id(),
+                    run_status:     reservation.run_status(),
+                }
+                .into(),
+            });
+        }
+        (
+            super::MergeExtentReconciliation {
+                operations:          serial_operations,
+                observed_by_holder:  serial_observed,
+                committed_by_holder: serial_committed,
+            },
+            serial_cost,
+        )
+    }
+
+    #[test]
+    fn concurrent_merge_extents_match_serial_targets_and_unavailable_holder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let MergeExtentComparisonFixture {
+            worktree: _worktree,
+            reservations,
+            snapshot,
+        } = merge_extent_comparison_fixture()?;
+        let (serial, serial_cost) = serial_merge_extent_reference(&reservations, &snapshot);
+        assert_eq!(
+            serial.observed_by_holder.len(),
+            2,
+            "the missing checkout must fail observation"
+        );
+        assert_eq!(serial_cost.worktree_status_queries, 3);
+        assert!(
+            serial_cost.path_queries > 0,
+            "exercise real branch path queries"
+        );
+        let calls = std::sync::Mutex::new(Vec::new());
+        let mut concurrent_cost = super::MergeExtentGitCost::default();
+        let concurrent = super::derive_merge_extents_with_observer(
+            &reservations,
+            &snapshot,
+            &[],
+            &mut concurrent_cost,
+            |reservation, reservations, snapshot, planned, cost| {
+                calls
+                    .lock()
+                    .map_err(|_| "observer call mutex poisoned".to_owned())?
+                    .push(reservation.id());
+                super::observe_merge_extent(reservation, reservations, snapshot, planned, cost)
+            },
+        )?;
+        let mut calls = calls
+            .into_inner()
+            .map_err(|_| "observer call mutex poisoned")?;
+        calls.sort();
+        let mut ids = reservations.iter().map(Reservation::id).collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(
+            calls, ids,
+            "observe both targets on the shared worktree and the unavailable holder exactly once"
+        );
+        assert_eq!(
+            serde_json::to_value(&concurrent.operations)?,
+            serde_json::to_value(&serial.operations)?,
+            "journal order and retained failure evidence"
+        );
+        assert_eq!(concurrent.observed_by_holder, serial.observed_by_holder);
+        assert_eq!(
+            concurrent.committed_by_holder.len(),
+            serial.committed_by_holder.len()
+        );
+        for (key, expected) in serial.committed_by_holder {
+            match (&concurrent.committed_by_holder[&key], expected) {
+                (
+                    super::CommittedMergeEvidence::Unavailable,
+                    super::CommittedMergeEvidence::Unavailable,
+                ) => {},
+                (
+                    super::CommittedMergeEvidence::Observed(actual),
+                    super::CommittedMergeEvidence::Observed(expected),
+                ) => assert_eq!(actual, &expected),
+                _ => return Err(format!("committed evidence differs for {key:?}").into()),
+            }
+        }
+        assert_eq!(
+            concurrent_cost.worktree_status_queries,
+            serial_cost.worktree_status_queries
+        );
+        assert_eq!(concurrent_cost.path_queries, serial_cost.path_queries);
         Ok(())
     }
 

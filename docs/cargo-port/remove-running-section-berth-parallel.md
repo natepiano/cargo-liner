@@ -86,7 +86,7 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 **Ruled out:** a lock-free fast path for an explicit remap (needs a durable write); a new "already current" mapping-publication variant (`published` is already true).
 
-### Phase 7 — Robust tests  · status: pending
+### Phase 7 — Robust tests  · status: done
 
 **Depends on:** Phase 6
 
@@ -98,7 +98,7 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 **Spec:** Each test runs under 1 s.
 1. **The fast path declines when it should.**
-   - (a) A path held by a sibling phase reservation of the same run but not by the caller's mapped one goes to today's path (`left_unmapped` answer unchanged).
+   - (a) A path held by a sibling reservation of the same run but not by the caller's mapped one takes the fast path, and its answer equals the locked path's: `already_held` naming the mapped reservation, mapping `published`, nothing written. (The locked path answers `left_unmapped` only for an unmapped session, which (d) covers.)
    - (b) A tree scope partially covered goes to today's path.
    - (c) A conflict present in the snapshot goes to today's path and is refused as today.
    - (d) An unmapped session with one active run reservation goes to today's path.
