@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Edit checks of paths already held by the caller's selected reservation return without locking or reconciliation; reconciliation observes distinct holder worktrees concurrently while preserving operation order and Git cost counts.
+
 - Discovery skips an empty or partial `.git` directory and honours `GIT_CEILING_DIRECTORIES` when searching for a worktree.
 
 - Integrated work releases itself. Reconciliation settles an integrated outstanding reservation with later branch work when another reservation of the same holder and target carries the same merge extent; without one it stays outstanding.

@@ -1391,6 +1391,89 @@ fn release_removes_only_the_marker_for_a_run_without_other_active_reservations()
 }
 
 #[test]
+fn a_session_checks_its_held_path_without_waiting_for_the_mutation_lock() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "live-holder");
+    assert_success(&claim(&foreign_root, "file:foreign.rs", SECOND_RUN));
+    fs::write(foreign_root.join("foreign.rs"), "live foreign work\n")
+        .expect("foreign holder should have work to observe");
+
+    let session = "held-lock-session";
+    let claimed = run_berth_with_session(root, &["check", "file:held.rs", "--json"], session);
+    assert_success(&claimed);
+    let claimed = json_output(&claimed);
+    let acquisition = &claimed["payload"]["data"]["acquisition"];
+    assert_eq!(acquisition["kind"], "appended");
+    let expected = run_berth_with_session(root, &["check", "file:held.rs", "--json"], session);
+    assert_success(&expected);
+    let expected_json = json_output(&expected);
+    assert_eq!(expected_json["status"], "clear");
+    assert_eq!(
+        expected_json["message"],
+        "No foreign reservation overlaps the requested paths; the acting run already holds them."
+    );
+    assert_eq!(
+        expected_json["payload"]["data"]["acquisition"]["kind"],
+        "already_held"
+    );
+    assert_eq!(
+        expected_json["payload"]["data"]["acquisition"]["reservation_id"],
+        acquisition["reservation_id"]
+    );
+
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(root.join(LOCK_PATH))
+        .expect("common git directory's mutation lock should open");
+    lock_file
+        .try_lock()
+        .expect("test should exclusively hold the mutation lock");
+    let lock_deadline = Duration::from_millis(100);
+    let check_while_locked = |scope| {
+        let started_at = Instant::now();
+        let output = berth_command(BERTH_EXECUTABLE)
+            .args(["check", scope, "--json"])
+            .current_dir(root)
+            .env_remove(RUN_ENVIRONMENT)
+            .env(SESSION_ENVIRONMENT, session)
+            .env(
+                LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+                lock_deadline.as_millis().to_string(),
+            )
+            .output()
+            .expect("check should finish within the shortened lock deadline");
+        (output, started_at.elapsed())
+    };
+
+    let (held, elapsed) = check_while_locked("file:held.rs");
+    assert_success(&held);
+    assert_eq!(held.status.code(), expected.status.code());
+    assert_eq!(
+        held.stdout, expected.stdout,
+        "held check preserves its envelope"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "an already-held path must answer well under one second: {elapsed:?}"
+    );
+
+    let (unheld, elapsed) = check_while_locked("file:unheld.rs");
+    assert_ne!(unheld.status.code(), Some(0), "{}", json_output(&unheld));
+    assert_ne!(json_output(&unheld)["status"], "clear");
+    assert!(
+        elapsed >= lock_deadline,
+        "an unheld path must wait for the lock deadline: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "the shortened lock deadline must keep the proof under one second: {elapsed:?}"
+    );
+    std::mem::drop(lock_file);
+}
+
+#[test]
 fn lock_contention_is_retryable_while_corrupt_journal_is_unreadable() {
     let repository = initialized_repository();
     let claim = claim(repository.path(), "file:a", FIRST_RUN);

@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::claim;
+use super::claim::CheckAcquisitionDecision;
 use super::claim::CheckReservationSelection;
 use super::claim::ClaimError;
 use super::claim::FirstTouchClaimExecution;
@@ -45,6 +46,7 @@ pub(crate) struct CheckRequest {
 }
 
 struct CheckDecision {
+    acquisition:       CheckAcquisitionDecision,
     scopes:            ReservationScopeSet,
     conflicts:         Vec<ReservationConflict>,
     merge_observation: MergeObservationRequirement,
@@ -103,7 +105,7 @@ impl CheckDecisionError {
     }
 }
 
-/// Evaluate tier-one overlap and permit only after a locked acquisition decision.
+/// Permit an already-protected edit immediately; acquire every other edit under the lock.
 pub(crate) fn execute(
     check_request: CheckRequest,
     recovery_command_line: &RecoveryCommandLine,
@@ -117,6 +119,7 @@ pub(crate) fn execute(
     let first_decision = match decide(
         &invocation_directory,
         check_request.declared_scopes.clone(),
+        check_request.reservation_selection,
         recovery_command_line,
     ) {
         Ok(Enrollment::Enrolled(check_decision)) => check_decision,
@@ -127,6 +130,13 @@ pub(crate) fn execute(
         },
         Err(error) => return error.into_output(),
     };
+    if let CheckAcquisitionDecision::HeldBySelectedReservation {
+        scopes,
+        acquisition,
+    } = first_decision.acquisition
+    {
+        return OutputEnvelope::clear_check(scopes, acquisition, None);
+    }
     if matches!(
         first_decision.merge_observation,
         MergeObservationRequirement::Required
@@ -199,6 +209,7 @@ fn reconcile_and_retry(
     let retried_decision = match decide(
         invocation_directory,
         declared_scopes.clone(),
+        reservation_selection,
         recovery_command_line,
     ) {
         Ok(Enrollment::Enrolled(check_decision)) => check_decision,
@@ -286,9 +297,10 @@ fn render_acquisition(
 fn decide(
     invocation_directory: &Path,
     declared_scopes: DeclaredReservationScopeSet,
+    reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
-    let (reservations, worktree_context, approver, default_answer) =
+    let (reservations, worktree_context, configuration) =
         match Ledger::read_for_edit_check(invocation_directory)
             .map_err(CheckDecisionError::Ledger)?
         {
@@ -305,6 +317,7 @@ fn decide(
         .map_err(CheckDecisionError::PathCase)?;
     // Refusal follows the full declared edit, including every child of a tree scope.
     // First-touch acquisition separately retains its exact-file scope contract.
+    let acquisition_scopes = declared_scopes.clone().into_exact_file_antichain(path_case);
     let scopes = declared_scopes.into_minimal_antichain(path_case);
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization =
@@ -330,6 +343,20 @@ fn decide(
     .map_err(CheckDecisionError::from)?;
     let conflicts =
         reservations.conflicts_for_edit(&scopes, resolved_edit_authorization, path_case);
+    let acquisition = if conflicts.is_empty()
+        && let Ok(repository_trunk) = configuration.repository_trunk()
+    {
+        claim::selected_reservation_check_acquisition(
+            &reservations,
+            &repository_trunk,
+            acquisition_scopes,
+            reservation_selection,
+            resolved_edit_authorization,
+            path_case,
+        )
+    } else {
+        CheckAcquisitionDecision::NeedsLockedDecision
+    };
     let merge_observation = if reservations.iter().any(|holder| {
         holder.actor().worktree != resolved_edit_authorization.worktree_id
             && !matches!(
@@ -342,11 +369,12 @@ fn decide(
         MergeObservationRequirement::NotNeeded
     };
     Ok(Enrollment::Enrolled(CheckDecision {
+        acquisition,
         scopes,
         conflicts,
         merge_observation,
-        approver,
-        default_answer,
+        approver: configuration.overlap_approver(worktree_context.repository_root()),
+        default_answer: configuration.default_answer,
     }))
 }
 

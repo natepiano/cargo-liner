@@ -95,6 +95,7 @@ use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::session;
 use crate::session::FirstTouchSessionReservationMapping;
+use crate::session::HarnessSessionIdentity;
 use crate::session::SessionIdentityMappingPublication;
 use crate::session::SessionReservationIdentity;
 
@@ -486,6 +487,83 @@ pub(crate) enum CheckReservationSelection {
     SessionMappingOrNew,
     /// Continue the named active reservation held by the acting run and worktree.
     Explicit(ReservationId),
+}
+
+/// Whether a lock-free check can reuse the reservation its caller selected.
+pub(super) enum CheckAcquisitionDecision {
+    /// The selected active reservation's run already protects the complete edit.
+    HeldBySelectedReservation {
+        /// The exact scopes that the locked acquisition would report.
+        scopes:      ReservationScopeSet,
+        /// The same already-held acquisition reported by the locked path.
+        acquisition: ReservationAcquisition,
+    },
+    /// Selection or coverage requires the ordinary locked first-touch decision.
+    NeedsLockedDecision,
+}
+
+/// Reuse the locked path's coverage and acquisition rules without publishing any state.
+pub(super) fn selected_reservation_check_acquisition(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    scopes: ReservationScopeSet,
+    selection: CheckReservationSelection,
+    identity: ResolvedEditAuthorization,
+    path_case: PathCase,
+) -> CheckAcquisitionDecision {
+    // An explicit switch must publish the session's new selection under the lock.
+    let reservation_id = match (selection, identity.edit_authorization()) {
+        (
+            CheckReservationSelection::Explicit(id),
+            EditAuthorization::Session { reservation_id, .. },
+        ) if id == reservation_id => id,
+        (CheckReservationSelection::Explicit(id), _)
+            if matches!(
+                session::current_process_harness_session(),
+                HarnessSessionIdentity::Unavailable
+            ) =>
+        {
+            id
+        },
+        (
+            CheckReservationSelection::SessionMappingOrSingleActive
+            | CheckReservationSelection::SessionMappingOrNew,
+            EditAuthorization::Session { reservation_id, .. },
+        ) => reservation_id,
+        _ => return CheckAcquisitionDecision::NeedsLockedDecision,
+    };
+    let FirstTouchReservationSelection::ExplicitReservation(reservation) =
+        FirstTouchReservationSelection::from_explicit_selection(
+            reservations,
+            reservation_id,
+            identity.coordination_run_id,
+            identity.worktree_id,
+        )
+    else {
+        return CheckAcquisitionDecision::NeedsLockedDecision;
+    };
+    let FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) =
+        partition_first_touch_protected_scopes(reservations, &scopes, reservation, path_case)
+    else {
+        return CheckAcquisitionDecision::NeedsLockedDecision;
+    };
+    let committed = already_held_acquisition(
+        reservation,
+        repository_trunk,
+        scopes,
+        FirstTouchConflictOutcome::None,
+    );
+    let (acquisition, scopes, _) = first_touch_acquisition(
+        committed,
+        identity.coordination_run_id,
+        CoordinationRunMarkerPublication::Published,
+        selection
+            .reported_session_mapping_publication(SessionIdentityMappingPublication::Published),
+    );
+    CheckAcquisitionDecision::HeldBySelectedReservation {
+        scopes,
+        acquisition,
+    }
 }
 
 /// A first-touch request whose fixed source and authorization rule exclude permissive answers.
@@ -1166,6 +1244,30 @@ fn first_touch_acquired_execution(
     marker_publication: CoordinationRunMarkerPublication,
     session_mapping_publication: SessionIdentityMappingPublication,
 ) -> FirstTouchClaimExecution {
+    let (acquisition, scopes, conflicts) = first_touch_acquisition(
+        committed,
+        coordination_run_id,
+        marker_publication,
+        session_mapping_publication,
+    );
+    FirstTouchClaimExecution::Acquired {
+        acquisition,
+        scopes,
+        conflicts,
+    }
+}
+
+/// Build the wire acquisition once for locked and already-protected checks.
+fn first_touch_acquisition(
+    committed: CommittedReservationAcquisition,
+    coordination_run_id: CoordinationRunId,
+    marker_publication: CoordinationRunMarkerPublication,
+    session_mapping_publication: SessionIdentityMappingPublication,
+) -> (
+    ReservationAcquisition,
+    ReservationScopeSet,
+    FirstTouchConflictOutcome,
+) {
     let CommittedReservationAcquisition {
         kind,
         reservation_id,
@@ -1175,8 +1277,8 @@ fn first_touch_acquired_execution(
         conflicts,
         already_held,
     } = committed;
-    FirstTouchClaimExecution::Acquired {
-        acquisition: ReservationAcquisition {
+    (
+        ReservationAcquisition {
             kind,
             reservation_id,
             target,
@@ -1188,7 +1290,7 @@ fn first_touch_acquired_execution(
         },
         scopes,
         conflicts,
-    }
+    )
 }
 
 fn publish_coordination_run_marker(
@@ -2043,22 +2145,37 @@ fn already_held_first_touch(
 ) -> FirstTouchReservationReuse {
     FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
         FirstTouchClaimRejection::AlreadyHeld {
-            acquisition: Box::new(CommittedReservationAcquisition {
-                kind: ReservationAcquisitionKind::AlreadyHeld,
-                reservation_id: reservation.id(),
-                target: Box::new(TargetView::from_recorded(
-                    reservation.target(),
-                    repository_trunk,
-                    reservation.comparison_snapshot(),
-                )),
-                phase_start_head: reservation.phase_start_head().clone(),
+            acquisition: Box::new(already_held_acquisition(
+                reservation,
+                repository_trunk,
                 scopes,
                 conflicts,
-                already_held: Vec::new(),
-            }),
+            )),
             session_mapping,
         },
     ))
+}
+
+/// Retain the selected reservation's identity and baseline for every already-held answer.
+fn already_held_acquisition(
+    reservation: &Reservation,
+    repository_trunk: &IntegrationTarget,
+    scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+) -> CommittedReservationAcquisition {
+    CommittedReservationAcquisition {
+        kind: ReservationAcquisitionKind::AlreadyHeld,
+        reservation_id: reservation.id(),
+        target: Box::new(TargetView::from_recorded(
+            reservation.target(),
+            repository_trunk,
+            reservation.comparison_snapshot(),
+        )),
+        phase_start_head: reservation.phase_start_head().clone(),
+        scopes,
+        conflicts,
+        already_held: Vec::new(),
+    }
 }
 
 enum FirstTouchScopeDecision {
