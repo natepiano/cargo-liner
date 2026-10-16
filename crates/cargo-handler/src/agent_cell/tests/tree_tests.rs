@@ -1,5 +1,6 @@
 //! One tree per tile, with shared columns and the frame's account decision.
 
+use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 
 use super::*;
@@ -557,12 +558,76 @@ fn an_empty_tree_has_only_the_nothing_running_note_in_either_view() {
     }
 }
 
-/// Check a width range without combining several fixtures in one test.
-fn assert_heights_at_widths(state: &MachineState, widths: RangeInclusive<u16>) {
+/// The tile widths the height tests cover.
+const TESTED_WIDTHS: RangeInclusive<usize> = 10..=140;
+
+/// Layout transitions and their neighbors, including the tested range's ends.
+fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeSet<u16> {
+    let indent = usize::from(summary::cell_width(SECTION_HEADER_INDENT));
+    let mut full = header_line(cell.row, cell.machine, NOW, account_column)
+        .width()
+        .max(place_line(cell.row).width());
+    if !cell.lines.is_empty() {
+        full = full.max(
+            table_width(&tree_widths(
+                &cell.lines,
+                TreeLayout::Full.columns(account_column),
+                NOW,
+            )) + 2 * indent,
+        );
+    }
+    if TESTED_WIDTHS.contains(&full) {
+        let full = u16::try_from(full).expect("the full boundary fits");
+        assert!(
+            matches!(
+                CellView::at_width(cell, full, NOW, account_column),
+                CellView::Full(_)
+            ),
+            "{} fits the full view at width {full}",
+            cell.row.name
+        );
+        assert_eq!(
+            CellView::at_width(cell, full - 1, NOW, account_column),
+            CellView::Compressed,
+            "{} needs the full boundary width {full}",
+            cell.row.name
+        );
+    }
+
+    let columns = TreeLayout::Compressed.columns(account_column);
+    let gaps = columns.len().saturating_sub(1);
+    let spacing = usize::from(TABLE_COLUMN_SPACING);
+    let widths = tree_widths(&cell.lines, columns, NOW);
+    let fixed = widths[1..]
+        .iter()
+        .map(|&width| usize::from(width))
+        .sum::<usize>()
+        + spacing * gaps;
+    let lead = cell
+        .lines
+        .iter()
+        .map(|line| usize::from(summary::cell_width(&line.lead())))
+        .max()
+        .unwrap_or(0);
+    let boundaries = [full, fixed + 2 * indent, fixed + lead + 2 * indent];
+    boundaries
+        .into_iter()
+        .chain((1..=spacing).map(|step| step * gaps + 1 + 2 * indent))
+        .flat_map(|boundary| [boundary.saturating_sub(1), boundary, boundary + 1])
+        .chain([*TESTED_WIDTHS.start(), *TESTED_WIDTHS.end()])
+        .map(|width| {
+            u16::try_from(width.clamp(*TESTED_WIDTHS.start(), *TESTED_WIDTHS.end()))
+                .expect("the test width fits")
+        })
+        .collect()
+}
+
+/// Check each cell's layout boundaries for one fixture.
+fn assert_heights_at_widths(state: &MachineState) {
     let cells = natedev_cells(state);
     let frame_account_column = account_column(&cells);
     for cell in &cells {
-        for width in widths.clone() {
+        for width in layout_widths(cell, frame_account_column) {
             let rows = height(cell, width, NOW, frame_account_column);
             let rect = area(width, rows + 3);
             let mut buffer = Buffer::empty(rect);
@@ -580,33 +645,18 @@ fn assert_heights_at_widths(state: &MachineState, widths: RangeInclusive<u16>) {
 }
 
 #[test]
-fn tree_heights_match_drawn_rows_at_every_width() {
-    assert_heights_at_widths(&mockup(["claude2", "claude1", "claude3"]), 10..=74);
+fn tree_heights_match_drawn_rows_at_layout_widths() {
+    assert_heights_at_widths(&mockup(["claude2", "claude1", "claude3"]));
 }
 
 #[test]
-fn tree_heights_match_drawn_rows_at_wide_widths() {
-    assert_heights_at_widths(&mockup(["claude2", "claude1", "claude3"]), 75..=140);
+fn tree_heights_without_accounts_match_drawn_rows_at_layout_widths() {
+    assert_heights_at_widths(&mockup(["claude2"; 3]));
 }
 
 #[test]
-fn tree_heights_without_accounts_match_drawn_rows_at_every_width() {
-    assert_heights_at_widths(&mockup(["claude2"; 3]), 10..=74);
-}
-
-#[test]
-fn tree_heights_without_accounts_match_drawn_rows_at_wide_widths() {
-    assert_heights_at_widths(&mockup(["claude2"; 3]), 75..=140);
-}
-
-#[test]
-fn tree_heights_with_nested_work_match_drawn_rows_at_every_width() {
-    assert_heights_at_widths(&boss_group(), 10..=74);
-}
-
-#[test]
-fn tree_heights_with_nested_work_match_drawn_rows_at_wide_widths() {
-    assert_heights_at_widths(&boss_group(), 75..=140);
+fn tree_heights_with_nested_work_match_drawn_rows_at_layout_widths() {
+    assert_heights_at_widths(&boss_group());
 }
 
 #[test]
