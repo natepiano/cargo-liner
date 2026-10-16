@@ -128,30 +128,18 @@ Read 2026-10-15 at 6d01f704.
 
 ### Phase 4 — An overlap refusal names only the holder  · status: done
 
-**Depends on:** Phase 3
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** a blocked `check` or `claim` message names the holder's coordination run beside the holder, so nothing in it reads as the requester (showrunner, 2026-10-15).
-
-**Spec:**
-1. One holder: `Reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry.` Today it ends `holds overlapping paths for <run>`, where `<run>` is the holder's own run id and reads as the asking reservation.
-2. Several holders: `<n> reservations hold paths that overlap the requested paths: reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>); …; reduce the requested scopes or coordinate with the holders, then retry.` The run id moves beside each holder the same way.
-3. Tests, each under 1 s: the one-holder `check` message equals the exact Spec 1 text for a real foreign holder (its reservation id, its run id, its branch), and the requester's run id appears nowhere in it; the several-holder `claim` message carries each holder's `(coordination run <run>)` beside its id. Update the existing assertion `2 reservations hold overlapping paths` in `tests/overlap.rs` to the new text.
+- A blocked `check` or `claim` names each holder's coordination run beside its reservation id, so nothing in the message reads as the requester. `overlap_holder_description` builds both forms.
+- One holder: `Reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry.`
+- Several holders: `<n> reservations hold paths that overlap the requested paths: reservation <H> (coordination run <run>) on <branch> (<source>, <purpose>); …; reduce the requested scopes or coordinate with the holders, then retry.` (entries joined by `; `).
+- `blocked_check_message_names_only_the_foreign_holder_run` pins the exact one-holder text for a real foreign holder and the absence of the requester's run id; `blocked_message_names_every_holder` pins each holder's `(coordination run <run>)` beside its id.
+- The README collision example and the CHANGELOG entry carry the new wording.
 
 **Files:**
-- `crates/cargo-berth/src/output.rs` — `overlap_holder_description` (~4134)
-- `crates/cargo-berth/tests/overlap.rs` — the Spec 3 tests and the updated assertion (~1317)
-- `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/src/output.rs` — `overlap_holder_description` builds the one-holder and several-holder messages
+- `crates/cargo-berth/tests/overlap.rs` — the two message tests above
+- `crates/cargo-berth/README.md` — collision example in the new wording
+- `crates/cargo-berth/CHANGELOG.md` — entry for the holder run in blocked messages
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — `output.rs` and the CHANGELOG.
-- `test` — the Spec 3 tests and the updated assertion in `crates/cargo-berth/tests/overlap.rs` (test owns this file alone).
-
-**Constraints from prior phases:**
-- `ReservationConflict` carries `reservation_id`, `holder_run_id`, `holder_branch()`, `source` and `purpose`; the description helpers are `source_description` and `purpose_description` in `output.rs`.
-- `tests/overlap.rs` already builds foreign holders with `foreign_worktree`, `make_dirty`, `reconcile_fixture` and `run_berth`, and reads the envelope with `json_output`.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The checkpoint carries a `Change-Review:` line for the new wording.
+**Gotchas:** the two message tests run in under 0.1 s alone but 1.5–3.3 s inside a loaded full run, where unchanged tests also pass 1 s; time them alone before treating them as slow.
