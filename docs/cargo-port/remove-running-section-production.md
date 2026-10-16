@@ -11,6 +11,7 @@
 - **Showrunner session:** cargo-liner
 - **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
 - **Change review:** `~/rust/hanadocs/change-review/change-review - cargo-liner.md`
+- **Review pool:** code
 - **User zone:** `America/New_York`. Every time the showrunner reports is in this zone only.
 - **Updates:** on demand. Each update reports every unit in full.
 - **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
