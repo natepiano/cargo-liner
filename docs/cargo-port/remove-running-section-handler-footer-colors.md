@@ -103,7 +103,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** scanning every `mesh_roster.json` on the machine.
 
-### Phase 3 — Unassigned tile  · status: todo
+### Phase 3 — Unassigned tile  · status: done
 
 **Depends on:** Phase 2
 
@@ -185,9 +185,44 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot shows a named worker row and a status word other than `busy`. The checkpoint carries `Change-Review: worker rows are named by seat or role and job, never a thread id | look under a unit for its impl, test and fix rows` and `Change-Review: the status column says what an agent is doing: a verify step, writing, reading, thinking, git and the like | watch a worker's status while it edits and runs verify`.
 
-### Phase 5 — Accurate clicks during motion  · status: todo
+### Phase 5 — Accounts table in the summary  · status: todo
 
 **Depends on:** Phase 4
+
+**Blocked by:** `accounts.py status --json` exists in natedev's `~/.claude` — asked of natedev 2026-10-16.
+
+#### Work Order
+
+**Goal:** the summary cell shows, below its top-level agents table, an `accounts` table with each account's role and remaining weekly usage, updating as tokens are used.
+
+**Source:** the user (via the showrunner), 2026-10-16: "cargo handler should reprsent the output of /showrunner:accounts - the summary cell could maybe be subdivided to show a table of top level agents followed by a table of accounts (that updates itself as tokens are used)". Showrunner design and packaging ruling, same day (below).
+
+**Constraints from prior phases:**
+- Phase 1's account footer colors (`footer_colors.rs`) color account labels; reuse them.
+- Phase 2's summary header style, gap rule and `ColumnSort` header layout; the agents table stays as it is.
+- The configured-command pattern of `[census] hierarchy_command` (run off the frame thread, JSON on stdout) is the model for `accounts_command`.
+
+**Spec:**
+1. The summary cell holds two stacked tables under its one title: the agents table as today, then an `accounts` table with the same header style and gap rule.
+2. Columns: `account` (label such as `claude1`, `codex2`, in its footer color); `role` (units, showrunners, workers or spare; `—` when none); `weekly left` (percent, red at 10% or less); `resets` (short, e.g. `Mon 02:00`); `credits` (Codex only, `—` for Claude; dimmed when use_credits is off). No folder, login, on-credits or read columns, so no email address is drawn; a row whose reading is over an hour old is dimmed and shows its age.
+3. Rows follow accounts.py's own order and signed-in rule; its problem lines draw dimmed under the table.
+4. One source of truth: a configured `[census] accounts_command` printing accounts.py's own JSON; never re-derive the role map or the usage readings in Rust. Parse the JSON into typed rows at the boundary.
+5. Refresh off the frame thread every 60 s and whenever a row's reading time changes; never block a frame. Set the command in both machines' configs.
+6. Tests: buffer read-back of both tables, column colors (red at ≤10%, dimmed credits, dimmed stale row with its age), `—` cells, problem lines, row order from the JSON, a refresh that changes a reading, and a command that fails or prints bad JSON leaving the agents table intact.
+
+**Files:**
+- `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/census/`
+- `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — production files, edits to existing tests, `mod` lines.
+- `test` — new accounts-table and refresh test files.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot shows the accounts table under the agents table. The checkpoint carries `Change-Review: the summary shows an accounts table that updates as usage changes | watch weekly left fall on a busy account`.
+
+### Phase 6 — Accurate clicks during motion  · status: todo
+
+**Depends on:** Phase 5
 
 **Blocked by:** tile-fixes phase 20 merged on main — the showrunner says when.
 
@@ -221,7 +256,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean. A live click during motion lands on the drawn cell in cargo-handler and in cargo-tile. The checkpoint carries `Change-Review: clicks land on the tile drawn under the pointer, even while tiles move | add or remove a tile and click a moving one at once, in cargo-handler and cargo-tile`.
 
-### Phase 6 — Claude reviewers and Claude dispatch seats  · status: todo
+### Phase 7 — Claude reviewers and Claude dispatch seats  · status: todo
 
 **Depends on:** Phase 4
 
@@ -238,7 +273,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Spec:**
 1. A `claude --print --permission-mode plan` process with no other role mapping shows role `review`. Trace the real discovery-to-row path (`census/classify.rs`, `census/tree.rs`, `census/placement.rs`) and make such a process a visible row; the `review` fallback is typed and never overrides a role that already comes from the hierarchy edge or a roster.
 2. The dispatch fold resolves a Claude-backed seat through `<session dir>/phases/<id>/impl_worker_<slot>.json` (family `claude` → `worker_id` is the session id), joining the dispatch to that Claude session's row the way phase 1 joins a Codex seat through `mesh_roster.json`. Model the joined worker as a family-aware identity, e.g. `enum WorkerIdentity { CodexThread(ThreadId), ClaudeSession(SessionId) }`, so identical id text from the two families never matches. `ParsedDispatch` keeps `--phase` so the fold reads the current phase's file for the slot; a file from an earlier phase is ignored. Read the file's real shape from a live run (this session dir has `impl_worker_impl.json`) before writing the parser, and record it in the summary.
-3. Tests, with fixture files: a reviewer started with `--print --permission-mode plan` reaches the drawn Role column as `review` (render through the existing helpers in `worker_dispatch/tests.rs`, so this phase shares no file with phase 5 but the CHANGELOG); a hierarchy-given role still wins; a Claude-seat dispatch folds into its session's row; a stale earlier-phase identity file is ignored; a Codex thread id and a Claude session id with the same text stay apart.
+3. Tests, with fixture files: a reviewer started with `--print --permission-mode plan` reaches the drawn Role column as `review` (render through the existing helpers in `worker_dispatch/tests.rs`, so this phase shares no file with phase 6 but the CHANGELOG); a hierarchy-given role still wins; a Claude-seat dispatch folds into its session's row; a stale earlier-phase identity file is ignored; a Codex thread id and a Claude session id with the same text stay apart.
 
 **Files:**
 - `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`

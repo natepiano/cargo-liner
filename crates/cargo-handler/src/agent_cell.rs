@@ -34,6 +34,7 @@ use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::HierarchyRole;
+use crate::census::Placement;
 use crate::census::RoleLabel;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
@@ -75,6 +76,7 @@ use crate::summary::age;
 use crate::theme::RainbowHue;
 use crate::theme::Role;
 use crate::tiles::AgentCell;
+use crate::tiles::TileKey;
 
 /// A top-level agent and the tree of members and work drawn in its tile.
 #[derive(Clone, Debug)]
@@ -128,6 +130,8 @@ enum SessionLocation {
 enum LineSubject<'a> {
     /// A listed agent opened or managed by a member of this tile.
     Agent(RoleLabel),
+    /// A top-level session in the flat unassigned pool.
+    UnassignedSession,
     /// A Codex thread held by a manager, with its stated responsibility.
     ManagedThread(&'a ChildRow, HierarchyRole),
     /// Work not represented by another member line.
@@ -167,6 +171,8 @@ impl Rail {
 /// Whether this child has a later sibling.
 #[derive(Clone, Copy, Debug)]
 enum Branch {
+    /// A session in the flat unassigned list.
+    Flat,
     Middle,
     Last,
 }
@@ -174,6 +180,7 @@ enum Branch {
 impl Branch {
     const fn glyph(self) -> &'static str {
         match self {
+            Self::Flat => "",
             Self::Middle => TREE_BRANCH,
             Self::Last => TREE_LAST_BRANCH,
         }
@@ -182,7 +189,7 @@ impl Branch {
     const fn rail(self) -> Rail {
         match self {
             Self::Middle => Rail::Continues,
-            Self::Last => Rail::Ended,
+            Self::Flat | Self::Last => Rail::Ended,
         }
     }
 }
@@ -278,12 +285,12 @@ impl TreeColumn {
     /// The header with this table's selected direction marker.
     fn sorted_header(self, sort: TreeSort) -> String { sort.header(self) }
 
-    /// The marked header, including the indentation over a session branch.
-    fn sorted_header_text(self, sort: TreeSort) -> String {
+    /// The marked header, aligned with this tile's session rows.
+    fn sorted_header_text(self, sort: TreeSort, lead: SessionHeaderLead) -> String {
         if self == Self::Session {
             format!(
                 "{}{}",
-                " ".repeat(usize::from(summary::cell_width(TREE_BRANCH))),
+                " ".repeat(usize::from(lead.width())),
                 self.sorted_header(sort)
             )
         } else {
@@ -305,8 +312,29 @@ impl SortColumn for TreeColumn {
     fn label(self) -> &'static str { self.header() }
 }
 
+/// Alignment of the session label above hierarchical or flat roots.
+#[derive(Clone, Copy, Debug)]
+enum SessionHeaderLead {
+    /// Leave room above a tree row's branch glyph.
+    OverBranch,
+    /// Align with a flat root's name.
+    Flush,
+}
+
+impl SessionHeaderLead {
+    /// Cells reserved before the session header text.
+    fn width(self) -> u16 {
+        match self {
+            Self::OverBranch => summary::cell_width(TREE_BRANCH),
+            Self::Flush => 0,
+        }
+    }
+}
+
 /// The visible responsibility shared by role text, footer tint and name style.
 enum LineKind {
+    /// A root shown in the flat unassigned pool.
+    UnassignedSession,
     /// A listed session with its accepted or inferred hierarchy role.
     Session(RoleLabel),
     /// A Codex worker resolved from hierarchy, roster, then seat tokens.
@@ -338,7 +366,7 @@ impl TreeLine<'_> {
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
         let original = match self.subject {
-            LineSubject::Agent(_) => &self.row.name,
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => &self.row.name,
             LineSubject::ManagedThread(child, _) => &child.name,
             LineSubject::Work(work) => &work.child.name,
         };
@@ -364,7 +392,7 @@ impl TreeLine<'_> {
     /// The start of this subject, rather than its carrier process.
     const fn started(&self) -> u64 {
         match self.subject {
-            LineSubject::Agent(_) => self.row.started,
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.started,
             LineSubject::ManagedThread(child, _) => child.started,
             LineSubject::Work(work) => work.child.started,
         }
@@ -373,7 +401,7 @@ impl TreeLine<'_> {
     /// The account belongs to an agent or thread, never its shell or subagent.
     const fn account(&self) -> &Account {
         match self.subject {
-            LineSubject::Agent(_) => &self.row.account,
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => &self.row.account,
             LineSubject::ManagedThread(child, _) => &child.account,
             LineSubject::Work(work) => work.account(),
         }
@@ -382,7 +410,7 @@ impl TreeLine<'_> {
     /// The tier follows the account rather than a thread's activity.
     const fn service_tier(&self) -> ServiceTier {
         match self.subject {
-            LineSubject::Agent(_) => self.row.service_tier,
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.service_tier,
             LineSubject::ManagedThread(child, _)
             | LineSubject::Work(Work {
                 child,
@@ -395,7 +423,7 @@ impl TreeLine<'_> {
     /// The program whose account this line names.
     const fn program(&self) -> Agent {
         match self.subject {
-            LineSubject::Agent(_) => self.row.agent,
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.agent,
             LineSubject::ManagedThread(_, _) | LineSubject::Work(_) => Agent::Codex,
         }
     }
@@ -403,6 +431,7 @@ impl TreeLine<'_> {
     /// Classify a visible row once for all of its presentation decisions.
     fn kind(&self) -> LineKind {
         match self.subject {
+            LineSubject::UnassignedSession => LineKind::UnassignedSession,
             LineSubject::Agent(role) => LineKind::Session(role),
             LineSubject::ManagedThread(_, role) => {
                 LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)))
@@ -428,8 +457,8 @@ impl TreeLine<'_> {
     fn role_text(&self) -> &'static str {
         match self.kind() {
             LineKind::Worker(source) => source.text(),
+            LineKind::UnassignedSession | LineKind::Shell => MISSING_VALUE,
             LineKind::Session(role) => role.column_text(),
-            LineKind::Shell => MISSING_VALUE,
             LineKind::Subagent => "subagent",
         }
     }
@@ -438,7 +467,9 @@ impl TreeLine<'_> {
     fn name_style(&self) -> Style {
         match self.kind() {
             LineKind::Shell | LineKind::Subagent => Style::default().fg(text_default()),
-            LineKind::Session(_) | LineKind::Worker(_) => Role::Rainbow(self.hue).style(),
+            LineKind::UnassignedSession | LineKind::Session(_) | LineKind::Worker(_) => {
+                Role::Rainbow(self.hue).style()
+            },
         }
     }
 
@@ -476,7 +507,9 @@ impl TreeLine<'_> {
             TreeColumn::Session => format!("{}{}", self.lead(), self.name()),
             TreeColumn::Role => self.role_text().to_string(),
             TreeColumn::Status => match self.subject {
-                LineSubject::Agent(_) => summary::status_text(self.row).to_string(),
+                LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                    summary::status_text(self.row).to_string()
+                },
                 LineSubject::ManagedThread(child, _) => child.thread_state.text().to_string(),
                 LineSubject::Work(work) => work.status(now),
             },
@@ -505,7 +538,9 @@ impl TreeLine<'_> {
     /// The status color of the subject.
     fn status_role(&self) -> Role {
         match self.subject {
-            LineSubject::Agent(_) => summary::status_role(self.row),
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                summary::status_role(self.row)
+            },
             LineSubject::ManagedThread(child, _)
             | LineSubject::Work(Work {
                 child,
@@ -542,7 +577,9 @@ impl TreeLine<'_> {
     /// Only management roles and sessions use the footer's role colors.
     fn footer_role(&self, colors: &FooterColors) -> FooterTint {
         match self.kind() {
-            LineKind::Session(RoleLabel::Unlabeled) => colors.role(FooterRole::Unassigned),
+            LineKind::UnassignedSession | LineKind::Session(RoleLabel::Unlabeled) => {
+                colors.role(FooterRole::Unassigned)
+            },
             LineKind::Session(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
             | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.role(role.into()),
             LineKind::Worker(_) => colors.role(FooterRole::Worker),
@@ -646,6 +683,142 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
     cells
 }
 
+/// A production-role root or the flat pool for one machine.
+#[derive(Clone, Debug)]
+pub(crate) enum AgentTile<'a> {
+    /// A session with its own tile.
+    Agent(AgentEntry<'a>),
+    /// Sessions without a production role, with their work below each row.
+    Unassigned(UnassignedEntry<'a>),
+}
+
+impl AgentTile<'_> {
+    /// Stable identity independent of the current sessions in a pool.
+    pub(crate) fn key(&self) -> TileKey {
+        match self {
+            Self::Agent(entry) => TileKey::Agent(entry.id.clone()),
+            Self::Unassigned(entry) => TileKey::Unassigned {
+                machine: entry.machine.to_owned(),
+            },
+        }
+    }
+}
+
+/// A machine's unassigned sessions, each retaining its original hue.
+#[derive(Clone, Debug)]
+pub(crate) struct UnassignedEntry<'a> {
+    /// The machine shared by all roots in this pool.
+    pub(crate) machine: &'a str,
+    /// Ordering shared by the flat roots and each nested sibling group.
+    sort:               TreeSort,
+    /// Flat roots followed by the existing depth-first trees below them.
+    lines:              Vec<TreeLine<'a>>,
+}
+
+/// Classify live tile identities without building or ordering their rows.
+pub(crate) fn tile_keys(placement: &AgentPlacement<'_>) -> HashSet<TileKey> {
+    placement
+        .rows
+        .iter()
+        .filter(|row| row.placement == Placement::Root)
+        .map(|root| match placement.role_label(root.identity) {
+            RoleLabel::Unlabeled => TileKey::Unassigned {
+                machine: root.identity.machine.to_owned(),
+            },
+            RoleLabel::Stated(_) | RoleLabel::Inferred(_) => TileKey::Agent(AgentCell {
+                machine:         root.identity.machine.to_owned(),
+                pid:             root.row.pid,
+                process_started: root.row.process_started,
+            }),
+        })
+        .collect()
+}
+
+/// Build tiles from a census with hues assigned before grouping or sorting.
+#[cfg(test)]
+pub(crate) fn tile_order_sorted<'a>(
+    placement: &AgentPlacement<'a>,
+    sorts: &HashMap<TileKey, TreeSort>,
+    now: u64,
+) -> Vec<AgentTile<'a>> {
+    let agents = cell_order_placed(placement);
+    group_tiles(placement, &agents, sorts, now)
+}
+
+/// Group already-colored sessions without changing the summary's entries.
+pub(crate) fn group_tiles<'a>(
+    placement: &AgentPlacement<'a>,
+    agents: &[AgentEntry<'a>],
+    sorts: &HashMap<TileKey, TreeSort>,
+    now: u64,
+) -> Vec<AgentTile<'a>> {
+    let session_sorts = agents
+        .iter()
+        .map(|entry| {
+            let key = if entry.role_label == RoleLabel::Unlabeled {
+                TileKey::Unassigned {
+                    machine: entry.machine.to_owned(),
+                }
+            } else {
+                TileKey::Agent(entry.id.clone())
+            };
+            (
+                entry.id.clone(),
+                sorts.get(&key).copied().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let mut ordered = agents.to_vec();
+    sort_cells(placement, &mut ordered, &session_sorts, now);
+    let mut tiles = Vec::new();
+    let mut pooled_machines = HashSet::new();
+    for entry in &ordered {
+        match entry.role_label {
+            RoleLabel::Stated(_) | RoleLabel::Inferred(_) => {
+                tiles.push(AgentTile::Agent(entry.clone()));
+            },
+            RoleLabel::Unlabeled if pooled_machines.insert(entry.machine) => {
+                let mut roots: Vec<_> = ordered
+                    .iter()
+                    .filter(|root| {
+                        root.machine == entry.machine && root.role_label == RoleLabel::Unlabeled
+                    })
+                    .collect();
+                roots.sort_by(|left, right| {
+                    unassigned_line(left).compare(&unassigned_line(right), entry.sort, now)
+                });
+                let lines = roots
+                    .into_iter()
+                    .flat_map(|root| {
+                        iter::once(unassigned_line(root)).chain(root.lines.iter().cloned())
+                    })
+                    .collect();
+                tiles.push(AgentTile::Unassigned(UnassignedEntry {
+                    machine: entry.machine,
+                    sort: entry.sort,
+                    lines,
+                }));
+            },
+            RoleLabel::Unlabeled => {},
+        }
+    }
+    tiles
+}
+
+/// A flat root retains its own session values and preassigned hue.
+const fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
+    TreeLine {
+        dispatch_label: DispatchLabel::Original,
+        machine:        entry.machine,
+        location:       SessionLocation::SameMachine,
+        row:            entry.row,
+        hue:            entry.hue,
+        rails:          Vec::new(),
+        branch:         Branch::Flat,
+        subject:        LineSubject::UnassignedSession,
+    }
+}
+
 /// Whether this traversal assigns colors or preserves the default traversal's colors.
 enum HueAssignment<'p, 'a> {
     /// Assign hues in the existing depth-first census order.
@@ -669,7 +842,7 @@ impl HueAssignment<'_, '_> {
 
 /// A default traversal needs no clock; selected status values do.
 enum SiblingOrder {
-    /// The phase-one start, machine and process ordering.
+    /// The default start, machine and process ordering.
     Default,
     /// The selected column, with a clock for status text such as timers.
     Selected { sort: TreeSort, now: u64 },
@@ -708,7 +881,7 @@ impl<'a> TreeBuild<'_, 'a> {
     ) -> TreeLine<'a> {
         TreeLine {
             dispatch_label: match subject {
-                LineSubject::Agent(_) => DispatchLabel::Original,
+                LineSubject::Agent(_) | LineSubject::UnassignedSession => DispatchLabel::Original,
                 LineSubject::ManagedThread(child, _) => self.placement.dispatch_label(child),
                 LineSubject::Work(work) => self.placement.dispatch_label(work.child),
             },
@@ -728,12 +901,24 @@ impl<'a> TreeBuild<'_, 'a> {
 }
 
 /// Rebuild sibling order using hues assigned by the default traversal.
+#[cfg(test)]
 pub(crate) fn cell_order_sorted<'a>(
     placement: &AgentPlacement<'a>,
     sorts: &HashMap<AgentCell, TreeSort>,
     now: u64,
 ) -> Vec<AgentEntry<'a>> {
     let mut cells = cell_order_placed(placement);
+    sort_cells(placement, &mut cells, sorts, now);
+    cells
+}
+
+/// Reorder existing trees, preserving every previously assigned name hue.
+fn sort_cells<'a>(
+    placement: &AgentPlacement<'a>,
+    cells: &mut [AgentEntry<'a>],
+    sorts: &HashMap<AgentCell, TreeSort>,
+    now: u64,
+) {
     let hues: HashMap<_, _> = cells
         .iter()
         .flat_map(|entry| {
@@ -746,7 +931,7 @@ pub(crate) fn cell_order_sorted<'a>(
             )
         })
         .collect();
-    for entry in &mut cells {
+    for entry in cells {
         entry.sort = sorts.get(&entry.id).copied().unwrap_or_default();
         if entry.sort == TreeSort::default() {
             continue;
@@ -773,7 +958,6 @@ pub(crate) fn cell_order_sorted<'a>(
             &mut entry.lines,
         );
     }
-    cells
 }
 
 /// Merge a member's own work with its listed members and managed threads.
@@ -856,7 +1040,7 @@ fn lines_of<'a>(
         lines.push(line);
         rails.push(branch.rail());
         match subject {
-            LineSubject::Agent(_) => {
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 lines_of(context, identity, rails, agents, hue, lines);
             },
             LineSubject::Work(_) => {
@@ -875,7 +1059,7 @@ fn line_order<'a>(
     subject: LineSubject<'_>,
 ) -> (u64, &'a str, u32) {
     let (started, pid) = match subject {
-        LineSubject::Agent(_) => (row.started, row.pid),
+        LineSubject::Agent(_) | LineSubject::UnassignedSession => (row.started, row.pid),
         LineSubject::ManagedThread(child, _) => (child.started, child.pid.unwrap_or(identity.pid)),
         LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
     };
@@ -1009,6 +1193,24 @@ enum CellView {
 }
 
 impl CellView {
+    /// Fit every full tree column using the same header and value widths.
+    fn tree_at_width(
+        lines: &[TreeLine<'_>],
+        sort: TreeSort,
+        width: u16,
+        now: u64,
+        account_column: AccountColumn,
+        lead: SessionHeaderLead,
+    ) -> Self {
+        let columns = TreeLayout::Full.columns(account_column);
+        let widths = tree_widths(lines, columns, now, sort, lead);
+        if !lines.is_empty() && table_width(&widths) > usize::from(width) {
+            Self::Compressed
+        } else {
+            Self::Full(FlatColumns { columns, widths })
+        }
+    }
+
     /// Full only when the heading, workplace and all tree values fit.
     fn at_width(
         entry: &AgentEntry<'_>,
@@ -1053,15 +1255,17 @@ impl FlatColumns {
         {
             return None;
         }
-        let columns = TreeLayout::Full.columns(account_column);
-        let tree = tree_widths(&entry.lines, columns, now, entry.sort);
-        if !entry.lines.is_empty() && table_width(&tree) > usize::from(header_width(width)) {
-            return None;
+        match CellView::tree_at_width(
+            &entry.lines,
+            entry.sort,
+            header_width(width),
+            now,
+            account_column,
+            SessionHeaderLead::OverBranch,
+        ) {
+            CellView::Full(fitted) => Some(fitted),
+            CellView::Compressed => None,
         }
-        Some(Self {
-            columns,
-            widths: tree,
-        })
     }
 }
 
@@ -1160,11 +1364,81 @@ pub(crate) fn draw(
         draw_tree(
             buffer,
             tree,
-            entry,
-            tree_header(entry, tree, now, account_column, &view),
+            &entry.lines,
+            entry.sort,
+            tree_header(
+                &entry.lines,
+                entry.sort,
+                tree,
+                now,
+                account_column,
+                &view,
+                SessionHeaderLead::OverBranch,
+            ),
             &TreeDraw { now, footer_colors },
         );
     }
+}
+
+/// Header and table layout for a flat pool, using the same tree column fitter.
+fn unassigned_header(
+    entry: &UnassignedEntry<'_>,
+    area: Rect,
+    now: u64,
+    account_column: AccountColumn,
+) -> TreeHeader {
+    let tree = header_indented(area);
+    let view = CellView::tree_at_width(
+        &entry.lines,
+        entry.sort,
+        tree.width,
+        now,
+        account_column,
+        SessionHeaderLead::Flush,
+    );
+    tree_header(
+        &entry.lines,
+        entry.sort,
+        tree,
+        now,
+        account_column,
+        &view,
+        SessionHeaderLead::Flush,
+    )
+}
+
+/// The pool has one header followed by its flat roots and nested work.
+pub(crate) fn unassigned_height(entry: &UnassignedEntry<'_>) -> usize {
+    usize::from(TABLE_HEADER_HEIGHT) + entry.lines.len()
+}
+
+/// Resolved header cells for clicks in an unassigned tile.
+pub(crate) fn unassigned_header_spans(
+    entry: &UnassignedEntry<'_>,
+    area: Rect,
+    now: u64,
+    account_column: AccountColumn,
+) -> Vec<HeaderSpan<TreeColumn>> {
+    unassigned_header(entry, area, now, account_column).spans
+}
+
+/// Draw the pool with the shared tree table, palette and sorted header.
+pub(crate) fn draw_unassigned(
+    buffer: &mut Buffer,
+    area: Rect,
+    entry: &UnassignedEntry<'_>,
+    now: u64,
+    account_column: AccountColumn,
+    footer_colors: &FooterColors,
+) {
+    draw_tree(
+        buffer,
+        header_indented(area),
+        &entry.lines,
+        entry.sort,
+        unassigned_header(entry, area, now, account_column),
+        &TreeDraw { now, footer_colors },
+    );
 }
 
 /// Widest header or value in each active column.
@@ -1173,6 +1447,7 @@ fn tree_widths(
     columns: &[TreeColumn],
     now: u64,
     sort: TreeSort,
+    lead: SessionHeaderLead,
 ) -> Vec<u16> {
     columns
         .iter()
@@ -1182,7 +1457,7 @@ fn tree_widths(
                 .map(|line| summary::cell_width(&line.value(column, now)))
                 .max()
                 .unwrap_or(0)
-                .max(summary::cell_width(&column.sorted_header_text(sort)))
+                .max(summary::cell_width(&column.sorted_header_text(sort, lead)))
         })
         .collect()
 }
@@ -1198,6 +1473,8 @@ fn table_width(widths: &[u16]) -> usize {
 
 /// Fitted widths and their resolved header cells are one layout decision.
 struct TreeHeader {
+    /// Session label alignment selected by the tile kind.
+    lead:    SessionHeaderLead,
     /// Columns selected by the fitted view.
     columns: &'static [TreeColumn],
     /// Widths shared with the table renderer.
@@ -1210,17 +1487,19 @@ struct TreeHeader {
 
 /// Resolve columns from the view already fitted by drawing or click mapping.
 fn tree_header(
-    entry: &AgentEntry<'_>,
+    lines: &[TreeLine<'_>],
+    sort: TreeSort,
     tree: Rect,
     now: u64,
     account_column: AccountColumn,
     view: &CellView,
+    lead: SessionHeaderLead,
 ) -> TreeHeader {
     let (columns, widths, spacing) = match view {
         CellView::Full(fitted) => (fitted.columns, fitted.widths.clone(), TABLE_COLUMN_SPACING),
         CellView::Compressed => {
             let columns = TreeLayout::Compressed.columns(account_column);
-            let mut widths = tree_widths(&entry.lines, columns, now, entry.sort);
+            let mut widths = tree_widths(lines, columns, now, sort, lead);
             let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
             let spacing = TABLE_COLUMN_SPACING.min(tree.width.saturating_sub(1) / gaps);
             let fixed = widths[1..]
@@ -1238,7 +1517,7 @@ fn tree_header(
         .spacing(spacing)
         .flex(Flex::Start)
         .split(tree);
-    let spans = if entry.lines.is_empty() || tree.is_empty() {
+    let spans = if lines.is_empty() || tree.is_empty() {
         Vec::new()
     } else {
         columns
@@ -1252,6 +1531,7 @@ fn tree_header(
             .collect()
     };
     TreeHeader {
+        lead,
         columns,
         widths,
         spacing,
@@ -1282,7 +1562,16 @@ pub(crate) fn header_spans(
         height: area.height.saturating_sub(above_height),
         ..area
     });
-    tree_header(entry, tree, now, account_column, &view).spans
+    tree_header(
+        &entry.lines,
+        entry.sort,
+        tree,
+        now,
+        account_column,
+        &view,
+        SessionHeaderLead::OverBranch,
+    )
+    .spans
 }
 
 /// Draw both views with one table, preserving fixed columns when names compress.
@@ -1294,16 +1583,17 @@ struct TreeDraw<'a> {
 fn draw_tree(
     buffer: &mut Buffer,
     area: Rect,
-    entry: &AgentEntry<'_>,
+    lines: &[TreeLine<'_>],
+    sort: TreeSort,
     header: TreeHeader,
     frame: &TreeDraw<'_>,
 ) {
     let TreeDraw { now, footer_colors } = *frame;
-    let lines = &entry.lines;
     if area.is_empty() {
         return;
     }
     let TreeHeader {
+        lead,
         columns,
         widths,
         spacing,
@@ -1353,7 +1643,7 @@ fn draw_tree(
         .header(
             Row::new(columns.iter().map(|&column| {
                 Cell::from(Span::styled(
-                    column.sorted_header_text(entry.sort),
+                    column.sorted_header_text(sort, lead),
                     Style::default().fg(label_color()),
                 ))
             }))
@@ -1571,6 +1861,8 @@ mod tests {
     mod sort_tests;
     #[path = "tree_tests.rs"]
     mod tree_tests;
+    #[path = "unassigned_tests.rs"]
+    mod unassigned_tests;
     use crate::census::Agent;
     use crate::census::Census;
     use crate::census::CensusUpdate;
@@ -2871,7 +3163,9 @@ mod tests {
                 (
                     line.machine,
                     match line.subject {
-                        LineSubject::Agent(_) => line.row.name.as_str(),
+                        LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                            line.row.name.as_str()
+                        },
                         LineSubject::Work(work) => work.child.name.as_str(),
                         LineSubject::ManagedThread(child, _) => child.name.as_str(),
                     },
@@ -2966,7 +3260,8 @@ mod tests {
                 .iter()
                 .map(|line| (
                     match line.subject {
-                        LineSubject::Agent(_) => line.row.name.as_str(),
+                        LineSubject::Agent(_) | LineSubject::UnassignedSession =>
+                            line.row.name.as_str(),
                         LineSubject::Work(work) => work.child.name.as_str(),
                         LineSubject::ManagedThread(child, _) => child.name.as_str(),
                     },

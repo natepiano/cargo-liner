@@ -601,6 +601,7 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
                 TreeLayout::Full.columns(account_column),
                 NOW,
                 TreeSort::default(),
+                SessionHeaderLead::OverBranch,
             )) + 2 * indent,
         );
     }
@@ -625,7 +626,13 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
     let columns = TreeLayout::Compressed.columns(account_column);
     let gaps = columns.len().saturating_sub(1);
     let spacing = usize::from(TABLE_COLUMN_SPACING);
-    let widths = tree_widths(&cell.lines, columns, NOW, TreeSort::default());
+    let widths = tree_widths(
+        &cell.lines,
+        columns,
+        NOW,
+        TreeSort::default(),
+        SessionHeaderLead::OverBranch,
+    );
     let fixed = widths[1..]
         .iter()
         .map(|&width| usize::from(width))
