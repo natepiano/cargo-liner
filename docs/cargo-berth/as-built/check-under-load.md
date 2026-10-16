@@ -109,7 +109,7 @@ In production the observer is `observe_merge_extent`; tests inject their own. `o
 - Joins in first-seen order, sums `worktree_status_queries` and `path_queries` into the caller's counter, and re-raises an observer panic with `resume_unwind`.
 - Returns a `HashMap<(WorktreeId, IntegrationTarget), Result<HolderMergeProtection, String>>`.
 
-The fold that follows walks reservations in replay order, looks each holder up in the map, groups equal extents per holder into `HolderMergeExtentObserved`, then appends `ResolveIncursion` for incidents whose extent is now empty.
+The fold that follows walks unreleased reservations in replay order, looks each holder up in the map, and gives each reservation its share of the observation through `reservation_merge_extent` (a failed observation becomes that reservation's own `unavailable` extent). It groups equal changed shares per holder into `HolderMergeExtentObserved`, then appends `ResolveIncursion` for incidents whose extent is now empty. The share split and its cache key are in [parallel-phases.md](parallel-phases.md).
 
 ### Reconcile failure envelope
 
@@ -182,7 +182,7 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
   - The repeat under the held lock must equal it field for field, with journal and mappings unchanged.
 - **Contended controls.** `assert_check_contention` pins status `contention`, exit 6, verb `check`, empty `blocked_by` and `reservations`, and the busy diagnostic, for the unheld control, the partial tree, the unmapped session, the explicit remap and the envelope reference.
 - **Concurrency proof.** `merge_extent_observations_run_concurrently_in_holder_order` uses three holder keys plus a sibling sharing one key. The three observers meet at a `Barrier::new(3)` inside an injected observer, and the result is received with a 400 ms timeout; a serial run would deadlock at the barrier and fail at the timeout. It also checks sibling grouping, operation order and summed costs (3 status, 6 path).
-- **Equivalence proof.** `concurrent_merge_extents_match_serial_targets_and_unavailable_holder` builds a real Git fixture with `merge_extent_comparison_fixture` (two holders on one worktree with different targets, plus one unavailable holder) and compares the concurrent output with `serial_merge_extent_reference`, which calls the real `observe_merge_extent` serially. Operations JSON, observed and committed evidence, and costs all match.
+- **Equivalence proof.** `concurrent_merge_extents_match_serial_targets_and_unavailable_holder` builds a real Git fixture with `merge_extent_comparison_fixture` (two holders on one worktree with different targets, plus one unavailable holder) and compares the concurrent output with `serial_merge_extent_reference`, which calls the real `observe_merge_extent` serially. Operations JSON, observed holder extents, and costs all match.
 - **Hook tests.**
   - `pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held` gives the session id through the hook payload, with environment ids removed.
   - `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` asserts the refusal names neither the foreign reservation id, nor "Holder", nor "overlap".
