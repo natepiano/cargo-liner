@@ -146,42 +146,18 @@ Read 2026-10-15 at 6d01f704.
 
 ### Phase 5 — Refusals name what to run: each ambiguous candidate's session, and every holder an answer left out  · status: done
 
-**Depends on:** Phase 4
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** when a director's own edit is refused because two phases hold reservations (`ambiguous_active_run_reservations`), each candidate id shows the session mapped to it, so the director copies the right `cargo-berth check --reservation <id> <path>` without a lookup; the message uses plain words instead of "harness-session mapping" (showrunner, 2026-10-15). And when an overlap answer names fewer holders than hold the requested paths, the refusal says which holders the answer left out and prints the full claim to copy, `--before <A> --before <B>`; today it repeats the unanswered refusal, which led hana's showrunner to conclude that a claim records only one holder (showrunner, 2026-10-15).
-
-**Spec:**
-1. Message (`OutputEnvelope::ambiguous_active_run_reservations`, `output.rs` ~2733): `No session names one phase's reservation among <candidates>. Run `<recovery command>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one.` `<candidates>` joins each candidate, in the existing wire order, with `, ` as `` `<id>` (session <sid>) ``; a candidate several sessions map to reads `` `<id>` (sessions <sid>, <sid>) `` in ascending order; a candidate no session maps to reads `` `<id>` (no session) ``.
-2. Presentation (`presentation::ambiguous_first_touch_block`, `presentation.rs` ~165): each listed candidate line reads `` - `<id>` (session <sid>) `` with the same three forms.
-3. Session ids come from the ledger's session mappings read under the same lock that produced the candidates (the selection in `verb/claim/mod.rs`, `FirstTouchReservationSelection::AmbiguousActiveRunReservations` ~513 and the rejections at ~649 and ~2711); carry them as a typed value beside each candidate id, not a parallel list. The JSON payload `candidate_reservation_ids` stays unchanged (no wire-contract change).
-4. Tests, each under 1 s: a real two-phase ambiguous refusal (two phase sessions `<sid>.phase-A`/`<sid>.phase-B` each holding a reservation, then an edit check under the bare `<sid>`) whose `.message` equals the exact Spec 1 text with both phase sessions beside their ids and no "harness-session"; the presentation unit test at `presentation.rs` ~412 pins the Spec 2 lines; update `tests/fixtures/front_end_corpus.json` and every existing assertion on the old wording.
-5. Incomplete answer (`bind_claim_authorization`, `verb/claim/mod.rs` ~2142, where `named_blockers != holders` returns `ClaimRejection::Conflict(conflicts)`): when the answer names a strict subset of the conflicting holders, or names a reservation that no longer conflicts, reject with a new typed rejection carrying the conflicts, the answer as given, and the holders it left out (and any named id that no longer conflicts); render it through `OutputEnvelope::blocked_claim`'s envelope so `status` (`blocked_by_overlap`), exit code, `blocked_by` and the JSON payload stay unchanged. A claim with no answer keeps today's refusal.
-6. Its `.message`: `The answer names <named> but not <unnamed>, which also hold paths that overlap the requested paths; one claim answers every holder. Run: `<command>`` — `<named>` and `<unnamed>` list ids in wire order joined with `, ` (singular `holds` for one unnamed holder). When the answer names an id that no longer conflicts, add `<id> no longer overlaps the requested paths, so the command leaves it out.` `<command>` is the caller's own claim made complete: the requested paths as the CLI takes them, `--reservation <id>` when given, each named holder with its own flag, each unnamed holder with the answer's flag when every named flag is the same kind (`--before`, `--after` or `--defer`), else `--<before|after> <id>` for the caller to pick, then `--overlap-why` with the caller's reason shell-quoted, and `--replace`/`--json` when given. An `--override` naming one of several holders gets no command: `--override settles one holder; narrow the requested scopes until one holder remains, or answer every holder with --before, --after or --defer.` The refusal detail (presentation block) leads with the same text before the holder facts.
-7. Tests, each under 1 s, in `tests/answers.rs`: two holders of one path; `claim <path> --before <A> --overlap-why "<r>" --json` is refused with the exact Spec 6 message naming B and the full `--before <A> --before <B>` command, and running that printed command then records both edges; the same through `--reservation <id>` on an active phase reservation; three holders A, B, C and a claim naming `--before <A> --after <B>` prints `--<before|after> <C>` for the one left out; an `--override` naming one of two holders pins the narrowing text.
+- An edit refused as `ambiguous_active_run_reservations` reads `No session names one phase's reservation among <candidates>. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one.` Each candidate is `` `<id>` (session <sid>) ``, `(sessions a, b)` or `(no session)`; the presentation lines use the same forms, and `candidate_reservation_ids` is unchanged.
+- The sessions come from `session::phase_reservation_sessions`, which reads the session store under the selection lock; an unreadable store renders bare ids rather than `(no session)`.
+- An overlap answer naming some holders but not all keeps `blocked_by_overlap`, its exit code and payload, and leads its detail with `The answer names <named> but not <unnamed>, which also hold(s) paths that overlap the requested paths; one claim answers every holder. Run: `<command>``. A stale holder adds `<id> no longer overlaps the requested paths, so the command leaves it out.` and the command names the current holder instead; mixed flags keep their direction; a several-holder `--override` gets narrowing text and no command. The configured chooser guidance follows the holder facts.
+- The command is rendered from `ClaimArguments::answer_recovery`, a typed snapshot of the parsed claim, never from process argv; the reason prints as `--overlap-why=<shell-quoted>`.
 
 **Files:**
-- `crates/cargo-berth/src/output.rs` — the message
-- `crates/cargo-berth/src/presentation.rs` — the block and its unit test
-- `crates/cargo-berth/src/verb/claim/mod.rs` — carry each candidate's mapped sessions; the incomplete-answer rejection
-- `crates/cargo-berth/src/answer/conflict_authorization.rs` — answer accessors the command rendering needs, if any
-- `crates/cargo-berth/tests/overlap.rs` — the real two-phase refusal test and old-text asserts
-- `crates/cargo-berth/tests/answers.rs` — incomplete-answer refusal tests
-- `crates/cargo-berth/tests/gate.rs` — old-text asserts
-- `crates/cargo-berth/tests/lifecycle.rs` — old-text asserts
-- `crates/cargo-berth/tests/fixtures/front_end_corpus.json` — the old message text
-- `crates/cargo-berth/CHANGELOG.md` — one Changed line
-- `docs/cargo-berth/as-built/phase-reservations.md` — the wording example, if present
+- `crates/cargo-berth/src/verb/claim/phase_candidate.rs` — ambiguity candidates and their session labels
+- `crates/cargo-berth/src/verb/claim/incomplete_answer.rs` — the incomplete-answer refusal
+- `crates/cargo-berth/src/verb/claim/recovery_command.rs` — renders the claim to copy
+- `crates/cargo-berth/src/cli.rs` — `ClaimArguments::answer_recovery`
+- `crates/cargo-berth/src/session/mod.rs` — `phase_reservation_sessions`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — `src/` files, the CHANGELOG and the as-built doc.
-- `test` — `tests/` files and the corpus fixture.
-
-**Constraints from prior phases:**
-- Phase sessions are named `<session id>.phase-<phase>`; a widen under the director's real session maps that session too, so a candidate can have more than one session.
-- Invalid states unrepresentable: model "no session / one / several" as a type, never a bare empty `Vec` check scattered in formatting.
-
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s. The checkpoint carries a `Change-Review:` line for both new messages.
+**Gotchas:** a value with a leading hyphen must use the `--flag=value` form; clap rejects it space-separated.
