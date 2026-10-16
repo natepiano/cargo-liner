@@ -1285,24 +1285,79 @@ fn reconciliation_removes_a_malformed_marker_directory_before_claim() {
 }
 
 #[test]
+fn blocked_check_message_names_only_the_foreign_holder_run() {
+    let repository = initialized_repository();
+    let holder = run_berth(
+        repository.path(),
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "update the holder library",
+            "--json",
+        ],
+    );
+    assert_success(&holder);
+    let holder = json_output(&holder);
+    let holder_id = holder["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("holder reservation id");
+    let holder_run = holder["payload"]["data"]["coordination_run_id"]
+        .as_str()
+        .expect("holder coordination run");
+    let (_requester_directory, requester_root) = foreign_worktree(&repository, "requester");
+    make_dirty(repository.path(), "src/lib.rs");
+
+    let blocked = berth_command(BERTH_EXECUTABLE)
+        .args(["check", "file:src/lib.rs", "--json"])
+        .current_dir(&requester_root)
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("requester's check should run");
+
+    assert_eq!(blocked.status.code(), Some(1));
+    let envelope = json_output(&blocked);
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    let message = envelope["message"].as_str().expect("blocked check message");
+    assert_eq!(
+        message,
+        format!(
+            "Reservation {holder_id} (coordination run {holder_run}) on refs/heads/main (explicit claim, update the holder library) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry."
+        )
+    );
+    assert!(
+        !message.contains(SECOND_RUN),
+        "the overlap message must identify the holder without naming the requester run"
+    );
+}
+
+#[test]
 fn blocked_message_names_every_holder() {
     let repository = initialized_repository();
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "other-holder");
-    for (root, scope) in [
-        (repository.path(), "tree:src"),
-        (holder_root.as_path(), "file:src/lib.rs"),
+    let mut holders = Vec::new();
+    for (root, scope, run) in [
+        (repository.path(), "tree:src", FIRST_RUN),
+        (holder_root.as_path(), "file:src/lib.rs", SECOND_RUN),
     ] {
-        assert!(
-            run_berth(root, &["claim", scope, "--run", FIRST_RUN, "--json"])
-                .status
-                .success()
-        );
+        let claimed = run_berth(root, &["claim", scope, "--run", run, "--json"]);
+        assert_success(&claimed);
+        let claimed = json_output(&claimed);
+        holders.push((
+            claimed["payload"]["data"]["reservation_id"]
+                .as_str()
+                .expect("holder reservation id")
+                .to_owned(),
+            run,
+        ));
     }
 
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     make_dirty(repository.path(), "src/lib.rs");
     make_dirty(&holder_root, "src/lib.rs");
-    reconcile_fixture(repository.path());
     let blocked = run_berth(&second_root, &["claim", "file:src/lib.rs", "--json"]);
 
     assert_eq!(blocked.status.code(), Some(1));
@@ -1314,12 +1369,14 @@ fn blocked_message_names_every_holder() {
         .as_array()
         .expect("blocked payload should list conflicts");
     assert_eq!(conflicts.len(), 2);
-    assert!(message.contains("2 reservations hold overlapping paths"));
-    for conflict in conflicts {
-        let reservation_id = conflict["reservation_id"]
-            .as_str()
-            .expect("conflict should name its reservation");
-        assert!(message.contains(reservation_id));
+    assert!(message.starts_with("2 reservations hold paths that overlap the requested paths: "));
+    for (reservation_id, run) in holders {
+        let description = format!("reservation {reservation_id} (coordination run {run}) on ");
+        assert!(
+            message.contains(&description),
+            "the holder's run must appear beside its reservation: {message}"
+        );
+        assert_eq!(message.matches(&description).count(), 1);
     }
 }
 

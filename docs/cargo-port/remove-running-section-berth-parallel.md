@@ -126,7 +126,7 @@ Read 2026-10-15 at 6d01f704.
 
 **Ruled out:** deduplicating repeats on a plain claim — each plain claim opens a distinct reservation, so no duplicate edge arises.
 
-### Phase 4 — An overlap refusal names only the holder  · status: todo
+### Phase 4 — An overlap refusal names only the holder  · status: done
 
 **Depends on:** Phase 3
 

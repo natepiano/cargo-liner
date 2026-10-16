@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Blocked `check` and `claim` messages name each holder's coordination run beside its reservation id, making the holder distinct from the requester.
 - A repeated named `claim --before` or `--after` refuses an existing ordering edge without changing the journal or session mapping, preserving readable coordination state.
 - `claim --reservation <id>` directs overlap answers and added scopes to that active phase reservation, preserving its target and baseline and publishing its session mapping. Deferrals and all-held answers record without acquiring paths; `--replace` leaves sibling ordering edges alone, sibling-held paths are reported, and widening needs no new reservation slot.
 

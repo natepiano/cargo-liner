@@ -4139,12 +4139,12 @@ fn overlap_holder_description(conflicts: &[ReservationConflict]) -> String {
         },
         [conflict] => {
             format!(
-                "Reservation {} on {} ({}, {}) holds overlapping paths for {}; reduce the requested scopes or coordinate with the holder, then retry.",
+                "Reservation {} (coordination run {}) on {} ({}, {}) holds paths that overlap the requested paths; reduce the requested scopes or coordinate with the holder, then retry.",
                 conflict.reservation_id,
+                conflict.holder_run_id,
                 conflict.holder_branch(),
                 source_description(&conflict.source),
                 purpose_description(&conflict.purpose),
-                conflict.holder_run_id,
             )
         },
         [_, _, ..] => {
@@ -4153,18 +4153,18 @@ fn overlap_holder_description(conflicts: &[ReservationConflict]) -> String {
                 .iter()
                 .map(|conflict| {
                     format!(
-                        "reservation {} on {} ({}, {}) for coordination run {}",
+                        "reservation {} (coordination run {}) on {} ({}, {})",
                         conflict.reservation_id,
+                        conflict.holder_run_id,
                         conflict.holder_branch(),
                         source_description(&conflict.source),
                         purpose_description(&conflict.purpose),
-                        conflict.holder_run_id,
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
             format!(
-                "{holder_count} reservations hold overlapping paths: {holders}; reduce the requested scopes or coordinate with the holders, then retry.",
+                "{holder_count} reservations hold paths that overlap the requested paths: {holders}; reduce the requested scopes or coordinate with the holders, then retry.",
             )
         },
     }
