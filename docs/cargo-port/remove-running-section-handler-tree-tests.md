@@ -51,23 +51,11 @@ Before, alone on the Mac (`cargo nextest run -p cargo-handler -E 'test(/tree_hei
 
 ### Phase 1 — Boundary widths  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the tree height tests check each cell only at the widths where its layout changes, plus the width on either side, with each boundary computed from the layout's own width functions and constants, and each test runs in well under the time it does now.
-
-**Spec:**
-1. In `tree_tests.rs`, a test-only `fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeSet<u16>` returns, for one cell, each boundary `b` below together with `b - 1` and `b + 1`, plus the range ends 10 and 140, clamped to `10..=140`. `indent` is `summary::cell_width(SECTION_HEADER_INDENT)`; a tree-area width `w` is the tile width `w + 2 * indent`. The boundaries, each computed with the module's own functions and constants, never a written-out number:
-   - **Full view.** The narrowest tile width the full view fits: the largest of `header_line(…).width()`, `place_line(…).width()` and, when the cell has tree lines, `table_width(&tree_widths(&cell.lines, TreeLayout::Full.columns(account_column), NOW)) + 2 * indent`.
-   - **Compressed spacing.** With `gaps` the compressed column count less one (`TreeLayout::Compressed.columns(account_column)`), the tree-area widths `k * gaps + 1` for `k` in `1..=TABLE_COLUMN_SPACING`, where `draw_tree`'s spacing steps.
-   - **Session column.** With the compressed `tree_widths` past the session column summed as `fixed` plus `TABLE_COLUMN_SPACING * gaps`: the tree-area width `fixed` (session column empty) and `fixed` plus the widest `lead()` among the cell's lines (every name cut to nothing).
-2. The derivation checks itself so it cannot drift from the view choice: when the full boundary `full` lies in range, `CellView::at_width(cell, full, NOW, account_column)` is `Full` and at `full - 1` is `Compressed`.
-3. `assert_heights_at_widths` takes the fixture alone and checks each cell at its `layout_widths`, with the same height-equals-drawn-rows assertion and failure message as now.
-4. The six tests become three, one per fixture, with the range split gone: `tree_heights_match_drawn_rows_at_layout_widths` (`mockup(["claude2", "claude1", "claude3"])`), `tree_heights_without_accounts_match_drawn_rows_at_layout_widths` (`mockup(["claude2"; 3])`) and `tree_heights_with_nested_work_match_drawn_rows_at_layout_widths` (`boss_group()`). Remove the `RangeInclusive` import if nothing else uses it.
+- The tree height tests check each agent tile only where its layout changes, plus one width on either side, inside `TESTED_WIDTHS` (10..=140, ends included). `layout_widths(cell, account_column) -> BTreeSet<u16>` derives the boundaries from the layout's own functions and constants: the full view's fit (`header_line`, `place_line`, `table_width(&tree_widths(…, TreeLayout::Full.columns(…), NOW))` plus both indents), the compressed spacing steps `k * gaps + 1` for `k` in `1..=TABLE_COLUMN_SPACING`, and the session column empty (`fixed`) and fully cut (`fixed` plus the widest `lead()`).
+- The derivation checks itself against the view choice: `CellView::at_width` is `Full` at the full boundary and `Compressed` one below.
+- Three tests, one per fixture: `tree_heights_match_drawn_rows_at_layout_widths`, `tree_heights_without_accounts_match_drawn_rows_at_layout_widths`, `tree_heights_with_nested_work_match_drawn_rows_at_layout_widths`. Alone on the Mac they take 0.06–0.10 s, against 0.47–0.64 s each for the six width sweeps they replace.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`
-
-**Workers:** 1 tester — one test file.
-- `test` — `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean; the unit director times the three tests alone on the Mac and natedev, each well under the fastest of the six it replaces, and sends the showrunner the before and after times. The checkpoint carries one line, `Change-Review: none — test-only change; nothing visible changes`.
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — `layout_widths` and `assert_heights_at_widths`, which checks one fixture's cells at their layout widths.
