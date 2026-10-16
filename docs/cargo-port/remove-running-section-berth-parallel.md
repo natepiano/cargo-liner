@@ -63,58 +63,30 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 ### Phase 6 — A held path answers at once, and holders are observed together  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** an edit check of a path the caller's own reservation already holds answers in milliseconds, even while another process holds the berth lock. Every other check's reconcile observes the live holders' worktrees concurrently, not one after another.
-
-**Spec:**
-1. **The fast path (`verb/check.rs` `execute`).** After the first lock-free `decide`, return `OutputEnvelope::clear_check` with an `AlreadyHeld` acquisition when all three of these hold:
-   - its conflicts are empty;
-   - the caller's identity selects one active reservation of its run in this worktree: the session mapping under `SessionMappingOrSingleActive`/`SessionMappingOrNew`, or the named id under `Explicit` only when the session already maps to that id or the invocation has no harness session. Naming another reservation switches the session's mapping, which is a durable write, so it keeps the locked path;
-   - that reservation covers every requested scope under the same coverage rule the locked path uses to answer `AlreadyHeld`.
-
-   This return comes before `reconcile_and_retry` and `acquire_first_touch`. Reuse that coverage rule and acquisition construction; do not write a second one. The envelope must be byte-identical to the locked path's answer for the same state:
-   - message;
-   - payload `acquisition` (`reservation_id`, `coordination_run_id`, `phase_start_head`, kind);
-   - `session_mapping_publication`;
-   - exit code.
-2. **Every other case runs today's path unchanged.** That covers: no mapping, a single-active fallback without a mapping, a path not held, any conflict, a released or another run's reservation, and `Unconfigured`.
-3. **Model the outcome as a type** that the first decision returns, for example `CheckDecision` carrying `HeldBySelectedReservation(acquisition)` against `NeedsLockedDecision`. Do not add a boolean.
-4. **Concurrent holder observation (`reconcile.rs` `derive_merge_extents`).** Collect the distinct holder keys `(worktree, recorded target)` in today's first-seen order. Run `observe_merge_extent` for each on its own `std::thread::scope` thread, each with its own `MergeExtentGitCost`, and sum the costs afterwards. Then run the existing loop over the precomputed results. Operations, their order, `observed_by_holder`, `committed_by_holder` and the git cost totals stay identical. If a shared input is not `Sync`, fix that at the type rather than cloning per thread.
-5. **Proof tests first, each under 1 s.**
-   - (a) Integration (`tests/lifecycle.rs`):
-     - set up a second worktree with a live reservation, so merge observation is required;
-     - a session claims path P through `check`;
-     - the test process takes an exclusive `flock` on `<common git dir>/cargo-berth/mutation.lock` and holds it;
-     - the same session runs `check P --json`, which returns `clear` with the `AlreadyHeld` message and the same reservation id in well under 1 s;
-     - with the lock still held, `check Q` for an unheld Q does not answer before the lock is released. Assert that it blocks briefly or fails at the lock deadline, using any existing test deadline override.
-   - (b) Unit (`reconcile.rs` tests): derive merge extents for three live holders with an injected observer that waits on a `std::sync::Barrier` of three, under a timeout. If the observations run one after another, the barrier never fills and the test fails, so it proves they run concurrently. The observer is a generic or function parameter that production fills with `observe_merge_extent`. Keep it test-facing only, with no new public surface.
-6. **CHANGELOG.** Add one `### Fixed` line under `[Unreleased]`.
-7. **As-built doc.** Add a short "check under load" section to `docs/cargo-berth/as-built/hook-cost.md` with the measured numbers from Findings and the two changes.
+- `check` answers `clear` with an `AlreadyHeld` acquisition straight from the lock-free `EditCheckLedgerSnapshot`, before `reconcile_and_retry` and `acquire_first_touch`, when no conflict exists and the caller's selected reservation already covers every requested exact-file scope. No lock, no reconcile, no writes; the envelope (message, acquisition, `session_mapping_publication`, exit code) matches the locked path's answer for the same state.
+- The decision is a type: `CheckDecision` carries an acquisition from `selected_reservation_check_acquisition`, a `CheckAcquisitionDecision` built from the same helpers the locked path uses (`partition_first_touch_protected_scopes`, `already_held_acquisition`, `first_touch_acquisition`). Every other case (no mapping, unheld path, any conflict, released or foreign reservation, `Unconfigured`) takes the locked path.
+- `derive_merge_extents` collects distinct holder keys in first-seen order and observes each on its own `std::thread::scope` thread via `observe_holder_merge_extents`, each with its own `MergeExtentGitCost`; results fold in first-seen order and costs are summed. `derive_merge_extents_with_observer` injects the observer for a three-party `Barrier` unit test.
 
 **Files:**
-- `crates/cargo-berth/src/verb/check.rs` — fast path and its outcome type
-- `crates/cargo-berth/src/verb/claim/mod.rs` — expose the existing coverage rule and acquisition construction to `check` (crate-private)
-- `crates/cargo-berth/src/ledger/handle.rs` — snapshot accessors, if needed
-- `crates/cargo-berth/src/reconcile.rs` — concurrent observation, the injected observer, and the barrier unit test
-- `crates/cargo-berth/tests/lifecycle.rs` — the held-lock proof test
-- `crates/cargo-berth/CHANGELOG.md`, `docs/cargo-berth/as-built/hook-cost.md`
+- `crates/cargo-berth/src/verb/check.rs` — `CheckDecision` and the fast return
+- `crates/cargo-berth/src/verb/claim/mod.rs` — `CheckAcquisitionDecision`, `selected_reservation_check_acquisition` and the shared acquisition helpers
+- `crates/cargo-berth/src/ledger/handle.rs` — `EditCheckLedgerSnapshot` keeps the full `BerthConfig`
+- `crates/cargo-berth/src/reconcile.rs` — concurrent holder observation, the injectable observer, the barrier test
+- `crates/cargo-berth/tests/lifecycle.rs` — `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`
+- `docs/cargo-berth/as-built/hook-cost.md` — "Check under load" section; `crates/cargo-berth/CHANGELOG.md` — `### Fixed` line
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — `src/` files, the CHANGELOG and the as-built doc.
-- `test` — `tests/lifecycle.rs`. The barrier unit test lives in `src/reconcile.rs`; `impl` writes it.
+**Gotchas:**
+- An explicit `--reservation` other than the session's mapped one keeps the locked path, since remapping is a durable write.
+- The fast path reports marker and mapping publication as `published` without writing; that holds because the mapping already exists.
+- The spawn loop collects every handle before joining; clippy `needless_collect` rejects the map/collect form.
+- When check's locked reconcile fails at the lock deadline, it answers `blocked_by_overlap` exit 1 with no conflicts, not contention exit 6.
+- At a load average near 30 each holder's `git status` still costs about 10 ms, so the concurrency gain shows only under heavier load.
 
-**Acceptance gate:**
-- `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` are green, and every new test runs under 1 s.
-- The director re-runs the hana trace and records the before and after numbers.
-- The director installs on natedev and the Mac, then sends the showrunner the install notice.
-- The checkpoint carries `Change-Review:` for the fast answer and the concurrent statuses.
+**Ruled out:** a lock-free fast path for an explicit remap (needs a durable write); a new "already current" mapping-publication variant (`published` is already true).
 
-### Phase 7 — Robust tests  · status: pending
+### Phase 7 — Robust tests  · status: done
 
 **Depends on:** Phase 6
 
@@ -126,7 +98,7 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 **Spec:** Each test runs under 1 s.
 1. **The fast path declines when it should.**
-   - (a) A path held by a sibling phase reservation of the same run but not by the caller's mapped one goes to today's path (`left_unmapped` answer unchanged).
+   - (a) A path held by a sibling reservation of the same run but not by the caller's mapped one takes the fast path, and its answer equals the locked path's: `already_held` naming the mapped reservation, mapping `published`, nothing written. (The locked path answers `left_unmapped` only for an unmapped session, which (d) covers.)
    - (b) A tree scope partially covered goes to today's path.
    - (c) A conflict present in the snapshot goes to today's path and is refused as today.
    - (d) An unmapped session with one active run reservation goes to today's path.
@@ -136,8 +108,43 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 3. **The pre-tool-use hook takes the fast path.** A Claude Code `Edit` payload for a held path, while the test holds the lock, is allowed in under 1 s (`tests/hooks.rs`).
 4. **Concurrent reconcile output is unchanged.** Two holders on the same worktree with different targets, plus one holder whose observation fails (an unavailable worktree), give the same operations, order and cost counts as a serial reference computed in the test.
 
-**Files:** `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/src/reconcile.rs` (unit tests only).
+**Constraints from prior phases:**
+- The fast path is `claim::selected_reservation_check_acquisition` (`verb/claim/mod.rs`), returning `CheckAcquisitionDecision::HeldBySelectedReservation`; `check::execute` returns it before any reconcile. It reports `marker_publication` and `session_mapping_publication` as `published` without writing, because the mapping already names that reservation.
+- An explicit `--reservation` other than the one the session maps to returns `NeedsLockedDecision`; with no harness session, an explicit id takes the fast path when that reservation covers the scopes.
+- Holder observation runs through `derive_merge_extents_with_observer` (`reconcile.rs`), whose observer argument is the injection point for item 4. The spawn loop must collect every handle before joining.
+- Existing proof test: `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs`). Its unheld control asserts only a nonzero exit and a status that is not `clear`, because a check whose reconcile hits the lock deadline answers `blocked_by_overlap` (exit 1) today; phase 8 changes that answer.
 
-**Workers:** 1 tester (`test`); `impl` only for a defect the tests find.
+**Files:**
+- `crates/cargo-berth/tests/lifecycle.rs`
+- `crates/cargo-berth/tests/hooks.rs`
+- `crates/cargo-berth/src/reconcile.rs`
+
+**Workers:** 1 tester (`test`), which edits `reconcile.rs` only inside its `tests` module; `impl` only for a defect the tests find.
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` are green, and every new test runs under 1 s.
+
+### Phase 8 — A busy ledger answers as busy  · status: pending
+
+**Depends on:** Phase 7
+
+#### Work Order
+
+**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
+
+**Goal:** when `check`'s reconcile fails, the answer names the real failure, never an overlap with no holder.
+
+**Spec:** Each test runs under 1 s.
+1. In `crates/cargo-berth/src/verb/check.rs` `reconcile_and_retry`, the `Err(_)` arm returns `OutputEnvelope::blocked_check(fallback.scopes, fallback.conflicts, fallback.approver)`: a lock deadline reads as `blocked_by_overlap`, exit 1, with an empty conflict list. Replace it with the reconcile error's own answer, `ReconcileError::into_output(CommandVerb::Check)` (`reconcile.rs`), so a lock deadline answers `contention`, exit 6, with the busy diagnostic, and every other reconcile failure answers as that failure. Drop `fallback` if nothing else reads it.
+2. Tighten `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`'s unheld control (`tests/lifecycle.rs`) to status `contention` and exit 6.
+3. Add a test that the pre-tool-use hook (`tests/hooks.rs`), given a check that answers `contention`, tells the writer the ledger was busy and names no holder.
+4. CHANGELOG `Fixed` line: a busy ledger during an edit check now answers as busy, not as an overlap.
+
+**Files:**
+- `crates/cargo-berth/src/verb/check.rs`
+- `crates/cargo-berth/tests/lifecycle.rs`
+- `crates/cargo-berth/tests/hooks.rs`
+- `crates/cargo-berth/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester. `impl` owns `src/` and `CHANGELOG.md`; `test` owns `tests/`.
+
+**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` are green, and every new test runs under 1 s. After the checkpoint, install on natedev and the Mac.

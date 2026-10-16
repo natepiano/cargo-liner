@@ -208,6 +208,49 @@ fn silent_allow_emits_nothing() -> TestResult {
 }
 
 #[test]
+fn pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held() -> TestResult {
+    let repository = initialized_repository()?;
+    let root = repository.path();
+    let claimed = run_berth_with_claude_code_session(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "locked-edit-session",
+    )?;
+    require_success(&claimed, "claim the edit path")?;
+    let journal = journal_events(root)?;
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH))?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .open(root.join(MUTATION_LOCK_PATH))?;
+    lock.try_lock()?;
+    let payload = edit_payload(root, "held.rs", Some("locked-edit-session"));
+    let started = Instant::now();
+    let mut child = berth_command(BERTH_EXECUTABLE)
+        .args(["hook", "pre-tool-use"])
+        .current_dir(root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin"))?
+        .write_all(&serde_json::to_vec(&payload)?)?;
+    let output = child.wait_with_output()?;
+    assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
+    assert_hook_output(&output, 0, b"", b"")?;
+    assert_eq!(journal_events(root)?, journal);
+    assert_eq!(fs::read(root.join(SESSION_MAPPING_PATH))?, mappings);
+    Ok(())
+}
+
+#[test]
 fn pre_tool_use_under_an_unmapped_session_joins_the_only_active_reservation() -> TestResult {
     let repository = initialized_repository()?;
     let root = repository.path();

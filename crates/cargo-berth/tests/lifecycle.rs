@@ -1473,6 +1473,294 @@ fn a_session_checks_its_held_path_without_waiting_for_the_mutation_lock() {
     std::mem::drop(lock_file);
 }
 
+/// Run a check while this process owns the lock; the short deadline also bounds regressions.
+fn check_at_held_mutation_lock(root: &Path, arguments: &[&str], session: &str) -> Output {
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(root.join(LOCK_PATH))
+        .expect("mutation lock should open");
+    lock.try_lock()
+        .expect("fixture should own the mutation lock");
+    let started = Instant::now();
+    let output = berth_command(BERTH_EXECUTABLE)
+        .args(arguments)
+        .current_dir(root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session)
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .output()
+        .expect("check should finish at its short deadline");
+    assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
+    output
+}
+
+#[test]
+fn fast_path_answers_sibling_coverage_as_the_locked_path_does() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    assert_success(&run_berth_with_session(
+        root,
+        &["claim", "file:sibling.rs", "--json"],
+        "older",
+    ));
+    let mapped = run_berth_with_session(root, &["claim", "file:mapped.rs", "--json"], "newer");
+    assert_success(&mapped);
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
+    let journal = journal_events(root);
+    let fast = check_at_held_mutation_lock(root, &["check", "file:sibling.rs", "--json"], "newer");
+    assert_success(&fast);
+    // The locked path's answer for a mapped session: its own reservation, mapping published.
+    let acquisition = &json_output(&fast)["payload"]["data"]["acquisition"];
+    assert_eq!(acquisition["kind"], "already_held");
+    assert_eq!(acquisition["reservation_id"], reservation_id(&mapped));
+    assert_eq!(acquisition["marker_publication"]["status"], "published");
+    assert_eq!(
+        acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert_eq!(journal_events(root), journal);
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"),
+        mappings
+    );
+}
+
+#[test]
+fn fast_path_declines_a_partially_covered_tree() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    assert_success(&run_berth_with_session(
+        root,
+        &["check", "file:src/held.rs", "--json"],
+        "tree-session",
+    ));
+    let contended =
+        check_at_held_mutation_lock(root, &["check", "tree:src", "--json"], "tree-session");
+    assert!(
+        !contended.status.success(),
+        "a held child does not cover the tree: {}",
+        json_output(&contended)
+    );
+    let checked = run_berth_with_session(root, &["check", "tree:src", "--json"], "tree-session");
+    assert_success(&checked);
+    assert_eq!(
+        json_output(&checked)["payload"]["data"]["acquisition"]["kind"],
+        "widened"
+    );
+}
+
+#[test]
+fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    assert_success(&run_berth_with_session(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "conflict-session",
+    ));
+    let (_directory, foreign) = foreign_worktree(&repository, "conflicting-holder");
+    let holder = claim(&foreign, "file:foreign.rs", SECOND_RUN);
+    assert_success(&holder);
+    fs::write(foreign.join("held.rs"), "foreign dirty work\n").expect("dirty foreign path");
+    assert_success(&run_berth(root, &["board", "--json"]));
+    let before = journal_events(root);
+    let checked = run_berth_with_session(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "conflict-session",
+    );
+    assert_eq!(checked.status.code(), Some(1));
+    let envelope = json_output(&checked);
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(
+        envelope["payload"]["data"]["conflicts"][0]["reservation_id"],
+        reservation_id(&holder)
+    );
+    assert_eq!(
+        journal_events(root),
+        before,
+        "refusal must not widen or append"
+    );
+}
+
+#[test]
+fn fast_path_declines_an_unmapped_session_with_one_active_reservation() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    assert_success(&run_berth_with_session(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "incumbent",
+    ));
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
+    let contended =
+        check_at_held_mutation_lock(root, &["check", "file:held.rs", "--json"], "unmapped");
+    assert!(
+        !contended.status.success(),
+        "an unmapped caller must lock: {}",
+        json_output(&contended)
+    );
+    let checked = run_berth_with_session(root, &["check", "file:held.rs", "--json"], "unmapped");
+    assert_success(&checked);
+    let acquisition = &json_output(&checked)["payload"]["data"]["acquisition"];
+    assert_eq!(acquisition["kind"], "already_held");
+    assert_eq!(
+        acquisition["session_mapping_publication"]["status"],
+        "left_unmapped"
+    );
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"),
+        mappings
+    );
+}
+
+#[test]
+fn fast_path_explicit_selection_reuses_its_mapping_but_locks_before_remapping() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let first = run_berth_with_session(
+        root,
+        &["claim", "file:first.rs", "--json"],
+        "explicit-session",
+    );
+    assert_success(&first);
+    let first_id = reservation_id(&first);
+    let second = run_berth_with_session(
+        root,
+        &["claim", "file:second.rs", "--json"],
+        "other-session",
+    );
+    assert_success(&second);
+    let second_id = reservation_id(&second);
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
+    let events = journal_events(root);
+    let held = check_at_held_mutation_lock(
+        root,
+        &[
+            "check",
+            "--reservation",
+            &first_id,
+            "file:first.rs",
+            "--json",
+        ],
+        "explicit-session",
+    );
+    assert_success(&held);
+    assert_eq!(
+        json_output(&held)["payload"]["data"]["acquisition"]["reservation_id"],
+        first_id
+    );
+    let contended = check_at_held_mutation_lock(
+        root,
+        &[
+            "check",
+            "--reservation",
+            &second_id,
+            "file:second.rs",
+            "--json",
+        ],
+        "explicit-session",
+    );
+    assert!(
+        !contended.status.success(),
+        "an explicit switch must lock: {}",
+        json_output(&contended)
+    );
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"),
+        mappings
+    );
+    assert_eq!(journal_events(root), events);
+    let remapped = run_berth_with_session(
+        root,
+        &[
+            "check",
+            "--reservation",
+            &second_id,
+            "file:second.rs",
+            "--json",
+        ],
+        "explicit-session",
+    );
+    assert_success(&remapped);
+    let mappings: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"))
+            .expect("mapping JSON");
+    assert_eq!(
+        mappings["identities"]["explicit-session"]["reservation_id"],
+        second_id
+    );
+}
+
+#[test]
+fn fast_path_declines_a_released_session_mapping() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let claimed = run_berth_with_session(
+        root,
+        &["claim", "file:held.rs", "--json"],
+        "released-session",
+    );
+    assert_success(&claimed);
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
+    assert_success(&run_berth(
+        root,
+        &["release", &reservation_id(&claimed), "--json"],
+    ));
+    fs::write(root.join(SESSION_MAPPING_PATH), mappings).expect("restore stale mapping");
+    let checked = check_at_held_mutation_lock(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "released-session",
+    );
+    assert!(
+        !checked.status.success(),
+        "released work cannot authorize a fast answer: {}",
+        json_output(&checked)
+    );
+    assert_ne!(json_output(&checked)["status"], "clear");
+}
+
+#[test]
+fn fast_path_envelope_equals_the_locked_already_held_answer() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let claimed = run_berth_with_session(root, &["claim", "file:held.rs", "--json"], "owner");
+    assert_success(&claimed);
+    let id = reservation_id(&claimed);
+    let arguments = ["check", "--reservation", &id, "file:held.rs", "--json"];
+    // With no mapping, this explicit selection must lock to publish the comparison session.
+    let contended = check_at_held_mutation_lock(root, &arguments, "comparison-session");
+    assert!(
+        !contended.status.success(),
+        "the reference invocation must require the lock"
+    );
+    let locked = run_berth_with_session(root, &arguments, "comparison-session");
+    assert_success(&locked);
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
+    let journal = journal_events(root);
+    let fast = check_at_held_mutation_lock(root, &arguments, "comparison-session");
+    assert_success(&fast);
+    let locked_json = json_output(&locked);
+    let fast_json = json_output(&fast);
+    assert_eq!(
+        locked_json["payload"]["data"]["acquisition"]["kind"],
+        "already_held"
+    );
+    // The same retained reservation is used, so no generated ids need normalization.
+    for (field, value) in locked_json.as_object().expect("envelope") {
+        assert_eq!(&fast_json[field], value, "envelope field {field}");
+    }
+    assert_eq!(fast_json, locked_json, "no extra fields may appear");
+    assert_eq!(fast.status.code(), locked.status.code());
+    assert_eq!(journal_events(root), journal);
+    assert_eq!(
+        fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"),
+        mappings
+    );
+}
+
 #[test]
 fn lock_contention_is_retryable_while_corrupt_journal_is_unreadable() {
     let repository = initialized_repository();
