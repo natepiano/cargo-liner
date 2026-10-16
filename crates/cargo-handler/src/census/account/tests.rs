@@ -26,8 +26,10 @@ use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::ThreadState;
 use crate::census::classify::ProcessEntry;
 use crate::census::probe;
+use crate::census::worker_dispatch::WorkerDispatch;
 use crate::config::AccountsConfig;
 
 /// The machine home used by account fixtures, independent of the test runner.
@@ -376,6 +378,8 @@ fn a_schema_three_probe_without_accounts_keeps_them_unrecorded() {
 fn child_row(kind: ChildKind, account: Account) -> ChildRow {
     ChildRow {
         thread_id: CodexThreadId::Unrecorded,
+        dispatch: WorkerDispatch::Plain,
+        thread_state: ThreadState::Idle,
         depth: 0,
         kind,
         service_tier: ServiceTier::Unrecorded,

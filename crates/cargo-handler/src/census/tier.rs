@@ -24,6 +24,7 @@ use chrono::DateTime;
 use serde::Deserialize;
 
 use super::ServiceTier;
+use super::ThreadState;
 use crate::constants::CODEX_CONFIG_FLAGS;
 use crate::constants::CODEX_CONFIG_PREFIX;
 use crate::constants::CODEX_EVENT_LINE;
@@ -34,13 +35,15 @@ use crate::constants::CODEX_THREAD_SETTINGS_EVENT;
 /// What one rollout holds, read up to [`RolloutRead::read_to`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct RolloutRead {
+    /// The activity named by the last complete turn event.
+    pub(super) thread_state: ThreadState,
     /// The offset just past the last whole line read.
-    read_to:          u64,
+    read_to:                 u64,
     /// When the thread began, in unix seconds, from its `session_meta`
     /// line; none before that line is written whole.
-    pub(super) began: Option<u64>,
+    pub(super) began:        Option<u64>,
     /// The tier the last `thread_settings_applied` event names.
-    service_tier:     ServiceTier,
+    service_tier:            ServiceTier,
 }
 
 impl RolloutRead {
@@ -79,8 +82,16 @@ impl RolloutRead {
     /// `thread_settings_applied` event.
     fn take(&mut self, line: &[u8]) {
         let first = self.read_to == 0;
-        let event =
-            std::str::from_utf8(line).is_ok_and(|text| text.contains(CODEX_THREAD_SETTINGS_EVENT));
+        let event = std::str::from_utf8(line).is_ok_and(|text| {
+            [
+                CODEX_THREAD_SETTINGS_EVENT,
+                "task_started",
+                "task_complete",
+                "turn_aborted",
+            ]
+            .iter()
+            .any(|kind| text.contains(kind))
+        });
         if !first && !event {
             return;
         }
@@ -95,9 +106,15 @@ impl RolloutRead {
                 .or(parsed.timestamp.as_deref())
                 .and_then(unix_seconds);
         }
-        if parsed.kind == CODEX_EVENT_LINE
-            && parsed.payload.kind.as_deref() == Some(CODEX_THREAD_SETTINGS_EVENT)
-        {
+        if parsed.kind != CODEX_EVENT_LINE {
+            return;
+        }
+        match parsed.payload.kind.as_deref() {
+            Some("task_started") => self.thread_state = ThreadState::Busy,
+            Some("task_complete" | "turn_aborted") => self.thread_state = ThreadState::Idle,
+            _ => {},
+        }
+        if parsed.payload.kind.as_deref() == Some(CODEX_THREAD_SETTINGS_EVENT) {
             self.service_tier = parsed
                 .payload
                 .thread_settings
