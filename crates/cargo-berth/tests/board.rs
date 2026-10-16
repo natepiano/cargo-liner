@@ -523,6 +523,94 @@ fn populated_board_json_leaves_the_complete_board_to_its_payload() {
 }
 
 #[test]
+fn board_names_an_outstanding_phases_dirty_paths_after_its_sibling_settles() {
+    assert_board_retains_pending_phase(PendingPhaseWork::Dirty);
+}
+
+#[test]
+fn board_keeps_an_outstanding_phases_unmerged_commit_after_its_sibling_settles() {
+    assert_board_retains_pending_phase(PendingPhaseWork::Committed);
+}
+
+/// The pending phase either still has working-tree changes or has committed them off trunk.
+#[derive(Clone, Copy)]
+enum PendingPhaseWork {
+    Dirty,
+    Committed,
+}
+
+fn assert_board_retains_pending_phase(work: PendingPhaseWork) {
+    let repository = initialized_repository();
+    let trunk = repository.path();
+    let (_holder_directory, holder) = foreign_worktree(&repository, "board-parallel-phases");
+    let mut phase_ids = Vec::new();
+    for (scope, session) in [
+        ("file:a.rs", "dir-sid.phase-1"),
+        ("file:b.rs", "dir-sid.phase-2"),
+    ] {
+        let claimed = berth_command(BERTH_EXECUTABLE)
+            .args(["claim", scope, "--json"])
+            .current_dir(&holder)
+            .env_remove("CARGO_BERTH_RUN")
+            .env("CARGO_BERTH_SESSION_ID", session)
+            .output()
+            .expect("phase claim should run");
+        assert_success(&claimed);
+        phase_ids.push(reservation_id(&claimed));
+    }
+    let first = &phase_ids[0];
+    let second = &phase_ids[1];
+    fs::write(holder.join("a.rs"), "// first phase work\n").expect("first phase source");
+    fs::write(holder.join("b.rs"), "// second phase work\n").expect("second phase source");
+    git(&holder, &["add", "a.rs"]);
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "first phase"]);
+    for id in [first, second] {
+        let checkpoint = run_berth(&holder, &["release", id, "--json"]);
+        assert_success(&checkpoint);
+        assert_eq!(
+            json(&checkpoint)["payload"]["data"]["status"],
+            "checkpointed"
+        );
+    }
+    GIT.run_without_hooks(
+        trunk,
+        ["merge", "--quiet", "--ff-only", "board-parallel-phases"],
+    );
+    if matches!(work, PendingPhaseWork::Committed) {
+        git(&holder, &["add", "b.rs"]);
+        GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "second phase"]);
+    }
+
+    let data = board_data(trunk);
+    let integrated = board_reservation_snapshot(&data, first);
+    assert_eq!(integrated["lifecycle"]["stage"], "released", "{data}");
+    assert_eq!(integrated["lifecycle"]["disposition"]["kind"], "integrated");
+    let pending = board_reservation_snapshot(&data, second);
+    assert_eq!(pending["lifecycle"]["stage"], "outstanding", "{data}");
+    assert_eq!(
+        pending["integration_evidence"]["status"]["status"],
+        "not_integrated"
+    );
+    assert_eq!(pending["edit_blocking_status"], "blocking");
+    let expected_paths = serde_json::json!([{"kind": "file", "path": "b.rs"}]);
+    assert_eq!(pending["merge_extent"]["status"], "protected");
+    assert_eq!(pending["merge_extent"]["scopes"], expected_paths);
+    let (report, presentation) = reservation_report_and_presentation(trunk, second);
+    assert_eq!(report["lifecycle"]["status"], "outstanding");
+    assert_eq!(report["race_extent"]["status"], "ended");
+    assert_eq!(report["merge_extent"]["scopes"], expected_paths);
+    assert_eq!(presentation[MERGE_EXTENT_LABEL]["scopes"], expected_paths);
+    let events = fs::read_to_string(trunk.join(JOURNAL_PATH)).expect("phase journal");
+    assert!(
+        !events.lines().any(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("journal event");
+            event["op"] == "release" && event["reservation_id"] == *second
+        }),
+        "board reconciliation must retain pending own work"
+    );
+}
+
+#[test]
 fn waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold() {
     let fixture = ordered_fixture();
     fs::write(

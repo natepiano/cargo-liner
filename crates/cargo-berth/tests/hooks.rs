@@ -369,6 +369,77 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn pre_tool_use_names_only_the_outstanding_phases_pending_path_after_a_sibling_merges() -> TestResult
+{
+    let repository = committed_configuration_repository()?;
+    let (_holder_directory, holder_root) = add_worktree(&repository, "parallel-holder")?;
+    let first = run_berth_with_session(
+        &holder_root,
+        &["claim", "file:a.rs", "--json"],
+        "dir-sid.phase-1",
+    )?;
+    require_success(&first, "first phase claim")?;
+    let first_id = claimed_reservation_id(&first)?;
+    let second = run_berth_with_session(
+        &holder_root,
+        &["claim", "file:b.rs", "--json"],
+        "dir-sid.phase-2",
+    )?;
+    require_success(&second, "second phase claim")?;
+    let second_id = claimed_reservation_id(&second)?;
+    dirty_source(&holder_root, "a.rs")?;
+    dirty_source(&holder_root, "b.rs")?;
+    run_git(&holder_root, &["add", "a.rs"])?;
+    GIT.run_without_hooks(&holder_root, ["commit", "--quiet", "-m", "first phase"]);
+    for (id, session, path) in [
+        (&first_id, "dir-sid.phase-1", "a.rs"),
+        (&second_id, "dir-sid.phase-2", "b.rs"),
+    ] {
+        let checkpoint = run_berth_with_session(&holder_root, &["release", id, "--json"], session)?;
+        require_success(&checkpoint, "phase checkpoint")?;
+        let checkpoint = json_output(&checkpoint)?;
+        assert_eq!(checkpoint["status"], "outstanding", "{checkpoint}");
+        assert_eq!(checkpoint["payload"]["data"]["status"], "checkpointed");
+        assert_eq!(
+            checkpoint["payload"]["data"]["pending_paths"],
+            serde_json::json!([path])
+        );
+        assert!(required_string(&checkpoint, "/message", "checkpoint")?.contains(path));
+    }
+    GIT.run_without_hooks(
+        repository.path(),
+        ["merge", "--quiet", "--ff-only", "parallel-holder"],
+    );
+    let (_requester_directory, requester_root) = add_worktree(&repository, "parallel-requester")?;
+
+    let refused = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "b.rs", Some("pending-phase-observer")),
+    )?;
+
+    assert_refused_for_scope(&refused, "file:b.rs", "outstanding phase's pending path")?;
+    let refusal = String::from_utf8(refused.stderr)?;
+    assert!(refusal.contains(&second_id), "{refusal}");
+    assert!(!refusal.contains(&first_id), "{refusal}");
+    assert!(!refusal.contains("file:a.rs"), "{refusal}");
+    let board = run_berth(
+        repository.path(),
+        &["board", "--reservation", &second_id, "--json"],
+    )?;
+    require_success(&board, "pending phase board report")?;
+    assert_eq!(
+        json_output(&board)?["payload"]["data"]["lifecycle"]["status"],
+        "outstanding"
+    );
+    let allowed = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "a.rs", Some("pending-phase-observer")),
+    )?;
+    require_success(&allowed, "integrated sibling's path is editable")?;
+    Ok(())
+}
+
 /// A second run reaches the incumbent's paths as a writer, and the pre-edit hook refuses it.
 ///
 /// The occupancy rule refuses this run a reservation of its own before any overlap is

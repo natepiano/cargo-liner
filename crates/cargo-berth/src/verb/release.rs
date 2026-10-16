@@ -529,6 +529,7 @@ fn checkpoint_operation(
             reservation_id,
             protected_tip: protected_tip.clone(),
             trunk_oid,
+            pending_paths: CheckpointPendingPaths::from(release_repository_context.merge_extent),
         },
         reservation_id,
         protected_tip,
@@ -1050,6 +1051,30 @@ impl ReleasePayloadPreparation {
     }
 }
 
+/// Whether checkpointing has a current observation of the reservation's pending work.
+enum CheckpointPendingPaths {
+    /// An observed empty extent has no pending paths; a protected extent names every path.
+    Observed(Vec<ReservationScopePath>),
+    /// An acquisition declaration or retained observation cannot describe current pending work.
+    Unavailable,
+}
+
+impl From<&MergeExtent> for CheckpointPendingPaths {
+    fn from(extent: &MergeExtent) -> Self {
+        match extent {
+            MergeExtent::Protected { scopes, .. } => Self::Observed(
+                scopes
+                    .as_slice()
+                    .iter()
+                    .map(|scope| scope.path.clone())
+                    .collect(),
+            ),
+            MergeExtent::Empty { .. } => Self::Observed(Vec::new()),
+            MergeExtent::NotDerived { .. } | MergeExtent::Unavailable { .. } => Self::Unavailable,
+        }
+    }
+}
+
 enum ReleasePayloadSeed {
     Outstanding {
         reservation_id: ReservationId,
@@ -1059,6 +1084,7 @@ enum ReleasePayloadSeed {
         reservation_id: ReservationId,
         protected_tip:  ProtectedReservationTip,
         trunk_oid:      GitObjectId,
+        pending_paths:  CheckpointPendingPaths,
     },
     Resnapshotted {
         pending_paths:  Vec<ReservationScopePath>,
@@ -1100,12 +1126,25 @@ impl ReleasePayloadSeed {
                 reservation_id,
                 protected_tip,
                 trunk_oid,
-            } => ReleasePayload::Checkpointed {
-                reservation_id,
-                protected_tip,
-                trunk_oid,
-                marker,
-                session_mapping_publication,
+                pending_paths,
+            } => match pending_paths {
+                CheckpointPendingPaths::Observed(pending_paths) => ReleasePayload::Checkpointed {
+                    reservation_id,
+                    protected_tip,
+                    trunk_oid,
+                    pending_paths,
+                    marker,
+                    session_mapping_publication,
+                },
+                CheckpointPendingPaths::Unavailable => {
+                    ReleasePayload::CheckpointedPendingPathsUnavailable {
+                        reservation_id,
+                        protected_tip,
+                        trunk_oid,
+                        marker,
+                        session_mapping_publication,
+                    }
+                },
             },
             Self::Resnapshotted {
                 pending_paths,
@@ -1275,6 +1314,9 @@ mod tests {
     use std::cell::Cell;
     use std::error::Error;
 
+    use serde_json::Value;
+
+    use super::CheckpointPendingPaths;
     use super::ReleasePayloadSeed;
     use super::ReleaseRetentionPlan;
     use super::integrated_release_operation;
@@ -1284,12 +1326,81 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
     use crate::ledger::ReleaseSource;
+    use crate::output::CoordinationRunMarkerRetirement;
+    use crate::output::OutputEnvelope;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
+    use crate::reservation::MergeExtent;
     use crate::reservation::ProtectedReservationTip;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::session::SessionIdentityMappingPublication;
+
+    #[test]
+    fn checkpoint_paths_distinguish_fresh_observations_from_unavailable_extents()
+    -> Result<(), Box<dyn Error>> {
+        let key = serde_json::json!({
+            "trunk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "working_tree": {"tracked_paths": [], "untracked_paths": []},
+        });
+        let declaration = serde_json::json!({
+            "status": "not_derived",
+            "protection": [{"kind": "file", "path": "pending.rs"}],
+        });
+        let protected = serde_json::json!({
+            "status": "protected", "key": key,
+            "scopes": [{"kind": "file", "path": "pending.rs"}],
+        });
+        let empty = serde_json::json!({"status": "empty", "key": key});
+        let unavailable = |retained| {
+            serde_json::json!({
+                "status": "unavailable", "retained_evidence": retained, "failure": "git unavailable",
+            })
+        };
+        for (extent, expected_paths) in [
+            (declaration.clone(), Value::Null),
+            (unavailable(declaration), Value::Null),
+            (unavailable(protected.clone()), Value::Null),
+            (unavailable(empty.clone()), Value::Null),
+            (empty, serde_json::json!([])),
+            (protected, serde_json::json!(["pending.rs"])),
+        ] {
+            let extent: MergeExtent = serde_json::from_value(extent)?;
+            let payload = ReleasePayloadSeed::Checkpointed {
+                reservation_id: ReservationId::new(),
+                protected_tip:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse()?,
+                trunk_oid:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
+                pending_paths:  CheckpointPendingPaths::from(&extent),
+            }
+            .into_payload(
+                CoordinationRunMarkerRetirement::AlreadyAbsent,
+                SessionIdentityMappingPublication::Published,
+            );
+            let envelope = serde_json::to_value(OutputEnvelope::released(payload))?;
+            let data = &envelope["payload"]["data"];
+            assert_eq!(envelope["status"], "outstanding");
+            assert_eq!(data["pending_paths"], expected_paths);
+            if expected_paths.is_null() {
+                assert_eq!(data["status"], "checkpointed_pending_paths_unavailable");
+                assert!(data.get("pending_paths").is_none());
+                assert!(
+                    envelope["message"]
+                        .as_str()
+                        .is_some_and(|message| message.ends_with("; pending paths unavailable."))
+                );
+            } else {
+                assert_eq!(data["status"], "checkpointed");
+                assert!(
+                    !envelope["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("unavailable"))
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn empty_extent_release_retains_the_historical_witness_in_its_disposition_and_action()

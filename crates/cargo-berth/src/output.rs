@@ -1538,6 +1538,22 @@ pub(crate) enum ReleasePayload {
     },
     /// An active reservation recorded its first protected checkpoint.
     Checkpointed {
+        /// Paths observed to contain uncommitted or unintegrated work.
+        pending_paths:               Vec<ReservationScopePath>,
+        /// The reservation that changed state.
+        reservation_id:              ReservationId,
+        /// The fixed commit retained for integration checks.
+        protected_tip:               ProtectedReservationTip,
+        /// The integration-target commit observed at checkpoint.
+        #[schemars(with = "String")]
+        trunk_oid:                   GitObjectId,
+        /// What happened to the worktree coordination-run marker.
+        marker:                      CoordinationRunMarkerRetirement,
+        /// Whether the harness session mapping retired this reservation.
+        session_mapping_publication: SessionIdentityMappingPublication,
+    },
+    /// An active reservation checkpointed without a fresh observation of its pending paths.
+    CheckpointedPendingPathsUnavailable {
         /// The reservation that changed state.
         reservation_id:              ReservationId,
         /// The fixed commit retained for integration checks.
@@ -1601,6 +1617,7 @@ impl ReleasePayload {
             Self::Outstanding { reservation_id, .. }
             | Self::TargetUncovered { reservation_id, .. }
             | Self::Checkpointed { reservation_id, .. }
+            | Self::CheckpointedPendingPathsUnavailable { reservation_id, .. }
             | Self::Resnapshotted { reservation_id, .. }
             | Self::EvidenceRevalidated { reservation_id, .. }
             | Self::AlreadySettled { reservation_id, .. }
@@ -1613,6 +1630,7 @@ impl ReleasePayload {
             Self::Outstanding { .. }
             | Self::TargetUncovered { .. }
             | Self::Checkpointed { .. }
+            | Self::CheckpointedPendingPathsUnavailable { .. }
             | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
             Self::EvidenceRevalidated { evidence, .. } | Self::AlreadySettled { evidence, .. } => {
                 integration_evidence_status(evidence)
@@ -2942,11 +2960,22 @@ impl OutputEnvelope {
             ),
             ReleasePayload::Checkpointed {
                 protected_tip,
+                pending_paths,
+                session_mapping_publication,
+                ..
+            } => checkpoint_release_message(
+                reservation_id,
+                protected_tip,
+                pending_paths,
+                session_mapping_publication,
+            ),
+            ReleasePayload::CheckpointedPendingPathsUnavailable {
+                protected_tip,
                 session_mapping_publication,
                 ..
             } => message_with_session_mapping_publication(
                 format!(
-                    "Reservation {reservation_id} is outstanding at protected tip {protected_tip}."
+                    "Reservation {reservation_id} is outstanding at protected tip {protected_tip}; pending paths unavailable."
                 ),
                 session_mapping_publication,
             ),
@@ -4214,6 +4243,27 @@ fn overlap_holder_description(conflicts: &[ReservationConflict]) -> String {
             )
         },
     }
+}
+
+fn checkpoint_release_message(
+    reservation_id: ReservationId,
+    protected_tip: &ProtectedReservationTip,
+    pending_paths: &[ReservationScopePath],
+    session_mapping_publication: &SessionIdentityMappingPublication,
+) -> String {
+    let checkpoint = if pending_paths.is_empty() {
+        format!("Reservation {reservation_id} is outstanding at protected tip {protected_tip}.")
+    } else {
+        format!(
+            "Reservation {reservation_id} is outstanding at protected tip {protected_tip}; pending paths: {}.",
+            pending_paths
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    message_with_session_mapping_publication(checkpoint, session_mapping_publication)
 }
 
 fn message_with_session_mapping_publication(

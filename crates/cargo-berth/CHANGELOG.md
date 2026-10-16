@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The checkpointing release now names the phase's pending paths, including dirty files and committed work not yet in its integration target.
+
 - A phase reservation stays outstanding while its own paths contain uncommitted or unmerged work. A release after the merge finishes in one call.
 
 - A busy ledger during an edit check now answers as busy instead of reporting an overlap with no holder.

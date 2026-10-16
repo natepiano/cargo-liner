@@ -736,10 +736,22 @@ fn stored_integrated_evidence_is_revalidated_before_release() {
         repository.path(),
         &["reset", "--hard", "--quiet", INITIAL_COMMIT_TAG],
     );
+    let releases_before_revalidation = journal_events(repository.path())
+        .iter()
+        .filter(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
+        .count();
     let rewritten = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     let rewritten_json = json_output(&rewritten);
 
     assert_eq!(rewritten_json["status"], "trunk_rewritten");
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
+            .count(),
+        releases_before_revalidation,
+        "changed evidence must not append a second settlement"
+    );
     assert_eq!(
         rewritten_json["payload"]["data"]["status"],
         "evidence_revalidated"

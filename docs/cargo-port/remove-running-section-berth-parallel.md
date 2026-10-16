@@ -110,7 +110,7 @@ Mapped 2026-10-16 at `834cffba` (main).
 - A board deserialized from JSON carries no session identity and shows `unavailable`.
 - The raw `git_cost`/`journal_position` JSON still sits below the table; the TUI model rebuild next item removes it.
 
-### Phase 11 — The checkpoint names pending paths, and robust tests  · status: todo
+### Phase 11 — The checkpoint names pending paths, and robust tests  · status: done
 
 **Depends on:** Phase 9
 

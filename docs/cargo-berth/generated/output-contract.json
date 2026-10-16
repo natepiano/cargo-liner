@@ -9342,6 +9342,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths observed to contain uncommitted or unintegrated work.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The fixed commit retained for integration checks."
@@ -9356,6 +9363,45 @@
                 },
                 "status": {
                   "const": "checkpointed",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed at checkpoint.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An active reservation checkpointed without a fresh observation of its pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The fixed commit retained for integration checks."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping retired this reservation."
+                },
+                "status": {
+                  "const": "checkpointed_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
@@ -16517,6 +16563,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths observed to contain uncommitted or unintegrated work.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The fixed commit retained for integration checks."
@@ -16531,6 +16584,45 @@
                 },
                 "status": {
                   "const": "checkpointed",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed at checkpoint.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An active reservation checkpointed without a fresh observation of its pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The fixed commit retained for integration checks."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping retired this reservation."
+                },
+                "status": {
+                  "const": "checkpointed_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
