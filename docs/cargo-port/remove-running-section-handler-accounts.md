@@ -143,7 +143,7 @@ FULL VIEW:
 
 **Ruled out:** `LineSubject::Work(&ChildRow)` (any `ChildKind` could reach it; `WorkKind` limits work to three kinds); `ServiceTier::mark(&str)` with string compares to recover `'static`; a flush-right tree in the compressed view; measuring labels by terminal display width (ASCII labels, crate-wide convention).
 
-### Phase 3 — Live check  · status: todo
+### Phase 3 — Live check  · status: done
 
 **Depends on:** Phase 2
 
@@ -170,3 +170,14 @@ FULL VIEW:
 - Phase 2: both views keep `SECTION_HEADER_INDENT` on the left and before the right border. The full view is chosen only when every name fits whole and its rows fit the tile's height; otherwise the compressed view cuts names in the `session` column. At very narrow widths the compressed view narrows the gaps between columns below two cells.
 
 **Acceptance gate:** shots of both views show every check in Spec item 3 with natedev's and the Mac's labels correct, and the showrunner has the shots.
+
+**Result (2026-10-16):** passed. Both machines run the checkpoint binary (36baad81). The `[accounts]` tables are natedev `"~/.claude" = "claude2"`, `"~/.codex" = "codex2"`; and the Mac `"~/.claude" = "claude2"` (its label file reads `claude 2`), `"~/.codex" = "codex2"` (the same Codex login as natedev's `~/.codex`). The captures ran natedev's installed binary with a scratch config that adds `mac` to `[machines] remote`, because natedev's own config lists no remote. The shots are at 429×90 (the hanadocs tile in the full view), 200×60 (the compressed view) and 700×140 (full-view work lines). Every Spec 3 check holds:
+- The header row is drawn in the label color (`96beb4`, the same as the summary's column headers).
+- `session` lines up over the top-level names.
+- Units and workers read `claude4`, `codex1` and `claude1` as their agents run, and the Mac's Codex rows read `codex2`.
+- The header line and the summary's `agent` column read the labels.
+- Shell, subagent and thread lines read `—` in `account` (and in `branch` and `directory` in the full view).
+- There is one blank column before the right border.
+- No list is drawn below the tree.
+
+Two things in the shots come from code outside this plan: the `content rows: N  r/c: …` readout at each tile's foot (from tui_pane) and the `codex1 --` standard-tier mark. A long tree, such as the hana tile's, is cut at the tile's foot; that is the overflow work, which is on hold.
