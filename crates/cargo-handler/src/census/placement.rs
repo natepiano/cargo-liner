@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+#[cfg(test)]
+use super::Account;
 use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
@@ -11,6 +13,10 @@ use super::HierarchyEdge;
 use super::HierarchyRole;
 use super::Machine;
 use super::SessionIdentity;
+#[cfg(test)]
+use super::account::AccountLabels;
+#[cfg(test)]
+use super::account::ConfigHome;
 #[cfg(test)]
 use super::classify;
 #[cfg(test)]
@@ -73,6 +79,14 @@ pub(crate) enum RoleLabel {
 }
 
 impl RoleLabel {
+    /// The role column of an agent line, including an unlabeled session.
+    pub(crate) const fn column_text(self) -> &'static str {
+        match self {
+            Self::Unlabeled => "session",
+            Self::Stated(role) | Self::Inferred(role) => role.text(),
+        }
+    }
+
     /// A suffix for the agent's name; `RoleLabel::Unlabeled` has none.
     pub(crate) fn suffix(self) -> String {
         match self {
@@ -435,6 +449,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         started: u64::from(pid),
         arguments: arguments.iter().map(|arg| (*arg).to_string()).collect(),
         directory: None,
+        config_home: ConfigHome::Unread,
         claude_pid: None,
     };
     let manager_processes = [process(10, 1, "claude", &["claude"])];
@@ -446,7 +461,13 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         status:     Some("busy".to_string()),
         entrypoint: None,
     }];
-    let manager_rows = classify::agent_rows(&manager_processes, &sessions, &[], None);
+    let manager_rows = classify::agent_rows(
+        &manager_processes,
+        &sessions,
+        &[],
+        None,
+        &AccountLabels::default(),
+    );
     let processes = [
         process(20, 1, "python3", &["python3", "mesh_daemon.py"]),
         process(
@@ -456,7 +477,8 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
             &["codex", "app-server", "--listen", "stdio://"],
         ),
     ];
-    let mut worker_rows = classify::agent_rows(&processes, &[], &[], None);
+    let mut worker_rows =
+        classify::agent_rows(&processes, &[], &[], None, &AccountLabels::default());
     let sources = TreeSources {
         threads: HashMap::from([(
             30,
@@ -465,6 +487,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
                 name:         "mesh worker".to_string(),
                 started:      40,
                 service_tier: super::ServiceTier::Fast,
+                account:      Account::Unrecorded,
             }],
         )]),
         ..TreeSources::default()
@@ -486,6 +509,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::census::Account;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
@@ -497,6 +521,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Claude(id.to_string()),
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: id.to_string(),
             status: None,
             started: u64::from(pid),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
+
 ### Fixed
 - On startup, agents appear before their details are read. A refresh never drops details, a resumed session keeps its cell, and remote probes no longer wait for the local scan.
 - A widened agents summary draws unbroken rows across column bands, including long directories.

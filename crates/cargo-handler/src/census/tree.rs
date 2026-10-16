@@ -20,6 +20,7 @@ use std::iter;
 use std::path::Path;
 use std::time::Duration;
 
+use super::Account;
 use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
@@ -68,6 +69,8 @@ pub(super) struct ThreadEntry {
     pub(super) started:      u64,
     /// The tier it asked for.
     pub(super) service_tier: ServiceTier,
+    /// The configuration home of the app server holding this thread.
+    pub(super) account:      Account,
 }
 
 /// What the scan read from disk for the tree.
@@ -171,6 +174,8 @@ struct Node {
     kind:         ChildKind,
     /// The tier a Codex thread or process asked for.
     service_tier: ServiceTier,
+    /// The account of an app-server thread; unrecorded for other nodes.
+    account:      Account,
     /// Its process, where it has one.
     pid:          Option<u32>,
     /// What the row says.
@@ -223,6 +228,7 @@ pub(super) fn attach_children(
                 thread_id:    CodexThreadId::Unrecorded,
                 kind:         ChildKind::Session(session.agent),
                 service_tier: session.service_tier,
+                account:      Account::Unrecorded,
                 pid:          Some(session.pid),
                 name:         session.name.clone(),
                 started:      session.started,
@@ -291,6 +297,7 @@ impl Walker<'_> {
                     thread_id:    thread.thread_id.clone(),
                     kind:         ChildKind::Thread,
                     service_tier: thread.service_tier,
+                    account:      thread.account.clone(),
                     pid:          None,
                     name:         thread.name.clone(),
                     started:      thread.started,
@@ -316,6 +323,7 @@ impl Walker<'_> {
                     thread_id: CodexThreadId::Unrecorded,
                     kind: ChildKind::Shell,
                     service_tier: ServiceTier::Unrecorded,
+                    account: Account::Unrecorded,
                     pid: Some(child.pid),
                     name,
                     started: child.started,
@@ -452,6 +460,7 @@ impl Walker<'_> {
         Node {
             thread_id: CodexThreadId::Unrecorded,
             kind: kind(agent),
+            account: Account::Unrecorded,
             service_tier: self
                 .sources
                 .service_tiers
@@ -488,6 +497,7 @@ fn subagent_node(
         thread_id: CodexThreadId::Unrecorded,
         kind: ChildKind::Subagent,
         service_tier: ServiceTier::Unrecorded,
+        account: Account::Unrecorded,
         pid: None,
         name: agent.description.clone(),
         started: agent.started,
@@ -554,6 +564,7 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
             depth,
             kind: node.kind,
             service_tier: node.service_tier,
+            account: node.account,
             pid: node.pid,
             name: node.name,
             started: node.started,
@@ -572,9 +583,12 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Machine;
     use crate::census::MachineState;
     use crate::census::SessionIdentity;
+    use crate::census::account::AccountLabels;
+    use crate::census::account::ConfigHome;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -601,6 +615,7 @@ mod tests {
             arguments: Vec::new(),
             started,
             directory: None,
+            config_home: ConfigHome::Unread,
             claude_pid: None,
         }
     }
@@ -701,6 +716,7 @@ mod tests {
             name: name.to_string(),
             started,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
         }
     }
 
@@ -772,6 +788,7 @@ mod tests {
             process(4_000_000, 2_246, ".ghostty-wrappe", 960),
             process(4_000_010, 4_000_000, "zsh", 960),
             ProcessEntry {
+                config_home: ConfigHome::Unread,
                 claude_pid: Some(TRUNK),
                 ..detailed(TERMINAL_CODEX, 4_000_010, "codex", 960, &["codex"])
             },
@@ -822,6 +839,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: format!("pid {pid}"),
             status: None,
             started,
@@ -962,7 +980,13 @@ mod tests {
     #[test]
     fn natedev_cells_hold_what_each_agent_runs() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let mut rows = classify::agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
         for row in &mut rows {
             if [TRUNK, GEOMETRY, ARRANGE].contains(&row.pid) {
                 row.launched_by = Some(BOSS);
@@ -1047,7 +1071,13 @@ mod tests {
     #[test]
     fn each_tier_reaches_its_row() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let mut rows = classify::agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
         for row in &mut rows {
             if row.pid == TERMINAL_CODEX {
                 row.launched_by = Some(TRUNK);
@@ -1306,7 +1336,8 @@ mod tests {
             app_server(30, 1, 30, None),
         ];
         let sessions = [session(10, "unit")];
-        let mut rows = classify::agent_rows(&processes, &sessions, &[], None);
+        let mut rows =
+            classify::agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
         // The completed scan can find a tmux launcher even for a transport-only server.
         for row in rows
             .iter_mut()
@@ -1319,6 +1350,10 @@ mod tests {
                 30,
                 vec![ThreadEntry {
                     thread_id: CodexThreadId::Recorded("mesh-worker".to_string()),
+                    account: Account::Home(AccountLabels::default().resolve(
+                        Path::new("/home/test/.codex2"),
+                        Some(Path::new("/home/test")),
+                    )),
                     ..thread("mesh worker", 40)
                 }],
             )]),
@@ -1334,6 +1369,10 @@ mod tests {
             rows[1].children[0].thread_id,
             CodexThreadId::Recorded("mesh-worker".to_string())
         );
+        assert_eq!(
+            rows[1].children[0].account, sources.threads[&30][0].account,
+            "thread children keep their app server's account through flattening",
+        );
         let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
         let placement = super::super::AgentPlacement::from_machines(&[Machine {
             name:  "local",
@@ -1347,7 +1386,13 @@ mod tests {
     #[test]
     fn app_server_thread_ids_survive_tree_flattening_independently_of_their_names() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let mut rows = classify::agent_rows(
+            &processes,
+            &sessions,
+            &[],
+            Some(Path::new(HOME)),
+            &AccountLabels::default(),
+        );
         let mut sources = natedev_sources(&sessions);
         for (pid, threads) in &mut sources.threads {
             for thread in threads {

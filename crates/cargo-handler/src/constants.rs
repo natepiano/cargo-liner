@@ -90,24 +90,20 @@ pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
 pub(crate) const AGENT_CELL_TITLE_LEAD: &str = " ";
 
 // agent cells
-/// The column labels of an agent cell's table, in column order.
-pub(crate) const CHILD_HEADERS: [&str; 5] = ["pid", "via", "runs", "name", "age"];
-/// Index of the `pid` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_PID_COLUMN: usize = 0;
-/// Index of the `via` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_VIA_COLUMN: usize = 1;
-/// Index of the `runs` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_RUNS_COLUMN: usize = 2;
-/// Index of the `name` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_NAME_COLUMN: usize = 3;
-/// Index of the `age` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_AGE_COLUMN: usize = 4;
-/// Cells the `via` column is indented by for each level a row sits
-/// below the agent.
-pub(crate) const CHILD_VIA_INDENT: usize = 2;
-/// Columns of a line in an agent cell's tree of sessions: the
-/// session's name after its glyphs, status, branch, directory and age.
-pub(crate) const TREE_COLUMNS: usize = 5;
+/// The account column of an agent tile tree.
+pub(crate) const TREE_ACCOUNT_HEADER: &str = "account";
+/// The age column of an agent tile tree.
+pub(crate) const TREE_AGE_HEADER: &str = "age";
+/// The branch column of an agent tile tree.
+pub(crate) const TREE_BRANCH_HEADER: &str = "branch";
+/// The directory column of an agent tile tree.
+pub(crate) const TREE_DIRECTORY_HEADER: &str = "directory";
+/// The role column of an agent tile tree.
+pub(crate) const TREE_ROLE_HEADER: &str = "role";
+/// The session column of an agent tile tree.
+pub(crate) const TREE_SESSION_HEADER: &str = "session";
+/// The status column of an agent tile tree.
+pub(crate) const TREE_STATUS_HEADER: &str = "status";
 /// Leads a session in an agent cell's tree that has a later session
 /// beside it.
 pub(crate) const TREE_BRANCH: &str = "├─ ";
@@ -118,11 +114,9 @@ pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
 pub(crate) const TREE_RAIL: &str = "│  ";
 /// Stands for a level of an agent cell's tree whose line has ended.
 pub(crate) const TREE_SPACE: &str = "   ";
-/// Blank rows between an agent cell's header and what it runs.
-pub(crate) const AGENT_HEADER_GAP_HEIGHT: u16 = 1;
-/// Rows the note standing in for an empty table takes.
+/// Rows the note standing in for an empty tree takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
-/// What an agent cell says in place of its table when the agent is
+/// What an agent cell says in place of its tree when the agent is
 /// running nothing.
 pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 /// Leads the agent's pid in an agent cell's header, and names a launcher
@@ -130,21 +124,6 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
-/// The `via` of a command the agent's shell tool is running, and of an
-/// agent that command started.
-pub(crate) const SHELL_VIA: &str = "shell";
-/// The `via` of a subagent.
-pub(crate) const SUBAGENT_VIA: &str = "subagent";
-/// The `via` of an agent another agent opened in a tmux session.
-pub(crate) const SESSION_VIA: &str = "session";
-/// The `via` of a thread a Codex app server runs.
-pub(crate) const THREAD_VIA: &str = "thread";
-/// The `via` of an agent process the agent started itself, not through
-/// a shell: an MCP server, or a command Codex runs.
-pub(crate) const DIRECT_VIA: &str = "direct";
-/// The `via` of a Codex app server that has left the shell that
-/// started it and names the agent in `CLAUDE_PID`.
-pub(crate) const DETACHED_VIA: &str = "detached";
 /// The `runs` of a command, where the row is not an agent.
 pub(crate) const COMMAND_RUNS: &str = "command";
 /// The `runs` of a command that is only a timer, in place of
@@ -460,6 +439,10 @@ pub(crate) const CODEX_APP_SERVER_LABEL: &str = "app-server";
 /// starts, naming the Claude Code process. A Codex app server carries it
 /// after it has been moved out from under the process that started it.
 pub(crate) const CLAUDE_PID_VARIABLE: &str = "CLAUDE_PID";
+/// The environment variable naming Claude Code's configuration home.
+pub(crate) const CLAUDE_CONFIG_DIR_VARIABLE: &str = "CLAUDE_CONFIG_DIR";
+/// The environment variable naming Codex's configuration home.
+pub(crate) const CODEX_HOME_VARIABLE: &str = "CODEX_HOME";
 /// Where each process's open files are listed on Linux, one link per
 /// descriptor under `/proc/<pid>/fd`.
 pub(crate) const PROC_DIRNAME: &str = "/proc";
