@@ -144,7 +144,7 @@ A tile draws the lines above its tree, then one table: a header row and one line
 - `ChildLine::from(ChildKind)` is the one place that decides what a child draws; its match is exhaustive, so a new `ChildKind` variant must be classified there as work, carrier or session.
 - A tile draws each kept child once, as a tree line; there is no second list.
 - Only an agent line or a thread names an account; shell and subagent lines draw `—`, because a shell or subagent has no configuration home of its own.
-- `height` measures the view `draw` picks at that width when the tile gets those rows (`the_height_is_the_rows_drawn_at_every_width`).
+- `height` measures the view `draw` picks at that width when the tile gets those rows (`the_height_is_the_rows_drawn_at_every_width`). The `tree_heights_*_at_layout_widths` tests check each tile of three fixtures only where its layout changes, plus one width on either side: `layout_widths` (`agent_cell/tests/tree_tests.rs`) derives those widths from `header_line`, `place_line`, `tree_widths`, `table_width`, `TreeLayout::columns` and `TABLE_COLUMN_SPACING`, and checks its full-view boundary against `CellView::at_width`. A change to how a view is chosen or a column is cut belongs in `layout_widths` too, or its new boundary goes untested.
 
 ## Calibration / gotchas
 
