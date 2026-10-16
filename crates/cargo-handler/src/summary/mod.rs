@@ -380,6 +380,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Census;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyEdge;
@@ -414,6 +415,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: name.to_string(),
             status: status.map(str::to_string),
             started: NOW - age,
@@ -865,6 +867,7 @@ mod tests {
                 ),
                 AgentRow {
                     service_tier: ServiceTier::Fast,
+                    account: Account::Unrecorded,
                     ..row(
                         4_039_085,
                         Agent::Codex,

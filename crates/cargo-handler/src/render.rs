@@ -267,6 +267,7 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::AgentRow;
     use crate::census::CensusUpdate;
@@ -703,6 +704,7 @@ fraying = "leading"
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
@@ -712,6 +714,7 @@ fraying = "leading"
             session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,
             service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
             name:            "boss of bosses".to_string(),
             status:          Some("idle".to_string()),
             started:         NOW - age,

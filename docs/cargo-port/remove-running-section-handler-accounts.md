@@ -31,6 +31,7 @@ FULL VIEW:
 ## Delegation Context
 
 - **Project:** `cargo-handler` — the terminal agent watcher: it scans this machine and each configured remote (over ssh, `cargo-handler probe`) for Claude Code and Codex agents and draws a summary tile plus one tile per top-level agent through `tui_pane`.
+- **Project started:** 2026-10-16T04:41:03.535+00:00
 - **Stack:** Rust 2024, ratatui 0.30, sysinfo (process table and environment), serde/serde_json (probe wire), toml (config), cargo-nextest.
 - **Worktree:** `/home/natepiano/rust/cargo-liner-handler-enh`, branch `remove-running-section-handler-enh`.
 - **Layout:**
@@ -55,7 +56,7 @@ FULL VIEW:
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler`
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler`
 - **Invariants:**
-  - Workers do not run builds, tests, lint or verify. A worker ends its turn with `Run request: <command>` naming the Build/Test/Lint line it needs, and the unit director runs it. Tests run with cargo nextest through `verify.sh`; formatting only with `cargo +nightly fmt`.
+  - Workers run only the Build/Test/Lint lines above; each `verify.sh` run detaches and its result arrives as the worker's next message, so a worker never polls, sleeps or waits on one. Tests run with cargo nextest through `verify.sh`; formatting only with `cargo +nightly fmt`.
   - Invalid states are unrepresentable. The user's rule, 2026-10-15: "this is an invalid state that is representable - you are not properly using the rust type system if you allow an invalid state to be representable - whether through a type state, or an enum, a trait or whatever - this is not something you should fix with c-like procedural code". No bare `Option`/`bool` in new domain types; a wire `Option` converts to an enum at the serde boundary.
   - Nothing on the UI thread runs a command or reads a file. Environment reads and config labels resolve in the scan (scheduler thread or `probe`), never in rendering.
   - Probe compatibility: `PROBE_SCHEMA` stays 3. A probe printed before `account` existed still parses (absent field → `Account::Unrecorded`); an older reader ignores the new field (`ProbeAgentRow` does not deny unknown fields).
@@ -77,7 +78,7 @@ FULL VIEW:
      must be renumbered, add an old→new mapping note to the doc.
      Full procedure: /plan:to_phased_plan → <PhaseNumbering/>. -->
 
-### Phase 1 — Census account  · status: todo
+### Phase 1 — Census account  · status: done
 
 **Depends on:** none
 
@@ -184,7 +185,7 @@ FULL VIEW:
 
 **Constraints from prior phases:** none.
 
-**Acceptance gate:** the unit director runs `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 10 case and the updated known-JSON and known-file tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding). Workers end with `Run request:` naming those lines. No tile output changes in this phase.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 10 case and the updated known-JSON and known-file tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding). No tile output changes in this phase.
 
 ### Phase 2 — Tile tree  · status: todo
 
@@ -246,16 +247,18 @@ FULL VIEW:
 - `crates/cargo-handler/src/census/placement.rs` — `RoleLabel::column_text`
 - `crates/cargo-handler/src/constants.rs` — tree header constants; removed child-table constants
 - `crates/cargo-handler/CHANGELOG.md` — `## [Unreleased]` entry
+- `crates/cargo-handler/src/census/account.rs` — `AccountHome::label()`, `AccountColumn` (see Constraints from prior phases)
+- `crates/cargo-handler/src/census/account/tests.rs` — the `AccountColumn::of` cases
 - `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — new: every case in Spec item 12
 
 **Workers:** 1 writer + 1 tester — the tree, its callers and the summary change together and cannot split; the new tests are their own file.
-- `impl` — `crates/cargo-handler/src/agent_cell.rs` (including the `#[path]` test declaration), `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`; hub: `crates/cargo-handler/src/constants.rs` (the header constants the tester's file reads)
-- `test` — `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`: every case in Spec item 12, written against the signatures in items 1–4 and the fixtures in `mod tests`
+- `impl` — `crates/cargo-handler/src/agent_cell.rs` (including the `#[path]` test declaration), `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`, `crates/cargo-handler/src/census/account.rs`; hub: `crates/cargo-handler/src/constants.rs` (the header constants the tester's file reads)
+- `test` — `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` and `crates/cargo-handler/src/census/account/tests.rs` (the `AccountColumn::of` cases): every case in Spec item 12, written against the signatures in items 1–4 and the fixtures in `mod tests`
 
 **Constraints from prior phases:**
-- Phase 1: `census::Account { Unrecorded, Home(AccountHome) }` on `AgentRow::account` and `ChildRow::account` (set for Codex thread rows from their app server, `Unrecorded` for shells, subagents and other children); `AccountHome::label()` is the text a tile shows; labels resolve on the machine that ran the agent (its own `[accounts]` table), so a remote's rows arrive labelled. `census::AccountColumn { Hidden, Shown }` with `AccountColumn::of(impl IntoIterator<Item = (Agent, &Account)>)` counts distinct labels per program, Codex and its thread host as one.
+- Phase 1: `census::Account { Unrecorded, Home(AccountHome) }` on `AgentRow::account` and `ChildRow::account` (set for Codex thread rows from their app server, `Unrecorded` for shells, subagents and other children); labels resolve on the machine that ran the agent (its own `[accounts]` table), so a remote's rows arrive labelled. Phase 1 kept no API without a consumer, so this phase adds, in `census/account.rs`: a `pub(crate) fn label(&self) -> &str` on `AccountHome` (the text a tile shows), and `census::AccountColumn { Hidden, Shown }` with `AccountColumn::of(impl IntoIterator<Item = (Agent, &Account)>)`, which counts distinct labels per program, Codex and its thread host as one, with its tests in `census/account/tests.rs` (one Claude label → Hidden; `claude1`+`claude2` → Shown; `claude2`+`codex1` → Hidden; `codex1` on an app server + `codex2` on a thread host → Shown; repeated `Unrecorded` → Hidden; one label on two machines → Hidden). Both files join this phase's Files: `account.rs` is `impl`'s, `account/tests.rs` is `test`'s. No `#[expect(dead_code)]` anywhere.
 
-**Acceptance gate:** the unit director runs `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 12 case and the updated existing tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding, no dead code left from the table). Workers end with `Run request:` naming those lines.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 12 case and the updated existing tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding, no dead code left from the table).
 
 ### Phase 3 — Live check  · status: todo
 

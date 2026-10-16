@@ -43,6 +43,7 @@ use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
+use crate::census::Account;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
@@ -871,6 +872,7 @@ fn nest<'a>(
                 depth:        below,
                 kind:         ChildKind::Session(member.row.agent),
                 service_tier: member.row.service_tier,
+                account:      Account::Unrecorded,
                 pid:          Some(member.identity.pid),
                 name:         member.row.name.clone(),
                 started:      member.row.started,
@@ -1109,6 +1111,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::Census;
     use crate::census::CensusUpdate;
@@ -1165,6 +1168,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: name.to_string(),
             status: Some("busy".to_string()),
             started: NOW - age,
@@ -1186,6 +1190,7 @@ mod tests {
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
@@ -1427,6 +1432,7 @@ mod tests {
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Codex,
             service_tier: ServiceTier::Fast,
+            account: Account::Unrecorded,
             status: None,
             children: vec![
                 child(
@@ -1438,6 +1444,7 @@ mod tests {
                 ),
                 ChildRow {
                     service_tier: ServiceTier::Standard,
+                    account: Account::Unrecorded,
                     ..child(1, ChildKind::Thread, None, "trunk mesh", 10 * MINUTE)
                 },
             ],
@@ -2655,11 +2662,13 @@ mod tests {
                         ChildRow {
                             thread_id: CodexThreadId::Recorded("fast-id".to_string()),
                             service_tier: ServiceTier::Fast,
+                            account: Account::Unrecorded,
                             ..child(0, ChildKind::Thread, None, "fast worker", MINUTE)
                         },
                         ChildRow {
                             thread_id: CodexThreadId::Recorded("standard-id".to_string()),
                             service_tier: ServiceTier::Standard,
+                            account: Account::Unrecorded,
                             ..child(0, ChildKind::Thread, None, "standard worker", MINUTE)
                         },
                     ],

@@ -212,6 +212,7 @@ fn end(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::AgentRow;
     use crate::census::ServiceTier;
@@ -239,6 +240,7 @@ mod tests {
                     session_id:      crate::census::SessionIdentity::Unrecorded,
                     agent:           Agent::Claude,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
                     status:          Some("idle".to_string()),
                     started:         5,

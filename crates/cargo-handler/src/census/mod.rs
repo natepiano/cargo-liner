@@ -14,6 +14,7 @@
 //! probes on threads of their own and hands each answer to the event
 //! loop as a [`CensusUpdate`].
 
+pub(crate) mod account;
 mod branch;
 pub(crate) mod classify;
 pub(crate) mod codex;
@@ -37,6 +38,7 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+pub(crate) use account::Account;
 use hierarchy::HierarchyAnswer;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
@@ -281,6 +283,8 @@ pub(crate) struct AgentRow {
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.
     pub(crate) service_tier:    ServiceTier,
+    /// The home the agent's process runs under. Missing from a probe printed before it existed.
+    pub(crate) account:         Account,
     /// The session's name, or what stands in for one.
     pub(crate) name:            String,
     /// What the session says it is doing: `idle`, `busy` or `shell`
@@ -418,6 +422,10 @@ pub(crate) struct ChildRow {
     /// probe printed before it existed.
     #[serde(default)]
     pub(crate) service_tier: ServiceTier,
+    /// The app server's home, for a Codex thread; unrecorded for any other row.
+    /// Missing from a probe printed before it existed.
+    #[serde(default, skip_serializing_if = "Account::is_unrecorded")]
+    pub(crate) account:      Account,
     /// Its process; none for a subagent or a thread, which have none of
     /// their own.
     pub(crate) pid:          Option<u32>,
@@ -660,6 +668,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: "enh/handler".to_string(),
             status: Some("busy".to_string()),
             started,

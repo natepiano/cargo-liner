@@ -460,6 +460,10 @@ pub(crate) const CODEX_APP_SERVER_LABEL: &str = "app-server";
 /// starts, naming the Claude Code process. A Codex app server carries it
 /// after it has been moved out from under the process that started it.
 pub(crate) const CLAUDE_PID_VARIABLE: &str = "CLAUDE_PID";
+/// The environment variable naming Claude Code's configuration home.
+pub(crate) const CLAUDE_CONFIG_DIR_VARIABLE: &str = "CLAUDE_CONFIG_DIR";
+/// The environment variable naming Codex's configuration home.
+pub(crate) const CODEX_HOME_VARIABLE: &str = "CODEX_HOME";
 /// Where each process's open files are listed on Linux, one link per
 /// descriptor under `/proc/<pid>/fd`.
 pub(crate) const PROC_DIRNAME: &str = "/proc";

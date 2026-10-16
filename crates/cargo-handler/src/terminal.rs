@@ -20,6 +20,7 @@ use crate::census;
 #[cfg(test)]
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
+use crate::census::account::AccountLabels;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
@@ -57,7 +58,14 @@ pub(crate) fn run() -> ExitCode {
     };
     run_terminal(&mut app, &iterm2_profile, |app| {
         Ticker::new(
-            census::schedule::spawn(app.remote_machines.clone(), app.hierarchy_command.clone()),
+            census::schedule::spawn(
+                app.remote_machines.clone(),
+                app.hierarchy_command.clone(),
+                AccountLabels::new(
+                    &app.loaded_config.config.accounts,
+                    dirs::home_dir().as_deref(),
+                ),
+            ),
             appearance_updates,
         )
     })
@@ -184,6 +192,7 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::HierarchyEdges;
     use crate::census::ServiceTier;
@@ -255,6 +264,7 @@ mod tests {
             agent:           Agent::Claude,
             session_id:      SessionIdentity::Unrecorded,
             service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
             name:            "enh/handler".to_string(),
             status:          Some("busy".to_string()),
             started:         90,

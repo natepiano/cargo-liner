@@ -33,6 +33,9 @@ use super::Agent;
 use super::AgentRow;
 use super::CodexThreadId;
 use super::ServiceTier;
+use super::account;
+use super::account::AccountLabels;
+use super::account::ConfigHome;
 use super::branch;
 use super::classify;
 use super::classify::HeldSession;
@@ -86,6 +89,8 @@ pub(super) struct LocalScanner {
     /// This machine's home directory: where the session records live,
     /// and what a row's directory is written against.
     home:             Option<PathBuf>,
+    /// Account labels resolved once from this machine's startup configuration.
+    account_labels:   AccountLabels,
     /// The call found for each shell wrapper, or none found once the
     /// wrapper was [`CALL_SEARCH_SETTLE`] old.
     shell_calls:      HashMap<ProcessKey, Option<ShellCall>>,
@@ -187,7 +192,13 @@ impl LocalScanner {
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
         let mut rows = startup_log::startup_stage("classify_agents", || {
-            classify::agent_rows(processes, sessions, codex_threads, home)
+            classify::agent_rows(
+                processes,
+                sessions,
+                codex_threads,
+                home,
+                &self.account_labels,
+            )
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
             publish(ScanStage::Classified, rows.clone());
@@ -198,16 +209,17 @@ impl LocalScanner {
     }
 
     /// A scanner of the user running this process.
-    pub(super) fn new() -> Self {
+    pub(super) fn new(account_labels: AccountLabels) -> Self {
         Self {
-            publication:      LocalPublication::FirstAnswerPending,
-            home:             dirs::home_dir(),
-            shell_calls:      HashMap::new(),
-            launchers:        HashMap::new(),
+            publication: LocalPublication::FirstAnswerPending,
+            home: dirs::home_dir(),
+            account_labels,
+            shell_calls: HashMap::new(),
+            launchers: HashMap::new(),
             transcript_paths: HashMap::new(),
-            session_starts:   HashMap::new(),
-            rollouts:         Rollouts::default(),
-            desktops:         None,
+            session_starts: HashMap::new(),
+            rollouts: Rollouts::default(),
+            desktops: None,
         }
     }
 
@@ -311,6 +323,8 @@ impl LocalScanner {
                     &home.join(CODEX_DIRNAME),
                     &mut self.rollouts,
                     &pacer,
+                    Some(home),
+                    &self.account_labels,
                 )
             })
             .unwrap_or_default()
@@ -616,6 +630,8 @@ fn app_server_threads(
     codex_dir: &Path,
     rollouts: &mut Rollouts,
     pacer: &PacerHistory,
+    home: Option<&Path>,
+    account_labels: &AccountLabels,
 ) -> HashMap<u32, Vec<ThreadEntry>> {
     if !cfg!(target_os = "linux") {
         return HashMap::new();
@@ -668,6 +684,7 @@ fn app_server_threads(
                         name,
                         started,
                         service_tier,
+                        account: account::account_of(process, home, account_labels),
                     }
                 })
                 .collect();
@@ -700,9 +717,9 @@ fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
 /// Three passes. The first reads every process's name, parent and
 /// start time, which is all the ancestry walk needs. The second reads
 /// the command line and directory, and only for the processes
-/// [`detailed_pids`] names. The third reads the environment of every
-/// `codex`, for the Claude Code process its `CLAUDE_PID` names; no other
-/// process's environment is read.
+/// [`detailed_pids`] names. The third reads every Codex and Claude Code
+/// environment for its configuration home, including version-named Claude
+/// binaries identified by session records. Codex also supplies `CLAUDE_PID`.
 fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
     let mut system = System::new();
     startup_log::startup_stage("proc_ancestry", || {
@@ -724,15 +741,20 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
                 .with_cwd(UpdateKind::OnlyIfNotSet),
         )
     });
-    let codex: Vec<Pid> = system
+    let session_pids: HashSet<u32> = sessions.iter().map(|session| session.pid).collect();
+    let agents: Vec<Pid> = system
         .processes()
         .values()
-        .filter(|process| process.name() == CODEX_AGENT)
+        .filter(|process| {
+            process.name() == CODEX_AGENT
+                || process.name() == CLAUDE_AGENT
+                || session_pids.contains(&process.pid().as_u32())
+        })
         .map(Process::pid)
         .collect();
-    startup_log::startup_stage("proc_codex_environment", || {
+    startup_log::startup_stage("proc_agent_environments", || {
         system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&codex),
+            ProcessesToUpdate::Some(&agents),
             false,
             ProcessRefreshKind::nothing()
                 .without_tasks()
@@ -742,22 +764,30 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
     system
         .processes()
         .values()
-        .map(|process| ProcessEntry {
-            pid:        process.pid().as_u32(),
-            parent:     process.parent().map(Pid::as_u32),
-            name:       process.name().to_string_lossy().into_owned(),
-            arguments:  process
-                .cmd()
-                .iter()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect(),
-            started:    process.start_time(),
-            directory:  process.cwd().map(Path::to_path_buf),
-            claude_pid: if process.name() == CODEX_AGENT {
-                claude_pid(process.environ())
-            } else {
-                None
-            },
+        .map(|process| {
+            let mut entry = ProcessEntry {
+                pid:         process.pid().as_u32(),
+                parent:      process.parent().map(Pid::as_u32),
+                name:        process.name().to_string_lossy().into_owned(),
+                arguments:   process
+                    .cmd()
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect(),
+                started:     process.start_time(),
+                directory:   process.cwd().map(Path::to_path_buf),
+                config_home: ConfigHome::Unread,
+                claude_pid:  if process.name() == CODEX_AGENT {
+                    claude_pid(process.environ())
+                } else {
+                    None
+                },
+            };
+            // sysinfo leaves the environment empty when it could not read it.
+            if !process.environ().is_empty() {
+                entry.config_home = account::config_home_of(&entry, process.environ());
+            }
+            entry
         })
         .collect()
 }
@@ -891,6 +921,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::SessionIdentity;
 
     /// Only `.json` files that parse are records: the key files beside
@@ -984,6 +1015,7 @@ mod tests {
         LocalScanner {
             publication:      LocalPublication::FirstAnswerPending,
             home:             None,
+            account_labels:   AccountLabels::default(),
             shell_calls:      HashMap::new(),
             launchers:        HashMap::new(),
             transcript_paths: HashMap::new(),
@@ -1005,6 +1037,7 @@ mod tests {
                 .collect(),
             started,
             directory: None,
+            config_home: ConfigHome::Unread,
             claude_pid: None,
         }
     }
@@ -1024,6 +1057,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: name.to_string(),
             status: None,
             started,
@@ -1268,6 +1302,7 @@ mod hierarchy_publication_tests {
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
     use crate::census::HierarchySource;
+    use crate::census::account::AccountLabels;
     use crate::census::hierarchy::HierarchyError;
     use crate::census::hierarchy::HierarchyRunner;
     use crate::census::schedule;
@@ -1294,7 +1329,7 @@ mod hierarchy_publication_tests {
             HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
             runner,
             move |answers| {
-                LocalScanner::new().scan_stages_with(
+                LocalScanner::new(AccountLabels::default()).scan_stages_with(
                     &[],
                     &[],
                     &[],

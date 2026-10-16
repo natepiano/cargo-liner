@@ -23,6 +23,7 @@ use super::CensusUpdate;
 use super::HierarchyCommand;
 use super::RemoteHierarchyAnswers;
 use super::RemoteMachines;
+use super::account::AccountLabels;
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyCache;
 use super::hierarchy::HierarchyRunner;
@@ -113,8 +114,9 @@ impl LocalAnswers {
 pub(crate) fn spawn(
     remotes: RemoteMachines,
     hierarchy: HierarchyCommand,
+    account_labels: AccountLabels,
 ) -> Receiver<CensusUpdate> {
-    let mut scanner = LocalScanner::new();
+    let mut scanner = LocalScanner::new(account_labels);
     spawn_staged_with(
         remotes,
         hierarchy,
@@ -308,6 +310,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::HierarchyEdges;
     use crate::census::MachineState;
@@ -356,6 +359,7 @@ mod tests {
             agent: Agent::Claude,
             session_id: SessionIdentity::Claude(id.to_string()),
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             name: "worker".to_string(),
             status: None,
             started: 1,

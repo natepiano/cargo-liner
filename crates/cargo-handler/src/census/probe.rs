@@ -13,11 +13,13 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::Account;
 use super::Agent;
 use super::AgentRow;
 use super::HierarchyEdges;
 use super::HierarchySource;
 use super::SessionIdentity;
+use super::account::AccountLabels;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyAnswer;
@@ -38,6 +40,8 @@ pub(super) struct ProbeAgentRow {
     session_id:      Option<String>,
     #[serde(default)]
     service_tier:    super::ServiceTier,
+    #[serde(default)]
+    account:         Account,
     name:            String,
     status:          Option<String>,
     started:         u64,
@@ -59,6 +63,7 @@ impl From<ProbeAgentRow> for AgentRow {
                 .session_id
                 .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
             service_tier:    row.service_tier,
+            account:         row.account,
             name:            row.name,
             status:          row.status,
             started:         row.started,
@@ -141,7 +146,11 @@ pub(crate) fn print() -> ExitCode {
     let source = HierarchySource::from(loaded.config.census.hierarchy_command);
     let mut report = ProbeReport::from_answer(
         local_machine_name(),
-        LocalScanner::new().scan(),
+        LocalScanner::new(AccountLabels::new(
+            &loaded.config.accounts,
+            dirs::home_dir().as_deref(),
+        ))
+        .scan(),
         HierarchyEdges::default(),
     );
     match hierarchy::read(&source, &CommandRunner) {
@@ -196,6 +205,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::census::Account;
     use crate::census::Agent;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
@@ -211,6 +221,7 @@ mod tests {
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
+            account: Account::Unrecorded,
             pid,
             name: name.to_string(),
             started,
@@ -233,6 +244,7 @@ mod tests {
                     agent:           Agent::Codex,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "ChatGPT".to_string(),
                     status:          None,
                     started:         1_790_000_000,
@@ -248,6 +260,7 @@ mod tests {
                     agent:           Agent::Claude,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
                     status:          Some("idle".to_string()),
                     started:         1_790_000_100,
@@ -274,6 +287,7 @@ mod tests {
                         ),
                         ChildRow {
                             service_tier: ServiceTier::Fast,
+                            account: Account::Unrecorded,
                             ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                         },
                         child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
@@ -303,6 +317,7 @@ mod tests {
                     agent:           Agent::Claude,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
+                    account:         Account::Unrecorded,
                     name:            "worker".to_string(),
                     status:          Some("busy".to_string()),
                     started:         1_790_000_130,
@@ -328,15 +343,15 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","account":null,"name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
             )
         );
         assert_eq!(
