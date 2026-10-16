@@ -82,110 +82,32 @@ FULL VIEW:
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** every agent row and every Codex thread row carries a typed `Account` (home plus label) read from its process's `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, labelled through an optional `[accounts]` config table, carried over the probe wire, with older probes still parsing.
-
-**Spec:**
-1. New module `crates/cargo-handler/src/census/account.rs`, declared `pub(crate) mod account;` in `census/mod.rs` (≈18–30, alphabetical) with `pub(crate) use account::Account;`, `pub(crate) use account::AccountColumn;`. Types:
-   ```rust
-   /// The configuration home an agent process runs under, with the label it shows as.
-   #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-   #[serde(from = "Option<AccountHome>", into = "Option<AccountHome>")]
-   pub(crate) enum Account {
-       /// No environment was read for the row: a probe printed before accounts
-       /// existed, a process whose environment could not be read, or a row that
-       /// is not an agent process (a shell, a subagent).
-       #[default]
-       Unrecorded,
-       /// The home the process runs under.
-       Home(AccountHome),
-   }
-
-   /// A home and its label.
-   #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-   pub(crate) struct AccountHome {
-       /// The home directory, with the machine's home written as `~` (`~/.claude1`).
-       home:  String,
-       /// What the tile shows: the `[accounts]` label for `home`, else the
-       /// home's last component without its leading dot (`~/.claude1` → `claude1`).
-       label: String,
-   }
-   ```
-   `AccountHome` fields stay private with getters `home()` and `label()`; the only constructor is `AccountLabels::resolve` (item 3), so a label always matches its home. Add `Account::is_unrecorded(&self) -> bool` for `skip_serializing_if`, and `Account::label(&self) -> Option<&str>` only if phase 2's accessors need it (prefer a match at the call site). `From<Option<AccountHome>>` / `From<Account> for Option<AccountHome>` give the wire form: `null` or `{"home":"~/.claude1","label":"claude1"}`.
-2. What a process's environment says, on `ProcessEntry` (`classify.rs` ≈65), a new field `config_home: ConfigHome` defined in `account.rs`:
-   ```rust
-   /// The configuration home a process's environment names.
-   pub(super) enum ConfigHome {
-       /// The environment was not read.
-       Unread,
-       /// The environment was read and sets neither variable: the tool's default home.
-       Default,
-       /// The value of `CLAUDE_CONFIG_DIR` (Claude Code) or `CODEX_HOME` (Codex).
-       Named(PathBuf),
-   }
-   ```
-   `fn config_home(environment: &[OsString], program: Program) -> ConfigHome` beside `claude_pid` (`scan.rs` ≈767), same `NAME=value` parsing; an empty value reads as `Default`. Constants in `constants.rs` beside `CLAUDE_PID_VARIABLE` (≈462): `CLAUDE_CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR"`, `CODEX_HOME_VARIABLE = "CODEX_HOME"`, each with a doc comment. Which variable is read follows the process: Claude Code (`ProcessEntry::is_claude`) reads `CLAUDE_CONFIG_DIR`, Codex (`is_codex`) reads `CODEX_HOME`; use a small private enum for the program, not a bool. Every `ProcessEntry` literal in the crate (scan.rs ≈745 and test fixtures in classify.rs, scan.rs, scan/staged_tests.rs, tree.rs, desktop.rs, placement.rs) gains `config_home: ConfigHome::Unread`.
-3. The environment pass in `process_table` (`scan.rs` ≈727–741) reads `environ` for every Codex process (as now) and every Claude Code process: the session-record pids (`sessions`) and processes named `claude`, so macOS's version-named binaries are covered through their session records. The doc comment ≈698–705 names both reads. `claude_pid` is still set for Codex only.
-4. Labels. `AccountLabels` in `account.rs`: built once from config (`From<&AccountsConfig>`), holding the configured home→label pairs with each key normalized to the `~` form through `classify::directory_label` (make it `pub(super)` if needed). `fn resolve(&self, home: &Path, machine_home: Option<&Path>) -> AccountHome`: the `~` form of `home`, its configured label, else its last component with one leading `.` stripped. The default home for `ConfigHome::Default` is `<machine home>/CLAUDE_DIRNAME` or `<machine home>/CODEX_DIRNAME`. `fn account_of(process: &ProcessEntry, machine_home: Option<&Path>, labels: &AccountLabels) -> Account`: `Unread` → `Unrecorded`; `Default` and `Named` → `Home`.
-5. Config: `crates/cargo-handler/src/config.rs` gets
-   ```rust
-   /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
-   #[derive(Debug, Default, Deserialize, Serialize)]
-   #[serde(transparent)]
-   pub(crate) struct AccountsConfig(pub(crate) BTreeMap<String, String>);
-   ```
-   and `pub(crate) accounts: AccountsConfig` on `Config` after `census`, with its doc line. Keys are homes written with `~` (`"~/.claude" = "claude2"`). Update the known-file test (≈181) to the text toml prints for the default (an empty `[accounts]` table after `[census]`) and keep `a_complete_config_is_left_alone` green. Labels are read at startup; a config edit takes effect on restart (the table has no settings-overlay row).
-6. Domain fields. `AgentRow` (`census/mod.rs` ≈276) gets `pub(crate) account: Account` after `service_tier`, documented "The home the agent's process runs under. Missing from a probe printed before it existed." `ProbeAgentRow` (`probe.rs` ≈35) gets `#[serde(default)] account: Account` and the `From` impl copies it. `ChildRow` (≈407) gets `#[serde(default, skip_serializing_if = "Account::is_unrecorded")] pub(crate) account: Account` after `service_tier`, documented "The app server's home, for a Codex thread; unrecorded for any other row. Missing from a probe printed before it existed." Every `AgentRow` and `ChildRow` literal in the crate (≈70 `AgentRow`, ≈17 `ChildRow`, tests included, in agent_cell.rs, render.rs, summary/mod.rs, terminal.rs and census/*) gains `account: Account::Unrecorded` (or `..` from a fixture that has it).
-7. Attaching accounts. `LocalScanner` gets `labels: AccountLabels`; `LocalScanner::new(labels: AccountLabels)`. In `scan_stages_with` (≈180), right after `classify::agent_rows` and before the `Classified` publish, set each row's `account` from the process with the row's pid (`account_of`). `app_server_threads` (≈614) takes `home` and `&AccountLabels` and sets `ThreadEntry::account` (new field on `ThreadEntry`, `tree.rs` ≈62) from the app server's process; `tree.rs` copies it through `Node` (≈283–299) and `flatten` (≈547) into the thread's `ChildRow`; every other `Node` gets `Account::Unrecorded`. Callers: `schedule::spawn(remotes, hierarchy, labels)` (≈113) passes them to `LocalScanner::new`; `terminal.rs` ≈60 passes `AccountLabels::from(&app.loaded_config.config.accounts)`; `probe::print` (≈144) builds them from `loaded.config.accounts`, so a remote labels its own homes; test scanners use `AccountLabels::default()`.
-8. `AccountColumn` in `account.rs`, used by phase 2:
-   ```rust
-   /// Whether a frame's lines name their accounts, decided once per frame.
-   #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-   pub(crate) enum AccountColumn {
-       /// Each program runs under at most one account label on screen.
-       Hidden,
-       /// Some program runs under two or more account labels on screen.
-       Shown,
-   }
-   impl AccountColumn {
-       /// Shown when two distinct labels of the same program are among `accounts`.
-       pub(crate) fn of<'a>(accounts: impl IntoIterator<Item = (Agent, &'a Account)>) -> Self;
-   }
-   ```
-   `Agent::Codex` and `Agent::CodexThreadHost` count as one program; `Unrecorded` counts for nothing. Distinct means distinct labels, so two machines' homes with one label count once.
-9. Probe: update the known-JSON test (`probe.rs` ≈324) for `"account":null` after `"service_tier"` in every row (child rows omit it while unrecorded). The schema stays 3.
-10. Tests in `crates/cargo-handler/src/census/account/tests.rs`, declared at the end of `account.rs` as `#[cfg(test)] #[path = "account/tests.rs"] mod tests;`. Required cases:
-    - `config_home`: `CLAUDE_CONFIG_DIR=/home/u/.claude1` among other variables → `Named`; unset → `Default`; empty → `Default`; `CLAUDE_CONFIG_DIRS=x` → `Default`; a Codex process reads `CODEX_HOME`, not `CLAUDE_CONFIG_DIR`.
-    - `resolve`: `/home/u/.claude1` under machine home `/home/u` → home `~/.claude1`, label `claude1`; `Default` for Claude → `~/.claude`, label `claude`; for Codex → `~/.codex`, `codex`; a configured `"~/.claude" = "claude2"` → `claude2`; a key written as `/home/u/.codex` still matches `~/.codex`; a home outside the machine home keeps its absolute path and labels by its last component.
-    - `account_of`: `Unread` → `Unrecorded`.
-    - `AccountColumn::of`: one Claude label → `Hidden`; `claude1` and `claude2` → `Shown`; `claude2` and `codex1` → `Hidden`; `codex1` on an app server and `codex2` on a thread host → `Shown`; repeated `Unrecorded` → `Hidden`; the same label from two machines → `Hidden`.
-    - Wire: an `AgentRow` with `Account::Home` round-trips through `probe::parse_report` on a schema-3 JSON line; a row JSON without `account` parses to `Unrecorded`; a `ChildRow` with `Unrecorded` serializes without an `account` key; a thread `ChildRow` with a home round-trips.
-    - Config: `toml::from_str::<Config>("[accounts]\n\"~/.claude\" = \"claude2\"\n")` gives that pair and restates to itself; a config without `[accounts]` parses to an empty table.
+- `crates/cargo-handler/src/census/account.rs` holds `Account { Unrecorded (default), Home(AccountHome) }` on `AgentRow::account` and `ChildRow::account`; its wire form is `null` or `{"home":"~/.claude1","label":"claude1"}` (`serde(from/into = "Option<AccountHome>")`, `Account::is_unrecorded` for `skip_serializing_if`). `AccountHome { home, label }` has private fields and no getters; `AccountLabels::resolve` is its only constructor, so a label always matches its home.
+- `ProcessEntry::config_home: ConfigHome { Unread, Default(Program), Named(PathBuf) }`. `Program { Claude, Codex }` (pub(super)) owns its variable (`CLAUDE_CONFIG_DIR_VARIABLE` / `CODEX_HOME_VARIABLE` in `constants.rs`) and default dirname (`CLAUDE_DIRNAME` / `CODEX_DIRNAME`). `config_home(&[OsString], Program)`: an absent, empty or inexactly named variable is `Default`; a non-UTF-8 value stays a path. `config_home_of(&ProcessEntry, &[OsString])` gives non-agent processes `Unread`.
+- `process_table` (`scan.rs`) reads `environ` for Codex processes, `claude`-named processes and session-record pids; an empty environment means sysinfo could not read it and stays `Unread`. `claude_pid` is still set for Codex only.
+- `AccountLabels::new(&AccountsConfig, Option<&Path>)` normalizes each configured key to the `~` form once (`classify::directory_label`); `resolve(home, machine_home)` returns the `~` form with its configured label, else the last component without one leading dot. `account_of(process, machine_home, labels)`: `Unread` → `Unrecorded`; `Default` with no machine home → `Unrecorded`; otherwise `Home`.
+- Rows get their account where they are built: `classify::agent_rows(.., &AccountLabels)` passes labels to `claude_row`, `desktop_app_row` and `codex_row`. `app_server_threads` sets `ThreadEntry::account` from the app server's process, and `tree.rs` carries it through `Node` and `flatten` into the thread's `ChildRow`; every other child is `Unrecorded`.
+- `LocalScanner::new(AccountLabels)`, `schedule::spawn(remotes, hierarchy, account_labels)`; `terminal.rs` and `probe::print` build labels from the loaded config, so each machine labels its own homes and a remote's rows arrive labelled.
+- `[accounts]` is `AccountsConfig(BTreeMap<String, String>)` (`serde(transparent)`) on `Config` after `census`, keys written with `~`; read at startup, a config edit applies on restart.
+- Probe: `ProbeAgentRow::account` is `#[serde(default)]`, `ChildRow::account` is omitted while unrecorded, `PROBE_SCHEMA` stays 3, and an older probe's rows parse to `Unrecorded`.
 
 **Files:**
-- `crates/cargo-handler/src/census/account.rs` — new: `Account`, `AccountHome`, `ConfigHome`, `AccountLabels`, `account_of`, `config_home`, `AccountColumn`; `#[path]` test declaration
-- `crates/cargo-handler/src/census/mod.rs` — `mod account` and re-exports; `account` on `AgentRow` and `ChildRow`; literals in its tests
-- `crates/cargo-handler/src/census/probe.rs` — `ProbeAgentRow::account`, `From`, `print` passes labels, known-JSON test
-- `crates/cargo-handler/src/census/scan.rs` — environment pass, `LocalScanner::labels`, `new(labels)`, accounts attached before the `Classified` publish, `app_server_threads` labels; test literals
-- `crates/cargo-handler/src/census/scan/staged_tests.rs` — literals
-- `crates/cargo-handler/src/census/classify.rs` — `ProcessEntry::config_home`; `directory_label` visibility; test literals
-- `crates/cargo-handler/src/census/tree.rs` — `ThreadEntry::account`, `Node::account`, `flatten`; test literals
-- `crates/cargo-handler/src/census/schedule.rs` — `spawn` takes `AccountLabels`; test literals
-- `crates/cargo-handler/src/census/desktop.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/remote.rs` — test literals
-- `crates/cargo-handler/src/config.rs` — `AccountsConfig`, `Config::accounts`, known-file test
+- `crates/cargo-handler/src/census/account.rs` — `Account`, `AccountHome`, `ConfigHome`, `Program`, `AccountLabels`, `config_home`, `config_home_of`, `account_of`
+- `crates/cargo-handler/src/census/account/tests.rs` — environment parsing, label resolution, `account_of`, probe wire round trips
+- `crates/cargo-handler/src/census/scan.rs` — environment pass, `LocalScanner::account_labels`, thread accounts
+- `crates/cargo-handler/src/census/classify.rs` — `ProcessEntry::config_home`; row builders set `account`
+- `crates/cargo-handler/src/census/tree.rs` — `ThreadEntry::account` into thread `ChildRow`s
+- `crates/cargo-handler/src/census/mod.rs`, `probe.rs`, `schedule.rs`, `crates/cargo-handler/src/terminal.rs` — the field, the wire, label plumbing
+- `crates/cargo-handler/src/config.rs` — `AccountsConfig`, `Config::accounts`, `[accounts]` parse tests
 - `crates/cargo-handler/src/constants.rs` — `CLAUDE_CONFIG_DIR_VARIABLE`, `CODEX_HOME_VARIABLE`
-- `crates/cargo-handler/src/terminal.rs` — passes labels to `spawn`; test literals
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/summary/mod.rs` — test literals only
-- `crates/cargo-handler/src/census/account/tests.rs` — new: every case in Spec item 10
 
-**Workers:** 1 writer + 1 tester — the field and its literals touch every census file and cannot split; the new tests are their own file.
-- `impl` — every file above except `census/account/tests.rs`; hub: `crates/cargo-handler/src/census/mod.rs` (module declaration and re-exports)
-- `test` — `crates/cargo-handler/src/census/account/tests.rs`: every case in Spec item 10, written against the signatures in items 1–8
+**Binds later work:** the Tile tree phase adds `AccountHome::label()` (pub(crate)) and `AccountColumn { Hidden, Shown }` with `AccountColumn::of` and its tests in `census/account/tests.rs`; `Program` is the grouping key for its per-program label count.
 
-**Constraints from prior phases:** none.
+**Gotchas:** `account.rs` imports `std::os::unix::ffi::OsStrExt` unguarded (cargo-handler is not built on Windows). An item with no consumer is narrowed by cargo-mend, and agent-written `#[expect(dead_code)]` is not allowed, so API lands with its first caller.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 10 case and the updated known-JSON and known-file tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding). No tile output changes in this phase.
+**Ruled out:** `From<&AccountsConfig>` reading `dirs::home_dir()` (a `From` takes no external context; the machine home is a parameter); patching accounts onto classified rows through a second pid table; an `AccountHome::home()` getter (no consumer).
 
 ### Phase 2 — Tile tree  · status: todo
 
@@ -257,6 +179,8 @@ FULL VIEW:
 
 **Constraints from prior phases:**
 - Phase 1: `census::Account { Unrecorded, Home(AccountHome) }` on `AgentRow::account` and `ChildRow::account` (set for Codex thread rows from their app server, `Unrecorded` for shells, subagents and other children); labels resolve on the machine that ran the agent (its own `[accounts]` table), so a remote's rows arrive labelled. Phase 1 kept no API without a consumer, so this phase adds, in `census/account.rs`: a `pub(crate) fn label(&self) -> &str` on `AccountHome` (the text a tile shows), and `census::AccountColumn { Hidden, Shown }` with `AccountColumn::of(impl IntoIterator<Item = (Agent, &Account)>)`, which counts distinct labels per program, Codex and its thread host as one, with its tests in `census/account/tests.rs` (one Claude label → Hidden; `claude1`+`claude2` → Shown; `claude2`+`codex1` → Hidden; `codex1` on an app server + `codex2` on a thread host → Shown; repeated `Unrecorded` → Hidden; one label on two machines → Hidden). Both files join this phase's Files: `account.rs` is `impl`'s, `account/tests.rs` is `test`'s. No `#[expect(dead_code)]` anywhere.
+- Phase 1: `AccountHome`'s fields (`home`, `label`) are private with no getters today; `AccountLabels::resolve` is its only constructor. `account.rs` holds `pub(super) enum Program { Claude, Codex }`; group programs in `AccountColumn::of` through a new `impl From<Agent> for Program` (`Claude` → `Claude`; `Codex` and `CodexThreadHost` → `Codex`) and count distinct labels per `Program`, not with a hand-written match on `Agent`. `account.rs` imports `std::os::unix::ffi::OsStrExt` unguarded (cargo-handler is not built on Windows).
+- Phase 1: `agent_cell.rs`'s `use crate::census::Account;` (≈46) serves only the `ChildRow` literal in `nest` (≈875), which Spec item 3 removes; keep the import only if the new account cell matches on `Account`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 12 case and the updated existing tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding, no dead code left from the table).
 
