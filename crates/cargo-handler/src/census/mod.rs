@@ -29,6 +29,7 @@ pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
 pub(crate) mod tree;
+pub(crate) mod worker_dispatch;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -52,6 +53,7 @@ pub(crate) use placement::mesh_worker_fixture;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
+use worker_dispatch::WorkerDispatch;
 
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
@@ -115,7 +117,7 @@ impl ServiceTier {
     /// `program` marked with this tier, as an `agent` or `runs` cell shows
     /// it: `codex fast`, `codex --`, or `program` alone when
     /// [`Self::Unrecorded`].
-    fn mark(self, program: impl Into<Cow<'static, str>>) -> Cow<'static, str> {
+    pub(crate) fn mark(self, program: impl Into<Cow<'static, str>>) -> Cow<'static, str> {
         let program = program.into();
         match self {
             Self::Fast => Cow::Owned(format!("{program} {FAST_TIER_LABEL}")),
@@ -136,6 +138,34 @@ impl From<&str> for ServiceTier {
             Self::Standard
         }
     }
+}
+
+/// The most recent turn event in a live Codex thread's rollout.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThreadState {
+    /// A turn has started and has not completed or aborted.
+    Busy,
+    /// The last turn finished, aborted, or no turn has started yet.
+    #[default]
+    Idle,
+}
+
+impl ThreadState {
+    /// The same activity words used for Claude sessions.
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::Busy => crate::constants::BUSY_STATUS,
+            Self::Idle => "idle",
+        }
+    }
+
+    /// Old probes and non-thread children need no extra idle field.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if predicates receive a reference"
+    )]
+    const fn is_idle(&self) -> bool { matches!(self, Self::Idle) }
 }
 
 /// A Claude Code session's stable identity, absent for other agents or old probes.
@@ -397,6 +427,15 @@ pub(crate) struct Timer {
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ChildRow {
+    /// The last turn event, read incrementally from a live thread's rollout.
+    #[serde(default, skip_serializing_if = "ThreadState::is_idle")]
+    pub(crate) thread_state: ThreadState,
+    /// A roster-backed launcher identity, resolved only during the scan.
+    #[serde(
+        default,
+        skip_serializing_if = "worker_dispatch::WorkerDispatch::is_plain"
+    )]
+    pub(crate) dispatch:     WorkerDispatch,
     /// The Codex thread this child represents, when recorded.
     #[serde(default, skip_serializing_if = "CodexThreadId::is_unrecorded")]
     pub(crate) thread_id:    CodexThreadId,
@@ -508,8 +547,10 @@ static SCANNING: MachineState = MachineState::Scanning;
 /// One answer from the scheduler.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CensusUpdate {
-    /// This machine's agents.
+    /// This machine's interim rows while a scan is still in progress.
     Local(Vec<AgentRow>, HierarchyEdges),
+    /// This machine's rows and management links from one finished scan.
+    LocalScanCompleted(Vec<AgentRow>, HierarchyEdges),
     /// A remote machine's answer, or why there was none.
     Remote {
         /// The ssh name the machine is configured under.
@@ -545,7 +586,7 @@ impl Census {
     /// Record `update`, answering whether anything it says changed.
     pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
         let (slot, state) = match update {
-            CensusUpdate::Local(rows, edges) => {
+            CensusUpdate::Local(rows, edges) | CensusUpdate::LocalScanCompleted(rows, edges) => {
                 (&mut self.local, MachineState::Answered(rows, edges))
             },
             CensusUpdate::Remote { host, state } => (
@@ -737,6 +778,18 @@ mod tests {
         assert!(census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
         assert!(!census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
         assert!(census.apply(CensusUpdate::Local(vec![row(2)], HierarchyEdges::default())));
+        assert!(!census.apply(CensusUpdate::LocalScanCompleted(
+            vec![row(2)],
+            HierarchyEdges::default(),
+        )));
+        assert!(census.apply(CensusUpdate::LocalScanCompleted(
+            vec![row(3)],
+            HierarchyEdges::default(),
+        )));
+        assert_eq!(
+            census.machines(&[])[0].state,
+            &MachineState::Answered(vec![row(3)], HierarchyEdges::default()),
+        );
 
         let failed = CensusUpdate::Remote {
             host:  "mac".to_string(),
@@ -819,3 +872,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "thread_state_tests.rs"]
+mod thread_state_tests;

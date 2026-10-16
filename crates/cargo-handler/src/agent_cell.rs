@@ -32,7 +32,10 @@ use crate::census::ChildRow;
 use crate::census::HierarchyRole;
 use crate::census::RoleLabel;
 use crate::census::RowIdentity;
+use crate::census::ServiceTier;
+use crate::census::ThreadState;
 use crate::census::Timer;
+use crate::census::worker_dispatch::DispatchLabel;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::LAUNCHED_BY_LABEL;
 use crate::constants::MISSING_VALUE;
@@ -54,6 +57,9 @@ use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_SPACE;
 use crate::constants::TREE_STATUS_HEADER;
+use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 use crate::summary;
 use crate::summary::age;
 use crate::theme::RainbowHue;
@@ -119,13 +125,15 @@ enum LineSubject<'a> {
 /// One member or work item, with the rails leading to it in the tree.
 #[derive(Clone, Debug)]
 struct TreeLine<'a> {
-    machine:  &'a str,
-    location: SessionLocation,
-    row:      &'a AgentRow,
-    hue:      RainbowHue,
-    rails:    Vec<Rail>,
-    branch:   Branch,
-    subject:  LineSubject<'a>,
+    /// The responsibility of a launcher folded into this thread.
+    dispatch_label: DispatchLabel<'a>,
+    machine:        &'a str,
+    location:       SessionLocation,
+    row:            &'a AgentRow,
+    hue:            RainbowHue,
+    rails:          Vec<Rail>,
+    branch:         Branch,
+    subject:        LineSubject<'a>,
 }
 
 /// Whether an ancestor's vertical rail continues past this line.
@@ -178,7 +186,7 @@ enum WorkKind {
 impl WorkKind {
     const fn role_text(self) -> &'static str {
         match self {
-            Self::Shell => "shell",
+            Self::Shell => MISSING_VALUE,
             Self::Subagent => "subagent",
             Self::Thread => "thread",
         }
@@ -206,7 +214,8 @@ impl<'a> Work<'a> {
                 || self.child.runs_label().into_owned(),
                 |timer| timer_label(timer, now),
             ),
-            WorkKind::Subagent | WorkKind::Thread => self.child.runs_label().into_owned(),
+            WorkKind::Subagent => self.child.runs_label().into_owned(),
+            WorkKind::Thread => self.child.thread_state.text().to_string(),
         }
     }
 }
@@ -300,13 +309,17 @@ impl TreeLayout {
 impl TreeLine<'_> {
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
-        let name = match self.subject {
+        let original = match self.subject {
             LineSubject::Agent(_) => &self.row.name,
             LineSubject::ManagedThread(child, _) => &child.name,
             LineSubject::Work(work) => &work.child.name,
         };
+        let name = match self.dispatch_label {
+            DispatchLabel::Original => original.clone(),
+            DispatchLabel::Worker(dispatch) => dispatch.label(),
+        };
         match self.location {
-            SessionLocation::SameMachine => name.clone(),
+            SessionLocation::SameMachine => name,
             SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
         }
     }
@@ -338,6 +351,19 @@ impl TreeLine<'_> {
         }
     }
 
+    /// The tier follows the account rather than a thread's activity.
+    const fn service_tier(&self) -> ServiceTier {
+        match self.subject {
+            LineSubject::Agent(_) => self.row.service_tier,
+            LineSubject::ManagedThread(child, _)
+            | LineSubject::Work(Work {
+                child,
+                kind: WorkKind::Thread,
+            }) => child.service_tier,
+            LineSubject::Work(_) => ServiceTier::Unrecorded,
+        }
+    }
+
     /// The program whose account this line names.
     const fn program(&self) -> Agent {
         match self.subject {
@@ -358,12 +384,15 @@ impl TreeLine<'_> {
             .to_string(),
             TreeColumn::Status => match self.subject {
                 LineSubject::Agent(_) => summary::status_text(self.row).to_string(),
-                LineSubject::ManagedThread(child, _) => child.runs_label().into_owned(),
+                LineSubject::ManagedThread(child, _) => child.thread_state.text().to_string(),
                 LineSubject::Work(work) => work.status(now),
             },
             TreeColumn::Account => match self.account() {
                 Account::Unrecorded => MISSING_VALUE.to_string(),
-                Account::Home(home) => home.label().to_string(),
+                Account::Home(home) => self
+                    .service_tier()
+                    .mark(home.label().to_owned())
+                    .into_owned(),
             },
             TreeColumn::Branch | TreeColumn::Directory
                 if matches!(self.subject, LineSubject::Work(_)) =>
@@ -384,8 +413,38 @@ impl TreeLine<'_> {
     fn status_role(&self) -> Role {
         match self.subject {
             LineSubject::Agent(_) => summary::status_role(self.row),
-            LineSubject::ManagedThread(_, _) => Role::Codex,
+            LineSubject::ManagedThread(child, _)
+            | LineSubject::Work(Work {
+                child,
+                kind: WorkKind::Thread,
+            }) => thread_status_role(child.thread_state),
             LineSubject::Work(work) => runs_role(work.kind),
+        }
+    }
+}
+
+/// The footer responsibility for each typed management role.
+impl From<HierarchyRole> for FooterRole {
+    fn from(role: HierarchyRole) -> Self {
+        match role {
+            HierarchyRole::Showrunner => Self::Showrunner,
+            HierarchyRole::Unit => Self::UnitDirector,
+            HierarchyRole::Impl
+            | HierarchyRole::Test
+            | HierarchyRole::Review
+            | HierarchyRole::Fix => Self::Worker,
+        }
+    }
+}
+
+impl TreeLine<'_> {
+    /// Only management roles and sessions use the footer's role colors.
+    fn footer_role(&self, colors: &FooterColors) -> FooterTint {
+        match self.subject {
+            LineSubject::Agent(RoleLabel::Unlabeled) => colors.role(FooterRole::Unassigned),
+            LineSubject::Agent(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
+            | LineSubject::ManagedThread(_, role) => colors.role(role.into()),
+            LineSubject::Work(_) => FooterTint::Plain,
         }
     }
 }
@@ -518,14 +577,8 @@ fn lines_of<'a>(
         )
         .collect();
     if let Some(owner) = placement.rows.iter().find(|row| row.identity == parent) {
-        let claimed = placement
-            .threads
-            .iter()
-            .filter(|thread| thread.owner == parent)
-            .map(|thread| thread.child_index)
-            .collect();
         siblings.extend(
-            work_branches(&owner.row.children, &claimed, 0)
+            unclaimed_work(placement, parent, owner.row)
                 .into_iter()
                 .map(|branch| {
                     (
@@ -537,16 +590,7 @@ fn lines_of<'a>(
                 }),
         );
     }
-    siblings.sort_by_key(|(identity, row, subject, _)| {
-        let (started, pid) = match subject {
-            LineSubject::Agent(_) => (row.started, row.pid),
-            LineSubject::ManagedThread(child, _) => {
-                (child.started, child.pid.unwrap_or(identity.pid))
-            },
-            LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
-        };
-        (started, identity.machine, pid)
-    });
+    siblings.sort_by_key(|(identity, row, subject, _)| line_order(*identity, row, *subject));
     let count = siblings.len();
     for (index, (identity, row, subject, branches)) in siblings.into_iter().enumerate() {
         let branch = if index + 1 == count {
@@ -561,7 +605,13 @@ fn lines_of<'a>(
         } else {
             parent_hue
         };
+        let dispatch_label = match subject {
+            LineSubject::Agent(_) => DispatchLabel::Original,
+            LineSubject::ManagedThread(child, _) => placement.dispatch_label(child),
+            LineSubject::Work(work) => placement.dispatch_label(work.child),
+        };
         lines.push(TreeLine {
+            dispatch_label,
             machine: identity.machine,
             location: if identity.machine == machine {
                 SessionLocation::SameMachine
@@ -580,7 +630,16 @@ fn lines_of<'a>(
                 lines_of(placement, identity, machine, rails, agents, hue, lines);
             },
             LineSubject::Work(_) => {
-                append_work(branches, row, identity.machine, machine, rails, hue, lines);
+                append_work(
+                    branches,
+                    row,
+                    identity.machine,
+                    machine,
+                    rails,
+                    hue,
+                    lines,
+                    placement,
+                );
             },
             LineSubject::ManagedThread(_, _) => {},
         }
@@ -588,7 +647,47 @@ fn lines_of<'a>(
     }
 }
 
+/// Order members and work by their start time, machine and process identity.
+fn line_order<'a>(
+    identity: RowIdentity<'a>,
+    row: &AgentRow,
+    subject: LineSubject<'_>,
+) -> (u64, &'a str, u32) {
+    let (started, pid) = match subject {
+        LineSubject::Agent(_) => (row.started, row.pid),
+        LineSubject::ManagedThread(child, _) => (child.started, child.pid.unwrap_or(identity.pid)),
+        LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
+    };
+    (started, identity.machine, pid)
+}
+
+/// Retain work that is neither a managed thread nor its folded dispatch.
+fn unclaimed_work<'a>(
+    placement: &AgentPlacement<'a>,
+    parent: RowIdentity<'a>,
+    row: &'a AgentRow,
+) -> Vec<WorkBranch<'a>> {
+    let claimed = placement
+        .threads
+        .iter()
+        .filter(|thread| thread.owner == parent)
+        .map(|thread| thread.child_index)
+        .chain(
+            row.children
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| placement.folds_dispatch(child))
+                .map(|(index, _)| index),
+        )
+        .collect();
+    work_branches(&row.children, &claimed, 0)
+}
+
 /// Append descendants under their nearest retained work ancestor.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "placement supplies labels for nested worker threads"
+)]
 fn append_work<'a>(
     branches: Vec<WorkBranch<'a>>,
     row: &'a AgentRow,
@@ -597,6 +696,7 @@ fn append_work<'a>(
     rails: &mut Vec<Rail>,
     hue: RainbowHue,
     lines: &mut Vec<TreeLine<'a>>,
+    placement: &AgentPlacement<'a>,
 ) {
     let count = branches.len();
     for (index, work_branch) in branches.into_iter().enumerate() {
@@ -606,6 +706,7 @@ fn append_work<'a>(
             Branch::Middle
         };
         lines.push(TreeLine {
+            dispatch_label: placement.dispatch_label(work_branch.work.child),
             machine,
             location: if machine == heading {
                 SessionLocation::SameMachine
@@ -627,6 +728,7 @@ fn append_work<'a>(
             rails,
             hue,
             lines,
+            placement,
         );
         rails.pop();
     }
@@ -755,7 +857,16 @@ fn view_height(
     view: &CellView,
     account_column: AccountColumn,
 ) -> usize {
-    above_tree(entry, &[], width, now, view, account_column).len()
+    above_tree(
+        entry,
+        &[],
+        width,
+        now,
+        view,
+        account_column,
+        &FooterColors::default(),
+    )
+    .len()
         + if entry.lines.is_empty() {
             usize::from(NOTHING_RUNNING_HEIGHT)
         } else {
@@ -774,8 +885,9 @@ pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> S
         )
 }
 
-/// Draw one tile with the account decision shared by the whole frame.
-pub(crate) fn draw(
+/// Draw a tile with the theme alone for existing layout fixtures.
+#[cfg(test)]
+fn draw(
     buffer: &mut Buffer,
     area: Rect,
     entry: &AgentEntry<'_>,
@@ -783,28 +895,37 @@ pub(crate) fn draw(
     now: u64,
     account_column: AccountColumn,
 ) {
-    draw_view(
+    draw_with_footer_colors(
         buffer,
         area,
         entry,
         cells,
         now,
-        &CellView::fitted(entry, area, now, account_column),
         account_column,
+        &FooterColors::default(),
     );
 }
 
-/// Fill the heading lines and the one tree table with no intervening gap.
-fn draw_view(
+/// Draw one tile with the account decision and footer palette shared by the frame.
+pub(crate) fn draw_with_footer_colors(
     buffer: &mut Buffer,
     area: Rect,
     entry: &AgentEntry<'_>,
     cells: &[AgentEntry<'_>],
     now: u64,
-    view: &CellView,
     account_column: AccountColumn,
+    footer_colors: &FooterColors,
 ) {
-    let above = above_tree(entry, cells, area.width, now, view, account_column);
+    let view = CellView::fitted(entry, area, now, account_column);
+    let above = above_tree(
+        entry,
+        cells,
+        area.width,
+        now,
+        &view,
+        account_column,
+        footer_colors,
+    );
     let above_height = u16::try_from(above.len()).unwrap_or(u16::MAX);
     Paragraph::new(above).render(
         Rect {
@@ -825,7 +946,15 @@ fn draw_view(
         ))
         .render(tree, buffer);
     } else {
-        draw_tree(buffer, tree, &entry.lines, now, view, account_column);
+        draw_tree(
+            buffer,
+            tree,
+            &entry.lines,
+            now,
+            &view,
+            account_column,
+            footer_colors,
+        );
     }
 }
 
@@ -861,6 +990,7 @@ fn draw_tree(
     now: u64,
     view: &CellView,
     account_column: AccountColumn,
+    footer_colors: &FooterColors,
 ) {
     if area.is_empty() {
         return;
@@ -900,13 +1030,28 @@ fn draw_tree(
                     Span::styled(lead, text),
                     Span::styled(name, style),
                 ]))
+            } else if column == TreeColumn::Account {
+                match line.account() {
+                    Account::Unrecorded => Cell::from(Span::styled(MISSING_VALUE, text)),
+                    Account::Home(home) => {
+                        let value = line.value(column, now);
+                        let (account, tier) = value.split_at(home.label().len());
+                        Cell::from(Line::from(vec![
+                            Span::styled(
+                                account.to_owned(),
+                                footer_colors.account(home.label()).style(text),
+                            ),
+                            Span::styled(tier.to_owned(), Role::Codex.style()),
+                        ]))
+                    },
+                }
             } else {
                 Cell::from(Span::styled(
                     line.value(column, now),
-                    if column == TreeColumn::Status {
-                        line.status_role().style()
-                    } else {
-                        text
+                    match column {
+                        TreeColumn::Status => line.status_role().style(),
+                        TreeColumn::Role => line.footer_role(footer_colors).style(text),
+                        _ => text,
                     },
                 ))
             }
@@ -937,13 +1082,14 @@ fn above_tree(
     now: u64,
     view: &CellView,
     account_column: AccountColumn,
+    footer_colors: &FooterColors,
 ) -> Vec<Line<'static>> {
     let row = entry.row;
     if *view == CellView::Compressed && row.launched_by.is_none() {
         return Vec::new();
     }
     let mut lines = vec![
-        header_line(row, entry.machine, now, account_column),
+        header_line_with_footer_colors(row, entry.machine, now, account_column, footer_colors),
         place_line(row),
     ];
     if let Some(launcher) = row.launched_by {
@@ -975,16 +1121,26 @@ fn header_line(
     now: u64,
     account_column: AccountColumn,
 ) -> Line<'static> {
+    header_line_with_footer_colors(row, machine, now, account_column, &FooterColors::default())
+}
+
+/// The header's account label uses the footer; its tier keeps the program style.
+fn header_line_with_footer_colors(
+    row: &AgentRow,
+    machine: &str,
+    now: u64,
+    account_column: AccountColumn,
+    footer_colors: &FooterColors,
+) -> Line<'static> {
     let text = Style::default().fg(text_default());
     let separator = summary::separator;
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(format!("{PID_LABEL} {}", row.pid), text),
         separator(),
-        Span::styled(
-            row.agent_label(account_column),
-            summary::agent_role(row.agent).style(),
-        ),
+    ];
+    spans.extend(summary::agent_label(row, account_column, footer_colors).spans);
+    spans.extend([
         separator(),
         Span::styled(
             summary::status_text(row).to_string(),
@@ -996,7 +1152,8 @@ fn header_line(
         Span::styled(machine.to_string(), text),
         separator(),
         Span::styled(summary::desktop_text(row).to_string(), text),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 /// Where `row` works, as one value: `<branch> · <directory>`, or the
@@ -1087,6 +1244,14 @@ fn time_left_label(left: u64) -> String {
     }
 }
 
+/// The same activity colors used for a Claude session's busy and idle states.
+const fn thread_status_role(state: ThreadState) -> Role {
+    match state {
+        ThreadState::Busy => Role::Busy,
+        ThreadState::Idle => Role::Idle,
+    }
+}
+
 /// The program color of a retained work line's status.
 const fn runs_role(kind: WorkKind) -> Role {
     match kind {
@@ -1108,6 +1273,8 @@ mod tests {
     use crate::census::Account;
     use crate::census::CodexThreadId;
 
+    #[path = "footer_color_tests.rs"]
+    mod footer_color_tests;
     #[path = "tree_tests.rs"]
     mod tree_tests;
     use crate::census::Agent;
@@ -1120,6 +1287,7 @@ mod tests {
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::worker_dispatch::WorkerDispatch;
     use crate::constants::TRUNCATION_MARK;
 
     /// Every cell across `machines`, in the order the grid shows them:
@@ -1181,6 +1349,8 @@ mod tests {
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
+            dispatch: WorkerDispatch::Plain,
+            thread_state: ThreadState::Idle,
             thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
@@ -1280,6 +1450,7 @@ mod tests {
                     &mut Vec::new(),
                     RainbowHue::Red,
                     &mut lines,
+                    &AgentPlacement::from_machines(&[]),
                 );
                 lines
             },
@@ -1387,10 +1558,10 @@ mod tests {
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
                 "    session                                                                role      status   branch  directory  age",
-                " ├─ Launch the Phase 1 implementation seat                                 shell     command  —       —          12m",
-                " │  └─ tool-based-ui-trunk-impl                                            thread    codex    —       —          11m",
+                " ├─ Launch the Phase 1 implementation seat                                 —         command  —       —          12m",
+                " │  └─ tool-based-ui-trunk-impl                                            thread    idle     —       —          11m",
                 " └─ Review the permission queue                                            subagent  claude   —       —          5m 3s",
-                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  shell     command  —       —          45s",
+                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  —         command  —       —          45s",
             ]
         );
         let heading = " pid 3266367 · claude · busy · 23h · natedev · berth_fix";
@@ -1411,7 +1582,7 @@ mod tests {
         for (text, role) in [
             ("claude", Role::Claude),
             ("busy", Role::Busy),
-            ("codex", Role::Codex),
+            ("idle", Role::Idle),
             ("command", Role::Shell),
         ] {
             let at = find(&buffer, text).expect("styled value");
@@ -1447,9 +1618,8 @@ mod tests {
         );
     }
 
-    /// A Codex agent's tier follows its program in the header, and a
-    /// Codex thread's in its `runs`, in the Codex color; a row no tier
-    /// was found for shows its program alone.
+    /// A Codex tier follows the header program; a thread shows activity
+    /// in the status column even when the account column is hidden.
     #[test]
     fn a_codex_tier_follows_its_program() {
         let codex = AgentRow {
@@ -1462,10 +1632,11 @@ mod tests {
             ..agent(4_039_085, "handler", 12 * MINUTE, None)
         };
         let buffer = drawn(&codex, None, WIDE);
-        for text in ["codex fast", "codex --"] {
-            let at = find(&buffer, text).expect("the tier is drawn");
-            assert_eq!(Some(buffer[at].fg), Role::Codex.style().fg);
-        }
+        let at = find(&buffer, "codex fast").expect("the header tier is drawn");
+        assert_eq!(Some(buffer[at].fg), Role::Codex.style().fg);
+        let at = find(&buffer, "idle").expect("the thread activity is drawn");
+        assert_eq!(Some(buffer[at].fg), Role::Idle.style().fg);
+        assert!(find(&buffer, "codex --").is_none());
         assert_eq!(find_all(&buffer, "trunk mesh").len(), 1);
     }
 
@@ -2551,9 +2722,9 @@ mod tests {
         );
     }
 
-    /// Managed threads retain their requested tiers when rendered in either tree view.
+    /// Managed threads show their activity when accounts are hidden in either tree view.
     #[test]
-    fn managed_codex_threads_show_their_tiers_in_full_and_compressed_views() {
+    fn managed_codex_threads_show_activity_in_full_and_compressed_views() {
         let state = MachineState::Answered(
             vec![
                 identified(1, "unit", HOUR, None),
@@ -2593,16 +2764,13 @@ mod tests {
             drawn_into(manager, &cells, 160, 3),
         ] {
             let rendered = lines(&buffer);
-            for (name, tier) in [
-                ("fast worker", "codex fast"),
-                ("standard worker", "codex --"),
-            ] {
+            for name in ["fast worker", "standard worker"] {
                 let worker_lines: Vec<_> =
                     rendered.iter().filter(|line| line.contains(name)).collect();
                 assert_eq!(worker_lines.len(), 1, "each managed worker appears once");
                 assert!(
-                    worker_lines[0].contains(tier),
-                    "{name} retains {tier}: {}",
+                    worker_lines[0].contains("idle"),
+                    "{name} shows its activity: {}",
                     worker_lines[0]
                 );
             }
@@ -2695,7 +2863,7 @@ mod tests {
             assert!(workers[0].contains("mesh worker · mac"));
             let at = find(&buffer, "impl").expect("the managed thread shows its accepted role");
             assert_eq!(buffer[at].fg, text_default());
-            assert!(workers[0].contains("codex fast"));
+            assert!(workers[0].contains("idle"));
         }
     }
 

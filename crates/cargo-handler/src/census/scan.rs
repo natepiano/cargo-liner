@@ -57,6 +57,9 @@ use super::tree::ShellCall;
 use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
+use super::worker_dispatch::ParsedDispatch;
+use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerRoster;
 use crate::constants::CALL_SEARCH_SETTLE;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CLAUDE_DIRNAME;
@@ -330,7 +333,10 @@ impl LocalScanner {
             .unwrap_or_default()
         });
         self.rollouts.forget_unread();
+        let dispatches =
+            startup_log::startup_stage("worker_dispatches", || find_worker_dispatches(processes));
         let sources = TreeSources {
+            dispatches,
             sessions,
             subagents,
             shell_calls,
@@ -547,6 +553,57 @@ impl LocalScanner {
     }
 }
 
+/// Resolve literal launchers against one roster read per directory per scan.
+/// A launcher's actual pid is used even when a shell wrapper owns its row.
+pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32, WorkerDispatch> {
+    let table = classify::pid_table(processes);
+    let wrappers: HashMap<_, _> = processes
+        .iter()
+        .filter_map(|process| {
+            let command = tree::shell_command(process)?;
+            Some((process.pid, ParsedDispatch::parse(&command).ok()?))
+        })
+        .collect();
+    let mut rosters = HashMap::new();
+    let mut found = HashMap::new();
+    for process in processes {
+        let Ok(dispatch) = ParsedDispatch::from_arguments(&process.arguments) else {
+            continue;
+        };
+        let roster = rosters
+            .entry(dispatch.session_dir.clone())
+            .or_insert_with(|| WorkerRoster::read(&dispatch.session_dir));
+        let worker = dispatch.resolve(roster, process.pid);
+        let mut parent = process;
+        let mut seen = HashSet::new();
+        while seen.insert(parent.pid) {
+            if let Some(wrapper) = wrappers.get(&parent.pid) {
+                if wrapper == &dispatch {
+                    found.insert(parent.pid, worker);
+                }
+                break;
+            }
+            let Some(ancestor) = parent.parent.and_then(|pid| table.get(&pid)) else {
+                break;
+            };
+            if ancestor.is_agent() {
+                break;
+            }
+            parent = ancestor;
+        }
+    }
+    for (pid, dispatch) in wrappers {
+        if found.contains_key(&pid) {
+            continue;
+        }
+        let roster = rosters
+            .entry(dispatch.session_dir.clone())
+            .or_insert_with(|| WorkerRoster::read(&dispatch.session_dir));
+        found.insert(pid, dispatch.resolve(roster, pid));
+    }
+    found
+}
+
 /// The launcher of `held`, a row tmux holds, by its pid and start: the
 /// other Claude Code row among `rows` whose transcript holds the call
 /// that opened it. The launcher's own process may have started later,
@@ -677,9 +734,10 @@ fn app_server_threads(
                             )
                         },
                     );
-                    let service_tier =
-                        tier::requested(Some(rollouts.read(&rollout)), &[], pacer, started);
+                    let read = rollouts.read(&rollout);
+                    let service_tier = tier::requested(Some(read), &[], pacer, started);
                     ThreadEntry {
+                        thread_state: read.thread_state,
                         thread_id: CodexThreadId::Recorded(id),
                         name,
                         started,
@@ -1365,7 +1423,7 @@ mod hierarchy_publication_tests {
             updates
                 .recv_timeout(Duration::from_millis(500))
                 .expect("hierarchy should follow completed rows"),
-            CensusUpdate::Local(
+            CensusUpdate::LocalScanCompleted(
                 Vec::new(),
                 HierarchyEdges(vec![HierarchyEdge {
                     manager: "boss".to_string(),

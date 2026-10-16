@@ -148,7 +148,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "└─",
             "hanadocs-dashboard-impl",
             "impl",
-            "codex",
+            "idle",
             "codex1",
             "5h"
         ]
@@ -163,7 +163,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     for (name, role, status, account, age) in [
         ("dashboard", "unit", "busy", "claude1", "6h"),
-        ("hanadocs-dashboard-impl", "impl", "codex", "codex1", "5h"),
+        ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5h"),
         ("diagrams", "unit", "idle", "claude3", "4h"),
     ] {
         let row = row_of(&buffer, name);
@@ -237,7 +237,7 @@ fn tree_headers_names_roles_accounts_and_statuses_keep_their_colors() {
         }
         for (name, pid, status_role) in [
             ("dashboard", 20, Role::Busy),
-            ("hanadocs-dashboard-impl", 20, Role::Codex),
+            ("hanadocs-dashboard-impl", 20, Role::Idle),
             ("diagrams", 30, Role::Idle),
         ] {
             let at = find(&buffer, name).expect("the name is drawn");
@@ -396,11 +396,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "busy", "claude1", "2h"),
-        ("clock job", "shell", "◑ 1:00", "—", "10m"),
-        ("unheld worker", "thread", "codex", "codex1", "9m"),
+        ("clock job", MISSING_VALUE, "◑ 1:00", "—", "10m"),
+        ("unheld worker", "thread", "idle", "codex1", "9m"),
         ("review worker", "subagent", "claude", "—", "8m"),
-        ("nested command", "shell", "command", "—", "7m"),
-        ("root command", "shell", "command", "—", "1h"),
+        ("nested command", MISSING_VALUE, "command", "—", "7m"),
+        ("root command", MISSING_VALUE, "command", "—", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -439,7 +439,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     let status_x = find(&buffer, "status").expect("status column").0;
     for (name, role) in [
         ("clock job", Role::Shell),
-        ("unheld worker", Role::Codex),
+        ("unheld worker", Role::Idle),
         ("review worker", Role::Claude),
     ] {
         assert_eq!(

@@ -23,12 +23,13 @@ use super::classify;
 use super::classify::ProcessEntry;
 #[cfg(test)]
 use super::classify::SessionRecord;
-#[cfg(test)]
 use super::tree;
+use super::tree::DispatchFold;
 #[cfg(test)]
 use super::tree::ThreadEntry;
 #[cfg(test)]
 use super::tree::TreeSources;
+use super::worker_dispatch::DispatchLabel;
 use crate::constants::HEADING_SEPARATOR;
 
 /// A listed agent's identity across the shown machines.
@@ -133,6 +134,8 @@ pub(crate) struct AgentPlacement<'a> {
     pub(crate) threads: Vec<super::ManagedThread<'a>>,
     /// Launcher-cycle rows promoted after the ordinary roots.
     rescued_roots:      HashSet<RowIdentity<'a>>,
+    /// Shell/thread pairs joined after their tile membership is normalized.
+    dispatch_folds:     Vec<DispatchFold<'a>>,
 }
 
 impl<'a> AgentPlacement<'a> {
@@ -184,11 +187,85 @@ impl<'a> AgentPlacement<'a> {
         Self::resolve_managers(&mut rows, &edges, &managers);
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
         let threads = Self::resolve_threads(machines, &managers, &edges);
-        Self {
+        let mut placement = Self {
             rows,
             threads,
             rescued_roots,
+            dispatch_folds: Vec::new(),
+        };
+        placement.dispatch_folds = placement.resolve_dispatches(machines);
+        placement
+    }
+
+    /// Find the tile root of a normalized listed member.
+    fn tile_root(&self, mut identity: RowIdentity<'a>) -> RowIdentity<'a> {
+        for _ in 0..self.rows.len() {
+            match self
+                .rows
+                .iter()
+                .find(|row| row.identity == identity)
+                .map(|row| row.placement)
+            {
+                Some(Placement::Managed { manager, .. } | Placement::Launched(manager)) => {
+                    identity = manager;
+                },
+                Some(Placement::Root) | None => break,
+            }
         }
+        identity
+    }
+
+    /// Include only visible work, assigning moved threads to their manager's tile.
+    fn resolve_dispatches(&self, machines: &[Machine<'a>]) -> Vec<DispatchFold<'a>> {
+        let mut children = Vec::new();
+        for machine in machines {
+            for row in machine.state.rows() {
+                let owner = RowIdentity {
+                    machine: machine.name,
+                    pid:     row.pid,
+                };
+                let mut hidden_until = 0;
+                for (index, child) in row.children.iter().enumerate() {
+                    if index < hidden_until {
+                        continue;
+                    }
+                    if matches!(child.kind, ChildKind::Session(_)) {
+                        hidden_until = (index + 1..row.children.len())
+                            .find(|&next| row.children[next].depth <= child.depth)
+                            .unwrap_or(row.children.len());
+                        continue;
+                    }
+                    let moved = self
+                        .threads
+                        .iter()
+                        .find(|thread| thread.owner == owner && thread.child_index == index);
+                    let tile = match moved {
+                        Some(thread) => self.tile_root(thread.manager),
+                        None if row.agent != Agent::CodexThreadHost => self.tile_root(owner),
+                        None => continue,
+                    };
+                    children.push((tile, child));
+                }
+            }
+        }
+        tree::join_dispatches(&children)
+    }
+
+    /// Whether this shell's worker is already visible in its tile.
+    pub(crate) fn folds_dispatch(&self, child: &super::ChildRow) -> bool {
+        self.dispatch_folds
+            .iter()
+            .any(|fold| std::ptr::eq(fold.shell, child))
+    }
+
+    /// The dispatch label for a thread matched in its final tile.
+    pub(crate) fn dispatch_label(&self, child: &super::ChildRow) -> DispatchLabel<'a> {
+        self.dispatch_folds
+            .iter()
+            .find(|fold| std::ptr::eq(fold.thread, child))
+            .map_or(DispatchLabel::Original, |fold| {
+                DispatchLabel::Worker(fold.dispatch)
+            })
     }
 
     /// Resolve `ManagedThread` entries, preferring listed owners over
@@ -483,6 +560,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         threads: HashMap::from([(
             30,
             vec![ThreadEntry {
+                thread_state: super::ThreadState::Idle,
                 thread_id:    CodexThreadId::Recorded("mesh-worker".to_string()),
                 name:         "mesh worker".to_string(),
                 started:      40,

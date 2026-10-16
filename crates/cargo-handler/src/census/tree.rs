@@ -26,13 +26,17 @@ use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
+use super::RowIdentity;
 use super::ServiceTier;
+use super::ThreadState;
 use super::Timer;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
+use super::worker_dispatch::ResolvedWorkerDispatch;
+use super::worker_dispatch::WorkerDispatch;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
@@ -41,7 +45,7 @@ use crate::constants::CODEX_ROLLOUT_EXTENSION;
 use crate::constants::CODEX_ROLLOUT_PREFIX;
 use crate::constants::CODEX_THREAD_ID_LENGTH;
 use crate::constants::SHELL_EVAL_OPEN;
-use crate::constants::SHELL_QUOTED_QUOTE;
+use crate::constants::SHELL_QUOTE_ESCAPES;
 use crate::constants::SHELL_SCRIPT_FLAG;
 use crate::constants::SHELL_SNAPSHOT_MARKER;
 use crate::constants::SLEEP_PROGRAM;
@@ -61,6 +65,8 @@ pub(super) struct ShellCall {
 /// One thread a Codex app server holds open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ThreadEntry {
+    /// The last turn event in its rollout.
+    pub(super) thread_state: ThreadState,
     /// The rollout thread id used by management links.
     pub(super) thread_id:    CodexThreadId,
     /// The thread's label, else its id.
@@ -76,6 +82,8 @@ pub(super) struct ThreadEntry {
 /// What the scan read from disk for the tree.
 #[derive(Debug, Default)]
 pub(super) struct TreeSources<'a> {
+    /// The worker launchers found in process commands and mesh rosters.
+    pub(super) dispatches:    HashMap<u32, WorkerDispatch>,
     /// Every session record, for naming a Claude Code process found
     /// under a shell.
     pub(super) sessions:      &'a [SessionRecord],
@@ -92,8 +100,8 @@ pub(super) struct TreeSources<'a> {
 
 /// The command a Claude Code shell wrapper runs, when `process` is one:
 /// its script sources a shell snapshot and runs the command quoted after
-/// `eval '`, where `'\''` stands for one `'`. A script with no `eval '`
-/// is the command itself.
+/// `eval '`, where either wrapper quote escape stands for one apostrophe.
+/// A script with no `eval '` is the command itself.
 pub(super) fn shell_command(process: &ProcessEntry) -> Option<String> {
     if process.arguments.get(1).map(String::as_str) != Some(SHELL_SCRIPT_FLAG) {
         return None;
@@ -108,7 +116,10 @@ pub(super) fn shell_command(process: &ProcessEntry) -> Option<String> {
     let mut rest = &script[open + SHELL_EVAL_OPEN.len()..];
     let mut command = String::new();
     loop {
-        if let Some(after) = rest.strip_prefix(SHELL_QUOTED_QUOTE) {
+        if let Some(after) = SHELL_QUOTE_ESCAPES
+            .iter()
+            .find_map(|escape| rest.strip_prefix(*escape))
+        {
             command.push('\'');
             rest = after;
             continue;
@@ -168,8 +179,12 @@ pub(super) fn thread_id(path: &Path) -> Option<String> {
 /// One row before it is laid out: what it is and the rows under it.
 #[derive(Debug)]
 struct Node {
+    /// A live thread's rollout state; idle for other work.
+    thread_state: ThreadState,
     /// The stable id when this node is an app-server thread.
     thread_id:    CodexThreadId,
+    /// A worker identity carried until tile placement is known.
+    dispatch:     WorkerDispatch,
     /// What the row is.
     kind:         ChildKind,
     /// The tier a Codex thread or process asked for.
@@ -225,7 +240,9 @@ pub(super) fn attach_children(
                 .map(|process| walker.agent_nodes(process, 0, &mut visited))
                 .unwrap_or_default();
             nodes.extend(sessions.iter().map(|session| Node {
+                thread_state: ThreadState::Idle,
                 thread_id:    CodexThreadId::Unrecorded,
+                dispatch:     WorkerDispatch::Plain,
                 kind:         ChildKind::Session(session.agent),
                 service_tier: session.service_tier,
                 account:      Account::Unrecorded,
@@ -266,6 +283,32 @@ pub(super) fn attach_children(
     }
 }
 
+/// One shell and thread that occupy the same final tile.
+#[derive(Debug)]
+pub(super) struct DispatchFold<'a> {
+    /// The shell whose row is suppressed, retaining its descendants.
+    pub(super) shell:    &'a ChildRow,
+    /// The worker row that receives the responsibility label.
+    pub(super) thread:   &'a ChildRow,
+    /// The identity established by parsing and roster lookup during scanning.
+    pub(super) dispatch: &'a ResolvedWorkerDispatch,
+}
+
+/// Join typed dispatches to threads only within the same normalized tile.
+pub(super) fn join_dispatches<'a>(
+    children: &[(RowIdentity<'a>, &'a ChildRow)],
+) -> Vec<DispatchFold<'a>> {
+    children.iter().filter_map(|(tile, shell)| {
+        let WorkerDispatch::Worker(dispatch) = &shell.dispatch else { return None; };
+        if shell.kind != ChildKind::Shell { return None; }
+        let (_, thread) = children.iter().find(|(thread_tile, child)| {
+            thread_tile == tile && child.kind == ChildKind::Thread
+                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if id == &dispatch.thread_id)
+        })?;
+        Some(DispatchFold { shell, thread, dispatch })
+    }).collect()
+}
+
 /// Walks the process table below an agent.
 struct Walker<'a> {
     /// Each process's children, by the parent's pid.
@@ -294,7 +337,9 @@ impl Walker<'_> {
                 .into_iter()
                 .flatten()
                 .map(|thread| Node {
+                    thread_state: thread.thread_state,
                     thread_id:    thread.thread_id.clone(),
+                    dispatch:     WorkerDispatch::Plain,
                     kind:         ChildKind::Thread,
                     service_tier: thread.service_tier,
                     account:      thread.account.clone(),
@@ -320,7 +365,14 @@ impl Walker<'_> {
                     .and_then(|call| call.description.clone())
                     .unwrap_or_else(|| command.split_whitespace().collect::<Vec<_>>().join(" "));
                 let shell = Node {
+                    thread_state: ThreadState::Idle,
                     thread_id: CodexThreadId::Unrecorded,
+                    dispatch: self
+                        .sources
+                        .dispatches
+                        .get(&child.pid)
+                        .cloned()
+                        .unwrap_or_default(),
                     kind: ChildKind::Shell,
                     service_tier: ServiceTier::Unrecorded,
                     account: Account::Unrecorded,
@@ -458,7 +510,9 @@ impl Walker<'_> {
             )
         };
         Node {
+            thread_state: ThreadState::Idle,
             thread_id: CodexThreadId::Unrecorded,
+            dispatch: WorkerDispatch::Plain,
             kind: kind(agent),
             account: Account::Unrecorded,
             service_tier: self
@@ -494,7 +548,9 @@ fn subagent_node(
         );
     }
     Node {
+        thread_state: ThreadState::Idle,
         thread_id: CodexThreadId::Unrecorded,
+        dispatch: WorkerDispatch::Plain,
         kind: ChildKind::Subagent,
         service_tier: ServiceTier::Unrecorded,
         account: Account::Unrecorded,
@@ -560,7 +616,9 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
+            thread_state: node.thread_state,
             thread_id: node.thread_id,
+            dispatch: node.dispatch,
             depth,
             kind: node.kind,
             service_tier: node.service_tier,
@@ -712,6 +770,7 @@ mod tests {
     /// A thread an app server holds open.
     fn thread(name: &str, started: u64) -> ThreadEntry {
         ThreadEntry {
+            thread_state: ThreadState::Idle,
             thread_id: CodexThreadId::Unrecorded,
             name: name.to_string(),
             started,
@@ -807,6 +866,7 @@ mod tests {
     /// was found in the transcript of a subagent that has since finished.
     fn natedev_sources(sessions: &[SessionRecord]) -> TreeSources<'_> {
         TreeSources {
+            dispatches: HashMap::new(),
             sessions,
             subagents: HashMap::from([(
                 GEOMETRY,
@@ -905,6 +965,35 @@ mod tests {
             None
         );
         assert_eq!(shell_command(&process(10, 1, "zsh", 0)), None);
+    }
+
+    /// Both shell wrappers preserve apostrophes and the command after them.
+    #[test]
+    fn wrapper_quote_escapes_preserve_the_full_command() {
+        for (quoted, expected) in [
+            (
+                r#"printf "%s" "fix the selection'\''s outline" && echo finished"#,
+                r#"printf "%s" "fix the selection's outline" && echo finished"#,
+            ),
+            (
+                r#"printf "%s" "fix the selection'"'"'s outline" && echo finished"#,
+                r#"printf "%s" "fix the selection's outline" && echo finished"#,
+            ),
+            (
+                r#"printf "%s" "fix the selection outline" && echo finished"#,
+                r#"printf "%s" "fix the selection outline" && echo finished"#,
+            ),
+            (
+                r#"printf "%s" "the selection'"'"'s and panel'\''s outlines" && echo finished"#,
+                r#"printf "%s" "the selection's and panel's outlines" && echo finished"#,
+            ),
+        ] {
+            assert_eq!(
+                shell_command(&wrapper(10, 1, 0, quoted)).as_deref(),
+                Some(expected),
+                "wrapper command: {quoted}",
+            );
+        }
     }
 
     /// A shell call written `offset_ms` milliseconds from [`STARTED`].
@@ -1349,6 +1438,7 @@ mod tests {
             threads: HashMap::from([(
                 30,
                 vec![ThreadEntry {
+                    thread_state: ThreadState::Idle,
                     thread_id: CodexThreadId::Recorded("mesh-worker".to_string()),
                     account: Account::Home(AccountLabels::default().resolve(
                         Path::new("/home/test/.codex2"),

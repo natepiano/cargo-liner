@@ -22,8 +22,27 @@ use crate::census::CodexThreadId;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::ThreadState;
 use crate::census::account::AccountLabels;
 use crate::census::account::ConfigHome;
+use crate::census::worker_dispatch::WorkerDispatch;
+
+/// The shell detail attached after classification is published.
+fn staged_child() -> ChildRow {
+    ChildRow {
+        thread_id:    CodexThreadId::Unrecorded,
+        dispatch:     WorkerDispatch::Plain,
+        thread_state: ThreadState::Idle,
+        depth:        0,
+        kind:         ChildKind::Shell,
+        service_tier: ServiceTier::Unrecorded,
+        account:      Account::Unrecorded,
+        pid:          Some(428_045),
+        name:         "build.sh".to_string(),
+        started:      110,
+        timer:        None,
+    }
+}
 
 #[test]
 fn the_staged_scan_sends_classified_rows_before_reading_details() {
@@ -76,17 +95,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         launched_by:     None,
         children:        Vec::new(),
     };
-    let child = ChildRow {
-        thread_id:    CodexThreadId::Unrecorded,
-        depth:        0,
-        kind:         ChildKind::Shell,
-        service_tier: ServiceTier::Unrecorded,
-        account:      Account::Unrecorded,
-        pid:          Some(428_045),
-        name:         "build.sh".to_string(),
-        started:      110,
-        timer:        None,
-    };
+    let child = staged_child();
     let (sender, updates) = mpsc::channel();
 
     super::LocalScanner::new(AccountLabels::default()).scan_stages(
