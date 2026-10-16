@@ -1460,8 +1460,7 @@ fn a_session_checks_its_held_path_without_waiting_for_the_mutation_lock() {
     );
 
     let (unheld, elapsed) = check_while_locked("file:unheld.rs");
-    assert_ne!(unheld.status.code(), Some(0), "{}", json_output(&unheld));
-    assert_ne!(json_output(&unheld)["status"], "clear");
+    assert_check_contention(&unheld);
     assert!(
         elapsed >= lock_deadline,
         "an unheld path must wait for the lock deadline: {elapsed:?}"
@@ -1493,6 +1492,24 @@ fn check_at_held_mutation_lock(root: &Path, arguments: &[&str], session: &str) -
         .expect("check should finish at its short deadline");
     assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
     output
+}
+
+/// A lock deadline must identify the busy ledger, without inventing an overlap holder.
+fn assert_check_contention(output: &Output) {
+    let envelope = json_output(output);
+    assert_eq!(output.status.code(), Some(6), "{envelope}");
+    assert_eq!(envelope["exit_code"], 6);
+    assert_eq!(envelope["status"], "contention");
+    assert_eq!(envelope["verb"], "check");
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
+    assert_eq!(envelope["reservations"], serde_json::json!([]));
+    assert!(
+        envelope["message"]
+            .as_str()
+            .expect("busy diagnostic")
+            .contains("another cargo-berth operation is still running"),
+        "{envelope}"
+    );
 }
 
 #[test]
@@ -1537,11 +1554,7 @@ fn fast_path_declines_a_partially_covered_tree() {
     ));
     let contended =
         check_at_held_mutation_lock(root, &["check", "tree:src", "--json"], "tree-session");
-    assert!(
-        !contended.status.success(),
-        "a held child does not cover the tree: {}",
-        json_output(&contended)
-    );
+    assert_check_contention(&contended);
     let checked = run_berth_with_session(root, &["check", "tree:src", "--json"], "tree-session");
     assert_success(&checked);
     assert_eq!(
@@ -1596,11 +1609,7 @@ fn fast_path_declines_an_unmapped_session_with_one_active_reservation() {
     let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");
     let contended =
         check_at_held_mutation_lock(root, &["check", "file:held.rs", "--json"], "unmapped");
-    assert!(
-        !contended.status.success(),
-        "an unmapped caller must lock: {}",
-        json_output(&contended)
-    );
+    assert_check_contention(&contended);
     let checked = run_berth_with_session(root, &["check", "file:held.rs", "--json"], "unmapped");
     assert_success(&checked);
     let acquisition = &json_output(&checked)["payload"]["data"]["acquisition"];
@@ -1662,11 +1671,7 @@ fn fast_path_explicit_selection_reuses_its_mapping_but_locks_before_remapping() 
         ],
         "explicit-session",
     );
-    assert!(
-        !contended.status.success(),
-        "an explicit switch must lock: {}",
-        json_output(&contended)
-    );
+    assert_check_contention(&contended);
     assert_eq!(
         fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings"),
         mappings
@@ -1714,12 +1719,11 @@ fn fast_path_declines_a_released_session_mapping() {
         &["check", "file:held.rs", "--json"],
         "released-session",
     );
-    assert!(
-        !checked.status.success(),
-        "released work cannot authorize a fast answer: {}",
-        json_output(&checked)
-    );
-    assert_ne!(json_output(&checked)["status"], "clear");
+    // Identity validation rejects this stale mapping before any lock is attempted.
+    let envelope = json_output(&checked);
+    assert_eq!(checked.status.code(), Some(5), "{envelope}");
+    assert_eq!(envelope["status"], "invalid_input");
+    assert_eq!(envelope["payload"]["data"]["kind"], "stale_session_mapping");
 }
 
 #[test]
@@ -1732,10 +1736,7 @@ fn fast_path_envelope_equals_the_locked_already_held_answer() {
     let arguments = ["check", "--reservation", &id, "file:held.rs", "--json"];
     // With no mapping, this explicit selection must lock to publish the comparison session.
     let contended = check_at_held_mutation_lock(root, &arguments, "comparison-session");
-    assert!(
-        !contended.status.success(),
-        "the reference invocation must require the lock"
-    );
+    assert_check_contention(&contended);
     let locked = run_berth_with_session(root, &arguments, "comparison-session");
     assert_success(&locked);
     let mappings = fs::read(root.join(SESSION_MAPPING_PATH)).expect("mappings");

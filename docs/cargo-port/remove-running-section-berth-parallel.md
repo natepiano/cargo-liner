@@ -88,42 +88,29 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 ### Phase 7 — Robust tests  · status: done
 
-**Depends on:** Phase 6
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`.
-
-**Goal:** pin every edge of the fast path and of concurrent observation.
-
-**Spec:** Each test runs under 1 s.
-1. **The fast path declines when it should.**
-   - (a) A path held by a sibling reservation of the same run but not by the caller's mapped one takes the fast path, and its answer equals the locked path's: `already_held` naming the mapped reservation, mapping `published`, nothing written. (The locked path answers `left_unmapped` only for an unmapped session, which (d) covers.)
-   - (b) A tree scope partially covered goes to today's path.
-   - (c) A conflict present in the snapshot goes to today's path and is refused as today.
-   - (d) An unmapped session with one active run reservation goes to today's path.
-   - (e) `--reservation <id>` naming the reservation the session already maps to takes the fast path. Naming a different one of the run's reservations remaps the session under the lock and does not.
-   - (f) A released mapped reservation goes to today's path.
-2. **Envelope equality.** For the same state, the fast answer's JSON equals the locked path's `AlreadyHeld` JSON. Get the locked answer by running with no foreign holder, where no reconcile runs, then compare field by field, ids normalized.
-3. **The pre-tool-use hook takes the fast path.** A Claude Code `Edit` payload for a held path, while the test holds the lock, is allowed in under 1 s (`tests/hooks.rs`).
-4. **Concurrent reconcile output is unchanged.** Two holders on the same worktree with different targets, plus one holder whose observation fails (an unavailable worktree), give the same operations, order and cost counts as a serial reference computed in the test.
-
-**Constraints from prior phases:**
-- The fast path is `claim::selected_reservation_check_acquisition` (`verb/claim/mod.rs`), returning `CheckAcquisitionDecision::HeldBySelectedReservation`; `check::execute` returns it before any reconcile. It reports `marker_publication` and `session_mapping_publication` as `published` without writing, because the mapping already names that reservation.
-- An explicit `--reservation` other than the one the session maps to returns `NeedsLockedDecision`; with no harness session, an explicit id takes the fast path when that reservation covers the scopes.
-- Holder observation runs through `derive_merge_extents_with_observer` (`reconcile.rs`), whose observer argument is the injection point for item 4. The spawn loop must collect every handle before joining.
-- Existing proof test: `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs`). Its unheld control asserts only a nonzero exit and a status that is not `clear`, because a check whose reconcile hits the lock deadline answers `blocked_by_overlap` (exit 1) today; phase 8 changes that answer.
+- Tests only; cargo-berth's behavior is unchanged. Nine tests, each 0.02–0.27 s.
+- `check_at_held_mutation_lock` (`tests/lifecycle.rs`) takes `mutation.lock` in the test process and runs `check` with a 50 ms contention tolerance under a 500 ms bound, so "takes the fast path" is a timing-free assertion: success while the lock is held.
+- Fast-path edges: a path held by a same-run sibling reservation answers `already_held` naming the caller's mapped reservation, marker and mapping `published`, journal and mappings unchanged. A partly covered tree, an unmapped session, an explicit `--reservation` naming a different reservation (a remap), and a released mapped reservation all fail under the held lock and take the locked path; with the lock free they answer as before (`widened`, `already_held` with `left_unmapped`, remapped). A retained foreign conflict on the held path answers `blocked_by_overlap` exit 1 naming the foreign reservation and appends nothing.
+- Envelope equality: the locked `already_held` answer comes from an explicit `--reservation` for a not-yet-mapped session, which must lock to publish the mapping; the repeat under the held lock returns an identical envelope and exit code and writes nothing.
+- The pre-tool-use hook allows a Claude Code `Edit` of a held path while the lock is held.
+- Concurrent `derive_merge_extents` output equals a serial reference built in the test, over real Git fixtures: two holders on one worktree with different targets plus one unavailable holder.
 
 **Files:**
-- `crates/cargo-berth/tests/lifecycle.rs`
-- `crates/cargo-berth/tests/hooks.rs`
-- `crates/cargo-berth/src/reconcile.rs`
+- `crates/cargo-berth/tests/lifecycle.rs` — `check_at_held_mutation_lock`; `fast_path_answers_sibling_coverage_as_the_locked_path_does`, `fast_path_declines_a_partially_covered_tree`, `fast_path_declines_a_retained_foreign_conflict_on_its_held_path`, `fast_path_declines_an_unmapped_session_with_one_active_reservation`, `fast_path_explicit_selection_reuses_its_mapping_but_locks_before_remapping`, `fast_path_declines_a_released_session_mapping`, `fast_path_envelope_equals_the_locked_already_held_answer`
+- `crates/cargo-berth/tests/hooks.rs` — `pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held`
+- `crates/cargo-berth/src/reconcile.rs` — tests module: `merge_extent_comparison_fixture`, `serial_merge_extent_reference`, `concurrent_merge_extents_match_serial_targets_and_unavailable_holder`
 
-**Workers:** 1 tester (`test`), which edits `reconcile.rs` only inside its `tests` module; `impl` only for a defect the tests find.
+**Binds later work:** the held-lock controls (`fast_path_declines_*`, the explicit remap, the envelope reference) assert only a nonzero exit and a status other than `clear`, because a lock-deadline check answers `blocked_by_overlap` exit 1; "A busy ledger answers as busy" tightens them to `contention`, exit 6.
 
-**Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` are green, and every new test runs under 1 s.
+**Gotchas:**
+- A check with the lock free is not a locked reference: the fast path answers first whenever it applies. A locked reference needs a state the fast path declines.
+- The locked path answers `left_unmapped` only for an unmapped session; a mapped session gets `already_held` with its own reservation, `published`.
 
-### Phase 8 — A busy ledger answers as busy  · status: pending
+**Ruled out:** restricting the fast path to the selected reservation's own scopes (the locked answer is identical, and the restriction would slow sibling-held edits).
+
+### Phase 8 — A busy ledger answers as busy  · status: done
 
 **Depends on:** Phase 7
 
@@ -135,7 +122,7 @@ Measured 2026-10-16 10:26–10:30 on natedev (load average 63–127) in `/home/n
 
 **Spec:** Each test runs under 1 s.
 1. In `crates/cargo-berth/src/verb/check.rs` `reconcile_and_retry`, the `Err(_)` arm returns `OutputEnvelope::blocked_check(fallback.scopes, fallback.conflicts, fallback.approver)`: a lock deadline reads as `blocked_by_overlap`, exit 1, with an empty conflict list. Replace it with the reconcile error's own answer, `ReconcileError::into_output(CommandVerb::Check)` (`reconcile.rs`), so a lock deadline answers `contention`, exit 6, with the busy diagnostic, and every other reconcile failure answers as that failure. Drop `fallback` if nothing else reads it.
-2. Tighten `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`'s unheld control (`tests/lifecycle.rs`) to status `contention` and exit 6.
+2. Tighten `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock`'s unheld control (`tests/lifecycle.rs`) to status `contention` and exit 6, and likewise every contended control that runs through `check_at_held_mutation_lock` and asserts only a failed status (the `fast_path_declines_*` tests, the explicit remap and the envelope reference).
 3. Add a test that the pre-tool-use hook (`tests/hooks.rs`), given a check that answers `contention`, tells the writer the ledger was busy and names no holder.
 4. CHANGELOG `Fixed` line: a busy ledger during an edit check now answers as busy, not as an overlap.
 

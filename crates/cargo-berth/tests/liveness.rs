@@ -1499,7 +1499,8 @@ fn marker_sweep_restores_the_marker_name_after_metadata_failure() {
 
     let failed = run_berth(repository.path(), &["check", "file:any", "--json"]);
 
-    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(failed.status.code(), Some(4));
+    assert_eq!(json_output(&failed)["status"], "ledger_unreadable");
     assert!(
         fs::symlink_metadata(marker_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     );

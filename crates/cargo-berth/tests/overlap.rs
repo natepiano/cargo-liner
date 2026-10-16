@@ -430,8 +430,8 @@ fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
         String::from_utf8_lossy(&own_check.stdout),
         String::from_utf8_lossy(&own_check.stderr)
     );
-    assert_eq!(foreign_check.status.code(), Some(1));
-    assert_eq!(json_output(&foreign_check)["status"], "blocked_by_overlap");
+    assert_eq!(foreign_check.status.code(), Some(4));
+    assert_eq!(json_output(&foreign_check)["status"], "ledger_unreadable");
     assert_eq!(
         fs::read(repository.path().join(JOURNAL_PATH)).expect("journal should reread"),
         journal_before
