@@ -113,76 +113,35 @@ FULL VIEW:
 
 **Depends on:** Phase 1
 
-#### Work Order
+#### As-built
 
-**Goal:** each agent tile draws its tree under a label-colored header row with `session`, `role`, `status`, `account` (when shown), `branch` and `directory` (full view only) and `age` columns; shells, subagents and unheld threads are tree lines; the children table below the tree is gone; when accounts show, the header line and the summary's `agent` column read the account label.
-
-**Spec:**
-1. One frame decision. `Cells::new` (`render.rs` ≈116) computes `accounts: AccountColumn` once, from `agent_cell::account_column(&agents)`, which feeds `AccountColumn::of` with every entry's root row and every Agent and thread line in its tree (shell and subagent lines carry no account). `Cells` stores it and passes it to `agent_cell::height`, `agent_cell::draw`, `summary::width` and `summary::draw` as a new last parameter. It counts every cell in the frame, including any the divided grid leaves unplaced.
-2. Agent value. `AgentRow::agent_label(&self, accounts: AccountColumn) -> Cow<'static, str>` (`census/mod.rs` ≈328): `Shown` with `Account::Home` → the home's label marked with the tier (`codex2 fast`); otherwise the program as today. `ServiceTier::mark` (≈121) takes `&str` and returns `Cow<'static, str>` (owned when marked or not static). `header_line` (`agent_cell.rs` ≈600), `summary::agent_row` (≈248) and `summary::column_widths` (≈329) call it with the frame's `accounts`.
-3. Tree lines. Replace `AgentEntry::sessions` and `AgentEntry::children` with `lines: Vec<TreeLine<'a>>`, top to bottom. A `TreeLine` keeps `machine`, `location`, `row` (the member's row, or the owner row for a thread), `hue`, `rails`, `last` and a subject:
-   ```rust
-   enum LineSubject<'a> {
-       /// A listed agent the cell's agent or one of its members opened or manages.
-       Agent(RoleLabel),
-       /// A Codex thread a manager holds, with the role its edge states.
-       ManagedThread(&'a ChildRow, HierarchyRole),
-       /// Work an agent runs that no other line stands for.
-       Work(&'a ChildRow),
-   }
-   ```
-   Siblings under one parent are its member lines (as `sessions_of` ≈280 finds them today) and its own work lines, together sorted oldest first by start, then machine and pid. A member's work comes from its own `row.children`: `Shell`, `Subagent`, and `Thread` rows that no `ManagedThread` claims (`owner == identity && child_index == index`). Skip each `Session` row and every row under it. Drop `Direct`, `UnderShell` and `Detached` rows (MCP servers, app servers); a kept row below a dropped one nests under its nearest kept ancestor in `children` order, else under the member. Work lines nest by that rule, so a subagent's shell sits under the subagent. Remove `CellChild`, `placed_children` and `nest`.
-4. Columns. A private enum in `agent_cell.rs`:
-   ```rust
-   enum TreeColumn { Session, Role, Status, Account, Branch, Directory, Age }
-   ```
-   with `header(self) -> &'static str` from new constants in `constants.rs` (`TREE_SESSION_HEADER = "session"`, `TREE_ROLE_HEADER = "role"`, `TREE_STATUS_HEADER = "status"`, `TREE_ACCOUNT_HEADER = "account"`, `TREE_BRANCH_HEADER = "branch"`, `TREE_DIRECTORY_HEADER = "directory"`, `TREE_AGE_HEADER = "age"`). The columns a view draws are one of four `const` slices chosen by `(view, accounts)`: full = all seven, compressed = `Session, Role, Status, Account, Age`; `Hidden` leaves `Account` out of either. No line computes its own column set.
-5. Cells per line:
-   - Session: `lead()` glyphs in text color, then the name (with ` · <machine>` for `AnotherMachine`) in the line's hue for `Agent` and `ManagedThread`, text color for `Work`. No role suffix: `name_spans` (≈184) drops `RoleLabel::suffix`.
-   - Role: `Agent(label)` → its hierarchy role, `session` when `Unlabeled` (add `RoleLabel::column_text(self) -> &'static str` in `placement.rs`, and make `HierarchyRole::text` `pub(crate)`); `ManagedThread` → its role; `Work` → `ChildKind::via()` (`shell`, `subagent`, `thread`). Label color is for headers only; role text is text color.
-   - Status: `Agent` → `summary::status_text` in `summary::status_role` (as now); `ManagedThread` → `runs_label()` in `Role::Codex` (as now); `Work` → a shell with a timer reads `timer_label` (pie and time left) in `Role::Shell`; any other work reads `runs_label()` in `runs_role(kind)`.
-   - Account: `Agent` → `row.account`, threads → the thread `ChildRow`'s `account`, each its label; `Unrecorded`, shells and subagents → `MISSING_VALUE`; text color.
-   - Branch, Directory (full only): `Agent` and `ManagedThread` → the line's `row` (as `tree_cells` ≈680 does); `Work` → `MISSING_VALUE`.
-   - Age: from the line's own start (thread and work rows use their `ChildRow::started`).
-6. Header row. Drawn as the `Table::header` of the tree, one row (`TABLE_HEADER_HEIGHT`), every label in `Style::default().fg(label_color())` as `summary::draw_machine` (≈189) styles `SUMMARY_HEADERS`. The `session` header is preceded by blanks the width of `TREE_BRANCH`, so it starts over the top-level names; each other header starts its column. Each column is at least its header wide.
-7. Views. `CellView::Full` holds the fitted widths of the active full columns; it is chosen as today: the header line and place line fit whole and every line's cells fit whole at their widest within `header_width(width)` with `TABLE_COLUMN_SPACING` between columns, else `Compressed`. A name is never cut in the full view. Compressed: every column but `Session` at its widest; `Session` takes the rest, each name cut by `summary::truncated` to what is left after its glyphs. The compressed view of a top-level agent still draws nothing above the header row. One `Table` draws both views; remove `compressed_session`, and `cut_line`/`gap` if nothing else calls them.
-8. Removal. Delete the children table and its helpers: `Children`, `children_width`, `compressed_child`, `child_row`, `child_name`, `via_text`, `depth_indent`, `table_columns`, `FlatColumns::table`, `children_top`, and the constants `CHILD_HEADERS`, `CHILD_PID_COLUMN`…`CHILD_AGE_COLUMN`, `CHILD_VIA_INDENT`, `TREE_COLUMNS`, `AGENT_HEADER_GAP_HEIGHT`. Keep `timer_label`, `timer_pie`, `time_left_label`, `runs_role`. The module doc (≈1–20) describes the one tree with its header row.
-9. Rows. A cell draws the lines `above_tree` gives (≈565, unchanged), then directly, with no gap row: the header row and one row per tree line; or, with no tree lines, the `NOTHING_RUNNING_NOTE` line alone at the tree's indent (no header row). `view_height` is `above + TABLE_HEADER_HEIGHT + lines` or `above + NOTHING_RUNNING_HEIGHT`, the rows `draw_view` fills; `height` and `CellView::fitted` keep their contracts.
-10. Existing tests in `agent_cell.rs`, `render.rs` and `summary/mod.rs` that assert the children table, the role suffix in tree lines, the gap row or the old heights are updated to the new tree and keep their content, hue and label-color checks; `only_labels_take_the_label_color` (≈1621) checks the tree header labels in place of `CHILD_HEADERS`. Tests that only exist for removed code (`a_cell_compresses_where_its_table_would_cut_a_name`, the table's timer row) are rewritten against the tree line or removed.
-11. `crates/cargo-handler/CHANGELOG.md` `## [Unreleased]`: an agent tile draws one tree under a header row with `session`, `role`, `status`, `account` and `age` columns (`branch` and `directory` in the full view); shell commands and subagents are lines in that tree; the list below the tree is gone; when two accounts of one program are running, the account column shows and the header line and the summary's `agent` column read the account label. Add the `[accounts]` config table to the same entry.
-12. Tests in `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`, declared inside `agent_cell.rs`'s `mod tests` as `#[path = "tree_tests.rs"] mod tree_tests;`, using `super::` fixtures (`agent`, `child`, `entry`, `drawn`, `drawn_into`, `lines`, `find`, `find_all`, `runs_in`, `boss_group`). Required cases:
-    - The mockup's compressed view: a top-level showrunner with two unit sessions (`claude1`, `claude3`) and a managed Codex thread (`codex1`) under the first draws the header row `session role status account age` first, then `├─ dashboard`, `│  └─ hanadocs-dashboard-impl`, `└─ diagrams`, each value in its column; `session` starts in the column of `dashboard`.
-    - The mockup's full view at a wide width: header line, place line, then the header row with `branch` and `directory`, no gap row.
-    - Header labels are in the label color; names keep their hues; roles, accounts and status keep their styles from Spec item 5.
-    - With every Claude row on one home and one Codex home, no `account` header or value shows and `header_line` reads `claude`; with two Claude homes, the column shows and the header line reads `claude2`.
-    - A shell with a timer is a tree line under its agent: role `shell`, status the pie and time left; a subagent's shell nests under the subagent; an MCP `Direct` process and an `UnderShell` app server draw no line, and the app server's unheld thread draws under the shell with role `thread` and the app server's account.
-    - No line of any cell draws text from the removed table (`pid`, `via`, `runs` headers).
-    - An agent with no lines draws `nothing running` and no header row, in both views.
-    - Height: for the mockup fixtures and the existing `boss_group`, `height` equals the rows drawn at every width from 10 to 140, as `the_height_is_the_rows_drawn_at_every_width` checks.
-    - Summary: with two Claude homes, the summary's `agent` cell reads each row's label (`claude2`), a Codex fast row reads `codex1 fast`; with one home it reads `claude`.
+- One frame decision: `Cells::new` (`render.rs`) computes `account_column: AccountColumn` from `agent_cell::account_column(&agents)` (every entry's root row plus each Agent and thread line's `(Agent, &Account)`, unplaced cells included) and passes it as the last parameter of `agent_cell::height`/`draw` and `summary::width`/`draw`.
+- `census::AccountColumn { Hidden, Shown }` in `census/account.rs`: `AccountColumn::of(impl IntoIterator<Item = (Agent, &Account)>)` is `Shown` when one `Program` has two distinct labels. `impl From<Agent> for Program` makes Codex and its thread host one program; `Unrecorded` is not a label, and one label on two machines is one label. `AccountHome::label(&self) -> &str` is pub(crate).
+- `AgentRow::agent_label(&self, account_column: AccountColumn) -> Cow<'static, str>`: `Shown` with `Account::Home` → the label marked with the tier (`codex1 fast`), else the program. `ServiceTier::mark(self, impl Into<Cow<'static, str>>)`. `header_line`, `summary::agent_row` and `summary::column_widths` call it with the frame's value.
+- Tree: `AgentEntry::lines: Vec<TreeLine>`, top to bottom. `TreeLine { machine, location, row, hue, rails: Vec<Rail { Continues, Ended }>, branch: Branch { Middle, Last }, subject }`; `LineSubject { Agent(RoleLabel), ManagedThread(&ChildRow, HierarchyRole), Work(Work) }`; `Work { child: &ChildRow, kind: WorkKind { Shell, Subagent, Thread } }` owns a work line's role text, status and account. `From<ChildKind> for ChildLine { Work(WorkKind), Carrier, Session }` is the one exhaustive classification: `Direct`, `UnderShell` and `Detached` rows (MCP servers, app servers) are carriers that draw no line, and their kept descendants nest under the nearest kept ancestor, else under the member; `Session` subtrees are skipped; a thread a `ManagedThread` claims is not a work line. Siblings sort oldest first by start, then machine and pid.
+- Columns: private `TreeColumn { Session, Role, Status, Account, Branch, Directory, Age }` with headers from the `TREE_*_HEADER` constants; `TreeLayout { Full, Compressed }::columns(AccountColumn)` picks one of four const slices (full = all seven, compressed = `Session, Role, Status, Account, Age`; `Hidden` drops `Account`); `FlatColumns { columns: &'static [TreeColumn], widths: Vec<u16> }` records the set it was fitted for.
+- Cells: names carry no role suffix. Role is the hierarchy role, `session` when unlabeled (`RoleLabel::column_text`; `HierarchyRole::text` is pub(crate)), or `shell`/`subagent`/`thread` for work. A timed shell's status is `timer_label` in `Role::Shell`; other work reads `runs_label()` in `runs_role(WorkKind)`. Shells and subagents draw `MISSING_VALUE` in account, branch and directory; a thread's account is its `ChildRow::account`.
+- Drawing: one `Table` draws both views under a `TABLE_HEADER_HEIGHT` header row in `label_color()`, the `session` header preceded by `TREE_BRANCH`-wide blanks, with no gap row. Both sides keep `SECTION_HEADER_INDENT` before the tile border; the full-view fit and the compressed `Session` width subtract it. Full is chosen when every name and cell fits whole within `header_width(width)`; compressed draws the fixed columns at their widest, gives `Session` the rest and cuts names with `summary::truncated`; spacing is `min(TABLE_COLUMN_SPACING, (width - 1) / gaps)`. No lines → `NOTHING_RUNNING_NOTE` and no header row. `view_height` is `above + TABLE_HEADER_HEIGHT + lines` or `above + NOTHING_RUNNING_HEIGHT`.
+- Removed: the children table and its helpers, `CellChild`, `placed_children`, `nest`, `ChildKind::via()`, and the `*_VIA`, `CHILD_*`, `TREE_COLUMNS` and `AGENT_HEADER_GAP_HEIGHT` constants. `summary::indented` is private.
+- `CHANGELOG.md` `## [Unreleased]` → `### Changed` records the tree, its columns, the account column rule and `[accounts]`.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine`, `LineSubject`, `TreeColumn`, header row, views, `account_column`, removals, updated tests, `#[path = "tree_tests.rs"] mod tree_tests;` inside `mod tests`
-- `crates/cargo-handler/src/render.rs` — `Cells::accounts`, calls pass it, updated tests
-- `crates/cargo-handler/src/summary/mod.rs` — `width`/`draw`/`agent_row`/`column_widths` take `AccountColumn`, updated tests
-- `crates/cargo-handler/src/census/mod.rs` — `agent_label(accounts)`, `ServiceTier::mark`, `HierarchyRole::text` visibility
+- `crates/cargo-handler/src/agent_cell.rs` — `TreeLine`, `LineSubject`, `Work`, `WorkKind`, `ChildLine`, `Rail`, `Branch`, `WorkBranch`, `TreeColumn`, `TreeLayout`, `FlatColumns`, `CellView`, `account_column`, `draw_tree`, `tree_widths`; inline tests
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — tree, view, account column, height sweep and right-margin tests, declared in `mod tests` with `#[path = "tree_tests.rs"]`
+- `crates/cargo-handler/src/census/account.rs` — `AccountColumn`, `From<Agent> for Program`, `AccountHome::label`
+- `crates/cargo-handler/src/census/account/tests.rs` — `AccountColumn::of` cases
+- `crates/cargo-handler/src/census/mod.rs` — `agent_label`, `ServiceTier::mark`, `HierarchyRole::text`
 - `crates/cargo-handler/src/census/placement.rs` — `RoleLabel::column_text`
-- `crates/cargo-handler/src/constants.rs` — tree header constants; removed child-table constants
+- `crates/cargo-handler/src/render.rs` — `Cells::account_column` and its callers
+- `crates/cargo-handler/src/summary/mod.rs` — `width`/`draw`/`agent_row`/`column_widths` take `AccountColumn`
+- `crates/cargo-handler/src/constants.rs` — `TREE_*_HEADER`
 - `crates/cargo-handler/CHANGELOG.md` — `## [Unreleased]` entry
-- `crates/cargo-handler/src/census/account.rs` — `AccountHome::label()`, `AccountColumn` (see Constraints from prior phases)
-- `crates/cargo-handler/src/census/account/tests.rs` — the `AccountColumn::of` cases
-- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — new: every case in Spec item 12
 
-**Workers:** 1 writer + 1 tester — the tree, its callers and the summary change together and cannot split; the new tests are their own file.
-- `impl` — `crates/cargo-handler/src/agent_cell.rs` (including the `#[path]` test declaration), `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`, `crates/cargo-handler/src/census/account.rs`; hub: `crates/cargo-handler/src/constants.rs` (the header constants the tester's file reads)
-- `test` — `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` and `crates/cargo-handler/src/census/account/tests.rs` (the `AccountColumn::of` cases): every case in Spec item 12, written against the signatures in items 1–4 and the fixtures in `mod tests`
+**Binds later work:** the Live check expects the account column only when one program has two distinct labels across the whole frame, `—` in the account, branch and directory cells of shell and subagent lines, `session`/`shell`/`subagent`/`thread` roles, and a blank `SECTION_HEADER_INDENT` before the right border.
 
-**Constraints from prior phases:**
-- Phase 1: `census::Account { Unrecorded, Home(AccountHome) }` on `AgentRow::account` and `ChildRow::account` (set for Codex thread rows from their app server, `Unrecorded` for shells, subagents and other children); labels resolve on the machine that ran the agent (its own `[accounts]` table), so a remote's rows arrive labelled. Phase 1 kept no API without a consumer, so this phase adds, in `census/account.rs`: a `pub(crate) fn label(&self) -> &str` on `AccountHome` (the text a tile shows), and `census::AccountColumn { Hidden, Shown }` with `AccountColumn::of(impl IntoIterator<Item = (Agent, &Account)>)`, which counts distinct labels per program, Codex and its thread host as one, with its tests in `census/account/tests.rs` (one Claude label → Hidden; `claude1`+`claude2` → Shown; `claude2`+`codex1` → Hidden; `codex1` on an app server + `codex2` on a thread host → Shown; repeated `Unrecorded` → Hidden; one label on two machines → Hidden). Both files join this phase's Files: `account.rs` is `impl`'s, `account/tests.rs` is `test`'s. No `#[expect(dead_code)]` anywhere.
-- Phase 1: `AccountHome`'s fields (`home`, `label`) are private with no getters today; `AccountLabels::resolve` is its only constructor. `account.rs` holds `pub(super) enum Program { Claude, Codex }`; group programs in `AccountColumn::of` through a new `impl From<Agent> for Program` (`Claude` → `Claude`; `Codex` and `CodexThreadHost` → `Codex`) and count distinct labels per `Program`, not with a hand-written match on `Agent`. `account.rs` imports `std::os::unix::ffi::OsStrExt` unguarded (cargo-handler is not built on Windows).
-- Phase 1: `agent_cell.rs`'s `use crate::census::Account;` (≈46) serves only the `ChildRow` literal in `nest` (≈875), which Spec item 3 removes; keep the import only if the new account cell matches on `Account`.
+**Gotchas:** text is measured by `chars().count()` / `summary::cell_width` across the crate, so a double-width label would be clipped; labels are ASCII. The account column depends on the whole frame: a second machine's label can turn it on for every tile.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 12 case and the updated existing tests; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding, no dead code left from the table).
+**Ruled out:** `LineSubject::Work(&ChildRow)` (any `ChildKind` could reach it; `WorkKind` limits work to three kinds); `ServiceTier::mark(&str)` with string compares to recover `'static`; a flush-right tree in the compressed view; measuring labels by terminal display width (ASCII labels, crate-wide convention).
 
 ### Phase 3 — Live check  · status: todo
 
@@ -195,12 +154,19 @@ FULL VIEW:
 **Spec:**
 1. The unit director sets each machine's `[accounts]` table in cargo-handler's `config.toml`. natedev: `"~/.claude" = "claude2"`, `"~/.codex" = "codex2"`. The Mac (`ssh mac`): read each home's account-label file (e.g. `~/.claude/account-label`, `~/.claude1/account-label`) and the Codex login of each Codex home, and write one pair per home that differs from its default label.
 2. Install the checkpoint binary on both machines and run cargo-handler on natedev with the Mac shown.
-3. Check the hanadocs showrunner tile in the full and compressed views: the header row sits between the header lines (or the title) and the tree, in the label color; `session` lines up over the top-level names; each unit and worker line shows its role, status and account label; the header line and the summary's `agent` column read the account labels; shells and subagents are tree lines; nothing is drawn below the tree.
+3. Check the hanadocs showrunner tile in the full and compressed views: the header row sits between the header lines (or the title) and the tree, in the label color; `session` lines up over the top-level names; each unit and worker line shows its role, status and account label; the header line and the summary's `agent` column read the account labels; shells and subagents are tree lines with role `shell` or `subagent` and `—` in the account column (and in `branch` and `directory` in the full view); the tree keeps one blank indent before the right border as on the left; nothing is drawn below the tree.
 4. Send the shots to the showrunner, and record the result here.
 
 **Files:**
 - `docs/cargo-port/remove-running-section-handler-accounts.md`
 
 **Workers:** none — the unit director runs the live check and edits only machine config outside the repo.
+
+**Constraints from prior phases:**
+- Phase 1: `[accounts]` lives in `<os config dir>/cargo-handler/config.toml` (`~/.config/cargo-handler/config.toml` on natedev), keys written with `~`, and is read at startup: restart cargo-handler after each edit. A home with no entry is labelled by its last path component without one leading dot (`~/.claude1` → `claude1`, `~/.claude` → `claude`).
+- Phase 1: labels resolve on the machine that ran the agent, so the Mac's rows carry the Mac's own `[accounts]` labels and need the checkpoint binary installed there; a probe from an older Mac binary has no `account` field and its rows draw `—`.
+- Phase 2: the account column, and the account labels in the header line and the summary's `agent` column, show only when one program has two distinct labels across the whole frame, both machines together (Codex and its thread host count as one program; one label on two machines is one label). Otherwise there is no `account` column and those values read `claude` or `codex`, by design. A Codex fast row reads `<label> fast`.
+- Phase 2: role column values are the hierarchy role (`unit`, `worker`, …), `session` for an agent with no stated or inferred role, and `shell`, `subagent` or `thread` for work lines. A Codex thread line shows its app server's account. MCP servers and app-server processes draw no line; a thread an app server runs under a shell draws under that shell. An agent with nothing running draws `nothing running` and no header row.
+- Phase 2: both views keep `SECTION_HEADER_INDENT` on the left and before the right border. The full view is chosen only when every name fits whole and its rows fit the tile's height; otherwise the compressed view cuts names in the `session` column. At very narrow widths the compressed view narrows the gaps between columns below two cells.
 
 **Acceptance gate:** shots of both views show every check in Spec item 3 with natedev's and the Mac's labels correct, and the showrunner has the shots.
