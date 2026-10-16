@@ -98,7 +98,16 @@ use crate::session::FirstTouchSessionReservationMapping;
 use crate::session::SessionIdentityMappingPublication;
 use crate::session::SessionReservationIdentity;
 
+mod incomplete_answer;
 mod named;
+mod phase_candidate;
+mod recovery_command;
+
+use incomplete_answer::IncompleteClaimAnswer;
+use incomplete_answer::IncompleteClaimAnswerRejection;
+pub(crate) use phase_candidate::PhaseReservationCandidate;
+pub(crate) use recovery_command::ClaimRecoveryCommand;
+pub(crate) use recovery_command::ClaimRecoverySelector;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
@@ -120,6 +129,8 @@ pub(crate) struct ClaimRequest {
     pub(crate) phase_start:                PhaseStartSelection,
     /// The semantic overlap answer and its reason.
     pub(crate) overlap_authorization:      OverlapAuthorizationRequest,
+    /// The parsed caller command retained for an incomplete answer retry.
+    pub(crate) answer_recovery:            ClaimRecoveryCommand,
 }
 
 /// The reservation receiving a claim's scopes and overlap answer.
@@ -259,8 +270,23 @@ pub(crate) fn execute(
             },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
+    let answer_recovery = claim_request.answer_recovery.clone();
     let reservation_selection = claim_request.reservation_selection;
-    let output_envelope = match acquire(claim_request, recovery_command_line) {
+    claim_acquisition_output(
+        acquire(claim_request, recovery_command_line),
+        reservation_selection,
+        &answer_recovery,
+    )
+    .with_alerts(reconciliation_report.alerts)
+}
+
+/// Render one acquisition result while preserving its blocked envelope contract.
+fn claim_acquisition_output(
+    outcome: Result<Enrollment<ClaimExecution>, ClaimError>,
+    reservation_selection: ClaimReservationSelection,
+    answer_recovery: &ClaimRecoveryCommand,
+) -> OutputEnvelope {
+    match outcome {
         Ok(Enrollment::Enrolled(ClaimExecution::Selected {
             acquisition,
             scopes,
@@ -290,6 +316,17 @@ pub(crate) fn execute(
             conflicts,
             approver,
         })) => OutputEnvelope::blocked_claim(conflicts, approver),
+        Ok(Enrollment::Enrolled(ClaimExecution::IncompleteAnswer {
+            rejection,
+            approver,
+        })) => {
+            let message = rejection.message(answer_recovery);
+            OutputEnvelope::blocked_claim_with_answer_recovery(
+                rejection.conflicts,
+                approver,
+                message,
+            )
+        },
         Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blockers))) => {
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
@@ -327,8 +364,7 @@ pub(crate) fn execute(
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Claim, &expected_configuration_path),
         Err(error) => error.into_output(CommandVerb::Claim),
-    };
-    output_envelope.with_alerts(reconciliation_report.alerts)
+    }
 }
 
 /// Name one reservation as `reservation <id>`, or several as `reservations <id>, <id>`.
@@ -370,6 +406,10 @@ enum ClaimExecution {
     },
     Blocked {
         conflicts: Vec<ReservationConflict>,
+        approver:  Option<OverlapApprover>,
+    },
+    IncompleteAnswer {
+        rejection: Box<IncompleteClaimAnswerRejection>,
         approver:  Option<OverlapApprover>,
     },
     AnsweredWithoutOverlap(Vec<ReservationId>),
@@ -512,7 +552,7 @@ enum FirstTouchReservationSelection<'reservation> {
     /// No usable mapping exists, and several active reservations are eligible.
     AmbiguousActiveRunReservations {
         /// Every eligible reservation id in deterministic order.
-        candidate_reservation_ids: WireOrderedReservationIds,
+        candidates: Vec<PhaseReservationCandidate>,
     },
 }
 
@@ -550,6 +590,7 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
     fn from_locked_session_mapping(
         reservations: &'reservation RetainedReservationSet,
         session_reservation_identity: SessionReservationIdentity,
+        ledger_directory: &Path,
         coordination_run_id: CoordinationRunId,
         worktree_id: WorktreeId,
     ) -> Self {
@@ -564,11 +605,17 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
         {
             return Self::SessionMappedReservation(reservation);
         }
-        Self::from_unmapped_active_run_reservations(reservations, coordination_run_id, worktree_id)
+        Self::from_unmapped_active_run_reservations(
+            reservations,
+            ledger_directory,
+            coordination_run_id,
+            worktree_id,
+        )
     }
 
     fn from_unmapped_active_run_reservations(
         reservations: &'reservation RetainedReservationSet,
+        ledger_directory: &Path,
         coordination_run_id: CoordinationRunId,
         worktree_id: WorktreeId,
     ) -> Self {
@@ -583,15 +630,30 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
             [] => Self::NoActiveRunReservation,
             [reservation] => Self::SingleActiveRunReservation(reservation),
             [_, _, ..] => {
-                let candidate_reservation_ids = WireOrderedReservationIds::sorted(
+                let mappings =
+                    session::phase_reservation_sessions(ledger_directory, coordination_run_id);
+                let ids = WireOrderedReservationIds::sorted(
                     active_run_reservations
                         .iter()
                         .map(|reservation| reservation.id())
                         .collect(),
                 );
-                Self::AmbiguousActiveRunReservations {
-                    candidate_reservation_ids,
-                }
+                let candidates = ids
+                    .as_slice()
+                    .iter()
+                    .map(|id| {
+                        mappings.as_ref().map_or_else(
+                            |_| PhaseReservationCandidate::without_session_label(*id),
+                            |mappings| {
+                                PhaseReservationCandidate::from_sessions(
+                                    *id,
+                                    mappings.get(id).cloned().unwrap_or_default(),
+                                )
+                            },
+                        )
+                    })
+                    .collect();
+                Self::AmbiguousActiveRunReservations { candidates }
             },
         }
     }
@@ -624,7 +686,8 @@ struct FirstTouchValidationContext {
 }
 
 #[derive(Clone, Copy)]
-struct FirstTouchReservationReuseContext {
+struct FirstTouchReservationReuseContext<'ledger> {
+    ledger_directory:                        &'ledger Path,
     first_touch_session_reservation_mapping: FirstTouchSessionReservationMapping,
     check_reservation_selection:             CheckReservationSelection,
     coordination_run_id:                     CoordinationRunId,
@@ -647,7 +710,7 @@ enum FirstTouchClaimRejection {
     ReservationLimitReached(u32),
     IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
-        candidate_reservation_ids: WireOrderedReservationIds,
+        candidates: Vec<PhaseReservationCandidate>,
     },
 }
 
@@ -686,6 +749,7 @@ fn acquire_new(
         coordination_run_selection,
         phase_start,
         overlap_authorization,
+        answer_recovery: _,
     } = claim_request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
@@ -1048,12 +1112,8 @@ fn first_touch_execution_from_outcome(
             FirstTouchClaimRejection::IneligibleExplicitReservation(reservation_id),
         ) => Err(ClaimError::IneligibleExplicitReservation(reservation_id)),
         LedgerCommittedActionOutcome::Rejected(
-            FirstTouchClaimRejection::AmbiguousActiveRunReservations {
-                candidate_reservation_ids,
-            },
-        ) => Err(ClaimError::AmbiguousActiveRunReservations {
-            candidate_reservation_ids,
-        }),
+            FirstTouchClaimRejection::AmbiguousActiveRunReservations { candidates },
+        ) => Err(ClaimError::AmbiguousActiveRunReservations { candidates }),
         LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
@@ -1201,6 +1261,10 @@ fn claim_rejection_execution(
         },
         ClaimRejection::Conflict(conflicts) => Ok(ClaimExecution::Blocked {
             conflicts,
+            approver,
+        }),
+        ClaimRejection::IncompleteAnswer(rejection) => Ok(ClaimExecution::IncompleteAnswer {
+            rejection,
             approver,
         }),
         ClaimRejection::AnsweredWithoutOverlap(blockers) => {
@@ -1434,18 +1498,20 @@ fn bind_answer_authorizations(
     request: DeferAnswerRequest,
     conflicts: Vec<ReservationConflict>,
 ) -> Result<Vec<ConflictAuthorization>, ClaimRejection> {
-    let DeferAnswerRequest { blockers, reason } = request;
     if conflicts.is_empty() {
-        return Err(ClaimRejection::AnsweredWithoutOverlap(blockers));
+        return Err(ClaimRejection::AnsweredWithoutOverlap(request.blockers));
     }
-    let named_blockers = blockers.into_iter().collect::<HashSet<_>>();
+    let named_blockers = request.blockers.iter().copied().collect::<HashSet<_>>();
     let holders = conflicts
         .iter()
         .map(|conflict| conflict.reservation_id)
         .collect::<HashSet<_>>();
     if named_blockers != holders {
-        return Err(ClaimRejection::Conflict(conflicts));
+        return Err(ClaimRejection::IncompleteAnswer(Box::new(
+            IncompleteClaimAnswerRejection::new(conflicts, IncompleteClaimAnswer::Defer(request)),
+        )));
     }
+    let reason = request.reason;
     Ok(conflicts
         .iter()
         .map(|conflict| {
@@ -1557,6 +1623,7 @@ fn validate_first_touch_transaction(
         protected_scopes,
         conflict_outcome,
         FirstTouchReservationReuseContext {
+            ledger_directory: &worktree_context.ledger_directory(),
             first_touch_session_reservation_mapping: first_touch_session_mapping,
             check_reservation_selection: reservation_selection,
             coordination_run_id,
@@ -1619,9 +1686,10 @@ fn select_first_touch_reservation_reuse(
     requested_scopes: ReservationScopeSet,
     protected_scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
-    context: FirstTouchReservationReuseContext,
+    context: FirstTouchReservationReuseContext<'_>,
 ) -> FirstTouchReservationReuse {
     let FirstTouchReservationReuseContext {
+        ledger_directory,
         first_touch_session_reservation_mapping,
         check_reservation_selection,
         coordination_run_id,
@@ -1655,6 +1723,7 @@ fn select_first_touch_reservation_reuse(
                 FirstTouchReservationSelection::from_locked_session_mapping(
                     reservations,
                     session_reservation_identity,
+                    ledger_directory,
                     coordination_run_id,
                     worktree_id,
                 ),
@@ -1685,6 +1754,7 @@ fn select_first_touch_reservation_reuse(
                 conflicts,
                 FirstTouchReservationSelection::from_unmapped_active_run_reservations(
                     reservations,
+                    ledger_directory,
                     coordination_run_id,
                     worktree_id,
                 ),
@@ -1714,7 +1784,7 @@ fn append_unheld_first_touch_scopes(
     repository_trunk: &IntegrationTarget,
     protected_scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
-    context: FirstTouchReservationReuseContext,
+    context: FirstTouchReservationReuseContext<'_>,
 ) -> FirstTouchReservationReuse {
     let already_held = sibling_held_scopes(
         reservations,
@@ -1825,13 +1895,9 @@ fn reuse_first_touch_reservation(
                 already_held: Vec::new(),
             };
         },
-        FirstTouchReservationSelection::AmbiguousActiveRunReservations {
-            candidate_reservation_ids,
-        } => {
+        FirstTouchReservationSelection::AmbiguousActiveRunReservations { candidates } => {
             return FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
-                FirstTouchClaimRejection::AmbiguousActiveRunReservations {
-                    candidate_reservation_ids,
-                },
+                FirstTouchClaimRejection::AmbiguousActiveRunReservations { candidates },
             ));
         },
     };
@@ -2140,7 +2206,15 @@ fn bind_claim_authorization(
         .map(|conflict| conflict.reservation_id)
         .collect::<HashSet<_>>();
     if named_blockers != holders {
-        return Err(ClaimRejection::Conflict(conflicts));
+        return Err(ClaimRejection::IncompleteAnswer(Box::new(
+            IncompleteClaimAnswerRejection::new(
+                conflicts,
+                IncompleteClaimAnswer::Permissive(PermissiveOverlapAuthorizationRequest {
+                    answer,
+                    reason,
+                }),
+            ),
+        )));
     }
     if let (
         ClaimReservationSelection::Existing(requester),
@@ -2661,6 +2735,8 @@ fn read_packed_reference(
 enum ClaimRejection {
     IneligibleExplicitReservation(ReservationId),
     Conflict(Vec<ReservationConflict>),
+    /// The supplied answer left current holders unanswered or named stale holders.
+    IncompleteAnswer(Box<IncompleteClaimAnswerRejection>),
     /// An overlap answer named these blockers while nothing overlapped the requested scopes.
     AnsweredWithoutOverlap(Vec<ReservationId>),
     /// A sequence answer without `--replace` points opposite to these live edges.
@@ -2709,7 +2785,7 @@ pub(crate) enum ClaimError {
     InvalidCanonicalWorktreeRoot,
     IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
-        candidate_reservation_ids: WireOrderedReservationIds,
+        candidates: Vec<PhaseReservationCandidate>,
     },
 }
 
@@ -2765,13 +2841,10 @@ impl Display for ClaimError {
                 formatter,
                 "reservation {reservation_id} is not active work held by the acting coordination run and worktree"
             ),
-            Self::AmbiguousActiveRunReservations {
-                candidate_reservation_ids,
-            } => write!(
+            Self::AmbiguousActiveRunReservations { candidates } => write!(
                 formatter,
                 "first-touch reservation selection is ambiguous among active reservations {}",
-                candidate_reservation_ids
-                    .as_slice()
+                candidates
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
@@ -2823,12 +2896,9 @@ impl ClaimError {
                     "reservation {reservation_id} is not active work held by the acting coordination run and worktree"
                 ),
             ),
-            Self::AmbiguousActiveRunReservations {
-                candidate_reservation_ids,
-            } => OutputEnvelope::ambiguous_active_run_reservations(
-                command_verb,
-                candidate_reservation_ids,
-            ),
+            Self::AmbiguousActiveRunReservations { candidates } => {
+                OutputEnvelope::ambiguous_active_run_reservations(command_verb, &candidates)
+            },
             error => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
         }
     }

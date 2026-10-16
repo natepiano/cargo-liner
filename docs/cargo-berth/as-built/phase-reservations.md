@@ -116,6 +116,10 @@ Without `--reservation`, a permissive claim opens a new reservation and an ordin
 
 `ReservationConflict.holder_run_id` supplies the run. The README's collision example carries the same text.
 
+An incomplete answer keeps the blocked envelope and holder payload, but names every holder it left out and prints the caller's claim with a flag for each current holder. A uniform answer repeats its flag; mixed ordering answers print `--<before|after> <id>` for the caller to choose. Stale named holders are identified and omitted from the recovery command. The recovery command comes from the parsed CLI values, retains the caller’s selectors, and prints its reason as `--overlap-why=<quoted reason>`. The refusal detail retains the configured answer chooser after the holder facts. A stale override with one current holder prints an override command for that holder. An override with several holders asks the caller to narrow the scopes or answer every holder with ordering or deferral flags.
+
+An ambiguous edit lists each candidate as `` `<id>` (session <sid>) ``, `` `<id>` (sessions <sid>, <sid>) `` or `` `<id>` (no session) ``. Sessions come from the disposable mapping read under the selection's ledger lock, sorted within each candidate. An unreadable or invalid mapping index leaves the candidate id bare rather than claiming no session maps to it; a missing index means no mappings. The message begins “No session names one phase's reservation among …” and ends “No reservation was appended or widened, and no session was mapped to one.” The `candidate_reservation_ids` payload stays unchanged.
+
 ### Key files
 
 | File | Role |
