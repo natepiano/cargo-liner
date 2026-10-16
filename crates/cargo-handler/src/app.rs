@@ -1,6 +1,7 @@
 //! `App`: the state the framework borrows itself back through, per
 //! [`AppContext`].
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -14,6 +15,7 @@ use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
+use tui_pane::CellClick;
 use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
@@ -31,7 +33,9 @@ use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
 use tui_pane::VisualDeadline;
 
+use crate::agent_cell;
 use crate::census;
+use crate::census::AgentPlacement;
 use crate::census::Census;
 #[cfg(test)]
 use crate::census::CensusUpdate;
@@ -48,6 +52,8 @@ use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::render;
 use crate::settings;
+use crate::sort::SummarySort;
+use crate::sort::TreeSort;
 use crate::startup_log;
 use crate::startup_log::StartupProbe;
 use crate::tiles::AgentCell;
@@ -100,6 +106,10 @@ pub(crate) struct App {
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
+    /// Per-root preferences, discarded when that root leaves the census.
+    pub(crate) tree_sorts:        HashMap<AgentCell, TreeSort>,
+    /// One preference shared by the summary machine groups.
+    pub(crate) summary_sort:      SummarySort,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:                 Option<String>,
@@ -122,6 +132,17 @@ pub(crate) struct App {
 }
 
 impl App {
+    /// Discard preferences for roots no longer represented by a tile.
+    pub(crate) fn prune_tree_sorts(&mut self) {
+        let machines = self
+            .census
+            .machines(&self.loaded_config.config.machines.remote);
+        let placement = AgentPlacement::from_machines(&machines);
+        let cells = agent_cell::cell_order_placed(&placement);
+        self.tree_sorts
+            .retain(|id, _| cells.iter().any(|entry| entry.id == *id));
+    }
+
     /// Build the app with the grid focused and the keymap loaded.
     pub(crate) fn new(
         loaded_config: LoadedConfig,
@@ -164,6 +185,8 @@ impl App {
             loaded_config,
             startup_note,
             tiles: TileGrid::new(),
+            tree_sorts: HashMap::new(),
+            summary_sort: SummarySort::default(),
             inline_error: None,
             started: Instant::now(),
             attract: Attract::new(),
@@ -309,6 +332,8 @@ impl TileGridHost for App {
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
+
+    fn cell_clicked(&mut self, click: CellClick<AgentCell>) { render::cell_clicked(self, click); }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of
@@ -339,7 +364,80 @@ impl FavoritesHost for App {
 )]
 mod tests {
     use super::*;
+    use crate::agent_cell::TreeColumn;
+    use crate::census::AgentRow;
     use crate::config::Config;
+    use crate::sort::SummaryColumn;
+
+    /// A saved preference belongs to one root incarnation, rather than its slot or pid alone.
+    #[test]
+    fn tree_sorts_follow_root_identity_across_census_changes() {
+        let row = |pid, started| {
+            serde_json::from_value::<AgentRow>(serde_json::json!({
+                "agent":"claude", "name":format!("agent-{pid}"), "pid":pid,
+                "started":started, "process_started":started, "directory":"/fixture",
+                "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
+            }))
+            .expect("a fixture agent")
+        };
+        let mut app = App::new_for_test().expect("a test app");
+        let first = row(10, 100);
+        let second = row(20, 200);
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            vec![first.clone(), second.clone()],
+            HierarchyEdges::default(),
+        ));
+        let first_id = AgentCell {
+            machine:         "natedev".to_string(),
+            pid:             10,
+            process_started: 100,
+        };
+        let second_id = AgentCell {
+            machine:         "natedev".to_string(),
+            pid:             20,
+            process_started: 200,
+        };
+        let mut first_sort = TreeSort::default();
+        first_sort.select(TreeColumn::Role);
+        let mut second_sort = TreeSort::default();
+        second_sort.select(TreeColumn::Session);
+        app.tree_sorts.insert(first_id.clone(), first_sort);
+        app.tree_sorts.insert(second_id.clone(), second_sort);
+        app.summary_sort.select(SummaryColumn::Status);
+        let summary_sort = app.summary_sort;
+
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            vec![second, first.clone()],
+            HierarchyEdges::default(),
+        ));
+        app.prune_tree_sorts();
+        assert_eq!(app.tree_sorts.get(&first_id), Some(&first_sort));
+        assert_eq!(app.tree_sorts.get(&second_id), Some(&second_sort));
+
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            vec![first, row(20, 300)],
+            HierarchyEdges::default(),
+        ));
+        app.prune_tree_sorts();
+        assert_eq!(
+            app.tree_sorts.len(),
+            1,
+            "a recycled pid starts with the default sort"
+        );
+        assert_eq!(app.tree_sorts.get(&first_id), Some(&first_sort));
+        assert_eq!(app.summary_sort, summary_sort);
+
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            Vec::new(),
+            HierarchyEdges::default(),
+        ));
+        app.prune_tree_sorts();
+        assert!(app.tree_sorts.is_empty());
+        assert_eq!(
+            app.summary_sort, summary_sort,
+            "machine scans keep the summary preference"
+        );
+    }
 
     /// Startup gives the scheduler the configured command before the
     /// settings overlay has been opened or edited.

@@ -6,7 +6,7 @@
 
 /// The agent a cell draws: its machine, its process id there, and when
 /// that process started, so a pid handed out again is a new cell.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct AgentCell {
     /// The machine's heading in the summary.
     pub(crate) machine:         String,

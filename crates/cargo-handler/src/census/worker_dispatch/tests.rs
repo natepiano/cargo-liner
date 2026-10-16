@@ -8,10 +8,13 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
+use serde_json::Value;
 use tempfile::TempDir;
 
 use super::*;
 use crate::agent_cell;
+use crate::agent_cell::TreeColumn;
 use crate::census::AccountColumn;
 use crate::census::Agent;
 use crate::census::AgentPlacement;
@@ -28,6 +31,10 @@ use crate::census::account::ConfigHome;
 use crate::census::classify::ProcessEntry;
 use crate::census::scan;
 use crate::footer_colors::FooterColors;
+use crate::sort::SortDirection;
+use crate::sort::TreeSort;
+use crate::theme::RainbowHue;
+use crate::theme::Role;
 
 const JOB: &str = "fix the slow saved-scene handover";
 const SEAT: &str = "cargo-liner-handler-enh-impl7";
@@ -517,7 +524,7 @@ fn drawn_tiles_with_edges(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<Str
                 .expect("fixture tile height fits u16");
             let area = Rect::new(0, 0, 220, height);
             let mut buffer = Buffer::empty(area);
-            agent_cell::draw_with_footer_colors(
+            agent_cell::draw(
                 &mut buffer,
                 area,
                 cell,
@@ -717,4 +724,383 @@ fn unresolved_and_cross_tile_dispatches_keep_their_shell_rows() {
     assert!(text.contains("cross tile shell"));
     assert!(text.contains("other tile thread"));
     assert!(!text.contains(&format!("impl7 · {JOB}")));
+}
+
+#[test]
+fn roster_roles_override_the_seat_stem_and_missing_roles_use_only_worker_stems() {
+    for (short, recorded, expected) in [
+        ("impl4", Some("fix"), DispatchRole::Worker(WorkerRole::Fix)),
+        (
+            "arrange",
+            Some("impl"),
+            DispatchRole::Worker(WorkerRole::Impl),
+        ),
+        (
+            "arrange",
+            Some("test"),
+            DispatchRole::Worker(WorkerRole::Test),
+        ),
+        (
+            "arrange",
+            Some("review"),
+            DispatchRole::Worker(WorkerRole::Review),
+        ),
+        (
+            "arrange",
+            Some("fix"),
+            DispatchRole::Worker(WorkerRole::Fix),
+        ),
+        ("impl4", None, DispatchRole::Worker(WorkerRole::Impl)),
+        ("test22", None, DispatchRole::Worker(WorkerRole::Test)),
+        ("review3", None, DispatchRole::Worker(WorkerRole::Review)),
+        ("fix2", None, DispatchRole::Worker(WorkerRole::Fix)),
+        ("impl", None, DispatchRole::Worker(WorkerRole::Impl)),
+        ("arrange", None, DispatchRole::Unroled),
+        ("impl4-extra", None, DispatchRole::Worker(WorkerRole::Impl)),
+        ("mat-test", None, DispatchRole::Worker(WorkerRole::Test)),
+        ("mat_test3", None, DispatchRole::Worker(WorkerRole::Test)),
+        (
+            "prefix_fix2_later-impl4",
+            None,
+            DispatchRole::Worker(WorkerRole::Fix),
+        ),
+        ("test_impl", None, DispatchRole::Worker(WorkerRole::Test)),
+        (
+            "mat-test",
+            Some("review"),
+            DispatchRole::Worker(WorkerRole::Review),
+        ),
+        ("myimpl4", None, DispatchRole::Unroled),
+    ] {
+        let seat = format!("cargo-liner-handler-enh-{short}");
+        let roster = WorkerRoster::parse(
+            &serde_json::json!({
+                seat.clone(): {"thread_id":"worker-thread", "launcher_pid":701, "role":recorded}
+            })
+            .to_string(),
+        );
+        let parsed = ParsedDispatch::parse(&command(
+            Path::new("/fixture/session"),
+            &format!("--to {seat}"),
+        ))
+        .expect("literal dispatch parses");
+        let WorkerDispatch::Worker(worker) = parsed.resolve(&roster, 701) else {
+            panic!("a valid thread resolves for {short}");
+        };
+        assert_eq!(worker.role, expected, "{short} with role {recorded:?}");
+        assert_eq!(worker.label(), format!("{short} · {JOB}"));
+        let encoded = serde_json::to_string(&WorkerDispatch::Worker(worker.clone()))
+            .expect("worker serializes");
+        assert_eq!(
+            serde_json::from_str::<WorkerDispatch>(&encoded).expect("worker round trip"),
+            WorkerDispatch::Worker(worker)
+        );
+    }
+}
+
+#[test]
+fn typed_roster_fields_ignore_malformed_neighbours_and_optional_metadata() {
+    let roster = WorkerRoster::parse(
+        r#"{
+        "cargo-liner-handler-enh-impl7":{"thread_id":" worker-thread ","launcher_pid":"bad","role":{ "future":true }},
+        "broken": 17,
+        "missing-thread": {"launcher_pid":701},
+        "blank-thread": {"thread_id":"  "},
+        "wrong-thread": {"thread_id":42},
+        "cargo-liner-handler-enh-fix2":{"thread_id":"fix-thread","launcher_pid":702,"role":"review","unrelated":{"schema":2}}
+    }"#,
+    );
+    let parsed = ParsedDispatch::parse(&command(
+        Path::new("/fixture/session"),
+        &format!("--to {SEAT}"),
+    ))
+    .expect("explicit dispatch");
+    let WorkerDispatch::Worker(worker) = parsed.resolve(&roster, 701) else {
+        panic!("invalid optional metadata must not discard its valid thread");
+    };
+    assert_eq!(worker.thread_id, "worker-thread");
+    assert_eq!(worker.role, DispatchRole::Worker(WorkerRole::Impl));
+    let implicit = ParsedDispatch::parse(&command(Path::new("/fixture/session"), ""))
+        .expect("implicit dispatch");
+    assert_eq!(implicit.resolve(&roster, 701), WorkerDispatch::Plain);
+    let WorkerDispatch::Worker(worker) = implicit.resolve(&roster, 702) else {
+        panic!("the valid neighbour still resolves by pid");
+    };
+    assert_eq!(worker.role, DispatchRole::Worker(WorkerRole::Review));
+    assert_eq!(worker.thread_id, "fix-thread");
+}
+
+#[test]
+fn folded_worker_role_reaches_the_final_tile_through_placement() {
+    for (short, role, expected) in [
+        ("impl4", None, DispatchRole::Worker(WorkerRole::Impl)),
+        ("fix2", Some("test"), DispatchRole::Worker(WorkerRole::Test)),
+        ("arrange", None, DispatchRole::Unroled),
+    ] {
+        let seat = format!("cargo-liner-handler-enh-{short}");
+        let roster = WorkerRoster::parse(
+            &serde_json::json!({seat.clone(): {"thread_id":"worker-thread","role":role}})
+                .to_string(),
+        );
+        let parsed = ParsedDispatch::parse(&command(
+            Path::new("/fixture/session"),
+            &format!("--to {seat}"),
+        ))
+        .expect("dispatch parses");
+        let mut shell = child("shell", "dispatch shell");
+        shell.dispatch = parsed.resolve(&roster, 701);
+        let mut thread = child("thread", "original thread");
+        thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
+        thread.pid = None;
+        let state =
+            MachineState::Answered(vec![agent(10, &[shell, thread])], HierarchyEdges::default());
+        let placement = AgentPlacement::from_machines(&[Machine {
+            name:  "fixture",
+            state: &state,
+        }]);
+        assert!(placement.folds_dispatch(&state.rows()[0].children[0]));
+        let DispatchLabel::Worker(worker) = placement.dispatch_label(&state.rows()[0].children[1])
+        else {
+            panic!("the visible thread carries its joined dispatch");
+        };
+        assert_eq!(worker.role, expected);
+        assert_eq!(worker.label(), format!("{short} · {JOB}"));
+    }
+}
+
+/// Draw a folded seat with either a roster role or its name-stem role.
+fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buffer {
+    let seat = format!("cargo-liner-handler-enh-{short}");
+    let roster = WorkerRoster::parse(
+        &serde_json::json!({seat.clone():{"thread_id":"worker-thread","role":recorded}})
+            .to_string(),
+    );
+    let parsed = ParsedDispatch::parse(&command(
+        Path::new("/fixture/session"),
+        &format!("--to {seat}"),
+    ))
+    .expect("dispatch parses");
+    let mut shell = child("shell", "folded shell");
+    shell.dispatch = parsed.resolve(&roster, 701);
+    let mut thread = child("thread", "original worker name");
+    thread.pid = None;
+    thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
+    let mut root = agent(10, &[shell, thread]);
+    root.session_id = SessionIdentity::Claude("manager-id".into());
+    let edges = if managed {
+        HierarchyEdges(vec![HierarchyEdge {
+            manager: "manager-id".into(),
+            member:  "worker-thread".into(),
+            role:    HierarchyRole::Test,
+        }])
+    } else {
+        HierarchyEdges::default()
+    };
+    let state = MachineState::Answered(vec![root], edges);
+    let placement = AgentPlacement::from_machines(&[Machine {
+        name:  "fixture",
+        state: &state,
+    }]);
+    let cells = agent_cell::cell_order_placed(&placement);
+    let palette = FooterColors::parse("role.worker=bright-cyan");
+    let rect = Rect::new(0, 0, 220, 12);
+    let mut buffer = Buffer::empty(rect);
+    agent_cell::draw(
+        &mut buffer,
+        rect,
+        &cells[0],
+        &cells,
+        1000,
+        AccountColumn::Shown,
+        &palette,
+    );
+    buffer
+}
+
+#[test]
+fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
+    for (short, recorded, expected_role) in [
+        ("impl4", None, "impl"),
+        ("fix2", None, "fix"),
+        ("impl4", Some("review"), "review"),
+        ("arrange", None, "worker"),
+        ("mat-test", None, "test"),
+    ] {
+        for managed in [false, true] {
+            let expected_role = if managed { "test" } else { expected_role };
+            let buffer = folded_role_buffer(short, recorded, managed);
+            let rect = *buffer.area();
+            let text: Vec<String> = (0..rect.height)
+                .map(|y| (0..rect.width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let name = format!("{short} · {JOB}");
+            let row = text
+                .iter()
+                .position(|line| line.contains(&name))
+                .expect("folded name visible");
+            let header = text
+                .iter()
+                .position(|line| line.contains("session") && line.contains("role"))
+                .expect("tree header");
+            let role_x = u16::try_from(text[header].find("role").expect("role column"))
+                .expect("role column fits");
+            let y = u16::try_from(row).expect("row fits");
+            let name_start = text[row].find(&name).expect("folded name starts");
+            let name_x =
+                u16::try_from(text[row][..name_start].chars().count()).expect("name column fits");
+            let drawn_role: String = (role_x..role_x + 6)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert_eq!(
+                drawn_role.trim(),
+                expected_role,
+                "{short} managed={managed}"
+            );
+            assert_eq!(buffer[(role_x, y)].fg, Color::LightCyan);
+            let name_color = Role::Rainbow(RainbowHue::Red)
+                .style()
+                .fg
+                .expect("parent hue");
+            assert_eq!(
+                buffer[(name_x, y)].fg,
+                name_color,
+                "{short} managed={managed}"
+            );
+            assert!(
+                !text
+                    .iter()
+                    .any(|line| line.contains("folded shell")
+                        || line.contains("original worker name"))
+            );
+        }
+    }
+}
+
+#[test]
+fn folded_dispatches_sort_as_single_worker_rows() {
+    let roster = WorkerRoster::parse(
+        r#"{
+        "cargo-liner-handler-enh-impl4":{"thread_id":"impl-thread"},
+        "cargo-liner-handler-enh-fix2":{"thread_id":"fix-thread"},
+        "cargo-liner-handler-enh-arrange":{"thread_id":"arrange-thread"}
+    }"#,
+    );
+    let mut children = Vec::new();
+    for (short, id, started) in [
+        ("impl4", "impl-thread", 100),
+        ("fix2", "fix-thread", 200),
+        ("arrange", "arrange-thread", 300),
+    ] {
+        let seat = format!("cargo-liner-handler-enh-{short}");
+        let parsed = ParsedDispatch::parse(&command(
+            Path::new("/fixture/session"),
+            &format!("--to {seat}"),
+        ))
+        .expect("dispatch parses");
+        let mut shell = child("shell", &format!("hidden-{short}"));
+        shell.dispatch = parsed.resolve(&roster, 701);
+        let mut thread = child("thread", &format!("original-{short}"));
+        thread.pid = None;
+        thread.thread_id = CodexThreadId::Recorded(id.to_string());
+        thread.started = started;
+        children.extend([shell, thread]);
+    }
+    let state = MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default());
+    let placement = AgentPlacement::from_machines(&[Machine {
+        name:  "fixture",
+        state: &state,
+    }]);
+    let defaults = agent_cell::cell_order_placed(&placement);
+    for (sort, expected) in [
+        (TreeSort::default(), ["impl4", "fix2", "arrange"]),
+        (
+            TreeSort {
+                column:    TreeColumn::Role,
+                direction: SortDirection::Ascending,
+            },
+            ["fix2", "impl4", "arrange"],
+        ),
+        (
+            TreeSort {
+                column:    TreeColumn::Age,
+                direction: SortDirection::Ascending,
+            },
+            ["arrange", "fix2", "impl4"],
+        ),
+    ] {
+        let sorts = std::collections::HashMap::from([(defaults[0].id.clone(), sort)]);
+        let cells = agent_cell::cell_order_sorted(&placement, &sorts, 1000);
+        let area = Rect::new(0, 0, 220, 12);
+        let mut buffer = Buffer::empty(area);
+        agent_cell::draw(
+            &mut buffer,
+            area,
+            &cells[0],
+            &cells,
+            1000,
+            AccountColumn::Shown,
+            &FooterColors::default(),
+        );
+        let text: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let actual: Vec<_> = text
+            .iter()
+            .filter_map(|line| {
+                ["impl4", "fix2", "arrange"]
+                    .into_iter()
+                    .find(|name| line.contains(&format!("{name} · {JOB}")))
+            })
+            .collect();
+        assert_eq!(actual, expected, "{sort:?}");
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("hidden-") || line.contains("original-"))
+        );
+    }
+}
+
+/// Old probe identities infer a role, while explicit roles remain authoritative.
+#[test]
+fn older_probe_dispatches_infer_roles_only_when_the_role_field_is_absent() {
+    for (short, inferred) in [
+        ("impl4", DispatchRole::Worker(WorkerRole::Impl)),
+        ("fix2", DispatchRole::Worker(WorkerRole::Fix)),
+        ("arrange", DispatchRole::Unroled),
+        ("mat-test", DispatchRole::Worker(WorkerRole::Test)),
+    ] {
+        let payload = serde_json::json!({"worker": {
+            "seat": format!("fixture-{short}"), "short_seat": short,
+            "thread_id": "worker-thread", "job": JOB,
+        }});
+        let WorkerDispatch::Worker(worker) =
+            serde_json::from_value(payload.clone()).expect("old probe identity")
+        else {
+            panic!("a recorded worker identity remains a worker");
+        };
+        assert_eq!(worker.role, inferred, "{short}");
+        let mut malformed = payload.clone();
+        malformed["worker"]["role"] = Value::Null;
+        assert!(
+            serde_json::from_value::<WorkerDispatch>(malformed).is_err(),
+            "explicit null is not an omitted role"
+        );
+        for explicit in [
+            DispatchRole::Unroled,
+            DispatchRole::Worker(WorkerRole::Review),
+        ] {
+            let mut recorded = payload.clone();
+            recorded["worker"]["role"] = serde_json::to_value(explicit).expect("role serializes");
+            let WorkerDispatch::Worker(worker) =
+                serde_json::from_value(recorded).expect("current probe identity")
+            else {
+                panic!("a recorded worker identity remains a worker");
+            };
+            assert_eq!(
+                worker.role, explicit,
+                "an explicit role must not be re-inferred"
+            );
+        }
+    }
 }
