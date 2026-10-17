@@ -1,6 +1,5 @@
 //! Shared liveness, evidence, retention-ref, and marker reconciliation.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -107,6 +106,7 @@ use crate::output::OutputEnvelope;
 use crate::reservation;
 use crate::reservation::DurableScopedPatchComparison;
 use crate::reservation::EditBlockingStatus;
+use crate::reservation::HolderMergeExtentCoverage;
 use crate::reservation::IntegrationEvidenceObservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
@@ -120,6 +120,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
+use crate::reservation::ReservationIntegrationJudgment;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -2242,21 +2243,10 @@ fn prepare_reconciliation_transaction(
     })
 }
 
-/// Committed paths retained separately from dirty paths during this observation pass.
-#[derive(Clone, Default)]
-enum CommittedMergeEvidence {
-    /// No current committed-path observation can support settlement of a protected extent.
-    #[default]
-    Unavailable,
-    /// The merge-base query produced these committed paths before dirty paths were added.
-    Observed(Vec<ReservationScopePath>),
-}
-
-/// One holder's independent committed-path evidence and its complete merge protection.
+/// One holder's complete observed merge protection.
 #[derive(Clone)]
 struct HolderMergeProtection {
-    extent:          MergeExtent,
-    committed_paths: CommittedMergeEvidence,
+    extent: MergeExtent,
 }
 
 /// One result per distinct holder and recorded target in a reconciliation pass.
@@ -2270,11 +2260,10 @@ struct HolderMergeExtentChange {
     reservations: ObservedReservationSet,
 }
 
-/// Journal updates and committed-path evidence derived together under the reconciliation lock.
+/// Journal updates and successful holder observations derived under the reconciliation lock.
 struct MergeExtentReconciliation {
-    operations:          Vec<JournalOperation>,
-    committed_by_holder: HashMap<(WorktreeId, IntegrationTarget), CommittedMergeEvidence>,
-    observed_by_holder:  HashMap<(WorktreeId, IntegrationTarget), MergeExtent>,
+    operations:         Vec<JournalOperation>,
+    observed_by_holder: HashMap<(WorktreeId, IntegrationTarget), MergeExtent>,
 }
 
 /// Share status and net branch reads across every reservation in the same holder checkout.
@@ -2326,10 +2315,12 @@ fn derive_merge_extents_with_observer(
             continue;
         };
         let extent = observed.as_ref().map_or_else(
-            |failure| Cow::Owned(reservation.merge_extent().unavailable(failure.clone())),
-            |observation| Cow::Borrowed(&observation.extent),
+            |failure| reservation.merge_extent().unavailable(failure.clone()),
+            |observation| {
+                reservation_merge_extent(reservation, reservations, snapshot, &observation.extent)
+            },
         );
-        if *extent == *reservation.merge_extent() {
+        if extent == *reservation.merge_extent() {
             continue;
         }
         let observed_reservation = ObservedReservation {
@@ -2340,13 +2331,13 @@ fn derive_merge_extents_with_observer(
         // reservations share a record only where their resulting extents are equal.
         if let Some(change) = changes
             .iter_mut()
-            .find(|change| change.holder == holder && change.extent == *extent)
+            .find(|change| change.holder == holder && change.extent == extent)
         {
             change.reservations.push(observed_reservation);
         } else {
             changes.push(HolderMergeExtentChange {
                 holder,
-                extent: extent.into_owned(),
+                extent,
                 reservations: observed_reservation.into(),
             });
         }
@@ -2381,18 +2372,55 @@ fn derive_merge_extents_with_observer(
     Ok(MergeExtentReconciliation {
         operations,
         observed_by_holder,
-        committed_by_holder: observed_by_worktree
-            .into_iter()
-            .map(|(holder, observation)| {
-                (
-                    holder,
-                    observation.map_or(CommittedMergeEvidence::Unavailable, |observation| {
-                        observation.committed_paths
-                    }),
-                )
-            })
-            .collect(),
     })
+}
+
+/// The unreleased reservations sharing one holder worktree and target, the reservation included.
+fn holder_group<'a>(
+    reservation: &Reservation,
+    reservations: &'a RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+) -> Vec<&'a Reservation> {
+    reservations
+        .iter()
+        .filter(|candidate| {
+            candidate.actor().worktree == reservation.actor().worktree
+                && snapshot.recorded_target(candidate.id())
+                    == snapshot.recorded_target(reservation.id())
+                && !matches!(candidate.lifecycle(), ReservationLifecycle::Released { .. })
+        })
+        .collect()
+}
+
+/// Partition a successful holder observation without leaving unclaimed work unprotected.
+fn reservation_merge_extent(
+    reservation: &Reservation,
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+    extent: &MergeExtent,
+) -> MergeExtent {
+    let MergeExtent::Protected { key, scopes } = extent else {
+        return extent.clone();
+    };
+    let siblings = holder_group(reservation, reservations, snapshot);
+    let covers = |candidate: &Reservation, path: &ReservationScope| {
+        candidate
+            .scopes()
+            .as_slice()
+            .iter()
+            .any(|scope| scope.contains(path, PathCase::Sensitive))
+    };
+    MergeExtent::derived(
+        key.clone(),
+        scopes
+            .as_slice()
+            .iter()
+            .filter(|path| {
+                covers(reservation, path) || !siblings.iter().any(|sibling| covers(sibling, path))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 /// Observe distinct holder keys concurrently, then collect costs in first-seen order.
@@ -2497,41 +2525,45 @@ fn observe_merge_extent(
         .unwrap_or_else(|| reservation.worktree_root());
     git_cost.worktree_status_queries += 1;
     let working_tree = drift::observe_merge_working_tree(root.as_ref())?;
+    let cached = holder_group(reservation, reservations, snapshot);
+    let mut reservation_ids = cached.iter().map(|holder| holder.id()).collect::<Vec<_>>();
+    reservation_ids.sort_unstable();
+    let reservation_group = if reservation_ids.len() == 1 {
+        HolderMergeExtentCoverage::FullHolder
+    } else {
+        HolderMergeExtentCoverage::ReservationShares { reservation_ids }
+    };
     let key = MergeExtentKey {
         trunk: trunk.clone(),
         head: head.clone(),
         working_tree,
+        reservation_group,
     };
-    let settlement_needs_committed_paths = reservations.iter().any(|candidate| {
-        candidate.actor().worktree == reservation.actor().worktree
-            && snapshot.recorded_target(candidate.id())
-                == snapshot.recorded_target(reservation.id())
-            && snapshot.reservation(candidate.id()).is_ok_and(|observed| {
-                matches!(
-                    observed.evidence,
-                    RepositoryReservationEvidence::Outstanding {
-                        integration_status: IntegrationEvidenceStatus::Integrated { .. },
-                        ..
-                    }
-                )
-            })
-    });
-    if let Some(cached) = reservations.iter().find(|holder| {
-        holder.actor().worktree == reservation.actor().worktree
-            && snapshot.recorded_target(holder.id()) == snapshot.recorded_target(reservation.id())
-            && holder.merge_extent().matches_key(&key)
-    }) && (!settlement_needs_committed_paths
-        || matches!(cached.merge_extent(), MergeExtent::Empty { .. }))
+    if cached
+        .iter()
+        .all(|holder| holder.merge_extent().matches_key(&key))
     {
+        // Each cached extent is now only one reservation's share. Reassemble the holder's
+        // complete surface before repartitioning it under the current declarations.
+        let mut scopes = Vec::new();
+        for holder in cached {
+            if let MergeExtent::Protected {
+                scopes: protected, ..
+            } = holder.merge_extent()
+            {
+                scopes.extend_from_slice(protected.as_slice());
+            }
+        }
+        scopes.sort_by_key(|scope| scope.path.to_string());
+        scopes.dedup();
         return Ok(HolderMergeProtection {
-            extent:          cached.merge_extent().clone(),
-            committed_paths: CommittedMergeEvidence::Unavailable,
+            extent: MergeExtent::derived(key, scopes),
         });
     }
     git_cost.path_queries += git::unmerged_branch_path_queries(trunk, head);
     let committed_paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
         .map_err(|error| error.to_string())?;
-    let mut paths = committed_paths.clone();
+    let mut paths = committed_paths;
     paths.extend(key.working_tree.tracked_paths.iter().cloned());
     paths.extend(key.working_tree.untracked_paths.iter().cloned());
     paths.sort_by_key(ToString::to_string);
@@ -2544,8 +2576,7 @@ fn observe_merge_extent(
         })
         .collect();
     Ok(HolderMergeProtection {
-        extent:          reservation::MergeExtent::derived(key, scopes),
-        committed_paths: CommittedMergeEvidence::Observed(committed_paths),
+        extent: reservation::MergeExtent::derived(key, scopes),
     })
 }
 
@@ -2678,13 +2709,9 @@ fn complete_reconciliation_plan(
     )?;
     plan.action.covered_targets = covered_targets_for_pass(reservations, &extents, plan);
     plan.operations.extend(extents.operations);
+    judge_live_integration(reservations, &mut snapshots, plan)?;
     append_evidence_operations(reservations, plan)?;
-    append_settlement_operations(
-        reservations,
-        ordering_graph,
-        &extents.committed_by_holder,
-        plan,
-    )?;
+    append_settlement_operations(reservations, ordering_graph, plan)?;
     let merged_runs = match context.merged_run_endings {
         MergedRunEndings::End => append_merged_run_endings(reservations, plan),
         MergedRunEndings::Defer => Vec::new(),
@@ -2738,6 +2765,53 @@ fn complete_reconciliation_plan(
         successors.by_predecessor,
         plan,
     )?;
+    Ok(())
+}
+
+/// Apply the live-path judgment while preserving an orphan's committed-work recovery evidence.
+fn judge_live_integration(
+    reservations: &RetainedReservationSet,
+    snapshots: &mut [RepositoryReservationSnapshot],
+    plan: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    for snapshot in snapshots {
+        let RepositoryReservationEvidence::Outstanding {
+            integration_status, ..
+        } = &mut snapshot.evidence
+        else {
+            continue;
+        };
+        let reservation = reservations.reservation(snapshot.reservation_id)?;
+        let extent = planned_merge_extent(reservation.id(), &plan.operations)
+            .unwrap_or_else(|| reservation.merge_extent());
+        let status = reservation::judge_integration(integration_status, extent).evidence_status();
+        // A deferred committed-work comparison must keep its existing journaling decision.
+        if status == *integration_status {
+            continue;
+        }
+        // An orphan has no checkout to observe. Its snapshot must retain the protected-tip
+        // ancestry or scoped-work proof for recovery, while the journal's full judgment stays
+        // conservative and cannot settle without a fresh empty extent.
+        if snapshot.worktree_liveness != WorktreeLiveness::Orphaned {
+            *integration_status = status.clone();
+        }
+        let ReservationEvidenceState::Outstanding {
+            integration_status: materialized,
+            ..
+        } = reservation.evidence_state()?
+        else {
+            continue;
+        };
+        plan.action
+            .evidence
+            .retain(|evidence| evidence.reservation_id != reservation.id());
+        if materialized != status {
+            plan.action.evidence.push(ReconciledEvidence {
+                reservation_id: reservation.id(),
+                status,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -4265,24 +4339,12 @@ enum SettlementSelection {
     Release(ReleaseDisposition),
 }
 
-/// Whether branch work past an integrated checkpoint stays protected once that checkpoint ends.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LaterWorkCover {
-    /// Another reservation of the same holder and target keeps the shared merge extent past
-    /// this pass, so ending the integrated reservation removes only a duplicate holder.
-    LiveReservation,
-    /// No other reservation holds the merge extent; the integrated reservation still protects it.
-    Unprotected,
-}
-
 /// Select from state so a previously appended proof can finish settlement after a restart.
 fn settlement_selection(
     reservation: &Reservation,
     evidence: &IntegrationEvidenceStatus,
     actual_trunk: &JudgedTargetTip,
     merge_extent: &MergeExtent,
-    committed_paths: &CommittedMergeEvidence,
-    later_work_cover: LaterWorkCover,
 ) -> SettlementSelection {
     if !matches!(
         reservation.lifecycle(),
@@ -4290,35 +4352,27 @@ fn settlement_selection(
     ) {
         return SettlementSelection::Unchanged;
     }
-    let has_unproven_work = match committed_paths {
-        CommittedMergeEvidence::Observed(paths) => {
-            reservation.has_unproven_merge_work(merge_extent, paths)
-        },
-        CommittedMergeEvidence::Unavailable => {
-            reservation.has_unproven_retained_merge_work(merge_extent)
-        },
-    };
-    if has_unproven_work && later_work_cover == LaterWorkCover::Unprotected {
-        return SettlementSelection::Unchanged;
-    }
     let (
-        IntegrationEvidenceStatus::Integrated {
+        ReservationIntegrationJudgment::Integrated {
             trunk_oid,
             proof,
             witness,
         },
         JudgedTargetTip::Resolved(actual),
-    ) = (evidence, actual_trunk)
+    ) = (
+        reservation::judge_integration(evidence, merge_extent),
+        actual_trunk,
+    )
     else {
         return SettlementSelection::Unchanged;
     };
-    if trunk_oid != actual {
+    if &trunk_oid != actual {
         return SettlementSelection::Unchanged;
     }
     SettlementSelection::Release(match proof {
         IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
         IntegrationProof::ScopedPatchEquivalent | IntegrationProof::RewrittenWitnessAncestor => {
-            ReleaseDisposition::RewrittenIntegration(witness.resolve(trunk_oid))
+            ReleaseDisposition::RewrittenIntegration(witness.resolve(&trunk_oid))
         },
     })
 }
@@ -4327,7 +4381,6 @@ fn settlement_selection(
 fn append_settlement_operations(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
-    committed_by_holder: &HashMap<(WorktreeId, IntegrationTarget), CommittedMergeEvidence>,
     reconciliation: &mut ReconciliationPlan,
 ) -> Result<(), ReservationReplayError> {
     let mut settled = HashMap::new();
@@ -4348,7 +4401,6 @@ fn append_settlement_operations(
         );
         let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
-        let later_work_cover = later_work_cover(reservations, reservation, extent, reconciliation)?;
         let SettlementSelection::Release(disposition) = settlement_selection(
             reservation,
             evidence,
@@ -4357,17 +4409,6 @@ fn append_settlement_operations(
                 .repository_snapshot
                 .target_for(reservation.id()),
             extent,
-            committed_by_holder
-                .get(&(
-                    reservation.actor().worktree,
-                    reconciliation
-                        .action
-                        .repository_snapshot
-                        .recorded_target(reservation.id())
-                        .clone(),
-                ))
-                .unwrap_or(&CommittedMergeEvidence::Unavailable),
-            later_work_cover,
         ) else {
             continue;
         };
@@ -4411,60 +4452,6 @@ fn planned_integration_status<'status>(
         .iter()
         .find(|evidence| evidence.reservation_id == reservation_id)
         .map_or(materialized, |evidence| &evidence.status)
-}
-
-/// Find a live reservation that holds the same merge extent as one about to settle.
-///
-/// Every unreleased reservation of one holder checkout and target records the holder's merge
-/// extent, and foreign checkouts read their protection from it. An active run, or an outstanding
-/// reservation whose own work is not integrated on the actual trunk, does not settle in this pass,
-/// so it keeps protecting work past the settling reservation's checkpoint.
-fn later_work_cover(
-    reservations: &RetainedReservationSet,
-    settling: &Reservation,
-    extent: &MergeExtent,
-    reconciliation: &ReconciliationPlan,
-) -> Result<LaterWorkCover, ReservationReplayError> {
-    let snapshot = &reconciliation.action.repository_snapshot;
-    let target = snapshot.recorded_target(settling.id());
-    for holder in reservations.iter() {
-        if holder.id() == settling.id()
-            || holder.actor().worktree != settling.actor().worktree
-            || snapshot.recorded_target(holder.id()) != target
-            || planned_merge_extent(holder.id(), &reconciliation.operations)
-                .unwrap_or_else(|| holder.merge_extent())
-                != extent
-        {
-            continue;
-        }
-        let later_work_cover = match holder.evidence_state()? {
-            ReservationEvidenceState::Active { .. } => LaterWorkCover::LiveReservation,
-            ReservationEvidenceState::Outstanding {
-                integration_status, ..
-            } => match (
-                planned_integration_status(
-                    holder.id(),
-                    &integration_status,
-                    &reconciliation.action.evidence,
-                ),
-                snapshot.target_for(holder.id()),
-            ) {
-                (
-                    IntegrationEvidenceStatus::Integrated { trunk_oid, .. },
-                    JudgedTargetTip::Resolved(actual),
-                ) if trunk_oid == actual => LaterWorkCover::Unprotected,
-                _ => LaterWorkCover::LiveReservation,
-            },
-            ReservationEvidenceState::Released { .. }
-            | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
-                LaterWorkCover::Unprotected
-            },
-        };
-        if later_work_cover == LaterWorkCover::LiveReservation {
-            return Ok(later_work_cover);
-        }
-    }
-    Ok(LaterWorkCover::Unprotected)
 }
 
 /// An active run this pass ended because trunk already contains all of its work.
@@ -4525,6 +4512,11 @@ fn append_merged_run_endings(
             trunk_oid: key.trunk.clone(),
             proof:     IntegrationProof::ProtectedTipAncestor,
             witness:   IntegrationWitness::EvaluatedTrunk,
+        };
+        let ReservationIntegrationJudgment::Integrated { .. } =
+            reservation::judge_integration(&integration_status, extent)
+        else {
+            continue;
         };
         let trunk_snapshot = key.trunk.clone();
         reconciliation
@@ -5550,6 +5542,7 @@ mod tests {
     use super::SettlementSelection;
     use super::rewrite_target_judgment;
     use super::rewrite_target_tip;
+    use crate::drift::WorkingTreeFingerprint;
     use crate::edge::JudgedTargetTip;
     use crate::edge::RepositoryReservationEvidence;
     use crate::edge::RepositoryReservationSnapshot;
@@ -5567,11 +5560,13 @@ mod tests {
     use crate::ledger::ObservedReservation;
     use crate::ledger::ReservationJudgingBranch;
     use crate::output::CommandVerb;
+    use crate::reservation::HolderMergeExtentCoverage;
     use crate::reservation::IntegrationEvidenceObservation;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
     use crate::reservation::MergeExtent;
+    use crate::reservation::MergeExtentKey;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::Reservation;
     use crate::reservation::ReservationEvidenceState;
@@ -5633,8 +5628,7 @@ mod tests {
                     cost.worktree_status_queries += 1;
                     cost.path_queries += 2;
                     Ok(super::HolderMergeProtection {
-                        extent:          extent.clone(),
-                        committed_paths: super::CommittedMergeEvidence::Unavailable,
+                        extent: extent.clone(),
                     })
                 },
             );
@@ -5668,7 +5662,6 @@ mod tests {
             [vec![ids[0], sibling_id], vec![ids[1]], vec![ids[2]]]
         );
         assert_eq!(reconciliation.observed_by_holder.len(), 3);
-        assert_eq!(reconciliation.committed_by_holder.len(), 3);
         Ok(())
     }
 
@@ -5785,7 +5778,6 @@ mod tests {
         let mut serial_cost = super::MergeExtentGitCost::default();
         let mut serial_operations = Vec::new();
         let mut serial_observed = HashMap::new();
-        let mut serial_committed = HashMap::new();
         for reservation in reservations.iter() {
             let key = (
                 reservation.actor().worktree,
@@ -5798,17 +5790,13 @@ mod tests {
                 &[],
                 &mut serial_cost,
             );
-            let (extent, committed) = match observed {
+            let extent = match observed {
                 Ok(protection) => {
                     serial_observed.insert(key.clone(), protection.extent.clone());
-                    (protection.extent, protection.committed_paths)
+                    protection.extent
                 },
-                Err(failure) => (
-                    reservation.merge_extent().unavailable(failure),
-                    super::CommittedMergeEvidence::Unavailable,
-                ),
+                Err(failure) => reservation.merge_extent().unavailable(failure),
             };
-            serial_committed.insert(key, committed);
             serial_operations.push(JournalOperation::HolderMergeExtentObserved {
                 extent,
                 reservations: ObservedReservation {
@@ -5820,9 +5808,8 @@ mod tests {
         }
         (
             super::MergeExtentReconciliation {
-                operations:          serial_operations,
-                observed_by_holder:  serial_observed,
-                committed_by_holder: serial_committed,
+                operations:         serial_operations,
+                observed_by_holder: serial_observed,
             },
             serial_cost,
         )
@@ -5878,23 +5865,6 @@ mod tests {
             "journal order and retained failure evidence"
         );
         assert_eq!(concurrent.observed_by_holder, serial.observed_by_holder);
-        assert_eq!(
-            concurrent.committed_by_holder.len(),
-            serial.committed_by_holder.len()
-        );
-        for (key, expected) in serial.committed_by_holder {
-            match (&concurrent.committed_by_holder[&key], expected) {
-                (
-                    super::CommittedMergeEvidence::Unavailable,
-                    super::CommittedMergeEvidence::Unavailable,
-                ) => {},
-                (
-                    super::CommittedMergeEvidence::Observed(actual),
-                    super::CommittedMergeEvidence::Observed(expected),
-                ) => assert_eq!(actual, &expected),
-                _ => return Err(format!("committed evidence differs for {key:?}").into()),
-            }
-        }
         assert_eq!(
             concurrent_cost.worktree_status_queries,
             serial_cost.worktree_status_queries
@@ -6144,6 +6114,17 @@ mod tests {
 
     #[test]
     fn settlement_selection() -> Result<(), Box<dyn std::error::Error>> {
+        let empty_extent = MergeExtent::Empty {
+            key: MergeExtentKey {
+                reservation_group: HolderMergeExtentCoverage::FullHolder,
+                trunk:             TRUNK.parse()?,
+                head:              TIP.parse()?,
+                working_tree:      WorkingTreeFingerprint {
+                    tracked_paths:   Vec::new(),
+                    untracked_paths: Vec::new(),
+                },
+            },
+        };
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
         let [claim, checkpoint] = checkpoint_events()?;
         let actual_trunk = JudgedTargetTip::Resolved(TRUNK.parse()?);
@@ -6178,31 +6159,27 @@ mod tests {
                 },
             };
             assert_eq!(
-                select_without_cover(
+                select_settlement(
                     reservation,
                     &integration_status,
                     &actual_trunk,
-                    reservation.merge_extent()
+                    &empty_extent
                 ),
                 SettlementSelection::Release(disposition.clone())
             );
             let unavailable_extent = extent.unavailable("holder missing".to_owned());
             for (status, trunk, extent) in [
-                (
-                    &integration_status,
-                    &other_trunk,
-                    reservation.merge_extent(),
-                ),
+                (&integration_status, &other_trunk, &empty_extent),
                 (&integration_status, &actual_trunk, &extent),
                 (&integration_status, &actual_trunk, &unavailable_extent),
                 (
                     &IntegrationEvidenceStatus::NotIntegrated,
                     &actual_trunk,
-                    reservation.merge_extent(),
+                    &empty_extent,
                 ),
             ] {
                 assert_eq!(
-                    select_without_cover(reservation, status, trunk, extent),
+                    select_settlement(reservation, status, trunk, extent),
                     SettlementSelection::Unchanged
                 );
             }
@@ -6220,11 +6197,11 @@ mod tests {
             ])?;
             let reservation = released.reservation(reservation_id)?;
             assert_eq!(
-                select_without_cover(
+                select_settlement(
                     reservation,
                     &integration_status,
                     &actual_trunk,
-                    reservation.merge_extent()
+                    &empty_extent
                 ),
                 SettlementSelection::Unchanged
             );
@@ -6240,6 +6217,17 @@ mod tests {
     #[test]
     fn settlement_preserves_historical_witness_only_for_actual_trunk()
     -> Result<(), Box<dyn std::error::Error>> {
+        let empty_extent = MergeExtent::Empty {
+            key: MergeExtentKey {
+                reservation_group: HolderMergeExtentCoverage::FullHolder,
+                trunk:             TRUNK.parse()?,
+                head:              TIP.parse()?,
+                working_tree:      WorkingTreeFingerprint {
+                    tracked_paths:   Vec::new(),
+                    untracked_paths: Vec::new(),
+                },
+            },
+        };
         let retained = RetainedReservationSet::replay(&checkpoint_events()?)?;
         let reservation = retained.reservation(RESERVATION_ID.parse()?)?;
         let witness = RewrittenIntegrationTrunkCommit::from(
@@ -6258,11 +6246,11 @@ mod tests {
             (TIP, SettlementSelection::Unchanged),
         ] {
             assert_eq!(
-                select_without_cover(
+                select_settlement(
                     reservation,
                     &evidence,
                     &JudgedTargetTip::Resolved(trunk.parse()?),
-                    reservation.merge_extent()
+                    &empty_extent
                 ),
                 expected,
             );
@@ -6490,22 +6478,14 @@ mod tests {
         Ok(())
     }
 
-    /// Select settlement for a holder whose committed paths are unknown and whose later work no
-    /// other reservation protects.
-    fn select_without_cover(
+    /// Select settlement using the reservation's current share of merge work.
+    fn select_settlement(
         reservation: &Reservation,
         evidence: &IntegrationEvidenceStatus,
         actual_trunk: &JudgedTargetTip,
         merge_extent: &MergeExtent,
     ) -> SettlementSelection {
-        super::settlement_selection(
-            reservation,
-            evidence,
-            actual_trunk,
-            merge_extent,
-            &super::CommittedMergeEvidence::Unavailable,
-            super::LaterWorkCover::Unprotected,
-        )
+        super::settlement_selection(reservation, evidence, actual_trunk, merge_extent)
     }
 
     /// A durable proof that can settle without another evidence change.

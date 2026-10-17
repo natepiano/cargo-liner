@@ -58,23 +58,21 @@ other eligible worktrees are still enrolled. See
 [enrollment operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/operations.md#worktree-enrollment)
 for recovery steps.
 
-**`release` is a lifecycle walk, not a single act**, which is why it appears
-more than once above. Called on an active reservation it *checkpoints* — pinning
-the commit that later evidence is judged against — and leaves the reservation
-outstanding. Called again after `integrate` has moved trunk, it records the
-terminal `integrated` disposition. A third call is sometimes needed: if the run
-after `integrate` only materialized the new evidence, the call after that records
-the disposition. If some other stateful read already materialized that evidence,
-the first post-integration `release` records the disposition directly. Run it
-until the board shows a disposition; repeating it is safe.
+An active reservation's first `release` checkpoints its current commit and
+leaves it outstanding. After its work is committed and merged and its own paths
+are clean, one more `release` records the terminal disposition. That call
+revalidates integration evidence and settles the reservation in one transaction;
+no separate evidence-refresh call is needed. With parallel phases in one
+worktree, each reservation is judged on its own paths, while unclaimed dirty
+or unmerged paths keep every phase outstanding. Repeating `release` is safe.
 
 `integrate` never checkpoints and `release` never moves trunk. Keeping them
 separate is what lets a reservation hold a pinned commit while trunk moves
 underneath it.
 
-This transcript came from the installed `cargo-berth 0.1.0-dev` in a scratch
-repository. The protected work was committed between `board` and the first
-`release`:
+This example shows a checkpoint followed by one release after integration.
+The protected changes to `crates/parser/src/lib.rs` and `src/main.rs` are
+committed between `board` and the first `release`:
 
 ```console
 $ cargo berth init
@@ -84,11 +82,9 @@ Claimed 2 reservation scope(s) as 01a0371f-ff36-75a3-ad13-b1dee3820f97.
 $ cargo berth board
 The reservation board was read. Use `cargo-berth board --json` to inspect it.
 $ cargo berth release 01a0371f-ff36-75a3-ad13-b1dee3820f97
-Reservation 01a0371f-ff36-75a3-ad13-b1dee3820f97 is outstanding at protected tip 292471ef2254a985665228c46355571f54e4148a.
+Reservation 01a0371f-ff36-75a3-ad13-b1dee3820f97 is outstanding at protected tip 292471ef2254a985665228c46355571f54e4148a; pending paths: crates/parser/src/lib.rs, src/main.rs.
 $ cargo berth integrate 01a0371f-ff36-75a3-ad13-b1dee3820f97
 Integrated reservation 01a0371f-ff36-75a3-ad13-b1dee3820f97; the ordering gate was clear.
-$ cargo berth release 01a0371f-ff36-75a3-ad13-b1dee3820f97
-Reservation 01a0371f-ff36-75a3-ad13-b1dee3820f97 has integration evidence in trunk commit 292471ef2254a985665228c46355571f54e4148a.
 $ cargo berth release 01a0371f-ff36-75a3-ad13-b1dee3820f97
 Reservation 01a0371f-ff36-75a3-ad13-b1dee3820f97 recorded disposition Integrated.
 $ cargo berth board --json | jq -c '{status, lifecycle: .payload.data.resolved.entries[0].lifecycle}'
@@ -116,8 +112,9 @@ The full verb set is:
 - `integrate`: update configured trunk to the current worktree `HEAD`;
   `--force --why <text>` records an explicit permit when ordering or deferral
   holds remain.
-- `release`: checkpoint an active reservation, materialize current integration
-  evidence for an outstanding one, or record its verified terminal disposition.
+- `release`: checkpoint an active reservation, or revalidate an outstanding
+  reservation and record its terminal disposition in one call when its own
+  paths are clean and its work has reached the integration target.
 - `resolve`: answer an incursion or record an explicit recovery disposition.
 - `renew`: refresh reservation activity without changing scopes or edges.
 

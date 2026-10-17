@@ -86,13 +86,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A release that replaces its checkpoint without a current merge extent reports pending paths unavailable, omits `pending_paths`, and stays outstanding instead of reporting an empty list.
+
+- An orphan whose protected tip or scoped work reached trunk again suggests verifying the resolved trunk commit. Unlanded work keeps its unproven recovery alert; an unavailable checkout still prevents automatic settlement.
+
+- The checkpointing release now names the phase's pending paths, including dirty files and committed work not yet in its integration target.
+
+- A phase reservation stays outstanding while its own paths contain uncommitted or unmerged work. A release after the merge finishes in one call.
+
 - A busy ledger during an edit check now answers as busy instead of reporting an overlap with no holder.
 
 - Edit checks of paths already held by the caller's selected reservation return without locking or reconciliation; reconciliation observes distinct holder worktrees concurrently while preserving operation order and Git cost counts.
 
 - Discovery skips an empty or partial `.git` directory and honours `GIT_CEILING_DIRECTORIES` when searching for a worktree.
 
-- Integrated work releases itself. Reconciliation settles an integrated outstanding reservation with later branch work when another reservation of the same holder and target carries the same merge extent; without one it stays outstanding.
+- Reconciliation settles an outstanding reservation when its committed work reached the integration target and its own observed merge extent is empty. Unclaimed dirty or unmerged work keeps every phase of that holder and target outstanding.
 
 - An overlap answer to a holder protecting many paths no longer exceeds the 16 KiB record limit. Answer, enrollment, and widen records named the holder's scope revision by copying every holder scope, so `claim --after <holder>` against a holder with a few hundred files failed with `invalid_input` however few paths the caller named. A scope revision is now a fixed-size SHA-256 digest of the scopes, in records, in board `exact_approved_scopes`, and in a conflict's `overlap_scope_revision`; `output_contract_version` is 6. Records written before the change carry the scope array and replay unchanged.
 

@@ -116,22 +116,45 @@ fn a_director_runs_two_phases_each_with_its_own_reservation() {
         );
     }
 
-    let released = run_berth_with_session(root, &["release", r15, "--json"], "dir-sid.phase-15");
-    assert_success(&released);
-    let board = run_berth_with_session(root, &["board", "--json"], "dir-sid.phase-16");
-    assert_success(&board);
-    let board = json(&board);
+    assert_unclaimed_work_keeps_phase_outstanding(root, r15, r16);
+}
+
+fn assert_unclaimed_work_keeps_phase_outstanding(root: &Path, r15: &str, r16: &str) {
+    let checkpoint = run_berth_with_session(root, &["release", r15, "--json"], "dir-sid.phase-15");
+    assert_success(&checkpoint);
+    let checkpoint = json(&checkpoint);
+    assert_eq!(checkpoint["status"], "outstanding", "{checkpoint}");
+    assert_eq!(checkpoint["payload"]["data"]["status"], "checkpointed");
+
+    let pending = run_berth_with_session(root, &["release", r15, "--json"], "dir-sid.phase-15");
+    assert_success(&pending);
+    let pending = json(&pending);
+    assert_eq!(pending["status"], "outstanding", "{pending}");
+    assert_eq!(pending["payload"]["data"]["status"], "outstanding");
+    assert_eq!(
+        pending["payload"]["data"]["pending_paths"],
+        serde_json::json!(["c.rs"])
+    );
+
+    let board = phase_board(root);
+    let checkpointed = reservation_row(&board, r15);
+    assert_eq!(checkpointed["lifecycle"]["stage"], "outstanding");
+    assert_eq!(
+        checkpointed["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "c.rs"}])
+    );
     let remaining = reservation_row(&board, r16);
     assert_eq!(remaining["lifecycle"]["stage"], "active");
     assert_eq!(
         remaining["scopes"],
         serde_json::json!([{"kind": "file", "path": "b.rs"}]),
-        "releasing phase 15 must leave phase 16 active with its original declaration"
+        "checkpointing phase 15 must leave phase 16 active with its original declaration"
     );
     assert!(
-        journal_events(root)
+        !journal_events(root)
             .iter()
-            .any(|event| { event["op"] == "release" && event["reservation_id"] == r15 })
+            .any(|event| event["op"] == "release" && event["reservation_id"] == r15),
+        "unclaimed dirt must prevent phase 15 from settling"
     );
 }
 
@@ -284,6 +307,369 @@ fn a_new_phase_reserves_only_free_paths_and_reports_the_sibling_holding_the_rest
             "scopes": [{"kind": "file", "path": "a.rs"}]
         }]),
         "the mixed check must associate its held path with the sibling that protects it"
+    );
+}
+
+#[test]
+fn parallel_phase_merge_extents_contain_only_each_phases_own_paths() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    GIT.run(root, ["switch", "--quiet", "-c", "unit"]);
+    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
+    fs::write(root.join("a.rs"), "// first phase work\n").expect("first phase file");
+    fs::write(root.join("b.rs"), "// second phase work\n").expect("second phase file");
+    GIT.run(root, ["add", "a.rs"]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "first phase"]);
+
+    let board = phase_board(root);
+    for (id, path) in [(&first, "a.rs"), (&second, "b.rs")] {
+        let extent = &reservation_row(&board, id)["merge_extent"];
+        assert_eq!(extent["status"], "protected", "{board}");
+        assert_eq!(
+            extent["scopes"],
+            serde_json::json!([{"kind": "file", "path": path}]),
+            "a phase must protect its own work without adopting its sibling's paths: {board}"
+        );
+    }
+}
+
+#[test]
+fn checkpointing_each_phase_names_its_dirty_or_unmerged_own_paths() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    GIT.run(root, ["switch", "--quiet", "-c", "unit"]);
+    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
+    fs::write(root.join("a.rs"), "// committed phase work\n").expect("first phase file");
+    fs::write(root.join("b.rs"), "// dirty phase work\n").expect("second phase file");
+    GIT.run(root, ["add", "a.rs"]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "first phase"]);
+
+    for (id, session, path) in [
+        (&first, "dir-sid.phase-1", "a.rs"),
+        (&second, "dir-sid.phase-2", "b.rs"),
+    ] {
+        let checkpoint = run_berth_with_session(root, &["release", id, "--json"], session);
+        assert_success(&checkpoint);
+        let checkpoint = json(&checkpoint);
+        assert_eq!(checkpoint["status"], "outstanding", "{checkpoint}");
+        assert_eq!(checkpoint["payload"]["data"]["status"], "checkpointed");
+        assert_eq!(
+            checkpoint["payload"]["data"]["pending_paths"],
+            serde_json::json!([path])
+        );
+        assert!(
+            checkpoint["message"]
+                .as_str()
+                .expect("checkpoint message")
+                .ends_with(&format!("; pending paths: {path}.")),
+            "{checkpoint}"
+        );
+    }
+}
+
+#[test]
+fn unclaimed_dirty_paths_belong_to_both_live_phase_extents() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
+    for path in ["a.rs", "b.rs", "c.rs"] {
+        fs::write(root.join(path), "// pending work\n").expect("phase work");
+    }
+
+    let board = phase_board(root);
+    for (id, own) in [(&first, "a.rs"), (&second, "b.rs")] {
+        assert_eq!(
+            reservation_row(&board, id)["merge_extent"]["scopes"],
+            serde_json::json!([
+                {"kind": "file", "path": own}, {"kind": "file", "path": "c.rs"}
+            ]),
+            "the unclaimed dirty path must remain protected by each phase: {board}"
+        );
+    }
+}
+
+#[test]
+fn a_lone_phase_extent_contains_the_whole_worktree_surface() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    GIT.run(root, ["switch", "--quiet", "-c", "unit"]);
+    let phase = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    fs::write(root.join("a.rs"), "// committed own work\n").expect("own work");
+    GIT.run(root, ["add", "a.rs"]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "own work"]);
+    fs::write(root.join("b.rs"), "// staged unclaimed work\n").expect("staged work");
+    GIT.run(root, ["add", "b.rs"]);
+    fs::write(root.join("c.rs"), "// untracked work\n").expect("untracked work");
+
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &phase)["merge_extent"]["scopes"],
+        serde_json::json!([
+            {"kind": "file", "path": "a.rs"}, {"kind": "file", "path": "b.rs"},
+            {"kind": "file", "path": "c.rs"}
+        ]),
+        "a lone phase must keep both its own and every unclaimed path: {board}"
+    );
+}
+
+#[test]
+fn reconciliation_keeps_a_checkpoint_outstanding_while_its_own_path_is_dirty() {
+    assert_reconciliation_retains_pending_own_path(false);
+}
+
+#[test]
+fn reconciliation_keeps_a_checkpoint_outstanding_while_its_own_path_is_unmerged() {
+    assert_reconciliation_retains_pending_own_path(true);
+}
+
+fn assert_reconciliation_retains_pending_own_path(commit_pending: bool) {
+    let repository = initialized_repository();
+    let trunk = repository.path();
+    let unit_directory = tempfile::tempdir().expect("unit directory");
+    let unit = unit_directory.path();
+    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
+    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    fs::write(unit.join("a.rs"), "// checkpoint work\n").expect("checkpoint work");
+    GIT.run(unit, ["add", "a.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "checkpoint work"]);
+    let tip = GIT.stdout(unit, ["rev-parse", "HEAD"]);
+    let checkpoint =
+        run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
+    assert_success(&checkpoint);
+    fs::write(unit.join("a.rs"), "// later own work\n").expect("pending own work");
+    fs::write(unit.join("b.rs"), "// sibling work\n").expect("sibling work");
+    if commit_pending {
+        GIT.run(unit, ["add", "a.rs"]);
+        GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "later own work"]);
+    }
+    GIT.run_without_hooks(trunk, ["merge", "--quiet", "--ff-only", tip.as_str()]);
+
+    let board = phase_board(unit);
+    let pending = reservation_row(&board, &first);
+    assert_eq!(pending["lifecycle"]["stage"], "outstanding", "{board}");
+    assert_eq!(
+        pending["integration_evidence"]["status"]["status"],
+        "not_integrated"
+    );
+    assert_eq!(
+        pending["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "a.rs"}])
+    );
+    assert_eq!(
+        reservation_row(&board, &second)["lifecycle"]["stage"],
+        "active"
+    );
+    assert!(
+        journal_events(trunk)
+            .iter()
+            .all(|event| event["op"] != "release" || event["reservation_id"] != first)
+    );
+}
+
+#[test]
+fn patch_equivalent_own_paths_settle_without_adopting_unmerged_sibling_work() {
+    let repository = initialized_repository();
+    let trunk = repository.path();
+    let unit_directory = tempfile::tempdir().expect("unit directory");
+    let unit = unit_directory.path();
+    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
+    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    fs::write(unit.join("a.rs"), "// integrated own work\n").expect("first phase work");
+    GIT.run(unit, ["add", "a.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "first phase work"]);
+    let protected_tip = GIT.stdout(unit, ["rev-parse", "HEAD"]);
+    assert_success(&run_berth_with_session(
+        unit,
+        &["release", &first, "--json"],
+        "dir-sid.phase-1",
+    ));
+    fs::write(unit.join("b.rs"), "// unmerged sibling work\n").expect("sibling work");
+    GIT.run(unit, ["add", "b.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "sibling work"]);
+    fs::write(trunk.join("trunk.rs"), "// independent trunk work\n").expect("trunk work");
+    GIT.run(trunk, ["add", "trunk.rs"]);
+    GIT.run_without_hooks(trunk, ["commit", "--quiet", "-m", "independent trunk work"]);
+    GIT.run_without_hooks(trunk, ["cherry-pick", protected_tip.as_str()]);
+    assert_ne!(GIT.stdout(trunk, ["rev-parse", "HEAD"]), protected_tip);
+
+    let board = phase_board(unit);
+    let integrated = reservation_row(&board, &first);
+    assert_eq!(integrated["lifecycle"]["stage"], "released", "{board}");
+    assert_eq!(
+        integrated["lifecycle"]["disposition"]["kind"],
+        "rewritten_integration"
+    );
+    assert_eq!(integrated["merge_extent"]["at_release"]["status"], "empty");
+    assert_eq!(
+        integrated["integration_evidence"]["status"]["proof"],
+        "scoped_patch_equivalent"
+    );
+    assert_eq!(
+        reservation_row(&board, &second)["lifecycle"]["stage"],
+        "active"
+    );
+    assert_eq!(
+        reservation_row(&board, &second)["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "b.rs"}])
+    );
+}
+
+#[test]
+fn abandoning_a_sibling_restores_its_unclaimed_paths_to_the_remaining_extent() {
+    assert_departed_sibling_paths_remain_protected(false);
+}
+
+#[test]
+fn retargeting_a_sibling_restores_its_unclaimed_paths_to_the_remaining_extent() {
+    assert_departed_sibling_paths_remain_protected(true);
+}
+
+fn assert_departed_sibling_paths_remain_protected(retarget: bool) {
+    let repository = initialized_repository();
+    let root = repository.path();
+    GIT.run(root, ["switch", "--quiet", "-c", "unit"]);
+    GIT.run(root, ["branch", "other-target", "main"]);
+    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
+    fs::write(root.join("b.rs"), "// committed sibling work\n").expect("sibling work");
+    GIT.run(root, ["add", "b.rs"]);
+    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "sibling work"]);
+    fs::write(root.join("a.rs"), "// remaining work\n").expect("remaining work");
+    let before = phase_board(root);
+    assert_eq!(
+        reservation_row(&before, &first)["merge_extent"]["scopes"],
+        serde_json::json!([{"kind":"file", "path":"a.rs"}])
+    );
+    assert_eq!(
+        reservation_row(&before, &second)["merge_extent"]["scopes"],
+        serde_json::json!([{"kind":"file", "path":"b.rs"}])
+    );
+    let output = if retarget {
+        run_berth_with_session(
+            root,
+            &["retarget", &second, "--target", "other-target", "--json"],
+            "dir-sid.phase-2",
+        )
+    } else {
+        run_berth_with_session(
+            root,
+            &[
+                "resolve",
+                &second,
+                "--abandon",
+                "--why",
+                "sibling stopped",
+                "--json",
+            ],
+            "dir-sid.phase-2",
+        )
+    };
+    assert_success(&output);
+    let after = phase_board(root);
+    assert_eq!(
+        reservation_row(&after, &first)["merge_extent"]["scopes"],
+        serde_json::json!([{"kind":"file", "path":"a.rs"}, {"kind":"file", "path":"b.rs"}]),
+        "unchanged Git inputs cannot hide the departed sibling's now-unclaimed work: {after}"
+    );
+}
+
+#[test]
+fn parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged() {
+    let repository = initialized_repository();
+    let trunk = repository.path();
+    let unit_directory = tempfile::tempdir().expect("unit worktree directory");
+    let unit = unit_directory.path();
+    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
+    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    fs::write(unit.join("a.rs"), "// first phase work\n").expect("first phase file");
+    fs::write(unit.join("b.rs"), "// second phase work\n").expect("second phase file");
+    GIT.run(unit, ["add", "a.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "first phase"]);
+
+    let first_checkpoint =
+        run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
+    assert_success(&first_checkpoint);
+    assert_eq!(
+        json(&first_checkpoint)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    let second_checkpoint =
+        run_berth_with_session(unit, &["release", &second, "--json"], "dir-sid.phase-2");
+    assert_success(&second_checkpoint);
+    let second_checkpoint = json(&second_checkpoint);
+    assert_eq!(
+        second_checkpoint["status"], "outstanding",
+        "{second_checkpoint}"
+    );
+    assert_eq!(
+        second_checkpoint["payload"]["data"]["status"], "checkpointed",
+        "dirty phase 2 work must remain outstanding: {second_checkpoint}"
+    );
+
+    GIT.run_without_hooks(trunk, ["merge", "--quiet", "--ff-only", "unit"]);
+    let first_release =
+        run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
+    assert_success(&first_release);
+    let first_release = json(&first_release);
+    assert_eq!(
+        first_release["payload"]["data"]["status"], "released",
+        "{first_release}"
+    );
+    assert_eq!(
+        first_release["payload"]["data"]["disposition"]["kind"], "integrated",
+        "dirty sibling work must not prevent phase 1's release: {first_release}"
+    );
+
+    let second_pending =
+        run_berth_with_session(unit, &["release", &second, "--json"], "dir-sid.phase-2");
+    assert_success(&second_pending);
+    let second_pending = json(&second_pending);
+    assert_eq!(second_pending["status"], "outstanding", "{second_pending}");
+    assert_eq!(
+        second_pending["payload"]["data"]["status"], "outstanding",
+        "phase 2 must not settle while its own path is dirty: {second_pending}"
+    );
+    assert_eq!(
+        second_pending["payload"]["data"]["pending_paths"],
+        serde_json::json!(["b.rs"]),
+        "the structured answer must identify only phase 2's pending work: {second_pending}"
+    );
+    assert!(
+        second_pending["message"]
+            .as_str()
+            .expect("outstanding release explanation")
+            .contains("b.rs"),
+        "the release answer must name the phase's pending path: {second_pending}"
+    );
+    let board = phase_board(unit);
+    let pending = reservation_row(&board, &second);
+    assert_eq!(pending["lifecycle"]["stage"], "outstanding", "{board}");
+    assert_eq!(
+        pending["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "b.rs"}]),
+        "phase 2 must keep its dirty path protected after phase 1 settles: {board}"
+    );
+
+    GIT.run(unit, ["add", "b.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "second phase"]);
+    GIT.run_without_hooks(trunk, ["merge", "--quiet", "--ff-only", "unit"]);
+    let second_release =
+        run_berth_with_session(unit, &["release", &second, "--json"], "dir-sid.phase-2");
+    assert_success(&second_release);
+    let second_release = json(&second_release);
+    assert_eq!(
+        second_release["payload"]["data"]["status"], "released",
+        "{second_release}"
+    );
+    assert_eq!(
+        second_release["payload"]["data"]["disposition"]["kind"], "integrated",
+        "merging phase 2's own work must allow release in this call: {second_release}"
     );
 }
 
@@ -504,6 +890,13 @@ fn named_claim_inactive_selection_is_mutation_free() {
         &["release", &ended, "--json"],
         "ended-phase",
     ));
+    // Settle the ended phase first. The assertion helper's board read then refreshes
+    // the remaining sibling group before measuring the refused claim.
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &ended)["lifecycle"]["stage"],
+        "released"
+    );
     fixture.assert_refused_selection(&ended);
 }
 

@@ -4197,6 +4197,44 @@
             }
           ]
         },
+        "HolderMergeExtentCoverage": {
+          "description": "Whether a cached extent covers the holder or depends on sibling shares.",
+          "oneOf": [
+            {
+              "description": "A lone reservation, or a legacy observation, holds the complete surface.",
+              "properties": {
+                "kind": {
+                  "const": "full_holder",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Every named reservation must still contribute its share before the cache is reusable.",
+              "properties": {
+                "kind": {
+                  "const": "reservation_shares",
+                  "type": "string"
+                },
+                "reservation_ids": {
+                  "items": {
+                    "$ref": "#/$defs/uuid_v7_identifier"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_ids"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "IncursionCommit": {
           "description": "One commit in a reservation's phase range that introduced entered paths.",
           "properties": {
@@ -4617,6 +4655,10 @@
             "head": {
               "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
+            },
+            "reservation_group": {
+              "$ref": "#/$defs/HolderMergeExtentCoverage",
+              "description": "The reservations whose shares together reconstruct this observation."
             },
             "trunk": {
               "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",
@@ -9245,6 +9287,34 @@
           "description": "Typed state transitions and evidence results returned by `release`.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
+              "description": "Current reservation paths still contain uncommitted or unintegrated work.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement"
+                },
+                "pending_paths": {
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "status": {
+                  "const": "outstanding",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "pending_paths",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Integration is proved, but the present target lacks a fresh cover.",
               "properties": {
                 "reservation_id": {
@@ -9272,6 +9342,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths observed to contain uncommitted or unintegrated work.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The fixed commit retained for integration checks."
@@ -9286,6 +9363,45 @@
                 },
                 "status": {
                   "const": "checkpointed",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed at checkpoint.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An active reservation checkpointed without a fresh observation of its pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The fixed commit retained for integration checks."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping retired this reservation."
+                },
+                "status": {
+                  "const": "checkpointed_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
@@ -9310,6 +9426,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths still needing integration after replacing the checkpoint.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The replacement fixed commit."
@@ -9320,6 +9443,40 @@
                 },
                 "status": {
                   "const": "resnapshotted",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed with the replacement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An outstanding reservation replaced its checkpoint without observing pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The replacement fixed commit."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "status": {
+                  "const": "resnapshotted_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
@@ -12259,6 +12416,44 @@
             }
           ]
         },
+        "HolderMergeExtentCoverage": {
+          "description": "Whether a cached extent covers the holder or depends on sibling shares.",
+          "oneOf": [
+            {
+              "description": "A lone reservation, or a legacy observation, holds the complete surface.",
+              "properties": {
+                "kind": {
+                  "const": "full_holder",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Every named reservation must still contribute its share before the cache is reusable.",
+              "properties": {
+                "kind": {
+                  "const": "reservation_shares",
+                  "type": "string"
+                },
+                "reservation_ids": {
+                  "items": {
+                    "$ref": "#/$defs/uuid_v7_identifier"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_ids"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "IncursionCommit": {
           "description": "One commit in a reservation's phase range that introduced entered paths.",
           "properties": {
@@ -12679,6 +12874,10 @@
             "head": {
               "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
+            },
+            "reservation_group": {
+              "$ref": "#/$defs/HolderMergeExtentCoverage",
+              "description": "The reservations whose shares together reconstruct this observation."
             },
             "trunk": {
               "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",
@@ -16342,6 +16541,34 @@
           "description": "Typed state transitions and evidence results returned by `release`.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
+              "description": "Current reservation paths still contain uncommitted or unintegrated work.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement"
+                },
+                "pending_paths": {
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "status": {
+                  "const": "outstanding",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "pending_paths",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Integration is proved, but the present target lacks a fresh cover.",
               "properties": {
                 "reservation_id": {
@@ -16369,6 +16596,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths observed to contain uncommitted or unintegrated work.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The fixed commit retained for integration checks."
@@ -16383,6 +16617,45 @@
                 },
                 "status": {
                   "const": "checkpointed",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed at checkpoint.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An active reservation checkpointed without a fresh observation of its pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The fixed commit retained for integration checks."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping retired this reservation."
+                },
+                "status": {
+                  "const": "checkpointed_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
@@ -16407,6 +16680,13 @@
                   "$ref": "#/$defs/coordination_run_marker_retirement",
                   "description": "What happened to the worktree coordination-run marker."
                 },
+                "pending_paths": {
+                  "description": "Paths still needing integration after replacing the checkpoint.",
+                  "items": {
+                    "$ref": "#/$defs/ReservationScopePath"
+                  },
+                  "type": "array"
+                },
                 "protected_tip": {
                   "$ref": "#/$defs/protected_reservation_tip",
                   "description": "The replacement fixed commit."
@@ -16417,6 +16697,40 @@
                 },
                 "status": {
                   "const": "resnapshotted",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The integration-target commit observed with the replacement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pending_paths",
+                "reservation_id",
+                "protected_tip",
+                "trunk_oid",
+                "marker"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An outstanding reservation replaced its checkpoint without observing pending paths.",
+              "properties": {
+                "marker": {
+                  "$ref": "#/$defs/coordination_run_marker_retirement",
+                  "description": "What happened to the worktree coordination-run marker."
+                },
+                "protected_tip": {
+                  "$ref": "#/$defs/protected_reservation_tip",
+                  "description": "The replacement fixed commit."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that changed state."
+                },
+                "status": {
+                  "const": "resnapshotted_pending_paths_unavailable",
                   "type": "string"
                 },
                 "trunk_oid": {
@@ -17896,6 +18210,44 @@
     },
     "reservation_lifecycle_query": {
       "$defs": {
+        "HolderMergeExtentCoverage": {
+          "description": "Whether a cached extent covers the holder or depends on sibling shares.",
+          "oneOf": [
+            {
+              "description": "A lone reservation, or a legacy observation, holds the complete surface.",
+              "properties": {
+                "kind": {
+                  "const": "full_holder",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Every named reservation must still contribute its share before the cache is reusable.",
+              "properties": {
+                "kind": {
+                  "const": "reservation_shares",
+                  "type": "string"
+                },
+                "reservation_ids": {
+                  "items": {
+                    "$ref": "#/$defs/uuid_v7_identifier"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_ids"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "MergeExtent": {
           "description": "The branch's independently observed merge protection, including inability to answer.",
           "oneOf": [
@@ -17989,6 +18341,10 @@
             "head": {
               "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
+            },
+            "reservation_group": {
+              "$ref": "#/$defs/HolderMergeExtentCoverage",
+              "description": "The reservations whose shares together reconstruct this observation."
             },
             "trunk": {
               "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",

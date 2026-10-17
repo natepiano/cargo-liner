@@ -3147,7 +3147,7 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
     let repository = initialized_repository();
     let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
-    // Uncommitted work keeps both runs in this worktree from ending on trunk.
+    // Each reservation protects its own uncommitted work.
     fs::write(repository.path().join("observer.txt"), "observer work\n")
         .expect("observer work should write");
     fs::write(repository.path().join("released.txt"), "released work\n")
@@ -3164,10 +3164,10 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
             "released work",
         ],
     );
-    // The observer's uncommitted work keeps the worktree dirty, so release checkpoints first.
+    // The observer's dirt belongs to its reservation, so the committed reservation settles.
     for (expected_status, expected_fact_status) in [
-        ("outstanding", "checkpointed"),
         ("integrated", "released"),
+        ("integrated", "already_settled"),
         ("integrated", "already_settled"),
     ] {
         let release = run_berth(repository.path(), &["release", &released_id, "--json"]);
