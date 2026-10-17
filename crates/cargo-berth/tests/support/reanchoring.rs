@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -20,7 +21,6 @@ use super::RETENTION_REF_PREFIX;
 use super::claim;
 use super::commit_file;
 use super::git_command;
-use super::initialized_repository;
 use super::journal_events;
 use super::json_output;
 use super::reservation_id;
@@ -33,6 +33,24 @@ const PENDING_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// Space between independently editable hunks makes the later conflict unambiguous.
 const HUNK_SEPARATOR: &str = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n";
 
+/// The empty-ledger main checkout before a holder starts rewriting its phase.
+const REWRITE_MAIN: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "rewrite-main",
+    build:            build_rewrite_main,
+};
+
+fn build_rewrite_main(root: &Path) {
+    super::build_initialized_repository(root, super::GitReferenceStorage::Loose);
+    for (key, value) in [("maintenance.auto", "false"), ("gc.auto", "0")] {
+        GIT.run(root, ["config", key, value]);
+    }
+    commit_file(root, "phase.txt", &contents("base", "base"), "phase base");
+    GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
+    GIT.run(root, ["commit", "--quiet", "-m", "policy configuration"]);
+}
+
 /// A linked holder whose managed hooks consult a different policy checkout.
 struct RewriteFixture {
     repository: TempDir,
@@ -42,24 +60,7 @@ struct RewriteFixture {
 
 impl RewriteFixture {
     fn new() -> Self {
-        let repository = initialized_repository();
-        for (key, value) in [("maintenance.auto", "false"), ("gc.auto", "0")] {
-            GIT.run(repository.path(), ["config", key, value]);
-        }
-        commit_file(
-            repository.path(),
-            "phase.txt",
-            &contents("base", "base"),
-            "phase base",
-        );
-        GIT.run(
-            repository.path(),
-            ["add", "--force", ".claude/config/berth.toml"],
-        );
-        GIT.run(
-            repository.path(),
-            ["commit", "--quiet", "-m", "policy configuration"],
-        );
+        let repository = REWRITE_MAIN.instantiate();
         let worktrees = tempdir().expect("linked checkout parent should exist");
         let holder = worktrees.path().join("holder");
         GIT.add_worktree_without_hooks(repository.path(), &holder, "holder", "HEAD");

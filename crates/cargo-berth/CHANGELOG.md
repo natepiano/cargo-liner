@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Test support exposes `IntegrationRepository::build_main_template` so integration-target fixtures can copy an initialized checkout with committed policy instead of repeating its git and berth setup.
+
 - An optional `default_answer = "first_ready"` key in `.claude/config/berth.toml`, supplied by the main worktree's file, records an answer when an overlap arrives without one. A `claim` that overlaps holders and names no answer records an `--override` answer to every holder of the requested paths, reserves nothing, adds no holder, and reports `answered`; a first-touch edit that overlaps holders records the same answer and proceeds, and its clear `check` payload lists those holders in `answered`. No integration order is recorded and neither lane is held, so whichever checkpoint is ready first merges first. The recorded reason names `default_answer` and `berth.toml`. Unset, an unanswered overlap is refused as before.
 - The README states what the edit check covers: only Claude Code's `Edit`, `Write`, and `NotebookEdit` tools. Writes from scripts, Bash commands, and Codex seats are not checked, so berth is advisory for them, and git merges remain the real conflict check.
 

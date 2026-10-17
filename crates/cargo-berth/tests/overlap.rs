@@ -9,6 +9,7 @@ use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::is_merge_extent_observation;
@@ -23,6 +24,21 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// An initialized main checkout with untracked policy and no reservations.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
+};
+
+/// Initialized main with committed policy for integration-target scenarios.
+const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
+    name: "integration-main",
+    build: |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
+    ..INITIALIZED_REPOSITORY
 };
 
 use std::fs;
@@ -56,7 +72,7 @@ const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[test]
 fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("two-run-lane", "integration");
     repo.git(&lane, &["reset", "--hard", "main"]);
     let older = repo.claim(&lane, "file:older.txt", FIRST_RUN, Some("main"));
@@ -93,7 +109,7 @@ fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
 
 #[test]
 fn sibling_lane_can_edit_landed_work_while_main_meets_the_cover() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let a = repo.lane("contained-a", "integration");
     let b = repo.lane("contained-b", "integration");
     let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
@@ -132,7 +148,7 @@ fn sibling_lane_can_edit_landed_work_while_main_meets_the_cover() {
 
 #[test]
 fn lane_editing_its_target_diff_records_no_cover_incursion() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     repo.commit_file(
         &repo.integration,
         "Cargo.toml",
@@ -172,7 +188,7 @@ fn lane_editing_its_target_diff_records_no_cover_incursion() {
 
 #[test]
 fn claim_target_precedence_and_source_are_recorded() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let explicit_lane = repo.lane("explicit-target-lane", "integration");
     let explicit = repo.claim(
         &explicit_lane,
@@ -239,7 +255,7 @@ fn claim_target_precedence_and_source_are_recorded() {
 
 #[test]
 fn explicit_claim_refuses_own_and_unresolved_targets() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("refused-target-lane", "integration");
     for (target, reason) in [
         ("refused-target-lane", "own branch"),
@@ -257,7 +273,7 @@ fn explicit_claim_refuses_own_and_unresolved_targets() {
 
 #[test]
 fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("malformed-claim-lane", "integration");
     for (target, message) in [
         (
@@ -280,7 +296,7 @@ fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
 
 #[test]
 fn first_touch_invalid_branch_settings_fall_back_to_repository_trunk() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     for (branch, configured_target, reason) in [
         ("own-target-lane", "own-target-lane", "own_branch"),
         ("missing-target-lane", "no-such-target", "unresolved"),
@@ -1722,25 +1738,18 @@ fn claim_overlapping_reservations(
     OverlappingReservationIds { newer, older }
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
-    git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch=main"],
-    );
-    git(repository.path(), &["config", "user.name", "Berth Test"]);
-    git(
-        repository.path(),
-        &["config", "user.email", "berth@example.invalid"],
-    );
-    git(repository.path(), &["config", "core.ignoreCase", "false"]);
-    fs::write(repository.path().join("README.md"), "scratch repository\n")
-        .expect("scratch file should write");
-    git(repository.path(), &["add", "README.md"]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    let initialized = run_berth(repository.path(), &["init", "--json"]);
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(root: &Path) {
+    git(root, &["init", "--quiet", "--initial-branch=main"]);
+    git(root, &["config", "user.name", "Berth Test"]);
+    git(root, &["config", "user.email", "berth@example.invalid"]);
+    git(root, &["config", "core.ignoreCase", "false"]);
+    fs::write(root.join("README.md"), "scratch repository\n").expect("scratch file should write");
+    git(root, &["add", "README.md"]);
+    git(root, &["commit", "--quiet", "-m", "initial"]);
+    let initialized = run_berth(root, &["init", "--json"]);
     assert!(initialized.status.success());
-    repository
 }
 
 /// Add a real worktree beside the repository, the second party berth has always refused.
