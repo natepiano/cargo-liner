@@ -1,4 +1,5 @@
-//! Unassigned roots share a flat tile without losing their own work or colors.
+//! `draw_unassigned` renders `UnassignedEntry` values with nested `ChildRow`
+//! lines and each session's `RainbowHue` preserved.
 
 #![expect(
     clippy::panic,

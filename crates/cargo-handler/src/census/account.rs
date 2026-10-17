@@ -113,17 +113,20 @@ impl From<Agent> for Program {
     }
 }
 
-/// Whether a frame names accounts in its tree columns and agent values.
+/// `AccountColumn::of` selects account visibility for `AgentRow` labels and
+/// tree account columns. `agent_cell::account_column` applies that decision
+/// across the frame's agent entries and their nested lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AccountColumn {
-    /// Each program has at most one account label in the frame.
+    /// `AccountColumn::of` found at most one account label per program.
     Hidden,
-    /// A program has two or more account labels in the frame.
+    /// `AccountColumn::of` found two or more account labels for one program.
     Shown,
 }
 
 impl AccountColumn {
-    /// Show accounts when one program has two distinct labels.
+    /// Select `Shown` when one program has two distinct account labels;
+    /// otherwise select `Hidden`.
     pub(crate) fn of<'a>(accounts: impl IntoIterator<Item = (Agent, &'a Account)>) -> Self {
         let mut labels = HashSet::new();
         for (agent, account) in accounts {
