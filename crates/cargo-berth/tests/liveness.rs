@@ -2193,7 +2193,10 @@ fn build_initialized_repository(repository_root: &Path) {
     git(repository_root, &["add", "README.md"]);
     git(repository_root, &["commit", "--quiet", "-m", "initial"]);
     assert!(run_berth(repository_root, &["init"]).status.success());
-    git(repository_root, &["add", ".claude/config/berth.toml"]);
+    git(
+        repository_root,
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     // Nothing is claimed yet, so the commit skips the hooks; see `GitDriver::run_without_hooks`.
     GIT.run_without_hooks(
         repository_root,

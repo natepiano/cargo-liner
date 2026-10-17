@@ -36,6 +36,12 @@ of their own. An existing main configuration is kept. When it is missing and
 the linked worktree running `init` has its own valid configuration, those
 settings seed the main file.
 
+Every `init` adds `/.claude/config/berth.toml` once to the common Git
+`info/exclude`, creating its directory when needed. The configuration stays at
+the same path and is excluded from `git status` in every worktree. An existing
+entry with or without the leading `/` is kept; tracked configurations remain
+visible to Git.
+
 You can initialize a repository with work already in flight. `init` inspects
 every live worktree and reserves its committed changes relative to trunk plus
 its staged, unstaged, and untracked paths. Each worktree with work and no prior

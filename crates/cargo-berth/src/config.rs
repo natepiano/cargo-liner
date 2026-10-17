@@ -22,6 +22,8 @@ const DEFAULT_MAXIMUM_ORDERING_EDGES: u32 = 512;
 const DEFAULT_MAXIMUM_RESERVATIONS: u32 = 128;
 const DEFAULT_TRUNK: &str = "main";
 const GATE_MODE_KEY: &str = "gate_mode";
+const GIT_EXCLUDE_FILE: &str = "exclude";
+const GIT_INFO_DIRECTORY: &str = "info";
 const MAXIMUM_ORDERING_EDGES_KEY: &str = "maximum_ordering_edges";
 const MAXIMUM_RESERVATIONS_KEY: &str = "maximum_reservations";
 const TRUNK_KEY: &str = "trunk";
@@ -40,7 +42,8 @@ pub(crate) enum Enrollment<T> {
 
 /// The files one worktree consults for its configuration.
 ///
-/// The configuration file is untracked and per-worktree. A linked worktree reads
+/// The configuration file is per-worktree and ignored through the common Git
+/// `info/exclude` unless already tracked. A linked worktree reads
 /// its own limits and gate mode first, but only the main worktree's `trunk`,
 /// `approver`, and `default_answer` keys define the repository trunk and overlap policy
 /// when the main configuration exists.
@@ -147,6 +150,38 @@ impl BerthConfig {
 
     /// Return this repository's configuration location.
     fn path(repository_root: &Path) -> PathBuf { repository_root.join(Self::relative_path()) }
+
+    /// Ignore the configuration in every worktree, retaining existing exclude entries.
+    pub(crate) fn exclude_from_git(common_git_directory: &Path) -> Result<(), ConfigError> {
+        let info_directory = common_git_directory.join(GIT_INFO_DIRECTORY);
+        let exclude_path = info_directory.join(GIT_EXCLUDE_FILE);
+        let contents = match fs::read(&exclude_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(ConfigError::Io(error)),
+        };
+        let configuration_path = Self::relative_path().to_string_lossy().replace('\\', "/");
+        if contents.split(|byte| *byte == b'\n').any(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            line.strip_prefix(b"/").unwrap_or(line) == configuration_path.as_bytes()
+        }) {
+            return Ok(());
+        }
+
+        fs::create_dir_all(info_directory)?;
+        let mut exclude_file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(exclude_path)?;
+        let separator = if contents.is_empty() || contents.ends_with(b"\n") {
+            ""
+        } else {
+            "\n"
+        };
+        writeln!(exclude_file, "{separator}/{configuration_path}")?;
+        exclude_file.sync_all()?;
+        Ok(())
+    }
 
     /// Initialize the main worktree's configuration, carrying over linked policy when absent.
     pub(crate) fn initialize(

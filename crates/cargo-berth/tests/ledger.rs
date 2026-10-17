@@ -40,6 +40,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const EXCLUDE_PATH: &str = ".git/info/exclude";
 const GIT_CEILING_ENVIRONMENT: &str = "GIT_CEILING_DIRECTORIES";
 const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
 const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
@@ -454,8 +455,10 @@ fn clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line() {
             repository.path(),
             &["ls-files", "--others", "--exclude-standard"]
         ),
-        CONFIGURATION_PATH
+        ""
     );
+    assert_eq!(git_stdout(repository.path(), &["status", "--short"]), "");
+    assert!(repository.path().join(CONFIGURATION_PATH).is_file());
     let enrollment = enrollment_report(repository.path());
     for section in ["enrolled", "overlaps", "failures"] {
         assert_eq!(enrollment[section], serde_json::json!([]));
@@ -564,6 +567,9 @@ fn init_creates_the_shared_ledger_and_is_idempotent() {
     let repository = scratch_repository();
 
     let first_init = run_berth(repository.path(), ["init", "--json"]);
+    assert_success(&first_init);
+    let exclude_path = repository.path().join(EXCLUDE_PATH);
+    let first_exclude = fs::read(&exclude_path).expect("exclude should read after init");
     let second_init = run_berth(repository.path(), ["init", "--json"]);
 
     assert!(first_init.status.success());
@@ -571,6 +577,16 @@ fn init_creates_the_shared_ledger_and_is_idempotent() {
     assert!(repository.path().join(JOURNAL_PATH).is_file());
     assert!(repository.path().join(PROJECTION_PATH).is_file());
     assert!(repository.path().join(CONFIGURATION_PATH).is_file());
+    let second_exclude = fs::read(&exclude_path).expect("exclude should read after repeated init");
+    assert_eq!(second_exclude, first_exclude);
+    assert_eq!(
+        String::from_utf8(second_exclude)
+            .expect("UTF-8 exclude")
+            .lines()
+            .filter(|line| *line == format!("/{CONFIGURATION_PATH}"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -584,6 +600,9 @@ fn init_leaves_an_edited_configuration_untouched() {
         edited_configuration,
     )
     .expect("edited configuration should write");
+    let exclude_path = repository.path().join(EXCLUDE_PATH);
+    fs::write(&exclude_path, "# legacy exclude\n/other-local-file")
+        .expect("pre-upgrade exclude should write");
 
     let second_init = run_berth(repository.path(), ["init"]);
 
@@ -592,6 +611,103 @@ fn init_leaves_an_edited_configuration_untouched() {
         fs::read_to_string(repository.path().join(CONFIGURATION_PATH))
             .expect("configuration should read"),
         edited_configuration
+    );
+    assert_eq!(
+        fs::read_to_string(exclude_path).expect("repaired exclude should read"),
+        format!("# legacy exclude\n/other-local-file\n/{CONFIGURATION_PATH}\n")
+    );
+    assert_eq!(git_stdout(repository.path(), &["status", "--short"]), "");
+}
+
+#[test]
+fn linked_init_excludes_configuration_in_every_worktree() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(root, worktrees.path(), "linked-init");
+    let configuration = "trunk = \"main\"\n";
+    for worktree in [root, checkout.as_path()] {
+        let configuration_path = worktree.join(CONFIGURATION_PATH);
+        fs::create_dir_all(configuration_path.parent().expect("configuration parent"))
+            .expect("configuration directory should exist");
+        fs::write(configuration_path, configuration).expect("existing configuration should write");
+    }
+
+    assert_success(&run_berth(&checkout, ["init", "--json"]));
+
+    for worktree in [root, checkout.as_path()] {
+        assert_eq!(git_stdout(worktree, &["status", "--short"]), "");
+        assert_eq!(
+            git_stdout(worktree, &["ls-files", "--others", "--exclude-standard"]),
+            ""
+        );
+        assert_eq!(
+            fs::read_to_string(worktree.join(CONFIGURATION_PATH))
+                .expect("configuration should remain in place"),
+            configuration
+        );
+    }
+    assert!(
+        fs::read_to_string(root.join(EXCLUDE_PATH))
+            .expect("common exclude should read")
+            .lines()
+            .any(|line| line == format!("/{CONFIGURATION_PATH}"))
+    );
+}
+
+#[test]
+fn init_preserves_existing_configuration_exclude_patterns() {
+    for prefix in ["/", ""] {
+        let repository = scratch_repository();
+        let exclude_path = repository.path().join(EXCLUDE_PATH);
+        let existing =
+            format!("# existing excludes\n/other-local-file\n{prefix}{CONFIGURATION_PATH}\n");
+        fs::write(&exclude_path, &existing).expect("existing exclude should write");
+
+        assert_success(&run_berth(repository.path(), ["init", "--json"]));
+
+        assert_eq!(
+            fs::read_to_string(exclude_path).expect("existing exclude should read"),
+            existing
+        );
+        assert_eq!(git_stdout(repository.path(), &["status", "--short"]), "");
+    }
+}
+
+#[test]
+fn init_creates_a_missing_common_info_directory() {
+    let repository = scratch_repository();
+    fs::remove_dir_all(repository.path().join(".git/info"))
+        .expect("initial info directory should remove");
+
+    assert_success(&run_berth(repository.path(), ["init", "--json"]));
+
+    assert_eq!(
+        fs::read_to_string(repository.path().join(EXCLUDE_PATH)).expect("new exclude should read"),
+        format!("/{CONFIGURATION_PATH}\n")
+    );
+    assert_eq!(git_stdout(repository.path(), &["status", "--short"]), "");
+}
+
+#[test]
+fn init_keeps_tracked_configuration_changes_visible() {
+    let repository = initialized_repository();
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    OpenOptions::new()
+        .append(true)
+        .open(configuration_path)
+        .expect("tracked configuration should open")
+        .write_all(b"\n# tracked local edit\n")
+        .expect("tracked configuration edit should write");
+
+    assert_success(&run_berth(repository.path(), ["init", "--json"]));
+
+    assert_eq!(
+        git_stdout(
+            repository.path(),
+            &["status", "--short", "--", CONFIGURATION_PATH]
+        ),
+        format!("M {CONFIGURATION_PATH}")
     );
 }
 
@@ -1498,7 +1614,7 @@ fn initialized_repository() -> TempDir {
             .status
             .success()
     );
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &[
@@ -1553,7 +1669,7 @@ fn separate_git_directory_repository() -> SeparateGitDirectoryRepository {
             .status
             .success()
     );
-    git(&worktree_root, &["add", CONFIGURATION_PATH]);
+    git(&worktree_root, &["add", "--force", CONFIGURATION_PATH]);
     git(
         &worktree_root,
         &[

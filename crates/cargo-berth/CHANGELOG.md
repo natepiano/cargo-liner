@@ -86,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `init` excludes `.claude/config/berth.toml` through the common Git `info/exclude` in every worktree, so a clean initialization leaves no untracked `.claude/` entry. Re-running `init` repairs older repositories without duplicating an existing exclude entry; tracked configurations remain visible.
 - A release that replaces its checkpoint without a current merge extent reports pending paths unavailable, omits `pending_paths`, and stays outstanding instead of reporting an empty list.
 
 - An orphan whose protected tip or scoped work reached trunk again suggests verifying the resolved trunk commit. Unlanded work keeps its unproven recovery alert; an unavailable checkout still prevents automatic settlement.

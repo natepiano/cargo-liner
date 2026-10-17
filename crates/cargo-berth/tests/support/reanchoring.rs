@@ -52,7 +52,10 @@ impl RewriteFixture {
             &contents("base", "base"),
             "phase base",
         );
-        GIT.run(repository.path(), ["add", ".claude/config/berth.toml"]);
+        GIT.run(
+            repository.path(),
+            ["add", "--force", ".claude/config/berth.toml"],
+        );
         GIT.run(
             repository.path(),
             ["commit", "--quiet", "-m", "policy configuration"],

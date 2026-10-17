@@ -81,7 +81,7 @@ const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
         git.run(root, ["add", "README.md"]);
         git.run(root, ["commit", "--quiet", "-m", "initial"]);
         assert_success(&run_berth(root, &["init", "--json"]));
-        git.run(root, ["add", CONFIGURATION_PATH]);
+        git.run(root, ["add", "--force", CONFIGURATION_PATH]);
         git.run_without_hooks(
             root,
             ["commit", "--quiet", "-m", "track berth configuration"],
@@ -579,7 +579,7 @@ fn resolve_reports_failed_session_mapping_retirement() {
 #[test]
 fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &[
@@ -639,7 +639,7 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
         repository.path(),
         &["config", "core.hooksPath", "/dev/null"],
     );
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "track berth configuration"],
@@ -4748,7 +4748,7 @@ mod merge_extent {
             // No hook or lifecycle verb runs when these tests integrate a branch. Only the
             // following board read may discover its now-empty merge surface.
             GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
-            GIT.run(root, ["add", ".claude/config/berth.toml"]);
+            GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
             GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");

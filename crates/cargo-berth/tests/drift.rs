@@ -2229,6 +2229,8 @@ fn a_refused_root_head_reports_the_path_it_introduced() {
             .status
             .success()
     );
+    fs::write(repository.path().join("held.txt"), "incumbent work\n")
+        .expect("holder work should keep its reservation active");
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
 
     assert_refused_head_entry(
@@ -2274,7 +2276,7 @@ fn assert_refused_head_entry(reported: &Output, holder_id: &str) {
     );
 }
 
-/// An untracked file created by `init` does not change direct drift's occupancy answer.
+/// A pre-upgrade untracked configuration does not change direct drift's occupancy answer.
 #[test]
 fn refused_run_with_untracked_configuration_reports_direct_hook_and_ambiguous_cases() {
     let repository = repository_with_uncommitted_berth_configuration();
@@ -4318,7 +4320,7 @@ fn initialized_repository() -> TempDir {
             .status
             .success()
     );
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -4334,6 +4336,9 @@ fn repository_with_uncommitted_berth_configuration() -> TempDir {
             .status
             .success()
     );
+    // Reproduce repositories initialized before init excluded its configuration.
+    fs::remove_file(repository.path().join(".git/info/exclude"))
+        .expect("configuration exclude should remove for the legacy fixture");
     let untracked = git_stdout(
         repository.path(),
         &["status", "--short", "--untracked-files=all"],
