@@ -587,7 +587,7 @@ fn drawn_tiles(rows: Vec<AgentRow>) -> Vec<String> {
 }
 
 fn drawn_tiles_with_edges(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
-    let state = MachineState::Answered(rows, edges);
+    let state = MachineState::Answered(rows, edges.into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,
@@ -928,8 +928,10 @@ fn folded_worker_role_reaches_the_final_tile_through_placement() {
         let mut thread = child("thread", "original thread");
         thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
         thread.pid = None;
-        let state =
-            MachineState::Answered(vec![agent(10, &[shell, thread])], HierarchyEdges::default());
+        let state = MachineState::Answered(
+            vec![agent(10, &[shell, thread])],
+            HierarchyEdges::default().into(),
+        );
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "fixture",
             state: &state,
@@ -972,7 +974,7 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
     } else {
         HierarchyEdges::default()
     };
-    let state = MachineState::Answered(vec![root], edges);
+    let state = MachineState::Answered(vec![root], edges.into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,
@@ -1081,7 +1083,8 @@ fn folded_dispatches_sort_as_single_worker_rows() {
         thread.started = started;
         children.extend([shell, thread]);
     }
-    let state = MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default());
+    let state =
+        MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default().into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,

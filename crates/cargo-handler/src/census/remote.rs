@@ -70,7 +70,7 @@ pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
             status: Some(0),
             stdout,
         } => probe::parse_report(&stdout).map_or_else(MachineState::Failed, |(rows, edges)| {
-            MachineState::Answered(rows, edges)
+            MachineState::Answered(rows, edges.into())
         }),
         ProbeOutcome::Finished {
             status: Some(SSH_UNREACHABLE_STATUS),
@@ -253,7 +253,7 @@ mod tests {
                     launched_by:     None,
                     children:        Vec::new(),
                 }],
-                crate::census::HierarchyEdges::default()
+                crate::census::HierarchyEdges::default().into()
             )
         );
         assert_eq!(

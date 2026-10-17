@@ -40,6 +40,8 @@ use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
 use crate::census::accounts::AccountsTable;
+#[cfg(test)]
+use crate::census::scan::ScanStage;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
@@ -77,6 +79,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .census
         .lists_an_agent(&app.loaded_config.config.machines.remote)
         || app.accounts.table.is_visible()
+        || app
+            .census
+            .has_hierarchy_notice(&app.loaded_config.config.machines.remote)
     {
         AttractWork::Running
     } else {
@@ -942,10 +947,11 @@ fraying = "leading"
     #[test]
     fn content_clicks_select_and_reverse_only_the_named_tile_sort() {
         let mut app = App::new_for_test().expect("a test app");
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![boss(900)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(900)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
         let area = Rect::new(0, 0, 220, 30);
         let (id, point) = {
             let cells = Cells::new(
@@ -1007,10 +1013,11 @@ fraying = "leading"
     #[test]
     fn attract_replacement_and_departure_ignore_tree_and_summary_header_clicks() {
         let mut app = App::new_for_test().expect("a test app");
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![boss(900)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(900)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
         let area = Rect::new(0, 0, 220, 30);
         let clicks = {
             let cells = Cells::new(
@@ -1117,10 +1124,11 @@ fraying = "leading"
     #[test]
     fn an_unassigned_agent_gets_a_flat_row_in_the_machine_pool() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            crate::census::HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: crate::census::HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_grid(&mut app);
         app.tiles.settle_for_test();
 
@@ -1172,7 +1180,11 @@ fraying = "leading"
                     })
                     .collect(),
             );
-            app.census.apply(CensusUpdate::Local(rows.clone(), edges));
+            app.census.apply(CensusUpdate::Local {
+                rows:      rows.clone(),
+                hierarchy: edges.into(),
+                stage:     ScanStage::Classified,
+            });
             let body = Rect::new(0, 0, 160, 40);
             drawn_buffer_in(&mut app, body);
             app.tiles.settle_for_test();
@@ -1261,7 +1273,11 @@ fraying = "leading"
             })
             .collect();
         let (agents, edges) = production_roots(agents);
-        app.census.apply(CensusUpdate::Local(agents, edges));
+        app.census.apply(CensusUpdate::Local {
+            rows:      agents,
+            hierarchy: edges.into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_buffer_in(&mut app, body);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer_in(&mut app, body);
@@ -1303,10 +1319,11 @@ fraying = "leading"
     #[test]
     fn unassigned_grid_titles_name_the_machine_and_use_theme_title_color() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         app.loaded_config.config.machines.remote = vec!["mac".to_string()];
         app.census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
@@ -1315,7 +1332,7 @@ fraying = "leading"
                     name: "remote-session".to_string(),
                     ..boss(3600)
                 }],
-                HierarchyEdges::default(),
+                HierarchyEdges::default().into(),
             ),
         });
         let body = Rect::new(0, 0, 160, 45);
@@ -1353,10 +1370,11 @@ fraying = "leading"
     #[test]
     fn an_unassigned_name_and_its_summary_row_share_a_hue() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_buffer(&mut app);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer(&mut app);
@@ -1389,10 +1407,10 @@ fraying = "leading"
                     ..boss(20 * 60 * 60)
                 },
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         if let MachineState::Answered(rows, edges) = &mut natedev {
-            (*rows, *edges) = production_roots(std::mem::take(rows));
+            (*rows, edges.edges) = production_roots(std::mem::take(rows));
         }
         let footer_colors = FooterColors::default();
         let cells = Cells::new(

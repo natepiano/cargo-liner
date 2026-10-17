@@ -18,12 +18,15 @@ use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
 use super::HierarchyEdges;
+use super::HierarchyNotice;
+use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::SessionIdentity;
 use super::account::AccountLabels;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyAnswer;
+use super::hierarchy::HierarchyError;
 use super::local_machine_name;
 use super::scan::LocalScanner;
 use crate::config::CargoHandler;
@@ -99,12 +102,21 @@ struct ProbeReport {
     /// A failed command must not erase the receiver's last successful links.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hierarchy_failed: bool,
+    /// Typed discovery health; older probes omit it and remain readable.
+    #[serde(default)]
+    hierarchy_notice: HierarchyNotice,
     /// Transport-only worker carriers, ignored by older schema-3 peers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     thread_hosts:     Vec<AgentRow>,
 }
 
 impl ProbeReport {
+    /// Keep the schema-3 failure flag for receivers that predate typed notices.
+    const fn record_failure(&mut self, reason: HierarchyError) {
+        self.hierarchy_failed = true;
+        self.hierarchy_notice = HierarchyNotice::Failed(reason);
+    }
+
     /// Separate visible agents from carriers at the outgoing wire boundary.
     fn from_answer(machine: String, rows: Vec<AgentRow>, edges: HierarchyEdges) -> Self {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
@@ -115,6 +127,7 @@ impl ProbeReport {
             edges,
             thread_hosts,
             hierarchy_failed: false,
+            hierarchy_notice: HierarchyNotice::Clear,
         }
     }
 
@@ -128,10 +141,13 @@ impl ProbeReport {
                 host
             }))
             .collect();
-        let hierarchy = if self.hierarchy_failed {
-            HierarchyAnswer::Failed
-        } else {
-            HierarchyAnswer::Answered(self.edges)
+        let hierarchy = match self.hierarchy_notice {
+            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed(reason),
+            HierarchyNotice::NoSessionMatched => HierarchyAnswer::Unmatched(self.edges),
+            HierarchyNotice::Clear if self.hierarchy_failed => {
+                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+            },
+            HierarchyNotice::Clear => HierarchyAnswer::Answered(self.edges),
         };
         (rows, hierarchy)
     }
@@ -160,8 +176,24 @@ pub(crate) fn print() -> ExitCode {
         HierarchyEdges::default(),
     );
     match hierarchy::read(&source, &CommandRunner) {
-        HierarchyAnswer::Answered(edges) => report.edges = edges,
-        HierarchyAnswer::Failed => report.hierarchy_failed = true,
+        Ok(edges) => {
+            let snapshot = HierarchySnapshot {
+                edges,
+                notice: HierarchyNotice::Clear,
+            };
+            let snapshot = if matches!(source, HierarchySource::Command(_)) {
+                let mut rows = report.rows.clone();
+                rows.extend_from_slice(&report.thread_hosts);
+                snapshot.matched(&rows)
+            } else {
+                snapshot
+            };
+            report.edges = snapshot.edges;
+            report.hierarchy_notice = snapshot.notice;
+        },
+        Err(reason) => {
+            report.record_failure(reason);
+        },
     }
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
@@ -180,8 +212,8 @@ pub(crate) fn print() -> ExitCode {
 pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdges), String> {
     parse_answer(output).map(|(rows, hierarchy)| {
         let edges = match hierarchy {
-            HierarchyAnswer::Answered(edges) => edges,
-            HierarchyAnswer::Failed => HierarchyEdges::default(),
+            HierarchyAnswer::Answered(edges) | HierarchyAnswer::Unmatched(edges) => edges,
+            HierarchyAnswer::Failed(_) => HierarchyEdges::default(),
         };
         (rows, edges)
     })
@@ -201,6 +233,10 @@ pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAns
         .map(ProbeReport::into_answer)
         .map_err(|_| UNREADABLE_PROBE_REASON.to_string())
 }
+
+#[cfg(test)]
+#[path = "probe/hierarchy_transport_tests.rs"]
+mod hierarchy_transport_tests;
 
 #[cfg(test)]
 #[expect(
@@ -247,6 +283,7 @@ mod tests {
     fn report() -> ProbeReport {
         ProbeReport {
             hierarchy_failed: false,
+            hierarchy_notice: HierarchyNotice::Clear,
             schema:           PROBE_SCHEMA,
             machine:          "mac".to_string(),
             thread_hosts:     Vec::new(),
@@ -327,23 +364,28 @@ mod tests {
                         ),
                     ],
                 },
-                AgentRow {
-                    agent:           Agent::Claude,
-                    session_id:      SessionIdentity::Unrecorded,
-                    service_tier:    ServiceTier::Unrecorded,
-                    account:         Account::Unrecorded,
-                    name:            "worker".to_string(),
-                    activity:        AgentActivity::from(Some("busy")),
-                    started:         1_790_000_130,
-                    process_started: 1_790_000_130,
-                    pid:             81_020,
-                    desktop:         None,
-                    directory:       "~".to_string(),
-                    branch:          None,
-                    launched_by:     Some(80_020),
-                    children:        Vec::new(),
-                },
+                worker(),
             ],
+        }
+    }
+
+    /// The separate session launched by the report's Claude row.
+    fn worker() -> AgentRow {
+        AgentRow {
+            agent:           Agent::Claude,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
+            name:            "worker".to_string(),
+            activity:        AgentActivity::from(Some("busy")),
+            started:         1_790_000_130,
+            process_started: 1_790_000_130,
+            pid:             81_020,
+            desktop:         None,
+            directory:       "~".to_string(),
+            branch:          None,
+            launched_by:     Some(80_020),
+            children:        Vec::new(),
         }
     }
 
@@ -365,7 +407,7 @@ mod tests {
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","activity":{"active":"thinking"},"started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","activity":{"active":"thinking"},"started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[],"hierarchy_notice":"clear"}"#,
             )
         );
         assert_eq!(
@@ -467,12 +509,20 @@ mod tests {
                 HierarchyAnswer::Answered(HierarchyEdges::default())
             ))
         );
-        report.hierarchy_failed = true;
         report.rows[0].name = "fresh row".to_string();
-        let bytes = serde_json::to_vec(&report).expect("serialize failed discovery");
+        let mut legacy = serde_json::to_value(&report).expect("serialize failed discovery");
+        legacy["hierarchy_failed"] = serde_json::json!(true);
+        legacy
+            .as_object_mut()
+            .expect("probe object")
+            .remove("hierarchy_notice");
+        let bytes = serde_json::to_vec(&legacy).expect("serialize legacy failure");
         assert_eq!(
             parse_answer(&bytes),
-            Ok((report.rows, HierarchyAnswer::Failed))
+            Ok((
+                report.rows,
+                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+            ))
         );
     }
 
@@ -549,7 +599,7 @@ mod tests {
         let (rows, edges) = parse_report(&bytes).expect("read worker host answer");
         assert_eq!(rows, worker.rows());
         assert_eq!(edges.0, worker.edges());
-        let received = MachineState::Answered(rows, edges);
+        let received = MachineState::Answered(rows, edges.into());
         let placement = crate::census::AgentPlacement::from_machines(&[
             Machine {
                 name:  "natedev",

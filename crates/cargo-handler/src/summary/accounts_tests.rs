@@ -20,6 +20,9 @@ use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::footer_colors::constants::MINIMUM_CONTRAST;
+use crate::footer_colors::tests;
+use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
 const RESET: &str = "2026-10-19T06:00:00Z";
@@ -70,23 +73,27 @@ fn agents() -> Vec<AgentRow> {
 }
 
 pub(super) fn drawn(table: &AccountsTable) -> Buffer {
-    let state = MachineState::Answered(agents(), HierarchyEdges::default());
+    let colors = FooterColors::parse(
+        "account.codex2=orange\naccount.claude1=bright-cyan\naccount.codex1=purple",
+    );
+    drawn_with_colors(table, &colors)
+}
+
+fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
+    let state = MachineState::Answered(agents(), HierarchyEdges::default().into());
     let machines = [Machine {
         name:  "fixture",
         state: &state,
     }];
     let placement = AgentPlacement::from_machines(&machines);
     let cells = agent_cell::cell_order_placed(&placement);
-    let colors = FooterColors::parse(
-        "account.codex2=orange\naccount.claude1=bright-cyan\naccount.codex1=purple",
-    );
     let frame = SummaryFrame {
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
         now:            NOW,
         account_column: AccountColumn::Hidden,
-        footer_colors:  &colors,
+        footer_colors:  colors,
         sort:           SummarySort::default(),
         accounts:       table,
     };
@@ -267,7 +274,7 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
     let stale_line = &text(&buffer)[usize::from(stale_y - buffer.area.y)];
     assert!(stale_line.contains("2h"), "{stale_line}");
     for x in buffer.area.x..buffer.area.right() {
-        if !buffer[(x, stale_y)].symbol().trim().is_empty() {
+        if x >= at(&buffer, "role").0 && !buffer[(x, stale_y)].symbol().trim().is_empty() {
             assert!(
                 buffer[(x, stale_y)].modifier.contains(Modifier::DIM),
                 "stale cell at {x}"
@@ -286,7 +293,7 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
         "no fabricated age: {missing_line}"
     );
     assert!(
-        buffer[at(&buffer, "claude3")]
+        !buffer[at(&buffer, "claude3")]
             .modifier
             .contains(Modifier::DIM)
     );
@@ -295,6 +302,55 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
             .modifier
             .contains(Modifier::DIM)
     );
+}
+
+#[test]
+fn accounts_contrast_fresh_stale_and_unread_labels_remain_readable_on_every_theme() {
+    let previous = tui_pane::theme();
+    let colors = FooterColors::parse(
+        "account.codex2=blue\naccount.claude1=blue\naccount.codex1=blue\naccount.claude3=blue",
+    );
+    for variant in theme::builtins() {
+        let background = variant.theme.text.bg_focus.color;
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        let buffer = drawn_with_colors(&AccountsTable::Ready(reading()), &colors);
+        for label in ["codex2", "claude1", "codex1", "claude3"] {
+            let (x, y) = at(&buffer, label);
+            for column in x..x + u16::try_from(label.len()).expect("short account label") {
+                let cell = &buffer[(column, y)];
+                assert!(
+                    !cell.modifier.contains(Modifier::DIM),
+                    "{} {label}: terminal DIM defeats contrast",
+                    variant.id.as_str()
+                );
+                let ratio = tests::contrast_ratio(cell.fg, background);
+                assert!(
+                    ratio >= MINIMUM_CONTRAST,
+                    "{} {label}: {:?} on {background:?} is {ratio}:1",
+                    variant.id.as_str(),
+                    cell.fg
+                );
+            }
+        }
+        let stale = buffer[at(&buffer, "codex1")].fg;
+        let unread = buffer[at(&buffer, "claude3")].fg;
+        assert!(
+            matches!(stale, Color::Rgb(..)),
+            "stale labels use a computed subdued foreground"
+        );
+        assert_eq!(
+            stale, unread,
+            "both uncertain readings have the same subdued blue"
+        );
+        let stale_line = &text(&buffer)[usize::from(at(&buffer, "codex1").1 - buffer.area.y)];
+        assert!(stale_line.contains("2h old"), "{stale_line}");
+        let unread_line = &text(&buffer)[usize::from(at(&buffer, "claude3").1 - buffer.area.y)];
+        assert!(
+            !unread_line.contains("old"),
+            "unread age must not be invented: {unread_line}"
+        );
+    }
+    tui_pane::set_active_theme(previous);
 }
 
 #[test]

@@ -166,7 +166,7 @@ enum LocalPublication {
 
 /// Which work is complete when a local scan publishes its rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ScanStage {
+pub(crate) enum ScanStage {
     /// Ready for immediate display, before detail reads or hierarchy discovery.
     Classified,
     /// All local row detail sources have been read.
@@ -1488,11 +1488,14 @@ mod hierarchy_publication_tests {
     use std::time::Duration;
 
     use super::LocalScanner;
+    use super::ScanStage;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyCommand;
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyEdges;
+    use crate::census::HierarchyNotice;
     use crate::census::HierarchyRole;
+    use crate::census::HierarchySnapshot;
     use crate::census::HierarchySource;
     use crate::census::account::AccountLabels;
     use crate::census::hierarchy::HierarchyError;
@@ -1534,8 +1537,8 @@ mod hierarchy_publication_tests {
                     |_, _| {
                         assert_eq!(
                             observed.0.load(Ordering::SeqCst),
-                            0,
-                            "classification must not run hierarchy discovery"
+                            1,
+                            "roles must be discovered before slow detail reads"
                         );
                     },
                 );
@@ -1545,26 +1548,55 @@ mod hierarchy_publication_tests {
             updates
                 .recv_timeout(Duration::from_millis(500))
                 .expect("classification should arrive"),
-            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+            CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            }
+        );
+        let edges = HierarchyEdges(vec![HierarchyEdge {
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Impl,
+        }]);
+        assert_eq!(
+            updates
+                .recv_timeout(Duration::from_millis(500))
+                .expect("classified roles should arrive"),
+            CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchySnapshot {
+                    edges:  edges.clone(),
+                    notice: HierarchyNotice::NoSessionMatched,
+                },
+                stage:     super::ScanStage::Classified,
+            }
         );
         assert_eq!(
             updates
                 .recv_timeout(Duration::from_millis(500))
-                .expect("completion should arrive"),
-            CensusUpdate::Local(Vec::new(), HierarchyEdges::default())
+                .expect("completed details should arrive"),
+            CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchySnapshot {
+                    edges:  edges.clone(),
+                    notice: HierarchyNotice::NoSessionMatched,
+                },
+                stage:     ScanStage::Classified,
+            }
         );
         assert_eq!(
             updates
                 .recv_timeout(Duration::from_millis(500))
-                .expect("hierarchy should follow completed rows"),
-            CensusUpdate::LocalScanCompleted(
-                Vec::new(),
-                HierarchyEdges(vec![HierarchyEdge {
-                    manager: "boss".to_string(),
-                    member:  "worker".to_string(),
-                    role:    HierarchyRole::Impl,
-                }])
-            )
+                .expect("completion should retain classified roles"),
+            CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchySnapshot {
+                    edges,
+                    notice: HierarchyNotice::NoSessionMatched
+                },
+                stage:     super::ScanStage::Completed,
+            }
         );
     }
 }

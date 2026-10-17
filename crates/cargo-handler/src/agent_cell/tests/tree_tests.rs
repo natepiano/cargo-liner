@@ -75,7 +75,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     .collect();
     MachineState::Answered(
         vec![root, dashboard, diagrams, carrier],
-        HierarchyEdges(edges),
+        HierarchyEdges(edges).into(),
     )
 }
 
@@ -311,7 +311,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
             account: home("codex2"),
             ..agent(50, "isolated", HOUR, None)
         }],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let cells = cell_order(&[
         Machine {
@@ -394,7 +394,7 @@ fn working_group() -> MachineState {
         children: vec![child(0, ChildKind::Shell, Some(107), "root command", HOUR)],
         ..agent(10, "production", 3 * HOUR, None)
     };
-    MachineState::Answered(vec![root, worker], HierarchyEdges::default())
+    MachineState::Answered(vec![root, worker], HierarchyEdges::default().into())
 }
 
 #[test]
@@ -732,7 +732,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
                     ..agent(30, "gamma", HOUR, None)
                 },
             ],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         );
         let machines = [Machine {
             name:  "natedev",

@@ -1016,7 +1016,7 @@ mod tests {
         let rows = agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].agent, Agent::CodexThreadHost);
-        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
+        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default().into());
         let placement = super::super::AgentPlacement::from_machines(&[Machine {
             name:  "local",
             state: &state,
