@@ -155,6 +155,9 @@ printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
 printf '%s\\0' "$@" > "$OBSERVED/arguments"
 printf 'process' > "$OBSERVED/source"
 printf 'Blocking waiting for file lock on build directory\\n' >&2
+if [ -n "${REGISTRATION_CARRIER-}" ]; then
+    accumulate_own_cpu
+fi
 if [ -n "${CPU_WORKLOAD-}" ]; then
     # Establish the invocation's own nonzero counter before its first scan.
     accumulate_own_cpu
@@ -881,10 +884,25 @@ def terminal_snapshot() -> Snapshot:
 def screen() -> str:
     return terminal_snapshot()[0]
 
-def unavailable_measurements(row: str) -> int:
-    # The final runs cell can touch the pane border without trailing padding.
-    # A border delimits that cell just as whitespace delimits the inner cells.
-    return row.replace('│', ' ').split().count('--')
+def measurement_cell(header: str, row: str, column: str, rendered: str) -> str:
+    titles = list(re.finditer(r'\b(?:pid|parent|start|dur|cpu|mem|state|command|compiler|runs)\b', header))
+    title = next((title for title in titles if title.group() == column), None)
+    if title is None:
+        assert column in ('compiler', 'runs'), 'missing ' + column + ' title\n' + rendered
+        return ''
+    def cell_start(title):
+        if title.group() != 'state':
+            return title.start()
+        start = title.end()
+        while start > 0 and not row[start - 1].isspace():
+            start -= 1
+        return title.start() if start == title.end() else start
+    start = cell_start(title)
+    end = next((cell_start(next_title) for next_title in titles if next_title.start() > title.start()),
+               row.rfind('│') if '│' in row else len(row))
+    if column == 'state':
+        end = title.end()
+    return row[start:end].strip()
 
 def blocked_invocation_in_rendered(marker: str, rendered: str) -> bool:
     # Process discovery can publish the row before captured output supplies its state.
@@ -898,13 +916,13 @@ def carrier_source_in_rendered(writer: RegistrationCarrier, source: str, rendere
     child_line = matching[0]
     if not any('parent' in line and 'command' in line for line in lines[:child_line]):
         return False
-    unavailable = unavailable_measurements(lines[child_line])
-    expected = 4
+    header = next(line for line in reversed(lines[:child_line])
+                  if 'parent' in line and 'command' in line)
+    readings = [measurement_cell(header, lines[child_line], column, rendered)
+                for column in ('cpu', 'mem', 'compiler', 'runs')]
     if source == 'registration':
-        return unavailable == expected
-    # A sleeping process may never earn a CPU baseline. Its observed compiler
-    # absence and managed count still distinguish it from registration-only data.
-    return unavailable < expected
+        return all(not reading for reading in readings)
+    return any(readings)
 
 def carrier_source_is_rendered(writer: RegistrationCarrier, source: str) -> bool:
     read_terminal(0.1)

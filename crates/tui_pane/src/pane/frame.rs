@@ -897,6 +897,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 214, 93));
+        let frame = PaneFrame::shifted(Rect::new(43, 79, 40, 14), 1, Rect::new(43, 80, 40, 14));
+        draw_clipped(&mut buffer, frame, |_, _| {});
+        assert_eq!(buffer.area, Rect::new(0, 0, 214, 93));
+    }
+
     /// Border and title shades a test can tell apart.
     fn chrome() -> PaneChrome {
         PaneChrome {

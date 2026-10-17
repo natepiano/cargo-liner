@@ -86,8 +86,7 @@ pub(crate) struct TilesConfig {
     /// How the cells spread over the columns once there is more than
     /// one: `add_new` or `redistribute`.
     pub(crate) fill:          TileFill,
-    /// Whether the grid chooses its view, always shows the summary, or
-    /// shows cells whenever they fit.
+    /// Whether the grid shows the summary alone or uses cells whenever they fit.
     pub(crate) view:          TileView,
     /// Whether the summary widens over the next columns when its widest
     /// line does not fit its own; see [`TileGrowth::widen_summary`].
@@ -257,7 +256,7 @@ hidden_when_idle = [\n    \"port\",\n    \"handler\",\n]
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
-view = \"auto\"
+view = \"cells\"
 widen_summary = false
 fade_seconds = 3
 ";

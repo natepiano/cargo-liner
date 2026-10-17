@@ -176,14 +176,16 @@ impl BoundaryWrap {
                 .filter(|(_, character)| *character == WRAP_HYPHEN)
                 .map(|(index, character)| index.saturating_add(character.len_utf8()))
                 .find(|&index| rest[..index].chars().any(char::is_alphanumeric));
-            let boundary = hyphen.or_else(|| {
-                candidate
-                    .char_indices()
-                    .rev()
-                    .find(|(_, character)| WRAP_BREAK_AFTER.contains(*character))
-                    .map(|(index, character)| index.saturating_add(character.len_utf8()))
-                    .filter(|&index| cell_count(&rest[..index]) >= self.width.saturating_add(1) / 2)
-            });
+            let punctuation = candidate
+                .char_indices()
+                .rev()
+                .find(|(_, character)| WRAP_BREAK_AFTER.contains(*character))
+                .map(|(index, character)| index.saturating_add(character.len_utf8()))
+                .filter(|&index| cell_count(&rest[..index]) >= self.width.saturating_add(1) / 2);
+            let boundary = match (hyphen, punctuation) {
+                (Some(hyphen), Some(punctuation)) => Some(hyphen.max(punctuation)),
+                (hyphen, punctuation) => hyphen.or(punctuation),
+            };
             let Some(boundary) = boundary else {
                 if separator.is_break_point() {
                     self.wrap();
@@ -512,6 +514,12 @@ mod tests {
     fn spans(text: &str) -> Vec<Span<'static>> { vec![Span::raw(text.to_owned())] }
 
     #[test]
+    fn a_slash_after_the_last_hyphen_takes_the_break() {
+        let text = wrapped(spans("/tmp/long-path/component/remaining"), 25);
+        assert_eq!(lines(&text), ["/tmp/long-path/component/", "remaining"]);
+    }
+
+    #[test]
     fn adjacent_spans_are_separate_words_joined_by_one_space() {
         let program = Style::default().fg(Color::Green);
         let argument = Style::default().fg(Color::Cyan);
@@ -599,7 +607,7 @@ mod tests {
         );
         assert_eq!(
             lines(&wrapped(spans(toolchain), 24)),
-            ["nightly-2026-09-03-", "x86_64-unknown-linux-", "gnu."],
+            ["nightly-2026-09-03-x86_", "64-unknown-linux-gnu."],
         );
     }
 
