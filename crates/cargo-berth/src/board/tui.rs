@@ -1266,6 +1266,14 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
     use crate::session::SessionReservationIdentity;
 
+    const EXPECTED_OMITTED_FIELDS: &[&str] = &[
+        "journal_position",
+        "recovered_bypasses_this_invocation",
+        "integration_order",
+        "targets",
+        "git_cost",
+    ];
+
     const MARKER_ID: &str = "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 
@@ -1907,7 +1915,7 @@ mod tests {
         let expected_fields = expected
             .as_object_mut()
             .unwrap_or_else(|| panic!("board should be an object"));
-        for field in OMITTED_MODEL_FIELDS {
+        for field in EXPECTED_OMITTED_FIELDS {
             expected_fields.remove(*field);
         }
         for value in expected_fields.values_mut() {
@@ -1925,7 +1933,7 @@ mod tests {
     fn pane_documents_omit_raw_diagnostics_and_nested_positions() -> FixtureResult<()> {
         let documents = BoardPaneDocuments::from_model(&model(&[MARKER_ID]))?;
         for pane in BoardPaneId::ALL {
-            for field in OMITTED_MODEL_FIELDS {
+            for field in EXPECTED_OMITTED_FIELDS {
                 assert!(
                     !documents.get(pane).text.contains(field),
                     "{pane:?}: {field}"

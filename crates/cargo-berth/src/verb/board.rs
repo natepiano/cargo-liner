@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::board;
+use crate::board::BoardError;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
 use crate::board::tui;
@@ -196,13 +197,13 @@ fn execute_reservation_lifecycle(
         Ok(reservation_report) => BoardDisplayOutcome::HeadlessResponse(
             OutputEnvelope::reservation_lifecycle(reservation_report),
         ),
-        Err(ReservationReplayError::UnknownReservation(reservation_id)) => {
-            BoardDisplayOutcome::HeadlessResponse(
-                OutputEnvelope::reservation_lifecycle_query_rejected(
-                    ReservationLifecycleQueryRejection::UnknownReservation { reservation_id },
-                ),
-            )
-        },
+        Err(BoardError::Reservation(ReservationReplayError::UnknownReservation(
+            reservation_id,
+        ))) => BoardDisplayOutcome::HeadlessResponse(
+            OutputEnvelope::reservation_lifecycle_query_rejected(
+                ReservationLifecycleQueryRejection::UnknownReservation { reservation_id },
+            ),
+        ),
         Err(error) => BoardDisplayOutcome::FactsUnavailable(OutputEnvelope::ledger_unreadable(
             CommandVerb::Board,
             &error.to_string(),

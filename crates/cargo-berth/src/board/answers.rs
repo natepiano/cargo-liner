@@ -41,7 +41,7 @@ use crate::reservation::EditBlockingStatus;
 /// answers nothing: it is scope growth, kept in the journal and never listed here.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "answer", rename_all = "snake_case")]
-pub(super) enum RecordedOverlapAnswer {
+pub(crate) enum RecordedOverlapAnswer {
     Enrollment {
         reservation_id:        ReservationId,
         exact_approved_scopes: AuthorizedOverlapSet,
@@ -89,6 +89,43 @@ pub(super) enum RecordedOverlapAnswer {
     },
 }
 
+impl RecordedOverlapAnswer {
+    /// Whether this answer names the reservation as requester or as an approved holder.
+    pub(super) fn names(&self, id: ReservationId) -> bool {
+        match self {
+            Self::Enrollment {
+                reservation_id,
+                exact_approved_scopes,
+                ..
+            } => {
+                *reservation_id == id
+                    || exact_approved_scopes
+                        .as_slice()
+                        .iter()
+                        .any(|overlap| overlap.reservation_id == id)
+            },
+            Self::Sequence {
+                reservation_id,
+                blocker,
+                ..
+            }
+            | Self::Defer {
+                reservation_id,
+                blocker,
+                ..
+            }
+            | Self::Override {
+                reservation_id,
+                blocker,
+                ..
+            } => [*reservation_id, *blocker].contains(&id),
+            Self::OrderingCreatedFromDeferral {
+                deferred, blocker, ..
+            } => [*deferred, *blocker].contains(&id),
+        }
+    }
+}
+
 /// How many recorded overlap answers belong to reservations that are already released.
 ///
 /// The board lists these answers only as a count; the journal keeps each one in full.
@@ -105,7 +142,7 @@ pub(super) struct BoardOverlapAnswers {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
-pub(super) enum AnswerAcquisition {
+pub(crate) enum AnswerAcquisition {
     Claim,
     /// A claim recorded an answer on this reservation without widening it.
     Answer,
@@ -119,7 +156,7 @@ pub(super) enum AnswerAcquisition {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub(super) enum OrderingConsequence {
+pub(crate) enum OrderingConsequence {
     Holding {
         action: WaitingAction,
     },
@@ -134,7 +171,7 @@ pub(super) enum OrderingConsequence {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum OverrideConsequence {
+pub(crate) enum OverrideConsequence {
     EditingAuthorizedWithoutIntegrationOrder,
 }
 
@@ -317,7 +354,7 @@ pub(super) fn board_overlap_answers(
                     *deferred_reservation_id,
                     *blocker_reservation_id,
                 );
-                let edge = recorded_ordering_edge(constraints, *edge_id)?;
+                let consequence = sequence_consequence(constraints, &replaced_edges, *edge_id)?;
                 answers.record(*deferred_reservation_id, || {
                     Ok(RecordedOverlapAnswer::OrderingCreatedFromDeferral {
                         edge_id: *edge_id,
@@ -327,7 +364,7 @@ pub(super) fn board_overlap_answers(
                         exact_approved_scopes,
                         deferral_reasons,
                         ordering_reason: reason.clone(),
-                        consequence: ordering_consequence(edge),
+                        consequence,
                     })
                 })?;
             },
@@ -351,7 +388,7 @@ const fn claim_acquisition(authorization: &ConflictAuthorization) -> AnswerAcqui
 fn replaced_edges(events: &[JournalEvent]) -> HashMap<EdgeId, ReservationId> {
     events
         .iter()
-        .filter_map(|event| reservation_answers(&event.operation))
+        .flat_map(|event| reservation_answers(&event.operation).bound())
         .flat_map(|(reservation_id, authorizations)| {
             authorizations.iter().flat_map(move |authorization| {
                 authorization
@@ -403,7 +440,7 @@ fn accumulated_deferral_approvals(
     let prior_answers = events
         .iter()
         .take_while(|prior| prior.event_id() != resolution_event_id)
-        .filter_map(|prior| reservation_answers(&prior.operation))
+        .flat_map(|prior| reservation_answers(&prior.operation).bound())
         .flat_map(|(requester, authorizations)| {
             authorizations
                 .iter()
@@ -440,21 +477,54 @@ fn accumulated_deferral_approvals(
     }
 }
 
-/// The answers one operation recorded, with the reservation that answered them.
-fn reservation_answers(
-    operation: &JournalOperation,
-) -> Option<(ReservationId, &[ConflictAuthorization])> {
+/// The reservation binding of the answers recorded by one journal operation.
+enum ReservationAnswers<'operation> {
+    /// This operation records no overlap answer.
+    NoAnswer,
+    /// The answer was recorded without an answering reservation.
+    Unbound,
+    /// The answer belongs to this retained reservation.
+    Bound {
+        reservation_id: ReservationId,
+        authorizations: &'operation [ConflictAuthorization],
+    },
+}
+
+impl<'operation> ReservationAnswers<'operation> {
+    fn bound(self) -> impl Iterator<Item = (ReservationId, &'operation [ConflictAuthorization])> {
+        match self {
+            Self::Bound {
+                reservation_id,
+                authorizations,
+            } => Some((reservation_id, authorizations)),
+            Self::NoAnswer | Self::Unbound => None,
+        }
+        .into_iter()
+    }
+}
+
+/// Read whether an operation records an answer and which reservation binds it.
+fn reservation_answers(operation: &JournalOperation) -> ReservationAnswers<'_> {
     match operation {
         JournalOperation::Answer {
-            reservation_id,
+            reservation_id: Some(reservation_id),
             authorizations,
             ..
-        } => reservation_id.map(|reservation_id| (reservation_id, authorizations.as_slice())),
-        _ => operation
-            .acquisition_authorization()
-            .map(|(reservation_id, authorization)| {
-                (reservation_id, slice::from_ref(authorization))
-            }),
+        } => ReservationAnswers::Bound {
+            reservation_id: *reservation_id,
+            authorizations,
+        },
+        JournalOperation::Answer {
+            reservation_id: None,
+            ..
+        } => ReservationAnswers::Unbound,
+        _ => match operation.acquisition_authorization() {
+            Some((reservation_id, authorization)) => ReservationAnswers::Bound {
+                reservation_id,
+                authorizations: slice::from_ref(authorization),
+            },
+            None => ReservationAnswers::NoAnswer,
+        },
     }
 }
 
@@ -706,10 +776,12 @@ mod tests {
     use crate::board::rows::DeferralConsequence;
     use crate::board::rows::WaitingAction;
     use crate::board::rows::WaitingHold;
+    use crate::board::rows::WaitingOrderingConstraint;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
     use crate::board::test_support::OverlapAnswerFixture;
+    use crate::config::Enrollment;
     use crate::ids::EdgeId;
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
@@ -719,9 +791,49 @@ mod tests {
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
     use crate::ledger::WidenCause;
+    use crate::reconcile::RecoveredBypassReporting;
     use crate::reservation::AbandonmentReason;
     use crate::reservation::EditBlockingStatus;
     use crate::reservation::ReleaseDisposition;
+
+    #[test]
+    fn unbound_answers_never_become_live_reservation_answers() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let actor = fixture.main_actor();
+        let blocker = fixture.claim(&actor, "shared.rs", ConflictAuthorization::NoConflict)?;
+        let operation = JournalOperation::Answer {
+            reservation_id: None,
+            scopes:         ReservationScopeSet::try_from(vec![ReservationScope {
+                path: "shared.rs".parse()?,
+                kind: ScopeKind::File,
+            }])?,
+            authorizations: vec![test_support::conflict_authorization(
+                OverlapAnswerFixture::Override,
+                &blocker,
+            )?],
+        };
+        assert!(matches!(
+            super::reservation_answers(&operation),
+            super::ReservationAnswers::Unbound
+        ));
+        fixture.append_as(&actor, operation)?;
+        let model = fixture.model()?;
+        assert_eq!(
+            model.live_overlap_answers.entries,
+            [] as [RecordedOverlapAnswer; 0]
+        );
+        let Enrollment::Enrolled(report) = crate::reconcile::reconcile(
+            fixture.repository.path(),
+            RecoveredBypassReporting::Report,
+        )?
+        else {
+            return Err(io::Error::other("fixture is not enrolled").into());
+        };
+        let selected =
+            crate::board::reservation_lifecycle_snapshot(&report, blocker.reservation_id)?;
+        assert_eq!(selected.overlap_answers, [] as [RecordedOverlapAnswer; 0]);
+        Ok(())
+    }
 
     /// Automatic drift widens onto files no other reservation holds, as a long-lived lane
     /// accumulates them.
@@ -857,7 +969,10 @@ mod tests {
             .entries
             .first()
             .ok_or_else(|| io::Error::other("sequence should create an integration hold"))?;
-        let WaitingHold::OrderingEdge { edge_id, .. } = &waiting.hold else {
+        let WaitingHold::OrderingEdge {
+            edge: WaitingOrderingConstraint { edge_id, .. },
+        } = &waiting.hold
+        else {
             return Err(io::Error::other("sequence should hold on its ordering edge").into());
         };
         let answer = recorded_answer(&sequence.model, sequence.requester_id)?;
