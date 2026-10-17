@@ -1,3 +1,9 @@
+---
+tier: D
+family: modules
+input_scope: manifest
+mechanism: llm
+---
 ## Stable toolchain install
 
 cargo-mend links against `rustc_driver`. Always install with stable + `RUSTC_BOOTSTRAP=1` so the binary can read `.rmeta` files from stable-toolchain projects. Installing with nightly produces a binary that fails with `E0514` on stable projects.

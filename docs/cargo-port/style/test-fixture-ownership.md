@@ -1,3 +1,8 @@
+---
+tier: C
+family: types
+mechanism: llm
+---
 ## Test Fixture Ownership
 
 Tests must make background work, process-global overrides, and fixture lifetimes explicit. Prefer quiet fixtures by default; only opt into real startup effects when the test owns every handle, guard, temp directory, and teardown path.
