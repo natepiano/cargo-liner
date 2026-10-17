@@ -145,6 +145,8 @@ pub(super) const GIT_RIGHT_COMMIT_MARK: char = '>';
 pub(super) const GIT_LITERAL_TOP_PATHSPEC_PREFIX: &str = ":(top,literal)";
 
 // references
+/// Suffix selecting a local branch's configured upstream.
+pub(super) const GIT_UPSTREAM_SELECTOR_SUFFIX: &str = "@{upstream}";
 /// Infix selecting the commits reachable from the second revision but not the first.
 pub(super) const GIT_ANCESTOR_RANGE_INFIX: &str = "..";
 /// Suffix that requires a revision to resolve as a commit.

@@ -104,8 +104,9 @@ const OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION: &str = "cargo-berth (observ
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// Attribution and merge observations remain fixed for these two holder checkouts, including
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
-/// lacks. Every branch path read is those two invocations.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 16;
+/// lacks. Every branch path read is those two invocations. Authorship also reads the
+/// locally available upstream once per distinct integration target.
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 17;
 const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";

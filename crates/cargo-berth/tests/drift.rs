@@ -29,6 +29,7 @@ const GIT: GitDriver = GitDriver {
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::fs;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
@@ -615,8 +616,19 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
         .to_owned();
     assert_eq!(incursion_event["reservation_id"], subject_id);
     assert_eq!(
-        incursion_event["blocked_paths"],
-        serde_json::json!([{"path": "shared/entered.txt", "holders": [foreign_id]}])
+        incursion_event["blocked_paths"]
+            .as_array()
+            .expect("blocked paths")
+            .len(),
+        1
+    );
+    assert_eq!(
+        incursion_event["blocked_paths"][0]["path"],
+        "shared/entered.txt"
+    );
+    assert_eq!(
+        incursion_event["blocked_paths"][0]["holders"],
+        serde_json::json!([foreign_id])
     );
     assert_eq!(
         incursion_envelope["payload"]["data"]["results"][0]["effects"][0]["incident_id"],
@@ -1142,6 +1154,273 @@ fn an_answered_incursion_covers_a_sibling_claimed_after_the_answer() {
     assert_eq!(incursions.len(), 1, "only the answered incident stands");
 }
 
+/// Committed evidence survives a later holder joining the same overlap.
+#[test]
+fn a_resolved_committed_incursion_stays_resolved_when_holders_grow() {
+    let fixture = CommittedIncursionFixture::new();
+    fixture.observe_and_resolve();
+    let (_directory, added_holder) = foreign_worktree(&fixture.repository, "additional-holder");
+    dirty_source(&added_holder, "shared/entered.txt");
+    fixture.add_holder(&added_holder);
+
+    let observed = fixture.observe();
+
+    assert_success(&observed);
+    assert_eq!(
+        incursion_effects(&json_output(&observed)),
+        [] as [serde_json::Value; 0]
+    );
+    assert_eq!(
+        fixture.incident_count(),
+        1,
+        "holder growth is the same answered entry"
+    );
+}
+
+#[test]
+fn a_new_commit_reopens_a_resolved_incursion_on_the_same_path() {
+    let fixture = CommittedIncursionFixture::new();
+    fixture.observe_and_resolve();
+    let next_commit =
+        commit_entering_path(&fixture.subject_root, "shared/entered.txt", "new entry\n");
+
+    let observed = fixture.observe();
+    let effects = incursion_effects(&json_output(&observed));
+
+    assert_eq!(json_output(&observed)["status"], "incursion");
+    assert_eq!(fixture.incident_count(), 2);
+    assert!(
+        incursion_for(&effects, "shared/entered.txt")["commits"]
+            .as_array()
+            .expect("entering commits")
+            .iter()
+            .any(|commit| commit["commit"] == next_commit)
+    );
+}
+
+#[test]
+fn a_committed_and_dirty_path_keeps_its_entering_commit_evidence() {
+    let fixture = CommittedIncursionFixture::new();
+    fs::write(
+        fixture.subject_root.join("shared/entered.txt"),
+        "later uncommitted work\n",
+    )
+    .expect("dirty entered path writes");
+    fixture.observe_and_resolve();
+    let (_directory, added_holder) =
+        foreign_worktree(&fixture.repository, "mixed-additional-holder");
+    dirty_source(&added_holder, "shared/entered.txt");
+    fixture.add_holder(&added_holder);
+
+    let observed = fixture.observe();
+
+    assert_success(&observed);
+    assert_eq!(
+        fixture.incident_count(),
+        1,
+        "a dirty path must retain its answered commit evidence"
+    );
+}
+
+#[test]
+fn legacy_paired_incursion_answers_keep_holder_subset_coverage() {
+    assert_legacy_incursion_coverage(LegacyIncursionLayout::PairedPaths);
+}
+
+#[test]
+fn legacy_independent_incursion_answers_keep_holder_subset_coverage() {
+    assert_legacy_incursion_coverage(LegacyIncursionLayout::IndependentPathsAndHolders);
+}
+
+/// A real foreign-path commit made after the subject and holder reservations were claimed.
+struct CommittedIncursionFixture {
+    repository:         TempDir,
+    _subject_directory: TempDir,
+    subject_root:       PathBuf,
+    subject_id:         String,
+    holder_id:          String,
+    entering_commit:    String,
+}
+
+impl CommittedIncursionFixture {
+    fn new() -> Self {
+        let repository = initialized_repository();
+        let (subject_directory, subject_root) =
+            foreign_worktree(&repository, "commit-entry-subject");
+        dirty_source(repository.path(), "shared/entered.txt");
+        dirty_source(repository.path(), "shared/local.txt");
+        dirty_source(repository.path(), "shared/authored.txt");
+        let holder_id = claim(repository.path(), "tree:shared", FIRST_RUN);
+        let subject_id = claim(&subject_root, "file:own.txt", SECOND_RUN);
+        let entering_commit =
+            commit_entering_path(&subject_root, "shared/entered.txt", "entered\n");
+        Self {
+            repository,
+            _subject_directory: subject_directory,
+            subject_root,
+            subject_id,
+            holder_id,
+            entering_commit,
+        }
+    }
+
+    fn observe(&self) -> Output {
+        run_berth_with_run(
+            &self.subject_root,
+            &[
+                "drift",
+                "--full",
+                "--reservation",
+                &self.subject_id,
+                "--json",
+            ],
+            SECOND_RUN,
+        )
+    }
+
+    fn observe_and_resolve(&self) {
+        let observed = self.observe();
+        let envelope = json_output(&observed);
+        assert_eq!(envelope["status"], "incursion", "{envelope}");
+        let effects = incursion_effects(&envelope);
+        assert!(
+            incursion_for(&effects, "shared/entered.txt")["commits"]
+                .as_array()
+                .expect("entering commits")
+                .iter()
+                .any(|commit| commit["commit"] == self.entering_commit),
+            "committed evidence must remain visible even if the path is also dirty: {envelope}"
+        );
+        assert_success(&run_berth_with_run(
+            &self.subject_root,
+            &["resolve", &self.subject_id, "--every-incursion", "--json"],
+            SECOND_RUN,
+        ));
+    }
+
+    fn add_holder(&self, root: &Path) {
+        // Resolving the entry acquires its path for the subject as well. Answer both holders.
+        let claimed = run_berth(
+            root,
+            &[
+                "claim",
+                "tree:shared",
+                "--run",
+                THIRD_RUN,
+                "--after",
+                &self.holder_id,
+                "--after",
+                &self.subject_id,
+                "--overlap-why",
+                "join the reviewed shared edit",
+                "--why",
+                "shared work",
+                "--json",
+            ],
+        );
+        assert_success(&claimed);
+    }
+
+    fn incident_count(&self) -> usize {
+        journal_events(self.repository.path())
+            .iter()
+            .filter(|event| event["op"] == "incursion")
+            .count()
+    }
+}
+
+/// The two journal layouts predating commit-keyed coverage.
+#[derive(Clone, Copy)]
+enum LegacyIncursionLayout {
+    PairedPaths,
+    IndependentPathsAndHolders,
+}
+
+fn assert_legacy_incursion_coverage(layout: LegacyIncursionLayout) {
+    let fixture = CommittedIncursionFixture::new();
+    fixture.observe_and_resolve();
+    let mut events = journal_events(fixture.repository.path());
+    for event in events.iter_mut().filter(|event| event["op"] == "incursion") {
+        let fields = event.as_object_mut().expect("journal record");
+        match layout {
+            LegacyIncursionLayout::PairedPaths => {
+                for path in fields
+                    .get_mut("blocked_paths")
+                    .expect("paired paths")
+                    .as_array_mut()
+                    .expect("paths")
+                {
+                    path.as_object_mut()
+                        .expect("path record")
+                        .remove("coverage");
+                }
+            },
+            LegacyIncursionLayout::IndependentPathsAndHolders => {
+                fields.remove("blocked_paths");
+                fields.insert(
+                    "paths".to_owned(),
+                    serde_json::json!(["shared/entered.txt"]),
+                );
+                fields.insert(
+                    "foreign_reservation_ids".to_owned(),
+                    serde_json::json!([fixture.holder_id]),
+                );
+            },
+        }
+    }
+    let journal = events.iter().fold(String::new(), |mut journal, event| {
+        writeln!(journal, "{event}").expect("journal event formats");
+        journal
+    });
+    fs::write(fixture.repository.path().join(JOURNAL_PATH), journal)
+        .expect("legacy journal writes");
+    fs::remove_file(fixture.repository.path().join(PROJECTION_PATH))
+        .expect("replay projection removes");
+    // Old answers cover new commits too, as long as the holders remain a subset.
+    commit_entering_path(
+        &fixture.subject_root,
+        "shared/entered.txt",
+        "later legacy entry\n",
+    );
+    assert_success(&fixture.observe());
+    assert_eq!(fixture.incident_count(), 1);
+
+    let (_directory, added_holder) = foreign_worktree(&fixture.repository, "legacy-new-holder");
+    dirty_source(&added_holder, "shared/entered.txt");
+    fixture.add_holder(&added_holder);
+    let observed = fixture.observe();
+    assert_eq!(
+        json_output(&observed)["status"],
+        "incursion",
+        "legacy coverage must still depend on holders"
+    );
+    assert_eq!(fixture.incident_count(), 2);
+}
+
+/// Avoid hook side effects and make the commit unambiguously later than the claims.
+fn commit_entering_path(root: &Path, path: &str, contents: &str) -> String {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("entered path parent"))
+        .expect("entered directory writes");
+    fs::write(file, contents).expect("entered path writes");
+    git(root, &["add", path]);
+    let committed = git_output_with_environment(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "enter foreign scope",
+        ],
+        "GIT_COMMITTER_DATE",
+        "2030-01-01T00:00:00Z",
+    );
+    assert_success(&committed);
+    git_stdout(root, &["rev-parse", "HEAD"]).trim().to_owned()
+}
+
 #[test]
 fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
     let repository = initialized_repository();
@@ -1232,33 +1511,36 @@ fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
 #[test]
 fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
     let repository = initialized_repository();
+    git(
+        repository.path(),
+        &["checkout", "--quiet", "-b", "authorship-subject"],
+    );
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "late-holder");
-    // Two reservations under one run leave the commit's widening ambiguous, so the shared
-    // path stays outside every scope, as an unattributed commit does in practice.
     let subject_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
-    claim(repository.path(), "file:second.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared.txt");
+    let late_holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
     fs::write(
         repository.path().join("shared.txt"),
-        "written before any holder\n",
+        "written before the holder's claim time\n",
     )
-    .expect("shared path should write");
+    .expect("shared path writes");
     git(repository.path(), &["add", "shared.txt"]);
+    // Backdate the commit instead of sleeping. Claiming first also prevents reconciliation
+    // from acquiring the unclaimed path while constructing the later holder.
     let committed = git_output_with_environment(
         repository.path(),
-        &["commit", "--quiet", "-m", "write the shared path"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "earlier shared work",
+        ],
         "GIT_COMMITTER_DATE",
         "2020-01-01T00:00:00Z",
     );
-    assert!(
-        committed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&committed.stderr)
-    );
-    // Uncommitted work in the subject's own scope keeps its run from ending on trunk.
-    fs::write(repository.path().join("first.txt"), "subject work\n")
-        .expect("subject work should write");
-    dirty_source(&foreign_root, "shared.txt");
-    let late_holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
+    assert_success(&committed);
 
     let reported = run_berth_with_run(
         repository.path(),
@@ -1267,20 +1549,10 @@ fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
     );
     let envelope = json_output(&reported);
 
-    assert_eq!(envelope["status"], "clear", "{envelope}");
-    let incursions = envelope["payload"]["data"]["results"]
-        .as_array()
-        .map_or(0, |results| {
-            results
-                .iter()
-                .filter_map(|result| result["effects"].as_array())
-                .flatten()
-                .filter(|effect| effect["kind"] == "incursion")
-                .count()
-        });
-    assert_eq!(
-        incursions, 0,
-        "a claim taken after the commit was not entered by it: {envelope}"
+    assert_success(&reported);
+    assert!(
+        incursion_effects(&envelope).is_empty(),
+        "a holder claimed after the commit was not entered by it: {envelope}"
     );
     assert!(
         !journal_events(repository.path())
@@ -1294,6 +1566,11 @@ fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
 #[test]
 fn a_claim_taken_before_a_commit_is_entered_by_it() {
     let repository = initialized_repository();
+    // Keep lane-authored commits off the local integration target.
+    git(
+        repository.path(),
+        &["checkout", "--quiet", "-b", "authorship-subject"],
+    );
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "early-holder");
     let subject_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
     claim(repository.path(), "file:second.txt", FIRST_RUN);
@@ -1525,7 +1802,7 @@ fn mixed_anchor_batch_preserves_two_valid_and_one_independent_history() {
 }
 
 #[test]
-fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
+fn merged_trunk_commits_do_not_raise_an_incursion() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "receives-trunk");
     let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
@@ -1550,9 +1827,6 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
         "{}",
         String::from_utf8_lossy(&committed.stderr)
     );
-    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"])
-        .trim()
-        .to_owned();
     // The holder still edits this path after its earlier version reached trunk.
     dirty_source(repository.path(), "held.txt");
     // Taking trunk's work into the phase puts a commit the phase never wrote inside
@@ -1574,27 +1848,14 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
     );
     let envelope = json_output(&reported);
 
-    assert_eq!(envelope["status"], "incursion");
-    let effect = envelope["payload"]["data"]["results"]
-        .as_array()
-        .expect("drift should report results")
-        .iter()
-        .find_map(|result| {
-            result["effects"]
-                .as_array()?
-                .iter()
-                .find(|effect| effect["kind"] == "incursion")
-        })
-        .expect("drift should report an incursion")
-        .clone();
-    assert_eq!(effect["paths"][0], "held.txt");
-    assert_eq!(effect["commits"][0]["commit"], trunk_commit);
-    assert_eq!(
-        effect["commits"][0]["origin"], "already_on_trunk",
-        "the phase received this commit rather than writing it: {effect}"
+    assert_success(&reported);
+    assert!(incursion_effects(&envelope).is_empty(), "{envelope}");
+    assert!(
+        !journal_events(repository.path())
+            .iter()
+            .any(|event| { event["op"] == "incursion" && event["reservation_id"] == subject_id }),
+        "receiving the holder's trunk commit must not create an incident for {holder_id}"
     );
-    assert_eq!(effect["commits"][0]["paths"][0], "held.txt");
-    assert_eq!(effect["foreign_reservation_ids"][0], holder_id);
 }
 
 #[test]
@@ -1609,45 +1870,225 @@ fn merged_integration_target_commits_are_not_attributed_to_the_lane() {
         .to_owned();
     let holder = repo.claim(&repo.integration, "file:target-held.txt", FIRST_RUN, None);
     assert_success(&holder);
-    repo.commit_file(
-        &repo.integration,
-        "target-held.txt",
-        "integration work\n",
-        "new integration work",
-    );
-    let target_commit = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    commit_entering_path(&repo.integration, "target-held.txt", "integration work\n");
     std::fs::write(
         repo.integration.join("target-held.txt"),
         "integration work in progress\n",
     )
     .expect("holder edit");
-    repo.git(&lane, &["merge", "--no-edit", "integration"]);
-    repo.commit_file(&lane, "own.txt", "lane work\n", "lane work");
+    repo.git(
+        &lane,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-edit",
+            "integration",
+        ],
+    );
+    fs::write(lane.join("own.txt"), "lane work\n").expect("own work writes");
     let observed = repo.run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
     let response = json(&observed);
-    assert_eq!(response["status"], "incursion", "{response}");
-    let effects = response["payload"]["data"]["results"]
-        .as_array()
-        .expect("drift results")
-        .iter()
-        .flat_map(|result| result["effects"].as_array().expect("drift effects"));
-    let incursion = effects
-        .filter(|effect| effect["kind"] == "incursion")
-        .find(|effect| {
-            effect["paths"]
-                .as_array()
-                .is_some_and(|paths| paths.iter().any(|path| path == "target-held.txt"))
-        })
-        .expect("target path incursion");
+    assert_success(&observed);
+    assert!(incursion_effects(&response).is_empty(), "{response}");
     assert!(
-        incursion["commits"]
-            .as_array()
-            .expect("incursion commits")
+        !repo
+            .journal()
             .iter()
-            .any(|commit| commit["commit"] == target_commit
-                && commit["origin"] == "already_on_trunk"),
-        "target commit is received work: {incursion}"
+            .any(|event| event["op"] == "incursion")
     );
+
+    // Filtering received commits must not hide a later write by the lane itself.
+    commit_entering_path(&lane, "target-held.txt", "lane entered it\n");
+    let observed = repo.run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
+    assert_eq!(json(&observed)["status"], "incursion");
+    let effects = incursion_effects(&json(&observed));
+    let entered = incursion_for(&effects, "target-held.txt");
+    assert!(
+        entered["commits"]
+            .as_array()
+            .expect("commits")
+            .iter()
+            .all(|commit| { commit["origin"] == "phase_authored" })
+    );
+}
+
+#[test]
+fn target_upstream_commits_do_not_raise_incursions_when_local_target_is_behind() {
+    let fixture = CommittedIncursionFixture::new();
+    let local_tip = git_stdout(fixture.repository.path(), &["rev-parse", "main"]);
+    configure_local_target_upstream(fixture.repository.path(), &fixture.entering_commit);
+
+    let observed = fixture.observe();
+
+    assert_success(&observed);
+    assert_eq!(
+        incursion_effects(&json_output(&observed)),
+        [] as [serde_json::Value; 0]
+    );
+    assert_eq!(fixture.incident_count(), 0);
+    assert_eq!(
+        git_stdout(fixture.repository.path(), &["rev-parse", "main"]),
+        local_tip,
+        "authorship observation must not advance the integration target"
+    );
+}
+
+#[test]
+fn a_received_commit_does_not_hide_a_dirty_write_to_its_path() {
+    let fixture = CommittedIncursionFixture::new();
+    configure_local_target_upstream(fixture.repository.path(), &fixture.entering_commit);
+    fs::write(
+        fixture.subject_root.join("shared/entered.txt"),
+        "lane's uncommitted entry\n",
+    )
+    .expect("dirty received path writes");
+
+    let observed = fixture.observe();
+    let envelope = json_output(&observed);
+    let effects = incursion_effects(&envelope);
+
+    assert_eq!(envelope["status"], "incursion", "{envelope}");
+    let entered = incursion_for(&effects, "shared/entered.txt");
+    assert_eq!(
+        entered["commits"],
+        serde_json::json!([]),
+        "the received commit must not be charged for the lane's working-tree write"
+    );
+}
+
+#[test]
+fn diverged_local_and_upstream_targets_both_filter_received_commits() {
+    let fixture = CommittedIncursionFixture::new();
+    configure_local_target_upstream(fixture.repository.path(), &fixture.entering_commit);
+    let local_commit = commit_entering_path(
+        fixture.repository.path(),
+        "shared/local.txt",
+        "local target work\n",
+    );
+    git(
+        &fixture.subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "main",
+        ],
+    );
+    // A third commit belongs to this lane alone and must remain attributable.
+    let authored =
+        commit_entering_path(&fixture.subject_root, "shared/authored.txt", "lane work\n");
+
+    let observed = fixture.observe();
+    let envelope = json_output(&observed);
+    let effects = incursion_effects(&envelope);
+
+    assert_eq!(envelope["status"], "incursion");
+    assert_eq!(
+        effects.len(),
+        1,
+        "only the lane's own path enters a holder: {envelope}"
+    );
+    assert_eq!(
+        effects[0]["paths"],
+        serde_json::json!(["shared/authored.txt"]),
+        "{envelope}"
+    );
+    let own = incursion_for(&effects, "shared/authored.txt");
+    assert_eq!(own["paths"], serde_json::json!(["shared/authored.txt"]));
+    assert_eq!(
+        own["commits"].as_array().expect("authored commits").len(),
+        1
+    );
+    assert_eq!(own["commits"][0]["commit"], authored);
+    assert_eq!(own["commits"][0]["origin"], "phase_authored");
+    assert_eq!(
+        git_stdout(fixture.repository.path(), &["rev-parse", "main"]).trim(),
+        local_commit
+    );
+}
+
+#[test]
+fn an_unconfigured_target_upstream_keeps_local_authorship_evidence() {
+    let fixture = CommittedIncursionFixture::new();
+    assert_local_target_fallback(&fixture);
+}
+
+#[test]
+fn an_upstream_with_an_unavailable_object_keeps_local_authorship_evidence() {
+    let fixture = CommittedIncursionFixture::new();
+    configure_local_target_upstream(fixture.repository.path(), &fixture.entering_commit);
+    // Model a locally recorded remote ref whose object is not available. Do not fetch.
+    fs::write(
+        fixture
+            .repository
+            .path()
+            .join(".git/refs/remotes/origin/main"),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .expect("unavailable upstream ref writes");
+    assert_local_target_fallback(&fixture);
+}
+
+fn configure_local_target_upstream(root: &Path, tip: &str) {
+    git(
+        root,
+        &[
+            "config",
+            "remote.origin.url",
+            "/no-network-for-incursion-tests",
+        ],
+    );
+    git(
+        root,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+    git(root, &["config", "branch.main.remote", "origin"]);
+    git(root, &["config", "branch.main.merge", "refs/heads/main"]);
+    git(root, &["update-ref", "refs/remotes/origin/main", tip]);
+    assert_eq!(
+        git_stdout(root, &["rev-parse", "main@{upstream}"]).trim(),
+        tip,
+        "the fixture must configure a locally readable upstream"
+    );
+}
+
+fn assert_local_target_fallback(fixture: &CommittedIncursionFixture) {
+    commit_entering_path(
+        fixture.repository.path(),
+        "shared/local.txt",
+        "local target work\n",
+    );
+    git(
+        &fixture.subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "main",
+        ],
+    );
+    let observed = fixture.observe();
+    let envelope = json_output(&observed);
+    assert_eq!(envelope["status"], "incursion", "{envelope}");
+    let effects = incursion_effects(&envelope);
+    assert_eq!(
+        effects.len(),
+        1,
+        "only the lane's own entry remains: {envelope}"
+    );
+    let entering = incursion_for(&effects, "shared/entered.txt");
+    assert_eq!(entering["paths"], serde_json::json!(["shared/entered.txt"]));
+    assert_eq!(entering["commits"][0]["commit"], fixture.entering_commit);
+    assert_eq!(entering["commits"][0]["origin"], "phase_authored");
 }
 
 #[test]
@@ -2585,8 +3026,8 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
         .iter()
         .filter(|event| event["op"] == "incursion")
         .collect::<Vec<_>>();
-    // Both reservations belong to one run in one worktree, so the entered path is one
-    // incursion: the earliest claim carries the incident and the sibling reports it too.
+    // Both reservations belong to one run in one worktree, so the earliest claim
+    // carries one incident. Committing the observed write keeps that incident covered.
     // The commit's markerless first touch claims under a run of its own, and its phase
     // range holds the same entered path; the outstanding incident already answers for it.
     let first_touch = journal_events
@@ -2595,10 +3036,16 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
         .expect("the markerless commit should claim on first touch");
     assert_ne!(first_touch["actor"]["run"], FIRST_RUN);
     assert_eq!(incursion_events.len(), 1);
-    assert_eq!(incursion_events[0]["reservation_id"], first_id);
+    for event in &incursion_events {
+        assert_eq!(event["reservation_id"], first_id);
+        assert_eq!(
+            event["blocked_paths"][0]["holders"],
+            serde_json::json!([foreign_id])
+        );
+    }
     assert_eq!(
-        incursion_events[0]["blocked_paths"][0]["holders"],
-        serde_json::json!([foreign_id])
+        incursion_events[0]["blocked_paths"][0]["coverage"],
+        serde_json::json!({"kind": "working_tree_writes"})
     );
     assert!(!journal_events.iter().any(|event| event["op"] == "widen"));
 }
@@ -3356,6 +3803,11 @@ fn reservation_selection_requires_an_explicit_choice_only_when_ambiguous() {
 #[test]
 fn post_commit_is_managed_separately_and_warns_without_rejecting_commits() {
     let repository = initialized_repository();
+    // Keep lane-authored commits off the local integration target.
+    git(
+        repository.path(),
+        &["checkout", "--quiet", "-b", "authorship-subject"],
+    );
     let initialized_again = run_berth(repository.path(), &["init", "--json"]);
     let hooks = json_output(&initialized_again)["payload"]["data"]["hooks"]
         .as_array()
@@ -4611,6 +5063,10 @@ struct ForeignEntryFixture {
 impl ForeignEntryFixture {
     fn new() -> Self {
         let repository = initialized_repository();
+        git(
+            repository.path(),
+            &["checkout", "--quiet", "-b", "entry-subject"],
+        );
         let worktrees = tempdir().expect("worktree parent should exist");
         let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
         dirty_source(&foreign_root, "shared/s.txt");
