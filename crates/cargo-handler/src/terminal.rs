@@ -48,7 +48,7 @@ pub(crate) fn run() -> ExitCode {
         startup_note =
             tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance);
     }
-    // Read before the config is handed to the app, which takes it.
+    // Read iterm2_profile before App::new consumes loaded_config.
     let iterm2_profile = loaded_config.config.appearance.iterm2_profile.clone();
     let mut app = match App::new(loaded_config, startup_note) {
         Ok(app) => app,
@@ -171,15 +171,13 @@ impl Ticker {
         let census_changed = self.drain_census(app);
         let appearance_changed = self.drain_appearances(app);
         let ages_moved = self.ages_moved(app, unix_now);
-        // Each of the three is asked every pass: asking is what moves it
-        // on, so none may be skipped because another already wants a
-        // frame.
+        // poll_favorites, TileGrid::tick and Attract::frame_due advance
+        // their state every pass, even when another requests a repaint.
         let favorites = tui_pane::poll_favorites(app, now);
-        // A grid in motion repaints every poll until it settles.
+        // TileGrid::tick requests repaints until app.tiles settles.
         let grid_moving = app.tiles.tick();
-        // The attract screen asks for frames on its own cadence while
-        // it is on the screen, and for one more at the end of the quiet
-        // it waits out before coming back.
+        // Attract::frame_due requests frames while app.attract is shown
+        // and once more when its idle delay expires.
         let attract = app.attract.frame_due();
         if accounts_changed
             || census_changed
