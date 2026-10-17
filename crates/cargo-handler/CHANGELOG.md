@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Production roles arrive before slow session detail reads. Hierarchy failures and unmatched sessions show a summary note; footer text colors meet 4.5:1 contrast on the active theme, including stale account labels.
 - The summary can show stored account roles, weekly usage, resets and credits from a configured accounts command, refreshed in the background. Worker job names skip dispatch role preambles.
 - Worker rows use their seat or role and first task instead of raw thread ids. Status shows the current tool activity or live verification step, including detached gates and Mac offloads; standard-tier accounts carry no mark. Fresh-seat and follow-up dispatches fold through their live launcher identity.
 - Top-level sessions without a production role share one sortable `unassigned` tile per machine, retaining their own name colors and nested work.

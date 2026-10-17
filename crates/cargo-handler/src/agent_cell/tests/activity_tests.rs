@@ -40,7 +40,7 @@ fn activity_forest() -> MachineState {
         }],
         ..agent(pid, name, HOUR + u64::from(pid), None)
     });
-    MachineState::Answered(rows.into(), HierarchyEdges::default())
+    MachineState::Answered(rows.into(), HierarchyEdges::default().into())
 }
 
 fn activity_pool(sort: TreeSort) -> Buffer {
@@ -173,7 +173,7 @@ fn activity_tree_account_cells_hide_standard_tier_and_show_only_fast() {
             ],
             ..agent(10, "manager", 2 * HOUR, None)
         }],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let machines = [Machine {
         name:  "fixture",
@@ -237,7 +237,8 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
                 member:  "writer-id".into(),
                 role:    HierarchyRole::Impl,
             },
-        ]),
+        ])
+        .into(),
     );
     let machines = [Machine {
         name:  "fixture",
@@ -306,7 +307,8 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
                 member:  unreadable_id.into(),
                 role:    HierarchyRole::Test,
             },
-        ]),
+        ])
+        .into(),
     );
     let machines = [Machine {
         name:  "fixture",

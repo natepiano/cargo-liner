@@ -23,6 +23,8 @@ use super::classify;
 use super::classify::ProcessEntry;
 #[cfg(test)]
 use super::classify::SessionRecord;
+#[cfg(test)]
+use super::scan::ScanStage;
 use super::tree;
 use super::tree::DispatchFold;
 #[cfg(test)]
@@ -579,14 +581,15 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
     };
     tree::attach_children(&mut worker_rows, &processes, &sources);
     (
-        super::MachineState::Answered(manager_rows, super::HierarchyEdges::default()),
+        super::MachineState::Answered(manager_rows, super::HierarchyEdges::default().into()),
         super::MachineState::Answered(
             worker_rows,
             super::HierarchyEdges(vec![HierarchyEdge {
                 manager: "unit".to_string(),
                 member:  "mesh-worker".to_string(),
                 role:    super::HierarchyRole::Impl,
-            }]),
+            }])
+            .into(),
         ),
     )
 }
@@ -641,7 +644,8 @@ mod tests {
                 edge("unit", "worker", HierarchyRole::Showrunner),
                 edge("absent", "unresolved", HierarchyRole::Review),
                 edge("self-linked", "self-linked", HierarchyRole::Fix),
-            ]),
+            ])
+            .into(),
         );
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "local",
@@ -682,7 +686,8 @@ mod tests {
                 edge("missing", "worker", HierarchyRole::Fix),
                 edge("b", "worker", HierarchyRole::Unit),
                 edge("a", "worker", HierarchyRole::Test),
-            ]),
+            ])
+            .into(),
         );
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "local",
@@ -724,7 +729,8 @@ mod tests {
             ),
             (vec![], RoleLabel::Unlabeled, vec![]),
         ] {
-            let worker = MachineState::Answered(worker.rows().to_vec(), HierarchyEdges(edges));
+            let worker =
+                MachineState::Answered(worker.rows().to_vec(), HierarchyEdges(edges).into());
             let placement = AgentPlacement::from_machines(&[
                 Machine {
                     name:  "natedev",
@@ -753,7 +759,8 @@ mod tests {
             HierarchyEdges(vec![
                 edge("b", "a", HierarchyRole::Review),
                 edge("a", "b", HierarchyRole::Unit),
-            ]),
+            ])
+            .into(),
         );
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "local",
@@ -801,7 +808,8 @@ mod tests {
                         member:  "A".to_string(),
                         role:    HierarchyRole::Impl,
                     },
-                ]),
+                ])
+                .into(),
             );
             let machines = [Machine {
                 name:  "local",
@@ -879,7 +887,8 @@ mod tests {
                         member:  "B".to_string(),
                         role:    HierarchyRole::Impl,
                     },
-                ]),
+                ])
+                .into(),
             );
             let placement = AgentPlacement::from_machines(&[Machine {
                 name:  "local",
@@ -951,12 +960,14 @@ mod tests {
             }
         );
         let mut census = super::super::Census::new("mac".to_string());
-        census.apply(CensusUpdate::Local(
-            worker.rows().to_vec(),
-            HierarchyEdges::default(),
-        ));
+        census.apply(CensusUpdate::Local {
+            rows:      worker.rows().to_vec(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         assert!(!census.lists_an_agent(&[]));
-        let unlinked = MachineState::Answered(worker.rows().to_vec(), HierarchyEdges::default());
+        let unlinked =
+            MachineState::Answered(worker.rows().to_vec(), HierarchyEdges::default().into());
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "mac",
             state: &unlinked,

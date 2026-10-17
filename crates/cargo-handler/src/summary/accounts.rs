@@ -4,7 +4,6 @@ use chrono::Duration;
 use chrono::Local;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -18,6 +17,13 @@ use tui_pane::text_default;
 
 use super::age;
 use super::cell_width;
+use super::constants::ACCOUNT_ROLE_SEPARATOR;
+use super::constants::ACCOUNTS_HEADING;
+use super::constants::LOW_WEEKLY_USAGE_COLOR;
+use super::constants::RESET_ROUNDING_SECONDS;
+use super::constants::RESET_TIME_FORMAT;
+use super::constants::STALE_ACCOUNT_SUFFIX;
+use super::constants::UNLIMITED_CREDITS_LABEL;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
@@ -134,7 +140,7 @@ impl Freshness {
 
     fn label(&self, account: &str) -> String {
         match self {
-            Self::Stale(age) => format!("{account}{HEADING_SEPARATOR}{age} old"),
+            Self::Stale(age) => format!("{account}{HEADING_SEPARATOR}{age} {STALE_ACCOUNT_SUFFIX}"),
             Self::Fresh | Self::Unread => account.to_owned(),
         }
     }
@@ -155,7 +161,7 @@ fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
             .iter()
             .map(|role| role.text())
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(ACCOUNT_ROLE_SEPARATOR)
     };
     [
         freshness.label(&row.label),
@@ -165,15 +171,15 @@ fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
             Reading::Unavailable => MISSING_VALUE.to_owned(),
         },
         match row.resets_at {
-            Reading::Known(at) => (at + Duration::seconds(30))
+            Reading::Known(at) => (at + Duration::seconds(RESET_ROUNDING_SECONDS))
                 .with_timezone(&Local)
-                .format("%a %H:%M")
+                .format(RESET_TIME_FORMAT)
                 .to_string(),
             Reading::Unavailable => MISSING_VALUE.to_owned(),
         },
         match row.credits {
             Credits::Amount(amount) => amount.to_string(),
-            Credits::Unlimited => "unlimited".to_owned(),
+            Credits::Unlimited => UNLIMITED_CREDITS_LABEL.to_owned(),
             Credits::Unavailable => MISSING_VALUE.to_owned(),
         },
     ]
@@ -219,7 +225,7 @@ fn lines(table: &AccountsTable, now: u64, colors: &FooterColors) -> Vec<Line<'st
     });
     let mut result = vec![
         Line::from(Span::styled(
-            format!("{SECTION_HEADER_INDENT}accounts"),
+            format!("{SECTION_HEADER_INDENT}{ACCOUNTS_HEADING}"),
             Style::default()
                 .fg(text_default())
                 .add_modifier(Modifier::BOLD),
@@ -233,9 +239,14 @@ fn lines(table: &AccountsTable, now: u64, colors: &FooterColors) -> Vec<Line<'st
     for (row, (values, freshness)) in reading.accounts.iter().zip(rows) {
         let base = freshness.style();
         let mut cells = values.map(|value| Span::styled(value, base));
-        cells[0].style = colors.account(&row.label).style(base);
+        cells[0].style = match freshness {
+            Freshness::Fresh => colors.account(&row.label).style(base),
+            Freshness::Stale(_) | Freshness::Unread => {
+                colors.account(&row.label).subdued_style(base)
+            },
+        };
         if matches!(row.weekly_left_percent, Reading::Known(left) if left <= ACCOUNTS_LOW_PERCENT) {
-            cells[2].style = base.fg(Color::Red);
+            cells[2].style = base.fg(LOW_WEEKLY_USAGE_COLOR);
         }
         if row.credit_use == CreditUse::Held {
             cells[4].style = base.add_modifier(Modifier::DIM);

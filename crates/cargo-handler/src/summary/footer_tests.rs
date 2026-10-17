@@ -154,7 +154,7 @@ fn machine_headings_count_top_level_agents_instead_of_all_sessions() {
                 ..session(20, "nested-session")
             });
         }
-        let state = MachineState::Answered(rows, HierarchyEdges::default());
+        let state = MachineState::Answered(rows, HierarchyEdges::default().into());
         let buffer = rendered_with_colors(&state, AccountColumn::Hidden, &FooterColors::default());
         assert_eq!(lines(&buffer)[0], expected);
     }
@@ -174,7 +174,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
                 ..row(20, Agent::Codex, "worker", None, MINUTE, "~")
             },
         ],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let colors = FooterColors::parse(
         "account.claude1=orange\naccount.codex1=bright-cyan\n\
@@ -190,7 +190,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
     );
     let unrecorded = MachineState::Answered(
         vec![row(30, Agent::Claude, "unrecorded", None, MINUTE, "~")],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let program = rendered_with_colors(&unrecorded, AccountColumn::Shown, &colors);
     assert_color(
@@ -219,7 +219,7 @@ fn summary_accounts_without_a_footer_entry_keep_the_program_style() {
             account: account("claude1"),
             ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
         }],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let buffer = rendered_with_colors(&state, AccountColumn::Shown, &FooterColors::default());
     assert_color(
