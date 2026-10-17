@@ -80,6 +80,7 @@ const fn default_dark() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Cyan),
             error:        StyleSpec::from_color(Color::Red),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
             success:      StyleSpec::from_color(Color::Green),
             label:        StyleSpec::from_color(Color::Rgb(150, 190, 180)),
@@ -126,6 +127,7 @@ const fn default_light() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
             success:      StyleSpec::from_color(Color::Rgb(0, 120, 0)),
             label:        StyleSpec::from_color(Color::Rgb(60, 100, 90)),
@@ -176,6 +178,7 @@ const fn high_contrast_dark() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::bold(Color::LightCyan),
             error:        StyleSpec::bold(Color::LightRed),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::bold(Color::LightYellow),
             success:      StyleSpec::bold(Color::LightGreen),
             label:        StyleSpec::from_color(Color::White),
@@ -225,6 +228,7 @@ const fn high_contrast_light() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::bold(Color::Rgb(0, 0, 140)),
             error:        StyleSpec::bold(Color::Rgb(180, 0, 0)),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::bold(Color::Rgb(140, 60, 0)),
             success:      StyleSpec::bold(Color::Rgb(0, 100, 0)),
             label:        StyleSpec::from_color(Color::Black),

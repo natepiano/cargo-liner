@@ -3,6 +3,7 @@ use super::CopyLabel;
 use super::CopyPayload;
 use super::CopySelectionResult;
 use super::DetailField;
+use super::GitCheckout;
 use super::GitData;
 use super::GitRow;
 use super::GitStatus;
@@ -105,10 +106,21 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
 
 fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
     match field {
-        DetailField::Head => match data.head.as_ref() {
-            Some(HeadState::Branch(name)) => name.clone(),
-            Some(HeadState::Detached { short_sha }) => short_sha.clone(),
-            Some(HeadState::Unborn) | None => String::new(),
+        DetailField::Head => match &data.checkout {
+            GitCheckout::Readable {
+                head: HeadState::Branch(name),
+                ..
+            } => name.clone(),
+            GitCheckout::Readable {
+                head: HeadState::Detached { short_sha },
+                ..
+            } => short_sha.clone(),
+            GitCheckout::Readable {
+                head: HeadState::Unborn,
+                ..
+            }
+            | GitCheckout::Broken
+            | GitCheckout::AwaitingProbe => String::new(),
         },
         DetailField::GitStatus => data
             .status
@@ -355,8 +367,7 @@ mod tests {
 
     fn git_data() -> GitData {
         GitData {
-            head:               None,
-            head_relation:      None,
+            checkout:           GitCheckout::AwaitingProbe,
             bisect:             None,
             submodule_ctx:      None,
             status:             None,

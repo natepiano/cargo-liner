@@ -56,6 +56,7 @@ const fn fallback_dark() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Cyan),
             error:        StyleSpec::from_color(Color::Red),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
             success:      StyleSpec::from_color(Color::Green),
             label:        StyleSpec::from_color(Color::Gray),
@@ -100,6 +101,7 @@ const fn fallback_light() -> Theme {
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
+            on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
             success:      StyleSpec::from_color(Color::Rgb(0, 120, 0)),
             label:        StyleSpec::from_color(Color::Rgb(90, 90, 90)),
