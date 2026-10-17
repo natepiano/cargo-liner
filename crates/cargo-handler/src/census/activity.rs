@@ -78,23 +78,6 @@ impl AgentActivity {
         matches!(activity.borrow(), Self::Idle)
     }
 
-    /// Convert an old optional status at a file or probe boundary.
-    pub(crate) fn from_legacy(status: Option<&str>) -> Self {
-        match status {
-            Some("idle") => Self::Idle,
-            Some("busy" | "thinking") => Self::Active(Activity::Thinking),
-            Some("shell" | "running") => Self::Active(Activity::Running),
-            Some("writing") => Self::Active(Activity::Writing),
-            Some("reading") => Self::Active(Activity::Reading),
-            Some("git") => Self::Active(Activity::Git),
-            Some("delegating") => Self::Active(Activity::Delegating),
-            Some("web") => Self::Active(Activity::Web),
-            Some("asking") => Self::Active(Activity::Asking),
-            Some("waiting") => Self::Active(Activity::Waiting),
-            _ => Self::Unreported,
-        }
-    }
-
     /// One word, also used as the Status sort key.
     pub(crate) const fn text(self) -> &'static str {
         match self {
@@ -142,11 +125,30 @@ impl AgentActivity {
     }
 }
 
+impl From<Option<&str>> for AgentActivity {
+    /// Convert an old optional status at a file or probe boundary.
+    fn from(status: Option<&str>) -> Self {
+        match status {
+            Some("idle") => Self::Idle,
+            Some("busy" | "thinking") => Self::Active(Activity::Thinking),
+            Some("shell" | "running") => Self::Active(Activity::Running),
+            Some("writing") => Self::Active(Activity::Writing),
+            Some("reading") => Self::Active(Activity::Reading),
+            Some("git") => Self::Active(Activity::Git),
+            Some("delegating") => Self::Active(Activity::Delegating),
+            Some("web") => Self::Active(Activity::Web),
+            Some("asking") => Self::Active(Activity::Asking),
+            Some("waiting") => Self::Active(Activity::Waiting),
+            _ => Self::Unreported,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for AgentActivity {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = Value::deserialize(deserializer)?;
         match value {
-            Value::String(ref text) => Ok(Self::from_legacy(Some(text))),
+            Value::String(ref text) => Ok(Self::from(Some(text.as_str()))),
             Value::Null => Ok(Self::Unreported),
             Value::Object(mut fields) => {
                 let active = fields

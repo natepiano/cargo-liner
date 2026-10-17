@@ -8,6 +8,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Fixed
+- Config rewrites preserve unknown keys and comments.
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
 
 ### Added

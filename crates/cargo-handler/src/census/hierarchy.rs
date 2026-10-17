@@ -89,59 +89,63 @@ pub(crate) struct CommandRunner;
 
 impl HierarchyRunner for CommandRunner {
     fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-        let deadline = Instant::now() + timeout;
-        let mut process = Command::new(SHELL_PROGRAM);
-        process
-            .arg(SHELL_SCRIPT_FLAG)
-            .arg(command)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .stdout(Stdio::piped());
-        // A shell can start children; end the whole group when its deadline expires.
-        #[cfg(unix)]
-        {
-            process.process_group(0);
-        }
-        let mut child = process.spawn().map_err(|_| HierarchyError::CouldNotStart)?;
-        let Some(stdout) = child.stdout.take() else {
+        parse(&run_output(command, timeout)?)
+    }
+}
+
+/// Run a bounded JSON-producing command away from the frame thread.
+pub(super) fn run_output(command: &str, timeout: Duration) -> Result<Vec<u8>, HierarchyError> {
+    let deadline = Instant::now() + timeout;
+    let mut process = Command::new(SHELL_PROGRAM);
+    process
+        .arg(SHELL_SCRIPT_FLAG)
+        .arg(command)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped());
+    // A shell can start children; end the whole group when its deadline expires.
+    #[cfg(unix)]
+    {
+        process.process_group(0);
+    }
+    let mut child = process.spawn().map_err(|_| HierarchyError::CouldNotStart)?;
+    let Some(stdout) = child.stdout.take() else {
+        end(&mut child);
+        return Err(HierarchyError::OutputUnreadable);
+    };
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(read_output(stdout));
+    });
+    let output = match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
             end(&mut child);
-            return Err(HierarchyError::OutputUnreadable);
-        };
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = sender.send(read_output(stdout));
-        });
-        let output = match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
+            return Err(error);
+        },
+        Err(error) => {
+            end(&mut child);
+            return Err(match error {
+                RecvTimeoutError::Timeout => HierarchyError::TimedOut,
+                RecvTimeoutError::Disconnected => HierarchyError::OutputUnreadable,
+            });
+        },
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(output),
+            Ok(Some(_)) => return Err(HierarchyError::ExitedUnsuccessfully),
+            Ok(None) if Instant::now() < deadline => thread::sleep(
+                PROBE_EXIT_CHECK.min(deadline.saturating_duration_since(Instant::now())),
+            ),
+            Ok(None) => {
                 end(&mut child);
-                return Err(error);
+                return Err(HierarchyError::TimedOut);
             },
-            Err(error) => {
+            Err(_) => {
                 end(&mut child);
-                return Err(match error {
-                    RecvTimeoutError::Timeout => HierarchyError::TimedOut,
-                    RecvTimeoutError::Disconnected => HierarchyError::OutputUnreadable,
-                });
+                return Err(HierarchyError::ExitUnreadable);
             },
-        };
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => return parse(&output),
-                Ok(Some(_)) => return Err(HierarchyError::ExitedUnsuccessfully),
-                Ok(None) if Instant::now() < deadline => thread::sleep(
-                    PROBE_EXIT_CHECK.min(deadline.saturating_duration_since(Instant::now())),
-                ),
-                Ok(None) => {
-                    end(&mut child);
-                    return Err(HierarchyError::TimedOut);
-                },
-                Err(_) => {
-                    end(&mut child);
-                    return Err(HierarchyError::ExitUnreadable);
-                },
-            }
         }
     }
 }

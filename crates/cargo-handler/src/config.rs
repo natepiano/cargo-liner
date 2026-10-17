@@ -117,6 +117,8 @@ pub(crate) struct CensusConfig {
     /// One line of shell that prints this machine's hierarchy edges;
     /// empty disables hierarchy discovery.
     pub(crate) hierarchy_command: String,
+    /// Optional command printing stored account roles and usage as JSON.
+    pub(crate) accounts_command:  String,
 }
 
 /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
@@ -200,6 +202,7 @@ remote = []
 
 [census]
 hierarchy_command = \"\"
+accounts_command = \"\"
 
 [accounts]
 ";

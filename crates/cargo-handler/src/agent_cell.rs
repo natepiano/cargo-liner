@@ -2004,7 +2004,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            activity: crate::census::AgentActivity::from_legacy(Some("busy")),
+            activity: AgentActivity::from(Some("busy")),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -2561,7 +2561,7 @@ mod tests {
                     ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity: AgentActivity::from(Some("idle")),
                     branch: Some("enh/arrange".to_string()),
                     directory: "~/rust/ui-arrange".to_string(),
                     children: vec![child(
@@ -2574,7 +2574,7 @@ mod tests {
                     ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity: AgentActivity::from(Some("idle")),
                     directory: "~/scratch/impl".to_string(),
                     ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
                 },

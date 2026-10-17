@@ -15,6 +15,7 @@ use crate::census::CensusUpdate;
 use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
+use crate::census::accounts::AccountsTable;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
@@ -313,6 +314,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
         &mut buffer,
         AREA,
         &SummaryFrame {
+            accounts:       &AccountsTable::NotConfigured,
             machines:       &machines,
             placement:      &placement,
             cells:          &agents,

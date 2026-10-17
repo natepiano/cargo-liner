@@ -577,3 +577,13 @@ pub(crate) const PROBE_SIGNALLED_REASON: &str = "probe ended by a signal";
 
 /// Title of a machine's pool of sessions without production roles.
 pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";
+
+/// Stored account usage is refreshed independently of the census scan.
+pub(crate) const ACCOUNTS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+/// Readings older than one hour are visibly stale.
+pub(crate) const ACCOUNTS_STALE_SECONDS: u64 = 60 * 60;
+/// Remaining weekly usage at or below this percentage needs attention.
+pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
+/// Columns in the source-ordered account usage table.
+pub(crate) const ACCOUNTS_HEADERS: [&str; 5] =
+    ["account", "role", "weekly left", "resets", "credits"];

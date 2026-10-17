@@ -11,8 +11,10 @@ use tui_pane::CellPoint;
 
 use super::*;
 use crate::census::Account;
+use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
+use crate::census::accounts::AccountsTable;
 use crate::sort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
@@ -110,6 +112,7 @@ fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts: &AccountsTable::NotConfigured,
             machines,
             placement: &placement,
             cells: &cells,
@@ -212,7 +215,7 @@ fn equal_summary_keys_use_default_age_and_pid_order_even_when_reversed() {
     let mut states = sort_states();
     if let MachineState::Answered(rows, _) = &mut states[0] {
         for row in rows {
-            row.activity = crate::census::AgentActivity::from_legacy(Some("git"));
+            row.activity = AgentActivity::from(Some("git"));
             row.account = Account::Unrecorded;
         }
     }
@@ -239,6 +242,7 @@ fn summary_header_clicks_work_for_every_machine_and_ignore_gaps_and_rows() {
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
+        accounts: &AccountsTable::NotConfigured,
         machines: &machines,
         placement: &placement,
         cells: &cells,
@@ -479,6 +483,7 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
                 &mut buffer,
                 area,
                 &SummaryFrame {
+                    accounts:       &AccountsTable::NotConfigured,
                     machines:       &machines,
                     placement:      &placement,
                     cells:          &cells,
@@ -533,6 +538,7 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
+        accounts:       &AccountsTable::NotConfigured,
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
