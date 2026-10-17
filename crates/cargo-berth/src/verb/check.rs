@@ -10,6 +10,7 @@ use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
+use super::refusal;
 use crate::answer::OverlapApprover;
 use crate::config::DefaultAnswer;
 use crate::config::Enrollment;
@@ -22,8 +23,10 @@ use crate::coordination_identity::RecoveryCommandLine;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
+use crate::ledger::RefusedVerb;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -46,6 +49,8 @@ pub(crate) struct CheckRequest {
 }
 
 struct CheckDecision {
+    requester:         ResolvedJournalMutationActor,
+    worktree_context:  WorktreeContext,
     acquisition:       CheckAcquisitionDecision,
     scopes:            ReservationScopeSet,
     conflicts:         Vec<ReservationConflict>,
@@ -162,7 +167,12 @@ pub(crate) fn execute(
                     recovery_command_line,
                 )
             },
-            acquisition => render_acquisition(acquisition, first_decision.approver),
+            acquisition => render_acquisition(
+                acquisition,
+                first_decision.approver,
+                first_decision.requester,
+                &first_decision.worktree_context,
+            ),
         };
     }
     reconcile_and_retry(
@@ -221,9 +231,18 @@ fn reconcile_and_retry(
                 recovery_command_line,
             ),
             retried_decision.approver,
+            retried_decision.requester,
+            &retried_decision.worktree_context,
         )
         .with_alerts(reconciliation_report.alerts)
     } else {
+        refusal::record(
+            &retried_decision.worktree_context,
+            retried_decision.requester,
+            RefusedVerb::Check,
+            &retried_decision.scopes,
+            &retried_decision.conflicts,
+        );
         OutputEnvelope::blocked_check(
             retried_decision.scopes,
             retried_decision.conflicts,
@@ -251,6 +270,8 @@ fn acquire_first_touch(
 fn render_acquisition(
     acquisition: Result<Enrollment<FirstTouchClaimExecution>, ClaimError>,
     approver: Option<OverlapApprover>,
+    requester: ResolvedJournalMutationActor,
+    worktree_context: &WorktreeContext,
 ) -> OutputEnvelope {
     match acquisition {
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
@@ -263,14 +284,21 @@ fn render_acquisition(
             scopes,
             conflicts: FirstTouchConflictOutcome::AnsweredByDefault { answered },
         })) => OutputEnvelope::clear_check(scopes, acquisition, Some(answered)),
-        Ok(Enrollment::Enrolled(
-            FirstTouchClaimExecution::Acquired {
-                scopes,
-                conflicts: FirstTouchConflictOutcome::PostWriteIncursion { conflicts, .. },
-                ..
-            }
-            | FirstTouchClaimExecution::Blocked { scopes, conflicts },
-        )) => OutputEnvelope::blocked_check(scopes, conflicts, approver),
+        Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
+            scopes,
+            conflicts: FirstTouchConflictOutcome::PostWriteIncursion { conflicts, .. },
+            ..
+        })) => OutputEnvelope::blocked_check(scopes, conflicts, approver),
+        Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { scopes, conflicts })) => {
+            refusal::record(
+                worktree_context,
+                requester,
+                RefusedVerb::Check,
+                &scopes,
+                &conflicts,
+            );
+            OutputEnvelope::blocked_check(scopes, conflicts, approver)
+        },
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum))) => {
             OutputEnvelope::check_reservation_limit_reached(maximum)
         },
@@ -362,6 +390,9 @@ fn decide(
         merge_observation,
         approver: configuration.overlap_approver(worktree_context.repository_root()),
         default_answer: configuration.default_answer,
+        requester: resolved_edit_authorization
+            .journal_mutation_actor_for(resolved_edit_authorization.coordination_run_id),
+        worktree_context,
     }))
 }
 

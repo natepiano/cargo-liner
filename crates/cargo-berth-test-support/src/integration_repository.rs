@@ -526,13 +526,8 @@ pub fn claim_id(output: &Output) -> String {
         .to_owned()
 }
 
-/// The row for reservation `id` in whichever `board --json` section lists it.
-///
-/// # Panics
-///
-/// Panics when no section lists the reservation.
-#[must_use]
-pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value {
+/// The reservation entries across every `board --json` reservation section.
+pub fn board_reservation_entries(board: &Value) -> impl Iterator<Item = &Value> {
     let data = &board["payload"]["data"];
     [
         "ready_now",
@@ -543,8 +538,37 @@ pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value 
     .into_iter()
     .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
     .map(|entry| entry.get("reservation").unwrap_or(entry))
-    .find(|entry| entry["reservation_id"] == id)
-    .expect("reservation appears on board")
+}
+
+/// The sorted reservation IDs across every `board --json` reservation section.
+///
+/// # Panics
+///
+/// Panics when a reservation entry names no string reservation ID.
+#[must_use]
+pub fn board_reservation_ids(board: &Value) -> Vec<String> {
+    let mut ids = board_reservation_entries(board)
+        .map(|entry| {
+            entry["reservation_id"]
+                .as_str()
+                .expect("reservation id")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+/// The row for reservation `id` in whichever `board --json` section lists it.
+///
+/// # Panics
+///
+/// Panics when no section lists the reservation.
+#[must_use]
+pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value {
+    board_reservation_entries(board)
+        .find(|entry| entry["reservation_id"] == id)
+        .expect("reservation appears on board")
 }
 
 /// The worktree identity and coordination run marker berth recorded in

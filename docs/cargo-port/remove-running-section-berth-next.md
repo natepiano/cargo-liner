@@ -303,7 +303,7 @@
 **Ruled out:**
 - Default text on the error red: black on the light theme's error red reads 2.71:1.
 
-### Phase 10 — Every refused check or claim leaves one typed journal record naming its requester, paths and holders  · status: todo
+### Phase 10 — Every refused check or claim leaves one typed journal record naming its requester, paths and holders  · status: done
 
 **Depends on:** Phase 8 (shares `crates/cargo-berth/tests/`)
 
@@ -526,8 +526,12 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
     - Local check before the checkpoint: delete `target/tmp/cargo-berth-templates/` (a cold start, as CI's), then one `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` run of the whole package at once, while no other `verify.sh` runs. Read the per-test times of the 16 from that run's nextest output.
     - Never time a test alone or with a `--filter` subset: phase 8 measured that times taken that way did not hold in CI.
     - Record natedev load (`uptime`) beside the run. A run at load above the core count is repeated, not trusted.
+15. **Carried from phase 10's review** (round 2 findings, moved here when that phase's gate converged):
+    - `acquire_new` (`crates/cargo-berth/src/verb/claim/mod.rs:821`) reads `ClaimRequest` field by field again. Restore the exhaustive destructure, so a new request field cannot be dropped silently, and meet clippy's length limit by extracting a helper, never by an allow.
+    - The `LedgerTransactionOutcome::Rejected` arm at `crates/cargo-berth/src/verb/claim/mod.rs:1399` cannot be reached. Make it unrepresentable by type where that transaction cannot reject; otherwise remove the arm's dead handling with the reason in one comment.
 
 **Files:**
+- `crates/cargo-berth/src/verb/claim/mod.rs` — Spec 15: `acquire_new` destructure, unreachable `Rejected` arm
 - `crates/cargo-berth-test-support/src/repository_template.rs` — R0 `LedgerFixture::Recorded`, projection reset, worktree id renewal, 12-hour rebuild
 - `crates/cargo-berth-test-support/src/integration_repository.rs` — `CROSS_TARGET_PAIR`, `CROSS_TARGET_AFTER_PAIR` builders
 - `crates/cargo-berth-test-support/src/lib.rs` — re-exports

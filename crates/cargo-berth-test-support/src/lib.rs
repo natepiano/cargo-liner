@@ -35,6 +35,8 @@ pub use git_driver::fixture_git_command;
 pub use git_driver::git_command;
 pub use integration_repository::IntegrationRepository;
 pub use integration_repository::assert_success;
+pub use integration_repository::board_reservation_entries;
+pub use integration_repository::board_reservation_ids;
 pub use integration_repository::claim_id;
 pub use integration_repository::deferring_run_path;
 pub use integration_repository::deferring_run_scope;

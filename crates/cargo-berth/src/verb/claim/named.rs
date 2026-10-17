@@ -23,6 +23,7 @@ use super::default_answer_request;
 use super::locked_claim_reservations;
 use super::normalized_claim_scopes;
 use super::publish_coordination_run_marker;
+use super::record_refusal;
 use super::sibling_held_scopes;
 use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
@@ -101,7 +102,11 @@ pub(super) fn acquire(
         |outcome| consume(outcome, &context, reservation_id, &config),
     );
     match result {
-        Ok(execution) => execution.map(Enrollment::Enrolled),
+        Ok(execution) => {
+            let execution = execution?;
+            record_refusal(&execution, &context.worktree_context, actor, &scopes);
+            Ok(Enrollment::Enrolled(execution))
+        },
         Err(LedgerCommittedActionError::Transaction(error)) => Err(ClaimError::Transaction(error)),
         Err(LedgerCommittedActionError::Action(error)) => match error {},
     }

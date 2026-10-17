@@ -10,6 +10,9 @@ mod linked_checkout;
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
+
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
 
@@ -1563,7 +1566,7 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
     assert_success(&holder);
     fs::write(foreign.join("held.rs"), "foreign dirty work\n").expect("dirty foreign path");
     assert_success(&run_berth(root, &["board", "--json"]));
-    let before = journal_events(root);
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal before refusal");
     let checked = run_berth_with_session(
         root,
         &["check", "file:held.rs", "--json"],
@@ -1576,10 +1579,11 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
         envelope["payload"]["data"]["conflicts"][0]["reservation_id"],
         reservation_id(&holder)
     );
-    assert_eq!(
-        journal_events(root),
-        before,
-        "refusal must not widen or append"
+    overlap_refusal::assert_one_refusal_appended(
+        &before,
+        &fs::read(root.join(JOURNAL_PATH)).expect("journal after refusal"),
+        "check",
+        &envelope,
     );
 }
 

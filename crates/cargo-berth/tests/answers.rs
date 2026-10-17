@@ -8,12 +8,16 @@
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
 
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::observes_merge_extent_of;
+use overlap_refusal::assert_one_refusal_appended;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -785,7 +789,12 @@ fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
         blocked_envelope["blocked_by"],
         serde_json::json!([first_holder_id, second_holder_id])
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// A partial answer prints a complete command that records an edge to each holder.
@@ -842,7 +851,12 @@ fn incomplete_before_answer_prints_a_complete_executable_claim() {
         );
     }
     assert_eq!(detail.matches(chooser).count(), 1, "{detail}");
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     let completed_envelope = json_output(&completed);
@@ -903,7 +917,12 @@ fn incomplete_answer_keeps_the_configured_chooser_after_holder_facts() {
         );
     }
     assert_eq!(detail.matches(&chooser).count(), 1, "{detail}");
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 }
 
 /// A partial defer answer names every holder in its executable recovery command.
@@ -945,7 +964,12 @@ fn incomplete_defer_answer_prints_a_complete_executable_claim() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     assert!(completed.status.success(), "{:#}", json_output(&completed));
@@ -1026,7 +1050,12 @@ fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     let completed_envelope = json_output(&completed);
@@ -1115,7 +1144,12 @@ fn incomplete_mixed_answer_prints_a_choice_for_the_missing_holder() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 }
 
 /// Execute the shell command users copy, substituting only the tested binary's location.
@@ -1393,7 +1427,12 @@ fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
     assert_eq!(naming_released.status.code(), Some(1), "{refusal:#}");
     assert_eq!(refusal["status"], "blocked_by_overlap");
     assert_eq!(refusal["blocked_by"], serde_json::json!([live_holder]));
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &refusal,
+    );
 
     let answered = answer_claim(
         &second_root,
@@ -1416,7 +1455,7 @@ fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
 }
 
 /// An answer naming both holders and also a reservation that shares nothing with the claim is
-/// refused with the obsolete answer identified, and nothing records.
+/// refused with the obsolete answer identified, and the refusal is journalled.
 #[test]
 fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
     let repository = initialized_repository();
@@ -1464,7 +1503,12 @@ fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
         refusal_detail(&blocked_envelope).starts_with(message),
         "{blocked_envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// `--override` names one holder, so it is refused while a second holder of the path conflicts.
@@ -1505,7 +1549,12 @@ fn an_override_naming_one_of_two_holders_is_refused() {
         refusal_detail(&blocked_envelope).starts_with(&message),
         "{blocked_envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// A stale override prints the sole current holder's id instead of asking to narrow scopes.
@@ -1569,7 +1618,12 @@ fn stale_override_prints_an_executable_claim_for_the_current_holder() {
         refusal_detail(&envelope).starts_with(message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     assert!(completed.status.success(), "{:#}", json_output(&completed));
