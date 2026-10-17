@@ -1,5 +1,5 @@
 ---
-tier: E
+tier: D
 family: types
 mechanism: llm
 ---
