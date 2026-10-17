@@ -353,8 +353,8 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // No colour of its own: where no tint is painted to carry
-            // focus, the focused tile's border takes the focused title's.
+            // PaneChromeTheme::active_border is None, so without focus
+            // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::DarkGray),
             active_title:    StyleSpec::bold(Color::Yellow),
@@ -402,8 +402,8 @@ fn default_dark() -> Theme {
 fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // No colour of its own: where no tint is painted to carry
-            // focus, the focused tile's border takes the focused title's.
+            // PaneChromeTheme::active_border is None, so without focus
+            // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
@@ -455,8 +455,8 @@ fn default_light() -> Theme {
 fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // No colour of its own: where no tint is painted to carry
-            // focus, the focused tile's border takes the focused title's.
+            // PaneChromeTheme::active_border is None, so without focus
+            // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::White),
             active_title:    StyleSpec::bold(Color::LightYellow),
@@ -507,8 +507,8 @@ fn high_contrast_dark() -> Theme {
 fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // No colour of its own: where no tint is painted to carry
-            // focus, the focused tile's border takes the focused title's.
+            // PaneChromeTheme::active_border is None, so without focus
+            // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Black),
             active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),

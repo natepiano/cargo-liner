@@ -74,7 +74,8 @@ impl<C: SortColumn> Default for ColumnSort<C> {
 }
 
 impl<C: SortColumn> ColumnSort<C> {
-    /// Reverse the current column, or select another column's natural direction.
+    /// Reverse `ColumnSort.direction` for the selected column; for another
+    /// column, use `SortColumn::natural_direction`.
     pub(crate) fn select(&mut self, column: C) {
         self.direction = if self.column == column {
             self.direction.reversed()
