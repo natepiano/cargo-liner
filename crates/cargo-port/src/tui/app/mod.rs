@@ -4581,6 +4581,7 @@ mod tests {
     mod interaction {
         use std::path::Path;
         use std::rc::Rc;
+        use std::sync::Arc;
         use std::time::Duration;
         use std::time::Instant;
 
@@ -4612,6 +4613,7 @@ mod tests {
         use tui_pane::RenderFocus;
         use tui_pane::SettingsLineTarget;
         use tui_pane::SettingsRowPayload;
+        use tui_pane::Theme;
         use tui_pane::ToastActivation;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
@@ -4659,6 +4661,7 @@ mod tests {
         use crate::project::Workspace;
         use crate::project::WorkspaceMetadata;
         use crate::project::WorktreeGroup;
+        use crate::project::WorktreeHealth;
         use crate::project::WorktreeStatus;
         use crate::scan::BackgroundMsg;
         use crate::scan::DirSizes;
@@ -6243,12 +6246,27 @@ mod tests {
             terminal.backend().buffer().clone()
         }
 
-        fn assert_git_error_colors(app: &mut App, error_value: &str) {
-            let original_theme = tui_pane::theme();
-            for appearance in [Appearance::Dark, Appearance::Light] {
+        struct ActiveThemeOverride {
+            saved: Arc<Theme>,
+        }
+
+        impl ActiveThemeOverride {
+            fn set(appearance: Appearance) -> Self {
+                let saved = tui_pane::theme();
                 tui_pane::set_active_theme(std::sync::Arc::new(tui_pane::fallback_theme(
                     appearance,
                 )));
+                Self { saved }
+            }
+        }
+
+        impl Drop for ActiveThemeOverride {
+            fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
+        }
+
+        fn assert_git_error_colors(app: &mut App, error_value: &str) {
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
                 let buffer = render_selected_git(app);
                 let area = buffer.area;
                 let value_position = (0..area.height)
@@ -6269,7 +6287,6 @@ mod tests {
                 assert_eq!(cell.fg, tui_pane::on_error_color());
                 assert_eq!(cell.bg, tui_pane::error_color());
             }
-            tui_pane::set_active_theme(original_theme);
         }
 
         #[test]
@@ -6353,6 +6370,56 @@ mod tests {
             );
 
             assert_git_error_colors(&mut app, &error_value);
+        }
+
+        #[test]
+        fn broken_worktree_project_row_draws_on_error_text_on_error_red() {
+            let linked_name = "broken-linked";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let mut primary =
+                make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            // A larger primary disk value leaves part of the linked suffix visible
+            // within the real column widths, while still clipping its tail.
+            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let (buffer, _) = super::render_tree_buffer(&mut app);
+                let area = buffer.area;
+                let (y, row, name_start) = (0..area.height)
+                    .find_map(|y| {
+                        let row = (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>();
+                        row.find(linked_name).map(|start| (y, row, start))
+                    })
+                    .expect("broken worktree name should render");
+                let suffix_start = row
+                    .find(" [")
+                    .expect("at least one suffix cell should render");
+                for (start, text) in [(name_start, linked_name), (suffix_start, " [broken]")] {
+                    let column = row[..start].chars().count();
+                    let visible_len = text.len().min(row.len() - start);
+                    assert_eq!(&row[start..start + visible_len], &text[..visible_len]);
+                    for x in column..column + visible_len {
+                        let cell = &buffer[(u16::try_from(x).expect("ASCII text fits buffer"), y)];
+                        assert_eq!(
+                            cell.fg,
+                            tui_pane::on_error_color(),
+                            "{appearance:?}: {text}"
+                        );
+                        assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}: {text}");
+                    }
+                }
+            }
         }
 
         #[test]
@@ -16234,6 +16301,15 @@ mod tests {
             init_git_project(dir, self.primary_name(), matches!(self, Self::Workspace));
         }
 
+        fn write_manifest(self, dir: &Path) {
+            std::fs::create_dir_all(dir).expect("create refresh project directory");
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                manifest_contents(self.primary_name(), matches!(self, Self::Workspace)),
+            )
+            .expect("write refresh project manifest");
+        }
+
         fn root_item(dir: &Path) -> RootItem { item_from_project_dir(dir) }
 
         fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
@@ -16546,27 +16622,36 @@ mod tests {
         assert_eq!(group.linked[0].path(), linked_dir.as_path());
     }
 
+    fn create_refresh_worktree(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
+        kind.write_manifest(linked);
+        let gitdir = primary.join(".git/worktrees").join(
+            linked
+                .file_name()
+                .expect("linked checkout has a directory name"),
+        );
+        std::fs::create_dir_all(&gitdir).expect("create linked administrative directory");
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("write linked gitdir pointer");
+        std::fs::write(gitdir.join("commondir"), "../..\n").expect("write common gitdir pointer");
+    }
+
     fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProjectKind) {
         let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_one_dir = tmp.path().join(kind.feature_name());
         let linked_two_dir = tmp.path().join(kind.linked_name());
-        kind.init_primary_repo(&primary_dir);
-        add_git_worktree(
-            &primary_dir,
-            &linked_one_dir,
-            &format!("feat/{}", kind.branch_prefix()),
-        );
+        kind.write_manifest(&primary_dir);
+        std::fs::create_dir(primary_dir.join(".git")).expect("create primary git directory");
+        create_refresh_worktree(&primary_dir, &linked_one_dir, kind);
 
         let primary_item = WorktreeProjectKind::root_item(&primary_dir);
         let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
         let mut app = make_app(&[primary_item, linked_one_item]);
 
-        add_git_worktree(
-            &primary_dir,
-            &linked_two_dir,
-            &format!("test/{}", kind.branch_prefix()),
-        );
+        create_refresh_worktree(&primary_dir, &linked_two_dir, kind);
         let stale_discovery = match kind {
             WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
                 Some(kind.primary_name()),

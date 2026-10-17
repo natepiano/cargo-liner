@@ -36,6 +36,7 @@ accent       = "Cyan"
 error        = { r = 255, g = 115, b = 115 }
 inline_error = "Yellow"
 label        = { r = 150, g = 190, b = 180 }
+on_error     = "White"
 success      = "Green"
 warning      = "Yellow"
 

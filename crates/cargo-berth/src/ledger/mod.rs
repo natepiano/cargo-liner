@@ -23,6 +23,7 @@ mod worktree_context;
 
 pub(crate) use authorization::EditAuthorization;
 pub(crate) use authorization::ResolvedEditAuthorization;
+pub(crate) use authorization::ResolvedJournalMutationActor;
 pub(crate) use compaction::JournalCompaction;
 pub(crate) use compaction::JournalCompactionError;
 pub(crate) use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
@@ -79,6 +80,8 @@ pub(crate) use journal::ObservedReservationSet;
 pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::PendingBypassMarkerId;
 pub(crate) use journal::ProtectedPhaseStartHead;
+pub(crate) use journal::RefusedVerb;
+pub(crate) use journal::RefusingHolderSet;
 pub(crate) use journal::ReleaseSource;
 pub(crate) use journal::ReservationPurpose;
 pub(crate) use journal::ReservationScope;

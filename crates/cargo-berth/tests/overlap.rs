@@ -3,7 +3,10 @@
     reason = "tests should panic on unexpected values"
 )]
 
-//! Built-binary tests for claim acquisition and mutation-free edit checks.
+//! Built-binary tests for claim acquisition, edit checks and refusal auditing.
+
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
 
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
@@ -12,9 +15,11 @@ use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::board_reservation_ids;
 use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
+use overlap_refusal::assert_one_refusal_appended;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -331,7 +336,82 @@ fn first_touch_invalid_branch_settings_fall_back_to_repository_trunk() {
 }
 
 #[test]
-fn blocked_claim_names_holder_provenance_and_appends_nothing() {
+fn a_refused_claim_journals_its_requester_paths_and_holders() {
+    let repository = initialized_repository();
+    let holder = run_berth(
+        repository.path(),
+        &[
+            "claim",
+            "tree:crates/hana_kana",
+            "--run",
+            FIRST_RUN,
+            "--json",
+        ],
+    );
+    assert_success(&holder);
+    let holder_id = json_output(&holder)["payload"]["data"]["reservation_id"].clone();
+    let holder_record = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "claim" && event["reservation_id"] == holder_id)
+        .expect("holder claim record");
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "crates/hana_kana/src/lib.rs");
+    let before_board_output = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&before_board_output);
+    let before_board = json_output(&before_board_output);
+    let journal_before =
+        fs::read(repository.path().join(JOURNAL_PATH)).expect("journal before refusal");
+
+    let blocked = run_berth(
+        &second_root,
+        &[
+            "claim",
+            "file:crates/hana_kana/src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--json",
+        ],
+    );
+    let envelope = json_output(&blocked);
+    assert_eq!(blocked.status.code(), Some(1), "{envelope}");
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    let record = assert_one_refusal_appended(
+        &journal_before,
+        &fs::read(repository.path().join(JOURNAL_PATH)).expect("journal after refusal"),
+        "claim",
+        &envelope,
+    );
+    assert_eq!(record["actor"]["run"], SECOND_RUN);
+    assert_ne!(
+        record["actor"]["worktree"],
+        holder_record["actor"]["worktree"]
+    );
+    assert_eq!(record["identity_inputs"]["status"], "recorded");
+    assert_eq!(
+        record["scopes"],
+        serde_json::json!([{"path": "crates/hana_kana/src/lib.rs", "kind": "file"}])
+    );
+    assert_eq!(record["holders"][0]["reservation_id"], holder_id);
+    assert_eq!(
+        record["holders"][0]["scopes"],
+        envelope["payload"]["data"]["conflicts"][0]["overlapping_scopes"]
+    );
+
+    let after_board_output = run_berth(repository.path(), &["board", "--json"]);
+    assert_success(&after_board_output);
+    let after_board = json_output(&after_board_output);
+    assert_eq!(
+        board_reservation_ids(&before_board),
+        board_reservation_ids(&after_board)
+    );
+    assert_eq!(
+        reservation_row(&after_board, holder_id.as_str().expect("holder id"))["reservation_id"],
+        holder_id
+    );
+}
+
+#[test]
+fn blocked_claim_names_holder_provenance_and_journals_one_refusal() {
     let repository = initialized_repository();
     let first_claim = run_berth(
         repository.path(),
@@ -394,10 +474,12 @@ fn blocked_claim_names_holder_provenance_and_appends_nothing() {
             .as_str()
             .is_some_and(|message| message.contains("reduce the requested scopes"))
     );
-    assert_eq!(
-        fs::read(repository.path().join(JOURNAL_PATH))
+    assert_one_refusal_appended(
+        &journal_before,
+        &fs::read(repository.path().join(JOURNAL_PATH))
             .expect("journal should read after rejection"),
-        journal_before
+        "claim",
+        &envelope,
     );
 }
 
@@ -1197,7 +1279,7 @@ fn assert_board_contains_every_claim_source(repository_root: &Path) {
 }
 
 #[test]
-fn blocked_check_returns_holder_decision_facts_without_appending() {
+fn blocked_check_returns_holder_decision_facts_and_journals_one_refusal() {
     let repository = initialized_repository();
     let holder = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:shared.rs", "--json"])
@@ -1233,10 +1315,16 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
     assert!(conflict["claimed_at"].is_string());
     assert_eq!(conflict["activity"]["status"], "active");
     assert!(conflict["activity"]["last_activity_at"].is_string());
-    assert_eq!(
-        fs::read(repository.path().join(JOURNAL_PATH))
+    let record = assert_one_refusal_appended(
+        &journal_before,
+        &fs::read(repository.path().join(JOURNAL_PATH))
             .expect("journal should reread after blocked check"),
-        journal_before
+        "check",
+        &envelope,
+    );
+    assert_eq!(
+        record["scopes"],
+        serde_json::json!([{"path": "shared.rs", "kind": "file"}])
     );
 }
 

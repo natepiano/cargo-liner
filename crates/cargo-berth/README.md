@@ -245,6 +245,12 @@ revalidate the evidence.
 
 ## Claims and collisions
 
+Every `check` or `claim` refused with `blocked_by_overlap` appends one
+`overlap_refused` journal record naming the requester, the refused paths and
+each holder with its own overlapping scopes. It records the final refusal in a
+separate transaction and creates no reservation or ordering edge. If the audit
+append fails, the refusal and its remedy stay unchanged.
+
 A bare path passed to `claim` reserves that path and its whole subtree. A bare
 path passed to `check` asks about exactly one file. Prefix either command's
 argument with `file:` or `tree:` to override its default. Overlap follows path

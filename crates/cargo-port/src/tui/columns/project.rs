@@ -6,6 +6,7 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::error_color;
 use tui_pane::label_color;
+use tui_pane::on_error_color;
 use tui_pane::secondary_text_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
@@ -479,7 +480,7 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             }
         }
     } else if matches!(row.worktree_health, WorktreeHealth::Broken) {
-        let broken_style = Style::default().fg(text_default()).bg(error_color());
+        let broken_style = Style::default().fg(on_error_color()).bg(error_color());
         for span in &mut spans {
             span.style = broken_style;
         }

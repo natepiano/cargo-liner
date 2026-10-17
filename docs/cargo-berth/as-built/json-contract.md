@@ -1094,6 +1094,7 @@ The operation union is:
 | `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict`, optional `evaluator_version` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `answer` | optional `reservation_id`, `scopes`, `authorizations` |
+| `overlap_refused` | `verb`, `scopes`, `holders` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `sequence` | `predecessor`, `successor`, `edge_id`, `scopes`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
@@ -1105,6 +1106,12 @@ The operation union is:
 | `relocate_worktree` | `reservation_id`, `worktree_id`, `previous_root`, `current_root` |
 
 These operation fields use the following tagged values:
+
+- For `overlap_refused`, `verb` is `check` or `claim`; `scopes` contains the
+  refused request's paths. `holders` is non-empty, and each entry is
+  `{ "reservation_id": <uuid-v7>, "scopes": [scope...] }`, with that holder's
+  own non-empty overlapping scopes, in refusal order. The requester is the
+  record's `actor` and `identity_inputs`, never a second operation field.
 
 - `source` is `{ "kind": "explicit" }`, `{ "kind": "first_touch" }`,
   `{ "kind": "enrolled" }`, `{ "kind": "cover", "covered_branch":
