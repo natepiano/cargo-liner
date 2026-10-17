@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Broken worktree names and their `[broken]` suffixes use the theme's on-error foreground on the error background, keeping project-list rows readable in both themes. Shipped theme templates now expose `on_error`.
 - Broken worktrees no longer show a misleading unborn Branch row, and the Git pane Error row uses a readable foreground in both themes.
 - Show the Git pane’s Error row when the selected worktree’s `.git` file points to a missing gitdir, even when no other Git details are available.
 

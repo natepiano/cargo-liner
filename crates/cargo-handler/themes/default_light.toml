@@ -33,6 +33,7 @@ accent       = { r = 0, g = 95, b = 135 }
 error        = { r = 170, g = 0, b = 0 }
 inline_error = { r = 180, g = 95, b = 0 }
 label        = { r = 60, g = 100, b = 90 }
+on_error     = "White"
 success      = { r = 0, g = 120, b = 0 }
 warning      = { r = 180, g = 95, b = 0 }
 
