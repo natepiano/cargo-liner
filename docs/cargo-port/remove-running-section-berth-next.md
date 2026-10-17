@@ -23,16 +23,17 @@
   - `crates/cargo-berth/src/ledger/handle.rs` — `Ledger::initialize` (~256–267) calls `BerthConfig::initialize`.
   - `crates/cargo-berth/src/cli.rs` — `initialize_ledger` (~1711): ledger init, `pin_unrecorded_targets`, `gate::install::install_managed_hooks`, `worktree::enroll_worktrees`.
   - `crates/cargo-berth/src/drift/observation.rs` — `observe_merge_working_tree` (~560–583) drops `BerthConfig::relative_path()` from the merge working tree.
-  - `crates/cargo-berth/src/board/tui.rs` — `run(model: &BoardModel)` (~106), `BoardApplication::new` (~502), `BoardPaneDocuments::from_model` (~251, Overview text at ~266–270), `OVERVIEW_FIELDS` (~64–70), `overview_reservation_table` (~337), `event_loop` (~639–666, blocking `event::read()`, no tick), unit tests `mod tests` (~1094, `TestBackend`), helper `reassembled_model_value` (~319, ~1368) splits Overview text at the first `"\n\n"`.
-  - `crates/cargo-berth/src/verb/board.rs` — `execute` (47) reconciles and calls `execute_complete_board` (~85: `BoardModel::build` at 90, `tui::run(&board)` at 113); `BoardOutputSelection::ReservationLifecycleFor` (29) → `execute_reservation_lifecycle` (~137).
-  - `crates/cargo-berth/src/board/rows.rs` — `BoardModel` (~85–104), `BoardModel::build` (~597; edges via `declared_ordering_constraints(&report.constraints, &active_ids)` and `unresolved_overlaps(&report.constraints)` ~633–634), `WaitingEntry` / `WaitingHold` (~356), `SettledOrderingConstraint` (~416), `BoardJournalPosition` (~150).
-  - `crates/cargo-berth/src/board/answers.rs` — `RecordedOverlapAnswer` (~43), `board_overlap_answers`.
+  - `crates/cargo-berth/src/board/tui.rs` — `run(source: &mut impl BoardModelSource, model: &BoardModel)` (114). `OMITTED_MODEL_FIELDS` (72) names the five diagnostics no pane shows (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`); `board --json` still carries them. `BoardPaneDocuments::from_model` (262) drops them and each section's nested `journal_position`; the Overview document is only `overview_reservation_table` (350). `BoardModelSource` (548: `current_position`, `rebuild`), `BoardApplication::new` (576) and `refresh` (609). `event_loop` (769) polls input through `BoardEvents` (745) up to a one-second `REFRESH_INTERVAL` deadline (71); a refresh rebuilds only when the journal position moved, and a failed rebuild keeps the last good documents. Unit tests `mod tests` (1245, `TestBackend`).
+  - `crates/cargo-berth/src/verb/board.rs` — `ReconciledBoardSource` (29) implements `BoardModelSource` (reconcile + `BoardModel::build`); `execute` (85); `execute_complete_board` (123: `BoardModel::build` at 128, `tui::run(source, model)` at 160); `BoardOutputSelection::ReservationLifecycleFor` (67) → `execute_reservation_lifecycle` (191), the `board --reservation <id> --json` path, unchanged by phase 5.
+  - `crates/cargo-berth/src/ledger/projection.rs`, `crates/cargo-berth/src/ledger/handle.rs` — `JournalPosition::{Published, Undecodable, Unpublished}` (projection.rs:26), a movement stamp only, from `Ledger::current_journal_position` (handle.rs:363).
+  - `crates/cargo-berth/src/board/rows.rs` — `BoardModel` (86–105), `BoardModel::journal_position` (515), `BoardModel::build` (606; edges via `declared_ordering_constraints(&report.constraints, &active_ids)` and `unresolved_overlaps(&report.constraints)` 639–640), `WaitingEntry` / `WaitingHold` (357, 366), `SettledOrderingConstraint` (417), `BoardJournalPosition` (151).
+  - `crates/cargo-berth/src/board/answers.rs` — `RecordedOverlapAnswer` (44), `board_overlap_answers` (235).
   - `crates/cargo-berth/src/board/report.rs` — `reservation_lifecycle_snapshot(report, id)` (79), `ReservationReport` (17, 50), `reservation_lifecycle_presentation`.
   - `crates/cargo-berth/src/output.rs` — `OutputFacts::Reservation(ReservationLifecycleQueryPayload)` (~762, payload kind `"reservation"`), `ReservationLifecycleQueryPayload` (~1049), `ReservationReportSnapshot` (~1058: `reservation_id`, `lifecycle`, `race_extent`, `merge_extent`), `OutputEnvelope::reservation_lifecycle` (~1748).
   - `crates/cargo-berth/src/output_contract.rs` — schemas `reservation_lifecycle` / `reservation_lifecycle_query` (~117–124); regenerate `docs/cargo-berth/generated/output-contract.json` with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1` (test at ~312).
   - `crates/cargo-berth/tests/ledger.rs` — init tests; `clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line` asserts a clean `git status` after `init`; `CONFIGURATION_PATH`, `EXCLUDE_PATH`.
-  - `crates/cargo-berth/tests/board.rs` — `reservation_report` / `reservation_report_and_presentation` helpers (~2039–2044), `waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold` (614).
-  - `crates/cargo-berth/README.md` — "First use" (10, init at 28–57), "Board" (382–420).
+  - `crates/cargo-berth/tests/board.rs` — `reservation_report` / `reservation_report_and_presentation` helpers (2134, 2139), `waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold` (614).
+  - `crates/cargo-berth/README.md` — "First use" (10, init at 28–57), "Board" (388–438).
   - `crates/cargo-berth/CHANGELOG.md` — `[Unreleased]` `Fixed` (~87).
 - **Build:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`
@@ -48,6 +49,7 @@
   - The target's locally available upstream (`LocalTargetUpstream`, `src/git/refs.rs`) filters incursion authorship only. Release, settlement and integration judge the local target branch; no change widens upstream reachability to them.
   - An incident journalled before phase 2 keeps holder-subset coverage (`IncursionCoverageEvidence`, `src/ledger/journal.rs`); only incidents journalled since carry commit-keyed coverage.
   - A working-tree incursion answer covers the single commit that records that write; a further commit entering the path reopens the incident (`EnteringWriteProgress`).
+  - Phase 5: `verb/board.rs` also owns `ReconciledBoardSource`, and the terminal board refreshes from the `JournalPosition` movement stamp. Nothing ahead may make a refresh reconcile on an unchanged journal, or bring the five `OMITTED_MODEL_FIELDS` back into a pane.
 
 ## Phases
 
@@ -164,31 +166,30 @@
 
 **Depends on:** Phase 4 (shared README and CHANGELOG)
 
-#### Work Order
+#### As-built
 
-**Goal:** A reservation created while the board is open appears in the Overview and Reservations panes without a restart, and the Overview shows only its Reservations table.
-
-**Spec:**
-1. `event_loop` waits with `event::poll` up to the next refresh deadline instead of a blocking `event::read()`. Refresh checks run once a second against a monotonic deadline, whether or not events arrive, so sustained key or resize input never starves them. Each check asks whether the ledger moved (the journal position the model was built at against the ledger's current one) with a read that does not reconcile; only when it moved does it rebuild: re-run the same `reconcile::reconcile` + `BoardModel::build` path `verb::board::execute` uses, rebuild the pane documents, and redraw. An unchanged ledger costs no reconcile. `ValidatedJournal` (`src/ledger/handle.rs:80`) keeps no generation or offset and the projection's position fields are private to the ledger, so add a read-only ledger API that returns the current journal position as a semantic type the board compares with the one its model was built at.
-2. `tui::run` takes a model source instead of one `&BoardModel`: a type owned by `verb/board.rs` (or `board/`) that holds the invocation directory and builds a fresh `BoardModel`. A rebuild that fails keeps the last good model and its journal position on screen, so the next check retries, and shows the failure in the status line until the next good rebuild; it never exits the board.
-3. A rebuild keeps the selected pane and each pane's scroll offset, clamped to the new document length.
-4. The Overview pane shows only the Reservations table. The five `OVERVIEW_FIELDS` (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`) leave the terminal board entirely, with no new pane: `board --json` already carries them for anyone diagnosing (showrunner, 2026-10-16: fewer things on screen wins). Each `BoardSection` also serializes its own `journal_position` (`src/board/rows.rs:161-163`); drop that nested field from every pane document too. `BoardPaneDocuments::from_model` drops these fields by name instead of failing on them as unassigned, so every other model field still has exactly one pane, and `board --json` output is unchanged. Update `reassembled_model_value` (no Overview split at `"\n\n"`) and `every_model_fact_is_reachable_through_exact_pane_documents` (every model field except the five is reachable), and retire `recovered_bypasses_render_only_in_the_model_that_reports_them`, whose fact the board no longer renders, unless `board --json` lacks a test for it.
-5. Tests (unit tests in `tui.rs`, `TestBackend`): (a) a model rebuilt with one more reservation renders that reservation in the Overview and Reservations panes; (b) no pane's text contains any of the five fields (`git_cost`, `journal_position`, …), nested section positions included; (c) every other model field is reachable through exactly one pane; (d) a failed rebuild keeps the previous rows and position, shows the failure, and the next check retries; (e) selection and scroll survive a rebuild, clamped; (f) a check with an unchanged position runs no reconcile; (g) sustained input with no idle gap still refreshes by the deadline. The loop reads events and the clock through a trait the tests implement, so no test sleeps.
-6. Docs: README "Board" (~388–427) states the live refresh and that the raw diagnostics are in `board --json`, not the terminal board; CHANGELOG `Fixed` line; `docs/cargo-berth/as-built/parallel-phases.md` ("Board Overview Reservations table" ~102–114, its Overview tests ~144–145, and the known-defect lines ~157–158) and `worktree-coordination.md` (~441) describe the refresh and the Overview that shows only the table.
+- `event_loop` (`board/tui.rs`) waits on `BoardEvents::next_event(timeout)` up to a one-second `REFRESH_INTERVAL` deadline read from `BoardEvents::now`, so sustained key or resize input never starves the refresh. `TerminalEvents` is the crossterm implementation; tests drive the loop with scripted events and `TestBackend`, and no test sleeps.
+- `tui::run(source: &mut impl BoardModelSource, model)` takes the initial model and a source. `BoardModelSource` has `current_position() -> Result<JournalPosition, BoardRefreshFailure>` and `rebuild() -> Result<BoardModel, BoardRefreshFailure>`. `ReconciledBoardSource` (`verb/board.rs`) opens its own `Ledger` after the initial build and rebuilds through `reconcile::reconcile` + `BoardModel::build`.
+- `Ledger::current_journal_position` (`ledger/handle.rs`) reads one `fs::metadata` on the journal plus the projection file and returns `JournalPosition::{Published, Unpublished, Undecodable}` (`ledger/projection.rs`), a movement stamp never shown or serialized. `BoardModel::journal_position` (`board/rows.rs`) gives the position a model was built at. A check rebuilds only when the position moved. `Undecodable` counts as moved, so reconcile republishes a damaged or unsupported-schema projection instead of the board stalling.
+- A failed check or rebuild keeps the last good documents and position, shows "Refresh failed: <reason>" in the footer until the next good rebuild, and retries each second; it never exits the board. The selected pane and each pane's scroll offset survive a rebuild, clamped to the new document length.
+- The Overview shows only the Reservations table. `OMITTED_MODEL_FIELDS` (`tui.rs`) drops `journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets` and `git_cost`, plus each `BoardSection`'s nested `journal_position`, from every pane; every other model field has exactly one pane. `board --json` is unchanged and still carries these fields.
+- README "Board", CHANGELOG `Fixed`, `parallel-phases.md` and `worktree-coordination.md` state the live refresh and that the diagnostics are in `board --json`.
 
 **Files:**
-- `crates/cargo-berth/src/board/tui.rs` — event loop, refresh, panes, unit tests
-- `crates/cargo-berth/src/verb/board.rs` — model source passed to `tui::run`
-- `crates/cargo-berth/src/board/rows.rs` — the model's journal position for comparison
-- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/projection.rs` — read-only current journal position
-- `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`
-- `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/worktree-coordination.md`
+- `crates/cargo-berth/src/board/tui.rs` — `event_loop`, `BoardEvents`, `BoardModelSource`, `BoardRefreshFailure`, `OMITTED_MODEL_FIELDS`, pane documents and the refresh unit tests
+- `crates/cargo-berth/src/verb/board.rs` — `ReconciledBoardSource`, `execute_complete_board`; `execute_reservation_lifecycle` unchanged
+- `crates/cargo-berth/src/ledger/handle.rs`, `src/ledger/projection.rs`, `src/ledger/mod.rs` — `current_journal_position`, `JournalPosition`
+- `crates/cargo-berth/src/board/rows.rs` — `BoardModel::journal_position`
+- `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`, `docs/cargo-berth/as-built/parallel-phases.md`, `worktree-coordination.md`
 
-**Workers:** 1 writer + 1 tester — nothing splits: the tests are unit tests inside `tui.rs`, so `impl` takes every file.
-- `impl` — every file above, the Spec 5 tests included; runs lint and the full gate.
-- `test` — opens as reviewer of the Spec 5 tests once `impl` posts them; writes nothing.
+**Binds later work:** `verb/board.rs` holds `ReconciledBoardSource` beside `execute_complete_board`; `board --reservation <id> --json` never reaches the terminal board. The diagnostic tests `pane_documents_omit_raw_diagnostics_and_nested_positions` and `every_model_fact_is_reachable_through_exact_pane_documents` check against production `OMITTED_MODEL_FIELDS`; "A single-reservation board answer carries its ordering edges and overlap answers" gives them a test-local `EXPECTED_OMITTED_FIELDS` oracle.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; a live board on natedev shows a reservation created after it opened within two seconds, and its Overview shows only the table.
+**Gotchas:**
+- A refresh on an unchanged journal must not reconcile.
+- `event_loop` is generic over `Backend<Error: Error + Send + Sync + 'static>` so `TestBackend` drives it.
+- While the diagnostic tests read `OMITTED_MODEL_FIELDS`, they cannot catch a field moved into a pane and dropped from that constant.
+
+**Ruled out:** a new pane for the diagnostics (showrunner, 2026-10-16: fewer things on screen).
 
 ### Phase 6 — A single-reservation board answer carries its ordering edges and overlap answers  · status: todo
 
@@ -200,27 +201,29 @@
 
 **Spec:**
 1. `ReservationReportSnapshot` (`src/output.rs` ~1058) gains `ordering_edges` and `overlap_answers`. `ordering_edges` holds every declared ordering constraint naming the reservation as predecessor or successor, waiting and settled, each in the same JSON shape the full board uses (`WaitingHold::OrderingEdge` fields, `SettledOrderingConstraint`); `overlap_answers` holds every live `RecordedOverlapAnswer` naming it. Empty arrays when none.
-2. Compute both from the same report the lifecycle read already reconciles (`execute_reservation_lifecycle` → `reservation_lifecycle_snapshot`), through the helpers `BoardModel::build` uses (`declared_ordering_constraints`, `board_overlap_answers`), filtered to the reservation — one derivation for both board answers, not a second copy. When extracting the shared answer projection, replace two `Option`s with semantic outcome enums: `board/answers.rs::reservation_answers` (`src/board/answers.rs:444`), whose `Option<(ReservationId, &[ConflictAuthorization])>` conflates an operation that records no answer with an answer that has no reservation binding, gets one variant for each; and `DeferralConsequence::from_lifecycles` (`src/board/rows.rs:462`), whose `None` means both endpoints have released, returns an enum with a variant for that case. Every wire layout stays unchanged. Each `RecordedOverlapAnswer::Sequence` already carries `edge_id` (phase 4), the same `EdgeId` its `WaitingHold::OrderingEdge` or `SettledOrderingConstraint` entry carries, so an answer links to its edge through that field and the new fields add no second edge reference. A claim that widened behind an existing edge records a second `Sequence` answer with the same `edge_id`; the per-reservation filter keeps every answer and never deduplicates by edge.
-3. The JSON envelope's rendered `presentation` (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle details. The selector still requires `--json` (`worktree-coordination.md:443`).
+2. Compute both from the same report the lifecycle read already reconciles (`execute_reservation_lifecycle` → `reservation_lifecycle_snapshot`), through the helpers `BoardModel::build` uses (`declared_ordering_constraints`, `board_overlap_answers`), filtered to the reservation — one derivation for both board answers, not a second copy. When extracting the shared answer projection, replace two `Option`s with semantic outcome enums: `board/answers.rs::reservation_answers` (`src/board/answers.rs:444`), whose `Option<(ReservationId, &[ConflictAuthorization])>` conflates an operation that records no answer with an answer that has no reservation binding, gets one variant for each; and `DeferralConsequence::from_lifecycles` (`src/board/rows.rs:463`), whose `None` means both endpoints have released, returns an enum with a variant for that case. Every wire layout stays unchanged. Each `RecordedOverlapAnswer::Sequence` already carries `edge_id` (phase 4), the same `EdgeId` its `WaitingHold::OrderingEdge` or `SettledOrderingConstraint` entry carries, so an answer links to its edge through that field and the new fields add no second edge reference. A claim that widened behind an existing edge records a second `Sequence` answer with the same `edge_id`; the per-reservation filter keeps every answer and never deduplicates by edge.
+3. The JSON envelope's rendered `presentation` (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle details. The selector still requires `--json` (`worktree-coordination.md:449`).
 4. Regenerate the output contract; follow the versioning rule in `docs/cargo-berth/as-built/json-contract.md` for an added payload field.
 5. Tests in `tests/board.rs`: (a) a successor with a declared `--after` edge reports that edge from both the predecessor's and successor's `board --reservation` answers, for a waiting edge and a settled one; (b) an edge or answer between two other reservations is absent; (c) a reservation with a recorded overlap answer reports it, whether it asked or was answered about, and a released answer from history is not reported as live; (d) a reservation with neither reports empty arrays; (e) each entry equals the full board's entry for the same edge or answer, including an answer bound to an existing edge by a claim that widened behind it (phase 4), compared between the full board and both endpoints' `board --reservation` answers — extend `assert_existing_ordering_widen_answer` (`tests/board.rs` ~1566) for that case, where both `Sequence` answers appear with the one `edge_id`; every `Sequence` answer whose consequence is not `replaced` names an entry of the same answer's `ordering_edges` by `edge_id`; (f) extend `reservation_report_and_presentation`'s exact presentation assertion (~2183); (g) unit tests in `src/board/answers.rs` and `src/board/rows.rs`: an answer with no reservation binding, and an answer whose endpoints have both released, never become live reservation answers. Extend `reservation_report`'s helper rather than adding a second one.
-6. Docs: json-contract.md "Named reservation lifecycle" (~560–620) and worktree-coordination.md (~443) describe the new fields; CHANGELOG `Fixed` line.
+6. Docs: json-contract.md "Named reservation lifecycle" (~560–620) and worktree-coordination.md (~449) describe the new fields; CHANGELOG `Fixed` line.
+7. Restore a test-owned oracle in `src/board/tui.rs` tests. Add a test-local constant `EXPECTED_OMITTED_FIELDS` listing exactly `journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`. `pane_documents_omit_raw_diagnostics_and_nested_positions` (~1925) and `every_model_fact_is_reachable_through_exact_pane_documents` (~1903) use it in place of production `OMITTED_MODEL_FIELDS` (72). The names are pinned by the spec, so a field moved into a pane and dropped from the production constant fails both tests. Production code is unchanged.
 
 **Files:**
 - `crates/cargo-berth/src/output.rs` — snapshot fields
 - `crates/cargo-berth/src/board/report.rs` — snapshot derivation and text presentation
 - `crates/cargo-berth/src/board/rows.rs`, `crates/cargo-berth/src/board/answers.rs` — shared per-reservation filtering, the semantic outcome enums and their unit tests (Spec 5(g))
 - `crates/cargo-berth/src/verb/board.rs` — lifecycle path
+- `crates/cargo-berth/src/board/tui.rs` — the Spec 7 test-local oracle, in `mod tests` only
 - `crates/cargo-berth/src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`
 - `crates/cargo-berth/tests/board.rs` — the Spec 5 (a)–(f) tests
 - `crates/cargo-berth/CHANGELOG.md`
 - `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/worktree-coordination.md`
 
 **Workers:** 1 writer + 1 tester
-- `impl` — `src/` (the Spec 5(g) unit tests included), generated contract, CHANGELOG, as-built docs; runs lint and the full gate.
-- `test` — the Spec 5 (a)–(f) tests in `tests/board.rs`.
+- `impl` — `src/` (the Spec 5(g) unit tests and the Spec 7 `tui.rs` oracle included), generated contract, CHANGELOG, as-built docs; runs lint and the full gate.
+- `test` — the Spec 5 (a)–(f) tests in `tests/board.rs`; reviews the Spec 7 `tui.rs` oracle once `impl` posts it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; `board --reservation <id> --json` on the live ledger shows `ordering_edges` and `overlap_answers`.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; `board --reservation <id> --json` on the live ledger shows `ordering_edges` and `overlap_answers`; `pane_documents_omit_raw_diagnostics_and_nested_positions` and `every_model_fact_is_reachable_through_exact_pane_documents` pass against `EXPECTED_OMITTED_FIELDS`.
 
 ### Phase 7 — Every cargo-berth test finishes in under a second  · status: todo
 
