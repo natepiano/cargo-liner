@@ -448,6 +448,16 @@ The Overview contains only the Reservations table (ID, Session, Stage, Blocking,
 
 `board --reservation <id> --json` is a placement-independent lifecycle read for one reservation, whichever board section lists its row. The selector requires `--json` and is rejected at the command line otherwise, so it never reaches the TUI path. `ReservationLifecycleSnapshot` is projected from `Reservation::evidence_state` rather than re-matched: `Active`, `Outstanding { protected_tip }`, `ReleasedAfterCheckpoint { protected_tip, disposition }`, `ReleasedWithoutCheckpoint { disposition }`. An unknown id rejects as `ReservationLifecycleQueryRejection::UnknownReservation`, never as an absent value. Both this read and the board rows publish `Reservation::effective_merge_extent`, an `EffectiveMergeExtent` that serializes an active or outstanding reservation's `MergeExtent` unchanged as `Live` and wraps a released one's as `Released { at_release }`, because reconciliation stops observing a released reservation and `edit_blocking_status` is `Clear` for it.
 
+The selected report also includes `ordering_edges` and `overlap_answers`, derived
+from the same coordination projection as the full board. Edges include both
+waiting and settled constraints naming either endpoint; answers include every
+live entry naming the reservation as requester or holder. Empty matches are
+empty arrays. Entries retain the full board's shapes: waiting edges have
+`hold = "ordering_edge"`, settled edges carry `settlement`, and each sequence
+answer links to its edge by `edge_id`. Multiple scope answers bound to a reused
+edge remain separate entries. Presentation lists `Ordering edges` and
+`Overlap answers` after the lifecycle and extent details.
+
 ### The generated output contract
 
 `output_contract.rs` generates the wire contract in-crate rather than from a build script, and `docs/cargo-berth/generated/output-contract.json` is the checked artifact. One test rewrites it on request; the ordinary run regenerates it in memory and byte-compares. Four declaration macros pair each variant with its pinned wire name in one list and generate both a test-visible inventory and an exhaustive match, so a status, verb, exit code, journal operation, or trunk observation cannot be added without appearing in the contract.

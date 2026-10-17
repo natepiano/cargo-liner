@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `board --reservation <id> --json` includes every declared ordering edge and live overlap answer naming the reservation, matching the full board and retaining all scope answers bound to a reused edge. The rendered report lists both after lifecycle and extent details.
+
 - The terminal board checks for journal changes once a second and refreshes reservations without reopening. Refresh failures retain the last good board and retry; pane selection and scroll positions survive rebuilds. Overview shows only its Reservations table, with raw diagnostics available through `board --json`.
 
 - `claim --reservation R --before H` and `--after H` reuse an existing edge in that direction when adding paths, retaining its identity and original reason. A repeat whose paths are already approved succeeds without appending to the journal and still selects R for the session. Only new edges count toward the edge limit; opposite directions still require `--replace`.

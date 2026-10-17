@@ -601,6 +601,27 @@ The envelope's rendered `presentation` block labels that value
 `Merge extent at release (not blocking)`, where a live extent reads
 `Merge extent`.
 
+The payload also includes two arrays, empty when no matching facts exist:
+
+- `ordering_edges`: every declared constraint naming the reservation as predecessor
+  or successor. A waiting entry has the same fields as the full board's
+  `waiting.entries[].hold = "ordering_edge"` entry, without its attached
+  `reservation` row: `hold`, `edge_id`, `predecessor`, `successor`, `scopes`,
+  `reason`, `action`, `provenance`, and `declaration_event_id`. A settled entry
+  matches `settled_ordering_constraints.entries[]`, with `settlement` instead
+  of `hold` and `action`.
+- `overlap_answers`: every entry of `live_overlap_answers.entries[]` that names
+  the reservation as requester or holder. Entries retain their existing `answer`
+  discriminator and fields; answers recorded by a released reservation are
+  excluded, just as on the full board.
+
+A `sequence` answer links to its ordering entry through `edge_id`. Widening a
+named reservation behind an existing edge can yield several answers with the
+same `edge_id`; all are retained, with their separate approved scopes. The
+rendered presentation appends `Ordering edges` and then `Overlap answers` as
+arrays after the lifecycle and extent details. These additive payload fields
+retain output contract version 6 under the rename/removal versioning rule.
+
 An unknown id returns `status = "invalid_input"`, `exit_code = 5`, and the same
 envelope reservation-id rules. Its typed payload is:
 

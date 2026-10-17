@@ -191,7 +191,7 @@
 
 **Ruled out:** a new pane for the diagnostics (showrunner, 2026-10-16: fewer things on screen).
 
-### Phase 6 — A single-reservation board answer carries its ordering edges and overlap answers  · status: todo
+### Phase 6 — A single-reservation board answer carries its ordering edges and overlap answers  · status: done
 
 **Depends on:** Phase 5 (shared README and CHANGELOG, `verb/board.rs`)
 

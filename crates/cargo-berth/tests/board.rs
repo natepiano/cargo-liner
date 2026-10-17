@@ -672,6 +672,200 @@ fn waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hol
 }
 
 #[test]
+fn reservation_reports_list_waiting_and_settled_edges_from_both_endpoints() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "edge-subject");
+    dirty_source(root, "shared.rs");
+    let predecessor = claim(root, "file:shared.rs", FIRST_RUN);
+    assert_success(&predecessor);
+    let predecessor_id = reservation_id(&predecessor);
+    let successor = answered_claim(
+        &subject_root,
+        "file:shared.rs",
+        SECOND_RUN,
+        "--after",
+        &predecessor_id,
+        "the predecessor lands first",
+    );
+    assert_success(&successor);
+    let successor_id = reservation_id(&successor);
+    let waiting = board_data(root);
+    let waiting_edge = waiting_ordering_edge(&waiting["waiting"]["entries"][0]);
+    assert_eq!(waiting_edge["predecessor"], predecessor_id);
+    assert_eq!(waiting_edge["successor"], successor_id);
+    for id in [&predecessor_id, &successor_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["ordering_edges"], serde_json::json!([waiting_edge]));
+        assert_eq!(
+            report["overlap_answers"],
+            waiting["live_overlap_answers"]["entries"]
+        );
+    }
+
+    assert_success(&run_berth_with_run(
+        root,
+        &[
+            "resolve",
+            &predecessor_id,
+            "--abandon",
+            "--why",
+            "discard the predecessor",
+            "--json",
+        ],
+        FIRST_RUN,
+    ));
+    let settled = board_data(root);
+    let settled_edges = &settled["settled_ordering_constraints"]["entries"];
+    assert_eq!(settled_edges.as_array().expect("settled edges").len(), 1);
+    assert_eq!(settled_edges[0]["edge_id"], waiting_edge["edge_id"]);
+    assert_eq!(settled_edges[0]["settlement"], "cancelled_constraint_ended");
+    for id in [&predecessor_id, &successor_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(&report["ordering_edges"], settled_edges);
+        assert_eq!(
+            report["overlap_answers"],
+            settled["live_overlap_answers"]["entries"]
+        );
+    }
+}
+
+#[test]
+fn reservation_reports_exclude_other_reservations_edges_and_answers() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "paired-subjects");
+    let (_other_holder_directory, other_holder_root) =
+        foreign_worktree(&repository, "other-holder");
+    let (_other_subject_directory, other_subject_root) =
+        foreign_worktree(&repository, "other-subject");
+    let mut pairs = Vec::new();
+    for (holder_root, subject_root, path) in [
+        (root, subject_root.as_path(), "first.rs"),
+        (
+            other_holder_root.as_path(),
+            other_subject_root.as_path(),
+            "second.rs",
+        ),
+    ] {
+        dirty_source(holder_root, path);
+        let scope = format!("file:{path}");
+        let holder = claim(holder_root, &scope, FIRST_RUN);
+        assert_success(&holder);
+        let holder_id = reservation_id(&holder);
+        let subject = answered_claim(
+            subject_root,
+            &scope,
+            SECOND_RUN,
+            "--after",
+            &holder_id,
+            "independent overlap order",
+        );
+        assert_success(&subject);
+        pairs.push((holder_id, reservation_id(&subject)));
+    }
+    let board = board_data(root);
+    let waiting = board["waiting"]["entries"]
+        .as_array()
+        .expect("waiting edges");
+    let answers = board["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live answers");
+    assert_eq!(waiting.len(), 2);
+    assert_eq!(answers.len(), 2);
+    for (holder, subject) in pairs {
+        let edge = waiting_ordering_edge(
+            waiting
+                .iter()
+                .find(|entry| entry["successor"] == subject)
+                .expect("pair's edge"),
+        );
+        let answer = answers
+            .iter()
+            .find(|answer| answer["reservation_id"] == subject)
+            .expect("pair's answer");
+        for id in [&holder, &subject] {
+            let report = reservation_report(root, id);
+            assert_eq!(report["ordering_edges"], serde_json::json!([edge]));
+            assert_eq!(report["overlap_answers"], serde_json::json!([answer]));
+        }
+    }
+}
+
+#[test]
+fn reservation_reports_keep_live_answers_for_both_parties_and_omit_released_history() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "override-subject");
+    dirty_source(root, "shared.rs");
+    let holder = claim(root, "file:shared.rs", FIRST_RUN);
+    assert_success(&holder);
+    let holder_id = reservation_id(&holder);
+    let subject = answered_claim(
+        &subject_root,
+        "file:shared.rs",
+        SECOND_RUN,
+        "--override",
+        &holder_id,
+        "parallel edits were agreed",
+    );
+    assert_success(&subject);
+    let subject_id = reservation_id(&subject);
+    let board = board_data(root);
+    let answers = &board["live_overlap_answers"]["entries"];
+    assert_eq!(answers.as_array().expect("live answers").len(), 1);
+    assert_eq!(answers[0]["answer"], "override");
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(&report["overlap_answers"], answers);
+        assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    }
+    assert_success(&run_berth_with_run(
+        &subject_root,
+        &[
+            "resolve",
+            &subject_id,
+            "--abandon",
+            "--why",
+            "discard the agreed edit",
+            "--json",
+        ],
+        SECOND_RUN,
+    ));
+    let released = board_data(root);
+    assert_eq!(
+        released["live_overlap_answers"]["entries"],
+        serde_json::json!([])
+    );
+    assert_eq!(released["released_overlap_answer_count"], 1);
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["overlap_answers"], serde_json::json!([]));
+        assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn reservation_without_coordination_reports_present_empty_arrays() {
+    let repository = initialized_repository();
+    dirty_source(repository.path(), "independent.rs");
+    let held = claim(repository.path(), "file:independent.rs", FIRST_RUN);
+    assert_success(&held);
+    let report = reservation_report(repository.path(), &reservation_id(&held));
+    assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    assert_eq!(report["overlap_answers"], serde_json::json!([]));
+}
+
+/// Compare the full waiting hold, whose surrounding reservation row is not part of an edge.
+fn waiting_ordering_edge(entry: &serde_json::Value) -> serde_json::Value {
+    assert_eq!(entry["hold"], "ordering_edge");
+    let mut edge = entry.as_object().expect("waiting entry").clone();
+    edge.remove("reservation")
+        .expect("waiting entry's reservation row");
+    serde_json::Value::Object(edge)
+}
+
+#[test]
 fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
@@ -1347,6 +1541,67 @@ fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
 }
 
 #[test]
+fn replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(root, "src/lib.rs");
+    let holder_id = reservation_id(&claim(root, "file:src/lib.rs", FIRST_RUN));
+    let deferred_id = reservation_id(&defer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        &holder_id,
+    ));
+    assert_success(&run_berth(
+        root,
+        &[
+            "sequence",
+            &holder_id,
+            &deferred_id,
+            "--why",
+            "holder first",
+            "--json",
+        ],
+    ));
+    assert_success(&run_berth_with_run(
+        &second_root,
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--reservation",
+            &deferred_id,
+            "--before",
+            &holder_id,
+            "--replace",
+            "--overlap-why",
+            "reverse the order",
+            "--json",
+        ],
+        SECOND_RUN,
+    ));
+
+    let data = board_data(root);
+    let answer = data["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live answers")
+        .iter()
+        .find(|answer| answer["answer"] == "ordering_created_from_deferral")
+        .expect("resolved deferral remains an answer");
+    assert_eq!(answer["consequence"]["state"], "replaced");
+    assert_eq!(answer["consequence"]["reservation_id"], deferred_id);
+    for endpoint in [&holder_id, &deferred_id] {
+        let report = reservation_report(root, endpoint);
+        assert!(
+            report["overlap_answers"]
+                .as_array()
+                .expect("reservation answers")
+                .contains(answer)
+        );
+    }
+}
+
+#[test]
 fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     let repository = initialized_repository();
     let wrapper_directory = tempdir().expect("git wrapper directory should exist");
@@ -1640,6 +1895,21 @@ fn assert_existing_ordering_widen_answer(flag: &str, direction: &str) {
         .expect("one live edge");
     assert_eq!(edges.len(), 1, "the new answer reuses the old edge: {data}");
     assert_eq!(edges[0]["edge_id"], edge_id);
+    assert_eq!(answers.len(), 2, "both scope approvals remain live: {data}");
+    assert!(
+        answers
+            .iter()
+            .all(|answer| answer["answer"] == "sequence" && answer["edge_id"] == edge_id)
+    );
+    let edge = waiting_ordering_edge(&edges[0]);
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["ordering_edges"], serde_json::json!([edge]));
+        assert_eq!(
+            &report["overlap_answers"],
+            &data["live_overlap_answers"]["entries"]
+        );
+    }
 }
 
 #[test]
@@ -2171,6 +2441,23 @@ fn reservation_report_and_presentation(
         reservation_id
     );
     let data = &envelope["payload"]["data"];
+    let edges = data["ordering_edges"]
+        .as_array()
+        .expect("ordering_edges is a present array");
+    let answers = data["overlap_answers"]
+        .as_array()
+        .expect("overlap_answers is a present array");
+    for answer in answers {
+        if answer["answer"] == "sequence" && answer["consequence"]["state"] != "replaced" {
+            let edge_id = answer["edge_id"]
+                .as_str()
+                .expect("a sequence answer names its edge");
+            assert!(
+                edges.iter().any(|edge| edge["edge_id"] == edge_id),
+                "answer has no matching ordering edge: {data}"
+            );
+        }
+    }
     let report = rendered_board_report(&envelope, "reservation lifecycle");
     let (merge_extent_label, merge_extent) = if data["merge_extent"]["status"] == "released" {
         (
@@ -2187,8 +2474,32 @@ fn reservation_report_and_presentation(
             "Lifecycle": data["lifecycle"],
             "Race extent": data["race_extent"],
             merge_extent_label: merge_extent,
+            "Ordering edges": data["ordering_edges"],
+            "Overlap answers": data["overlap_answers"],
         })
     );
+    let detail = envelope["presentation"]["blocks"][0]["detail"]
+        .as_str()
+        .expect("reservation presentation detail");
+    let keys = [
+        "Reservation",
+        "Lifecycle",
+        "Race extent",
+        merge_extent_label,
+        "Ordering edges",
+        "Overlap answers",
+    ];
+    let mut previous_position = 0;
+    for key in keys {
+        let position = detail
+            .find(&format!("\"{key}\":"))
+            .expect("presentation key");
+        assert!(
+            position > previous_position,
+            "presentation keys follow lifecycle, extents, edges, answers: {detail}"
+        );
+        previous_position = position;
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
     (data.clone(), report)
 }
