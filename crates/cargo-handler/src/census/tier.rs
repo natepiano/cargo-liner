@@ -23,27 +23,83 @@ use std::path::PathBuf;
 use chrono::DateTime;
 use serde::Deserialize;
 
+use super::AgentActivity;
 use super::ServiceTier;
+use super::activity::ActivityRead;
+use super::tree;
 use crate::constants::CODEX_CONFIG_FLAGS;
 use crate::constants::CODEX_CONFIG_PREFIX;
 use crate::constants::CODEX_EVENT_LINE;
 use crate::constants::CODEX_SERVICE_TIER_KEY;
 use crate::constants::CODEX_SESSION_META_LINE;
 use crate::constants::CODEX_THREAD_SETTINGS_EVENT;
+use crate::constants::ROLLOUT_CONTEXT_PREFIXES;
 
 /// What one rollout holds, read up to [`RolloutRead::read_to`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RolloutRead {
+    activity_read:           ActivityRead,
+    pub(super) first_prompt: FirstTaskPrompt,
+    pub(super) worktree:     ThreadWorktree,
     /// The offset just past the last whole line read.
-    read_to:          u64,
+    read_to:                 u64,
     /// When the thread began, in unix seconds, from its `session_meta`
     /// line; none before that line is written whole.
-    pub(super) began: Option<u64>,
+    pub(super) began:        Option<u64>,
     /// The tier the last `thread_settings_applied` event names.
-    service_tier:     ServiceTier,
+    service_tier:            ServiceTier,
+}
+
+impl Default for RolloutRead {
+    fn default() -> Self {
+        Self {
+            activity_read: super::activity::ActivityRead::default(),
+            first_prompt:  FirstTaskPrompt::Unread,
+            worktree:      ThreadWorktree::Unrecorded,
+            read_to:       0,
+            began:         None,
+            service_tier:  ServiceTier::Unrecorded,
+        }
+    }
+}
+
+/// A task remains unread until a real user prompt has been observed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum FirstTaskPrompt {
+    #[default]
+    Unread,
+    Recorded(String),
+}
+impl FirstTaskPrompt {
+    /// Text passed to the task and roster parsers; unread input names only a role.
+    pub(super) fn text(&self) -> &str {
+        match self {
+            Self::Unread => "",
+            Self::Recorded(text) => text,
+        }
+    }
+}
+
+/// A missing cwd must not act as an empty filesystem path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum ThreadWorktree {
+    #[default]
+    Unrecorded,
+    Recorded(PathBuf),
+}
+impl ThreadWorktree {
+    pub(super) fn seat_prefix(&self) -> Option<&str> {
+        match self {
+            Self::Unrecorded => None,
+            Self::Recorded(path) => path.file_name().and_then(|name| name.to_str()),
+        }
+    }
 }
 
 impl RolloutRead {
+    /// The turn reader is the sole source of conversation activity.
+    pub(super) const fn activity(&self) -> AgentActivity { self.activity_read.activity() }
+
     /// Read the rollout at `path` on from [`Self::read_to`], from the
     /// start again when it has shrunk. A last line still being written
     /// is left for the next read.
@@ -79,12 +135,40 @@ impl RolloutRead {
     /// `thread_settings_applied` event.
     fn take(&mut self, line: &[u8]) {
         let first = self.read_to == 0;
-        let event =
-            std::str::from_utf8(line).is_ok_and(|text| text.contains(CODEX_THREAD_SETTINGS_EVENT));
-        if !first && !event {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             return;
+        };
+        {
+            self.activity_read.take_codex(&value);
+            let payload = &value["payload"];
+            if value["type"] == "session_meta" {
+                self.worktree = payload["cwd"]
+                    .as_str()
+                    .filter(|path| !path.is_empty())
+                    .map_or(ThreadWorktree::Unrecorded, |path| {
+                        ThreadWorktree::Recorded(PathBuf::from(path))
+                    });
+            }
+            if matches!(self.first_prompt, FirstTaskPrompt::Unread)
+                && value["type"] == "response_item"
+                && payload["role"] == "user"
+                && let Some(parts) = payload["content"].as_array()
+            {
+                let text = parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty()
+                    && !ROLLOUT_CONTEXT_PREFIXES
+                        .iter()
+                        .any(|prefix| text.starts_with(prefix))
+                {
+                    self.first_prompt = FirstTaskPrompt::Recorded(text);
+                }
+            }
         }
-        let Ok(parsed) = serde_json::from_slice::<RolloutLine>(line) else {
+        let Ok(parsed) = serde_json::from_value::<RolloutLine>(value) else {
             return;
         };
         if first && parsed.kind == CODEX_SESSION_META_LINE {
@@ -95,9 +179,10 @@ impl RolloutRead {
                 .or(parsed.timestamp.as_deref())
                 .and_then(unix_seconds);
         }
-        if parsed.kind == CODEX_EVENT_LINE
-            && parsed.payload.kind.as_deref() == Some(CODEX_THREAD_SETTINGS_EVENT)
-        {
+        if parsed.kind != CODEX_EVENT_LINE {
+            return;
+        }
+        if parsed.payload.kind.as_deref() == Some(CODEX_THREAD_SETTINGS_EVENT) {
             self.service_tier = parsed
                 .payload
                 .thread_settings
@@ -152,6 +237,8 @@ pub(super) struct Rollouts {
     reads:   HashMap<PathBuf, RolloutRead>,
     /// The rollouts read since the last [`Rollouts::forget_unread`].
     current: HashSet<PathBuf>,
+    /// Exact thread identity to its currently read rollout path.
+    threads: HashMap<String, PathBuf>,
 }
 
 impl Rollouts {
@@ -159,9 +246,17 @@ impl Rollouts {
     /// since the last read of it.
     pub(super) fn read(&mut self, path: &Path) -> RolloutRead {
         self.current.insert(path.to_path_buf());
+        if let Some(id) = tree::thread_id(path) {
+            self.threads.insert(id, path.to_path_buf());
+        }
         let read = self.reads.entry(path.to_path_buf()).or_default();
         read.advance(path);
-        *read
+        read.clone()
+    }
+
+    /// Detail already read for a live thread, without reopening its rollout.
+    pub(super) fn thread(&self, id: &str) -> Option<&RolloutRead> {
+        self.threads.get(id).and_then(|path| self.reads.get(path))
     }
 
     /// Forget every rollout not read since the last call, as a scan
@@ -169,6 +264,7 @@ impl Rollouts {
     pub(super) fn forget_unread(&mut self) {
         let current = std::mem::take(&mut self.current);
         self.reads.retain(|path, _| current.contains(path));
+        self.threads.retain(|_, path| current.contains(path));
     }
 }
 
@@ -230,7 +326,10 @@ pub(super) fn requested(
     pacer: &PacerHistory,
     started: u64,
 ) -> ServiceTier {
-    let began = rollout.and_then(|read| read.began).unwrap_or(started);
+    let began = rollout
+        .as_ref()
+        .and_then(|read| read.began)
+        .unwrap_or(started);
     rollout
         .map_or(ServiceTier::Unrecorded, |read| read.service_tier)
         .or_else(|| argument_tier(arguments))
@@ -467,5 +566,52 @@ mod tests {
             requested(None, &[], &absent, BEGAN),
             ServiceTier::Unrecorded
         );
+    }
+    #[test]
+    fn rollout_lookup_uses_exact_thread_identity_and_forgets_expired_paths() {
+        let directory = TempDir::new().expect("rollout fixture");
+        let id = "01a142f0-1234-5678-9abc-0123456789ab";
+        let path = directory.path().join(format!("rollout-prefix-{id}.jsonl"));
+        append(
+            &path,
+            &[
+                META,
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            ],
+        );
+        let mut rollouts = Rollouts::default();
+        rollouts.read(&path);
+        assert_eq!(
+            rollouts.thread(id).map(RolloutRead::activity),
+            Some(AgentActivity::Active(
+                super::super::activity::Activity::Thinking
+            ))
+        );
+        assert!(rollouts.thread("prefix").is_none());
+        rollouts.forget_unread();
+        rollouts.forget_unread();
+        assert!(rollouts.thread(id).is_none());
+    }
+
+    #[test]
+    fn absent_rollout_context_stays_typed_until_real_task_and_cwd_arrive() {
+        let directory = TempDir::new().expect("rollout fixture");
+        let path = directory.path().join("rollout.jsonl");
+        let mut rollouts = Rollouts::default();
+        let absent = rollouts.read(&path);
+        assert!(matches!(absent.first_prompt, FirstTaskPrompt::Unread));
+        assert!(matches!(absent.worktree, ThreadWorktree::Unrecorded));
+        append(
+            &path,
+            &[
+                r#"{"type":"session_meta","payload":{"cwd":"/work/fixture"}}"#,
+                r#"{"type":"response_item","payload":{"role":"user","content":[{"text":"Repair the widget"}]}}"#,
+            ],
+        );
+        let read = rollouts.read(&path);
+        assert!(
+            matches!(read.first_prompt, FirstTaskPrompt::Recorded(ref text) if text == "Repair the widget")
+        );
+        assert_eq!(read.worktree.seat_prefix(), Some("fixture"));
     }
 }

@@ -7,8 +7,12 @@
 
 pub(crate) mod age;
 
+use std::cmp::Ordering;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
+use ratatui::layout::Flex;
+use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -28,34 +32,31 @@ use tui_pane::text_default;
 use self::age::age_label;
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
+use crate::census::Account;
 use crate::census::AccountColumn;
 use crate::census::Agent;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::Machine;
 use crate::census::MachineState;
-use crate::constants::AGE_COLUMN;
-use crate::constants::AGENT_COLUMN;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
-use crate::constants::BUSY_STATUS;
-use crate::constants::DESKTOP_COLUMN;
-use crate::constants::DIRECTORY_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::MISSING_VALUE;
-use crate::constants::NAME_COLUMN;
 use crate::constants::NAME_COLUMN_MAX;
 use crate::constants::NO_AGENTS_NOTE;
-use crate::constants::PID_COLUMN;
 use crate::constants::SCANNING_NOTE;
-use crate::constants::SHELL_STATUS;
-use crate::constants::STATUS_COLUMN;
 use crate::constants::SUMMARY_HEADERS;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
+use crate::footer_colors::FooterColors;
+use crate::sort;
+use crate::sort::HeaderSpan;
+use crate::sort::SummaryColumn;
+use crate::sort::SummarySort;
 use crate::theme::Role;
 
 /// Rows the summary draws for `machines`: each machine's heading and
@@ -82,6 +83,7 @@ pub(crate) fn width(
     placement: &AgentPlacement<'_>,
     now: u64,
     account_column: AccountColumn,
+    sort: SummarySort,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -94,7 +96,7 @@ pub(crate) fn width(
     {
         return headings;
     }
-    let widths = column_widths(machines, placement, now, account_column);
+    let widths = column_widths(machines, placement, now, account_column, sort);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
     let table = (0..SUMMARY_HEADERS.len())
         .map(|column| widths.get(column))
@@ -125,92 +127,192 @@ fn root_rows<'a>(
         .filter(move |row| placement.is_root(machine.name, row.pid))
 }
 
-/// Shared column widths and the account labels those widths accommodate.
-struct SummaryColumns {
+/// Shared column widths, account visibility and the footer palette.
+struct SummaryColumns<'a> {
+    footer_colors:  &'a FooterColors,
     constraints:    Vec<Constraint>,
     account_column: AccountColumn,
+    sort:           SummarySort,
 }
 
-/// Draw `machines` into `area`, with each agent's name in the hue of its
-/// cell among `cells` and ages measured to `now` in unix seconds.
-pub(crate) fn draw(
-    buffer: &mut Buffer,
-    area: Rect,
-    machines: &[Machine<'_>],
-    placement: &AgentPlacement<'_>,
-    cells: &[AgentEntry<'_>],
-    now: u64,
-    account_column: AccountColumn,
-) {
-    // Every machine's table is laid out with the same constraints and
-    // indent, so its columns line up with every other machine's.
+/// The census, palette and ordering shared throughout one summary draw.
+pub(crate) struct SummaryFrame<'a, 'data> {
+    pub(crate) machines:       &'a [Machine<'data>],
+    pub(crate) placement:      &'a AgentPlacement<'data>,
+    pub(crate) cells:          &'a [AgentEntry<'data>],
+    pub(crate) now:            u64,
+    pub(crate) account_column: AccountColumn,
+    pub(crate) footer_colors:  &'a FooterColors,
+    pub(crate) sort:           SummarySort,
+}
+
+/// Draw machine groups with the palette and ordering shared by this frame.
+pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
+    let SummaryHeader {
+        constraints,
+        machines,
+        ..
+    } = summary_header(area, frame);
     let columns = SummaryColumns {
-        constraints: fitted_constraints(machines, placement, now, account_column),
-        account_column,
+        footer_colors: frame.footer_colors,
+        constraints,
+        account_column: frame.account_column,
+        sort: frame.sort,
     };
-    let mut remaining = area;
     for machine in machines {
-        if remaining.height == 0 {
-            break;
-        }
-        let used = draw_machine(buffer, remaining, machine, placement, cells, &columns, now);
-        remaining.y = remaining.y.saturating_add(used);
-        remaining.height = remaining.height.saturating_sub(used);
+        draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
 }
 
-/// Draw one machine's heading, and its label row and rows when it lists
-/// agents, into the top of `area`, answering how many rows that took
-/// including the gap below it. Each name takes its hue from `cells`.
+/// A visible machine group with its heading, table and rows resolved together.
+struct MachineTable<'a> {
+    /// Machine identity and scan state used by its heading.
+    machine: Machine<'a>,
+    /// The visible part of the machine heading.
+    heading: Rect,
+    /// The visible table, whose top row is its column header.
+    table:   Rect,
+    /// Root rows before applying the summary ordering.
+    rows:    Vec<&'a AgentRow>,
+}
+
+/// Resolve vertical machine placement once for drawing and header clicks.
+fn machine_tables<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> Vec<MachineTable<'a>> {
+    let mut remaining = area;
+    let mut tables = Vec::new();
+    for &machine in frame.machines {
+        if remaining.is_empty() {
+            break;
+        }
+        let rows: Vec<_> = root_rows(machine, frame.placement).collect();
+        let heading = Rect {
+            height: GROUP_HEADER_HEIGHT.min(remaining.height),
+            ..remaining
+        };
+        let drawn = remaining
+            .height
+            .saturating_sub(GROUP_HEADER_HEIGHT)
+            .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
+        let table = Rect {
+            y: remaining.y.saturating_add(GROUP_HEADER_HEIGHT),
+            height: drawn,
+            ..indented(remaining)
+        };
+        let used = GROUP_HEADER_HEIGHT
+            .saturating_add(drawn)
+            .saturating_add(GROUP_GAP_HEIGHT);
+        tables.push(MachineTable {
+            machine,
+            heading,
+            table,
+            rows,
+        });
+        remaining.y = remaining.y.saturating_add(used);
+        remaining.height = remaining.height.saturating_sub(used);
+    }
+    tables
+}
+
+/// Draw one machine using the same resolved rectangles as header hit testing.
 fn draw_machine(
     buffer: &mut Buffer,
-    area: Rect,
-    machine: &Machine<'_>,
-    placement: &AgentPlacement<'_>,
+    machine: MachineTable<'_>,
     cells: &[AgentEntry<'_>],
-    columns: &SummaryColumns,
+    columns: &SummaryColumns<'_>,
     now: u64,
-) -> u16 {
-    let rows: Vec<&AgentRow> = root_rows(*machine, placement).collect();
+) {
+    let mut rows = machine.rows;
+    rows.sort_by(|left, right| compare_rows(left, right, columns.sort, columns.account_column));
     let label = Style::default().fg(label_color());
-    Paragraph::new(heading(machine, rows.len())).render(
-        Rect {
-            height: GROUP_HEADER_HEIGHT.min(area.height),
-            ..area
-        },
-        buffer,
-    );
-
-    let drawn = area
-        .height
-        .saturating_sub(GROUP_HEADER_HEIGHT)
-        .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
+    Paragraph::new(heading(&machine.machine, rows.len())).render(machine.heading, buffer);
     Table::new(
         rows.iter().map(|row| {
             agent_row(
                 row,
-                agent_cell::name_style(cells, machine.name, row.pid),
+                agent_cell::name_style(cells, machine.machine.name, row.pid),
                 now,
                 columns.account_column,
+                columns.footer_colors,
             )
         }),
         columns.constraints.iter().copied(),
     )
     .header(Row::new(
-        SUMMARY_HEADERS.map(|header| Span::styled(header, label)),
+        SummaryColumn::ALL.map(|column| Span::styled(columns.sort.header(column), label)),
     ))
     .column_spacing(TABLE_COLUMN_SPACING)
-    .render(
-        Rect {
-            y: area.y.saturating_add(GROUP_HEADER_HEIGHT),
-            height: drawn,
-            ..indented(area)
-        },
-        buffer,
+    .render(machine.table, buffer);
+}
+
+/// Compare values within one machine; ties keep the census's original order.
+fn compare_rows(
+    left: &AgentRow,
+    right: &AgentRow,
+    sort: SummarySort,
+    accounts: AccountColumn,
+) -> Ordering {
+    let primary = match sort.column {
+        SummaryColumn::Pid => left.pid.cmp(&right.pid),
+        SummaryColumn::Agent => left.agent_label(accounts).cmp(&right.agent_label(accounts)),
+        SummaryColumn::Name => left.name.cmp(&right.name),
+        SummaryColumn::Status => status_text(left).cmp(status_text(right)),
+        SummaryColumn::Age => right.started.cmp(&left.started),
+        SummaryColumn::Desktop => desktop_text(left).cmp(desktop_text(right)),
+        SummaryColumn::Directory => left.directory.cmp(&right.directory),
+    };
+    sort.direction
+        .order(primary)
+        .then_with(|| (left.started, left.pid).cmp(&(right.started, right.pid)))
+}
+
+/// Shared horizontal columns and vertical machine placement for the summary.
+struct SummaryHeader<'a> {
+    /// Column widths used by every machine table.
+    constraints: Vec<Constraint>,
+    /// The visible machine tables and their heading rectangles.
+    machines:    Vec<MachineTable<'a>>,
+    /// Header cells used to resolve clicks.
+    spans:       Vec<HeaderSpan<SummaryColumn>>,
+}
+
+/// One column layout supplies both drawing and header hit testing.
+fn summary_header<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> SummaryHeader<'a> {
+    let constraints = fitted_constraints(
+        frame.machines,
+        frame.placement,
+        frame.now,
+        frame.account_column,
+        frame.sort,
     );
-    GROUP_HEADER_HEIGHT
-        .saturating_add(drawn)
-        .saturating_add(GROUP_GAP_HEIGHT)
+    let machines = machine_tables(area, frame);
+    let mut spans = Vec::new();
+    for machine in &machines {
+        if machine.rows.is_empty() || machine.table.is_empty() {
+            continue;
+        }
+        let rects = Layout::horizontal(constraints.iter().copied())
+            .spacing(TABLE_COLUMN_SPACING)
+            .flex(Flex::Start)
+            .split(machine.table);
+        spans.extend(sort::column_spans(
+            &SummaryColumn::ALL,
+            &rects,
+            machine.table.y,
+        ));
+    }
+    SummaryHeader {
+        constraints,
+        machines,
+        spans,
+    }
+}
+
+/// Header spans for every visible machine table in summary-content coordinates.
+pub(crate) fn header_spans(
+    area: Rect,
+    frame: &SummaryFrame<'_, '_>,
+) -> Vec<HeaderSpan<SummaryColumn>> {
+    summary_header(area, frame).spans
 }
 
 /// `machine`'s heading: its name in bold, then how many agents it
@@ -245,8 +347,7 @@ pub(crate) fn separator() -> Span<'static> {
     Span::styled(HEADING_SEPARATOR, Style::default().fg(text_default()))
 }
 
-/// What a heading says about a machine that answered with `count`
-/// agents.
+/// What a heading says about a machine with `count` top-level agents.
 fn count_note(count: usize) -> String {
     match count {
         0 => NO_AGENTS_NOTE.to_string(),
@@ -261,27 +362,54 @@ fn agent_row(
     name_style: Style,
     now: u64,
     account_column: AccountColumn,
+    footer_colors: &FooterColors,
 ) -> Row<'static> {
     let text = Style::default().fg(text_default());
     Row::new([
-        Span::styled(row.pid.to_string(), text),
-        Span::styled(
-            row.agent_label(account_column),
-            agent_role(row.agent).style(),
-        ),
-        Span::styled(
+        Line::from(Span::styled(row.pid.to_string(), text)),
+        agent_label(row, account_column, footer_colors),
+        Line::from(Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
-        ),
-        Span::styled(status_text(row).to_string(), status_role(row).style()),
-        Span::styled(age_label(now.saturating_sub(row.started)), text),
-        Span::styled(desktop_text(row).to_string(), text),
-        Span::styled(row.directory.clone(), text),
+        )),
+        Line::from(Span::styled(
+            status_text(row).to_string(),
+            status_role(row).style(),
+        )),
+        Line::from(Span::styled(
+            age_label(now.saturating_sub(row.started)),
+            text,
+        )),
+        Line::from(Span::styled(desktop_text(row).to_string(), text)),
+        Line::from(Span::styled(row.directory.clone(), text)),
     ])
 }
 
+/// An account label with its tier kept in the existing program style.
+pub(crate) fn agent_label(
+    row: &AgentRow,
+    account_column: AccountColumn,
+    footer_colors: &FooterColors,
+) -> Line<'static> {
+    let program_style = agent_role(row.agent).style();
+    let label = row.agent_label(account_column);
+    match (account_column, &row.account) {
+        (AccountColumn::Shown, Account::Home(home)) => {
+            let (account, tier) = label.split_at(home.label().len());
+            Line::from(vec![
+                Span::styled(
+                    account.to_string(),
+                    footer_colors.account(home.label()).style(program_style),
+                ),
+                Span::styled(tier.to_string(), program_style),
+            ])
+        },
+        _ => Line::from(Span::styled(label, program_style)),
+    }
+}
+
 /// The role an agent's program is drawn in.
-pub(crate) const fn agent_role(agent: Agent) -> Role {
+const fn agent_role(agent: Agent) -> Role {
     match agent {
         Agent::Claude => Role::Claude,
         Agent::Codex | Agent::CodexThreadHost => Role::Codex,
@@ -289,16 +417,10 @@ pub(crate) const fn agent_role(agent: Agent) -> Role {
 }
 
 /// The role an agent's status is drawn in.
-pub(crate) fn status_role(row: &AgentRow) -> Role {
-    match row.status.as_deref() {
-        Some(BUSY_STATUS) => Role::Busy,
-        Some(SHELL_STATUS) => Role::Shell,
-        _ => Role::Idle,
-    }
-}
+pub(crate) const fn status_role(row: &AgentRow) -> Role { row.activity.color_role() }
 
 /// The status cell: the status, or [`MISSING_VALUE`].
-pub(crate) fn status_text(row: &AgentRow) -> &str { row.status.as_deref().unwrap_or(MISSING_VALUE) }
+pub(crate) const fn status_text(row: &AgentRow) -> &str { row.activity.text() }
 
 /// The desktop cell: the desktop, or [`MISSING_VALUE`].
 pub(crate) fn desktop_text(row: &AgentRow) -> &str {
@@ -325,14 +447,15 @@ fn fitted_constraints(
     placement: &AgentPlacement<'_>,
     now: u64,
     account_column: AccountColumn,
+    sort: SummarySort,
 ) -> Vec<Constraint> {
-    column_widths(machines, placement, now, account_column)
+    column_widths(machines, placement, now, account_column, sort)
         .to_constraints()
         .into_iter()
         .enumerate()
         .map(|(column, constraint)| {
-            if column == DIRECTORY_COLUMN {
-                Constraint::Min(cell_width(SUMMARY_HEADERS[DIRECTORY_COLUMN]))
+            if column == SummaryColumn::Directory.index() {
+                Constraint::Min(cell_width(&sort.header(SummaryColumn::Directory)))
             } else {
                 constraint
             }
@@ -347,14 +470,14 @@ fn column_widths(
     placement: &AgentPlacement<'_>,
     now: u64,
     account_column: AccountColumn,
+    sort: SummarySort,
 ) -> ColumnWidths {
     let mut widths = ColumnWidths::new(
-        SUMMARY_HEADERS
-            .iter()
-            .enumerate()
-            .map(|(column, header)| ColumnSpec {
-                min: cell_width(header),
-                max: (column == NAME_COLUMN).then_some(NAME_COLUMN_MAX),
+        SummaryColumn::ALL
+            .into_iter()
+            .map(|column| ColumnSpec {
+                min: cell_width(&sort.header(column)),
+                max: (column == SummaryColumn::Name).then_some(NAME_COLUMN_MAX),
             })
             .collect(),
     );
@@ -362,17 +485,29 @@ fn column_widths(
         .iter()
         .flat_map(|machine| root_rows(*machine, placement))
     {
-        widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
         widths.observe_cell_usize(
-            AGENT_COLUMN,
+            SummaryColumn::Pid.index(),
+            row.pid.to_string().chars().count(),
+        );
+        widths.observe_cell_usize(
+            SummaryColumn::Agent.index(),
             row.agent_label(account_column).chars().count(),
         );
-        widths.observe_cell_usize(NAME_COLUMN, row.name.chars().count());
-        widths.observe_cell_usize(STATUS_COLUMN, status_text(row).chars().count());
+        widths.observe_cell_usize(SummaryColumn::Name.index(), row.name.chars().count());
+        widths.observe_cell_usize(
+            SummaryColumn::Status.index(),
+            status_text(row).chars().count(),
+        );
         let age = age_label(now.saturating_sub(row.started));
-        widths.observe_cell_usize(AGE_COLUMN, age.chars().count());
-        widths.observe_cell_usize(DESKTOP_COLUMN, desktop_text(row).chars().count());
-        widths.observe_cell_usize(DIRECTORY_COLUMN, row.directory.chars().count());
+        widths.observe_cell_usize(SummaryColumn::Age.index(), age.chars().count());
+        widths.observe_cell_usize(
+            SummaryColumn::Desktop.index(),
+            desktop_text(row).chars().count(),
+        );
+        widths.observe_cell_usize(
+            SummaryColumn::Directory.index(),
+            row.directory.chars().count(),
+        );
     }
     widths
 }
@@ -439,7 +574,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            status: status.map(str::to_string),
+            activity: crate::census::AgentActivity::from_legacy(status),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -557,18 +692,28 @@ mod tests {
         let area = Rect::new(
             0,
             0,
-            width(machines, &placement, NOW, AccountColumn::Hidden),
+            width(
+                machines,
+                &placement,
+                NOW,
+                AccountColumn::Hidden,
+                SummarySort::default(),
+            ),
             u16::try_from(height(machines, &placement)).expect("the summary height should fit"),
         );
         let mut buffer = Buffer::empty(area);
         draw(
             &mut buffer,
             area,
-            machines,
-            &placement,
-            &cells,
-            NOW,
-            AccountColumn::Hidden,
+            &SummaryFrame {
+                machines,
+                placement: &placement,
+                cells: &cells,
+                now: NOW,
+                account_column: AccountColumn::Hidden,
+                footer_colors: &FooterColors::default(),
+                sort: SummarySort::default(),
+            },
         );
         let drawn = lines(&buffer);
         let mut machine = "";
@@ -624,7 +769,7 @@ mod tests {
         }];
         let drawn = assert_summary_roots(&machines, &[("natedev", 10), ("natedev", 40)]);
 
-        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn[0], " natedev · 2 top-level agents");
         assert_eq!(drawn.len(), 4);
         assert!(!drawn.iter().any(|line| line.contains("nested-showrunner")));
     }
@@ -651,7 +796,7 @@ mod tests {
         ];
         let drawn = assert_summary_roots(&machines, &[("natedev", 7), ("natedev", 9)]);
 
-        assert_eq!(drawn[0], " natedev · 2 agents");
+        assert_eq!(drawn[0], " natedev · 2 top-level agents");
         assert_eq!(drawn[5], " mac · no agents");
         assert_eq!(drawn.len(), 6);
     }
@@ -702,6 +847,7 @@ mod tests {
             &AgentPlacement::from_machines(&machines),
             NOW,
             AccountColumn::Hidden,
+            SummarySort::default(),
         );
         let mut census = Census::new("natedev".to_string());
 
@@ -709,17 +855,17 @@ mod tests {
             (
                 HierarchyEdges::default(),
                 vec![("natedev", 1), ("natedev", 2)],
-                "2 agents",
+                "2 top-level agents",
             ),
             (
                 links(&[("showrunner", "unit")]),
                 vec![("natedev", 1)],
-                "1 agent",
+                "1 top-level agent",
             ),
             (
                 HierarchyEdges::default(),
                 vec![("natedev", 1), ("natedev", 2)],
-                "2 agents",
+                "2 top-level agents",
             ),
         ] {
             census.apply(CensusUpdate::Local(
@@ -734,6 +880,7 @@ mod tests {
                 &AgentPlacement::from_machines(&machines),
                 NOW,
                 AccountColumn::Hidden,
+                SummarySort::default(),
             );
             if expected.len() == 1 {
                 assert_eq!(
@@ -819,26 +966,30 @@ mod tests {
         draw(
             &mut buffer,
             area,
-            &machines,
-            &placement,
-            &cells,
-            NOW,
-            AccountColumn::Hidden,
+            &SummaryFrame {
+                machines:       &machines,
+                placement:      &placement,
+                cells:          &cells,
+                now:            NOW,
+                account_column: AccountColumn::Hidden,
+                footer_colors:  &FooterColors::default(),
+                sort:           SummarySort::default(),
+            },
         );
 
         assert_eq!(
             lines(&buffer),
             [
-                " natedev · 4 agents",
-                " pid      agent   name                                  status  age     desktop        directory",
-                " 1579022  claude  boss of bosses                        idle    21h     boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  berth_fix      ~/rust/cargo-handler",
-                " 428044   claude  enh/handler                           busy    1h 36m  cargo handler  ~/rust/handler",
-                " 4039085  codex   --model gpt-5                         —       12m     —              ~/rust/handler",
+                " natedev · 4 top-level agents",
+                " pid      agent   name                                  status    age ▼   desktop        directory",
+                " 1579022  claude  boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude  tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
+                " 428044   claude  enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
+                " 4039085  codex   --model gpt-5                         —         12m     —              ~/rust/handler",
                 "",
-                " mac · 1 agent",
-                " pid      agent   name                                  status  age     desktop        directory",
-                " 12055    claude  natemccoy-30                          idle    23h     —              ~",
+                " mac · 1 top-level agent",
+                " pid      agent   name                                  status    age ▼   desktop        directory",
+                " 12055    claude  natemccoy-30                          idle      23h     —              ~",
                 "",
                 " studio · unreachable",
                 "",
@@ -930,20 +1081,24 @@ mod tests {
         draw(
             &mut buffer,
             area,
-            &machines,
-            &placement,
-            &agent_cell::cell_order_placed(&placement),
-            NOW,
-            AccountColumn::Hidden,
+            &SummaryFrame {
+                machines:       &machines,
+                placement:      &placement,
+                cells:          &agent_cell::cell_order_placed(&placement),
+                now:            NOW,
+                account_column: AccountColumn::Hidden,
+                footer_colors:  &FooterColors::default(),
+                sort:           SummarySort::default(),
+            },
         );
 
         assert_eq!(
             lines(&buffer),
             [
-                " natedev · 2 agents",
-                " pid      agent       name           status  age  desktop  directory",
-                " 428044   claude      enh/handler    busy    1h   —        ~/rust/handler",
-                " 4039085  codex fast  --model gpt-5  —       12m  —        ~/rust/handler",
+                " natedev · 2 top-level agents",
+                " pid      agent       name           status    age ▼  desktop  directory",
+                " 428044   claude      enh/handler    thinking  1h     —        ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  —         12m    —        ~/rust/handler",
             ]
         );
         for x in [10, 19] {
@@ -969,7 +1124,13 @@ mod tests {
             state: &natedev,
         }];
         let placement = AgentPlacement::from_machines(&machines);
-        let fitted = width(&machines, &placement, NOW, AccountColumn::Hidden);
+        let fitted = width(
+            &machines,
+            &placement,
+            NOW,
+            AccountColumn::Hidden,
+            SummarySort::default(),
+        );
         let height =
             u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
@@ -977,11 +1138,15 @@ mod tests {
         draw(
             &mut buffer,
             area,
-            &machines,
-            &placement,
-            &agent_cell::cell_order_placed(&placement),
-            NOW,
-            AccountColumn::Hidden,
+            &SummaryFrame {
+                machines:       &machines,
+                placement:      &placement,
+                cells:          &agent_cell::cell_order_placed(&placement),
+                now:            NOW,
+                account_column: AccountColumn::Hidden,
+                footer_colors:  &FooterColors::default(),
+                sort:           SummarySort::default(),
+            },
         );
         let widest = lines(&buffer)
             .iter()
@@ -1014,7 +1179,8 @@ mod tests {
                 &machines,
                 &AgentPlacement::from_machines(&machines),
                 NOW,
-                AccountColumn::Hidden
+                AccountColumn::Hidden,
+                SummarySort::default()
             )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
@@ -1037,10 +1203,27 @@ mod tests {
                 &machines,
                 &AgentPlacement::from_machines(&machines),
                 NOW,
-                AccountColumn::Hidden
+                AccountColumn::Hidden,
+                SummarySort::default()
             )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "footer_tests.rs"]
+mod footer_tests;
+
+#[cfg(test)]
+#[path = "sort_tests.rs"]
+mod sort_tests;
+
+#[cfg(test)]
+#[path = "unassigned_summary_tests.rs"]
+mod unassigned_summary_tests;
+
+#[cfg(test)]
+#[path = "activity_summary_tests.rs"]
+mod activity_summary_tests;

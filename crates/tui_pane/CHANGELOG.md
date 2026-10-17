@@ -14,6 +14,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ### Added
 - The provided `TileCells::prepare_frame` requests current allocations lazily and sets shared content widths before demand and allocation measurements; `TileGrid::painted_summary_frames` returns the summary clips painted by the shared `draw_tile_grid` pipeline.
 - `Toasts::area_avoiding_frames` keeps cards and their cleared gaps outside frame feet, while allowing room below short frames and in other columns.
+- `TileGridHost::cell_clicked` receives `CellPoint` coordinates relative to a cell’s content after a left press focuses it; border presses only focus. Existing hosts keep their current behavior.
 - The provided `TerminalApp::panic_log` names a file `run_terminal`'s panic hook appends each panic to -- the time, where it was raised, its message and a backtrace. Once the terminal is restored the hook prints the file's path to standard error; a failed write prints nothing. `chrono` is now a dependency without the `backdrop` feature.
 - `CellContentExtent` and the provided `TileCells::content_extent` method let a cell mark source omissions in its foot without changing its measured row demand; `TileCells::readout_rows` excludes surrendered decoration from the displayed count.
 - `CellReadoutFade`, `CellFadeProgress` and the provided `TileCells::readout_fade` method let apps fade a cell's foot with its contents; existing providers keep unfaded readouts.

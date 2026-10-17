@@ -56,6 +56,7 @@ use tui_pane::draw_clipped;
 use unicode_width::UnicodeWidthStr;
 
 use super::BoardModel;
+use super::rows::BoardReservationVisibility;
 use super::rows::HumanTargetVisibility;
 
 const FOOTER_HEIGHT: u16 = 1;
@@ -202,7 +203,7 @@ impl BoardPaneId {
     }
 }
 
-/// Exact JSON facts assigned to one terminal pane.
+/// Scrollable text assigned to one terminal pane.
 struct BoardPaneDocument {
     text:              String,
     line_count:        usize,
@@ -218,17 +219,21 @@ impl BoardPaneDocument {
         visibility.omit_json_targets(&mut rendered_fields);
         let text = serde_json::to_string_pretty(&Value::Object(rendered_fields))
             .map_err(BoardTerminalViewOpeningFailure::ModelSerialization)?;
+        Ok(Self::from_text(text))
+    }
+
+    fn from_text(text: String) -> Self {
         let line_count = text.lines().count();
         let widest_line_width = text
             .lines()
             .map(UnicodeWidthStr::width)
             .max()
             .unwrap_or_default();
-        Ok(Self {
+        Self {
             text,
             line_count,
             widest_line_width,
-        })
+        }
     }
 }
 
@@ -244,12 +249,9 @@ struct BoardPaneDocuments {
 
 impl BoardPaneDocuments {
     fn from_model(model: &BoardModel) -> Result<Self, BoardTerminalViewOpeningFailure> {
+        let reservation_table = overview_reservation_table(model);
         let model = serde_json::to_value(model)
             .map_err(BoardTerminalViewOpeningFailure::ModelSerialization)?;
-        Self::from_model_value(model)
-    }
-
-    fn from_model_value(model: Value) -> Result<Self, BoardTerminalViewOpeningFailure> {
         let Value::Object(mut unassigned) = model else {
             return Err(BoardTerminalViewOpeningFailure::SerializedModelWasNotObject);
         };
@@ -259,7 +261,12 @@ impl BoardPaneDocuments {
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len),
         );
-        let overview = Self::take_document(&mut unassigned, BoardPaneId::Overview, visibility)?;
+        let overview_metadata =
+            Self::take_document(&mut unassigned, BoardPaneId::Overview, visibility)?;
+        let overview = BoardPaneDocument::from_text(format!(
+            "{reservation_table}\n\n{}",
+            overview_metadata.text
+        ));
         let reservations =
             Self::take_document(&mut unassigned, BoardPaneId::Reservations, visibility)?;
         let constraints =
@@ -312,11 +319,63 @@ impl BoardPaneDocuments {
     fn reassembled_model_value(&self) -> Result<Value, serde_json::Error> {
         let mut model = Map::new();
         for pane_id in BoardPaneId::ALL {
-            let fields: Map<String, Value> = serde_json::from_str(&self.get(pane_id).text)?;
+            let document = self.get(pane_id);
+            let text = match pane_id {
+                BoardPaneId::Overview => document
+                    .text
+                    .split_once("\n\n")
+                    .map_or(document.text.as_str(), |(_, metadata)| metadata),
+                _ => &document.text,
+            };
+            let fields: Map<String, Value> = serde_json::from_str(text)?;
             model.extend(fields);
         }
         Ok(Value::Object(model))
     }
+}
+
+fn overview_reservation_table(model: &BoardModel) -> String {
+    let mut reservations = model
+        .ready_now
+        .entries
+        .iter()
+        .map(|entry| &entry.reservation)
+        .chain(model.waiting.entries.iter().map(|entry| &entry.reservation))
+        .chain(model.unconstrained_reservations.entries.iter())
+        .filter(|reservation| reservation.visibility != BoardReservationVisibility::ResolvedAudit)
+        .collect::<Vec<_>>();
+    reservations.sort_by_key(|reservation| reservation.reservation_id);
+    reservations.dedup_by_key(|reservation| reservation.reservation_id);
+    let mut rows = vec![["ID", "Session", "Stage", "Blocking", "Race paths"].map(str::to_owned)];
+    rows.extend(
+        reservations
+            .iter()
+            .map(|reservation| reservation.overview_cells()),
+    );
+    let widths: [usize; 5] = std::array::from_fn(|column| {
+        rows.iter()
+            .map(|row| UnicodeWidthStr::width(row[column].as_str()))
+            .max()
+            .unwrap_or_default()
+    });
+    let mut lines = vec!["Reservations".to_owned()];
+    for row in &rows {
+        let cells = row
+            .iter()
+            .zip(widths)
+            .map(|(cell, width)| {
+                format!(
+                    "{cell}{}",
+                    " ".repeat(width.saturating_sub(UnicodeWidthStr::width(cell.as_str())))
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.push(cells.join("  ").trim_end().to_owned());
+    }
+    if reservations.is_empty() {
+        lines.push("no reservations".to_owned());
+    }
+    lines.join("\n")
 }
 
 /// Scroll state retained independently for one board pane.
@@ -1033,6 +1092,8 @@ impl Error for BoardTerminalViewAfterOpeningFailure {
     reason = "tests should stop when a pane document stops being valid JSON"
 )]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
     use std::io::Write;
 
     use crossterm::event::KeyCode;
@@ -1040,8 +1101,18 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::TerminalOptions;
     use ratatui::Viewport;
+    use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::answer::ConflictAuthorization;
+    use crate::board::test_support;
+    use crate::board::test_support::BoardFixture;
+    use crate::board::test_support::FixtureResult;
+    use crate::board::test_support::OverlapAnswerFixture;
+    use crate::ledger::Ledger;
+    use crate::ledger::WorktreeContext;
+    use crate::reservation::ReleaseDisposition;
+    use crate::session::SessionReservationIdentity;
 
     const MARKER_ID: &str = "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
@@ -1113,6 +1184,185 @@ mod tests {
     fn model(recovered_bypasses: &[&str]) -> BoardModel {
         serde_json::from_value(model_value(recovered_bypasses))
             .unwrap_or_else(|error| panic!("fixture should deserialize as BoardModel: {error}"))
+    }
+
+    fn render_overview(model: &BoardModel) -> FixtureResult<String> {
+        let mut application = BoardApplication::new(model)?;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| draw(frame, &mut application))?;
+        let buffer = terminal.backend().buffer();
+        Ok((0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    #[test]
+    fn overview_renders_active_unconstrained_reservation() -> FixtureResult<()> {
+        let board = BoardFixture::new()?;
+        let actor = board.main_actor();
+        let claim = board.claim(&actor, "src/lib.rs", ConflictAuthorization::NoConflict)?;
+        let reservations = Ledger::open(board.repository.path())?
+            .read_validated_journal()?
+            .into_reservations()?;
+        let run = reservations.reservation(claim.reservation_id)?.actor().run;
+        let context = WorktreeContext::discover(board.repository.path())?;
+        fs::write(
+            context.ledger_directory().join("session-identities.json"),
+            b"{\"identities\":{}}",
+        )?;
+        let model = board.model()?;
+
+        let rendered = render_overview(&model)?;
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("src/lib.rs"))
+            .ok_or_else(|| io::Error::other("Overview should show the reserved race path"))?;
+        let id = claim.reservation_id.to_string();
+        assert!(
+            row.contains(id.rsplit('-').next().unwrap_or_default()),
+            "{row}"
+        );
+        assert!(row.contains("active"), "{row}");
+        assert!(row.contains("blocking"), "{row}");
+        let run = run.to_string();
+        assert!(
+            row.contains(&format!(
+                "run {}",
+                run.rsplit('-').next().unwrap_or_default()
+            )),
+            "{row}"
+        );
+        assert!(rendered.contains("Session"), "{rendered}");
+        assert!(rendered.contains("Race paths"), "{rendered}");
+        let wire = serde_json::to_value(&model)?;
+        assert!(
+            wire["unconstrained_reservations"]["entries"][0]
+                .get("session")
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn overview_distinguishes_sibling_phase_sessions_in_one_run() -> FixtureResult<()> {
+        let board = BoardFixture::new()?;
+        let actor = board.main_actor();
+        let first = board.claim(&actor, "a.rs", ConflictAuthorization::NoConflict)?;
+        let second = board.claim(&actor, "b.rs", ConflictAuthorization::NoConflict)?;
+        let reservations = Ledger::open(board.repository.path())?
+            .read_validated_journal()?
+            .into_reservations()?;
+        let run = reservations.reservation(first.reservation_id)?.actor().run;
+        assert_eq!(
+            run,
+            reservations.reservation(second.reservation_id)?.actor().run
+        );
+        let identities = BTreeMap::from([
+            (
+                "7393c2a2-b68d-4697-85a2-2146a7146aff.phase-1",
+                SessionReservationIdentity::new(run, first.reservation_id),
+            ),
+            (
+                "7393c2a2-b68d-4697-85a2-2146a7146aff.phase-2",
+                SessionReservationIdentity::new(run, second.reservation_id),
+            ),
+        ]);
+        let context = WorktreeContext::discover(board.repository.path())?;
+        fs::write(
+            context.ledger_directory().join("session-identities.json"),
+            serde_json::to_vec(&serde_json::json!({"identities": identities}))?,
+        )?;
+
+        let rendered = render_overview(&board.model()?)?;
+        for (claim, path, session) in [
+            (first, "a.rs", "2146a7146aff.phase-1"),
+            (second, "b.rs", "2146a7146aff.phase-2"),
+        ] {
+            let row = rendered
+                .lines()
+                .find(|line| line.contains(path))
+                .ok_or_else(|| io::Error::other("Overview should show each phase's path"))?;
+            let id = claim.reservation_id.to_string();
+            let cells = row.trim_matches('│').split_whitespace().collect::<Vec<_>>();
+            assert_eq!(cells[0], id.rsplit('-').next().unwrap_or_default(), "{row}");
+            assert_eq!(cells[1], session, "{row}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn overview_phase_session_and_alias_leave_race_paths_visible_at_100_columns()
+    -> FixtureResult<()> {
+        let board = BoardFixture::new()?;
+        let actor = board.main_actor();
+        let claim = board.claim(&actor, "src/phase.rs", ConflictAuthorization::NoConflict)?;
+        let reservations = Ledger::open(board.repository.path())?
+            .read_validated_journal()?
+            .into_reservations()?;
+        let run = reservations.reservation(claim.reservation_id)?.actor().run;
+        let identities = BTreeMap::from([
+            (
+                "7393c2a2-b68d-4697-85a2-2146a7146aff.phase-9",
+                SessionReservationIdentity::new(run, claim.reservation_id),
+            ),
+            (
+                "8393c2a2-b68d-4697-85a2-3146a7146aff.phase-9",
+                SessionReservationIdentity::new(run, claim.reservation_id),
+            ),
+        ]);
+        let context = WorktreeContext::discover(board.repository.path())?;
+        fs::write(
+            context.ledger_directory().join("session-identities.json"),
+            serde_json::to_vec(&serde_json::json!({"identities": identities}))?,
+        )?;
+
+        let rendered = render_overview(&board.model()?)?;
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("2146a7146aff.phase-9"))
+            .ok_or_else(|| io::Error::other("Overview should show the compact phase session"))?;
+        assert!(row.contains("3146a7146aff.phase-9"), "{row}");
+        assert!(row.contains("src/phase.rs"), "{row}");
+        assert!(row.ends_with('│'), "{row}");
+        Ok(())
+    }
+
+    #[test]
+    fn overview_renders_empty_table_after_terminal_reservation() -> FixtureResult<()> {
+        let board = BoardFixture::new()?;
+        let actor = board.main_actor();
+        let claim = board.claim(&actor, "retired.rs", ConflictAuthorization::NoConflict)?;
+        board.release(
+            &actor,
+            claim.reservation_id,
+            ReleaseDisposition::Abandoned("work was dropped".parse()?),
+        )?;
+        let rendered = render_overview(&board.model()?)?;
+
+        assert!(rendered.contains("Race paths"), "{rendered}");
+        assert!(rendered.contains("no reservations"), "{rendered}");
+        assert!(!rendered.contains("retired.rs"), "{rendered}");
+        Ok(())
+    }
+
+    #[test]
+    fn overview_lists_waiting_reservations_once_despite_multiple_holds() -> FixtureResult<()> {
+        let mut fixture = test_support::answered_board(OverlapAnswerFixture::Defer)?;
+        let held = fixture.model.waiting.entries[0].clone();
+        fixture.model.waiting.entries.push(held);
+        let rendered = render_overview(&fixture.model)?;
+
+        for reservation_id in [fixture.blocker_id, fixture.requester_id] {
+            let id = reservation_id.to_string();
+            let short_id = id.rsplit('-').next().unwrap_or_default();
+            assert_eq!(rendered.matches(short_id).count(), 1, "{rendered}");
+        }
+        Ok(())
     }
 
     fn reassembled_model_value(documents: &BoardPaneDocuments) -> Value {

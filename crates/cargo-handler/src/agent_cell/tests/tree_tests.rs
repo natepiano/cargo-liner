@@ -3,8 +3,12 @@
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 
+use summary::SummaryFrame;
+
 use super::*;
 use crate::census::AccountColumn;
+use crate::census::AgentActivity;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH_HEADER;
@@ -12,6 +16,7 @@ use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_STATUS_HEADER;
+use crate::sort::SummarySort;
 
 /// A remote probe's account value, independent of the runner's home directory.
 fn home(label: &str) -> Account {
@@ -34,8 +39,9 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     let mut diagrams = agent(30, "diagrams", 4 * HOUR, None);
     diagrams.session_id = SessionIdentity::Claude("diagrams-id".to_string());
     diagrams.account = home(claude_accounts[2]);
-    diagrams.status = Some("idle".to_string());
+    diagrams.activity = AgentActivity::Idle;
     let thread = ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         thread_id: CodexThreadId::Recorded("dashboard-impl-id".to_string()),
         account: home("codex1"),
         ..child(
@@ -81,7 +87,15 @@ fn rendered(
 ) -> Buffer {
     let rect = area(width, height(cell, width, NOW, account_column));
     let mut buffer = Buffer::empty(rect);
-    draw(&mut buffer, rect, cell, cells, NOW, account_column);
+    draw(
+        &mut buffer,
+        rect,
+        cell,
+        cells,
+        NOW,
+        account_column,
+        &FooterColors::default(),
+    );
     buffer
 }
 
@@ -135,11 +149,11 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["session", "role", "status", "account", "age"]
+        ["session", "role", "status", "account", "age", "▼"]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        ["├─", "dashboard", "unit", "busy", "claude1", "6h"]
+        ["├─", "dashboard", "unit", "thinking", "claude1", "6h"]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -148,7 +162,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "└─",
             "hanadocs-dashboard-impl",
             "impl",
-            "codex",
+            "idle",
             "codex1",
             "5h"
         ]
@@ -162,8 +176,8 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         find(&buffer, "dashboard").expect("name").0
     );
     for (name, role, status, account, age) in [
-        ("dashboard", "unit", "busy", "claude1", "6h"),
-        ("hanadocs-dashboard-impl", "impl", "codex", "codex1", "5h"),
+        ("dashboard", "unit", "thinking", "claude1", "6h"),
+        ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5h"),
         ("diagrams", "unit", "idle", "claude3", "4h"),
     ] {
         let row = row_of(&buffer, name);
@@ -189,7 +203,7 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
     let buffer = rendered(&cells[0], &cells, 220, account_column(&cells));
     let text = lines(&buffer);
 
-    assert!(text[0].contains(" · claude2 · busy · "));
+    assert!(text[0].contains(" · claude2 · thinking · "));
     assert_eq!(text[1], " main · ~/rust/showrunner");
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -200,7 +214,8 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
             "account",
             "branch",
             "directory",
-            "age"
+            "age",
+            "▼"
         ]
     );
     assert_eq!(text.len(), 6);
@@ -237,7 +252,7 @@ fn tree_headers_names_roles_accounts_and_statuses_keep_their_colors() {
         }
         for (name, pid, status_role) in [
             ("dashboard", 20, Role::Busy),
-            ("hanadocs-dashboard-impl", 20, Role::Codex),
+            ("hanadocs-dashboard-impl", 20, Role::Idle),
             ("diagrams", 30, Role::Idle),
         ] {
             let at = find(&buffer, name).expect("the name is drawn");
@@ -330,6 +345,7 @@ fn working_group() -> MachineState {
             HOUR,
         ),
         ChildRow {
+            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
             timer: Some(Timer {
                 started:  NOW - MINUTE,
                 deadline: NOW + MINUTE,
@@ -344,6 +360,7 @@ fn working_group() -> MachineState {
             10 * MINUTE,
         ),
         ChildRow {
+            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
             account: home("codex1"),
             ..child(2, ChildKind::Thread, None, "unheld worker", 9 * MINUTE)
         },
@@ -395,12 +412,12 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         assert!(!text.contains(hidden), "{hidden} is not a tree line");
     }
     for (name, role, status, account, age) in [
-        ("unit-member", "session", "busy", "claude1", "2h"),
-        ("clock job", "shell", "◑ 1:00", "—", "10m"),
-        ("unheld worker", "thread", "codex", "codex1", "9m"),
+        ("unit-member", "session", "thinking", "claude1", "2h"),
+        ("clock job", MISSING_VALUE, "◑ 1:00", "—", "10m"),
+        ("unheld worker", "worker", "idle", "codex1", "9m"),
         ("review worker", "subagent", "claude", "—", "8m"),
-        ("nested command", "shell", "command", "—", "7m"),
-        ("root command", "shell", "command", "—", "1h"),
+        ("nested command", MISSING_VALUE, "command", "—", "7m"),
+        ("root command", MISSING_VALUE, "command", "—", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -421,7 +438,14 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
                 assert_eq!(column_value(&buffer, header, y, &HEADERS), "—");
             }
             let at = find(&buffer, name).expect("work name");
-            assert_eq!(buffer[at].fg, text_default());
+            let expected_color = match role {
+                "worker" => buffer[find(&buffer, "unit-member").expect("parent session")].fg,
+                _ => text_default(),
+            };
+            assert_eq!(
+                buffer[at].fg, expected_color,
+                "{name} uses its row kind's color"
+            );
         }
     }
     let rows = lines(&buffer);
@@ -439,7 +463,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     let status_x = find(&buffer, "status").expect("status column").0;
     for (name, role) in [
         ("clock job", Role::Shell),
-        ("unheld worker", Role::Codex),
+        ("unheld worker", Role::Idle),
         ("review worker", Role::Claude),
     ] {
         assert_eq!(
@@ -510,7 +534,15 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
             let inner = Rect::new(1, 1, width, rows);
             let mut buffer = Buffer::empty(outer);
             ratatui::widgets::Block::bordered().render(outer, &mut buffer);
-            draw(&mut buffer, inner, &cell, &[], NOW, account_column);
+            draw(
+                &mut buffer,
+                inner,
+                &cell,
+                &[],
+                NOW,
+                account_column,
+                &FooterColors::default(),
+            );
             let header_y = row_of(&buffer, "session");
             assert_eq!(
                 header_y,
@@ -527,10 +559,10 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
                         "tree row {y} at width {width} keeps its right margin"
                     );
                 }
-                assert_ne!(
-                    buffer[(inner.right() - indent - 1, y)].symbol(),
-                    " ",
-                    "the header and each age fill the column before the margin"
+                let age_x = find(&buffer, "age").expect("age header").0;
+                assert!(
+                    (age_x..inner.right() - indent).any(|x| buffer[(x, y)].symbol() != " "),
+                    "the header and each age remain visible before the margin"
                 );
             }
         }
@@ -573,6 +605,8 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
                 &cell.lines,
                 TreeLayout::Full.columns(account_column),
                 NOW,
+                TreeSort::default(),
+                SessionHeaderLead::OverBranch,
             )) + 2 * indent,
         );
     }
@@ -597,7 +631,13 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
     let columns = TreeLayout::Compressed.columns(account_column);
     let gaps = columns.len().saturating_sub(1);
     let spacing = usize::from(TABLE_COLUMN_SPACING);
-    let widths = tree_widths(&cell.lines, columns, NOW);
+    let widths = tree_widths(
+        &cell.lines,
+        columns,
+        NOW,
+        TreeSort::default(),
+        SessionHeaderLead::OverBranch,
+    );
     let fixed = widths[1..]
         .iter()
         .map(|&width| usize::from(width))
@@ -631,7 +671,15 @@ fn assert_heights_at_widths(state: &MachineState) {
             let rows = height(cell, width, NOW, frame_account_column);
             let rect = area(width, rows + 3);
             let mut buffer = Buffer::empty(rect);
-            draw(&mut buffer, rect, cell, &cells, NOW, frame_account_column);
+            draw(
+                &mut buffer,
+                rect,
+                cell,
+                &cells,
+                NOW,
+                frame_account_column,
+                &FooterColors::default(),
+            );
             let text = lines(&buffer);
             let last = text.iter().rposition(|line| !line.is_empty());
             assert_eq!(
@@ -692,17 +740,27 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
         let placement = AgentPlacement::from_machines(&machines);
         let cells = cell_order_placed(&placement);
         assert_eq!(account_column(&cells), frame_account_column);
-        let width = summary::width(&machines, &placement, NOW, frame_account_column);
+        let width = summary::width(
+            &machines,
+            &placement,
+            NOW,
+            frame_account_column,
+            SummarySort::default(),
+        );
         let rect = area(width, summary::height(&machines, &placement));
         let mut buffer = Buffer::empty(rect);
         summary::draw(
             &mut buffer,
             rect,
-            &machines,
-            &placement,
-            &cells,
-            NOW,
-            frame_account_column,
+            &SummaryFrame {
+                machines:       &machines,
+                placement:      &placement,
+                cells:          &cells,
+                now:            NOW,
+                account_column: frame_account_column,
+                footer_colors:  &FooterColors::default(),
+                sort:           SummarySort::default(),
+            },
         );
         for (name, shown, hidden) in [
             ("alpha", "claude2", "claude"),

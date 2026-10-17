@@ -147,21 +147,6 @@ pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
     "desktop",
     "directory",
 ];
-/// Index of the `pid` column in [`SUMMARY_HEADERS`].
-pub(crate) const PID_COLUMN: usize = 0;
-/// Index of the `agent` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGENT_COLUMN: usize = 1;
-/// Index of the `name` column in [`SUMMARY_HEADERS`].
-pub(crate) const NAME_COLUMN: usize = 2;
-/// Index of the `status` column in [`SUMMARY_HEADERS`].
-pub(crate) const STATUS_COLUMN: usize = 3;
-/// Index of the `age` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGE_COLUMN: usize = 4;
-/// Index of the `desktop` column in [`SUMMARY_HEADERS`].
-pub(crate) const DESKTOP_COLUMN: usize = 5;
-/// Index of the `directory` column in [`SUMMARY_HEADERS`], the one
-/// column that takes whatever the fitted columns leave.
-pub(crate) const DIRECTORY_COLUMN: usize = 6;
 /// Cells the `name` column grows to at most. A longer name is cut to
 /// fit and ends in [`TRUNCATION_MARK`].
 pub(crate) const NAME_COLUMN_MAX: u16 = 36;
@@ -185,9 +170,9 @@ pub(crate) const SCANNING_NOTE: &str = "scanning";
 /// What a machine heading says when the machine has no agents.
 pub(crate) const NO_AGENTS_NOTE: &str = "no agents";
 /// Counts one agent in a machine heading.
-pub(crate) const AGENT_SINGULAR: &str = "agent";
+pub(crate) const AGENT_SINGULAR: &str = "top-level agent";
 /// Counts any other number of agents in a machine heading.
-pub(crate) const AGENT_PLURAL: &str = "agents";
+pub(crate) const AGENT_PLURAL: &str = "top-level agents";
 /// Shown in a cell that has no value, such as the status of an agent
 /// that reports none.
 pub(crate) const MISSING_VALUE: &str = "—";
@@ -232,6 +217,27 @@ pub(crate) const RAINBOW_BLUE_ROLE: &str = "rainbow_blue";
 pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 
 // census
+/// Verification launcher whose detached runs may override conversation activity.
+pub(crate) const VERIFY_SCRIPT: &str = "verify.sh";
+/// Mesh launcher used to select fresh and existing worker seats.
+pub(crate) const CODEX_MESH_SCRIPT: &str = "codex_mesh.py";
+/// Seat selectors accepted by the live mesh child.
+pub(crate) const MESH_SEAT_FLAGS: [&str; 2] = ["--name", "--to"];
+/// Processes whose argv is needed to identify verification and dispatch descendants.
+pub(crate) const ACTIVITY_PROCESS_NAMES: [&str; 6] =
+    ["sleep", "cargo", "ssh", "taplo", "bash", "python3"];
+/// A thread without a recorded task or supported responsibility.
+pub(crate) const WORKER_LABEL: &str = "worker";
+/// Only session directories named by the worker itself may be discovered.
+pub(crate) const SESSION_ROOTS: [&str; 2] = ["/tmp/claude/unit/", "/tmp/claude/delegate/"];
+/// Width of an unabridged UUID, including separators.
+pub(crate) const UUID_TEXT_LENGTH: usize = 36;
+/// Injected rollout context is not the worker's first task.
+pub(crate) const ROLLOUT_CONTEXT_PREFIXES: [&str; 3] = [
+    "# AGENTS.md",
+    "<environment_context>",
+    "<permissions instructions>",
+];
 /// The `agent` value of a Claude Code row, and the process name a
 /// Claude Code process runs under.
 pub(crate) const CLAUDE_AGENT: &str = "claude";
@@ -254,9 +260,6 @@ pub(crate) const CODEX_FAST_TIERS: [&str; 2] = ["fast", "priority"];
 /// Marks a Codex agent or thread that asked for the fast tier, after
 /// its program.
 pub(crate) const FAST_TIER_LABEL: &str = "fast";
-/// Marks a Codex agent or thread that asked for any other tier, after
-/// its program.
-pub(crate) const STANDARD_TIER_LABEL: &str = "--";
 /// The flags that pass `codex` one `key=value` setting in the next
 /// argument.
 pub(crate) const CODEX_CONFIG_FLAGS: [&str; 2] = ["-c", "--config"];
@@ -286,11 +289,6 @@ pub(crate) const CODEX_DESKTOP_APP: &str = "ChatGPT";
 /// itself `tmux: server`; on macOS renaming a process does nothing, so
 /// the server keeps the name `tmux`.
 pub(crate) const TMUX_SERVER_NAMES: [&str; 2] = ["tmux: server", "tmux"];
-/// The status a Claude Code session reports while it works.
-pub(crate) const BUSY_STATUS: &str = "busy";
-/// The status a Claude Code session reports while a shell command it
-/// ran is in the foreground.
-pub(crate) const SHELL_STATUS: &str = "shell";
 /// Characters of a Claude session id a row shows when the session has
 /// no name.
 pub(crate) const SESSION_ID_PREFIX_LENGTH: usize = 8;
@@ -354,8 +352,12 @@ pub(crate) const SHELL_SNAPSHOT_MARKER: &str = "/shell-snapshots/snapshot-";
 /// What opens the command inside a shell tool script, which runs it
 /// quoted in single quotes.
 pub(crate) const SHELL_EVAL_OPEN: &str = "eval '";
-/// How a shell tool script writes one `'` inside the quoted command.
-pub(crate) const SHELL_QUOTED_QUOTE: &str = r"'\''";
+/// How a bash wrapper writes one `'` inside the quoted command.
+const SHELL_BASH_QUOTED_QUOTE: &str = r"'\''";
+/// How a zsh wrapper writes one `'` inside the quoted command.
+const SHELL_ZSH_QUOTED_QUOTE: &str = r#"'"'"'"#;
+/// The wrapper encodings that each decode to one apostrophe.
+pub(crate) const SHELL_QUOTE_ESCAPES: &[&str] = &[SHELL_BASH_QUOTED_QUOTE, SHELL_ZSH_QUOTED_QUOTE];
 /// How far before a process started the transcript is read for the
 /// call that started it.
 pub(crate) const CALL_LOOKBACK: Duration = Duration::from_mins(10);
@@ -572,3 +574,6 @@ pub(crate) const UNREADABLE_PROBE_REASON: &str = "unreadable probe output";
 pub(crate) const SSH_NOT_STARTED_REASON: &str = "ssh could not start";
 /// Why a remote gave no answer: the probe was ended by a signal.
 pub(crate) const PROBE_SIGNALLED_REASON: &str = "probe ended by a signal";
+
+/// Title of a machine's pool of sessions without production roles.
+pub(crate) const UNASSIGNED_CELL_TITLE: &str = "unassigned";

@@ -24,6 +24,13 @@ main file is written. An uncommitted configuration file at that path, untracked
 or tracked and modified, is excluded from enrollment and merge-extent
 observations; committed changes to it still count.
 
+Every plain `init` ensures `/.claude/config/berth.toml` appears once in the
+common Git directory's `info/exclude`, creating `info/` when absent. An existing
+entry with or without the leading `/` is preserved. This keeps the untracked
+configuration out of `git status` in every worktree without moving or changing
+the file; tracked configurations remain visible. Run `init` again in a
+repository initialized by an older version to add the exclude entry.
+
 Enrollment reserves the exact file paths merging the branch into its recorded target would
 change or conflict on, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
 ended ones, prevent a worktree from being enrolled again. Re-run `init` after
@@ -199,6 +206,7 @@ way when it is invoked directly.
 `init` has four branches:
 
 - Plain `cargo berth init` creates a missing ledger and main-worktree config,
+  ensures the configuration is excluded through the common Git `info/exclude`,
   installs or refreshes each managed hook without replacing an unmanaged hook,
   and enrolls existing worktree work as described under
   [Worktree enrollment](#worktree-enrollment). A hook change alone needs no
@@ -253,11 +261,18 @@ reinitializing that journal.
 An outstanding reservation needs no command once its work reaches its
 recorded target: ordinary reconciliation (`board`, `check`, the post-Bash hook,
 the prepared gate, or `release`) settles it when git proves the whole scoped
-phase is on that branch's current tip and no reserved work remains outside that
-proof, including after a rebase, amend, or reset. At a present non-trunk target
-it also waits for the target's cover, as above. An orphan notice names the
-dispositions that fit the orphan and the observed tip of the branch it is
-judged at.
+phase is on that branch's current tip and the reservation's own merge extent is
+empty, including after a rebase, amend, or reset. That extent holds the dirty,
+untracked, or unmerged paths in its checkout that the reservation declares,
+plus those no other unreleased reservation of the same worktree and target
+declares; [parallel-phases.md](parallel-phases.md) covers phases that share a
+worktree. At a present non-trunk target settlement also waits for the target's
+cover, as above. After the merge, one `release` answers `released`; while work
+remains, `release` answers `outstanding` and names the pending paths.
+
+An orphan with no checkout cannot be observed, so it never settles on its own.
+Its notice names the dispositions that fit it and the observed tip of the
+branch it is judged at.
 
 `resolve` records one of these explicit decisions for what reconciliation
 cannot prove:
@@ -293,9 +308,10 @@ wait.
 
 ## Journal compaction
 
-Reconciliation journals a merge extent observation whenever a holder checkout's
-merge extent changes, and each one replaces the extent recorded for every
-reservation it names. Once later observations have replaced an observation for
+Reconciliation journals a merge extent observation whenever a reservation's
+share of its holder checkout's merge extent changes. Reservations of one holder
+whose shares are equal share one record, and each record replaces the extent
+recorded for every reservation it names. Once later observations have replaced an observation for
 every reservation it names, compaction removes it. Every other record stays,
 byte for byte and in order.
 

@@ -11,6 +11,7 @@
 - **Showrunner session:** cargo-liner
 - **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
 - **Change review:** `~/rust/hanadocs/change-review/change-review - cargo-liner.md`
+- **Review pool:** code
 - **User zone:** `America/New_York`. Every time the showrunner reports is in this zone only.
 - **Updates:** on demand. Each update reports every unit in full.
 - **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
@@ -28,7 +29,8 @@
 | berth-hook-hang-unit | `docs/cargo-berth/as-built/hook-cost.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-hook-hang` (deleted) | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | berth-ceiling-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-ceiling` (deleted) | — | crates/cargo-berth/ |
 | handler-enh-unit | docs/cargo-handler/as-built/startup.md, docs/cargo-handler/as-built/hierarchy.md | /home/natepiano/rust/cargo-liner-handler-enh | remove-running-section-handler-enh | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
-| berth-parallel-unit | docs/cargo-berth/as-built/phase-reservations.md | /home/natepiano/rust/cargo-liner-berth-parallel | remove-running-section-berth-parallel | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
+| berth-parallel-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth-parallel | remove-running-section-berth-parallel | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
+| review-unit | docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
 
 ## Hub files
 

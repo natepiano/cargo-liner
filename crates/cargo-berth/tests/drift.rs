@@ -2229,6 +2229,8 @@ fn a_refused_root_head_reports_the_path_it_introduced() {
             .status
             .success()
     );
+    fs::write(repository.path().join("held.txt"), "incumbent work\n")
+        .expect("holder work should keep its reservation active");
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
 
     assert_refused_head_entry(
@@ -2274,7 +2276,7 @@ fn assert_refused_head_entry(reported: &Output, holder_id: &str) {
     );
 }
 
-/// An untracked file created by `init` does not change direct drift's occupancy answer.
+/// A pre-upgrade untracked configuration does not change direct drift's occupancy answer.
 #[test]
 fn refused_run_with_untracked_configuration_reports_direct_hook_and_ambiguous_cases() {
     let repository = repository_with_uncommitted_berth_configuration();
@@ -3147,7 +3149,7 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
     let repository = initialized_repository();
     let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
-    // Uncommitted work keeps both runs in this worktree from ending on trunk.
+    // Each reservation protects its own uncommitted work.
     fs::write(repository.path().join("observer.txt"), "observer work\n")
         .expect("observer work should write");
     fs::write(repository.path().join("released.txt"), "released work\n")
@@ -3164,10 +3166,10 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
             "released work",
         ],
     );
-    // The observer's uncommitted work keeps the worktree dirty, so release checkpoints first.
+    // The observer's dirt belongs to its reservation, so the committed reservation settles.
     for (expected_status, expected_fact_status) in [
-        ("outstanding", "checkpointed"),
         ("integrated", "released"),
+        ("integrated", "already_settled"),
         ("integrated", "already_settled"),
     ] {
         let release = run_berth(repository.path(), &["release", &released_id, "--json"]);
@@ -4318,7 +4320,7 @@ fn initialized_repository() -> TempDir {
             .status
             .success()
     );
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -4334,6 +4336,9 @@ fn repository_with_uncommitted_berth_configuration() -> TempDir {
             .status
             .success()
     );
+    // Reproduce repositories initialized before init excluded its configuration.
+    fs::remove_file(repository.path().join(".git/info/exclude"))
+        .expect("configuration exclude should remove for the legacy fixture");
     let untracked = git_stdout(
         repository.path(),
         &["status", "--short", "--untracked-files=all"],

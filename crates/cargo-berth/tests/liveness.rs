@@ -1171,7 +1171,7 @@ fn active_checkpoint_release_reconciles_outstanding_retention_refs() {
 }
 
 #[test]
-fn terminal_release_omits_the_orphan_alert_it_resolves() {
+fn release_retains_an_orphan_without_a_fresh_merge_extent() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let phase_worktree = worktree_parent.path().join("release-alert");
@@ -1207,15 +1207,11 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
     let settled = run_berth(repository.path(), &["board", "--json"]);
     assert!(settled.status.success());
     let settled_json = json_output(&settled);
-    let reservation = settled_json["payload"]["data"]["resolved"]["entries"]
-        .as_array()
-        .expect("resolved reservations should exist")
-        .iter()
-        .find(|reservation| reservation["reservation_id"] == reservation_id)
-        .expect("integrated orphan should settle on the same pass");
-    assert_eq!(reservation["lifecycle"]["stage"], "released");
+    let reservation = reservation_row(&settled_json, &reservation_id);
+    assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+    assert_eq!(reservation["merge_extent"]["status"], "unavailable");
     assert_eq!(
-        reservation["lifecycle"]["disposition"]["kind"],
+        reservation["integration_evidence"]["status"]["status"],
         "integrated"
     );
     assert!(
@@ -1223,20 +1219,21 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
             .as_array()
             .expect("board alerts should exist")
             .iter()
-            .all(|alert| alert["reservation_id"] != reservation_id)
+            .any(|alert| alert["reservation_id"] == reservation_id
+                && alert["kind"] == "orphaned_outstanding")
     );
     let repeated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     assert!(repeated.status.success());
     assert_eq!(
         json_output(&repeated)["payload"]["data"]["status"],
-        "already_settled"
+        "evidence_revalidated"
     );
     assert!(
         json_output(&repeated)["payload"]["alerts"]
             .as_array()
             .expect("release alerts should exist")
             .iter()
-            .all(|alert| alert["kind"] != "orphaned_outstanding")
+            .any(|alert| alert["kind"] == "orphaned_outstanding")
     );
 }
 
@@ -1499,7 +1496,8 @@ fn marker_sweep_restores_the_marker_name_after_metadata_failure() {
 
     let failed = run_berth(repository.path(), &["check", "file:any", "--json"]);
 
-    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(failed.status.code(), Some(4));
+    assert_eq!(json_output(&failed)["status"], "ledger_unreadable");
     assert!(
         fs::symlink_metadata(marker_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     );
@@ -2195,7 +2193,10 @@ fn build_initialized_repository(repository_root: &Path) {
     git(repository_root, &["add", "README.md"]);
     git(repository_root, &["commit", "--quiet", "-m", "initial"]);
     assert!(run_berth(repository_root, &["init"]).status.success());
-    git(repository_root, &["add", ".claude/config/berth.toml"]);
+    git(
+        repository_root,
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     // Nothing is claimed yet, so the commit skips the hooks; see `GitDriver::run_without_hooks`.
     GIT.run_without_hooks(
         repository_root,

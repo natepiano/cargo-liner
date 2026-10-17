@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::IntegrationProof;
 use super::lifecycle::IntegrationWitness;
+use super::merge_extent::MergeExtent;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -20,6 +21,7 @@ use crate::git::ScopedPatchComparison;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::ReservationScopePath;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationScopeSet;
 
@@ -125,6 +127,116 @@ pub(crate) fn current_trunk(
     trunk_branch: &str,
 ) -> Result<GitObjectId, GitError> {
     git::branch_object_id(repository_root, trunk_branch)
+}
+
+/// Integration of the complete reservation, including its current uncommitted work.
+pub(crate) enum ReservationIntegrationJudgment {
+    /// A fresh empty extent and committed-work proof permit settlement.
+    Integrated {
+        trunk_oid: GitObjectId,
+        proof:     IntegrationProof,
+        witness:   IntegrationWitness,
+    },
+    /// These paths still need to reach the integration target.
+    Outstanding {
+        pending_paths: Vec<ReservationScopePath>,
+        evidence:      PendingIntegrationEvidence,
+    },
+    /// The committed-work proof does not establish integration.
+    NotIntegrated,
+    /// The integration target no longer contains previously proven work.
+    TrunkRewritten,
+    /// The current holder observation or committed-work proof is unavailable.
+    ObjectUnknown,
+}
+
+/// A committed-work verdict that cannot authorize release of pending paths.
+pub(crate) enum PendingIntegrationEvidence {
+    Unproven,
+    TrunkRewritten,
+    ObjectUnknown,
+}
+
+impl ReservationIntegrationJudgment {
+    /// Record the complete judgment using the journal's existing evidence vocabulary.
+    pub(crate) fn evidence_status(&self) -> IntegrationEvidenceStatus {
+        match self {
+            Self::Integrated {
+                trunk_oid,
+                proof,
+                witness,
+            } => IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk_oid.clone(),
+                proof:     *proof,
+                witness:   witness.clone(),
+            },
+            Self::Outstanding {
+                evidence: PendingIntegrationEvidence::Unproven,
+                ..
+            }
+            | Self::NotIntegrated => IntegrationEvidenceStatus::NotIntegrated,
+            Self::Outstanding {
+                evidence: PendingIntegrationEvidence::TrunkRewritten,
+                ..
+            }
+            | Self::TrunkRewritten => IntegrationEvidenceStatus::TrunkRewritten,
+            Self::Outstanding {
+                evidence: PendingIntegrationEvidence::ObjectUnknown,
+                ..
+            }
+            | Self::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+        }
+    }
+}
+
+/// Judge live integration once for release, reconciliation, and retained merge protection.
+/// Checkpoint ancestry and patch equivalence alone cannot clear pending reservation paths.
+pub(crate) fn judge_integration(
+    evidence: &IntegrationEvidenceStatus,
+    extent: &MergeExtent,
+) -> ReservationIntegrationJudgment {
+    if let MergeExtent::Protected { scopes, .. } = extent {
+        let pending_evidence = match evidence {
+            IntegrationEvidenceStatus::TrunkRewritten => PendingIntegrationEvidence::TrunkRewritten,
+            IntegrationEvidenceStatus::ObjectUnknown => PendingIntegrationEvidence::ObjectUnknown,
+            IntegrationEvidenceStatus::Integrated { .. }
+            | IntegrationEvidenceStatus::NotIntegrated => PendingIntegrationEvidence::Unproven,
+        };
+        return ReservationIntegrationJudgment::Outstanding {
+            pending_paths: scopes
+                .as_slice()
+                .iter()
+                .map(|scope| scope.path.clone())
+                .collect(),
+            evidence:      pending_evidence,
+        };
+    }
+    match evidence {
+        IntegrationEvidenceStatus::TrunkRewritten => {
+            return ReservationIntegrationJudgment::TrunkRewritten;
+        },
+        IntegrationEvidenceStatus::ObjectUnknown => {
+            return ReservationIntegrationJudgment::ObjectUnknown;
+        },
+        _ => {},
+    }
+    if !matches!(extent, MergeExtent::Empty { .. }) {
+        return ReservationIntegrationJudgment::ObjectUnknown;
+    }
+    match evidence {
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid,
+            proof,
+            witness,
+        } => ReservationIntegrationJudgment::Integrated {
+            trunk_oid: trunk_oid.clone(),
+            proof:     *proof,
+            witness:   witness.clone(),
+        },
+        IntegrationEvidenceStatus::NotIntegrated => ReservationIntegrationJudgment::NotIntegrated,
+        IntegrationEvidenceStatus::TrunkRewritten => ReservationIntegrationJudgment::TrunkRewritten,
+        IntegrationEvidenceStatus::ObjectUnknown => ReservationIntegrationJudgment::ObjectUnknown,
+    }
 }
 
 /// Revalidate a protected tip against current trunk.
@@ -286,4 +398,70 @@ pub(crate) fn retain_protected_tip(
     protected_tip: &ProtectedReservationTip,
 ) -> Result<(), GitError> {
     git::write_reservation_retention_ref(repository_root, reservation_id, protected_tip.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn unobserved_and_unavailable_extents_do_not_report_pending_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let declaration = json!({
+            "status": "not_derived",
+            "protection": [{"kind": "file", "path": "pending.rs"}],
+        });
+        let previously_observed = json!({
+            "status": "protected",
+            "scopes": [{"kind": "file", "path": "pending.rs"}],
+            "key": {
+                "trunk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "working_tree": {"tracked_paths": [], "untracked_paths": []},
+            },
+        });
+        let extents = [
+            declaration.clone(),
+            json!({
+                "status": "unavailable",
+                "retained_evidence": declaration,
+                "failure": "holder unavailable",
+            }),
+            json!({
+                "status": "unavailable",
+                "retained_evidence": previously_observed,
+                "failure": "trunk unavailable",
+            }),
+        ];
+        let evidence_statuses = [
+            IntegrationEvidenceStatus::NotIntegrated,
+            IntegrationEvidenceStatus::ObjectUnknown,
+            IntegrationEvidenceStatus::TrunkRewritten,
+            IntegrationEvidenceStatus::Integrated {
+                trunk_oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
+                proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
+            },
+        ];
+        for extent in extents {
+            let extent: MergeExtent = serde_json::from_value(extent)?;
+            for evidence in &evidence_statuses {
+                let judgment = judge_integration(evidence, &extent);
+                if matches!(evidence, IntegrationEvidenceStatus::TrunkRewritten) {
+                    assert!(matches!(
+                        judgment,
+                        ReservationIntegrationJudgment::TrunkRewritten
+                    ));
+                } else {
+                    assert!(matches!(
+                        judgment,
+                        ReservationIntegrationJudgment::ObjectUnknown
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }

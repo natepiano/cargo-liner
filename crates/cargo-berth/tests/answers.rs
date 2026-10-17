@@ -520,7 +520,7 @@ fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     assert!(revalidated.status.success());
     assert_eq!(
         json_output(&revalidated)["payload"]["data"]["status"],
-        "evidence_revalidated"
+        "outstanding"
     );
     assert!(
         check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
@@ -1753,7 +1753,10 @@ fn an_answer_is_invalid_input_once_its_sole_holder_is_released() {
 fn an_answer_claim_reports_reconciliation_alerts_on_its_own_envelope() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), ["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        ["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository.path(),
         ["commit", "--quiet", "-m", "track berth config"],

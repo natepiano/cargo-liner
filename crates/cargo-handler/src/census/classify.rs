@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use super::Agent;
+use super::AgentActivity;
 use super::AgentRow;
 use super::ServiceTier;
 use super::SessionIdentity;
@@ -325,7 +326,7 @@ fn claude_row(
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
         name:            session.label(),
-        status:          session.status.clone(),
+        activity:        super::AgentActivity::from_legacy(session.status.as_deref()),
         started:         process.started,
         process_started: process.started,
         pid:             process.pid,
@@ -352,7 +353,7 @@ fn desktop_app_row(
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
         name:            CLAUDE_DESKTOP_APP.to_string(),
-        status:          None,
+        activity:        AgentActivity::Unreported,
         started:         process.started,
         process_started: process.started,
         pid:             process.pid,
@@ -414,7 +415,7 @@ fn codex_row(
         service_tier: ServiceTier::Unrecorded,
         account: account::account_of(process, home, account_labels),
         name,
-        status: None,
+        activity: AgentActivity::Unreported,
         started: process.started,
         process_started: process.started,
         pid: process.pid,
@@ -799,7 +800,7 @@ mod tests {
             handler.session_id,
             super::super::SessionIdentity::Claude(sessions[1].session_id.clone())
         );
-        assert_eq!(handler.status.as_deref(), Some("busy"));
+        assert_eq!(handler.activity.text(), "thinking");
         assert_eq!(handler.started, 800);
         assert_eq!(handler.pid, 428_044);
         assert_eq!(handler.directory, "~/rust/handler");
@@ -808,7 +809,7 @@ mod tests {
         let codex = &rows[9];
         assert_eq!(codex.agent, Agent::Codex);
         assert_eq!(codex.session_id, super::super::SessionIdentity::Unrecorded);
-        assert_eq!(codex.status, None);
+        assert_eq!(codex.activity, super::AgentActivity::Unreported);
         assert_eq!(codex.directory, "~/rust/handler");
     }
 
@@ -856,7 +857,7 @@ mod tests {
         );
 
         assert_eq!(names(&rows), ["00000500"]);
-        assert_eq!(rows[0].status, None);
+        assert_eq!(rows[0].activity, super::AgentActivity::Unreported);
     }
 
     /// Started in the same second, the lower pid comes first.
@@ -997,7 +998,7 @@ mod tests {
         assert!(!held_by_tmux(&processes, 80_020));
         let desktop = &rows[0];
         assert_eq!(desktop.agent, Agent::Codex);
-        assert_eq!(desktop.status, None);
+        assert_eq!(desktop.activity, super::AgentActivity::Unreported);
         assert_eq!(desktop.started, 1_005);
         assert_eq!(desktop.directory, "/");
         assert_eq!(rows[1].directory, "~");
@@ -1088,7 +1089,7 @@ mod tests {
         assert_eq!(app.pid, 500);
         assert_eq!(app.agent, Agent::Claude);
         assert_eq!(app.session_id, super::super::SessionIdentity::Unrecorded);
-        assert_eq!(app.status, None);
+        assert_eq!(app.activity, super::AgentActivity::Unreported);
         assert_eq!(app.directory, HOME_ABBREVIATION);
     }
 

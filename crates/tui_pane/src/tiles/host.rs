@@ -5,7 +5,9 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 
+use super::grid::TileContent;
 use super::grid::TileGrid;
 use crate::AppContext;
 use crate::CycleDirection;
@@ -17,6 +19,28 @@ use crate::InputContext;
 use crate::Mode;
 use crate::Pane;
 use crate::dispatch_hit_test;
+
+/// A terminal cell position relative to a tile's content origin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellPoint {
+    /// Horizontal cell offset within the content.
+    pub column: u16,
+    /// Vertical cell offset within the content.
+    pub row:    u16,
+}
+
+/// A content press resolved before focus changes the grid's layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CellClick<Id> {
+    /// The clicked cell's grid index.
+    pub index:   usize,
+    /// The content assigned to that cell.
+    pub content: TileContent<Id>,
+    /// The content rectangle in terminal coordinates.
+    pub area:    Rect,
+    /// The press relative to the content origin.
+    pub point:   CellPoint,
+}
 
 /// An app whose body is one [`TileGrid`], registered as one pane.
 ///
@@ -33,6 +57,9 @@ pub trait TileGridHost: AppContext + 'static {
 
     /// The app's grid, to focus and steer.
     fn tile_grid_mut(&mut self) -> &mut TileGrid<Self::TileId>;
+
+    /// Handle a left press inside a focused cell's content, after focus moves.
+    fn cell_clicked(&mut self, _click: CellClick<Self::TileId>) {}
 }
 
 /// Keymap host for the grid. It has no keys of its own, so `A`, the app
@@ -106,7 +133,21 @@ where
     A: TileGridHost + InputContext<Target = TilePick>,
 {
     match dispatch_hit_test(app, position) {
-        Some(TilePick::Cell(index)) => app.tile_grid_mut().focus_cell(index),
+        Some(TilePick::Cell(index)) => {
+            let content = app.tile_grid_mut().cell_content_at(position);
+            app.tile_grid_mut().focus_cell(index);
+            if let Some((index, content, area)) = content {
+                app.cell_clicked(CellClick {
+                    index,
+                    content,
+                    area,
+                    point: CellPoint {
+                        column: position.x - area.x,
+                        row:    position.y - area.y,
+                    },
+                });
+            }
+        },
         Some(TilePick::OverlayRow { id, row }) => {
             select_framework_overlay_row(app.framework_mut(), id, row);
         },
@@ -373,3 +414,7 @@ mod tests {
         assert_eq!(focused(&app), TileContent::Empty(TABLE_CELL + 1));
     }
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod host_tests;

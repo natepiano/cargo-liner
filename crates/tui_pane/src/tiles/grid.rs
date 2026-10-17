@@ -3154,6 +3154,28 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             TileAction::FocusDown => self.focus_step(Direction::Down, growth),
         }
     }
+
+    /// The settled cell content under a press, excluding its frame and readout.
+    pub(super) fn cell_content_at(&self, pos: Position) -> Option<(usize, TileContent<Id>, Rect)> {
+        let (index, area) = if self.display() == GridDisplay::SummaryAlone {
+            (TABLE_CELL, self.area)
+        } else {
+            let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
+            let pane = grid
+                .resolved
+                .panes
+                .iter()
+                .find(|pane| pane.area.contains(pos))?;
+            (pane.pane, pane.area)
+        };
+        let area = draw::content_area(frame_inner(area));
+        if !area.contains(pos) {
+            return None;
+        }
+        cells(&self.slots)
+            .into_iter()
+            .find_map(|(content, cell)| (cell == index).then_some((index, content, area)))
+    }
 }
 
 /// What each slot draws and the cell it sits at, the summary first.

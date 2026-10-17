@@ -20,6 +20,7 @@ use super::Program;
 use super::account_of;
 use super::config_home;
 use crate::census::Agent;
+use crate::census::AgentActivity;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
@@ -28,6 +29,8 @@ use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::classify::ProcessEntry;
 use crate::census::probe;
+use crate::census::worker_dispatch::WorkerDispatch;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::config::AccountsConfig;
 
 /// The machine home used by account fixtures, independent of the test runner.
@@ -326,7 +329,7 @@ fn agent_row(account: Account) -> AgentRow {
         service_tier: ServiceTier::Standard,
         account,
         name: "account-wire".to_string(),
-        status: None,
+        activity: AgentActivity::Unreported,
         started: 100,
         process_started: 101,
         pid: 42,
@@ -375,7 +378,10 @@ fn a_schema_three_probe_without_accounts_keeps_them_unrecorded() {
 /// A child with enough identity to check that account transport preserves its row.
 fn child_row(kind: ChildKind, account: Account) -> ChildRow {
     ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         thread_id: CodexThreadId::Unrecorded,
+        dispatch: WorkerDispatch::Plain,
+        activity: AgentActivity::Idle,
         depth: 0,
         kind,
         service_tier: ServiceTier::Unrecorded,

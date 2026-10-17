@@ -1,6 +1,8 @@
 //! Frame rendering: the tile grid, the framework status line along the
 //! bottom, and whichever overlay is open above them.
 
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -10,8 +12,10 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use tui_pane::AttractGridPresentation;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
+use tui_pane::CellClick;
 use tui_pane::Keymap;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
@@ -24,9 +28,12 @@ use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
 use tui_pane::label_color;
 use tui_pane::render_status_line;
+use tui_pane::title_color;
 
 use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
+use crate::agent_cell::AgentTile;
+use crate::agent_cell::TreeColumn;
 use crate::app::App;
 use crate::census;
 use crate::census::AccountColumn;
@@ -36,15 +43,24 @@ use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
+use crate::constants::HEADING_SEPARATOR;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
+use crate::constants::UNASSIGNED_CELL_TITLE;
+use crate::footer_colors::FooterColors;
 use crate::globals::AppGlobalAction;
 use crate::settings;
+use crate::sort;
+use crate::sort::HeaderHit;
+use crate::sort::HeaderSpan;
+use crate::sort::SummarySort;
+use crate::sort::TreeSort;
 use crate::summary;
+use crate::summary::SummaryFrame;
 use crate::theme::Role;
-use crate::tiles::AgentCell;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
+use crate::tiles::TileKey;
 
 /// Draw one frame: the grid fills the body above the status line, and
 /// toasts are drawn inside the grid's outer frame. The favorites modal
@@ -90,6 +106,9 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         app.census
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
+        app.footer_colors.colors(),
+        &app.tree_sorts,
+        app.summary_sort,
     );
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
@@ -102,43 +121,124 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
     );
 }
 
-/// What the tile grid's cells hold: the summary of every machine's
-/// agents, and a cell for each agent.
+/// Map a content press through the same census and header layouts as drawing.
+pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
+    match app.attract.configuration().grid_presentation() {
+        AttractGridPresentation::ReplacesGrid => return,
+        AttractGridPresentation::OverGrid => {},
+    }
+    let CellClick {
+        content,
+        area,
+        point,
+        ..
+    } = click;
+    let area = Rect::new(0, 0, area.width, area.height);
+    let cells = Cells::new(
+        app.census
+            .machines(&app.loaded_config.config.machines.remote),
+        census::unix_now(),
+        app.footer_colors.colors(),
+        &app.tree_sorts,
+        app.summary_sort,
+    );
+    match content {
+        TileContent::Summary => {
+            if let HeaderHit::Column(column) =
+                sort::header_hit(&summary::header_spans(area, &cells.summary_frame()), point)
+            {
+                app.summary_sort.select(column);
+            }
+        },
+        TileContent::Group(id) => {
+            if let Some(tile) = cells.tile(&id)
+                && let HeaderHit::Column(column) =
+                    sort::header_hit(&cells.header_spans(tile, area), point)
+            {
+                app.tree_sorts.entry(id).or_default().select(column);
+            }
+        },
+        TileContent::Empty(_) => {},
+    }
+}
+
+/// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
     /// This machine, then each configured remote.
     machines:       Vec<Machine<'a>>,
-    /// Every agent's cell, in grid order.
+    /// Individual sessions in default hue order, independent of tile grouping.
     agents:         Vec<AgentEntry<'a>>,
     /// The account columns and agent labels shared by every cell.
     account_column: AccountColumn,
     /// The forest shared by cell order and summary roots.
     placement:      AgentPlacement<'a>,
+    /// Grouped tiles, apart from the per-session summary hue lookup.
+    tiles:          Vec<AgentTile<'a>>,
     /// The unix second the ages are measured to.
     now:            u64,
+    /// Footer colors already loaded by the app.
+    footer_colors:  &'a FooterColors,
+    /// Ordering shared by all machine groups in the summary.
+    summary_sort:   SummarySort,
 }
 
 impl<'a> Cells<'a> {
-    /// The cells for `machines`, with ages measured to `now`.
-    fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
+    /// Build each default tree once, then reorder only tiles with a saved sort.
+    fn new(
+        machines: Vec<Machine<'a>>,
+        now: u64,
+        footer_colors: &'a FooterColors,
+        sorts: &HashMap<TileKey, TreeSort>,
+        summary_sort: SummarySort,
+    ) -> Self {
         let placement = AgentPlacement::from_machines(&machines);
         let agents = agent_cell::cell_order_placed(&placement);
+        let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
         Self {
             machines,
             agents,
             account_column,
             placement,
+            tiles,
             now,
+            footer_colors,
+            summary_sort,
         }
     }
 
-    /// The agent the cell `id` draws, while it is still listed.
-    fn agent(&self, id: &AgentCell) -> Option<&AgentEntry<'a>> {
-        self.agents.iter().find(|entry| entry.id == *id)
+    /// The inputs shared by summary drawing and header hit testing.
+    fn summary_frame(&self) -> SummaryFrame<'_, 'a> {
+        SummaryFrame {
+            machines:       &self.machines,
+            placement:      &self.placement,
+            cells:          &self.agents,
+            now:            self.now,
+            account_column: self.account_column,
+            footer_colors:  self.footer_colors,
+            sort:           self.summary_sort,
+        }
+    }
+
+    /// The tile named by a stable session or machine-pool identity.
+    fn tile(&self, id: &TileKey) -> Option<&AgentTile<'a>> {
+        self.tiles.iter().find(|tile| tile.key() == *id)
+    }
+
+    /// Resolve either tile's headers through its shared drawing layout.
+    fn header_spans(&self, tile: &AgentTile<'_>, area: Rect) -> Vec<HeaderSpan<TreeColumn>> {
+        match tile {
+            AgentTile::Agent(entry) => {
+                agent_cell::header_spans(entry, area, self.now, self.account_column)
+            },
+            AgentTile::Unassigned(entry) => {
+                agent_cell::unassigned_header_spans(entry, area, self.now, self.account_column)
+            },
+        }
     }
 }
 
-impl TileCells<AgentCell> for Cells<'_> {
+impl TileCells<TileKey> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     /// Every row of the summary is one line at any width: a name too long
@@ -154,7 +254,7 @@ impl TileCells<AgentCell> for Cells<'_> {
             .map(|&(_, width)| width)
             .min()
             .unwrap_or_default();
-        let width_of = |id: &AgentCell| {
+        let width_of = |id: &TileKey| {
             widths
                 .iter()
                 .find(|(content, _)| matches!(content, TileContent::Group(group) if group == id))
@@ -167,18 +267,21 @@ impl TileCells<AgentCell> for Cells<'_> {
                 &self.placement,
                 self.now,
                 self.account_column,
+                self.summary_sort,
             ),
             groups:        self
-                .agents
+                .tiles
                 .iter()
-                .map(|entry| TileDemand {
-                    id:   entry.id.clone(),
-                    rows: agent_cell::height(
-                        entry,
-                        width_of(&entry.id),
-                        self.now,
-                        self.account_column,
-                    ),
+                .map(|tile| {
+                    let id = tile.key();
+                    let width = width_of(&id);
+                    let rows = match tile {
+                        AgentTile::Agent(entry) => {
+                            agent_cell::height(entry, width, self.now, self.account_column)
+                        },
+                        AgentTile::Unassigned(entry) => agent_cell::unassigned_height(entry),
+                    };
+                    TileDemand { id, rows }
                 })
                 .collect(),
         }
@@ -187,38 +290,44 @@ impl TileCells<AgentCell> for Cells<'_> {
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
             TileContent::Summary => {
-                summary::draw(
+                summary::draw(buffer, inner, &self.summary_frame());
+            },
+            TileContent::Group(id) => match self.tile(id) {
+                Some(AgentTile::Agent(entry)) => agent_cell::draw(
                     buffer,
                     inner,
-                    &self.machines,
-                    &self.placement,
+                    entry,
                     &self.agents,
                     self.now,
                     self.account_column,
-                );
-            },
-            TileContent::Group(id) => {
-                if let Some(entry) = self.agent(id) {
-                    agent_cell::draw(
-                        buffer,
-                        inner,
-                        entry,
-                        &self.agents,
-                        self.now,
-                        self.account_column,
-                    );
-                }
+                    self.footer_colors,
+                ),
+                Some(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
+                    buffer,
+                    inner,
+                    entry,
+                    self.now,
+                    self.account_column,
+                    self.footer_colors,
+                ),
+                None => {},
             },
             // The grid draws an empty cell's number itself.
             TileContent::Empty(_) => {},
         }
     }
 
-    /// The name keeps its summary hue; the accepted or inferred role
-    /// follows in the label color.
-    fn group_title(&self, id: &AgentCell) -> Option<Line<'static>> {
-        self.agent(id).map(|entry| {
-            Line::from(vec![
+    /// Session titles retain their hue; pooled titles use the theme's title color.
+    fn group_title(&self, id: &TileKey) -> Option<Line<'static>> {
+        self.tile(id).map(|tile| match tile {
+            AgentTile::Unassigned(entry) => Line::from(Span::styled(
+                format!(
+                    "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
+                    UNASSIGNED_CELL_TITLE, entry.machine
+                ),
+                Style::default().fg(title_color()),
+            )),
+            AgentTile::Agent(entry) => Line::from(vec![
                 Span::styled(
                     format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
                     Role::Rainbow(entry.hue).style(),
@@ -227,7 +336,7 @@ impl TileCells<AgentCell> for Cells<'_> {
                     entry.role_label.suffix(),
                     Style::default().fg(label_color()),
                 ),
-            ])
+            ]),
         })
     }
 }
@@ -286,12 +395,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
+    use tui_pane::CellPoint;
     use tui_pane::FavoritesFileState;
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::agent_cell::TreeColumn;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::AgentRow;
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
@@ -304,7 +416,11 @@ mod tests {
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::worker_dispatch::WorkerDispatch;
+    use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
+    use crate::sort::SortDirection;
+    use crate::sort::SummaryColumn;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -528,14 +644,13 @@ fraying = "leading"
     /// The unix second the agent cell golden measures ages to.
     const NOW: u64 = 1_790_372_800;
 
-    /// The grid with one agent listed: the summary, then the agent's
-    /// cell, titled with its name, holding a shell running a Codex app
-    /// server with one thread, and a subagent.
+    /// The grid with one unassigned session: summary, then the machine's
+    /// pool with its flat session row and nested shell, worker and subagent.
     const ONE_AGENT_CELL: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│ natedev · 1 agent                                                            │",
-        "│ pid      agent   name            status  age  desktop  directory             │",
-        "│ 1579022  claude  boss of bosses  idle    21h  —        ~/rust/hana_catalyst/d│",
+        "│ natedev · 1 top-level agent                                                  │",
+        "│ pid      agent   name            status  age ▼  desktop  directory           │",
+        "│ 1579022  claude  boss of bosses  idle    21h    —        ~/rust/hana_catalyst│",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -543,17 +658,17 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                  content rows: 3  r/c: 10/78 │",
-        "├ boss of bosses───────────────────────────────────────────────────────────────┤",
-        "│    session                                          role      status   age   │",
-        "│ ├─ Launch the Phase 2 implementation seat           shell     command  12m   │",
-        "│ │  └─ tool-based-ui-geometry-material-impl          thread    codex    12m   │",
+        "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
+        "│ session                                             role      status   age ▼ │",
+        "│ boss of bosses                                      —         idle     21h   │",
+        "│ ├─ Launch the Phase 2 implementation seat           —         command  12m   │",
+        "│ │  └─ tool-based-ui-geometry-material-impl          worker    idle     12m   │",
         "│ └─ Survey the tile grid                             subagent  claude   5m 3s │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 4  r/c: 10/78 │",
+        "│                                                  content rows: 5  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -723,6 +838,9 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            worker_task: WorkerTask::Unrecorded,
+            dispatch: WorkerDispatch::Plain,
+            activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
@@ -739,7 +857,7 @@ fraying = "leading"
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "boss of bosses".to_string(),
-            status:          Some("idle".to_string()),
+            activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
             started:         NOW - age,
             process_started: NOW - age,
             pid:             1_579_022,
@@ -780,6 +898,162 @@ fraying = "leading"
         }
     }
 
+    /// Give each layout fixture root a real production responsibility.
+    fn production_roots(mut roots: Vec<AgentRow>) -> (Vec<AgentRow>, HierarchyEdges) {
+        let mut members = Vec::new();
+        let mut edges = Vec::new();
+        for root in &mut roots {
+            let manager = format!("root-{}", root.pid);
+            let member = format!("member-{}", root.pid);
+            root.session_id = SessionIdentity::Claude(manager.clone());
+            members.push(AgentRow {
+                session_id: SessionIdentity::Claude(member.clone()),
+                pid: root.pid + 1_000_000,
+                name: member.clone(),
+                children: Vec::new(),
+                ..root.clone()
+            });
+            edges.push(HierarchyEdge {
+                manager,
+                member,
+                role: HierarchyRole::Impl,
+            });
+        }
+        roots.extend(members);
+        (roots, HierarchyEdges(edges))
+    }
+
+    /// The host geometry selects only the clicked tile's header preference.
+    #[test]
+    fn content_clicks_select_and_reverse_only_the_named_tile_sort() {
+        let mut app = App::new_for_test().expect("a test app");
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            vec![boss(900)],
+            HierarchyEdges::default(),
+        ));
+        let area = Rect::new(0, 0, 220, 30);
+        let (id, point) = {
+            let cells = Cells::new(
+                app.census.machines(&[]),
+                NOW,
+                app.footer_colors.colors(),
+                &app.tree_sorts,
+                app.summary_sort,
+            );
+            let tile = &cells.tiles[0];
+            let span = cells
+                .header_spans(tile, area)
+                .into_iter()
+                .find(|span| span.column == TreeColumn::Role)
+                .expect("a role header");
+            (
+                tile.key(),
+                CellPoint {
+                    column: span.columns.start,
+                    row:    span.row,
+                },
+            )
+        };
+        let click = CellClick {
+            index: 2,
+            content: TileContent::Group(id.clone()),
+            area: Rect::new(8, 5, area.width, area.height),
+            point,
+        };
+        cell_clicked(&mut app, click.clone());
+        assert_eq!(
+            app.tree_sorts[&id],
+            TreeSort {
+                column:    TreeColumn::Role,
+                direction: SortDirection::Ascending,
+            }
+        );
+        assert_eq!(app.summary_sort, SummarySort::default());
+        cell_clicked(&mut app, click.clone());
+        assert_eq!(app.tree_sorts[&id].direction, SortDirection::Descending);
+        let selected = app.tree_sorts[&id];
+        cell_clicked(
+            &mut app,
+            CellClick {
+                point: CellPoint {
+                    row: point.row + 1,
+                    ..point
+                },
+                ..click
+            },
+        );
+        assert_eq!(
+            app.tree_sorts[&id], selected,
+            "a data row keeps the preference"
+        );
+    }
+
+    /// Stale grid hit areas cannot change hidden preferences during replacement or departure.
+    #[test]
+    fn attract_replacement_and_departure_ignore_tree_and_summary_header_clicks() {
+        let mut app = App::new_for_test().expect("a test app");
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            vec![boss(900)],
+            HierarchyEdges::default(),
+        ));
+        let area = Rect::new(0, 0, 220, 30);
+        let clicks = {
+            let cells = Cells::new(
+                app.census.machines(&[]),
+                NOW,
+                app.footer_colors.colors(),
+                &HashMap::new(),
+                SummarySort::default(),
+            );
+            let tile = &cells.tiles[0];
+            let tree = cells
+                .header_spans(tile, area)
+                .into_iter()
+                .find(|span| span.column == TreeColumn::Role)
+                .expect("tree header");
+            let summary = summary::header_spans(area, &cells.summary_frame())
+                .into_iter()
+                .find(|span| span.column == SummaryColumn::Agent)
+                .expect("summary header");
+            [
+                CellClick {
+                    index: 1,
+                    content: TileContent::Group(tile.key()),
+                    area,
+                    point: CellPoint {
+                        column: tree.columns.start,
+                        row:    tree.row,
+                    },
+                },
+                CellClick {
+                    index: 0,
+                    content: TileContent::Summary,
+                    area,
+                    point: CellPoint {
+                        column: summary.columns.start,
+                        row:    summary.row,
+                    },
+                },
+            ]
+        };
+        app.attract.request_show();
+        for click in &clicks {
+            cell_clicked(&mut app, click.clone());
+        }
+        assert!(app.tree_sorts.is_empty());
+        assert_eq!(app.summary_sort, SummarySort::default());
+        app.attract.toggle();
+        assert!(
+            !app.attract.asked_for(),
+            "departure retains replacement presentation"
+        );
+        for click in &clicks {
+            cell_clicked(&mut app, click.clone());
+        }
+        assert!(app.tree_sorts.is_empty());
+        assert_eq!(app.summary_sort, SummarySort::default());
+    }
+
     /// The grid of `app` drawn into the body of an 80×24 frame with ages
     /// measured to [`NOW`].
     fn drawn_buffer(app: &mut App) -> Buffer {
@@ -794,6 +1068,9 @@ fraying = "leading"
             app.census
                 .machines(&app.loaded_config.config.machines.remote),
             NOW,
+            app.footer_colors.colors(),
+            &HashMap::new(),
+            SummarySort::default(),
         );
         let mut buffer = Buffer::empty(body);
         tui_pane::draw_tile_grid(
@@ -820,10 +1097,10 @@ fraying = "leading"
             .collect()
     }
 
-    /// A listed agent opens a cell of its own below the summary, titled
-    /// with its name, holding its header and the tree of what it runs.
+    /// An unassigned session opens the pool below the summary, with its
+    /// own values in a flat row above the tree of what it runs.
     #[test]
-    fn a_listed_agent_gets_a_cell_titled_with_its_name() {
+    fn an_unassigned_agent_gets_a_flat_row_in_the_machine_pool() {
         let mut app = laid_out_app();
         app.census.apply(CensusUpdate::Local(
             vec![boss(21 * 60 * 60)],
@@ -835,12 +1112,9 @@ fraying = "leading"
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
     }
 
-    /// Tile titles and nested lines follow the current relationships, retaining name and label
-    /// colors.
-    #[test]
-    fn title_and_tree_role_labels_change_with_accepted_relationships() {
-        let mut app = laid_out_app();
-        let rows = vec![
+    /// A manager and member whose accepted relationship can change between scans.
+    fn relationship_rows() -> Vec<AgentRow> {
+        vec![
             AgentRow {
                 session_id: SessionIdentity::Claude("production".to_string()),
                 name: "production".to_string(),
@@ -856,7 +1130,15 @@ fraying = "leading"
                 children: Vec::new(),
                 ..boss(2 * 60 * 60)
             },
-        ];
+        ]
+    }
+
+    /// Tile titles and nested lines follow the current relationships, retaining name and label
+    /// colors.
+    #[test]
+    fn title_and_tree_role_labels_change_with_accepted_relationships() {
+        let mut app = laid_out_app();
+        let rows = relationship_rows();
         for (role, manager_role_label, member_role_label) in [
             (None, Unlabeled, Unlabeled),
             (Some(Unit), Inferred(Showrunner), Stated(Unit)),
@@ -883,7 +1165,11 @@ fraying = "leading"
             let rendered: Vec<String> = (0..body.height)
                 .map(|y| (0..body.width).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
-            let title_text = format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}");
+            let title_text = if manager_role_label == Unlabeled {
+                format!("{AGENT_CELL_TITLE_LEAD}{UNASSIGNED_CELL_TITLE}{HEADING_SEPARATOR}natedev")
+            } else {
+                format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}")
+            };
             let (title_y, title_line) = rendered
                 .iter()
                 .enumerate()
@@ -899,14 +1185,22 @@ fraying = "leading"
             let title_y = u16::try_from(title_y).expect("the row fits");
             assert_eq!(
                 buffer[(title_x + 1, title_y)].fg,
-                Role::Rainbow(crate::theme::RainbowHue::Red)
-                    .style()
-                    .fg
-                    .expect("the title has a hue")
+                if manager_role_label == Unlabeled {
+                    title_color()
+                } else {
+                    Role::Rainbow(crate::theme::RainbowHue::Red)
+                        .style()
+                        .fg
+                        .expect("the title has a hue")
+                }
             );
             let after_name = title_x
-                + u16::try_from(format!("{AGENT_CELL_TITLE_LEAD}production").chars().count())
-                    .expect("the title fits");
+                + u16::try_from(if manager_role_label == Unlabeled {
+                    title_text.chars().count()
+                } else {
+                    format!("{AGENT_CELL_TITLE_LEAD}production").chars().count()
+                })
+                .expect("the title fits");
             if manager_label.is_empty() {
                 assert_eq!(
                     buffer[(after_name, title_y)].symbol(),
@@ -951,10 +1245,8 @@ fraying = "leading"
                 ..boss(21 * 60 * 60)
             })
             .collect();
-        app.census.apply(CensusUpdate::Local(
-            agents,
-            crate::census::HierarchyEdges::default(),
-        ));
+        let (agents, edges) = production_roots(agents);
+        app.census.apply(CensusUpdate::Local(agents, edges));
         drawn_buffer_in(&mut app, body);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer_in(&mut app, body);
@@ -992,25 +1284,78 @@ fraying = "leading"
         }
     }
 
-    /// The agent's name in the summary and the title of its cell are
-    /// drawn in one hue: the first cell's, red.
+    /// The real grid names each pool by machine and uses the theme's title color.
     #[test]
-    fn an_agent_name_and_its_cell_title_share_a_hue() {
+    fn unassigned_grid_titles_name_the_machine_and_use_theme_title_color() {
         let mut app = laid_out_app();
         app.census.apply(CensusUpdate::Local(
             vec![boss(21 * 60 * 60)],
-            crate::census::HierarchyEdges::default(),
+            HierarchyEdges::default(),
+        ));
+        app.loaded_config.config.machines.remote = vec!["mac".to_string()];
+        app.census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(
+                vec![AgentRow {
+                    name: "remote-session".to_string(),
+                    ..boss(3600)
+                }],
+                HierarchyEdges::default(),
+            ),
+        });
+        let body = Rect::new(0, 0, 160, 45);
+        drawn_buffer_in(&mut app, body);
+        app.tiles.settle_for_test();
+        let buffer = drawn_buffer_in(&mut app, body);
+        for machine in ["natedev", "mac"] {
+            let title = format!("{UNASSIGNED_CELL_TITLE}{HEADING_SEPARATOR}{machine}");
+            let mut found = false;
+            for y in body.y..body.bottom() {
+                let text: String = (body.x..body.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                if let Some(start) = text.find(&title) {
+                    assert!(text.contains('─'), "the label is drawn in a tile frame");
+                    let x =
+                        u16::try_from(text[..start].chars().count()).expect("title column fits");
+                    assert_eq!(buffer[(x, y)].fg, title_color());
+                    assert_eq!(
+                        buffer[(
+                            x + u16::try_from(title.chars().count() - 1).expect("title fits"),
+                            y
+                        )]
+                            .fg,
+                        title_color()
+                    );
+                    found = true;
+                }
+            }
+            assert!(found, "the grid draws the pool title for {machine}");
+        }
+    }
+
+    /// A pooled session keeps the same name hue in the summary and flat list.
+    #[test]
+    fn an_unassigned_name_and_its_summary_row_share_a_hue() {
+        let mut app = laid_out_app();
+        app.census.apply(CensusUpdate::Local(
+            vec![boss(21 * 60 * 60)],
+            HierarchyEdges::default(),
         ));
         drawn_buffer(&mut app);
         app.tiles.settle_for_test();
-
         let buffer = drawn_buffer(&mut app);
-
-        let red = Color::Rgb(255, 95, 95);
-        assert_eq!(buffer[(19, 3)].symbol(), "b");
-        assert_eq!(buffer[(19, 3)].fg, red, "the summary's name");
-        assert_eq!(buffer[(2, 11)].symbol(), "b");
-        assert_eq!(buffer[(2, 11)].fg, red, "the cell's title");
+        let mut colors = Vec::new();
+        for y in 0..buffer.area.height {
+            let text: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            if let Some(start) = text.find("boss of bosses") {
+                let x = u16::try_from(text[..start].chars().count()).expect("name column fits");
+                colors.push(buffer[(x, y)].fg);
+            }
+        }
+        assert_eq!(colors, [Color::Rgb(255, 95, 95); 2]);
     }
 
     /// Each agent's cell asks for the rows it takes at the width its
@@ -1018,7 +1363,7 @@ fraying = "leading"
     /// takes at the narrowest width: the width its cell will open at.
     #[test]
     fn an_agent_cell_asks_for_its_rows_at_its_own_width() {
-        let natedev = MachineState::Answered(
+        let mut natedev = MachineState::Answered(
             vec![
                 boss(21 * 60 * 60),
                 AgentRow {
@@ -1031,19 +1376,26 @@ fraying = "leading"
             ],
             crate::census::HierarchyEdges::default(),
         );
+        if let MachineState::Answered(rows, edges) = &mut natedev {
+            (*rows, *edges) = production_roots(std::mem::take(rows));
+        }
+        let footer_colors = FooterColors::default();
         let cells = Cells::new(
             vec![Machine {
                 name:  "natedev",
                 state: &natedev,
             }],
             NOW,
+            &footer_colors,
+            &HashMap::new(),
+            SummarySort::default(),
         );
         let [boss, handler] = [&cells.agents[0], &cells.agents[1]];
         let narrow = 30;
 
         let demands = cells.demands(&[
             (TileContent::Summary, WIDTH - 2),
-            (TileContent::Group(boss.id.clone()), narrow),
+            (TileContent::Group(TileKey::Agent(boss.id.clone())), narrow),
         ]);
 
         let rows: Vec<usize> = demands.groups.iter().map(|group| group.rows).collect();

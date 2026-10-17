@@ -2,7 +2,11 @@
 
 ## What it is
 
-`cargo-berth hook post-tool-use` runs the drift check on every tool call. In one worktree it ran one thread at full CPU, with no output, until the 600 s hook timeout ended it. A foreign worktree there held 13 blocking reservations with 4,732 scopes, 364 of them distinct. Two costs were quadratic. Scope reduction compared every pair of scopes. Each holder's protection was worked out again for every changed path the check classified. The design below changes cost only. Every answer stays identical: the same conflicts, the same scopes in the same order, the same JSON. That hook now takes 1.79–2.47 s on a release build on a quiet machine.
+`cargo-berth hook post-tool-use` runs the drift check on every tool call. In one worktree it ran one thread at full CPU, with no output, until the 600 s hook timeout ended it. A foreign worktree there held 13 blocking reservations with 4,732 scopes, 364 of them distinct. Two costs were quadratic. Scope reduction compared every pair of scopes. Each holder's protection was worked out again for every changed path the check classified. The design below changes cost only. Every answer stays identical: the same conflicts, the same scopes in the same order, the same JSON. That hook takes 1.79–2.47 s on a release build on a quiet machine.
+
+## Check under load
+
+The pre-edit `cargo-berth check` is described in [check-under-load.md](check-under-load.md). In short: an already-held path answers `clear` from the lock-free snapshot, holders are observed concurrently under the lock, and a reconcile failure at the lock deadline answers `contention`, exit 6.
 
 ## How it works
 

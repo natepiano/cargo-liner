@@ -14,6 +14,7 @@ use super::ProcessEntry;
 use super::SessionRecord;
 use crate::census::Account;
 use crate::census::Agent;
+use crate::census::AgentActivity;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
@@ -24,6 +25,26 @@ use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::account::AccountLabels;
 use crate::census::account::ConfigHome;
+use crate::census::worker_dispatch::WorkerDispatch;
+use crate::census::worker_dispatch::WorkerTask;
+
+/// The shell detail attached after classification is published.
+fn staged_child() -> ChildRow {
+    ChildRow {
+        worker_task:  WorkerTask::Unrecorded,
+        thread_id:    CodexThreadId::Unrecorded,
+        dispatch:     WorkerDispatch::Plain,
+        activity:     AgentActivity::Idle,
+        depth:        0,
+        kind:         ChildKind::Shell,
+        service_tier: ServiceTier::Unrecorded,
+        account:      Account::Unrecorded,
+        pid:          Some(428_045),
+        name:         "build.sh".to_string(),
+        started:      110,
+        timer:        None,
+    }
+}
 
 #[test]
 fn the_staged_scan_sends_classified_rows_before_reading_details() {
@@ -66,7 +87,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         )),
         service_tier:    ServiceTier::Unrecorded,
         name:            "handler".to_string(),
-        status:          Some("busy".to_string()),
+        activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
         started:         100,
         process_started: 100,
         pid:             428_044,
@@ -76,17 +97,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         launched_by:     None,
         children:        Vec::new(),
     };
-    let child = ChildRow {
-        thread_id:    CodexThreadId::Unrecorded,
-        depth:        0,
-        kind:         ChildKind::Shell,
-        service_tier: ServiceTier::Unrecorded,
-        account:      Account::Unrecorded,
-        pid:          Some(428_045),
-        name:         "build.sh".to_string(),
-        started:      110,
-        timer:        None,
-    };
+    let child = staged_child();
     let (sender, updates) = mpsc::channel();
 
     super::LocalScanner::new(AccountLabels::default()).scan_stages(
@@ -182,4 +193,66 @@ fn later_scans_publish_completed_rows_without_a_classified_refresh() {
         completed
     );
     assert!(matches!(updates.try_recv(), Err(mpsc::TryRecvError::Empty)));
+}
+
+/// Missing conversation data retains the known turn and hides raw worker identities.
+#[test]
+fn activity_scan_missing_transcript_preserves_reported_turn_and_unread_worker_uses_role() {
+    let directory = tempfile::tempdir().expect("isolated transcript directory");
+    let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
+        "agent":"claude", "name":"root", "status":"busy", "pid":10, "started":10,
+        "directory":"/fixture", "desktop":null, "branch":null, "launched_by":null,
+        "children":[{"kind":"thread", "depth":0, "pid":null, "name":"raw-thread-id",
+            "thread_id":"raw-thread-id", "started":20, "timer":null}]
+    }]))
+    .expect("scan fixture rows");
+    let mut scanner = super::LocalScanner::new(AccountLabels::default());
+    let transcripts =
+        std::collections::HashMap::from([(10, directory.path().join("missing.jsonl"))]);
+    scanner.attach_activity_and_names(&[], &transcripts, &mut rows);
+    assert_eq!(rows[0].activity.text(), "thinking");
+    assert_eq!(
+        rows[0].children[0].worker_task.label(
+            crate::census::worker_dispatch::WorkerRoleSource::Unroled,
+            &rows[0].children[0].name,
+        ),
+        "worker"
+    );
+    std::fs::write(directory.path().join("missing.jsonl"), "").expect("empty transcript writes");
+    scanner.attach_activity_and_names(&[], &transcripts, &mut rows);
+    assert_eq!(rows[0].activity.text(), "thinking");
+}
+
+#[test]
+fn transcript_cache_changes_paths_and_forgets_sessions_that_disappear()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let first = directory.path().join("first.jsonl");
+    let second = directory.path().join("second.jsonl");
+    let tool = |name| {
+        serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":name,"input":{}}]}}).to_string()
+    };
+    std::fs::write(&first, format!("{}\n", tool("Read")))?;
+    std::fs::write(&second, format!("{}\n", tool("Edit")))?;
+    let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
+        "agent":"claude","name":"root","status":"busy","pid":10,"started":10,"directory":"/fixture","children":[]
+    }]))?;
+    let mut scanner = super::LocalScanner::new(AccountLabels::default());
+    scanner.attach_activity_and_names(
+        &[],
+        &std::collections::HashMap::from([(10, first.clone())]),
+        &mut rows,
+    );
+    assert_eq!(rows[0].activity.text(), "reading");
+    scanner.attach_activity_and_names(
+        &[],
+        &std::collections::HashMap::from([(10, second.clone())]),
+        &mut rows,
+    );
+    assert_eq!(rows[0].activity.text(), "writing");
+    assert!(!scanner.transcript_activity.contains_key(&first));
+    assert!(scanner.transcript_activity.contains_key(&second));
+    scanner.attach_activity_and_names(&[], &std::collections::HashMap::new(), &mut []);
+    assert!(scanner.transcript_activity.is_empty());
+    Ok(())
 }

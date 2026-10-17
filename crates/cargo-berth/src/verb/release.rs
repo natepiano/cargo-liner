@@ -18,6 +18,7 @@ use crate::git::ReservationCheckpointCommits;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CommittedActionValidation;
@@ -42,6 +43,7 @@ use crate::output::CoordinationRunMarkerRetirement;
 use crate::output::OutputEnvelope;
 use crate::output::ReleasePayload;
 use crate::reconcile;
+use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::IntegrationEvidenceStatus;
@@ -53,6 +55,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
+use crate::reservation::ReservationIntegrationJudgment;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
@@ -88,7 +91,7 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string());
         },
     };
-    let mut reconciliation_report =
+    let reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
             Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
             Ok(Enrollment::Unconfigured {
@@ -101,6 +104,14 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Release),
         };
+    release_reconciled_request(release_request, reconciliation_report)
+}
+
+/// Complete a release request using the settlements and evidence just revalidated.
+fn release_reconciled_request(
+    release_request: ReleaseRequest,
+    mut reconciliation_report: ReconciliationReport,
+) -> OutputEnvelope {
     for settlement in &reconciliation_report.settlements {
         if settlement.reservation_id == release_request.reservation_id {
             reconciliation_report
@@ -138,15 +149,27 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
         })
         .with_alerts(reconciliation_report.alerts);
     }
-    for reconciled_evidence in &reconciliation_report.evidence {
-        if reconciled_evidence.reservation_id == release_request.reservation_id {
-            return OutputEnvelope::released(ReleasePayload::EvidenceRevalidated {
-                reservation_id: release_request.reservation_id,
-                evidence:       reconciled_evidence.status.clone(),
-                marker:         CoordinationRunMarkerRetirement::AlreadyAbsent,
-            })
-            .with_alerts(reconciliation_report.alerts);
-        }
+    // Already settled reservations still report a changed proof without another lifecycle edit.
+    if reconciliation_report
+        .repository_snapshot
+        .reservation(release_request.reservation_id)
+        .is_ok_and(|snapshot| {
+            matches!(
+                snapshot.evidence,
+                RepositoryReservationEvidence::Released { .. }
+            )
+        })
+        && let Some(evidence) = reconciliation_report
+            .evidence
+            .iter()
+            .find(|evidence| evidence.reservation_id == release_request.reservation_id)
+    {
+        return OutputEnvelope::released(ReleasePayload::EvidenceRevalidated {
+            reservation_id: release_request.reservation_id,
+            evidence:       evidence.status.clone(),
+            marker:         CoordinationRunMarkerRetirement::AlreadyAbsent,
+        })
+        .with_alerts(reconciliation_report.alerts);
     }
     let release_result = match execute_release(
         release_request,
@@ -404,9 +427,10 @@ fn validate_release_transaction(
         Ok(retention_deletions) => retention_deletions,
         Err(error) => return CommittedActionValidation::Reject(error),
     };
-    CommittedActionValidation::Append {
-        operation: Box::new(release_append.operation),
-        action:    ReleaseCommittedAction {
+    CommittedActionValidation::AppendWithPrerequisites {
+        prerequisites: release_append.prerequisites,
+        operation:     Box::new(release_append.operation),
+        action:        ReleaseCommittedAction {
             payload_seed: release_append.payload_seed,
             retention_plan: release_append.retention_plan,
             marker_plan,
@@ -505,6 +529,7 @@ fn checkpoint_operation(
             reservation_id,
             protected_tip: protected_tip.clone(),
             trunk_oid,
+            pending_paths: ReleasePendingPaths::from(release_repository_context.merge_extent),
         },
         reservation_id,
         protected_tip,
@@ -523,9 +548,12 @@ fn outstanding_operation(
         release_repository_context.repository_root,
         release_repository_context.target_branch,
     ) else {
-        return Ok(evidence_operation(
+        return Ok(judged_evidence_operation(
             reservation,
-            IntegrationEvidenceStatus::ObjectUnknown,
+            reservation::judge_integration(
+                &IntegrationEvidenceStatus::ObjectUnknown,
+                release_repository_context.merge_extent,
+            ),
             protected_tip.clone(),
         ));
     };
@@ -550,30 +578,45 @@ fn outstanding_operation(
         )
         .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
     };
-    // The command names this reservation, so integrated checkpoint work ends it whatever the
-    // holder committed or left dirty afterwards.
-    if matches!(
-        materialized_status,
-        IntegrationEvidenceStatus::Integrated { .. }
-    ) && let IntegrationEvidenceStatus::Integrated { witness, .. } = &evidence
-    {
-        return Ok(integrated_release_operation(
-            reservation_id,
-            protected_tip,
-            witness,
-        ));
+    let judgment =
+        reservation::judge_integration(&evidence, release_repository_context.merge_extent);
+    match &judgment {
+        ReservationIntegrationJudgment::Integrated { witness, .. } => {
+            let mut append = integrated_release_operation(reservation_id, protected_tip, witness);
+            append
+                .prerequisites
+                .push(JournalOperation::EvidenceRevalidated {
+                    reservation_id,
+                    status: judgment.evidence_status(),
+                    edit_blocking_status: reservation.edit_blocking_status(),
+                });
+            return Ok(append);
+        },
+        ReservationIntegrationJudgment::Outstanding { .. } => {
+            // Advance a stale checkpoint when the holder has committed new pending work.
+            if !matches!(evidence, IntegrationEvidenceStatus::ObjectUnknown)
+                && release_repository_context.holder_worktree == HolderWorktree::Invoking
+                && reservation::current_head(release_repository_context.repository_root)
+                    .is_ok_and(|head| head != *protected_tip.as_ref())
+            {
+                return resnapshot_operation(
+                    release_repository_context,
+                    reservation_id,
+                    &current_trunk,
+                );
+            }
+            return Ok(judged_evidence_operation(
+                reservation,
+                judgment,
+                protected_tip.clone(),
+            ));
+        },
+        ReservationIntegrationJudgment::NotIntegrated
+        | ReservationIntegrationJudgment::TrunkRewritten
+        | ReservationIntegrationJudgment::ObjectUnknown => {},
     }
     // Work that has not reached trunk stays outstanding, and its checkpoint moves to the
     // holder's current HEAD so commits and dirty paths added later stay protected until merged.
-    if matches!(
-        release_repository_context.merge_extent,
-        MergeExtent::Protected { .. }
-    ) && release_repository_context.holder_worktree == HolderWorktree::Invoking
-        && reservation::current_head(release_repository_context.repository_root)
-            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
-    {
-        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
-    }
     if !matches!(
         materialized_status,
         IntegrationEvidenceStatus::Integrated { .. }
@@ -587,9 +630,9 @@ fn outstanding_operation(
     {
         return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
     }
-    Ok(evidence_operation(
+    Ok(judged_evidence_operation(
         reservation,
-        evidence,
+        judgment,
         protected_tip.clone(),
     ))
 }
@@ -617,6 +660,7 @@ fn integrated_release_operation(
         ),
     };
     ReleaseAppend {
+        prerequisites: Vec::new(),
         operation: JournalOperation::Release {
             reservation_id,
             disposition: disposition.clone(),
@@ -701,6 +745,7 @@ fn resnapshot_operation(
             },
         },
         ReleasePayloadSeed::Resnapshotted {
+            pending_paths: ReleasePendingPaths::from(release_repository_context.merge_extent),
             reservation_id,
             protected_tip: replacement_tip.clone(),
             trunk_oid: current_trunk.clone(),
@@ -800,6 +845,7 @@ fn already_settled_operation(
         },
     };
     ReleaseAppend {
+        prerequisites: Vec::new(),
         operation: JournalOperation::EvidenceRevalidated {
             reservation_id,
             status: evidence.clone(),
@@ -840,6 +886,22 @@ impl HolderWorktree {
     }
 }
 
+/// Keep known pending paths visible even when the committed-work proof is unavailable.
+fn judged_evidence_operation(
+    reservation: &Reservation,
+    judgment: ReservationIntegrationJudgment,
+    protected_tip: ProtectedReservationTip,
+) -> ReleaseAppend {
+    let mut append = evidence_operation(reservation, judgment.evidence_status(), protected_tip);
+    if let ReservationIntegrationJudgment::Outstanding { pending_paths, .. } = judgment {
+        append.payload_seed = ReleasePayloadSeed::Outstanding {
+            reservation_id: reservation.id(),
+            pending_paths,
+        };
+    }
+    append
+}
+
 fn evidence_operation(
     reservation: &Reservation,
     evidence: IntegrationEvidenceStatus,
@@ -878,6 +940,7 @@ fn marker_plan_for(
 }
 
 struct ReleaseAppend {
+    prerequisites:  Vec<JournalOperation>,
     operation:      JournalOperation,
     payload_seed:   ReleasePayloadSeed,
     retention_plan: ReleaseRetentionPlan,
@@ -891,6 +954,7 @@ impl ReleaseAppend {
         protected_tip: ProtectedReservationTip,
     ) -> Self {
         Self {
+            prerequisites: Vec::new(),
             operation,
             payload_seed,
             retention_plan: ReleaseRetentionPlan::RetainProtectedTip {
@@ -979,13 +1043,43 @@ impl ReleasePayloadPreparation {
     }
 }
 
+/// Whether release has a current observation of the reservation's pending work.
+enum ReleasePendingPaths {
+    /// An observed empty extent has no pending paths; a protected extent names every path.
+    Observed(Vec<ReservationScopePath>),
+    /// An acquisition declaration or retained observation cannot describe current pending work.
+    Unavailable,
+}
+
+impl From<&MergeExtent> for ReleasePendingPaths {
+    fn from(extent: &MergeExtent) -> Self {
+        match extent {
+            MergeExtent::Protected { scopes, .. } => Self::Observed(
+                scopes
+                    .as_slice()
+                    .iter()
+                    .map(|scope| scope.path.clone())
+                    .collect(),
+            ),
+            MergeExtent::Empty { .. } => Self::Observed(Vec::new()),
+            MergeExtent::NotDerived { .. } | MergeExtent::Unavailable { .. } => Self::Unavailable,
+        }
+    }
+}
+
 enum ReleasePayloadSeed {
+    Outstanding {
+        reservation_id: ReservationId,
+        pending_paths:  Vec<ReservationScopePath>,
+    },
     Checkpointed {
         reservation_id: ReservationId,
         protected_tip:  ProtectedReservationTip,
         trunk_oid:      GitObjectId,
+        pending_paths:  ReleasePendingPaths,
     },
     Resnapshotted {
+        pending_paths:  ReleasePendingPaths,
         reservation_id: ReservationId,
         protected_tip:  ProtectedReservationTip,
         trunk_oid:      GitObjectId,
@@ -1012,26 +1106,59 @@ impl ReleasePayloadSeed {
         session_mapping_publication: SessionIdentityMappingPublication,
     ) -> ReleasePayload {
         match self {
+            Self::Outstanding {
+                reservation_id,
+                pending_paths,
+            } => ReleasePayload::Outstanding {
+                reservation_id,
+                pending_paths,
+                marker,
+            },
             Self::Checkpointed {
                 reservation_id,
                 protected_tip,
                 trunk_oid,
-            } => ReleasePayload::Checkpointed {
-                reservation_id,
-                protected_tip,
-                trunk_oid,
-                marker,
-                session_mapping_publication,
+                pending_paths,
+            } => match pending_paths {
+                ReleasePendingPaths::Observed(pending_paths) => ReleasePayload::Checkpointed {
+                    reservation_id,
+                    protected_tip,
+                    trunk_oid,
+                    pending_paths,
+                    marker,
+                    session_mapping_publication,
+                },
+                ReleasePendingPaths::Unavailable => {
+                    ReleasePayload::CheckpointedPendingPathsUnavailable {
+                        reservation_id,
+                        protected_tip,
+                        trunk_oid,
+                        marker,
+                        session_mapping_publication,
+                    }
+                },
             },
             Self::Resnapshotted {
+                pending_paths,
                 reservation_id,
                 protected_tip,
                 trunk_oid,
-            } => ReleasePayload::Resnapshotted {
-                reservation_id,
-                protected_tip,
-                trunk_oid,
-                marker,
+            } => match pending_paths {
+                ReleasePendingPaths::Observed(pending_paths) => ReleasePayload::Resnapshotted {
+                    pending_paths,
+                    reservation_id,
+                    protected_tip,
+                    trunk_oid,
+                    marker,
+                },
+                ReleasePendingPaths::Unavailable => {
+                    ReleasePayload::ResnapshottedPendingPathsUnavailable {
+                        reservation_id,
+                        protected_tip,
+                        trunk_oid,
+                        marker,
+                    }
+                },
             },
             Self::EvidenceRevalidated {
                 reservation_id,
@@ -1189,7 +1316,10 @@ mod tests {
     use std::cell::Cell;
     use std::error::Error;
 
+    use serde_json::Value;
+
     use super::ReleasePayloadSeed;
+    use super::ReleasePendingPaths;
     use super::ReleaseRetentionPlan;
     use super::integrated_release_operation;
     use super::revalidate_integrated_evidence;
@@ -1198,12 +1328,81 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
     use crate::ledger::ReleaseSource;
+    use crate::output::CoordinationRunMarkerRetirement;
+    use crate::output::OutputEnvelope;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
+    use crate::reservation::MergeExtent;
     use crate::reservation::ProtectedReservationTip;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::session::SessionIdentityMappingPublication;
+
+    #[test]
+    fn checkpoint_paths_distinguish_fresh_observations_from_unavailable_extents()
+    -> Result<(), Box<dyn Error>> {
+        let key = serde_json::json!({
+            "trunk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "working_tree": {"tracked_paths": [], "untracked_paths": []},
+        });
+        let declaration = serde_json::json!({
+            "status": "not_derived",
+            "protection": [{"kind": "file", "path": "pending.rs"}],
+        });
+        let protected = serde_json::json!({
+            "status": "protected", "key": key,
+            "scopes": [{"kind": "file", "path": "pending.rs"}],
+        });
+        let empty = serde_json::json!({"status": "empty", "key": key});
+        let unavailable = |retained| {
+            serde_json::json!({
+                "status": "unavailable", "retained_evidence": retained, "failure": "git unavailable",
+            })
+        };
+        for (extent, expected_paths) in [
+            (declaration.clone(), Value::Null),
+            (unavailable(declaration), Value::Null),
+            (unavailable(protected.clone()), Value::Null),
+            (unavailable(empty.clone()), Value::Null),
+            (empty, serde_json::json!([])),
+            (protected, serde_json::json!(["pending.rs"])),
+        ] {
+            let extent: MergeExtent = serde_json::from_value(extent)?;
+            let payload = ReleasePayloadSeed::Checkpointed {
+                reservation_id: ReservationId::new(),
+                protected_tip:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse()?,
+                trunk_oid:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
+                pending_paths:  ReleasePendingPaths::from(&extent),
+            }
+            .into_payload(
+                CoordinationRunMarkerRetirement::AlreadyAbsent,
+                SessionIdentityMappingPublication::Published,
+            );
+            let envelope = serde_json::to_value(OutputEnvelope::released(payload))?;
+            let data = &envelope["payload"]["data"];
+            assert_eq!(envelope["status"], "outstanding");
+            assert_eq!(data["pending_paths"], expected_paths);
+            if expected_paths.is_null() {
+                assert_eq!(data["status"], "checkpointed_pending_paths_unavailable");
+                assert!(data.get("pending_paths").is_none());
+                assert!(
+                    envelope["message"]
+                        .as_str()
+                        .is_some_and(|message| message.ends_with("; pending paths unavailable."))
+                );
+            } else {
+                assert_eq!(data["status"], "checkpointed");
+                assert!(
+                    !envelope["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("unavailable"))
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn empty_extent_release_retains_the_historical_witness_in_its_disposition_and_action()

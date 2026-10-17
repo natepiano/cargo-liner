@@ -30,12 +30,15 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 
 use super::Agent;
+use super::AgentActivity;
 use super::AgentRow;
 use super::CodexThreadId;
 use super::ServiceTier;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::activity;
+use super::activity::TranscriptRead;
 use super::branch;
 use super::classify;
 use super::classify::HeldSession;
@@ -57,6 +60,12 @@ use super::tree::ShellCall;
 use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
+use super::worker_dispatch::ParsedDispatch;
+use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerNames;
+use super::worker_dispatch::WorkerRoleSource;
+use super::worker_dispatch::WorkerTask;
+use crate::constants::ACTIVITY_PROCESS_NAMES;
 use crate::constants::CALL_SEARCH_SETTLE;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CLAUDE_DIRNAME;
@@ -64,18 +73,21 @@ use crate::constants::CLAUDE_PID_VARIABLE;
 use crate::constants::CLAUDE_SESSIONS_DIRNAME;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_DIRNAME;
+use crate::constants::CODEX_MESH_SCRIPT;
 use crate::constants::CODEX_PACER_STATE;
 use crate::constants::CODEX_SESSIONS_DIRNAME;
 use crate::constants::DESKTOP_QUERY_INTERVAL;
+use crate::constants::MESH_SEAT_FLAGS;
 use crate::constants::PROC_DIRNAME;
 use crate::constants::PROC_FD_DIRNAME;
 use crate::constants::PROJECTS_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
-use crate::constants::SLEEP_PROGRAM;
 use crate::constants::TMUX_LIST_CLIENTS;
 use crate::constants::TMUX_LIST_PANES;
+use crate::constants::VERIFY_SCRIPT;
 #[cfg(target_os = "linux")]
 use crate::constants::WINDOW_LIST_EXPRESSION;
+use crate::constants::WORKER_LABEL;
 
 /// A process as a cache knows it: its pid and start, so a pid handed
 /// out again is a new key.
@@ -85,29 +97,31 @@ type ProcessKey = (u32, u64);
 #[derive(Debug)]
 pub(super) struct LocalScanner {
     /// Whether a completed answer has replaced the startup classification.
-    publication:      LocalPublication,
+    publication:         LocalPublication,
     /// This machine's home directory: where the session records live,
     /// and what a row's directory is written against.
-    home:             Option<PathBuf>,
+    home:                Option<PathBuf>,
     /// Account labels resolved once from this machine's startup configuration.
-    account_labels:   AccountLabels,
+    account_labels:      AccountLabels,
     /// The call found for each shell wrapper, or none found once the
     /// wrapper was [`CALL_SEARCH_SETTLE`] old.
-    shell_calls:      HashMap<ProcessKey, Option<ShellCall>>,
+    shell_calls:         HashMap<ProcessKey, Option<ShellCall>>,
     /// The launcher found for each session tmux holds, by the launcher's
     /// pid and start, or none found once the session was
     /// [`CALL_SEARCH_SETTLE`] old.
-    launchers:        HashMap<ProcessKey, Option<ProcessKey>>,
+    launchers:           HashMap<ProcessKey, Option<ProcessKey>>,
     /// Where each session's transcript was found, by session id.
-    transcript_paths: HashMap<String, PathBuf>,
+    transcript_paths:    HashMap<String, PathBuf>,
     /// When the session each transcript holds began, by the
     /// transcript's path, or none where it holds no stamped line yet.
-    session_starts:   HashMap<PathBuf, Option<u64>>,
+    session_starts:      HashMap<PathBuf, Option<u64>>,
     /// Each Codex rollout read for its tier, as far as it was read.
-    rollouts:         Rollouts,
+    rollouts:            Rollouts,
+    transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    worker_names:        WorkerNames,
     /// What `KWin` and tmux last answered, kept for
     /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
-    desktops:         Option<DesktopRead>,
+    desktops:            Option<DesktopRead>,
 }
 
 /// What `KWin` and tmux answered at one moment.
@@ -219,6 +233,8 @@ impl LocalScanner {
             transcript_paths: HashMap::new(),
             session_starts: HashMap::new(),
             rollouts: Rollouts::default(),
+            transcript_activity: HashMap::new(),
+            worker_names: WorkerNames::default(),
             desktops: None,
         }
     }
@@ -330,7 +346,11 @@ impl LocalScanner {
             .unwrap_or_default()
         });
         self.rollouts.forget_unread();
+        let dispatches = startup_log::startup_stage("worker_dispatches", || {
+            worker_dispatches(processes, &mut self.worker_names)
+        });
         let sources = TreeSources {
+            dispatches,
             sessions,
             subagents,
             shell_calls,
@@ -340,8 +360,81 @@ impl LocalScanner {
         startup_log::startup_stage("attach_children", || {
             tree::attach_children(rows, processes, &sources);
         });
+        self.attach_activity_and_names(processes, &transcripts, rows);
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
+    }
+
+    /// Resolve conversation tools and detached runs once, after child attachment.
+    fn attach_activity_and_names(
+        &mut self,
+        processes: &[ProcessEntry],
+        transcripts: &HashMap<u32, PathBuf>,
+        rows: &mut [AgentRow],
+    ) {
+        let mut runs = HashMap::new();
+        let mut seen_transcripts = HashSet::new();
+        let table = classify::pid_table(processes);
+        for row in rows {
+            if let Some(path) = transcripts.get(&row.pid) {
+                seen_transcripts.insert(path.clone());
+                let read = self
+                    .transcript_activity
+                    .entry(path.clone())
+                    .or_insert_with(|| activity::TranscriptRead::new(row.activity));
+                read.advance(path, row.activity);
+                // The session record is authoritative for a closed Claude turn.
+                if row.activity != AgentActivity::Idle
+                    && read.activity() != AgentActivity::Unreported
+                {
+                    row.activity = read.activity();
+                }
+            }
+            if let Some(verify) = processes.iter().find(|process| {
+                process.arguments.iter().any(|arg| {
+                    Path::new(arg)
+                        .file_name()
+                        .is_some_and(|name| name == VERIFY_SCRIPT)
+                }) && process_is_below(process.pid, row.pid, &table)
+            }) {
+                row.activity = activity::verify_activity(processes, verify.pid).activity();
+            }
+            for child in &mut row.children {
+                let CodexThreadId::Recorded(id) = &child.thread_id else {
+                    continue;
+                };
+                let Some(read) = self.rollouts.thread(id) else {
+                    child.worker_task = WorkerTask::RoleOnly;
+                    continue;
+                };
+                let prompt = read.first_prompt.text();
+                let dispatch = self.worker_names.resolve(id, prompt, &read.worktree);
+                child.worker_task = WorkerTask::from_prompt(prompt);
+                child.name = match &dispatch {
+                    WorkerDispatch::Worker(worker) => worker.label(),
+                    WorkerDispatch::Plain => child
+                        .worker_task
+                        .label(WorkerRoleSource::Unroled, &child.name),
+                };
+                child.dispatch = dispatch;
+                let records: Vec<_> = WorkerNames::session_dirs(prompt)
+                    .into_iter()
+                    .flat_map(|directory| {
+                        runs.entry(directory.clone())
+                            .or_insert_with(|| activity::read_runs(&directory))
+                            .clone()
+                    })
+                    .collect();
+                let gate = activity::run_activity(&records, processes, id);
+                child.activity = if gate == AgentActivity::Unreported {
+                    read.activity()
+                } else {
+                    gate
+                };
+            }
+        }
+        self.transcript_activity
+            .retain(|path, _| seen_transcripts.contains(path));
     }
 
     /// The tier each Codex among `processes` that is not an app server
@@ -547,6 +640,98 @@ impl LocalScanner {
     }
 }
 
+/// Cycle-safe process ancestry for live launches and descendant gates.
+fn process_is_below(pid: u32, root: u32, table: &HashMap<u32, &ProcessEntry>) -> bool {
+    let mut current = Some(pid);
+    let mut seen = HashSet::new();
+    while let Some(pid) = current {
+        if pid == root {
+            return true;
+        }
+        if !seen.insert(pid) {
+            break;
+        }
+        current = table.get(&pid).and_then(|process| process.parent);
+    }
+    false
+}
+
+/// Resolve literal launchers against one roster read per directory per scan.
+/// A launcher's actual pid is used even when a shell wrapper owns its row.
+#[cfg(test)]
+pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32, WorkerDispatch> {
+    worker_dispatches(processes, &mut WorkerNames::default())
+}
+
+/// Share the mtime roster cache with launcher-free naming.
+fn worker_dispatches(
+    processes: &[ProcessEntry],
+    names: &mut WorkerNames,
+) -> HashMap<u32, WorkerDispatch> {
+    let table = classify::pid_table(processes);
+    let wrappers: HashMap<_, _> = processes
+        .iter()
+        .filter_map(|process| {
+            let command = tree::shell_command(process)?;
+            Some((process.pid, ParsedDispatch::parse(&command).ok()?))
+        })
+        .collect();
+    let mut found = HashMap::new();
+    for process in processes {
+        let Ok(dispatch) = ParsedDispatch::from_arguments(&process.arguments) else {
+            continue;
+        };
+        let roster = names.roster(&dispatch.session_dir);
+        let selected = processes
+            .iter()
+            .filter(|candidate| {
+                candidate.arguments.iter().any(|arg| {
+                    Path::new(arg)
+                        .file_name()
+                        .is_some_and(|name| name == CODEX_MESH_SCRIPT)
+                }) && process_is_below(candidate.pid, process.pid, &table)
+            })
+            .find_map(|candidate| {
+                candidate
+                    .arguments
+                    .windows(2)
+                    .find(|pair| MESH_SEAT_FLAGS.contains(&pair[0].as_str()))
+                    .map(|pair| pair[1].clone())
+            });
+        let launcher = dispatch.clone();
+        let mut dispatch = dispatch;
+        if let Some(seat) = selected {
+            dispatch.select_seat(seat);
+        }
+        let worker = dispatch.resolve(roster, process.pid);
+        found.insert(process.pid, worker.clone());
+        let mut parent = process;
+        let mut seen = HashSet::new();
+        while seen.insert(parent.pid) {
+            if tree::shell_command(parent)
+                .is_some_and(|command| launcher.is_final_command_of(&command))
+            {
+                found.insert(parent.pid, worker.clone());
+            }
+            let Some(ancestor) = parent.parent.and_then(|pid| table.get(&pid)) else {
+                break;
+            };
+            if ancestor.is_agent() {
+                break;
+            }
+            parent = ancestor;
+        }
+    }
+    for (pid, dispatch) in wrappers {
+        if found.contains_key(&pid) {
+            continue;
+        }
+        let roster = names.roster(&dispatch.session_dir);
+        found.insert(pid, dispatch.resolve(roster, pid));
+    }
+    found
+}
+
 /// The launcher of `held`, a row tmux holds, by its pid and start: the
 /// other Claude Code row among `rows` whose transcript holds the call
 /// that opened it. The launcher's own process may have started later,
@@ -669,17 +854,18 @@ fn app_server_threads(
                 .into_iter()
                 .map(|(id, rollout)| {
                     let (name, started) = named.get(&id).map_or_else(
-                        || (id.clone(), process.started),
+                        || (WORKER_LABEL.to_owned(), process.started),
                         |thread| {
                             (
-                                thread.label().unwrap_or_else(|| id.clone()),
+                                thread.label().unwrap_or_else(|| WORKER_LABEL.to_owned()),
                                 thread.created_ms / 1_000,
                             )
                         },
                     );
-                    let service_tier =
-                        tier::requested(Some(rollouts.read(&rollout)), &[], pacer, started);
+                    let read = rollouts.read(&rollout);
+                    let service_tier = tier::requested(Some(read.clone()), &[], pacer, started);
                     ThreadEntry {
+                        activity: read.activity(),
                         thread_id: CodexThreadId::Recorded(id),
                         name,
                         started,
@@ -854,7 +1040,7 @@ fn tmux_output(program: &str, arguments: &[&str]) -> Option<String> {
 /// macOS a Claude Code process is named for its version, so an ancestor
 /// is only recognised as Claude Code by its command line. The tree
 /// reads a `sleep`'s arguments for the span of a shell timer, and
-/// nothing above it for that, so each [`SLEEP_PROGRAM`] is read alone.
+/// nothing above it for that, so each [`ACTIVITY_PROCESS_NAMES`] is read alone.
 fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
     let processes = system.processes();
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
@@ -904,7 +1090,11 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
     detailed.extend(
         processes
             .values()
-            .filter(|process| process.name() == SLEEP_PROGRAM)
+            .filter(|process| {
+                ACTIVITY_PROCESS_NAMES
+                    .iter()
+                    .any(|name| process.name() == *name)
+            })
             .map(Process::pid),
     );
     detailed.into_iter().collect()
@@ -1013,15 +1203,17 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
-            publication:      LocalPublication::FirstAnswerPending,
-            home:             None,
-            account_labels:   AccountLabels::default(),
-            shell_calls:      HashMap::new(),
-            launchers:        HashMap::new(),
-            transcript_paths: HashMap::new(),
-            session_starts:   HashMap::new(),
-            rollouts:         Rollouts::default(),
-            desktops:         None,
+            publication:         LocalPublication::FirstAnswerPending,
+            home:                None,
+            account_labels:      AccountLabels::default(),
+            shell_calls:         HashMap::new(),
+            launchers:           HashMap::new(),
+            transcript_paths:    HashMap::new(),
+            session_starts:      HashMap::new(),
+            rollouts:            Rollouts::default(),
+            transcript_activity: HashMap::new(),
+            worker_names:        WorkerNames::default(),
+            desktops:            None,
         }
     }
 
@@ -1059,7 +1251,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            status: None,
+            activity: AgentActivity::Unreported,
             started,
             process_started: started,
             pid,
@@ -1365,7 +1557,7 @@ mod hierarchy_publication_tests {
             updates
                 .recv_timeout(Duration::from_millis(500))
                 .expect("hierarchy should follow completed rows"),
-            CensusUpdate::Local(
+            CensusUpdate::LocalScanCompleted(
                 Vec::new(),
                 HierarchyEdges(vec![HierarchyEdge {
                     manager: "boss".to_string(),
@@ -1376,3 +1568,7 @@ mod hierarchy_publication_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "scan/activity_scan_tests.rs"]
+mod activity_scan_tests;

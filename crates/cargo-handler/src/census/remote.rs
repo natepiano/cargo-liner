@@ -242,7 +242,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
-                    status:          Some("idle".to_string()),
+                    activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
                     started:         5,
                     process_started: 5,
                     pid:             80_020,

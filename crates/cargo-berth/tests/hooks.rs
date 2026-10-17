@@ -208,6 +208,49 @@ fn silent_allow_emits_nothing() -> TestResult {
 }
 
 #[test]
+fn pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held() -> TestResult {
+    let repository = initialized_repository()?;
+    let root = repository.path();
+    let claimed = run_berth_with_claude_code_session(
+        root,
+        &["check", "file:held.rs", "--json"],
+        "locked-edit-session",
+    )?;
+    require_success(&claimed, "claim the edit path")?;
+    let journal = journal_events(root)?;
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH))?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .open(root.join(MUTATION_LOCK_PATH))?;
+    lock.try_lock()?;
+    let payload = edit_payload(root, "held.rs", Some("locked-edit-session"));
+    let started = Instant::now();
+    let mut child = berth_command(BERTH_EXECUTABLE)
+        .args(["hook", "pre-tool-use"])
+        .current_dir(root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin"))?
+        .write_all(&serde_json::to_vec(&payload)?)?;
+    let output = child.wait_with_output()?;
+    assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
+    assert_hook_output(&output, 0, b"", b"")?;
+    assert_eq!(journal_events(root)?, journal);
+    assert_eq!(fs::read(root.join(SESSION_MAPPING_PATH))?, mappings);
+    Ok(())
+}
+
+#[test]
 fn pre_tool_use_under_an_unmapped_session_joins_the_only_active_reservation() -> TestResult {
     let repository = initialized_repository()?;
     let root = repository.path();
@@ -326,6 +369,77 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn pre_tool_use_names_only_the_outstanding_phases_pending_path_after_a_sibling_merges() -> TestResult
+{
+    let repository = committed_configuration_repository()?;
+    let (_holder_directory, holder_root) = add_worktree(&repository, "parallel-holder")?;
+    let first = run_berth_with_session(
+        &holder_root,
+        &["claim", "file:a.rs", "--json"],
+        "dir-sid.phase-1",
+    )?;
+    require_success(&first, "first phase claim")?;
+    let first_id = claimed_reservation_id(&first)?;
+    let second = run_berth_with_session(
+        &holder_root,
+        &["claim", "file:b.rs", "--json"],
+        "dir-sid.phase-2",
+    )?;
+    require_success(&second, "second phase claim")?;
+    let second_id = claimed_reservation_id(&second)?;
+    dirty_source(&holder_root, "a.rs")?;
+    dirty_source(&holder_root, "b.rs")?;
+    run_git(&holder_root, &["add", "a.rs"])?;
+    GIT.run_without_hooks(&holder_root, ["commit", "--quiet", "-m", "first phase"]);
+    for (id, session, path) in [
+        (&first_id, "dir-sid.phase-1", "a.rs"),
+        (&second_id, "dir-sid.phase-2", "b.rs"),
+    ] {
+        let checkpoint = run_berth_with_session(&holder_root, &["release", id, "--json"], session)?;
+        require_success(&checkpoint, "phase checkpoint")?;
+        let checkpoint = json_output(&checkpoint)?;
+        assert_eq!(checkpoint["status"], "outstanding", "{checkpoint}");
+        assert_eq!(checkpoint["payload"]["data"]["status"], "checkpointed");
+        assert_eq!(
+            checkpoint["payload"]["data"]["pending_paths"],
+            serde_json::json!([path])
+        );
+        assert!(required_string(&checkpoint, "/message", "checkpoint")?.contains(path));
+    }
+    GIT.run_without_hooks(
+        repository.path(),
+        ["merge", "--quiet", "--ff-only", "parallel-holder"],
+    );
+    let (_requester_directory, requester_root) = add_worktree(&repository, "parallel-requester")?;
+
+    let refused = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "b.rs", Some("pending-phase-observer")),
+    )?;
+
+    assert_refused_for_scope(&refused, "file:b.rs", "outstanding phase's pending path")?;
+    let refusal = String::from_utf8(refused.stderr)?;
+    assert!(refusal.contains(&second_id), "{refusal}");
+    assert!(!refusal.contains(&first_id), "{refusal}");
+    assert!(!refusal.contains("file:a.rs"), "{refusal}");
+    let board = run_berth(
+        repository.path(),
+        &["board", "--reservation", &second_id, "--json"],
+    )?;
+    require_success(&board, "pending phase board report")?;
+    assert_eq!(
+        json_output(&board)?["payload"]["data"]["lifecycle"]["status"],
+        "outstanding"
+    );
+    let allowed = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "a.rs", Some("pending-phase-observer")),
+    )?;
+    require_success(&allowed, "integrated sibling's path is editable")?;
+    Ok(())
+}
+
 /// A second run reaches the incumbent's paths as a writer, and the pre-edit hook refuses it.
 ///
 /// The occupancy rule refuses this run a reservation of its own before any overlap is
@@ -428,6 +542,78 @@ fn a_contended_ledger_states_the_engine_message() -> TestResult {
         "another cargo-berth operation is still running",
         "lock contention refusal",
     )
+}
+
+#[test]
+fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -> TestResult {
+    let repository = initialized_repository()?;
+    let root = repository.path();
+    let (_directory, foreign_root) = add_worktree(&repository, "busy-ledger-holder")?;
+    let foreign = run_berth_with_session(
+        &foreign_root,
+        &["claim", "file:foreign.rs", "--json"],
+        "foreign-busy-session",
+    )?;
+    require_success(&foreign, "live foreign reservation requires reconciliation")?;
+    fs::write(foreign_root.join("foreign.rs"), "live foreign work\n")?;
+    let foreign_id = claimed_reservation_id(&foreign)?;
+    let session = "busy-edit-session";
+    require_success(
+        &run_berth_with_session(root, &["check", "file:held.rs", "--json"], session)?,
+        "claim the acting session's first path",
+    )?;
+    let journal = journal_events(root)?;
+    let mappings = fs::read(root.join(SESSION_MAPPING_PATH))?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .open(root.join(MUTATION_LOCK_PATH))?;
+    lock.try_lock()?;
+    let started = Instant::now();
+    let checked = berth_command(BERTH_EXECUTABLE)
+        .args(["check", "file:unheld.rs", "--json"])
+        .current_dir(root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env("CARGO_BERTH_SESSION_ID", session)
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .output()?;
+    let envelope = json_output(&checked)?;
+    assert_eq!(checked.status.code(), Some(6), "{envelope}");
+    assert_eq!(envelope["status"], "contention");
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
+    assert_eq!(envelope["reservations"], serde_json::json!([]));
+    let payload = edit_payload(root, "unheld.rs", Some(session));
+    let mut child = berth_command(BERTH_EXECUTABLE)
+        .args(["hook", "pre-tool-use"])
+        .current_dir(root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin"))?
+        .write_all(&serde_json::to_vec(&payload)?)?;
+    let output = child.wait_with_output()?;
+    assert!(started.elapsed() < Duration::from_millis(500), "{output:?}");
+    assert_engine_authored_refusal(
+        &output,
+        LOCK_CONTENTION_SUMMARY,
+        required_string(&envelope, "/message", "busy check")?,
+        "reconciliation contention refusal",
+    )?;
+    let diagnostic = String::from_utf8(output.stderr)?;
+    assert!(!diagnostic.contains(&foreign_id), "{diagnostic}");
+    assert!(!diagnostic.contains("Holder"), "{diagnostic}");
+    assert!(!diagnostic.contains("overlap"), "{diagnostic}");
+    assert_eq!(journal_events(root)?, journal);
+    assert_eq!(fs::read(root.join(SESSION_MAPPING_PATH))?, mappings);
+    Ok(())
 }
 
 #[test]
@@ -2302,7 +2488,7 @@ impl OrphanedReservations {
 /// never froze.
 fn committed_configuration_repository() -> TestResult<TempDir> {
     let repository = initialized_repository()?;
-    run_git(repository.path(), &["add", CONFIGURATION_PATH])?;
+    run_git(repository.path(), &["add", "--force", CONFIGURATION_PATH])?;
     run_git(
         repository.path(),
         &[

@@ -39,6 +39,7 @@ use crate::edge::RepositorySnapshot;
 use crate::edge::UnintegratedPredecessorEvidence;
 use crate::git;
 use crate::git::AheadBehind;
+use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
 use crate::ids::GitObjectId;
@@ -57,6 +58,7 @@ use crate::ledger::IntegrationTarget;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
+use crate::ledger::WorktreeContext;
 use crate::output::EngineAnswerOccasion;
 use crate::output::TargetView;
 use crate::presentation;
@@ -73,6 +75,8 @@ use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
+use crate::session;
+use crate::session::HarnessSessionId;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 
@@ -169,6 +173,8 @@ pub(super) enum IntegrationOrderDeclaration {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct BoardReservationSnapshot {
     pub(super) reservation_id: ReservationId,
+    #[serde(skip)]
+    session:                   BoardReservationSession,
     target:                    TargetView,
     holder:                    ReservationHolder,
     source:                    ClaimSource,
@@ -184,6 +190,72 @@ pub(super) struct BoardReservationSnapshot {
     pub(super) visibility:     BoardReservationVisibility,
     pub(super) freshness:      ReservationFreshness,
     ahead_behind_main:         AheadBehind,
+}
+
+/// A reservation's harness session labels, or its explicitly identified fallback run.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum BoardReservationSession {
+    Mapped {
+        primary: HarnessSessionId,
+        aliases: Vec<HarnessSessionId>,
+    },
+    RunOnly(CoordinationRunId),
+    /// A board deserialized from JSON does not carry its session identity.
+    #[default]
+    Unavailable,
+}
+
+impl BoardReservationSnapshot {
+    /// Compact cells for the Overview table, using the same facts as reservation details.
+    pub(super) fn overview_cells(&self) -> [String; 5] {
+        let session = match &self.session {
+            BoardReservationSession::Mapped { primary, aliases } => std::iter::once(primary)
+                .chain(aliases)
+                .map(|session| {
+                    overview_short_id(session.as_str())
+                        .escape_debug()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            BoardReservationSession::RunOnly(run) => {
+                format!("run {}", overview_short_id(&run.to_string()))
+            },
+            BoardReservationSession::Unavailable => "unavailable".to_owned(),
+        };
+        let stage = match self.lifecycle {
+            ReservationLifecycle::Active => "active",
+            ReservationLifecycle::Outstanding { .. } => "outstanding",
+            ReservationLifecycle::Released { .. } => "released",
+        };
+        let blocking = match self.edit_blocking_status {
+            EditBlockingStatus::Blocking => "blocking",
+            EditBlockingStatus::Clear => "clear",
+        };
+        let race_paths = match &self.race_extent {
+            RaceExtent::Editing { scopes } => scopes
+                .as_slice()
+                .iter()
+                .map(|scope| scope.path.to_string().escape_debug().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            RaceExtent::Ended => "(ended)".to_owned(),
+        };
+        [
+            overview_short_id(&self.reservation_id.to_string()),
+            session,
+            stage.to_owned(),
+            blocking.to_owned(),
+            race_paths,
+        ]
+    }
+}
+
+/// Keep an identity's final group and phase suffix readable in compact table columns.
+fn overview_short_id(id: &str) -> String {
+    let phase_start = id.find(".phase-").unwrap_or(id.len());
+    let (identity, phase) = id.split_at(phase_start);
+    format!("{}{phase}", identity.rsplit('-').next().unwrap_or(identity))
 }
 
 /// Whether human board presentations show reservation targets.
@@ -884,6 +956,7 @@ fn board_reservation_snapshots(
 ) -> Result<(Vec<BoardReservationSnapshot>, u64), BoardError> {
     let (ahead_by_worktree, ahead_behind_computations) =
         ahead_behind_by_worktree(repository_root, reservations, snapshot)?;
+    let mut sessions = board_reservation_sessions(repository_root, reservations);
     let mut reservation_snapshots = Vec::new();
     for reservation in reservations.iter() {
         let repository_reservation = snapshot.reservation(reservation.id())?;
@@ -907,6 +980,9 @@ fn board_reservation_snapshots(
         let visibility = reservation_visibility(reservation);
         reservation_snapshots.push(BoardReservationSnapshot {
             reservation_id: reservation.id(),
+            session: sessions
+                .remove(&reservation.id())
+                .unwrap_or_else(|| BoardReservationSession::RunOnly(reservation.actor().run)),
             target: TargetView::from_recorded(
                 reservation.target(),
                 snapshot.repository_trunk_target(),
@@ -941,6 +1017,38 @@ fn board_reservation_snapshots(
         });
     }
     Ok((reservation_snapshots, ahead_behind_computations))
+}
+
+/// Read disposable labels once per run, matching both the reservation and its actor.
+fn board_reservation_sessions(
+    repository_root: &Path,
+    reservations: &RetainedReservationSet,
+) -> HashMap<ReservationId, BoardReservationSession> {
+    let Ok(context) = WorktreeContext::discover(repository_root) else {
+        return HashMap::new();
+    };
+    let mut sessions_by_run = HashMap::new();
+    let mut sessions = HashMap::new();
+    for reservation in reservations.iter() {
+        let run = reservation.actor().run;
+        let mappings = sessions_by_run.entry(run).or_insert_with(|| {
+            session::phase_reservation_sessions(&context.ledger_directory(), run)
+                .unwrap_or_default()
+        });
+        let Some(labels) = mappings.get(&reservation.id()) else {
+            continue;
+        };
+        if let [primary, aliases @ ..] = labels.as_slice() {
+            sessions.insert(
+                reservation.id(),
+                BoardReservationSession::Mapped {
+                    primary: primary.clone(),
+                    aliases: aliases.to_vec(),
+                },
+            );
+        }
+    }
+    sessions
 }
 
 fn ahead_behind_by_worktree(

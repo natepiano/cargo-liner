@@ -2654,6 +2654,11 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
         assert!(sequenced.status.success());
     }
 
+    // The placeholder dirt establishes overlap during claims, then must not block integration.
+    git(
+        &predecessor_root,
+        &["restore", "--worktree", "--", "successors"],
+    );
     fs::create_dir_all(predecessor_root.join("successors"))
         .expect("predecessor source directory should exist");
     fs::write(
@@ -2873,7 +2878,10 @@ fn defer_answer(repository_root: &Path, scope: &str, run: &str, blocker: &str) -
 /// Commit the policy without hooks: before any reservation exists, the trunk gate and the
 /// post-commit drift check write no berth state.
 fn commit_configuration(repository_root: &Path) {
-    git(repository_root, &["add", ".claude/config/berth.toml"]);
+    git(
+        repository_root,
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository_root,
         &[
