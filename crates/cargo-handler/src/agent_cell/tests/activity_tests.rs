@@ -1,4 +1,5 @@
-//! Detailed activity is drawn and sorted in ordinary trees and unassigned pools.
+//! These fixtures exercise `AgentActivity` rendering and sorting in
+//! `AgentTile::Agent` trees and `AgentTile::Unassigned` pools.
 
 #![expect(
     clippy::panic,
