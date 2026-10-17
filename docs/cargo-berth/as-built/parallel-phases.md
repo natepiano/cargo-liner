@@ -6,6 +6,12 @@ Two or more phase reservations (harness sessions `<sid>.phase-N` in one coordina
 
 ## How it works
 
+### Incursions across phase history
+
+A phase's committed range can contain work merged from its integration target. Incursion authorship excludes commits reachable from the local target or its upstream ref already available locally; no fetch occurs. An absent upstream or unavailable upstream object falls back to the local target alone. Committed-only paths carried entirely by those commits raise no incursion. History is also read for paths that are both committed and dirty, while present working-tree writes still count as writes. This authorship filter leaves the local branch used for release and integration judgments unchanged.
+
+Each incident records coverage evidence per entered path. Known entering commits form a non-empty set: once answered, the same commits stay answered as holders or sibling reservations join, and only a new entering commit reopens that path. Working-tree writes and unavailable history have distinct evidence variants. A working-tree answer covers the first commit recording the answered write; two or more entering commits reopen the path. Records from either earlier journal layout retain their holder-subset coverage rule. Coverage is shared only by reservations of the same run and worktree, so `resolve --every-incursion` answers the run's recorded backlog for the next hook check too.
+
 ### Each reservation's share of the worktree observation (`crates/cargo-berth/src/reconcile.rs`)
 
 - `derive_merge_extents` calls `derive_merge_extents_with_observer`, whose observer can be swapped out in unit tests. `observe_holder_merge_extents` observes once per holder key `(WorktreeId, IntegrationTarget)`, using the first unreleased reservation it finds for that key. All keys are observed at the same time under `std::thread::scope`.

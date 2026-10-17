@@ -2,13 +2,13 @@
 
 > **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** Initializing berth leaves the trunk worktree clean, the terminal board shows reservations created after it opens and shows no raw diagnostics, and a single-reservation board answer carries that reservation's ordering edges and overlap answers.
 
-> **As-built disposition: amend** — `docs/cargo-berth/as-built/worktree-enrollment.md`, `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/operations.md`
+> **As-built disposition: amend** — `docs/cargo-berth/as-built/worktree-enrollment.md`, `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/operations.md`, `docs/cargo-berth/as-built/rebase-settlement.md`
 
 > **Production: remove-running-section** — unit `berth-parallel-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
 
 ## Source
 
-2026-10-16, from the showrunner: the three berth-parallel next items (that file is retired; each item is a phase here), one phase each. Phase 2 was added the same day from organon's berth report (resolved incursions re-raised for commits already on `init/catalyst`); the showrunner placed it ahead of the board phases because it hits every session's hook. They are berth defects under the user's berth standing approval: fast fix with tests, install on both machines after each checkpoint.
+2026-10-16, from the showrunner: the three berth-parallel next items (that file is retired; each item is a phase here), one phase each. Phase 2 was added the same day from organon's berth report (resolved incursions re-raised for commits already on `init/catalyst`); the showrunner placed it ahead of the board phases because it hits every session's hook. A second case came from cables-unit the same day (merge e540ed18d of `init/catalyst`, then a plan-doc edit; reservation 01a14753 charged with incursions for files the merge only received). Phase 3 (a trial merge read as an edit, from handler-enh) and phase 4 (claiming a new path behind an existing edge, from the showrunner) were added that evening, ahead of the board phases. They are berth defects under the user's berth standing approval: fast fix with tests, install on both machines after each checkpoint.
 
 ## Delegation Context
 
@@ -72,7 +72,7 @@
 
 **Ruled out:** serializing concurrent `init` exclude writes — single-user race.
 
-### Phase 2 — An incursion from commits already on the integration target is never raised, and a resolved one stays resolved  · status: todo
+### Phase 2 — An incursion from commits already on the integration target is never raised, and a resolved one stays resolved  · status: done
 
 **Depends on:** Phase 1 (shared README and CHANGELOG)
 
@@ -103,9 +103,66 @@
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; a reservation with target-reachable commits in its range reports no incursion for them; after `resolve --every-incursion`, the next hook check raises none.
 
-### Phase 3 — The terminal board shows reservations created after it opens, and its Overview holds no raw diagnostics  · status: todo
+### Phase 3 — A trial merge in progress is never read as this worktree's edit  · status: todo
 
-**Depends on:** Phase 2 (shared README and CHANGELOG)
+**Depends on:** Phase 2 (shared CHANGELOG, `src/drift/`, as-built docs)
+
+#### Work Order
+
+**Goal:** While a merge, cherry-pick or revert is in progress in an enrolled worktree (for example `git merge --no-commit --no-ff <peer tip>`, the production's trial merge), no hook or drift check creates a first-touch reservation or raises an incursion for the changes it brought in, and after `git merge --abort` nothing remains.
+
+**Spec:**
+1. Repro (handler-enh, 2026-10-16): a trial merge in an enrolled worktree raised incursions on paths tile-fixes and berth-parallel held and created first-touch reservation 01a147a4. Drift stands aside only for a rebase: `git::rewrite_in_progress` (`src/git/discovery.rs:118`) checks only `rebase-merge`/`rebase-apply` (`src/git/constants.rs:165`), used by `comparable_worktree` (`src/drift/execution.rs:527`), which returns `DeferredPendingRewrite` and an unchanged empty report (`:534-549`). `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD` sit in `OPERATION_IN_PROGRESS_MARKERS` (`src/worktree/constants.rs:10-16`), read only by enrollment (`src/worktree/enrollment.rs:343`). The post-tool-use hook (`src/hook/post_tool_use.rs:229`) runs drift, whose `claim_post_write_paths` (`execution.rs:552`, called at `:331` and `:398`) acquires the first touch.
+2. Drift defers whenever any in-progress operation exists — rebase, merge, cherry-pick, revert — through one shared marker set and one semantic type naming which operation is pending, used by both drift and enrollment; never a second list. The deferred report is the same unchanged empty report a pending rebase gives today, so no first touch and no incursion.
+3. Once the operation ends, drift resumes: after an abort the tree is clean and nothing is reported; after a completed merge commit the merged-in commits are judged by phase 2's committed-origin rules.
+4. Tests: (a) a trial merge of a peer's held paths, then a post-tool-use check: no reservation, no incursion; (b) the same after `git cherry-pick --no-commit`; (c) after `git merge --abort` the next check reports nothing; (d) a merge completed with a commit is judged as a commit, not deferred forever; (e) extend `drift_reports_no_change_while_a_rewrite_is_pending` (`src/drift/execution.rs:984`) to each operation.
+5. Docs: CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/worktree-coordination.md` (Drift ~374-406, invariants ~516-517), `rebase-settlement.md` (~128), `worktree-enrollment.md` (~85, 93, 113).
+
+**Files:**
+- `crates/cargo-berth/src/git/discovery.rs`, `crates/cargo-berth/src/git/constants.rs`, `crates/cargo-berth/src/worktree/constants.rs`, `crates/cargo-berth/src/worktree/enrollment.rs` — the shared in-progress operation type
+- `crates/cargo-berth/src/drift/execution.rs` — deferral and its unit test
+- `crates/cargo-berth/tests/` — the Spec 4 integration tests
+- `crates/cargo-berth/CHANGELOG.md`
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/rebase-settlement.md`, `docs/cargo-berth/as-built/worktree-enrollment.md`
+
+**Workers:** 1 writer + 1 tester
+- `impl` — `src/` (the unit test included), CHANGELOG, as-built docs; runs lint and the full gate.
+- `test` — the Spec 4 integration tests in `tests/`.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; a trial merge in an enrolled worktree leaves the board unchanged.
+
+### Phase 4 — Claiming a new path behind a holder you already sequenced against succeeds  · status: todo
+
+**Depends on:** Phase 3 (shared CHANGELOG and as-built docs)
+
+#### Work Order
+
+**Goal:** `cargo-berth claim <new path> --reservation R --before H` (or `--after H`), when R already has that ordering edge with H, adds the path to R under the existing edge and exits 0.
+
+**Spec:**
+1. Repro (handler-enh, 2026-10-16): reservation 01a14740 claimed `crates/tui_pane/Cargo.toml` and `CHANGELOG.md` with `--before 01a13687`; a second `claim crates/cargo-handler/CHANGELOG.md --reservation 01a14740… --before 01a13687…` exits 2 `duplicate_ordering_edge`, the path is never added, and `check` on it stays `blocked_by_overlap`. Today `bind_claim_authorization` (`src/verb/claim/mod.rs:2336-2351`) refuses when `ordering_graph.contains_sequence(requester, blocker)` (`src/edge/graph.rs:365`), before `coverage()`/`mutation()` (`src/verb/claim/named.rs:195-196`) add any path.
+2. When the edge in the requested direction already exists, the claim widens R with the new paths and binds their overlaps with H to that existing edge, recording no second edge: graph replay refuses a repeated endpoint pair (`add_edge`, `graph.rs:660-669`), and coverage is per scope (`partition::reservations_authorize_scope`, `src/reservation/partition.rs:158-186`), so the new scopes need a recorded authorization naming the existing edge. Model it on `ConflictAuthorization::ExistingAnswersCoverEveryOverlap` (`src/answer/conflict_authorization.rs:111`, used by drift widen at `src/reservation/retention.rs:626`) or a Sequence form that skips the holder whose pair exists — as a semantic type, never an optional edge. With several holders, only the holders whose edge is new add edges; a skipped holder counts nothing toward the edge limit (`mod.rs:2353-2365`). Journal replay of existing ledgers is unchanged.
+3. A repeat that names no new path is an idempotent success that writes nothing (unit director's call: the showrunner asked for an idempotent edge). The opposite direction to an existing edge is still refused as today. `--defer` and the `sequence` verb are unchanged; `OutputStatus::DuplicateOrderingEdge` stays for the `sequence` verb (`src/verb/sequence.rs:90-93`). Remove `ClaimRejection`/`ClaimError::DuplicateOrdering` and `OutputEnvelope::claim_duplicate_ordering` (`src/output.rs:2581-2587`) if nothing else reaches them.
+4. Tests: invert `assert_repeated_named_ordering_is_refused` (`tests/parallel_phases.rs:1430`, callers at :821 and :826) — the `file:extra.rs` case widens and succeeds and `check` on it is clear; the no-growth repeat succeeds with no journal change; both for `--before` and `--after`. Add: two holders where one edge exists and one is new; the opposite direction is still refused; replay after the widen succeeds. Keep the `sequence` verb's duplicate tests (`tests/edges.rs:808-812`, `:2290-2296`).
+5. Docs: CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/json-contract.md:860-865`, `worktree-coordination.md:332`, `phase-reservations.md:105`.
+
+**Files:**
+- `crates/cargo-berth/src/verb/claim/` — the refusal, authorization binding and widen
+- `crates/cargo-berth/src/answer/conflict_authorization.rs`, `crates/cargo-berth/src/edge/graph.rs` — authorization naming an existing edge, and its replay
+- `crates/cargo-berth/src/output.rs` — remove the claim-only duplicate envelope
+- `crates/cargo-berth/tests/` — the Spec 4 tests
+- `crates/cargo-berth/CHANGELOG.md`
+- `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/phase-reservations.md`
+
+**Workers:** 1 writer + 1 tester
+- `impl` — `src/`, CHANGELOG, as-built docs; runs lint and the full gate.
+- `test` — the Spec 4 tests in `tests/`.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; the repro's second claim exits 0 and `check` on the new path is clear.
+
+### Phase 5 — The terminal board shows reservations created after it opens, and its Overview holds no raw diagnostics  · status: todo
+
+**Depends on:** Phase 4 (shared README and CHANGELOG)
 
 #### Work Order
 
@@ -133,9 +190,9 @@
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; a live board on natedev shows a reservation created after it opened within two seconds, and its Overview shows only the table.
 
-### Phase 4 — A single-reservation board answer carries its ordering edges and overlap answers  · status: todo
+### Phase 6 — A single-reservation board answer carries its ordering edges and overlap answers  · status: todo
 
-**Depends on:** Phase 3 (shared README and CHANGELOG, `verb/board.rs`)
+**Depends on:** Phase 5 (shared README and CHANGELOG, `verb/board.rs`)
 
 #### Work Order
 
@@ -165,9 +222,9 @@
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; `board --reservation <id> --json` on the live ledger shows `ordering_edges` and `overlap_answers`.
 
-### Phase 5 — Every cargo-berth test finishes in under a second  · status: todo
+### Phase 7 — Every cargo-berth test finishes in under a second  · status: todo
 
-**Depends on:** Phase 4 (every phase edits `crates/cargo-berth/tests/`)
+**Depends on:** Phase 6 (every phase edits `crates/cargo-berth/tests/`)
 
 #### Work Order
 

@@ -46,6 +46,7 @@ use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::patch::HistoricalIntegrationCandidateDiscovery;
 use super::patch::ScopedPatchTargetHistory;
+use super::refs::LocalTargetUpstream;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
@@ -1031,17 +1032,33 @@ pub(crate) fn commits_outside_origin_basis(
     repository_root: &Path,
     origin_basis: &GitObjectId,
     target: &GitObjectId,
+    upstream: &LocalTargetUpstream,
 ) -> Result<HashSet<GitObjectId>, GitError> {
     let range = format!("{origin_basis}{GIT_ANCESTOR_RANGE_INFIX}{target}");
-    let arguments = [GIT_REV_LIST_COMMAND.to_owned(), range];
+    let mut arguments = vec![GIT_REV_LIST_COMMAND.to_owned(), range];
+    if let LocalTargetUpstream::Available(upstream) = upstream {
+        arguments.push(format!("{GIT_EXCLUDE_REVISION_PREFIX}{upstream}"));
+    }
     let output = error::completed_git_command(
         command::git_output_dynamic(repository_root, &arguments).into(),
     )?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_REV_LIST_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+    match (output.status.success(), upstream) {
+        (true, _) => {},
+        (false, LocalTargetUpstream::Available(_)) => {
+            // A ref can resolve while an ancestor object is missing. Preserve local evidence.
+            return commits_outside_origin_basis(
+                repository_root,
+                origin_basis,
+                target,
+                &LocalTargetUpstream::Unavailable,
+            );
+        },
+        (false, LocalTargetUpstream::Unavailable) => {
+            return Err(GitError::CommandFailed {
+                command: GIT_REV_LIST_COMMAND,
+                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        },
     }
     let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
     output_text
