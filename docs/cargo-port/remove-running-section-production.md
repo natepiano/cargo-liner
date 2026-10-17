@@ -15,7 +15,7 @@
 - **Review pool:** code
 - **User zone:** `America/New_York`. Every time the showrunner reports is in this zone only.
 - **Updates:** on demand. Each update reports every unit in full.
-- **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
+- **Merge tests:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` (they build on tui_pane)
 - **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), three units.
 
 ## Units
