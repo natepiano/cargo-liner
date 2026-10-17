@@ -97,13 +97,8 @@ const BRANCH_PATH_DIFF_QUERY: &str = "diff --name-only -z --no-renames ";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 if [ "$1" = "--no-optional-locks" ]; then
-    command_name="$2"
-    (
-        shift 2
-        command_line="$command_name"
-        for argument in "$@"; do command_line="$command_line $argument"; done
-        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-    )
+    command_line="$*"
+    printf '%s\n' "${command_line#--no-optional-locks }" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 fi
 if { { [ "$2" = "merge-tree" ] && [ "$4" != "--name-only" ]; } \
         || { [ "$2" = "rev-list" ] && [ "$3" = "--cherry-mark" ]; }; } \
@@ -1762,7 +1757,9 @@ fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
         ],
     );
     git(root, &["reflog", "expire", "--expire=now", "--all"]);
-    git(root, &["gc", "--prune=now"]);
+    // These fixtures create loose objects with auto-maintenance disabled. Prune
+    // the unreachable tip directly; repacking reachable history is unrelated.
+    git(root, &["prune", "--expire=now"]);
     assert!(!git_status(
         root,
         &["cat-file", "-e", &fixture.protected_tip]
@@ -2623,48 +2620,8 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
     }
     let predecessor = claim(&predecessor_root, "tree:successors", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
+    let predecessor_claim = last_journal_event(repository.path());
     let protected_content = "pub fn protected_predecessor() {}\n";
-    let mut successor_heads = Vec::new();
-    for successor_index in 0..successor_count {
-        let successor_root = add_worktree(
-            repository.path(),
-            worktrees.path(),
-            &format!("successor-{successor_index}"),
-        );
-        let successor_path = format!("successors/successor-{successor_index}.rs");
-        fs::write(
-            successor_root.join("successors/protected.rs"),
-            protected_content,
-        )
-        .expect("successor source should write");
-        git(&successor_root, &["add", "successors/protected.rs"]);
-        git(
-            &successor_root,
-            &[
-                "commit",
-                "--quiet",
-                "-m",
-                &format!("successor {successor_index}"),
-            ],
-        );
-        successor_heads.push(git_stdout(&successor_root, &["rev-parse", "HEAD"]));
-        let successor_run = uuid::Uuid::now_v7().to_string();
-        let successor = defer_claim(
-            &successor_root,
-            &format!("file:{successor_path}"),
-            &successor_run,
-            &predecessor_id,
-        );
-        let successor_id = reservation_id(&successor);
-        let sequenced = sequence(
-            repository.path(),
-            &predecessor_id,
-            &successor_id,
-            "predecessor lands before this successor",
-        );
-        assert!(sequenced.status.success());
-    }
-
     // The placeholder dirt establishes overlap during claims, then must not block integration.
     git(
         &predecessor_root,
@@ -2687,6 +2644,29 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
             .status
             .success()
     );
+    // Finish the predecessor before adding the scale population, so its commit hook and
+    // release do not repeatedly observe every successor during setup.
+    let mut successor_heads = Vec::new();
+    for successor_index in 0..successor_count {
+        let branch = format!("successor-{successor_index}");
+        let successor_root = add_worktree(repository.path(), worktrees.path(), &branch);
+        commit_successor_fixture_file(
+            &successor_root,
+            "successors/protected.rs",
+            protected_content,
+            &format!("successor {successor_index}"),
+        );
+        let head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
+        record_scale_successor(
+            repository.path(),
+            &successor_root,
+            &branch,
+            &head,
+            &predecessor_claim,
+        );
+        successor_heads.push(head);
+    }
+
     git(
         repository.path(),
         &[
@@ -2703,6 +2683,61 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
         _worktrees: worktrees,
         successor_heads,
     }
+}
+
+/// Replay setup for the scale tests: each live successor owns its file and one edge to the
+/// predecessor. Claim acquisition has separate command tests; these tests measure board reads.
+fn record_scale_successor(
+    root: &Path,
+    successor_root: &Path,
+    branch: &str,
+    head: &str,
+    predecessor: &serde_json::Value,
+) {
+    let previous = last_journal_event(root);
+    let mut event = predecessor.clone();
+    let worktree_id = uuid::Uuid::now_v7().to_string();
+    let administrative_directory = linked_worktree_administrative_directory(successor_root);
+    fs::write(
+        administrative_directory.join("cargo-berth-worktree-id"),
+        &worktree_id,
+    )
+    .expect("successor identity should write");
+    let scopes = serde_json::json!([{"path": format!("successors/{branch}.rs"), "kind": "file"}]);
+    event["actor"]["worktree"] = serde_json::json!(worktree_id);
+    event["actor"]["run"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+    event["event_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+    event["reservation_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+    event["projection_generation"] = serde_json::json!(
+        previous["projection_generation"]
+            .as_u64()
+            .expect("generation should exist")
+            + 1
+    );
+    event["scopes"] = scopes.clone();
+    event["head_snapshot"] = serde_json::json!({
+        "kind": "branch", "full_ref": format!("refs/heads/{branch}"), "head": head,
+    });
+    event["phase_start_head"] = serde_json::json!(head);
+    event["worktree_root"] = serde_json::json!(successor_root);
+    event["worktree_administrative_locator"] = serde_json::json!(
+        administrative_directory
+            .strip_prefix(root.join(".git"))
+            .expect("linked administration should be in common git")
+    );
+    event["authorization"] = serde_json::json!({
+        "kind": "sequence",
+        "overlaps": [{"reservation_id": predecessor["reservation_id"],
+                      "scope_revision": predecessor["scopes"], "scopes": scopes}],
+        "blocker": predecessor["reservation_id"],
+        "direction": "holder_before_requester",
+        "edge_id": uuid::Uuid::now_v7().to_string(),
+        "reason": "predecessor lands before this successor",
+    });
+    let mut journal = journal_text(root);
+    journal.push_str(&event.to_string());
+    journal.push('\n');
+    fs::write(root.join(JOURNAL_PATH), journal).expect("successor scale claim should append");
 }
 
 fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixture {
@@ -3288,7 +3323,11 @@ fn run_berth_with_stale_marker(
 fn git_binary() -> PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").expect("test PATH should exist"))
         .map(|directory| directory.join(GIT_BINARY))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
         .expect("git should exist on PATH")
 }
 

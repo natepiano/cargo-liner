@@ -5,6 +5,9 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
+#[path = "support/lock_contention.rs"]
+mod lock_contention;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -83,9 +86,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use tempfile::TempDir;
 use tempfile::tempdir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
@@ -1495,22 +1498,19 @@ fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
     );
     assert_success(&claimed);
     let predecessor_id = claim_id(&claimed);
-    let deferred = repository.defer_claim_to(
-        &successor,
-        "file:shared.txt",
-        SECOND_RUN,
-        &predecessor_id,
-        Some("main"),
-    );
-    assert_success(&deferred);
-    let successor_id = claim_id(&deferred);
+    // The gate needs the edge, rather than the intermediate unanswered deferral.
     assert_success(&repository.run(
-        repository.root(),
+        &successor,
         &[
-            "sequence",
+            "claim",
+            "file:shared.txt",
+            "--run",
+            SECOND_RUN,
+            "--target",
+            "main",
+            "--after",
             &predecessor_id,
-            &successor_id,
-            "--why",
+            "--overlap-why",
             "A reaches main before X",
             "--json",
         ],

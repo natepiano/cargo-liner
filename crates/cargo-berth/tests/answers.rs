@@ -5,6 +5,9 @@
 
 //! Built-binary tests for overlap answers, which record in the claim that carries them.
 
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::OptionalLocks;
@@ -563,37 +566,54 @@ fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
 fn an_answer_to_a_holder_with_many_scopes_records() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    for batch in 0..3 {
-        let paths = (0..100)
-            .map(|index| {
-                format!("src/generated/module_with_a_descriptive_name_{batch}_{index:03}.rs")
+    let root = repository.path();
+    let scopes = (0..3)
+        .flat_map(|batch| {
+            (0..100).map(move |index| {
+                let path =
+                    format!("src/generated/module_with_a_descriptive_name_{batch}_{index:03}.rs");
+                dirty_source(root, &path);
+                format!("file:{path}")
             })
-            .collect::<Vec<_>>();
-        for path in &paths {
-            dirty_source(repository.path(), path);
-        }
-        let scopes = paths
-            .iter()
-            .map(|path| format!("file:{path}"))
-            .collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
+    let claim_arguments = [
+        "claim",
+        "--run",
+        FIRST_RUN,
+        "--plan",
+        "docs/holder.md",
+        "--phase",
+        "phase-a",
+        "--why",
+        "protect generated modules",
+        "--json",
+    ];
+    let mut first_arguments = claim_arguments.to_vec();
+    first_arguments.extend(scopes[..100].iter().map(String::as_str));
+    let first = run_berth(repository.path(), first_arguments);
+    assert!(
+        first.status.success(),
+        "holder claim failed: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let holder_id = reservation_id(&first);
+    for added_scopes in scopes[100..].chunks(100) {
         let mut arguments = vec![
             "claim",
             "--run",
             FIRST_RUN,
-            "--plan",
-            "docs/holder.md",
-            "--phase",
-            "phase-a",
-            "--why",
-            "protect generated modules",
+            "--reservation",
+            holder_id.as_str(),
             "--json",
         ];
-        arguments.extend(scopes.iter().map(String::as_str));
+        arguments.extend(added_scopes.iter().map(String::as_str));
         let output = run_berth(repository.path(), arguments);
         assert!(
             output.status.success(),
-            "holder claim failed: {}",
-            String::from_utf8_lossy(&output.stdout)
+            "holder claim failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
@@ -603,10 +623,22 @@ fn an_answer_to_a_holder_with_many_scopes_records() {
         ["claim", shared_scope, "--run", SECOND_RUN, "--json"],
     );
     assert_eq!(refused.status.code(), Some(1));
-    let holder_id = json_output(&refused)["blocked_by"][0]
-        .as_str()
-        .expect("the refusal should name the holder")
-        .to_owned();
+    let refusal = json_output(&refused);
+    assert_eq!(refusal["blocked_by"], serde_json::json!([holder_id]));
+
+    let protection = journal_events(repository.path())
+        .into_iter()
+        .rev()
+        .find(|event| observes_merge_extent_of(event, &holder_id))
+        .expect("foreign refusal should observe the holder's actual protection");
+    assert_eq!(
+        protection["extent"]["scopes"]
+            .as_array()
+            .expect("protected scopes")
+            .len(),
+        300,
+        "the answer must bind a genuinely large protection set: {protection}"
+    );
 
     let applied = answer_claim(
         &second_root,
@@ -626,6 +658,10 @@ fn an_answer_to_a_holder_with_many_scopes_records() {
     );
     let scope_revision =
         &last_journal_event(repository.path())["authorization"]["overlaps"][0]["scope_revision"];
+    assert_eq!(
+        scope_revision, &refusal["payload"]["data"]["conflicts"][0]["overlap_scope_revision"],
+        "the recorded answer must bind the observed large protection revision"
+    );
     assert_eq!(
         scope_revision.as_str().map(str::len),
         Some(64),
@@ -2581,9 +2617,7 @@ fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 
 fn build_initialized_repository(root: &Path) {
     git(root, ["init", "--quiet", "--initial-branch=main"]);
-    git(root, ["config", "user.name", "Berth Test"]);
-    git(root, ["config", "user.email", "berth@example.invalid"]);
-    git(root, ["config", "core.ignoreCase", "false"]);
+    git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[core]\n ignoreCase = false\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
     fs::write(root.join("README.md"), "scratch repository\n").expect("scratch file should write");
     git(root, ["add", "README.md"]);
     git(root, ["commit", "--quiet", "-m", "initial"]);
