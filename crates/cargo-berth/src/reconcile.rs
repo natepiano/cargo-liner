@@ -61,6 +61,7 @@ use crate::git::ReservationRetentionRefRepair;
 use crate::git::ResolvedBatchCommitCandidates;
 use crate::git::ScopedPatchComparison;
 use crate::git::ScopedPatchTargetHistory;
+use crate::git::WorktreeOperation;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::JournalByteOffset;
@@ -1860,7 +1861,8 @@ pub(crate) fn prepare_rewrite_reconciliation(
         .map_err(LedgerError::Io)?
         .into_iter()
         .filter(|marker| {
-            !git::rewrite_in_progress(&marker.rewrite.worktree_administrative_directory)
+            WorktreeOperation::observe(&marker.rewrite.worktree_administrative_directory)
+                != WorktreeOperation::Rebase
         })
         .collect::<Vec<_>>();
     let mut preflight = RewriteReconciliationPreflight::default();

@@ -30,7 +30,7 @@
    - If `ledger::worktree_identity` fails for a candidate, that is also reported as `unavailable`.
 3. **Check history.** `reservation_history(events, worktree_id)` returns `AlreadyReserved` if any `JournalOperation::Claim` has that worktree as actor, whatever its source or lifecycle. Otherwise it returns `NeverReserved`.
 4. **Observe the footprint** (`observe_footprint`, all Git, no lock):
-   - Any entry in `OPERATION_IN_PROGRESS_MARKERS` present in the administrative directory → `operation_in_progress`.
+   - `git::WorktreeOperation::observe` names a pending rebase, merge, cherry-pick, or revert in the administrative directory → `operation_in_progress`. Drift reads the same type and defers acquisition and incursions until the operation ends. A completed `--no-commit` cherry-pick or revert leaves no pending marker, so its dirty paths count as this worktree's edits.
    - HEAD via `git::head_object_id`, then `read_enrollment_target`: `ledger::resolve_claim_target` with `TargetSelectionRequest::AutomaticAcquisition` selects `branch.<name>.cargoBerthTarget`, else the repository trunk (always for a detached HEAD). The trunk comes from `BerthConfig::repository_trunk()`; `enroll_worktrees` checks it once before any footprint, so a trunk that is not a local branch fails `init`, and `read_enrollment_target` repeats the check as `configuration`. A setting naming the claimant's own branch or a branch that does not resolve falls back to the trunk and records `fallback: Some(TargetFallback { requested, reason })`. The target commit comes from `git::branch_object_id`. A `GitError::CommandFailed` here → `no_merge_base`; other errors → `git_failure`.
    - `git merge-base target head`, skipped when target and head are the same commit (a commit is its own merge base). Exit code `MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE` (1) → `no_merge_base`; any other failure → `git_failure`.
    - Paths = `git::unmerged_branch_paths(root, target, head)` ∪ `drift::observe_merge_working_tree(root)` tracked ∪ untracked. The result becomes exact file scopes via `DeclaredReservationScopeSet::from_file_paths(..).into_exact_file_antichain(path_case)`. No paths → `FootprintObservation::Empty`, which is neither enrolled nor reported.
@@ -90,7 +90,8 @@
 
 ### Constants
 
-- `worktree/constants.rs`: `ENROLLMENT_SEQUENCE_REASON`, `MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE`, `OPERATION_IN_PROGRESS_MARKERS` (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`).
+- `worktree/constants.rs`: `ENROLLMENT_SEQUENCE_REASON`, `MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE`.
+- `git/worktree_operation.rs`: the single `WORKTREE_OPERATION_MARKERS` mapping used by `WorktreeOperation::observe`, with marker spellings owned by `git/constants.rs` (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`).
 - `answer/constants.rs`: `ENROLLMENT_AUTHORIZATION_REASON`.
 
 ## Invariants
