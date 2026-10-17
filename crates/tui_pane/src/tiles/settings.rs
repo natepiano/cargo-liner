@@ -76,7 +76,7 @@ pub(super) struct TileSettings {
 impl Default for TileSettings {
     fn default() -> Self {
         Self {
-            view:                   TileView::Auto,
+            view:                   TileView::Cells,
             min_tile_height:        MIN_TILE_HEIGHT,
             min_tile_width:         MIN_TILE_WIDTH,
             border_rows:            TILE_BORDER_ROWS,

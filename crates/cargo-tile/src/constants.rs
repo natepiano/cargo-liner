@@ -2,6 +2,12 @@
 
 use std::time::Duration;
 
+#[cfg(test)]
+use ratatui::layout::Rect;
+
+use crate::render::RemovableTableColumn;
+use crate::render::TableWidthReduction;
+
 // account headings
 /// Separate the account qualifier from the directory without joining their names.
 pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
@@ -192,6 +198,8 @@ pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
     "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// Marks anything shortened or shed for lack of room.
 pub(crate) const ELISION: &str = "\u{2026}";
+/// Spaced mark for arguments omitted from a Short command.
+pub(crate) const ARGUMENT_OMISSION_MARK: &str = " …";
 /// Written on the summary cell's top border, so the one cell listing
 /// every command is named rather than told apart by its contents. A
 /// manager's own cell reads much like the summary -- one row per cargo
@@ -271,6 +279,9 @@ pub(crate) const CARGO_SUBCOMMAND_PREFIX: &str = "cargo-";
 pub(crate) const CARGO_TARGET_DIR_ENV: &str = "CARGO_TARGET_DIR";
 /// Cargo's explicit target directory takes precedence over its environment.
 pub(crate) const CARGO_TARGET_DIR_FLAG: &str = "--target-dir";
+/// Nextest's action remains beside its cargo subcommand in a column budget.
+pub(crate) const NEXTEST_SUBCOMMAND_NAME: &str = "nextest";
+
 /// What marks the toolchain selector cargo takes ahead of a subcommand,
 /// as in `cargo +nightly build`. Reading a subcommand out of an argument
 /// list means stepping over one of these first.
@@ -459,16 +470,24 @@ pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
     [MANIFEST_PATH_FLAG, CARGO_MESSAGE_FORMAT_FLAG, "--color"];
 /// Label before the summary's total resident memory.
 pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
-/// Order whole columns leave a table too narrow for them, first to go first.
-pub(crate) const TABLE_COLUMN_DROP_ORDER: [usize; 8] = [
-    MANAGED_COLUMN,
-    COMPILER_COLUMN,
-    START_COLUMN,
-    DURATION_COLUMN,
-    MEMORY_COLUMN,
-    CPU_COLUMN,
-    STATE_COLUMN,
-    PARENT_COLUMN,
+/// Shared reductions for every view: arguments, blank state alignment, counts,
+/// start, duration, memory, CPU, filled state and parent. Progress state has no
+/// removable handle. Command words yield only after optional metadata has left.
+pub(crate) const TABLE_COLUMN_DROP_ORDER: [TableWidthReduction; 14] = [
+    TableWidthReduction::ArgumentTails,
+    TableWidthReduction::Columns(&[RemovableTableColumn::BlankStateAlignment]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::BlankParent]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Runs]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Compiler]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Start]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Duration]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Memory]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Cpu]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::FilledStateValue]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Parent]),
+    TableWidthReduction::CommandWords,
+    TableWidthReduction::Columns(&[RemovableTableColumn::Command]),
+    TableWidthReduction::Columns(&[RemovableTableColumn::Pid]),
 ];
 /// Blank cells between table columns.
 pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
@@ -933,6 +952,19 @@ pub(crate) const TEST_INVOCATION_PID: u32 = 42;
 /// A second native birth distinguishes a replacement from the original test lifetime.
 #[cfg(test)]
 pub(crate) const TEST_REPLACEMENT_LIFETIME: u64 = 100_002;
+
+/// Process rows in the single-frame layout regression.
+#[cfg(test)]
+pub(crate) const LARGE_TABLE_TEST_ROWS: u32 = 602;
+/// First invocation in the large cell's process fixture.
+#[cfg(test)]
+pub(crate) const LARGE_TABLE_TEST_FIRST_PID: u32 = 700_000;
+/// Terminal bounds that reproduce the large-cell freeze.
+#[cfg(test)]
+pub(crate) const LARGE_TABLE_TEST_AREA: Rect = Rect::new(0, 0, 70, 30);
+/// Process command used by every row in the large cell.
+#[cfg(test)]
+pub(crate) const LARGE_TABLE_TEST_COMMAND: [&str; 1] = ["test"];
 
 #[cfg(test)]
 mod tests {

@@ -1,17 +1,76 @@
 //! Invocation identity and continuity across scans.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::Path;
 
 use sysinfo::Pid;
 use uuid::Uuid;
 
+use super::command_text;
 use crate::birth_stamp::BirthStamp;
 use crate::birth_stamp::LifetimeEvidence;
 use crate::birth_stamp::ProcessLifetime;
+use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture::CaptureRootIndex;
 use crate::registration::VerifiedRegistration;
 use crate::root_scan::RootIncarnation;
+
+/// An observed external tool either carries this cargo dispatch or starts another command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispatchedProcess {
+    /// Matching forwarded arguments identify the process cargo launched.
+    Matched {
+        /// The process cargo launched, including an interpreted external tool.
+        pid:             Pid,
+        /// The executable or script begins the canonical cargo argument slice.
+        arguments_start: usize,
+    },
+    /// The observations do not establish this dispatch.
+    NotObserved,
+}
+
+/// Match the dispatched executable and complete arguments independently of cwd availability.
+pub(super) fn dispatched_process(
+    shim_arguments: &[OsString],
+    process_arguments: &[OsString],
+    pid: Pid,
+) -> DispatchedProcess {
+    let Ok(arguments) = command_text::cargo_split(shim_arguments) else {
+        return DispatchedProcess::NotObserved;
+    };
+    if !arguments.follows_cargo_executable() {
+        return DispatchedProcess::NotObserved;
+    }
+    let forwarded = &shim_arguments[arguments.start..];
+    process_arguments
+        .iter()
+        .enumerate()
+        .find_map(|(arguments_start, program)| {
+            let name = Path::new(program).file_name()?.to_str()?;
+            if !name.starts_with(CARGO_SUBCOMMAND_PREFIX)
+                || !command_text::is_cargo_name(name.as_ref())
+            {
+                return None;
+            }
+            let subcommand = name.strip_prefix(CARGO_SUBCOMMAND_PREFIX)?;
+            let dispatched = &process_arguments[arguments_start + 1..];
+            (forwarded
+                .first()
+                .is_some_and(|argument| argument == subcommand)
+                && (forwarded == dispatched
+                    || (dispatched
+                        .first()
+                        .is_none_or(|argument| argument != subcommand)
+                        && &forwarded[1..] == dispatched)))
+                .then_some(DispatchedProcess::Matched {
+                    pid,
+                    arguments_start,
+                })
+        })
+        .unwrap_or(DispatchedProcess::NotObserved)
+}
 
 /// Identity of an invocation, independent of its displayed process or row source.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -105,6 +164,8 @@ impl InvocationId {
 pub(crate) enum CaptureMembership {
     /// This invocation runs inside the named capture and keeps its own identity.
     Enclosing(RunId),
+    /// An ancestor's selected capture supplies progress without verified metadata.
+    EnclosingUnconfirmed,
     /// No enclosing capture supplies this invocation's progress.
     Outside,
 }
@@ -147,6 +208,161 @@ impl ProcessIdentity {
                 pid,
                 observation: uuid::Uuid::now_v7(),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    use sysinfo::Pid;
+
+    use super::DispatchedProcess;
+    use super::dispatched_process;
+
+    #[test]
+    fn an_external_dispatch_matches_its_forwarded_arguments() {
+        let shim = [
+            OsString::from("cargo"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "2".into(),
+        ];
+        let driver = [
+            OsString::from("/tools/cargo-p20driver"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "2".into(),
+        ];
+        assert_eq!(
+            dispatched_process(&shim, &driver, Pid::from_u32(200)),
+            DispatchedProcess::Matched {
+                pid:             Pid::from_u32(200),
+                arguments_start: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn an_interpreted_dispatch_retains_the_external_script_arguments() {
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [
+            OsString::from("python3"),
+            "/tools/cargo-p20driver".into(),
+            "p20driver".into(),
+        ];
+        assert_eq!(
+            dispatched_process(&shim, &driver, Pid::from_u32(200)),
+            DispatchedProcess::Matched {
+                pid:             Pid::from_u32(200),
+                arguments_start: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn an_installed_shell_shim_identifies_its_dispatched_script() {
+        let shim = [
+            OsString::from("/bin/sh"),
+            "/home/u/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo".into(),
+            "p20bdrv".into(),
+        ];
+        let driver = [
+            OsString::from("/bin/sh"),
+            "/tools/drvbin/cargo-p20bdrv".into(),
+            "p20bdrv".into(),
+        ];
+        assert_eq!(
+            dispatched_process(&shim, &driver, Pid::from_u32(2_929_162)),
+            DispatchedProcess::Matched {
+                pid:             Pid::from_u32(2_929_162),
+                arguments_start: 1,
+            }
+        );
+        let external = [OsString::from("cargo-nextest"), "p20bdrv".into()];
+        assert_eq!(
+            dispatched_process(&external, &driver, Pid::from_u32(2_929_162)),
+            DispatchedProcess::NotObserved
+        );
+        let unrelated = [
+            OsString::from("/bin/sh"),
+            "/tools/build".into(),
+            "p20bdrv".into(),
+        ];
+        assert_eq!(
+            dispatched_process(&unrelated, &driver, Pid::from_u32(2_929_162)),
+            DispatchedProcess::NotObserved
+        );
+    }
+
+    #[test]
+    fn interpreter_flags_do_not_hide_the_dispatched_script() {
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [
+            OsString::from("python3"),
+            "-u".into(),
+            "/tools/cargo-p20driver".into(),
+            "p20driver".into(),
+        ];
+        assert_eq!(
+            dispatched_process(&shim, &driver, Pid::from_u32(200)),
+            DispatchedProcess::Matched {
+                pid:             Pid::from_u32(200),
+                arguments_start: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_matching_keeps_non_utf8_argument_bytes_distinct() {
+        let shim = [
+            OsString::from("cargo"),
+            "p20driver".into(),
+            OsString::from_vec(vec![0xff]),
+        ];
+        let driver = [
+            OsString::from("cargo-p20driver"),
+            "p20driver".into(),
+            OsString::from_vec(vec![0xfe]),
+        ];
+        assert_eq!(
+            dispatched_process(&shim, &driver, Pid::from_u32(200)),
+            DispatchedProcess::NotObserved
+        );
+    }
+
+    #[test]
+    fn a_nested_command_with_different_arguments_is_not_a_dispatch() {
+        let shim = [
+            OsString::from("cargo"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "2".into(),
+        ];
+        let changed = [
+            OsString::from("cargo-p20driver"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "4".into(),
+        ];
+        let other = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let nested = [
+            OsString::from("cargo"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "2".into(),
+        ];
+        for arguments in [changed.as_slice(), other.as_slice(), nested.as_slice(), &[]] {
+            assert_eq!(
+                dispatched_process(&shim, arguments, Pid::from_u32(200)),
+                DispatchedProcess::NotObserved
+            );
         }
     }
 }

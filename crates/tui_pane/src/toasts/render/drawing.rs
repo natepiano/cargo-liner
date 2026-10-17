@@ -120,6 +120,39 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
     }
 }
 
+impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
+    /// Keep toast cards and their cleared gaps outside protected frame feet.
+    /// Frames in other columns leave the toast's original area available.
+    #[must_use]
+    pub fn area_avoiding_frames(&self, mut area: Rect, frames: &[Rect]) -> Rect {
+        let width = manager::toast_card_width(self.settings(), area.width);
+        let left = area
+            .right()
+            .saturating_sub(width)
+            .saturating_sub(crate::constants::TOAST_SIDE_GAP.saturating_mul(2))
+            .max(area.x);
+        for frame in frames {
+            if frame.right() <= left
+                || frame.left() >= area.right()
+                || frame.bottom() <= area.top()
+                || frame.top() >= area.bottom()
+            {
+                continue;
+            }
+            let foot = crate::frame_inner(*frame).bottom().saturating_sub(1);
+            let above = foot.saturating_sub(area.top()).min(area.height);
+            let below = area.bottom().saturating_sub(frame.bottom());
+            if below > above {
+                area.y = frame.bottom();
+                area.height = below;
+            } else {
+                area.height = above;
+            }
+        }
+        area
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -281,6 +314,28 @@ mod tests {
             })
             .collect();
         (card_height, rows)
+    }
+
+    #[test]
+    fn a_toast_area_avoids_only_crossing_frames_and_keeps_the_larger_region() {
+        for placement in [ToastPlacement::TopRight, ToastPlacement::BottomRight] {
+            let mut settings = settings_with_width(12);
+            settings.placement = placement;
+            let toasts = Toasts::<TestApp>::with_settings(settings);
+            let area = Rect::new(1, 1, 60, 30);
+            let outside = Rect::new(1, 1, 15, 10);
+            assert_eq!(toasts.area_avoiding_frames(area, &[outside]), area);
+            let short = Rect::new(30, 1, 31, 6);
+            assert_eq!(
+                toasts.area_avoiding_frames(area, &[outside, short]),
+                Rect::new(1, 7, 60, 24)
+            );
+            let tall = Rect::new(30, 1, 31, 25);
+            assert_eq!(
+                toasts.area_avoiding_frames(area, &[outside, tall]),
+                Rect::new(1, 1, 60, 23)
+            );
+        }
     }
 
     #[test]

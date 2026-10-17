@@ -8,22 +8,29 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Fixed
+- A cell holding hundreds of rows no longer stalls the grid; each cell's content is measured at most once per height in a frame.
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
 
 ### Added
+- The provided `TileCells::prepare_frame` requests current allocations lazily and sets shared content widths before demand and allocation measurements; `TileGrid::painted_summary_frames` returns the summary clips painted by the shared `draw_tile_grid` pipeline.
+- `Toasts::area_avoiding_frames` keeps cards and their cleared gaps outside frame feet, while allowing room below short frames and in other columns.
 - The provided `TerminalApp::panic_log` names a file `run_terminal`'s panic hook appends each panic to -- the time, where it was raised, its message and a backtrace. Once the terminal is restored the hook prints the file's path to standard error; a failed write prints nothing. `chrono` is now a dependency without the `backdrop` feature.
 - `CellContentExtent` and the provided `TileCells::content_extent` method let a cell mark source omissions in its foot without changing its measured row demand; `TileCells::readout_rows` excludes surrendered decoration from the displayed count.
 - `CellReadoutFade`, `CellFadeProgress` and the provided `TileCells::readout_fade` method let apps fade a cell's foot with its contents; existing providers keep unfaded readouts.
 - `TileCells::rows_kept` separates the rows a cell retains before lending room to its column mates from the rows its content paints.
-- `TileView` configures `tiles.view` as `auto`, `summary` or `cells`; `TileGrid::set_view`, `FrameworkSetting::TileView`, `AppConfig::tile_view_mut` and `SettingsRows::tile_view` connect it to each app and its settings overlay.
+- `TileView` configures `tiles.view` as `summary` or `cells`; `TileGrid::set_view`, `FrameworkSetting::TileView`, `AppConfig::tile_view_mut` and `SettingsRows::tile_view` connect it to each app and its settings overlay.
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- Removed the `auto` tile view because it drew the same as `cells`; a saved `auto` view loads as `cells`.
 - `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.
+- A summary that borrows a row protects its retained content while its separators yield to a mate's hidden content; separators use a mate's blank spare row first.
+- Wrapping takes the latest permitted punctuation break, including a slash after a hyphen.
+- Tile allocation uses painted rows for receiving steps and retained rows for donors; separators restore from unused space without displacing painted content.
 - Toast timing, activation, focus and tracked-item lifetimes use named public states while preserving their rendered output.
 - Cell foot readouts and summary foot spans follow the fade and ground of their contents.
 - Toast bodies retain styled runs with explicit line-break policies, words that fit move whole to a fresh line, and cards keep one cleared row above, below and between them.
-- The tile grid automatic view shows command cells whenever every cell fits the area at its floor; the area alone decides, and rows a cell cannot show go to its hidden count. The choice changes on settled frames and stays fixed through motion.
+- The tile grid cells view shows command cells whenever every cell fits the area at its floor; the area alone decides, and rows a cell cannot show go to its hidden count. The choice changes on settled frames and stays fixed through motion.
 - Tile columns give available rows first to cells below their exact framed demand. A summary no more than half a position short borrows the difference from its tallest mates without taking any tile below its height floor.
 - `wrapped` is the shared boundary-aware text wrapper, including comma break points; toast bodies retain their written spacing, and `render_toasts` now takes the body area it draws within.
 - Toast cards grow to the rows their bodies draw at the available card width, wrap each explicit line through `wrapped`, pad the body on both sides, fill widths that leave less than eight cells beside them, and reserve an available action row; when the stack gives a body fewer rows, its last visible row ends in `…`.
@@ -37,7 +44,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 - A summary spanning column bands clears their dividers from its interior and keeps the border joins to the columns below.
-- The tile grid automatic view no longer drops every command cell when tall column mates leave the summary fewer rows than it draws alone.
+- The tile grid cells view no longer drops every command cell when tall column mates leave the summary fewer rows than it draws alone.
+- Grid drawing prepares content before one demand-measurement pass and sync per frame, keeping unchanged reserved layouts settled. Providers with default preparation do not resolve a preliminary drawing.
+- Moving panes stop at buffer edges, and the last band divider keeps every piece inside its column band.
 - Moving tile heights keep destination bounds ordered when a previous allocation falls outside the destination's permitted height range.
 - Panics restore raw mode, mouse reporting, the alternate screen and cursor visibility before printing the panic message, while retaining iTerm2 profile restoration.
 - Tile motion keeps pieces inside their column bands, gives resident cells’ transferable spare rows at once, and lets a waiting command claim a key’s opening within the same motion. Content changes keep emptied residents at their height floor beside cutting mates and retarget filled destinations on the same clock. Entering and departing cells slide throughout that clock.
