@@ -1,6 +1,5 @@
 ---
-tier: D
-family: types
+tier: E
 mechanism: llm
 ---
 # Trait tutorial format

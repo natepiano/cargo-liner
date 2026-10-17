@@ -138,8 +138,8 @@ pub(crate) enum AppSetting {
 pub(crate) enum CommandList {
     /// `commands.excluded`.
     Excluded,
-    /// `commands.hidden_when_idle`.
-    HiddenWhenIdle,
+    /// `commands.hidden`.
+    Hidden,
 }
 
 /// Build the settings rows for the current frame.
@@ -171,9 +171,9 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
         list_display(&config.commands.excluded),
     );
     out.text(
-        AppSetting::Commands(CommandList::HiddenWhenIdle),
-        "hidden when idle",
-        list_display(&config.commands.hidden_when_idle),
+        AppSetting::Commands(CommandList::Hidden),
+        "hidden cargo commands",
+        list_display(&config.commands.hidden),
     );
 
     out.files::<CargoTile>();
@@ -217,7 +217,7 @@ pub(crate) fn selected_text(app: &App) -> Option<String> {
 }
 
 /// Replace the selected Commands list with what was typed, write
-/// `config.toml`, and apply it: the grid reads `hidden_when_idle` every
+/// `config.toml`, and apply it: the grid reads `commands.hidden` every
 /// frame, and the census worker picks up `excluded` on its next scan.
 pub(crate) fn commit_text(app: &mut App, text: &str) {
     let Some(list) = selected_command_list(app) else {
@@ -249,7 +249,7 @@ fn selected_command_list(app: &App) -> Option<CommandList> {
 fn command_list(config: &Config, list: CommandList) -> &[String] {
     match list {
         CommandList::Excluded => &config.commands.excluded,
-        CommandList::HiddenWhenIdle => &config.commands.hidden_when_idle,
+        CommandList::Hidden => &config.commands.hidden,
     }
 }
 
@@ -257,7 +257,7 @@ fn command_list(config: &Config, list: CommandList) -> &[String] {
 const fn command_list_mut(config: &mut Config, list: CommandList) -> &mut Vec<String> {
     match list {
         CommandList::Excluded => &mut config.commands.excluded,
-        CommandList::HiddenWhenIdle => &mut config.commands.hidden_when_idle,
+        CommandList::Hidden => &mut config.commands.hidden,
     }
 }
 
@@ -1156,9 +1156,9 @@ mod tests {
     #[test]
     fn only_the_command_lists_open_an_editor_on_their_bare_entries() {
         let mut app = App::new_for_test().expect("quiet settings app");
-        app.loaded_config.config.commands.hidden_when_idle = vec!["port".into(), "handler".into()];
+        app.loaded_config.config.commands.hidden = vec!["port".into(), "handler".into()];
         app.loaded_config.config.commands.excluded.clear();
-        select(&mut app, "hidden when idle");
+        select(&mut app, "hidden cargo commands");
         assert_eq!(selected_text(&app).as_deref(), Some("port, handler"));
         select(&mut app, "excluded");
         assert_eq!(selected_text(&app).as_deref(), Some(""));
@@ -1168,20 +1168,16 @@ mod tests {
         assert_eq!(selected_text(&app), None);
     }
 
-    /// `hidden_when_idle` is read from the config every frame, while the
+    /// `commands.hidden` is read from the config every frame, while the
     /// census worker holds its own handle on `excluded`.
     #[test]
     fn a_typed_list_replaces_the_config_and_reaches_the_census_worker() {
         let mut app = App::new_for_test().expect("quiet settings app");
         let worker = app.excluded_commands.clone();
-        set_command_list(
-            &mut app,
-            CommandList::HiddenWhenIdle,
-            parse_list("port handler"),
-        );
+        set_command_list(&mut app, CommandList::Hidden, parse_list("port handler"));
         assert_eq!(
-            app.loaded_config.config.commands.hidden_when_idle,
-            ["port", "handler"]
+            app.loaded_config.config.commands.hidden,
+            crate::constants::DEFAULT_HIDDEN_COMMANDS
         );
         assert_eq!(
             worker.snapshot(),
@@ -1204,6 +1200,7 @@ mod layout_tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use toml::Value;
     use tui_pane::AppIdentity;
     use tui_pane::GlobalAction;
     use tui_pane::SECTION_ITEM_INDENT;
@@ -1216,6 +1213,39 @@ mod layout_tests {
     use crate::app::CaptureStartupNotice;
     use crate::config::CargoTile;
     use crate::render;
+
+    #[test]
+    fn the_settings_row_names_hidden_cargo_commands() {
+        let mut app = App::new_for_test().expect("settings app");
+        let keymap = Rc::clone(&app.keymap);
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        let mut terminal = Terminal::new(TestBackend::new(120, 60)).expect("settings terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("draw settings");
+        let buffer = terminal.backend().buffer();
+        let text = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("hidden cargo commands"), "{text}");
+        let saved = toml::to_string_pretty(&app.loaded_config.config).expect("saved config");
+        let saved: Value = toml::from_str(&saved).expect("saved TOML");
+        assert_eq!(
+            saved["commands"]["hidden"]
+                .as_array()
+                .expect("hidden commands")
+                .iter()
+                .map(|value| value.as_str().expect("subcommand"))
+                .collect::<Vec<_>>(),
+            crate::constants::DEFAULT_HIDDEN_COMMANDS
+        );
+        assert!(saved["commands"].get("hidden_when_idle").is_none());
+    }
 
     /// A resolved path as the Files rows print it.
     fn shown(path: Option<PathBuf>) -> String {
@@ -1273,7 +1303,7 @@ mod layout_tests {
         "10 Value shared directory = <shared directory>",
         "[Commands]",
         "11 Value excluded = berth",
-        "12 Value hidden when idle = port, handler",
+        "12 Value hidden cargo commands = port, handler",
         "[Files]",
         "13 Value config = <config path>",
         "14 Value themes = <themes dir>",

@@ -1,6 +1,6 @@
 ---
 tier: D
-family: names
+family: modules
 mechanism: llm
 ---
 ## README diagnostic section format

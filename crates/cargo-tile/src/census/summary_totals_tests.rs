@@ -58,7 +58,7 @@ impl SummaryTree {
 
     fn roster(&self, shares: &[(u32, Measurement<f32>)]) -> Roster {
         let [driver, first, nested, deep, second, sibling_nested] = Self::pids();
-        // The direct children are promoted; nested and deep stay in their command view.
+        // Each direct child owns its nested descendants and excludes the other branch.
         let parents = [
             (first, driver),
             (nested, first),
@@ -210,7 +210,7 @@ impl SummaryTree {
             render::summary_cpu_for_test(&roster, &[]),
             &[(driver, group_cpu)],
         );
-        Self::assert_summary(&roster, first_total, second_total);
+        Self::assert_visible_subtree_cpu(&roster, first_total, second_total);
     }
 
     fn roster_with_registration(
@@ -248,17 +248,31 @@ impl SummaryTree {
         roster
     }
 
-    fn assert_summary(roster: &Roster, first: Measurement<&str>, second: Measurement<&str>) {
+    fn assert_visible_subtree_cpu(
+        roster: &Roster,
+        first: Measurement<&str>,
+        second: Measurement<&str>,
+    ) {
         let before = command_cpu(roster);
         let [_, first_pid, _, _, second_pid, _] = Self::pids();
-        assert_cpu_rows(
-            render::summary_cpu_for_test(roster, &["port".to_owned()]),
-            &[(first_pid, first), (second_pid, second)],
-        );
+        let visible = roster.clone().visible(&[]);
+        let subtrees = visible
+            .groups()
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .filter(|row| [first_pid, second_pid].contains(&row.process.pid))
+            .map(|row| {
+                (
+                    row.process.pid,
+                    row.process.subtree_resource_use.cpu.map(scan::cpu_label),
+                )
+            })
+            .collect();
+        assert_cpu_rows(subtrees, &[(first_pid, first), (second_pid, second)]);
         assert_eq!(
             command_cpu(roster),
             before,
-            "selecting summary totals must preserve command-row measurements"
+            "selecting subtree totals must preserve command-row measurements"
         );
     }
 }
@@ -314,11 +328,20 @@ fn assert_cpu_rows(
 }
 
 #[test]
-fn promoted_totals_count_each_descendant_once_and_exclude_driver_and_sibling() {
+fn subtree_totals_count_each_descendant_once_and_exclude_parent_and_sibling() {
     let tree = SummaryTree::new();
     let roster = tree.roster(&SummaryTree::readings());
 
-    SummaryTree::assert_summary(
+    assert_eq!(
+        render::summary_cpu_for_test(
+            &roster,
+            &[crate::constants::PORT_SUBCOMMAND_NAME.to_owned()]
+        ),
+        Vec::new(),
+        "hiding the lead hides both branches from the summary"
+    );
+
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -327,7 +350,7 @@ fn promoted_totals_count_each_descendant_once_and_exclude_driver_and_sibling() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric() {
+fn zero_own_ticks_across_thirteen_samples_keep_descendant_cpu_numeric() {
     let tree = SummaryTree::new();
     let roster = tree.roster_with_idle_parent(Measurement::Reading(Duration::ZERO));
     let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
@@ -342,7 +365,7 @@ fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric()
             (sibling_nested, Measurement::Reading("50%")),
         ],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("100%"),
         Measurement::Reading("50%"),
@@ -351,11 +374,11 @@ fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric()
 
 #[cfg(target_os = "linux")]
 #[test]
-fn unreadable_parent_counter_keeps_its_promoted_total_unavailable_despite_busy_leaf() {
+fn unreadable_parent_counter_keeps_its_subtree_total_unavailable_despite_busy_leaf() {
     let tree = SummaryTree::new();
     let unavailable = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
     let roster = tree.roster_with_idle_parent(unavailable);
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::ReadFailed),
         Measurement::Reading("50%"),
@@ -390,7 +413,7 @@ fn command_rows_keep_own_attributions_and_the_summary_keeps_the_group_total() {
         render::summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -398,7 +421,7 @@ fn command_rows_keep_own_attributions_and_the_summary_keeps_the_group_total() {
 }
 
 #[test]
-fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
+fn an_unavailable_contribution_affects_only_its_own_subtree() {
     let tree = SummaryTree::new();
     let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     for reason in [
@@ -406,7 +429,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
         MeasurementAbsence::ReadFailed,
         MeasurementAbsence::Unproven,
     ] {
-        // Cover both depths and both siblings, as well as each promoted row's own bucket.
+        // Cover both depths and both siblings, as well as each subtree lead's own bucket.
         for unavailable in [first, nested, deep, second, sibling_nested] {
             let shares = SummaryTree::readings().map(|(pid, cpu)| {
                 (
@@ -429,7 +452,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
             } else {
                 Measurement::Reading("48%")
             };
-            SummaryTree::assert_summary(&roster, first_total, second_total);
+            SummaryTree::assert_visible_subtree_cpu(&roster, first_total, second_total);
 
             let expected = [
                 (driver, Measurement::Reading("128%")),
@@ -459,7 +482,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
 }
 
 #[test]
-fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
+fn an_unavailable_parent_does_not_replace_known_child_subtree_totals() {
     let tree = SummaryTree::new();
     let [driver, ..] = SummaryTree::pids();
     for reason in [
@@ -478,7 +501,7 @@ fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
             )
         });
         let roster = tree.roster(&shares);
-        SummaryTree::assert_summary(
+        SummaryTree::assert_visible_subtree_cpu(
             &roster,
             Measurement::Reading("7%"),
             Measurement::Reading("48%"),
@@ -513,7 +536,7 @@ fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         Measurement::Reading("48%"),
@@ -528,7 +551,7 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
     let registration = unproven_row(&baseline, deep);
     let roster = tree.roster_with_registration(&registration, &[deep]);
 
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &baseline,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -565,7 +588,7 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         Measurement::Reading("48%"),
@@ -645,7 +668,7 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
         render::summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -688,7 +711,7 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -701,7 +724,7 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
 }
 
 #[test]
-fn measured_zero_remains_available_in_each_promoted_subtree() {
+fn measured_zero_remains_available_in_each_visible_subtree() {
     let tree = SummaryTree::new();
     let [driver, ..] = SummaryTree::pids();
     for shares in [
@@ -718,7 +741,7 @@ fn measured_zero_remains_available_in_each_promoted_subtree() {
         SummaryTree::readings().map(|(pid, _)| (pid, Measurement::Reading(0.0))),
     ] {
         let roster = tree.roster(&shares);
-        SummaryTree::assert_summary(
+        SummaryTree::assert_visible_subtree_cpu(
             &roster,
             Measurement::Reading("0%"),
             Measurement::Reading("0%"),
@@ -744,7 +767,7 @@ fn subtree_totals_round_once_after_summing_raw_attributions() {
         total.map(scan::cpu_label),
         Measurement::Reading("270%".to_owned())
     );
-    SummaryTree::assert_summary(
+    SummaryTree::assert_visible_subtree_cpu(
         &roster,
         Measurement::Reading("86%"),
         Measurement::Reading("83%"),

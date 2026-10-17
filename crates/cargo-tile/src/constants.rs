@@ -36,14 +36,8 @@ pub(crate) const DEFAULT_EXCLUDED: [&str; 1] = [COORDINATION_SUBCOMMAND_NAME];
 pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 /// Id of the built-in high-contrast light variant.
 pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
-/// The `commands.hidden_when_idle` default: subcommands the grid gives a
-/// cell of their own only while they are driving other cargo
-/// invocations. The sibling terminal UIs are the case it exists for --
-/// each is open all day and compiles nothing on its own, so an idle
-/// cell for one is a cell no build is getting. The summary still
-/// carries them: one line saying each is running is the whole of what
-/// it has to say.
-pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 2] =
+/// Cargo subcommands hidden with their entire invocation subtree, idle or busy.
+pub(crate) const DEFAULT_HIDDEN_COMMANDS: [&str; 2] =
     [PORT_SUBCOMMAND_NAME, HANDLER_SUBCOMMAND_NAME];
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
@@ -107,14 +101,14 @@ pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 /// other argument, so the command line drops it before parsing.
 pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 /// A sibling terminal UI in this workspace, reached as `cargo handler`.
-/// The capture shim passes it through and [`DEFAULT_HIDDEN_WHEN_IDLE`]
+/// The capture shim passes it through and [`DEFAULT_HIDDEN_COMMANDS`]
 /// names it for the same reasons as [`PORT_SUBCOMMAND_NAME`].
 pub(crate) const HANDLER_SUBCOMMAND_NAME: &str = "handler";
 /// A sibling terminal UI in this workspace, reached as `cargo port`.
 /// The capture shim passes it through for the same reason it passes the
 /// grid through: capturing a terminal UI copies every redraw of it into
 /// a log for as long as it stays open. It is also what
-/// [`DEFAULT_HIDDEN_WHEN_IDLE`] names, being the command that runs all
+/// [`DEFAULT_HIDDEN_COMMANDS`] names, being the command that runs all
 /// day without compiling anything.
 pub(crate) const PORT_SUBCOMMAND_NAME: &str = "port";
 
@@ -533,6 +527,7 @@ pub(crate) const EXEC_WRAPPER_PROCESS_NAMES: [&str; 14] = [
 /// Cargo flags selecting its optimized profile.
 pub(crate) const CARGO_RELEASE_FLAGS: [&str; 2] = ["--release", "-r"];
 /// Cargo's global options whose separate values precede the subcommand name.
+/// Assigned or attached values stay in the option's own argument.
 pub(crate) const CARGO_GLOBAL_VALUED_OPTIONS: [&str; 4] = ["--color", "--config", "-Z", "-C"];
 /// Cargo flag naming a build profile.
 pub(crate) const CARGO_PROFILE_FLAG: &str = "--profile";

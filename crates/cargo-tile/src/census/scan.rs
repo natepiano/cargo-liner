@@ -1673,7 +1673,7 @@ impl Census {
     /// Looping rather than one pass because a shim can stand in front of
     /// a shim, and dropping the outer one is what reveals the next.
     fn collapse_shims(&mut self, system: &ProcessObservations<'_>) {
-        // Main counts runs after cargo-named forwarding aliases have gone.
+        // Runs are counted only after cargo-named forwarding aliases have gone.
         // Interpreted drivers admitted for dispatch naming keep their reading;
         // the aliases themselves must never become runs in that reading.
         loop {
@@ -1726,8 +1726,8 @@ impl Census {
                 let Some(inner) = system.process(representative) else {
                     continue;
                 };
-                // Preserve the runs of an external dispatch chain. Aliases of a
-                // built-in cargo command were already rowless before dispatch naming.
+                // Preserve the runs of an external dispatch chain. A shim in front of
+                // a built-in cargo command carries no runs of its own to preserve.
                 if !matches!(
                     Self::dispatch(outer, inner),
                     DispatchedProcess::Matched { .. }
@@ -2737,7 +2737,7 @@ pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
 }
 
 /// Each pid contributes once to every ancestor's numeric subtree total.
-fn subtree_resource_totals(members: &[&CargoProcess]) -> Vec<InvocationResourceUse> {
+pub(crate) fn subtree_resource_totals(members: &[&CargoProcess]) -> Vec<InvocationResourceUse> {
     let indices: HashMap<_, _> = members
         .iter()
         .enumerate()
@@ -4808,8 +4808,9 @@ mod tests {
         let mut expected_family = FamilyHead::NoChildren;
         for (index, scan) in scans.iter().enumerate() {
             roster.observe(scan.clone(), Instant::now());
-            assert_eq!(roster.groups().len(), 1);
-            let tracked = &roster.groups()[0];
+            let visible = roster.visible(&[]);
+            assert_eq!(visible.groups().len(), 1);
+            let tracked = &visible.groups()[0];
             assert_eq!(tracked.rows().count(), 2);
             assert!(tracked.rows().all(|row| !row.is_ended()));
             if index == 0 {
@@ -7115,7 +7116,7 @@ mod tests {
         );
     }
 
-    /// The list as it reaches [`CommandText::is_hidden_when_idle`] once
+    /// The list as it reaches [`CommandText::is_hidden`] once
     /// the config has turned it into owned strings.
 
     #[test]
