@@ -7,7 +7,10 @@ use std::fmt::Formatter;
 use std::io;
 use std::io::IsTerminal;
 use std::io::Stdout;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::event;
 use crossterm::event::Event;
@@ -56,12 +59,17 @@ use tui_pane::draw_clipped;
 use unicode_width::UnicodeWidthStr;
 
 use super::BoardModel;
+use super::error::BoardError;
 use super::rows::BoardReservationVisibility;
 use super::rows::HumanTargetVisibility;
+use crate::ledger::JournalPosition;
+use crate::ledger::LedgerError;
+use crate::reconcile::ReconcileError;
 
 const FOOTER_HEIGHT: u16 = 1;
 const HORIZONTAL_SCROLL_STEP: u16 = 4;
-const OVERVIEW_FIELDS: &[&str] = &[
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const OMITTED_MODEL_FIELDS: &[&str] = &[
     "journal_position",
     "recovered_bypasses_this_invocation",
     "integration_order",
@@ -103,7 +111,10 @@ pub(crate) fn terminal_attachment() -> TerminalAttachment {
 }
 
 /// Run the terminal board until its keymap dispatches quit.
-pub(crate) fn run(model: &BoardModel) -> Result<(), BoardTerminalViewRunFailure> {
+pub(crate) fn run(
+    source: &mut impl BoardModelSource,
+    model: &BoardModel,
+) -> Result<(), BoardTerminalViewRunFailure> {
     let mut application =
         BoardApplication::new(model).map_err(BoardTerminalViewRunFailure::BeforeOpening)?;
     let mut terminal = setup_terminal().map_err(|error| {
@@ -111,7 +122,7 @@ pub(crate) fn run(model: &BoardModel) -> Result<(), BoardTerminalViewRunFailure>
             error,
         ))
     })?;
-    let interaction = event_loop(&mut terminal, &mut application);
+    let interaction = event_loop(&mut terminal, &mut application, source, &mut TerminalEvents);
     let restoration = restore_terminal(&mut terminal);
     finish_terminal_view(interaction, restoration)
 }
@@ -193,7 +204,7 @@ impl BoardPaneId {
 
     const fn model_fields(self) -> &'static [&'static str] {
         match self {
-            Self::Overview => OVERVIEW_FIELDS,
+            Self::Overview => &[],
             Self::Reservations => RESERVATION_FIELDS,
             Self::Constraints => CONSTRAINT_FIELDS,
             Self::Answers => ANSWER_FIELDS,
@@ -261,12 +272,10 @@ impl BoardPaneDocuments {
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len),
         );
-        let overview_metadata =
-            Self::take_document(&mut unassigned, BoardPaneId::Overview, visibility)?;
-        let overview = BoardPaneDocument::from_text(format!(
-            "{reservation_table}\n\n{}",
-            overview_metadata.text
-        ));
+        for field in OMITTED_MODEL_FIELDS {
+            unassigned.remove(*field);
+        }
+        let overview = BoardPaneDocument::from_text(reservation_table);
         let reservations =
             Self::take_document(&mut unassigned, BoardPaneId::Reservations, visibility)?;
         let constraints =
@@ -296,9 +305,12 @@ impl BoardPaneDocuments {
     ) -> Result<BoardPaneDocument, BoardTerminalViewOpeningFailure> {
         let mut fields = Map::new();
         for field in pane_id.model_fields() {
-            let Some(value) = unassigned.remove(*field) else {
+            let Some(mut value) = unassigned.remove(*field) else {
                 return Err(BoardTerminalViewOpeningFailure::MissingModelField(field));
             };
+            if let Value::Object(section) = &mut value {
+                section.remove("journal_position");
+            }
             fields.insert((*field).to_owned(), value);
         }
         BoardPaneDocument::from_model_fields(fields, visibility)
@@ -320,15 +332,16 @@ impl BoardPaneDocuments {
         let mut model = Map::new();
         for pane_id in BoardPaneId::ALL {
             let document = self.get(pane_id);
-            let text = match pane_id {
-                BoardPaneId::Overview => document
-                    .text
-                    .split_once("\n\n")
-                    .map_or(document.text.as_str(), |(_, metadata)| metadata),
-                _ => &document.text,
-            };
-            let fields: Map<String, Value> = serde_json::from_str(text)?;
-            model.extend(fields);
+            if pane_id == BoardPaneId::Overview {
+                continue;
+            }
+            let fields: Map<String, Value> = serde_json::from_str(&document.text)?;
+            for (field, value) in fields {
+                assert!(
+                    model.insert(field.clone(), value).is_none(),
+                    "field assigned twice: {field}"
+                );
+            }
         }
         Ok(Value::Object(model))
     }
@@ -490,21 +503,86 @@ impl BoardPaneViewports {
     }
 }
 
+/// A refresh prerequisite failed while the last good board remains visible.
+#[derive(Debug)]
+pub(crate) enum BoardRefreshFailure {
+    /// The ledger's movement stamp could not be read.
+    LedgerRead(LedgerError),
+    /// Repository reconciliation failed.
+    Reconcile(Box<ReconcileError>),
+    /// Repository enrollment is absent at the expected configuration path.
+    RepositoryNotConfigured(PathBuf),
+    /// Reconciled facts could not be projected into a board.
+    Model(BoardError),
+    /// The board could not be assigned to terminal panes.
+    PaneDocuments(BoardTerminalViewOpeningFailure),
+}
+
+impl Display for BoardRefreshFailure {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LedgerRead(error) => error.fmt(formatter),
+            Self::Reconcile(error) => error.fmt(formatter),
+            Self::RepositoryNotConfigured(path) => {
+                write!(formatter, "configuration unavailable: {}", path.display())
+            },
+            Self::Model(error) => error.fmt(formatter),
+            Self::PaneDocuments(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for BoardRefreshFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::LedgerRead(error) => Some(error),
+            Self::Reconcile(error) => Some(error.as_ref()),
+            Self::RepositoryNotConfigured(_) => None,
+            Self::Model(error) => Some(error),
+            Self::PaneDocuments(error) => Some(error),
+        }
+    }
+}
+
+/// Rebuilds the board from the same repository invocation as its initial model.
+pub(crate) trait BoardModelSource {
+    /// Read ledger movement without reconciling repository facts.
+    fn current_position(&mut self) -> Result<JournalPosition, BoardRefreshFailure>;
+    /// Reconcile repository facts and project a fresh board.
+    fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure>;
+}
+
+/// Result of a refresh check; failure retains the last good documents and position.
+enum BoardRefreshResult {
+    /// Fresh documents and their journal position replaced the previous model.
+    Rebuilt,
+    /// No journal movement requires reconciliation.
+    Unchanged,
+    /// The last good documents and position remain available for retry.
+    Failed(BoardRefreshFailure),
+}
+
 /// Application state borrowed back through [`AppContext`].
 struct BoardApplication {
-    framework: Framework<Self>,
-    keymap:    Rc<Keymap<Self>>,
-    documents: BoardPaneDocuments,
-    viewports: BoardPaneViewports,
+    framework:        Framework<Self>,
+    keymap:           Rc<Keymap<Self>>,
+    documents:        BoardPaneDocuments,
+    viewports:        BoardPaneViewports,
+    journal_position: JournalPosition,
+    refresh_result:   BoardRefreshResult,
 }
 
 impl BoardApplication {
     fn new(model: &BoardModel) -> Result<Self, BoardTerminalViewOpeningFailure> {
-        Self::from_documents(BoardPaneDocuments::from_model(model)?)
+        Self::from_documents(
+            BoardPaneDocuments::from_model(model)?,
+            model.journal_position(),
+        )
     }
 
     fn from_documents(
         documents: BoardPaneDocuments,
+        journal_position: JournalPosition,
     ) -> Result<Self, BoardTerminalViewOpeningFailure> {
         let mut framework = Framework::new(FocusedPane::App(BoardPaneId::Overview));
         let keymap = Keymap::builder()
@@ -523,7 +601,34 @@ impl BoardApplication {
             keymap: Rc::new(keymap),
             documents,
             viewports: BoardPaneViewports::new(),
+            journal_position,
+            refresh_result: BoardRefreshResult::Unchanged,
         })
+    }
+
+    fn refresh(&mut self, source: &mut impl BoardModelSource) {
+        self.refresh_result = match self.prepare_refresh(source) {
+            Ok(result) => result,
+            Err(error) => BoardRefreshResult::Failed(error),
+        };
+    }
+
+    fn prepare_refresh(
+        &mut self,
+        source: &mut impl BoardModelSource,
+    ) -> Result<BoardRefreshResult, BoardRefreshFailure> {
+        let position = source.current_position()?;
+        if position == self.journal_position
+            && !matches!(self.refresh_result, BoardRefreshResult::Failed(_))
+        {
+            return Ok(BoardRefreshResult::Unchanged);
+        }
+        let model = source.rebuild()?;
+        let documents =
+            BoardPaneDocuments::from_model(&model).map_err(BoardRefreshFailure::PaneDocuments)?;
+        self.documents = documents;
+        self.journal_position = model.journal_position();
+        Ok(BoardRefreshResult::Rebuilt)
     }
 }
 
@@ -636,29 +741,71 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     raw_mode.and(alternate_screen).and(cursor)
 }
 
+/// Events and monotonic time share one boundary so refresh deadlines are testable.
+trait BoardEvents {
+    fn now(&self) -> Instant;
+    fn next_event(&mut self, timeout: Duration) -> io::Result<BoardEvent>;
+}
+
+enum BoardEvent {
+    Input(Event),
+    DeadlineReached,
+}
+
+struct TerminalEvents;
+
+impl BoardEvents for TerminalEvents {
+    fn now(&self) -> Instant { Instant::now() }
+
+    fn next_event(&mut self, timeout: Duration) -> io::Result<BoardEvent> {
+        if event::poll(timeout)? {
+            event::read().map(BoardEvent::Input)
+        } else {
+            Ok(BoardEvent::DeadlineReached)
+        }
+    }
+}
+
 fn event_loop(
-    terminal: &mut Terminal<impl Backend<Error = io::Error>>,
+    terminal: &mut Terminal<impl Backend<Error: Error + Send + Sync + 'static>>,
     application: &mut BoardApplication,
+    source: &mut impl BoardModelSource,
+    events: &mut impl BoardEvents,
 ) -> BoardTerminalViewInteractionOutcome {
     if let Err(error) = terminal.draw(|frame| draw(frame, application)) {
-        return BoardTerminalViewInteractionOutcome::FailedBeforeFirstFrame(error);
+        return BoardTerminalViewInteractionOutcome::FailedBeforeFirstFrame(io::Error::other(
+            error,
+        ));
     }
-
+    let mut refresh_deadline = events.now() + REFRESH_INTERVAL;
     while !application.framework.quit_requested() {
-        let event = match event::read() {
+        if events.now() >= refresh_deadline {
+            refresh_deadline = events.now() + REFRESH_INTERVAL;
+            application.refresh(source);
+            if let Err(error) = terminal.draw(|frame| draw(frame, application)) {
+                return BoardTerminalViewInteractionOutcome::FailedAfterFirstFrame(
+                    io::Error::other(error),
+                );
+            }
+        }
+        let event = match events
+            .next_event(refresh_deadline.saturating_duration_since(events.now()))
+        {
             Ok(event) => event,
-            Err(error) => {
-                return BoardTerminalViewInteractionOutcome::FailedAfterFirstFrame(error);
-            },
+            Err(error) => return BoardTerminalViewInteractionOutcome::FailedAfterFirstFrame(error),
         };
         match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(application, key),
-            _ => {},
+            BoardEvent::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                handle_key(application, key);
+            },
+            BoardEvent::Input(_) | BoardEvent::DeadlineReached => {},
         }
         if !application.framework.quit_requested()
             && let Err(error) = terminal.draw(|frame| draw(frame, application))
         {
-            return BoardTerminalViewInteractionOutcome::FailedAfterFirstFrame(error);
+            return BoardTerminalViewInteractionOutcome::FailedAfterFirstFrame(io::Error::other(
+                error,
+            ));
         }
     }
     BoardTerminalViewInteractionOutcome::Completed
@@ -723,6 +870,10 @@ fn draw_focused_pane(frame: &mut Frame, application: &mut BoardApplication, area
 }
 
 fn draw_footer(frame: &mut Frame, application: &BoardApplication, area: Rect) {
+    if let BoardRefreshResult::Failed(error) = &application.refresh_result {
+        frame.render_widget(Paragraph::new(format!("Refresh failed: {error}")), area);
+        return;
+    }
     let status_bar = status_bar(&application.keymap);
     let [navigation, lifecycle] =
         Layout::horizontal([Constraint::Percentage(75), Constraint::Percentage(25)]).areas(area);
@@ -1093,6 +1244,7 @@ impl Error for BoardTerminalViewAfterOpeningFailure {
 )]
 mod tests {
     use std::collections::BTreeMap;
+    use std::collections::VecDeque;
     use std::fs;
     use std::io::Write;
 
@@ -1116,6 +1268,382 @@ mod tests {
 
     const MARKER_ID: &str = "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
+    struct ScriptedModelSource {
+        position: JournalPosition,
+        rebuilds: usize,
+        checks:   usize,
+        models:   VecDeque<Result<BoardModel, BoardRefreshFailure>>,
+    }
+
+    impl ScriptedModelSource {
+        fn new(model: BoardModel) -> Self {
+            Self {
+                position: model.journal_position(),
+                rebuilds: 0,
+                checks:   0,
+                models:   [Ok(model)].into(),
+            }
+        }
+    }
+
+    impl BoardModelSource for ScriptedModelSource {
+        fn current_position(&mut self) -> Result<JournalPosition, BoardRefreshFailure> {
+            self.checks += 1;
+            Ok(self.position)
+        }
+
+        fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure> {
+            self.rebuilds += 1;
+            self.models
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected rebuild"))
+        }
+    }
+
+    struct ReconciledFixtureSource {
+        fixture: BoardFixture,
+        ledger:  Ledger,
+    }
+
+    impl BoardModelSource for ReconciledFixtureSource {
+        fn current_position(&mut self) -> Result<JournalPosition, BoardRefreshFailure> {
+            self.ledger
+                .current_journal_position()
+                .map_err(BoardRefreshFailure::LedgerRead)
+        }
+
+        fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure> {
+            // This fixture uses real reconciliation and BoardModel::build.
+            Ok(self
+                .fixture
+                .model()
+                .unwrap_or_else(|error| panic!("fixture rebuild: {error}")))
+        }
+    }
+
+    struct ScriptedEvents {
+        now:    Instant,
+        inputs: VecDeque<(Duration, BoardEvent)>,
+    }
+
+    impl ScriptedEvents {
+        fn idle_then_quit() -> Self {
+            Self {
+                now:    Instant::now(),
+                inputs: [
+                    (REFRESH_INTERVAL, BoardEvent::DeadlineReached),
+                    (
+                        Duration::ZERO,
+                        BoardEvent::Input(Event::Key(KeyEvent::new(
+                            KeyCode::Char('q'),
+                            KeyModifiers::NONE,
+                        ))),
+                    ),
+                ]
+                .into(),
+            }
+        }
+    }
+
+    impl BoardEvents for ScriptedEvents {
+        fn now(&self) -> Instant { self.now }
+
+        fn next_event(&mut self, timeout: Duration) -> io::Result<BoardEvent> {
+            let (elapsed, event) = self
+                .inputs
+                .pop_front()
+                .ok_or_else(|| io::Error::other("script exhausted"))?;
+            assert!(
+                elapsed <= timeout,
+                "the loop must poll only until its deadline"
+            );
+            self.now += elapsed;
+            Ok(event)
+        }
+    }
+
+    fn rendered_application(application: &mut BoardApplication) -> FixtureResult<String> {
+        let mut terminal = Terminal::new(TestBackend::new(160, 60))?;
+        terminal.draw(|frame| draw(frame, application))?;
+        Ok(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect())
+    }
+
+    fn changed_model() -> BoardModel {
+        let mut value = model_value(&[]);
+        value["journal_position"]["generation"] = serde_json::json!(10);
+        value["journal_position"]["journal_byte_offset"] = serde_json::json!(500);
+        serde_json::from_value(value).unwrap_or_else(|error| panic!("changed fixture: {error}"))
+    }
+
+    #[test]
+    fn refresh_renders_a_new_reservation_in_overview_and_reservations() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let initial = fixture.model()?;
+        let mut application = BoardApplication::new(&initial)?;
+        let ledger = Ledger::open(fixture.repository.path())?;
+        assert_eq!(
+            ledger.current_journal_position()?,
+            initial.journal_position()
+        );
+        assert!(!rendered_application(&mut application)?.contains("arrived.rs"));
+        fixture.claim(
+            &fixture.main_actor(),
+            "arrived.rs",
+            ConflictAuthorization::NoConflict,
+        )?;
+        let mut source = ScriptedModelSource::new(fixture.model()?);
+        assert_eq!(source.position, ledger.current_journal_position()?);
+        application.refresh(&mut source);
+        assert!(matches!(
+            application.refresh_result,
+            BoardRefreshResult::Rebuilt
+        ));
+        assert!(rendered_application(&mut application)?.contains("arrived.rs"));
+        handle_key(
+            &mut application,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert!(rendered_application(&mut application)?.contains("arrived.rs"));
+        assert_eq!(application.journal_position, source.position);
+        Ok(())
+    }
+
+    #[test]
+    fn undecodable_projection_triggers_refresh_and_is_republished() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let initial = fixture.model()?;
+        let mut application = BoardApplication::new(&initial)?;
+        let ledger = Ledger::open(fixture.repository.path())?;
+        let projection_path = fixture
+            .repository
+            .path()
+            .join(".git/cargo-berth/reservations.json");
+        let mut source = ReconciledFixtureSource { fixture, ledger };
+        for invalid_projection in ["not JSON", r#"{"schema_version":4294967295}"#] {
+            fs::write(&projection_path, invalid_projection)?;
+            let position = source.current_position()?;
+            assert!(matches!(position, JournalPosition::Undecodable { .. }));
+            assert_ne!(position, application.journal_position);
+            // A movement check must leave the cache untouched until the rebuild.
+            assert_eq!(fs::read_to_string(&projection_path)?, invalid_projection);
+            application.refresh(&mut source);
+            assert!(matches!(
+                application.refresh_result,
+                BoardRefreshResult::Rebuilt
+            ));
+            let republished = source.current_position()?;
+            assert!(matches!(republished, JournalPosition::Published { .. }));
+            assert_eq!(republished, application.journal_position);
+            application.refresh(&mut source);
+            assert!(matches!(
+                application.refresh_result,
+                BoardRefreshResult::Unchanged
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_refresh_keeps_rows_and_position_and_retries() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        fixture.claim(
+            &fixture.main_actor(),
+            "previous.rs",
+            ConflictAuthorization::NoConflict,
+        )?;
+        let initial = fixture.model()?;
+        let mut application = BoardApplication::new(&initial)?;
+        fixture.claim(
+            &fixture.main_actor(),
+            "arrived.rs",
+            ConflictAuthorization::NoConflict,
+        )?;
+        let mut source = ScriptedModelSource::new(fixture.model()?);
+        source
+            .models
+            .push_front(Err(BoardRefreshFailure::LedgerRead(LedgerError::Io(
+                io::Error::other("cannot read repository"),
+            ))));
+        application.refresh(&mut source);
+        assert_eq!(application.journal_position, initial.journal_position());
+        let screen = rendered_application(&mut application)?;
+        assert!(screen.contains("previous.rs"));
+        assert!(!screen.contains("arrived.rs"));
+        assert!(screen.contains("Refresh failed: ledger I/O failed: cannot read repository"));
+        application.refresh(&mut source);
+        assert_eq!(source.rebuilds, 2);
+        assert_eq!(application.journal_position, source.position);
+        let screen = rendered_application(&mut application)?;
+        assert!(screen.contains("arrived.rs"));
+        assert!(!screen.contains("Refresh failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_preserves_pane_selection_and_clamps_every_scroll_offset() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        fixture.claim(
+            &fixture.main_actor(),
+            "a_very_long_original_reservation_path_for_horizontal_scrolling.rs",
+            ConflictAuthorization::NoConflict,
+        )?;
+        let mut initial_value = serde_json::to_value(fixture.model()?)?;
+        let alert = model_value(&[])["alerts"]["entries"][0].clone();
+        initial_value["alerts"]["entries"] = serde_json::json!(vec![alert.clone(); 12]);
+        let initial = serde_json::from_value(initial_value)?;
+        let mut application = BoardApplication::new(&initial)?;
+        let mut terminal = Terminal::new(TestBackend::new(50, 8))?;
+        let mut offsets = Vec::new();
+        // Start at valid offsets in the old documents, including panes that will shrink.
+        for pane in BoardPaneId::ALL {
+            assert_eq!(application.framework.focused(), &FocusedPane::App(pane));
+            terminal.draw(|frame| draw(frame, &mut application))?;
+            let viewport = application.viewports.get_mut(pane);
+            viewport.vertical_offset = viewport.max_vertical_offset();
+            viewport.horizontal_offset = viewport.max_horizontal_offset;
+            offsets.push((pane, viewport.vertical_offset, viewport.horizontal_offset));
+            handle_key(
+                &mut application,
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            );
+        }
+        fixture.claim(
+            &fixture.main_actor(),
+            "new_reservation.rs",
+            ConflictAuthorization::NoConflict,
+        )?;
+        let mut replacement = serde_json::to_value(fixture.model()?)?;
+        replacement["alerts"]["entries"] = serde_json::json!([alert]);
+        let mut source = ScriptedModelSource::new(serde_json::from_value(replacement)?);
+        let new_documents = BoardPaneDocuments::from_model(
+            source
+                .models
+                .front()
+                .and_then(|model| model.as_ref().ok())
+                .ok_or("missing replacement")?,
+        )?;
+        assert!(
+            new_documents.reservations.line_count > application.documents.reservations.line_count
+        );
+        assert!(new_documents.alerts.line_count < application.documents.alerts.line_count);
+        handle_key(
+            &mut application,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        application.refresh(&mut source);
+        assert_eq!(
+            application.framework.focused(),
+            &FocusedPane::App(BoardPaneId::Reservations)
+        );
+        for (pane, old_vertical, old_horizontal) in offsets {
+            // Draw each pane at the same size, as when the user next visits it.
+            while application.framework.focused() != &FocusedPane::App(pane) {
+                handle_key(
+                    &mut application,
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                );
+            }
+            terminal.draw(|frame| draw(frame, &mut application))?;
+            let viewport = application.viewports.get_mut(pane);
+            assert_eq!(
+                viewport.vertical_offset,
+                old_vertical.min(viewport.max_vertical_offset())
+            );
+            assert_eq!(
+                viewport.horizontal_offset,
+                old_horizontal.min(viewport.max_horizontal_offset)
+            );
+            if pane == BoardPaneId::Alerts {
+                assert!(
+                    old_vertical > viewport.vertical_offset,
+                    "shrinking content must clamp a previously valid offset"
+                );
+            }
+            if pane == BoardPaneId::Reservations {
+                assert!(old_vertical > 0);
+                assert_eq!(
+                    viewport.vertical_offset, old_vertical,
+                    "growing content keeps the offset"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_failures_keep_their_source_and_name_missing_configuration() {
+        let failure = BoardRefreshFailure::LedgerRead(LedgerError::Io(io::Error::other(
+            "journal unavailable",
+        )));
+        assert_eq!(
+            failure.to_string(),
+            "ledger I/O failed: journal unavailable"
+        );
+        assert!(failure.source().is_some());
+        let missing =
+            BoardRefreshFailure::RepositoryNotConfigured(PathBuf::from("/repository/berth.toml"));
+        assert_eq!(
+            missing.to_string(),
+            "configuration unavailable: /repository/berth.toml"
+        );
+        assert!(missing.source().is_none());
+    }
+
+    #[test]
+    fn unchanged_journal_position_skips_model_reconciliation() -> FixtureResult<()> {
+        let initial = model(&[]);
+        let mut application = BoardApplication::new(&initial)?;
+        let mut source = ScriptedModelSource::new(initial);
+        let mut events = ScriptedEvents::idle_then_quit();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        assert!(matches!(
+            event_loop(&mut terminal, &mut application, &mut source, &mut events),
+            BoardTerminalViewInteractionOutcome::Completed
+        ));
+        assert_eq!(source.checks, 1);
+        assert_eq!(source.rebuilds, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn sustained_input_refreshes_at_the_monotonic_deadline() -> FixtureResult<()> {
+        let mut application = BoardApplication::new(&model(&[]))?;
+        let mut source = ScriptedModelSource::new(changed_model());
+        let mut events = ScriptedEvents {
+            now:    Instant::now(),
+            inputs: (0..10)
+                .map(|_| {
+                    (
+                        Duration::from_millis(100),
+                        BoardEvent::Input(Event::Resize(100, 30)),
+                    )
+                })
+                .chain([(
+                    Duration::ZERO,
+                    BoardEvent::Input(Event::Key(KeyEvent::new(
+                        KeyCode::Char('q'),
+                        KeyModifiers::NONE,
+                    ))),
+                )])
+                .collect(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        assert!(matches!(
+            event_loop(&mut terminal, &mut application, &mut source, &mut events),
+            BoardTerminalViewInteractionOutcome::Completed
+        ));
+        assert_eq!(source.checks, 1);
+        assert_eq!(source.rebuilds, 1);
+        assert_eq!(application.journal_position, source.position);
+        Ok(())
+    }
 
     struct FirstFrameWriteFailure;
 
@@ -1376,10 +1904,17 @@ mod tests {
         let model = model(&[MARKER_ID]);
         let mut expected = serde_json::to_value(&model)
             .unwrap_or_else(|error| panic!("BoardModel should serialize: {error}"));
-        expected
+        let expected_fields = expected
             .as_object_mut()
-            .unwrap_or_else(|| panic!("board should be an object"))
-            .remove("targets");
+            .unwrap_or_else(|| panic!("board should be an object"));
+        for field in OMITTED_MODEL_FIELDS {
+            expected_fields.remove(*field);
+        }
+        for value in expected_fields.values_mut() {
+            if let Value::Object(section) = value {
+                section.remove("journal_position");
+            }
+        }
         let documents = BoardPaneDocuments::from_model(&model)
             .unwrap_or_else(|error| panic!("model should project: {error}"));
 
@@ -1387,22 +1922,21 @@ mod tests {
     }
 
     #[test]
-    fn recovered_bypasses_render_only_in_the_model_that_reports_them() {
-        let reporting_model = model(&[MARKER_ID]);
-        let later_model = model(&[]);
-        let reporting = BoardPaneDocuments::from_model(&reporting_model)
-            .unwrap_or_else(|error| panic!("reporting model should project: {error}"));
-        let later = BoardPaneDocuments::from_model(&later_model)
-            .unwrap_or_else(|error| panic!("later model should project: {error}"));
-
+    fn pane_documents_omit_raw_diagnostics_and_nested_positions() -> FixtureResult<()> {
+        let documents = BoardPaneDocuments::from_model(&model(&[MARKER_ID]))?;
+        for pane in BoardPaneId::ALL {
+            for field in OMITTED_MODEL_FIELDS {
+                assert!(
+                    !documents.get(pane).text.contains(field),
+                    "{pane:?}: {field}"
+                );
+            }
+        }
         assert_eq!(
-            reassembled_model_value(&reporting)["recovered_bypasses_this_invocation"],
-            serde_json::json!([MARKER_ID])
+            documents.overview.text,
+            overview_reservation_table(&model(&[]))
         );
-        assert_eq!(
-            reassembled_model_value(&later)["recovered_bypasses_this_invocation"],
-            serde_json::json!([])
-        );
+        Ok(())
     }
 
     #[test]
@@ -1452,7 +1986,9 @@ mod tests {
         let mut terminal = Terminal::with_options(backend, TerminalOptions { viewport })
             .unwrap_or_else(|error| panic!("fixed test terminal should build: {error}"));
 
-        let interaction = event_loop(&mut terminal, &mut application);
+        let mut source = ScriptedModelSource::new(model);
+        let mut events = ScriptedEvents::idle_then_quit();
+        let interaction = event_loop(&mut terminal, &mut application, &mut source, &mut events);
         let failure = finish_terminal_view(interaction, Ok(()));
 
         assert!(matches!(

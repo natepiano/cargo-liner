@@ -160,7 +160,7 @@
 
 **Ruled out:** `ExistingAnswersCoverEveryOverlap` for the widen — that form means earlier answers already authorize every scope and records no board answer; an optional edge on the plain `Sequence` form.
 
-### Phase 5 — The terminal board shows reservations created after it opens, and its Overview holds no raw diagnostics  · status: todo
+### Phase 5 — The terminal board shows reservations created after it opens, and its Overview holds no raw diagnostics  · status: done
 
 **Depends on:** Phase 4 (shared README and CHANGELOG)
 

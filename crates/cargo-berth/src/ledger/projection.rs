@@ -21,6 +21,50 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::SchemaVersion;
 
+/// A journal movement stamp; it is not a validation of journal contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum JournalPosition {
+    /// A published generation paired with the journal's observed byte length.
+    Published {
+        generation:  ProjectionGeneration,
+        byte_offset: JournalByteOffset,
+    },
+    /// The disposable projection cannot be decoded and must be rebuilt from the journal.
+    Undecodable { byte_offset: JournalByteOffset },
+    /// The journal exists but its disposable projection has not been published.
+    Unpublished { byte_offset: JournalByteOffset },
+}
+
+impl JournalPosition {
+    /// Name the generation and byte boundary represented by one replay.
+    pub(crate) const fn new(
+        generation: ProjectionGeneration,
+        byte_offset: JournalByteOffset,
+    ) -> Self {
+        Self::Published {
+            generation,
+            byte_offset,
+        }
+    }
+}
+
+/// Read only the small projection stamp, paired with an independently observed journal length.
+pub(super) fn read_position(
+    projection_path: &Path,
+    byte_offset: JournalByteOffset,
+) -> Result<JournalPosition, ProjectionError> {
+    match read_once(projection_path) {
+        Ok(ProjectionRead::Present(projection)) => {
+            Ok(JournalPosition::new(projection.generation, byte_offset))
+        },
+        Ok(ProjectionRead::Missing) => Ok(JournalPosition::Unpublished { byte_offset }),
+        Err(ProjectionError::Deserialization(_) | ProjectionError::UnsupportedSchemaVersion(_)) => {
+            Ok(JournalPosition::Undecodable { byte_offset })
+        },
+        Err(error) => Err(error),
+    }
+}
+
 /// The version field that determines whether this binary can decode a projection cache.
 #[derive(Deserialize)]
 struct ProjectionSchemaHeader {

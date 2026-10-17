@@ -37,6 +37,7 @@ use super::journal::JournalReplay;
 use super::journal::RecordCeiling;
 use super::lock::MutationLock;
 use super::projection;
+use super::projection::JournalPosition;
 use super::projection::Projection;
 use super::projection::ProjectionError;
 use super::projection::ProjectionSynchronization;
@@ -351,6 +352,18 @@ impl Ledger {
             worktree_context,
             configuration,
         }))
+    }
+
+    /// Read a movement stamp with one journal metadata lookup and one small projection read.
+    ///
+    /// Cost is independent of journal length: no records are read or replayed, no lock is
+    /// acquired, and nothing is published. A concurrent append or projection publication can
+    /// cause an extra refresh; the ensuing reconciliation validates the actual journal.
+    /// An undecodable projection counts as movement so reconciliation can rebuild it.
+    pub(crate) fn current_journal_position(&self) -> Result<JournalPosition, LedgerError> {
+        let byte_offset = JournalByteOffset::from(fs::metadata(&self.paths.journal)?.len());
+        projection::read_position(&self.paths.projection, byte_offset)
+            .map_err(LedgerError::Projection)
     }
 
     /// Read validated journal truth without holding the mutation lock.
@@ -1140,6 +1153,26 @@ mod tests {
     use crate::reservation::MergeExtent;
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReservationRunStatus;
+
+    #[test]
+    fn journal_movement_reads_no_records_and_detects_unpublished_appends()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path())?;
+        let ledger = Ledger::open(repository.path())?;
+        let initial = ledger.current_journal_position()?;
+        let projection_before = fs::read(&ledger.paths.projection)?;
+        // Movement detection does not decode even a complete malformed record.
+        fs::write(&ledger.paths.journal, b"invalid journal record\n")?;
+        let appended = ledger.current_journal_position()?;
+        assert_ne!(appended, initial);
+        assert_eq!(fs::read(&ledger.paths.projection)?, projection_before);
+        assert!(ledger.read_validated_journal().is_err());
+        fs::remove_file(&ledger.paths.projection)?;
+        assert_ne!(ledger.current_journal_position()?, appended);
+        assert!(!ledger.paths.projection.exists());
+        Ok(())
+    }
 
     #[test]
     fn rejected_reconciliation_does_not_append_or_run_its_committed_action() {
