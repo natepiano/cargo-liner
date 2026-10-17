@@ -44,6 +44,20 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     },
 };
 
+/// The empty-ledger main checkout with the ignored policy deliberately committed.
+const COMMITTED_POLICY_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "committed-policy",
+    build: |root| {
+        build_initialized_repository(root, GitReferenceStorage::Loose);
+        GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
+        GIT.run_without_hooks(
+            root,
+            ["commit", "--quiet", "-m", "track berth configuration"],
+        );
+    },
+    ..INITIALIZED_REPOSITORY
+};
+
 /// `INITIALIZED_REPOSITORY` with its references kept in a reftable.
 const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "initialized-reftable",
@@ -58,35 +72,7 @@ const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
     name:             "integration-main",
-    build:            |root| {
-        let git = GitDriver {
-            cleared_environment: &[
-                RUN_ENVIRONMENT,
-                SESSION_ENVIRONMENT,
-                "GIT_DIR",
-                "GIT_COMMON_DIR",
-            ],
-            ..GIT
-        };
-        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        for (key, value) in [
-            ("user.name", "Berth Test"),
-            ("user.email", "berth@example.invalid"),
-            ("maintenance.auto", "false"),
-            ("gc.auto", "0"),
-        ] {
-            git.run(root, ["config", key, value]);
-        }
-        cargo_berth_test_support::write_file(root, "README.md", "initial\n");
-        git.run(root, ["add", "README.md"]);
-        git.run(root, ["commit", "--quiet", "-m", "initial"]);
-        assert_success(&run_berth(root, &["init", "--json"]));
-        git.run(root, ["add", "--force", CONFIGURATION_PATH]);
-        git.run_without_hooks(
-            root,
-            ["commit", "--quiet", "-m", "track berth configuration"],
-        );
-    },
+    build:            |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
 };
 
 use std::fs;
@@ -94,7 +80,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -186,13 +171,12 @@ mod integration_cover {
     use cargo_berth_test_support::reservation_row;
     use cargo_berth_test_support::worktree_identity_and_marker_run;
 
-    use super::BERTH_EXECUTABLE;
     use super::FIRST_RUN;
     use super::SECOND_RUN;
 
     #[test]
     fn first_lane_creates_a_cover_in_the_integration_worktree_with_its_main_diff() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let lane = repo.lane("cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -239,7 +223,7 @@ mod integration_cover {
 
     #[test]
     fn prepared_main_hook_creates_cover_under_the_integration_checkout_actor() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let integration_path = repo.integration.to_str().expect("UTF-8 worktree path");
         repo.git(
             repo.root(),
@@ -279,7 +263,7 @@ mod integration_cover {
 
     #[test]
     fn empty_integration_footprint_waits_until_the_branch_has_work_to_cover() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         repo.git(&repo.integration, &["reset", "--hard", "main"]);
         let lane = repo.lane("empty-cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
@@ -368,7 +352,7 @@ mod integration_cover {
 
     #[test]
     fn a_later_lane_gets_a_new_cover_after_the_previous_cover_ends() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let first = repo.lane("first-cover-lane", "integration");
         let claimed = repo.claim(&first, "file:first.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -414,7 +398,7 @@ mod integration_cover {
     #[test]
     fn cover_uses_existing_marker_and_unmapped_session_respects_its_held_paths() {
         for existing_marker in [false, true] {
-            let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+            let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
             let lane = repo.lane("session-cover-lane", "integration");
             let marker_name = repo.git_stdout(
                 &repo.integration,
@@ -578,19 +562,7 @@ fn resolve_reports_failed_session_mapping_retirement() {
 
 #[test]
 fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
-    let repository = initialized_repository();
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "track berth configuration",
-        ],
-    );
+    let repository = COMMITTED_POLICY_REPOSITORY.instantiate();
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
@@ -633,20 +605,15 @@ fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted
 
 #[test]
 fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
-    let repository = initialized_repository();
+    let repository = COMMITTED_POLICY_REPOSITORY.instantiate();
     // This fixture exercises a released holder only; commits must not add live first touches.
     git(
         repository.path(),
         &["config", "core.hooksPath", "/dev/null"],
     );
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "track berth configuration"],
-    );
     git(repository.path(), &["tag", "--force", INITIAL_COMMIT_TAG]);
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -707,7 +674,7 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
 #[test]
 fn stored_integrated_evidence_is_revalidated_before_release() {
     let repository = initialized_repository();
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -839,7 +806,7 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 
 #[test]
 fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
     let lane = repo.lane("target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -876,7 +843,7 @@ fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
 
 #[test]
 fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
     let lane = repo.lane("missing-target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -1250,7 +1217,7 @@ fn loose_reference_reads_spawn_no_git_process() {
 fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -2433,15 +2400,18 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
 }
 
 fn git_binary() -> String {
-    let output = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("git lookup should run");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .expect("git path should be UTF-8")
-        .trim()
-        .to_owned()
+    let path = std::env::var_os("PATH").expect("test PATH should exist");
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("git"))
+        .find(|candidate| {
+            candidate.is_file()
+                && candidate
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        })
+        .expect("git should exist on PATH")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn wait_for_path(path: &Path, child: &mut Child) {
@@ -2474,7 +2444,6 @@ mod merge_extent {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::process::Output;
 
     use cargo_berth_test_support::GitDriver;
@@ -2575,7 +2544,7 @@ mod merge_extent {
 
     #[test]
     fn merge_extents_exclude_changes_already_on_the_integration_target() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         repo.commit_file(
             &repo.integration,
             "Cargo.toml",
@@ -2619,7 +2588,7 @@ mod merge_extent {
 
     #[test]
     fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("missing-target-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2676,7 +2645,7 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("partly-landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2721,7 +2690,7 @@ mod merge_extent {
 
     #[test]
     fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -4707,16 +4676,36 @@ mod merge_extent {
         GIT.run(fixture.trunk(), ["worktree", "prune"]);
     }
 
-    fn real_git() -> String {
-        let output = Command::new("sh")
-            .args(["-c", "command -v git"])
-            .output()
-            .expect("git location should resolve");
-        assert!(output.status.success());
-        String::from_utf8(output.stdout)
-            .expect("git location should be UTF-8")
-            .trim()
-            .to_owned()
+    fn real_git() -> String { super::git_binary() }
+
+    /// Committed source and berth policy, with hooks disabled so only explicit reads reconcile.
+    const MERGE_EXTENT_MAIN: super::RepositoryTemplate = super::RepositoryTemplate {
+        target_directory: env!("CARGO_TARGET_TMPDIR"),
+        executable:       BERTH,
+        name:             "merge-extent-main",
+        build:            build_merge_extent_main,
+    };
+
+    fn build_merge_extent_main(root: &Path) {
+        GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
+        for (key, value) in [
+            ("user.name", "Berth Test"),
+            ("user.email", "berth@example.invalid"),
+            ("maintenance.auto", "false"),
+            ("gc.auto", "0"),
+        ] {
+            GIT.run(root, ["config", key, value]);
+        }
+        write(root, "tracked.rs", "base\n");
+        write(root, "staged.rs", "base\n");
+        GIT.run(root, ["add", "."]);
+        GIT.run(root, ["commit", "--quiet", "-m", "base"]);
+        succeed(&berth(root, &["init", "--json"], FIRST_RUN));
+        // No hook or lifecycle verb runs when these tests integrate a branch. Only the
+        // following board read may discover its now-empty merge surface.
+        GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
+        GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
+        GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
     }
 
     /// Three checkouts share object storage but have independent working trees.
@@ -4729,27 +4718,8 @@ mod merge_extent {
 
     impl Repository {
         fn new() -> Self {
-            let repository = tempdir().expect("repository parent should exist");
+            let repository = MERGE_EXTENT_MAIN.instantiate();
             let root = repository.path();
-            GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-            for (key, value) in [
-                ("user.name", "Berth Test"),
-                ("user.email", "berth@example.invalid"),
-                ("maintenance.auto", "false"),
-                ("gc.auto", "0"),
-            ] {
-                GIT.run(root, ["config", key, value]);
-            }
-            write(root, "tracked.rs", "base\n");
-            write(root, "staged.rs", "base\n");
-            GIT.run(root, ["add", "."]);
-            GIT.run(root, ["commit", "--quiet", "-m", "base"]);
-            succeed(&berth(root, &["init", "--json"], FIRST_RUN));
-            // No hook or lifecycle verb runs when these tests integrate a branch. Only the
-            // following board read may discover its now-empty merge surface.
-            GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
-            GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-            GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");
             let outsider = worktrees.path().join("outsider");

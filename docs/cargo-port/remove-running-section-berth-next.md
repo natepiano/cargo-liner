@@ -223,7 +223,7 @@
 
 **Ruled out:** a CHANGELOG `Fixed` line for the retired-deferral repair — the defect and `--replace` are both inside `[Unreleased]`.
 
-### Phase 7 — Every cargo-berth test finishes in under a second  · status: todo
+### Phase 7 — Every cargo-berth test finishes in under a second  · status: done
 
 **Depends on:** Phase 6 (every phase edits `crates/cargo-berth/tests/`)
 

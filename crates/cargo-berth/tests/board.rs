@@ -50,7 +50,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -75,7 +74,7 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 
 #[test]
 fn engine_cover_has_a_cover_source_and_targets_main() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("board-cover-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -95,7 +94,7 @@ fn engine_cover_has_a_cover_source_and_targets_main() {
 
 #[test]
 fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("uncovered-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -162,7 +161,7 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
 
 #[test]
 fn deleted_target_uses_main_without_an_uncovered_alert() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("deleted-target-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -416,7 +415,7 @@ fn f003_board_json_schema_requires_a_non_nullable_row_target() {
 
 #[test]
 fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let a = repo.lane("invoker-a", "integration");
     let _ = repo.lane("invoker-b", "integration");
     let claimed = repo.claim(&a, "file:invoker.txt", FIRST_RUN, None);
@@ -1394,7 +1393,7 @@ fn reservation_lifecycle_query_distinguishes_all_four_states() {
 fn human_board_uses_and_restores_an_attached_terminal() {
     let repository = initialized_repository();
     let transcript = repository.path().join("terminal-transcript");
-    let mut child = Command::new("/usr/bin/script")
+    let mut child = std::process::Command::new("/usr/bin/script")
         .args([
             "-q",
             transcript
@@ -7766,34 +7765,7 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 
 fn build_integration_main(root: &Path) {
-    let git = GitDriver {
-        optional_locks: OptionalLocks::Taken,
-        cleared_environment: &[
-            "CARGO_BERTH_RUN",
-            "CARGO_BERTH_SESSION_ID",
-            "GIT_DIR",
-            "GIT_COMMON_DIR",
-        ],
-        ..GIT
-    };
-    git.run(root, ["init", "--quiet", "--initial-branch=main"]);
-    for (key, value) in [
-        ("user.name", "Berth Test"),
-        ("user.email", "berth@example.invalid"),
-        ("maintenance.auto", "false"),
-        ("gc.auto", "0"),
-    ] {
-        git.run(root, ["config", key, value]);
-    }
-    fs::write(root.join("README.md"), "initial\n").expect("initial source should write");
-    git.run(root, ["add", "README.md"]);
-    git.run(root, ["commit", "--quiet", "-m", "initial"]);
-    assert_success(&run_berth(root, &["init", "--json"]));
-    git.run(root, ["add", "--force", CONFIGURATION_PATH]);
-    git.run_without_hooks(
-        root,
-        ["commit", "--quiet", "-m", "track berth configuration"],
-    );
+    IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE);
 }
 
 fn build_initialized_repository(repository_root: &Path) {
@@ -8122,13 +8094,13 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
     GIT.stdout(repository_root, arguments)
 }
 
-fn git_binary() -> String {
-    let output = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("git lookup should run");
-    String::from_utf8(output.stdout)
-        .expect("git path should be UTF-8")
-        .trim()
-        .to_owned()
+fn git_binary() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH should exist"))
+        .map(|directory| directory.join(GIT_BINARY))
+        .find(|candidate| {
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .expect("git should exist on PATH")
 }

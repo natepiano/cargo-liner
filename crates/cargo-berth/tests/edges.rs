@@ -37,6 +37,23 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     build:            build_initialized_repository,
 };
 
+/// An initialized main checkout with committed policy, before integration lanes exist.
+const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
+    name: "integration-main",
+    build: |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
+    ..INITIALIZED_REPOSITORY
+};
+
+/// The source checkout with berth policy committed before linked lanes branch.
+const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "configured",
+    build: |root| {
+        build_initialized_repository(root);
+        commit_configuration(root);
+    },
+    ..INITIALIZED_REPOSITORY
+};
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -106,7 +123,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 #[test]
 fn same_target_edge_waits_for_predecessor_to_reach_integration() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("same-target-a", "integration");
     let successor = repo.lane("same-target-b", "integration");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -198,7 +215,7 @@ fn same_target_edge_waits_for_predecessor_to_reach_integration() {
 
 #[test]
 fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("active-cross-a", "integration");
     let successor = repo.main_lane("active-cross-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -218,7 +235,7 @@ fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence()
 
 #[test]
 fn cross_target_edge_keeps_earlier_landed_proof_after_target_revalidation() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("landed-proof-a", "integration");
     let successor = repo.main_lane("landed-proof-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -270,7 +287,7 @@ fn cross_target_edge_keeps_earlier_landed_proof_after_target_revalidation() {
 
 #[test]
 fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("cross-target-a", "integration");
     let successor = repo.main_lane("cross-target-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -318,7 +335,7 @@ fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
 
 #[test]
 fn cross_target_edge_is_fulfilled_when_successor_merges_outstanding_predecessor() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("early-a", "integration");
     let successor = repo.main_lane("early-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -380,8 +397,7 @@ struct EdgeReadinessFixture {
 
 impl EdgeReadinessFixture {
     fn new() -> Self {
-        let repository = initialized_repository();
-        commit_configuration(repository.path());
+        let repository = CONFIGURED_REPOSITORY.instantiate();
         let base_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
         let baseline_journal =
             fs::read(repository.path().join(JOURNAL_PATH)).expect("initial journal should read");
@@ -823,8 +839,7 @@ fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_reject
 
 #[test]
 fn sequence_rejects_each_invalid_identity_and_carries_alerts() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let worktrees = tempdir().expect("worktree parent should exist");
@@ -1047,8 +1062,7 @@ fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
 
 #[test]
 fn successor_head_and_current_trunk_both_control_readiness() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     fs::create_dir_all(repository.path().join("left")).expect("left directory should exist");
     fs::create_dir_all(repository.path().join("right")).expect("right directory should exist");
     fs::write(repository.path().join("left/shared.rs"), "// left\n")
@@ -2132,8 +2146,7 @@ fn assert_successor_round_robin_progress(
 
 #[test]
 fn released_predecessor_ref_retires_only_after_every_successor_is_terminal() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
@@ -2432,8 +2445,7 @@ fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) 
 }
 
 fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSuccessorFixture {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
@@ -2572,8 +2584,7 @@ fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
 /// Start successor scale fixtures with the same tracked scope files, committed without hooks
 /// before any reservation exists.
 fn successor_scope_repository(successor_count: usize) -> TempDir {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     fs::create_dir_all(repository.path().join("successors"))
         .expect("successor scope directory should exist");
     for successor_index in 0..successor_count {
@@ -2695,8 +2706,7 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
 }
 
 fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixture {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     commit_predecessor_scopes(repository.path(), predecessor_count);
     let worktrees = tempdir().expect("worktree parent should exist");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
@@ -2815,8 +2825,7 @@ fn commit_predecessor_scopes(repository_root: &Path, predecessor_count: usize) {
 
 /// Commit a `left/shared.rs` tree and a `right/` tree of three per-successor files.
 fn commit_left_and_right_trees() -> TempDir {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     fs::create_dir_all(repository.path().join("left")).expect("left directory should exist");
     fs::create_dir_all(repository.path().join("right")).expect("right directory should exist");
     fs::write(repository.path().join("left/shared.rs"), "// left\n")

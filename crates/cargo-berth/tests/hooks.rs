@@ -13,6 +13,7 @@ mod timing;
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
@@ -31,6 +32,56 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// A main checkout with one commit, before berth installs its hooks.
+const GIT_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "git-only",
+    build:            |root| {
+        let built = build_git_repository(root);
+        assert!(built.is_ok(), "git repository template failed: {built:?}");
+    },
+};
+
+/// An initialized checkout with untracked policy and no session or reservation.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "initialized",
+    build: |root| {
+        let built = build_initialized_repository(root);
+        assert!(
+            built.is_ok(),
+            "initialized hook repository template failed: {built:?}"
+        );
+    },
+    ..GIT_REPOSITORY
+};
+
+/// Initialized main with its policy committed before a corpus or incursion scenario.
+const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "configured",
+    build: |root| {
+        let built = build_initialized_repository(root).and_then(|()| {
+            run_git(root, &["add", "--force", CONFIGURATION_PATH])?;
+            run_git(
+                root,
+                &[
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "configure cargo-berth",
+                ],
+            )
+        });
+        assert!(
+            built.is_ok(),
+            "configured hook repository template failed: {built:?}"
+        );
+    },
+    ..GIT_REPOSITORY
 };
 
 use std::error::Error;
@@ -2130,31 +2181,29 @@ fn dirty_source(root: &Path, path: &str) -> TestResult {
 }
 
 fn initialized_repository() -> TestResult<TempDir> {
-    let repository = git_repository()?;
-    let initialized = run_berth(repository.path(), &["init", "--json"])?;
-    require_success(&initialized, "cargo-berth init")?;
-    Ok(repository)
+    fs::create_dir_all(SCRATCH_ROOT)?;
+    Ok(INITIALIZED_REPOSITORY.instantiate())
 }
 
 fn git_repository() -> TestResult<TempDir> {
     fs::create_dir_all(SCRATCH_ROOT)?;
-    let repository = TempDir::new_in(SCRATCH_ROOT)?;
+    Ok(GIT_REPOSITORY.instantiate())
+}
+
+fn build_initialized_repository(root: &Path) -> TestResult {
+    build_git_repository(root)?;
+    let initialized = run_berth(root, &["init", "--json"])?;
+    require_success(&initialized, "cargo-berth init")
+}
+
+fn build_git_repository(root: &Path) -> TestResult {
+    run_git(root, &["init", "--quiet", "--initial-branch", "main"])?;
+    run_git(root, &["config", "user.name", "Hook Acceptance Test"])?;
+    run_git(root, &["config", "user.email", "hooks@example.invalid"])?;
+    fs::write(root.join("README.md"), "hook fixture\n")?;
+    run_git(root, &["add", "README.md"])?;
     run_git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch", "main"],
-    )?;
-    run_git(
-        repository.path(),
-        &["config", "user.name", "Hook Acceptance Test"],
-    )?;
-    run_git(
-        repository.path(),
-        &["config", "user.email", "hooks@example.invalid"],
-    )?;
-    fs::write(repository.path().join("README.md"), "hook fixture\n")?;
-    run_git(repository.path(), &["add", "README.md"])?;
-    run_git(
-        repository.path(),
+        root,
         &[
             "-c",
             "commit.gpgsign=false",
@@ -2164,7 +2213,7 @@ fn git_repository() -> TestResult<TempDir> {
             "initial",
         ],
     )?;
-    Ok(repository)
+    Ok(())
 }
 
 fn add_worktree(repository: &TempDir, name: &str) -> TestResult<(TempDir, PathBuf)> {
@@ -2487,20 +2536,8 @@ impl OrphanedReservations {
 /// changed path like any other, and the auto-widen line it produces is text the corpus
 /// never froze.
 fn committed_configuration_repository() -> TestResult<TempDir> {
-    let repository = initialized_repository()?;
-    run_git(repository.path(), &["add", "--force", CONFIGURATION_PATH])?;
-    run_git(
-        repository.path(),
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "configure cargo-berth",
-        ],
-    )?;
-    Ok(repository)
+    fs::create_dir_all(SCRATCH_ROOT)?;
+    Ok(CONFIGURED_REPOSITORY.instantiate())
 }
 
 fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
