@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The summary can show stored account roles, weekly usage, resets and credits from a configured accounts command, refreshed in the background. Worker job names skip dispatch role preambles.
 - Worker rows use their seat or role and first task instead of raw thread ids. Status shows the current tool activity or live verification step, including detached gates and Mac offloads; standard-tier accounts carry no mark. Fresh-seat and follow-up dispatches fold through their live launcher identity.
 - Top-level sessions without a production role share one sortable `unassigned` tile per machine, retaining their own name colors and nested work.
 - Click a tree or summary column header to sort its siblings or machine group; click again to reverse. The default `age ▼` keeps the existing order and name colors. Codex workers use hierarchy roles, then the folded dispatch’s session roster role or seat role token, or `worker`; every Codex worker name uses its parent session’s color.

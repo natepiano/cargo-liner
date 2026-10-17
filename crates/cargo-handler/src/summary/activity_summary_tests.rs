@@ -12,6 +12,7 @@ use crate::census::AgentActivity;
 use crate::census::RunLocation;
 use crate::census::ServiceTier;
 use crate::census::VerifyStep;
+use crate::census::accounts::AccountsTable;
 use crate::sort::SortDirection;
 
 fn row(pid: u32, name: &str, activity: AgentActivity) -> AgentRow {
@@ -63,6 +64,7 @@ fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts: &AccountsTable::NotConfigured,
             machines: &machines,
             placement: &placement,
             cells: &cells,

@@ -34,7 +34,7 @@ fn sorting_forest() -> MachineState {
     let older = AgentRow {
         session_id: SessionIdentity::Claude("older-id".into()),
         account: sort_account("z-account"),
-        activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+        activity: AgentActivity::from(Some("idle")),
         branch: Some("z-branch".into()),
         directory: "/z-directory".into(),
         ..agent(20, "zeta", 8 * HOUR, Some(10))
@@ -42,7 +42,7 @@ fn sorting_forest() -> MachineState {
     let younger = AgentRow {
         session_id: SessionIdentity::Claude("younger-id".into()),
         account: sort_account("a-account"),
-        activity: crate::census::AgentActivity::from_legacy(Some("thinking")),
+        activity: AgentActivity::from(Some("thinking")),
         branch: Some("a-branch".into()),
         directory: "/a-directory".into(),
         children: vec![child(0, ChildKind::Shell, Some(41), "a-shell", 2 * HOUR)],
@@ -559,7 +559,7 @@ fn independent_sort_forest() -> MachineState {
         let id = format!("id-{pid}");
         rows.push(AgentRow {
             session_id: SessionIdentity::Claude(id.clone()),
-            activity: AgentActivity::from_legacy(Some(status)),
+            activity: AgentActivity::from(Some(status)),
             account: sort_account(account),
             branch: Some(branch.into()),
             directory: directory.into(),

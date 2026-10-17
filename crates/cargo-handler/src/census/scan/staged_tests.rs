@@ -87,7 +87,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         )),
         service_tier:    ServiceTier::Unrecorded,
         name:            "handler".to_string(),
-        activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
+        activity:        AgentActivity::from(Some("busy")),
         started:         100,
         process_started: 100,
         pid:             428_044,
