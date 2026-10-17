@@ -105,7 +105,7 @@
 
 **Ruled out:** treating merge history simplification as hiding an authored edit — git prunes a parent only when the merge result matches the other parent for that path, so the pruned edit is not in the result.
 
-### Phase 3 — A trial merge in progress is never read as this worktree's edit  · status: todo
+### Phase 3 — A trial merge in progress is never read as this worktree's edit  · status: done
 
 **Depends on:** Phase 2 (shared CHANGELOG, `src/drift/`, as-built docs)
 

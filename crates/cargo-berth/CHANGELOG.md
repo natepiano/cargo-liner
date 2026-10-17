@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Drift defers while Git records a pending rebase, merge, cherry-pick, or revert, so trial merges and stopped operations create no first-touch reservations or incursions. Checks resume after completion or abort; completed `--no-commit` cherry-picks and reverts remain ordinary working-tree edits.
+
 - Incursion classification excludes commits already reachable from the integration target or its locally available upstream. An answered working-tree write stays answered when first committed; a further entering commit reopens it. Resolved paths retain commit-based coverage as holders grow, and reopen only for new entering commits; older incidents keep their original holder-based coverage.
 
 - `init` excludes `.claude/config/berth.toml` through the common Git `info/exclude` in every worktree, so a clean initialization leaves no untracked `.claude/` entry. Re-running `init` repairs older repositories without duplicating an existing exclude entry; tracked configurations remain visible.
