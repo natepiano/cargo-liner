@@ -222,6 +222,7 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::account::ConfigHome;
@@ -266,7 +267,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            status: None,
+            activity: AgentActivity::Unreported,
             started: 0,
             process_started: 0,
             pid,

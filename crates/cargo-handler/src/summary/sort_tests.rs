@@ -63,7 +63,7 @@ fn sort_states() -> [MachineState; 2] {
                 sort_row(
                     20,
                     "alpha",
-                    "busy",
+                    "git",
                     NOW - 3600,
                     "a-account",
                     "a-desktop",
@@ -76,7 +76,7 @@ fn sort_states() -> [MachineState; 2] {
             vec![sort_row(
                 1,
                 "other-machine",
-                "busy",
+                "git",
                 NOW - 8000,
                 "a-account",
                 "a-desktop",
@@ -151,7 +151,7 @@ fn default_summary_sort_keeps_phase_one_machine_order_rows_and_colors() {
     assert_eq!(order(&buffer), ["zeta", "alpha", "other-machine"]);
     for (name, expected) in [
         ("zeta", "100 z-account zeta idle 2h z-desktop /z-directory"),
-        ("alpha", "20 a-account alpha busy 1h a-desktop /a-directory"),
+        ("alpha", "20 a-account alpha git 1h a-desktop /a-directory"),
     ] {
         let y = find_label(&buffer, name).1;
         let text: String = (0..buffer.area.width)
@@ -212,7 +212,7 @@ fn equal_summary_keys_use_default_age_and_pid_order_even_when_reversed() {
     let mut states = sort_states();
     if let MachineState::Answered(rows, _) = &mut states[0] {
         for row in rows {
-            row.status = Some("busy".to_string());
+            row.activity = crate::census::AgentActivity::from_legacy(Some("git"));
             row.account = Account::Unrecorded;
         }
     }
@@ -380,7 +380,7 @@ fn each_summary_column_has_an_independent_order_including_numeric_pids() {
                 sort_row(
                     300,
                     "dog",
-                    "busy",
+                    "git",
                     NOW - 4 * 3600,
                     "a-account",
                     "c-desk",
@@ -389,7 +389,7 @@ fn each_summary_column_has_an_independent_order_including_numeric_pids() {
                 sort_row(
                     40,
                     "cat",
-                    "paused",
+                    "reading",
                     NOW - 2 * 3600,
                     "b-account",
                     "a-desk",

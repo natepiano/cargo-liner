@@ -22,13 +22,13 @@ use std::time::Duration;
 
 use super::Account;
 use super::Agent;
+use super::AgentActivity;
 use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
 use super::RowIdentity;
 use super::ServiceTier;
-use super::ThreadState;
 use super::Timer;
 use super::classify;
 use super::classify::ProcessEntry;
@@ -37,6 +37,7 @@ use super::transcript::BashCall;
 use super::transcript::Subagent;
 use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerTask;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
@@ -66,7 +67,7 @@ pub(super) struct ShellCall {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ThreadEntry {
     /// The last turn event in its rollout.
-    pub(super) thread_state: ThreadState,
+    pub(super) activity:     AgentActivity,
     /// The rollout thread id used by management links.
     pub(super) thread_id:    CodexThreadId,
     /// The thread's label, else its id.
@@ -180,7 +181,7 @@ pub(super) fn thread_id(path: &Path) -> Option<String> {
 #[derive(Debug)]
 struct Node {
     /// A live thread's rollout state; idle for other work.
-    thread_state: ThreadState,
+    activity:     AgentActivity,
     /// The stable id when this node is an app-server thread.
     thread_id:    CodexThreadId,
     /// A worker identity carried until tile placement is known.
@@ -240,7 +241,7 @@ pub(super) fn attach_children(
                 .map(|process| walker.agent_nodes(process, 0, &mut visited))
                 .unwrap_or_default();
             nodes.extend(sessions.iter().map(|session| Node {
-                thread_state: ThreadState::Idle,
+                activity:     AgentActivity::Idle,
                 thread_id:    CodexThreadId::Unrecorded,
                 dispatch:     WorkerDispatch::Plain,
                 kind:         ChildKind::Session(session.agent),
@@ -337,7 +338,7 @@ impl Walker<'_> {
                 .into_iter()
                 .flatten()
                 .map(|thread| Node {
-                    thread_state: thread.thread_state,
+                    activity:     thread.activity,
                     thread_id:    thread.thread_id.clone(),
                     dispatch:     WorkerDispatch::Plain,
                     kind:         ChildKind::Thread,
@@ -365,7 +366,7 @@ impl Walker<'_> {
                     .and_then(|call| call.description.clone())
                     .unwrap_or_else(|| command.split_whitespace().collect::<Vec<_>>().join(" "));
                 let shell = Node {
-                    thread_state: ThreadState::Idle,
+                    activity: AgentActivity::Idle,
                     thread_id: CodexThreadId::Unrecorded,
                     dispatch: self
                         .sources
@@ -510,7 +511,7 @@ impl Walker<'_> {
             )
         };
         Node {
-            thread_state: ThreadState::Idle,
+            activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             kind: kind(agent),
@@ -548,7 +549,7 @@ fn subagent_node(
         );
     }
     Node {
-        thread_state: ThreadState::Idle,
+        activity: AgentActivity::Idle,
         thread_id: CodexThreadId::Unrecorded,
         dispatch: WorkerDispatch::Plain,
         kind: ChildKind::Subagent,
@@ -616,7 +617,8 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
-            thread_state: node.thread_state,
+            worker_task: WorkerTask::Unrecorded,
+            activity: node.activity,
             thread_id: node.thread_id,
             dispatch: node.dispatch,
             depth,
@@ -770,7 +772,7 @@ mod tests {
     /// A thread an app server holds open.
     fn thread(name: &str, started: u64) -> ThreadEntry {
         ThreadEntry {
-            thread_state: ThreadState::Idle,
+            activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             name: name.to_string(),
             started,
@@ -901,7 +903,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: format!("pid {pid}"),
-            status: None,
+            activity: AgentActivity::Unreported,
             started,
             process_started: started,
             pid,
@@ -1438,7 +1440,7 @@ mod tests {
             threads: HashMap::from([(
                 30,
                 vec![ThreadEntry {
-                    thread_state: ThreadState::Idle,
+                    activity: AgentActivity::Idle,
                     thread_id: CodexThreadId::Recorded("mesh-worker".to_string()),
                     account: Account::Home(AccountLabels::default().resolve(
                         Path::new("/home/test/.codex2"),

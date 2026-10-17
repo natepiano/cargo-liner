@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"process_started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","activity":{"active":"thinking"},"started":1790000000,"process_started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -43,7 +43,10 @@ pub(super) struct ProbeAgentRow {
     #[serde(default)]
     account:         Account,
     name:            String,
+    #[serde(default)]
     status:          Option<String>,
+    #[serde(default)]
+    activity:        Option<super::AgentActivity>,
     started:         u64,
     /// Older probes supply their identity through `started` instead.
     process_started: Option<u64>,
@@ -65,7 +68,9 @@ impl From<ProbeAgentRow> for AgentRow {
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
-            status:          row.status,
+            activity:        row
+                .activity
+                .unwrap_or_else(|| super::AgentActivity::from_legacy(row.status.as_deref())),
             started:         row.started,
             process_started: row.process_started.unwrap_or(row.started),
             pid:             row.pid,
@@ -207,21 +212,23 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
     use crate::census::Machine;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
-    use crate::census::ThreadState;
     use crate::census::Timer;
     use crate::census::worker_dispatch::WorkerDispatch;
+    use crate::census::worker_dispatch::WorkerTask;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
+            worker_task: WorkerTask::Unrecorded,
             thread_id: crate::census::CodexThreadId::Unrecorded,
             dispatch: WorkerDispatch::Plain,
-            thread_state: ThreadState::Idle,
+            activity: AgentActivity::Idle,
             depth,
             kind,
             service_tier: ServiceTier::Unrecorded,
@@ -250,7 +257,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "ChatGPT".to_string(),
-                    status:          None,
+                    activity:        AgentActivity::Unreported,
                     started:         1_790_000_000,
                     process_started: 1_790_000_000,
                     pid:             76_130,
@@ -266,7 +273,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
-                    status:          Some("idle".to_string()),
+                    activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
                     started:         1_790_000_100,
                     process_started: 1_790_000_100,
                     pid:             80_020,
@@ -290,12 +297,14 @@ mod tests {
                             1_790_000_111,
                         ),
                         ChildRow {
+                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                             service_tier: ServiceTier::Fast,
                             account: Account::Unrecorded,
                             ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                         },
                         child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
                         ChildRow {
+                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                             timer: Some(Timer {
                                 started:  1_790_000_125,
                                 deadline: 1_790_000_425,
@@ -323,7 +332,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "worker".to_string(),
-                    status:          Some("busy".to_string()),
+                    activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
                     started:         1_790_000_130,
                     process_started: 1_790_000_130,
                     pid:             81_020,
@@ -347,15 +356,15 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","account":null,"name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","account":null,"name":"ChatGPT","activity":"unreported","started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"natemccoy-30","activity":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
+                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","activity":{"active":"thinking"},"started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[]}"#,
             )
         );
         assert_eq!(
@@ -370,7 +379,7 @@ mod tests {
     fn a_row_without_a_desktop_or_branch_reads_back_with_none() {
         let output = concat!(
             r#"{"schema":3,"machine":"natedev","rows":["#,
-            r#"{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"directory":"~/rust/handler","launched_by":null,"children":[]},"#,
+            r#"{"agent":"claude","name":"enh/handler","activity":{"active":"thinking"},"started":1790000000,"pid":428044,"directory":"~/rust/handler","launched_by":null,"children":[]},"#,
             r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","branch":"fix/berth","launched_by":null,"children":[]}]}"#,
         );
 

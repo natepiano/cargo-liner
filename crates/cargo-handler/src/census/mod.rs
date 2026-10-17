@@ -15,6 +15,7 @@
 //! loop as a [`CensusUpdate`].
 
 pub(crate) mod account;
+pub(crate) mod activity;
 mod branch;
 pub(crate) mod classify;
 pub(crate) mod codex;
@@ -25,7 +26,6 @@ pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
 pub(crate) mod schedule;
-mod thread_state;
 pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
@@ -42,6 +42,13 @@ use std::time::UNIX_EPOCH;
 
 pub(crate) use account::Account;
 pub(crate) use account::AccountColumn;
+#[cfg(test)]
+pub(crate) use activity::Activity;
+pub(crate) use activity::AgentActivity;
+#[cfg(test)]
+pub(crate) use activity::RunLocation;
+#[cfg(test)]
+pub(crate) use activity::VerifyStep;
 use hierarchy::HierarchyAnswer;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
@@ -54,8 +61,8 @@ pub(crate) use placement::mesh_worker_fixture;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
-pub(crate) use thread_state::ThreadState;
 use worker_dispatch::WorkerDispatch;
+use worker_dispatch::WorkerTask;
 
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
@@ -63,7 +70,6 @@ use crate::constants::CODEX_FAST_TIERS;
 use crate::constants::COMMAND_RUNS;
 use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
-use crate::constants::STANDARD_TIER_LABEL;
 use crate::constants::TIMER_RUNS;
 
 /// The program a census row represents, including transport-only worker hosts.
@@ -117,14 +123,13 @@ impl ServiceTier {
     }
 
     /// `program` marked with this tier, as an `agent` or `runs` cell shows
-    /// it: `codex fast`, `codex --`, or `program` alone when
+    /// it: `codex fast`, or `program` alone when
     /// [`Self::Unrecorded`].
     pub(crate) fn mark(self, program: impl Into<Cow<'static, str>>) -> Cow<'static, str> {
         let program = program.into();
         match self {
             Self::Fast => Cow::Owned(format!("{program} {FAST_TIER_LABEL}")),
-            Self::Standard => Cow::Owned(format!("{program} {STANDARD_TIER_LABEL}")),
-            Self::Unrecorded => program,
+            Self::Standard | Self::Unrecorded => program,
         }
     }
 }
@@ -287,9 +292,8 @@ pub(crate) struct AgentRow {
     pub(crate) account:         Account,
     /// The session's name, or what stands in for one.
     pub(crate) name:            String,
-    /// What the session says it is doing: `idle`, `busy` or `shell`
-    /// for Claude Code, and nothing for Codex, which reports none.
-    pub(crate) status:          Option<String>,
+    /// One current activity, resolved from conversation events and live verification.
+    pub(crate) activity:        AgentActivity,
     /// When the agent's session began, in unix seconds: for Claude Code
     /// the first line of its transcript, so a session resumed or
     /// restarted keeps its age, else when its process started.
@@ -397,13 +401,26 @@ pub(crate) struct Timer {
     pub(crate) deadline: u64,
 }
 
+/// Old probe children had no activity unless their thread was busy.
+const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
+
 /// One row of an agent's cell: something the agent started that is
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ChildRow {
+    /// Task naming survives placement so the final hierarchy role supplies its label.
+    #[serde(
+        default,
+        skip_serializing_if = "worker_dispatch::WorkerTask::is_unrecorded"
+    )]
+    pub(crate) worker_task:  WorkerTask,
     /// The last turn event, read incrementally from a live thread's rollout.
-    #[serde(default, skip_serializing_if = "ThreadState::is_idle")]
-    pub(crate) thread_state: ThreadState,
+    #[serde(
+        default = "idle_activity",
+        alias = "thread_state",
+        skip_serializing_if = "AgentActivity::is_idle"
+    )]
+    pub(crate) activity:     AgentActivity,
     /// A roster-backed launcher identity, resolved only during the scan.
     #[serde(
         default,
@@ -673,7 +690,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: "enh/handler".to_string(),
-            status: Some("busy".to_string()),
+            activity: crate::census::AgentActivity::from_legacy(Some("busy")),
             started,
             process_started: started,
             pid: 428_044,
@@ -814,7 +831,7 @@ mod tests {
         assert!(!census.lists_an_agent(&configured));
 
         let idle = AgentRow {
-            status: Some("idle".to_string()),
+            activity: crate::census::AgentActivity::from_legacy(Some("idle")),
             ..row(2)
         };
         census.apply(CensusUpdate::Remote {
@@ -850,3 +867,7 @@ mod tests {
 #[cfg(test)]
 #[path = "thread_state_tests.rs"]
 mod thread_state_tests;
+
+#[cfg(test)]
+#[path = "activity_tests.rs"]
+mod activity_tests;

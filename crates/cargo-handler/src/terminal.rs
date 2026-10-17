@@ -392,7 +392,7 @@ mod tests {
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "enh/handler".to_string(),
-            status:          Some("busy".to_string()),
+            activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
             started:         90,
             process_started: 90,
             pid:             428_044,
@@ -423,7 +423,7 @@ mod tests {
         sender
             .send(CensusUpdate::Local(
                 vec![census::AgentRow {
-                    status: None,
+                    activity: crate::census::AgentActivity::Unreported,
                     ..row
                 }],
                 HierarchyEdges::default(),
