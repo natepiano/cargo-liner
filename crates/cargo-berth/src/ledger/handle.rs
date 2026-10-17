@@ -186,6 +186,8 @@ pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
         /// Work authorized only after all operations commit.
         action:        CommittedAction,
     },
+    /// The requested state already holds; run the locked action without appending.
+    AlreadySatisfied(CommittedAction),
     /// Return the semantic rejection without changing durable state.
     Reject(Rejection),
 }
@@ -239,6 +241,19 @@ pub(crate) enum LedgerTransactionOutcome<Rejection> {
     Rejected(Rejection),
 }
 
+/// The result of applying or rejecting locked reconciliation work.
+pub(crate) enum LedgerReconciliationOutcome<Rejection, CommittedActionOutput> {
+    /// Reconciliation committed and its repair action ran under the lock.
+    Appended {
+        /// The output produced by the repair action.
+        output:                      CommittedActionOutput,
+        /// Whether the journal's session identity consequences were published.
+        session_mapping_publication: SessionIdentityMappingPublication,
+    },
+    /// Validation rejected reconciliation before any append or repair.
+    Rejected(Rejection),
+}
+
 /// The result of a transaction whose appended record authorizes a locked side effect.
 pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
     /// The event committed, its action ran under the lock, and the projection published.
@@ -246,6 +261,13 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
         /// The output produced by the committed action.
         output:                      CommittedActionOutput,
         /// Whether the event's session identity consequence was published.
+        session_mapping_publication: SessionIdentityMappingPublication,
+    },
+    /// Validation found the requested state already durable; no event was appended.
+    AlreadySatisfied {
+        /// The output of the locked action.
+        output:                      CommittedActionOutput,
+        /// No new journal identity consequence was needed.
         session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Validation rejected the operation before any append or side effect.
@@ -452,6 +474,21 @@ impl Ledger {
                     (operation, action)
                 },
                 CommittedActionValidation::Append { operation, action } => (operation, action),
+                CommittedActionValidation::AlreadySatisfied(action) => {
+                    transaction
+                        .publish_if_rebuild_required(&self.paths)
+                        .map_err(LedgerTransactionError::LedgerUnreadable)
+                        .map_err(LedgerCommittedActionError::Transaction)?;
+                    let output =
+                        commit_action(action).map_err(LedgerCommittedActionError::Action)?;
+                    return Ok(consume_locked_outcome(
+                        LedgerCommittedActionOutcome::AlreadySatisfied {
+                            output,
+                            session_mapping_publication:
+                                SessionIdentityMappingPublication::LeftUnmapped,
+                        },
+                    ));
+                },
                 CommittedActionValidation::Reject(rejection) => {
                     transaction
                         .publish_if_rebuild_required(&self.paths)
@@ -503,7 +540,7 @@ impl Ledger {
             &RecoverableReconciliationAppendFailures,
         ) -> Result<CommittedActionOutput, CommittedActionError>,
     ) -> Result<
-        LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
+        LedgerReconciliationOutcome<Rejection, CommittedActionOutput>,
         LedgerCommittedActionError<CommittedActionError>,
     > {
         let transaction = self
@@ -564,7 +601,7 @@ impl Ledger {
                     action_output.map_or_else(
                         |error| Err(LedgerCommittedActionError::Action(error)),
                         |output| {
-                            Ok(LedgerCommittedActionOutcome::Appended {
+                            Ok(LedgerReconciliationOutcome::Appended {
                                 output,
                                 session_mapping_publication,
                             })
@@ -576,7 +613,7 @@ impl Ledger {
                         .publish_if_rebuild_required(&self.paths)
                         .map_err(LedgerTransactionError::LedgerUnreadable)
                         .map_err(LedgerCommittedActionError::Transaction)?;
-                    Ok(LedgerCommittedActionOutcome::Rejected(rejection))
+                    Ok(LedgerReconciliationOutcome::Rejected(rejection))
                 },
             }
         })
@@ -1074,6 +1111,7 @@ mod tests {
     use super::Ledger;
     use super::LedgerCommittedActionOutcome;
     use super::LedgerError;
+    use super::LedgerReconciliationOutcome;
     use super::LedgerTransactionError;
     use super::LedgerTransactionOutcome;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
@@ -1123,7 +1161,7 @@ mod tests {
             .expect("rejected validation should return without mutation");
         assert!(matches!(
             result,
-            LedgerCommittedActionOutcome::Rejected("rewrite subject changed")
+            LedgerReconciliationOutcome::Rejected("rewrite subject changed")
         ));
         assert!(!committed);
         assert_eq!(
@@ -1281,6 +1319,47 @@ mod tests {
         )
         .expect("projection should decode");
         assert_eq!(projection["generation"], 1);
+    }
+
+    #[test]
+    fn already_satisfied_actions_keep_the_journal_unchanged_and_consume_under_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path())?;
+        let ledger = Ledger::open(repository.path())?;
+        let before = fs::read(&ledger.paths.journal)?;
+        let competing_lock = fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&ledger.paths.lock)?;
+        let output = ledger.transact_with_committed_action_and_consume_locked_outcome(
+            WorktreeId::new(),
+            CoordinationRunId::new(),
+            |_| CommittedActionValidation::<(), _>::AlreadySatisfied("selected reservation"),
+            |selection| {
+                assert!(matches!(
+                    competing_lock.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                Ok::<_, std::io::Error>(selection)
+            },
+            |outcome| {
+                assert!(matches!(
+                    competing_lock.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                match outcome {
+                    LedgerCommittedActionOutcome::AlreadySatisfied { output, .. } => Ok(output),
+                    LedgerCommittedActionOutcome::Appended { .. }
+                    | LedgerCommittedActionOutcome::Rejected(()) => {
+                        Err("satisfied validation should not append or reject")
+                    },
+                }
+            },
+        )??;
+        assert_eq!(output, "selected reservation");
+        assert_eq!(fs::read(&ledger.paths.journal)?, before);
+        Ok(())
     }
 
     #[test]

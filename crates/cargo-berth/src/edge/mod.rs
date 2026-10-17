@@ -92,6 +92,9 @@ impl From<&OverlapAuthorizationReason> for OrderingReason {
 struct OrderingOverlapScopeSet(ReservationScopeSet);
 
 impl OrderingOverlapScopeSet {
+    /// Keep every scope approved under this relationship across later claims.
+    fn with_added(&self, added: &Self) -> Self { Self(self.0.with_added(&added.0)) }
+
     fn from_authorized_overlaps(
         blocker: ReservationId,
         overlaps: &AuthorizedOverlapSet,

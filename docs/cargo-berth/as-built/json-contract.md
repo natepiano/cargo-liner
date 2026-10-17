@@ -417,7 +417,7 @@ The sections mean:
   recorded on the reservation without widening it: a `--defer`, a repository
   default answer, or a `claim --reservation` whose paths the reservation or its
   siblings already held. A `sequence` entry carries
-  `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
+  `edge_id`, `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
   `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
   reservation whose later `claim --replace` retired this answer's edge to the
   same holder. A `sequence` entry recorded with `--replace` adds `replaced`,
@@ -859,11 +859,23 @@ earlier reservation once. The message says to re-run the claim with
 `--replace`, which records the same answer with the contradicted edges in the
 authorization's `replaced` array. Without `--reservation`, an answer in the same
 direction as the live edge records an edge on its new reservation, as before.
-With `--reservation`, repeating an existing directed endpoint pair returns
-`duplicate_ordering_edge` (exit 2), with message
-`Ordering edge <before> before <after> already exists.`, matching `sequence`.
-It records nothing and leaves the session mapping unchanged,
-even if the request also names paths that would otherwise widen the reservation.
+With `--reservation`, an existing edge in the requested direction authorizes the
+new paths at exit 0. The widen records `authorization.kind =
+"sequence_with_existing_edges"`, with `overlaps`, `holders` and an optional
+`replaced` array. Each `holders` entry has `kind = "existing_edge"` or
+`"new_edge"`, a `holder` containing `{ blocker, direction, edge_id }`, and
+`reason`. An existing binding retains its recorded edge identity, direction and
+original reason. A new binding creates its edge; only new bindings count toward
+the edge limit. The board renders one `sequence` answer per holder with the
+newly approved scopes and that relationship's reason and identity.
+
+When the selected reservation already holds the requested paths and its
+recorded answers cover them under those exact existing edges, the claim
+succeeds without appending any journal record. It still publishes that
+reservation as the session's selection. The `sequence` verb continues to refuse
+repeated endpoints as `duplicate_ordering_edge` (exit 2). Opposite-direction
+claims retain the contradiction and `--replace` rules above. Existing journal
+authorization layouts replay unchanged.
 
 `--replace` with no contradicted edge returns `status = "invalid_input"` and
 exit code `5`, naming the holders, so a re-ruling that no longer applies never

@@ -24,6 +24,7 @@ use super::locked_claim_reservations;
 use super::normalized_claim_scopes;
 use super::publish_coordination_run_marker;
 use super::sibling_held_scopes;
+use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::config::BerthConfig;
@@ -93,10 +94,7 @@ pub(super) fn acquire(
         actor.worktree_id,
         actor.coordination_run_id,
         |state| match validate(&state, reservation_id, scopes.clone(), &context) {
-            Ok((operation, acquisition)) => CommittedActionValidation::Append {
-                operation: Box::new(operation),
-                action:    acquisition,
-            },
+            Ok(validation) => validation,
             Err(rejection) => CommittedActionValidation::Reject(rejection),
         },
         Ok::<_, Infallible>,
@@ -118,6 +116,10 @@ fn consume(
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
+            output: committed,
+            session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
             output: committed,
             session_mapping_publication,
         } => {
@@ -174,7 +176,10 @@ fn validate(
     id: ReservationId,
     scopes: ReservationScopeSet,
     context: &ClaimValidationContext,
-) -> Result<(JournalOperation, CommittedReservationAcquisition), ClaimRejection> {
+) -> Result<
+    CommittedActionValidation<ClaimRejection, CommittedReservationAcquisition>,
+    ClaimRejection,
+> {
     let reservations = locked_reservations(state, id, context)?;
     let FirstTouchReservationSelection::ExplicitReservation(selected) =
         FirstTouchReservationSelection::from_explicit_selection(
@@ -193,7 +198,24 @@ fn validate(
         additions,
         already_held,
     } = coverage(&reservations, selected, &scopes, context);
-    let (operation, kind, acquired_scopes) = mutation(selected, scopes, additions, authorization);
+    let mutation = if additions.is_empty()
+        && ordering_is_already_satisfied(&authorization, state, id, context.path_case)
+    {
+        NamedClaimMutation::AlreadySatisfied(scopes)
+    } else {
+        let (operation, kind, scopes) = mutation(selected, scopes, additions, authorization);
+        NamedClaimMutation::Append {
+            operation: Box::new(operation),
+            kind,
+            scopes,
+        }
+    };
+    let (kind, acquired_scopes) = match &mutation {
+        NamedClaimMutation::Append { kind, scopes, .. } => (*kind, scopes.clone()),
+        NamedClaimMutation::AlreadySatisfied(scopes) => {
+            (ReservationAcquisitionKind::AlreadyHeld, scopes.clone())
+        },
+    };
     let acquisition = CommittedReservationAcquisition {
         kind,
         reservation_id: id,
@@ -207,7 +229,97 @@ fn validate(
         conflicts: FirstTouchConflictOutcome::None,
         already_held,
     };
-    Ok((operation, acquisition))
+    Ok(match mutation {
+        NamedClaimMutation::Append { operation, .. } => CommittedActionValidation::Append {
+            operation,
+            action: acquisition,
+        },
+        NamedClaimMutation::AlreadySatisfied(_) => {
+            CommittedActionValidation::AlreadySatisfied(acquisition)
+        },
+    })
+}
+
+/// A named claim either changes durable facts or selects work already authorized.
+enum NamedClaimMutation {
+    /// A new scope or overlap answer requires one journal record.
+    Append {
+        operation: Box<JournalOperation>,
+        kind:      ReservationAcquisitionKind,
+        scopes:    ReservationScopeSet,
+    },
+    /// Existing scope declarations and edge-bound answers satisfy the request.
+    AlreadySatisfied(ReservationScopeSet),
+}
+
+/// Match each scope against answers recorded for this exact reservation and edge.
+fn ordering_is_already_satisfied(
+    authorization: &NamedAuthorization,
+    state: &ReplayedLedgerState<'_>,
+    id: ReservationId,
+    path_case: PathCase,
+) -> bool {
+    let NamedAuthorization::Acquire(ConflictAuthorization::SequenceWithExistingEdges {
+        overlaps,
+        holders,
+        ..
+    }) = authorization
+    else {
+        return false;
+    };
+    holders.iter().all(|binding| {
+        let ClaimSequenceBinding::ExistingEdge { holder, .. } = binding else {
+            return false;
+        };
+        overlaps
+            .as_slice()
+            .iter()
+            .filter(|overlap| overlap.reservation_id == holder.blocker)
+            .all(|overlap| {
+                overlap.scopes.as_slice().iter().all(|scope| {
+                    state
+                        .coordination_events()
+                        .iter()
+                        .any(|event| match &event.operation {
+                            JournalOperation::Claim {
+                                reservation_id,
+                                authorization,
+                                ..
+                            } if *reservation_id == id => authorization.covers_ordering_edge(
+                                holder.edge_id,
+                                overlap,
+                                scope,
+                                path_case,
+                            ),
+                            JournalOperation::Widen {
+                                reservation_id,
+                                authorization,
+                                ..
+                            } if *reservation_id == id => authorization.covers_ordering_edge(
+                                holder.edge_id,
+                                overlap,
+                                scope,
+                                path_case,
+                            ),
+                            JournalOperation::Answer {
+                                reservation_id: Some(reservation_id),
+                                authorizations,
+                                ..
+                            } if *reservation_id == id => {
+                                authorizations.iter().any(|authorization| {
+                                    authorization.covers_ordering_edge(
+                                        holder.edge_id,
+                                        overlap,
+                                        scope,
+                                        path_case,
+                                    )
+                                })
+                            },
+                            _ => false,
+                        })
+                })
+            })
+    })
 }
 
 struct NamedClaimCoverage {

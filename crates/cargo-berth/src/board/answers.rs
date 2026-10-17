@@ -18,6 +18,7 @@ use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
 use crate::answer::OverlapAuthorizationReason;
+use crate::answer::SequencedHolder;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeReadiness;
 use crate::edge::EdgeReplayError;
@@ -48,6 +49,7 @@ pub(super) enum RecordedOverlapAnswer {
         consequence:           DeferralConsequence,
     },
     Sequence {
+        edge_id:               EdgeId,
         reservation_id:        ReservationId,
         blocker:               ReservationId,
         direction:             OrderingDirection,
@@ -463,17 +465,12 @@ fn append_authorization_answer(
     replaced_edges: &HashMap<EdgeId, ReservationId>,
     constraints: &IntegrationConstraintProjection,
 ) -> Result<(), BoardError> {
-    let RecordedAuthorizationRow {
-        reservation_id,
-        authorization,
-        acquisition,
-    } = row;
-    match authorization {
+    match row.authorization {
         ConflictAuthorization::Enrollment { overlaps } => append_enrollment_answer(
             answers,
-            reservation_id,
+            row.reservation_id,
             overlaps,
-            acquisition,
+            row.acquisition,
             resolved_pairs,
             constraints,
         )?,
@@ -486,14 +483,15 @@ fn append_authorization_answer(
             replaced,
         } => {
             let consequence = sequence_consequence(constraints, replaced_edges, *edge_id)?;
-            answers.record(reservation_id, || {
+            answers.record(row.reservation_id, || {
                 Ok(RecordedOverlapAnswer::Sequence {
-                    reservation_id,
+                    edge_id: *edge_id,
+                    reservation_id: row.reservation_id,
                     blocker: *blocker,
                     direction: *direction,
                     exact_approved_scopes: overlaps.clone(),
                     authorization_reason: reason.clone(),
-                    acquisition,
+                    acquisition: row.acquisition,
                     consequence,
                     replaced: replaced.clone(),
                 })
@@ -506,63 +504,146 @@ fn append_authorization_answer(
             holders,
             reason,
             replaced,
-        } => {
-            for holder in holders {
-                let consequence =
-                    sequence_consequence(constraints, replaced_edges, holder.edge_id)?;
-                let exact_approved_scopes = overlaps
-                    .of_holder(holder.blocker)
-                    .map_err(|_| EdgeReplayError::MissingAuthorizedScopes(holder.blocker))?;
-                answers.record(reservation_id, || {
-                    Ok(RecordedOverlapAnswer::Sequence {
-                        reservation_id,
-                        blocker: holder.blocker,
-                        direction: holder.direction,
-                        exact_approved_scopes,
-                        authorization_reason: reason.clone(),
-                        acquisition: acquisition.clone(),
-                        consequence,
-                        replaced: replaced_toward(replaced, holder.blocker),
-                    })
-                })?;
-            }
-        },
+        } => append_holder_sequence_answers(
+            answers,
+            row,
+            overlaps,
+            holders.iter().map(|holder| (holder, reason)),
+            replaced,
+            replaced_edges,
+            constraints,
+        )?,
+        ConflictAuthorization::SequenceWithExistingEdges {
+            overlaps,
+            holders,
+            replaced,
+        } => append_holder_sequence_answers(
+            answers,
+            row,
+            overlaps,
+            holders
+                .iter()
+                .map(|binding| (binding.holder(), binding.reason())),
+            replaced,
+            replaced_edges,
+            constraints,
+        )?,
         ConflictAuthorization::Defer {
             overlaps,
             blocker,
             reason,
-        } if !resolved_pairs.contains(&(reservation_id, *blocker)) => {
-            answers.record(reservation_id, || {
-                let blocker_lifecycle = &constraints.reservation(*blocker)?.lifecycle;
-                Ok(RecordedOverlapAnswer::Defer {
-                    reservation_id,
-                    blocker: *blocker,
-                    exact_approved_scopes: overlaps.clone(),
-                    authorization_reason: reason.clone(),
-                    acquisition,
-                    consequence: DeferralConsequence::with_live_deferred([blocker_lifecycle]),
-                })
-            })?;
-        },
+        } if !resolved_pairs.contains(&(row.reservation_id, *blocker)) => append_defer_answer(
+            answers,
+            row.reservation_id,
+            overlaps,
+            *blocker,
+            reason,
+            row.acquisition,
+            constraints,
+        )?,
         ConflictAuthorization::Override {
             overlaps,
             blocker,
             reason,
-        } => answers.record(reservation_id, || {
-            Ok(RecordedOverlapAnswer::Override {
-                reservation_id,
-                blocker: *blocker,
-                exact_approved_scopes: overlaps.clone(),
-                authorization_reason: reason.clone(),
-                acquisition,
-                consequence: OverrideConsequence::EditingAuthorizedWithoutIntegrationOrder,
-            })
-        })?,
+        } => append_override_answer(
+            answers,
+            row.reservation_id,
+            overlaps,
+            *blocker,
+            reason,
+            row.acquisition,
+        )?,
         // No foreign overlap, overlaps earlier answers already cover, and a deferral a later
         // sequence resolved each record no answer of their own.
         ConflictAuthorization::NoConflict
         | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. }
         | ConflictAuthorization::Defer { .. } => {},
+    }
+    Ok(())
+}
+
+/// Render an unresolved deferral with the current lifecycle of its blocker.
+fn append_defer_answer(
+    answers: &mut AnswerSplit<'_>,
+    reservation_id: ReservationId,
+    overlaps: &AuthorizedOverlapSet,
+    blocker: ReservationId,
+    reason: &OverlapAuthorizationReason,
+    acquisition: AnswerAcquisition,
+    constraints: &IntegrationConstraintProjection,
+) -> Result<(), BoardError> {
+    answers.record(reservation_id, || {
+        let blocker_lifecycle = &constraints.reservation(blocker)?.lifecycle;
+        Ok(RecordedOverlapAnswer::Defer {
+            reservation_id,
+            blocker,
+            exact_approved_scopes: overlaps.clone(),
+            authorization_reason: reason.clone(),
+            acquisition,
+            consequence: DeferralConsequence::with_live_deferred([blocker_lifecycle]),
+        })
+    })
+}
+
+/// Render an editing override without implying an integration order.
+fn append_override_answer(
+    answers: &mut AnswerSplit<'_>,
+    reservation_id: ReservationId,
+    overlaps: &AuthorizedOverlapSet,
+    blocker: ReservationId,
+    reason: &OverlapAuthorizationReason,
+    acquisition: AnswerAcquisition,
+) -> Result<(), BoardError> {
+    answers.record(reservation_id, || {
+        Ok(RecordedOverlapAnswer::Override {
+            reservation_id,
+            blocker,
+            exact_approved_scopes: overlaps.clone(),
+            authorization_reason: reason.clone(),
+            acquisition,
+            consequence: OverrideConsequence::EditingAuthorizedWithoutIntegrationOrder,
+        })
+    })
+}
+
+/// List each holder's approved scopes under its original or newly recorded edge.
+fn append_holder_sequence_answers<'authorization>(
+    answers: &mut AnswerSplit<'_>,
+    row: RecordedAuthorizationRow<'_>,
+    overlaps: &AuthorizedOverlapSet,
+    holders: impl Iterator<
+        Item = (
+            &'authorization SequencedHolder,
+            &'authorization OverlapAuthorizationReason,
+        ),
+    >,
+    replaced: &[ContradictedOrdering],
+    replaced_edges: &HashMap<EdgeId, ReservationId>,
+    constraints: &IntegrationConstraintProjection,
+) -> Result<(), BoardError> {
+    let RecordedAuthorizationRow {
+        reservation_id,
+        acquisition,
+        ..
+    } = row;
+    for (holder, reason) in holders {
+        let consequence = sequence_consequence(constraints, replaced_edges, holder.edge_id)?;
+        let exact_approved_scopes = overlaps
+            .of_holder(holder.blocker)
+            .map_err(|_| EdgeReplayError::MissingAuthorizedScopes(holder.blocker))?;
+        answers.record(reservation_id, || {
+            Ok(RecordedOverlapAnswer::Sequence {
+                edge_id: holder.edge_id,
+                reservation_id,
+                blocker: holder.blocker,
+                direction: holder.direction,
+                exact_approved_scopes,
+                authorization_reason: reason.clone(),
+                acquisition: acquisition.clone(),
+                consequence,
+                replaced: replaced_toward(replaced, holder.blocker),
+            })
+        })?;
     }
     Ok(())
 }
@@ -624,6 +705,7 @@ mod tests {
     use crate::board::rows::BoardModel;
     use crate::board::rows::DeferralConsequence;
     use crate::board::rows::WaitingAction;
+    use crate::board::rows::WaitingHold;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
@@ -767,6 +849,24 @@ mod tests {
     }
 
     #[test]
+    fn sequence_answers_expose_the_edge_identity_the_board_waits_on() -> FixtureResult<()> {
+        let sequence = test_support::answered_board(OverlapAnswerFixture::Sequence)?;
+        let waiting = sequence
+            .model
+            .waiting
+            .entries
+            .first()
+            .ok_or_else(|| io::Error::other("sequence should create an integration hold"))?;
+        let WaitingHold::OrderingEdge { edge_id, .. } = &waiting.hold else {
+            return Err(io::Error::other("sequence should hold on its ordering edge").into());
+        };
+        let answer = recorded_answer(&sequence.model, sequence.requester_id)?;
+        let wire = serde_json::to_value(answer)?;
+        assert_eq!(wire["edge_id"], serde_json::to_value(edge_id)?);
+        Ok(())
+    }
+
+    #[test]
     fn overlap_answers_preserve_typed_authorization_variants() -> FixtureResult<()> {
         let sequence = test_support::answered_board(OverlapAnswerFixture::Sequence)?;
         let sequence_answer = recorded_answer(&sequence.model, sequence.requester_id)?;
@@ -779,6 +879,7 @@ mod tests {
             acquisition,
             consequence,
             replaced,
+            ..
         } = sequence_answer
         else {
             return Err(

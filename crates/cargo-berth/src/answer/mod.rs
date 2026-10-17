@@ -7,8 +7,10 @@ mod request;
 mod scope_binding;
 
 pub(crate) use approver::OverlapApprover;
+pub(crate) use conflict_authorization::ClaimSequenceBinding;
 pub(crate) use conflict_authorization::ConflictAuthorization;
 pub(crate) use conflict_authorization::ContradictedOrdering;
+pub(crate) use conflict_authorization::SequencedHolder;
 pub(crate) use request::DeferAnswerRequest;
 pub(crate) use request::OrderingReplacement;
 pub(crate) use request::OverlapAuthorizationReason;

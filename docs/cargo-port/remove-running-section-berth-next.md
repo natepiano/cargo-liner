@@ -131,7 +131,7 @@
 - The integration tests reach each state through real git commands (a conflicting cherry-pick writes `CHERRY_PICK_HEAD`), never a written marker file.
 
 **Ruled out:** separate cache invalidation for a completed merge — git unlinks `MERGE_HEAD` before `post-commit` runs, so the installed hook judges the merge commit in full even after a cached clean fingerprint.
-### Phase 4 — Claiming a new path behind a holder you already sequenced against succeeds  · status: todo
+### Phase 4 — Claiming a new path behind a holder you already sequenced against succeeds  · status: done
 
 **Depends on:** Phase 3 (shared CHANGELOG and as-built docs)
 
