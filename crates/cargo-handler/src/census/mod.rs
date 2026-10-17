@@ -51,6 +51,8 @@ pub(crate) use activity::RunLocation;
 #[cfg(test)]
 pub(crate) use activity::VerifyStep;
 use hierarchy::HierarchyAnswer;
+pub(crate) use hierarchy::HierarchyNotice;
+pub(crate) use hierarchy::HierarchySnapshot;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
@@ -59,6 +61,7 @@ pub(crate) use placement::RoleLabel;
 pub(crate) use placement::RowIdentity;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
+use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
@@ -477,7 +480,7 @@ pub(crate) enum MachineState {
     /// No answer yet.
     Scanning,
     /// Every agent someone can talk to, oldest first.
-    Answered(Vec<AgentRow>, HierarchyEdges),
+    Answered(Vec<AgentRow>, HierarchySnapshot),
     /// The machine gave no answer, and why.
     Failed(String),
 }
@@ -495,8 +498,15 @@ impl MachineState {
     /// Management links from this machine's latest completed answer.
     pub(crate) fn edges(&self) -> &[HierarchyEdge] {
         match self {
-            Self::Answered(_, edges) => &edges.0,
+            Self::Answered(_, hierarchy) => &hierarchy.edges.0,
             Self::Scanning | Self::Failed(_) => &[],
+        }
+    }
+
+    pub(crate) const fn hierarchy_notice(&self) -> HierarchyNotice {
+        match self {
+            Self::Answered(_, hierarchy) => hierarchy.notice,
+            _ => HierarchyNotice::Clear,
         }
     }
 }
@@ -518,11 +528,25 @@ impl RemoteHierarchyAnswers {
         match answer {
             Ok((rows, HierarchyAnswer::Answered(edges))) => {
                 self.edges.insert(host.to_string(), edges.clone());
-                MachineState::Answered(rows, edges)
+                MachineState::Answered(rows, edges.into())
             },
-            Ok((rows, HierarchyAnswer::Failed)) => {
-                MachineState::Answered(rows, self.edges.get(host).cloned().unwrap_or_default())
+            Ok((rows, HierarchyAnswer::Unmatched(edges))) => {
+                self.edges.insert(host.to_string(), edges.clone());
+                MachineState::Answered(
+                    rows,
+                    HierarchySnapshot {
+                        edges,
+                        notice: HierarchyNotice::NoSessionMatched,
+                    },
+                )
             },
+            Ok((rows, HierarchyAnswer::Failed(reason))) => MachineState::Answered(
+                rows,
+                HierarchySnapshot {
+                    edges:  self.edges.get(host).cloned().unwrap_or_default(),
+                    notice: HierarchyNotice::Failed(reason),
+                },
+            ),
             Err(reason) => MachineState::Failed(reason),
         }
     }
@@ -539,10 +563,15 @@ static SCANNING: MachineState = MachineState::Scanning;
 /// One answer from the scheduler.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CensusUpdate {
-    /// This machine's interim rows while a scan is still in progress.
-    Local(Vec<AgentRow>, HierarchyEdges),
-    /// This machine's rows and management links from one finished scan.
-    LocalScanCompleted(Vec<AgentRow>, HierarchyEdges),
+    /// This machine's rows and hierarchy at one stage of its scan.
+    Local {
+        /// Classified or detailed agent rows.
+        rows:      Vec<AgentRow>,
+        /// Retained links and the latest discovery outcome.
+        hierarchy: HierarchySnapshot,
+        /// Whether detail collection has finished.
+        stage:     ScanStage,
+    },
     /// A remote machine's answer, or why there was none.
     Remote {
         /// The ssh name the machine is configured under.
@@ -566,6 +595,13 @@ pub(crate) struct Census {
 }
 
 impl Census {
+    /// Diagnostics keep an otherwise empty watcher visible.
+    pub(crate) fn has_hierarchy_notice(&self, configured: &[String]) -> bool {
+        self.machines(configured)
+            .iter()
+            .any(|machine| machine.state.hierarchy_notice().is_visible())
+    }
+
     /// A census of `local_name` that nothing has answered yet.
     pub(crate) fn new(local_name: String) -> Self {
         Self {
@@ -578,9 +614,9 @@ impl Census {
     /// Record `update`, answering whether anything it says changed.
     pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
         let (slot, state) = match update {
-            CensusUpdate::Local(rows, edges) | CensusUpdate::LocalScanCompleted(rows, edges) => {
-                (&mut self.local, MachineState::Answered(rows, edges))
-            },
+            CensusUpdate::Local {
+                rows, hierarchy, ..
+            } => (&mut self.local, MachineState::Answered(rows, hierarchy)),
             CensusUpdate::Remote { host, state } => (
                 self.remotes.entry(host).or_insert(MachineState::Scanning),
                 state,
@@ -680,6 +716,7 @@ pub(crate) fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use hierarchy::HierarchyAnswer;
+    use hierarchy::HierarchyError;
 
     use super::*;
 
@@ -705,6 +742,31 @@ mod tests {
 
     /// Remote hierarchy failures retain that host's links while its row details keep changing.
     #[test]
+    fn local_notice_changes_publish_even_when_rows_and_links_stay_the_same() {
+        let mut census = Census::new("fixture".into());
+        for stage in [ScanStage::Classified, ScanStage::Completed] {
+            for notice in [
+                HierarchyNotice::Failed(HierarchyError::TimedOut),
+                HierarchyNotice::Clear,
+            ] {
+                let rows = vec![row(1)];
+                let hierarchy = HierarchySnapshot {
+                    edges: HierarchyEdges::default(),
+                    notice,
+                };
+                assert!(census.apply(CensusUpdate::Local {
+                    rows: rows.clone(),
+                    hierarchy,
+                    stage
+                }));
+                let machines = census.machines(&[]);
+                assert_eq!(machines[0].state.rows(), rows);
+                assert_eq!(machines[0].state.hierarchy_notice(), notice);
+            }
+        }
+    }
+
+    #[test]
     fn failed_remote_hierarchy_preserves_links_and_updates_rows_until_answered_empty() {
         let mut answers = RemoteHierarchyAnswers::default();
         let mut census = Census::new("local".to_string());
@@ -720,11 +782,16 @@ mod tests {
                 HierarchyAnswer::Answered(edges.clone()),
                 edges.clone(),
             ),
-            ("remote", 2, HierarchyAnswer::Failed, edges.clone()),
+            (
+                "remote",
+                2,
+                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
+                edges.clone(),
+            ),
             (
                 "other",
                 3,
-                HierarchyAnswer::Failed,
+                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
                 HierarchyEdges::default(),
             ),
             (
@@ -736,10 +803,15 @@ mod tests {
             (
                 "remote",
                 5,
-                HierarchyAnswer::Failed,
+                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
                 HierarchyEdges::default(),
             ),
         ] {
+            let notice = match &hierarchy {
+                HierarchyAnswer::Failed(reason) => HierarchyNotice::Failed(*reason),
+                HierarchyAnswer::Answered(_) => HierarchyNotice::Clear,
+                HierarchyAnswer::Unmatched(_) => HierarchyNotice::NoSessionMatched,
+            };
             let state = answers.apply(host, Ok((vec![row(started)], hierarchy)));
             assert!(census.apply(CensusUpdate::Remote {
                 host: host.to_string(),
@@ -748,7 +820,13 @@ mod tests {
             let configured = vec![host.to_string()];
             assert_eq!(
                 census.machines(&configured)[1].state,
-                &MachineState::Answered(vec![row(started)], expected)
+                &MachineState::Answered(
+                    vec![row(started)],
+                    HierarchySnapshot {
+                        edges: expected,
+                        notice
+                    }
+                )
             );
         }
         answers.apply("removed", Ok((vec![], HierarchyAnswer::Answered(edges))));
@@ -756,9 +834,18 @@ mod tests {
         assert_eq!(
             answers.apply(
                 "removed",
-                Ok((vec![row(6)], hierarchy::HierarchyAnswer::Failed))
+                Ok((
+                    vec![row(6)],
+                    HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+                ))
             ),
-            MachineState::Answered(vec![row(6)], HierarchyEdges::default())
+            MachineState::Answered(
+                vec![row(6)],
+                HierarchySnapshot {
+                    edges:  HierarchyEdges::default(),
+                    notice: HierarchyNotice::Failed(HierarchyError::ExitedUnsuccessfully),
+                }
+            )
         );
     }
 
@@ -767,20 +854,34 @@ mod tests {
     #[test]
     fn only_a_changed_answer_counts_as_a_change() {
         let mut census = Census::new("natedev".to_string());
-        assert!(census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
-        assert!(!census.apply(CensusUpdate::Local(vec![row(1)], HierarchyEdges::default())));
-        assert!(census.apply(CensusUpdate::Local(vec![row(2)], HierarchyEdges::default())));
-        assert!(!census.apply(CensusUpdate::LocalScanCompleted(
-            vec![row(2)],
-            HierarchyEdges::default(),
-        )));
-        assert!(census.apply(CensusUpdate::LocalScanCompleted(
-            vec![row(3)],
-            HierarchyEdges::default(),
-        )));
+        assert!(census.apply(CensusUpdate::Local {
+            rows:      vec![row(1)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        }));
+        assert!(!census.apply(CensusUpdate::Local {
+            rows:      vec![row(1)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        }));
+        assert!(census.apply(CensusUpdate::Local {
+            rows:      vec![row(2)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        }));
+        assert!(!census.apply(CensusUpdate::Local {
+            rows:      vec![row(2)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        }));
+        assert!(census.apply(CensusUpdate::Local {
+            rows:      vec![row(3)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        }));
         assert_eq!(
             census.machines(&[])[0].state,
-            &MachineState::Answered(vec![row(3)], HierarchyEdges::default()),
+            &MachineState::Answered(vec![row(3)], HierarchyEdges::default().into()),
         );
 
         let failed = CensusUpdate::Remote {
@@ -798,7 +899,7 @@ mod tests {
         let mut census = Census::new("natedev".to_string());
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default().into()),
         });
         let configured = ["studio".to_string(), "mac".to_string()];
 
@@ -820,14 +921,18 @@ mod tests {
         let configured = ["mac".to_string(), "studio".to_string()];
         assert!(!census.lists_an_agent(&configured));
 
-        census.apply(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()));
+        census.apply(CensusUpdate::Local {
+            rows:      Vec::new(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         census.apply(CensusUpdate::Remote {
             host:  "studio".to_string(),
             state: MachineState::Failed("timed out".to_string()),
         });
         census.apply(CensusUpdate::Remote {
             host:  "old".to_string(),
-            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default().into()),
         });
         assert!(!census.lists_an_agent(&configured));
 
@@ -837,11 +942,15 @@ mod tests {
         };
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![idle], HierarchyEdges::default()),
+            state: MachineState::Answered(vec![idle], HierarchyEdges::default().into()),
         });
         assert!(census.lists_an_agent(&configured));
 
-        census.apply(CensusUpdate::Local(vec![row(3)], HierarchyEdges::default()));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![row(3)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         assert!(census.lists_an_agent(&[]));
     }
 
@@ -852,7 +961,7 @@ mod tests {
         let mut census = Census::new("natedev".to_string());
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default()),
+            state: MachineState::Answered(vec![row(1)], HierarchyEdges::default().into()),
         });
 
         census.retain_remotes(&[]);

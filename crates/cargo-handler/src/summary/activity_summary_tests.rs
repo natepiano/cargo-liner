@@ -51,7 +51,7 @@ fn position(buffer: &Buffer, label: &str) -> (u16, u16) {
 }
 
 fn rendered(rows: Vec<AgentRow>, sort: SummarySort) -> Buffer {
-    let state = MachineState::Answered(rows, crate::census::HierarchyEdges::default());
+    let state = MachineState::Answered(rows, crate::census::HierarchyEdges::default().into());
     let machines = [Machine {
         name:  "fixture",
         state: &state,

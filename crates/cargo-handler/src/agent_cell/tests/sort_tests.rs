@@ -65,7 +65,8 @@ fn sorting_forest() -> MachineState {
                 member:  "younger-id".into(),
                 role:    HierarchyRole::Impl,
             },
-        ]),
+        ])
+        .into(),
     )
 }
 
@@ -398,7 +399,7 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
         ],
         ..agent(10, "root", 10 * HOUR, None)
     };
-    let state = MachineState::Answered(vec![root], HierarchyEdges::default());
+    let state = MachineState::Answered(vec![root], HierarchyEdges::default().into());
     let machines = [Machine {
         name:  "natedev",
         state: &state,
@@ -578,7 +579,7 @@ fn independent_sort_forest() -> MachineState {
             role,
         });
     }
-    MachineState::Answered(rows, HierarchyEdges(edges))
+    MachineState::Answered(rows, HierarchyEdges(edges).into())
 }
 
 #[test]

@@ -1465,7 +1465,7 @@ mod tests {
             rows[1].children[0].account, sources.threads[&30][0].account,
             "thread children keep their app server's account through flattening",
         );
-        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default());
+        let state = MachineState::Answered(rows, super::super::HierarchyEdges::default().into());
         let placement = super::super::AgentPlacement::from_machines(&[Machine {
             name:  "local",
             state: &state,

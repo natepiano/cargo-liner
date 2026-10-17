@@ -184,7 +184,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** re-deriving roles or usage in Rust (accounts.py's JSON is the only source); a cargo-handler CHANGELOG line for the config fix (tui_pane's CHANGELOG is the record).
 
-### Phase 6 — Live roles and readable account colors  · status: todo
+### Phase 6 — Live roles and readable account colors  · status: done
 
 **Depends on:** Phase 5
 
@@ -221,9 +221,38 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot on natedev shows the showrunner and unit tiles with their roles, and claude3's account label readable. The checkpoint carries `Change-Review: production sessions draw in their unit tiles with their roles again; a hierarchy that cannot be read says so | open cargo-handler on natedev and find each unit tile under its showrunner` and `Change-Review: every account and role color reads clearly on the background | look at claude3's label in the summary and in a tile header, in light and dark mode`.
 
-### Phase 7 — Reviewers and Claude dispatch seats  · status: todo
+### Phase 7 — First scan under two seconds  · status: todo
 
 **Depends on:** Phase 6
+
+#### Work Order
+
+**Goal:** cargo-handler's first full scan on natedev finishes in under 2 s in a release build, and no later scan re-reads a whole transcript.
+
+**Source:** the showrunner, 2026-10-17: "A 35 s first scan is a defect; fast comes before features. Target: first full scan under 2 s in release on natedev, measured before and after, with the cost named per source. Read only new transcript bytes, and never re-read whole files each scan."
+
+**Constraints from prior phases:**
+- Measured 2026-10-17 00:20 EDT on natedev: `~/.cargo/bin/cargo-handler probe` (release, installed 22:45) takes 35 s for a full scan; the debug build took 218 s. Roles no longer wait on this scan: hierarchy discovery runs at the `ScanStage::Classified` publication, before detail reads.
+- Detail reads live in `census/scan.rs`, and `census/tier.rs` (`RolloutRead`) reads Codex rollouts incrementally with a per-path offset. The Claude transcript read added for worker rows (job text, last `tool_use`) is the likely cost; transcripts reach 1 GB.
+
+**Spec:**
+1. Measure before changing anything: time the release `cargo-handler probe` on natedev, and name the cost of each detail source (Claude transcripts, Codex rollouts, session files, process tree, accounts). Put the table in the summary.
+2. Every transcript and rollout source reads only bytes appended since its last read, kept as a typed per-path position. A first read takes only what the row needs (for example the transcript's tail, read backward to the last whole record), never the whole file.
+3. The first full scan finishes in under 2 s in release on natedev, measured after the change with the same command, cost per source in the summary.
+4. Tests: a source read twice reads only the appended bytes the second time; a first read of a large file reads a bounded tail; rows read from a tail match the rows read from the whole file.
+
+**Files:**
+- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tier.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/scan/`, `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the measurement, the incremental and tail reads, `mod` lines, CHANGELOG.
+- `test` — the append, bounded-tail and tail-equals-whole tests and their fixtures.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean; the release `cargo-handler probe` on natedev finishes a full scan in under 2 s, before and after times in the summary. The checkpoint carries `Change-Review: cargo-handler shows every session's details within two seconds of starting | start cargo-handler on natedev and watch the worker rows fill in`.
+
+### Phase 8 — Reviewers and Claude dispatch seats  · status: todo
+
+**Depends on:** Phase 7
 
 #### Work Order
 
@@ -259,7 +288,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live tile shows a plan-mode reviewer as `review` and a busy pool reviewer under its unit. The checkpoint carries `Change-Review: Claude plan-mode reviewers show role review; dispatches to Claude seats fold into their row | open a tile running a Claude reviewer or a Claude-seat dispatch` and `Change-Review: a pool reviewer shows under its unit as a review row while it runs a review, and not otherwise | look under a hana unit while its code review runs`.
 
-### Phase 8 — Accurate clicks during motion  · status: todo
+### Phase 9 — Accurate clicks during motion  · status: todo
 
 **Depends on:** Phase 5
 

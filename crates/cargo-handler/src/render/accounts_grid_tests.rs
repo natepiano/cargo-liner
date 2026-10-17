@@ -17,6 +17,7 @@ use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
+use crate::census::scan::ScanStage;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
 
@@ -78,10 +79,11 @@ fn accounts_grid_measured_tables_are_visible_and_account_header_click_preserves_
             .expect("agent fixture")
         })
         .into();
-    app.census.apply(CensusUpdate::LocalScanCompleted(
+    app.census.apply(CensusUpdate::Local {
         rows,
-        HierarchyEdges::default(),
-    ));
+        hierarchy: HierarchyEdges::default().into(),
+        stage: ScanStage::Completed,
+    });
     app.summary_sort = SummarySort {
         column:    SummaryColumn::Name,
         direction: SortDirection::Descending,
@@ -145,10 +147,11 @@ fn accounts_grid_measured_tables_are_visible_and_account_header_click_preserves_
 #[test]
 fn failed_accounts_without_agents_keep_the_summary_visible() {
     let mut app = App::new_for_test().expect("test app");
-    app.census.apply(CensusUpdate::LocalScanCompleted(
-        Vec::new(),
-        HierarchyEdges::default(),
-    ));
+    app.census.apply(CensusUpdate::Local {
+        rows:      Vec::new(),
+        hierarchy: HierarchyEdges::default().into(),
+        stage:     ScanStage::Completed,
+    });
     app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
     let keymap = std::rc::Rc::clone(&app.keymap);
     let mut terminal =

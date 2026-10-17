@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "edges": [
+    {
+      "manager": "4dbdb78e-a83b-4248-b8f9-ff278dcbc60c",
+      "member": "fc0ab8f8-54e4-4c8e-9eed-89b6be9766d0",
+      "role": "unit"
+    },
+    {
+      "manager": "fc0ab8f8-54e4-4c8e-9eed-89b6be9766d0",
+      "member": "01a14488-1234-5678-9abc-0123456789ab",
+      "role": "review",
+      "unit": "fc0ab8f8-54e4-4c8e-9eed-89b6be9766d0",
+      "thread_id": "01a14488-1234-5678-9abc-0123456789ab",
+      "state": "running",
+      "type": "review"
+    }
+  ]
+}

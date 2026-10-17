@@ -93,7 +93,8 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
             manager: "fixture-root-id".into(),
             member: THREAD.into(),
             role,
-        }]),
+        }])
+        .into(),
     );
     let machines = [Machine {
         name:  "fixture",

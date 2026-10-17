@@ -72,7 +72,7 @@ fn sort_states() -> [MachineState; 2] {
                     "/a-directory",
                 ),
             ],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         ),
         MachineState::Answered(
             vec![sort_row(
@@ -84,7 +84,7 @@ fn sort_states() -> [MachineState; 2] {
                 "a-desktop",
                 "/a-directory",
             )],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         ),
     ]
 }
@@ -400,9 +400,9 @@ fn each_summary_column_has_an_independent_order_including_numeric_pids() {
                     "/c",
                 ),
             ],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         ),
-        MachineState::Answered(Vec::new(), HierarchyEdges::default()),
+        MachineState::Answered(Vec::new(), HierarchyEdges::default().into()),
     ];
     let machines = sort_machines(&states);
     for (column, ascending) in [
@@ -458,7 +458,10 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
         "desk",
         "/fixture",
     );
-    let state = MachineState::Answered(vec![priority, early, late], HierarchyEdges::default());
+    let state = MachineState::Answered(
+        vec![priority, early, late],
+        HierarchyEdges::default().into(),
+    );
     let machines = [Machine {
         name:  "fixture",
         state: &state,
@@ -514,7 +517,7 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
 #[test]
 fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
     let states = sort_states();
-    let empty = MachineState::Answered(Vec::new(), HierarchyEdges::default());
+    let empty = MachineState::Answered(Vec::new(), HierarchyEdges::default().into());
     let failed = MachineState::Failed("fixture failure".into());
     let machines = [
         Machine {

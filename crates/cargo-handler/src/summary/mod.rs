@@ -6,7 +6,12 @@
 //! agent's cell can be paired at a glance.
 
 mod accounts;
+
+#[cfg(test)]
+use crate::census::scan::ScanStage;
+
 pub(crate) mod age;
+mod constants;
 
 use std::cmp::Ordering;
 
@@ -67,7 +72,9 @@ fn machine_height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> u
     let groups: usize = machines
         .iter()
         .map(|machine| {
-            usize::from(GROUP_HEADER_HEIGHT) + table_height(root_rows(*machine, placement).count())
+            usize::from(GROUP_HEADER_HEIGHT)
+                + table_height(root_rows(*machine, placement).count())
+                + usize::from(machine.state.hierarchy_notice().is_visible())
         })
         .sum();
     let gaps = machines.len().saturating_sub(1) * usize::from(GROUP_GAP_HEIGHT);
@@ -90,7 +97,11 @@ pub(crate) fn width(
 ) -> u16 {
     let headings = machines
         .iter()
-        .map(|machine| heading(machine, root_rows(*machine, placement).count()).width())
+        .map(|machine| {
+            heading(machine, root_rows(*machine, placement).count())
+                .width()
+                .max(SECTION_ITEM_INDENT.len() + machine.state.hierarchy_notice().text().len())
+        })
         .max()
         .map_or(0, |widest| u16::try_from(widest).unwrap_or(u16::MAX));
     if machines
@@ -212,6 +223,8 @@ struct MachineTable<'a> {
     heading: Rect,
     /// The visible table, whose top row is its column header.
     table:   Rect,
+    /// A diagnostic follows the agents table without becoming a sortable row.
+    notice:  Rect,
     /// Root rows before applying the summary ordering.
     rows:    Vec<&'a AgentRow>,
 }
@@ -240,11 +253,23 @@ fn machine_tables<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> Vec<MachineTa
         };
         let used = GROUP_HEADER_HEIGHT
             .saturating_add(drawn)
+            .saturating_add(u16::from(machine.state.hierarchy_notice().is_visible()))
             .saturating_add(GROUP_GAP_HEIGHT);
+        let notice = Rect {
+            y: table.y.saturating_add(drawn),
+            height: u16::from(machine.state.hierarchy_notice().is_visible()).min(
+                remaining
+                    .height
+                    .saturating_sub(GROUP_HEADER_HEIGHT)
+                    .saturating_sub(drawn),
+            ),
+            ..indented(remaining)
+        };
         tables.push(MachineTable {
             machine,
             heading,
             table,
+            notice,
             rows,
         });
         remaining.y = remaining.y.saturating_add(used);
@@ -282,6 +307,15 @@ fn draw_machine(
     ))
     .column_spacing(TABLE_COLUMN_SPACING)
     .render(machine.table, buffer);
+    if machine.machine.state.hierarchy_notice().is_visible() {
+        Paragraph::new(Span::styled(
+            machine.machine.state.hierarchy_notice().text(),
+            Style::default()
+                .fg(text_default())
+                .add_modifier(Modifier::DIM),
+        ))
+        .render(machine.notice, buffer);
+    }
 }
 
 /// Compare values within one machine; ties keep the census's original order.
@@ -373,7 +407,9 @@ fn heading<'a>(machine: &Machine<'a>, roots: usize) -> Line<'a> {
     ];
     match machine.state {
         MachineState::Scanning => heading.push(Span::styled(SCANNING_NOTE, note)),
-        MachineState::Answered(_, _) => heading.push(Span::styled(count_note(roots), note)),
+        MachineState::Answered(_, _) => {
+            heading.push(Span::styled(count_note(roots), note));
+        },
         MachineState::Failed(reason) => {
             heading.push(Span::styled(reason.as_str(), Role::Unreachable.style()));
         },
@@ -700,7 +736,7 @@ mod tests {
                     "~/rust/handler",
                 ),
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         )
     }
 
@@ -806,7 +842,8 @@ mod tests {
             links(&[
                 ("showrunner", "nested-showrunner"),
                 ("nested-showrunner", "unit"),
-            ]),
+            ])
+            .into(),
         );
         let machines = [Machine {
             name:  "natedev",
@@ -825,10 +862,12 @@ mod tests {
     fn cross_machine_membership_uses_both_machine_and_pid() {
         let local = MachineState::Answered(
             vec![session(7, "showrunner"), session(9, "local-root")],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         );
-        let remote =
-            MachineState::Answered(vec![session(9, "unit")], links(&[("showrunner", "unit")]));
+        let remote = MachineState::Answered(
+            vec![session(9, "unit")],
+            links(&[("showrunner", "unit")]).into(),
+        );
         let machines = [
             Machine {
                 name:  "natedev",
@@ -862,7 +901,7 @@ mod tests {
                     ..session(3, "orphan")
                 },
             ],
-            links(&[("missing", "launched"), ("missing", "orphan")]),
+            links(&[("missing", "launched"), ("missing", "orphan")]).into(),
         );
         assert_summary_roots(
             &[Machine {
@@ -882,7 +921,8 @@ mod tests {
             directory: format!("~/{}", "long/".repeat(30)),
             ..session(2, "unit")
         };
-        let manager_only = MachineState::Answered(vec![manager.clone()], HierarchyEdges::default());
+        let manager_only =
+            MachineState::Answered(vec![manager.clone()], HierarchyEdges::default().into());
         let machines = [Machine {
             name:  "natedev",
             state: &manager_only,
@@ -914,10 +954,11 @@ mod tests {
                 "2 top-level agents",
             ),
         ] {
-            census.apply(CensusUpdate::Local(
-                vec![manager.clone(), member.clone()],
-                edges,
-            ));
+            census.apply(CensusUpdate::Local {
+                rows:      vec![manager.clone(), member.clone()],
+                hierarchy: edges.into(),
+                stage:     ScanStage::Classified,
+            });
             let machines = census.machines(&[]);
             let drawn = assert_summary_roots(&machines, &expected);
             assert_eq!(drawn[0], format!(" natedev · {count}"));
@@ -948,14 +989,17 @@ mod tests {
     #[test]
     fn a_remote_manager_leaving_and_returning_restores_and_hides_the_member() {
         let mut census = Census::new("natedev".to_string());
-        census.apply(CensusUpdate::Local(
-            vec![session(5, "unit")],
-            links(&[("showrunner", "unit")]),
-        ));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![session(5, "unit")],
+            hierarchy: links(&[("showrunner", "unit")]).into(),
+            stage:     ScanStage::Classified,
+        });
         let configured = ["mac".to_string()];
         assert_summary_roots(&census.machines(&configured), &[("natedev", 5)]);
-        let manager =
-            MachineState::Answered(vec![session(5, "showrunner")], HierarchyEdges::default());
+        let manager = MachineState::Answered(
+            vec![session(5, "showrunner")],
+            HierarchyEdges::default().into(),
+        );
         for (state, expected) in [
             (manager.clone(), vec![("mac", 5)]),
             (
@@ -992,7 +1036,7 @@ mod tests {
                 23 * HOUR,
                 "~",
             )],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         let studio = MachineState::Failed("unreachable".to_string());
         let pi = MachineState::Scanning;
@@ -1114,7 +1158,7 @@ mod tests {
                     )
                 },
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         let machines = [Machine {
             name:  "natedev",
@@ -1220,7 +1264,7 @@ mod tests {
             MINUTE,
             LONG_DIRECTORY,
         ));
-        let longer = MachineState::Answered(rows, crate::census::HierarchyEdges::default());
+        let longer = MachineState::Answered(rows, crate::census::HierarchyEdges::default().into());
         let machines = [Machine {
             name:  "natedev",
             state: &longer,
@@ -1238,7 +1282,8 @@ mod tests {
             "the table widens by what the long directory adds"
         );
 
-        let quiet = MachineState::Answered(Vec::new(), crate::census::HierarchyEdges::default());
+        let quiet =
+            MachineState::Answered(Vec::new(), crate::census::HierarchyEdges::default().into());
         let studio = MachineState::Failed("unreachable".to_string());
         let machines = [
             Machine {
@@ -1286,3 +1331,6 @@ mod accounts_tests;
 
 #[cfg(test)]
 mod accounts_refresh_tests;
+
+#[cfg(test)]
+mod hierarchy_note_tests;

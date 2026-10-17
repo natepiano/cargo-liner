@@ -1,5 +1,9 @@
 //! Bounded hierarchy commands and their per-session-set cache, run off the UI thread.
 
+#[cfg(test)]
+#[path = "hierarchy_snapshot_tests.rs"]
+mod snapshot_tests;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Display;
@@ -17,6 +21,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use serde::Deserialize;
+use serde::Serialize;
 
 use super::AgentRow;
 use super::HierarchyEdge;
@@ -38,7 +43,8 @@ use crate::constants::SHELL_SCRIPT_FLAG;
 use crate::startup_log;
 
 /// Why hierarchy discovery could not produce a usable answer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum HierarchyError {
     /// The configured shell could not start.
     CouldNotStart,
@@ -58,6 +64,60 @@ pub(crate) enum HierarchyError {
     MalformedEdge,
     /// An edge names an empty manager or member session.
     EmptySessionId,
+}
+
+/// Discovery health travels with retained links instead of disappearing on failure.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HierarchyNotice {
+    #[default]
+    Clear,
+    Failed(HierarchyError),
+    NoSessionMatched,
+}
+
+impl HierarchyNotice {
+    pub(crate) const fn is_visible(self) -> bool { !matches!(self, Self::Clear) }
+
+    /// One summary line; clear discovery contributes no line at all.
+    pub(crate) fn text(self) -> String {
+        match self {
+            Self::Clear => String::new(),
+            Self::Failed(HierarchyError::TimedOut) => "hierarchy: timed out".to_owned(),
+            Self::Failed(reason) => format!("hierarchy: {reason}"),
+            Self::NoSessionMatched => "hierarchy: no session matched".to_owned(),
+        }
+    }
+}
+
+/// Usable management links and the latest discovery outcome are one publication.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HierarchySnapshot {
+    pub(crate) edges:  HierarchyEdges,
+    pub(crate) notice: HierarchyNotice,
+}
+
+impl From<HierarchyEdges> for HierarchySnapshot {
+    fn from(edges: HierarchyEdges) -> Self {
+        Self {
+            edges,
+            notice: HierarchyNotice::Clear,
+        }
+    }
+}
+
+impl HierarchySnapshot {
+    pub(crate) fn matched(mut self, rows: &[AgentRow]) -> Self {
+        if self.notice == HierarchyNotice::Clear && !self.edges.0.iter().any(|edge| {
+            rows.iter().any(|row| {
+                matches!(&row.session_id, SessionIdentity::Claude(id) if id == &edge.member || id == &edge.manager)
+                || row.children.iter().any(|child| matches!(&child.thread_id, super::CodexThreadId::Recorded(id) if id == &edge.member))
+            })
+        }) {
+            self.notice = HierarchyNotice::NoSessionMatched;
+        }
+        self
+    }
 }
 
 impl Display for HierarchyError {
@@ -257,20 +317,25 @@ fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
 pub(super) enum HierarchyAnswer {
     /// A successful command, or discovery explicitly turned off.
     Answered(HierarchyEdges),
+    /// A configured source answered, but none of its identities occur in this scan.
+    Unmatched(HierarchyEdges),
     /// Discovery failed; absence of edges is not an authoritative answer.
-    Failed,
+    Failed(HierarchyError),
 }
 
 /// Run one configured discovery, logging a single line for each failed command.
-pub(super) fn read(source: &HierarchySource, runner: &dyn HierarchyRunner) -> HierarchyAnswer {
+pub(super) fn read(
+    source: &HierarchySource,
+    runner: &dyn HierarchyRunner,
+) -> Result<HierarchyEdges, HierarchyError> {
     let HierarchySource::Command(command) = source else {
-        return HierarchyAnswer::Answered(HierarchyEdges::default());
+        return Ok(HierarchyEdges::default());
     };
     match runner.run(command, HIERARCHY_TIMEOUT) {
-        Ok(edges) => HierarchyAnswer::Answered(edges),
+        Ok(edges) => Ok(edges),
         Err(reason) => {
             startup_log::startup_event(&format!("hierarchy_failed {reason}"));
-            HierarchyAnswer::Failed
+            Err(reason)
         },
     }
 }
@@ -321,6 +386,7 @@ pub(super) struct HierarchyCache {
     success:  LastSuccessfulHierarchy,
     /// Failure invalidates the ordinary refresh interval.
     retry:    HierarchyRetry,
+    notice:   HierarchyNotice,
 }
 
 impl HierarchyCache {
@@ -330,6 +396,7 @@ impl HierarchyCache {
             self.source = source;
             self.success = LastSuccessfulHierarchy::Unanswered;
             self.retry = HierarchyRetry::OnExpiration;
+            self.notice = HierarchyNotice::Clear;
         }
         &self.success
     }
@@ -362,16 +429,63 @@ impl HierarchyCache {
         }
         self.sessions = sessions;
         match read(&self.source, runner) {
-            HierarchyAnswer::Answered(edges) => {
+            Ok(edges) => {
+                self.notice = HierarchyNotice::Clear;
                 self.success = LastSuccessfulHierarchy::Answered {
                     refreshed: now,
                     edges,
                 };
                 self.retry = HierarchyRetry::OnExpiration;
             },
-            HierarchyAnswer::Failed => self.retry = HierarchyRetry::NextTick,
+            Err(reason) => {
+                self.retry = HierarchyRetry::NextTick;
+                self.notice = HierarchyNotice::Failed(reason);
+            },
         }
         self.success.edges()
+    }
+
+    /// Refresh links and keep the diagnostic bound to this command result.
+    pub(super) fn snapshot(
+        &mut self,
+        source: HierarchySource,
+        rows: &[AgentRow],
+        runner: &dyn HierarchyRunner,
+        now: Instant,
+    ) -> HierarchySnapshot {
+        let enabled = matches!(source, HierarchySource::Command(_));
+        let edges = self.edges(source, rows, runner, now);
+        let snapshot = HierarchySnapshot {
+            edges,
+            notice: self.notice,
+        };
+        if enabled {
+            let snapshot = snapshot.matched(rows);
+            self.notice = snapshot.notice;
+            snapshot
+        } else {
+            snapshot
+        }
+    }
+
+    /// A cached success keeps its original deadline; a failed attempt belongs to this scan.
+    pub(super) fn reuse_deadline(&self, attempted: Instant) -> Instant {
+        let refreshed = match (&self.success, self.notice) {
+            (
+                LastSuccessfulHierarchy::Answered { refreshed, .. },
+                HierarchyNotice::Clear | HierarchyNotice::NoSessionMatched,
+            ) => *refreshed,
+            _ => attempted,
+        };
+        refreshed + HIERARCHY_REFRESH_INTERVAL
+    }
+
+    pub(super) fn retained(&mut self, source: HierarchySource) -> HierarchySnapshot {
+        let edges = self.cached(source).edges();
+        HierarchySnapshot {
+            edges,
+            notice: self.notice,
+        }
     }
 }
 
