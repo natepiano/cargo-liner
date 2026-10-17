@@ -33,6 +33,7 @@ use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ledger::EnteringCommitSet;
 use crate::ledger::IncursionPathSet;
 use crate::ledger::IntegrationTarget;
 use crate::reservation::RetainedReservationSet;
@@ -66,6 +67,24 @@ pub(super) struct IncursionAttributionBatch {
     origin_membership: BTreeMap<IntegrationTarget, IncursionCommitOriginMembership>,
 }
 
+/// Whether the pre-lock pass could read committed foreign-path history.
+pub(super) enum CommittedForeignPathHistory {
+    /// Classification has not yet requested history.
+    NotRead,
+    /// The observation contains no committed foreign paths to inspect.
+    NoCommittedPaths,
+    /// Required history could not be read.
+    Unavailable,
+    Read(IncursionAttributionBatch),
+}
+
+/// Authorship of one path inside the reservation's committed range.
+pub(super) enum PathCommitAuthorship {
+    NoEnteringCommits,
+    Entering(EnteringCommitSet),
+    HistoryUnavailable,
+}
+
 enum IncursionCommitOriginMembership {
     Classified(HashSet<GitObjectId>),
     CannotClassifyOrigin,
@@ -76,12 +95,18 @@ impl IncursionCommitOriginMembership {
         repository_root: &Path,
         origin_basis: &JudgedTargetTip,
         target: &GitObjectId,
+        recorded_target: &IntegrationTarget,
     ) -> Self {
         let JudgedTargetTip::Resolved(origin_basis) = origin_basis else {
             return Self::CannotClassifyOrigin;
         };
-        git::commits_outside_origin_basis(repository_root, origin_basis, target)
-            .map_or(Self::CannotClassifyOrigin, Self::Classified)
+        git::commits_outside_origin_basis(
+            repository_root,
+            origin_basis,
+            target,
+            &recorded_target.local_upstream(repository_root),
+        )
+        .map_or(Self::CannotClassifyOrigin, Self::Classified)
     }
 }
 
@@ -97,7 +122,7 @@ pub(super) fn read_committed_foreign_paths(
     acting_identity: DriftActingIdentity,
     repository_snapshot: &RepositorySnapshot,
     committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
-) -> Result<Option<IncursionAttributionBatch>, DriftFingerprintError> {
+) -> Result<CommittedForeignPathHistory, DriftFingerprintError> {
     let mut anchors = Vec::new();
     let mut paths = Vec::new();
     let mut origin_targets = HashMap::new();
@@ -122,17 +147,17 @@ pub(super) fn read_committed_foreign_paths(
     }
     ordering::normalize_paths(&mut paths);
     if paths.is_empty() {
-        return Ok(None);
+        return Ok(CommittedForeignPathHistory::NoCommittedPaths);
     }
     let ObservedDriftChanges::Full(full_changes) = changes else {
-        return Ok(None);
+        return Ok(CommittedForeignPathHistory::Unavailable);
     };
     let FullPhaseHistoryObservation::Anchored {
         target: observed_tip,
         anchor_states,
     } = full_changes.phase_history()
     else {
-        return Ok(None);
+        return Ok(CommittedForeignPathHistory::Unavailable);
     };
     let anchors = anchors
         .into_iter()
@@ -164,13 +189,14 @@ pub(super) fn read_committed_foreign_paths(
                     repository_root,
                     &observation,
                     observed_tip,
+                    &target,
                 );
                 (target, membership)
             })
             .collect();
     }
     batch.origin_targets = origin_targets;
-    Ok(Some(batch))
+    Ok(CommittedForeignPathHistory::Read(batch))
 }
 
 const fn origin_reservation_for_path(
@@ -185,12 +211,81 @@ const fn origin_reservation_for_path(
     }
 }
 
+/// Exclude target-reachable commits before deciding whether the path entered a holder.
+pub(super) fn path_commit_authorship(
+    history: &CommittedForeignPathHistory,
+    reservation_id: ReservationId,
+    phase_start: &GitObjectId,
+    path: &ReservationScopePath,
+    reservations: &RetainedReservationSet,
+    holders: &[ReservationId],
+) -> PathCommitAuthorship {
+    let batch = match history {
+        CommittedForeignPathHistory::NoCommittedPaths => {
+            return PathCommitAuthorship::NoEnteringCommits;
+        },
+        CommittedForeignPathHistory::NotRead | CommittedForeignPathHistory::Unavailable => {
+            return PathCommitAuthorship::HistoryUnavailable;
+        },
+        CommittedForeignPathHistory::Read(batch) => batch,
+    };
+    let Some(anchor) = batch.anchors.get(phase_start) else {
+        return PathCommitAuthorship::HistoryUnavailable;
+    };
+    if anchor.state != IncursionAttributionAnchorState::UsableAncestor {
+        return PathCommitAuthorship::HistoryUnavailable;
+    }
+    let commits = batch
+        .commits
+        .iter()
+        .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter(|commit| commit.paths.contains(path))
+        .collect::<Vec<_>>();
+    if commits.is_empty() {
+        return PathCommitAuthorship::HistoryUnavailable;
+    }
+    let entering = commits
+        .iter()
+        .filter(|commit| {
+            origin_for_commit(batch, reservation_id, &commit.commit)
+                != IncursionCommitOrigin::AlreadyOnTrunk
+        })
+        .filter(|commit| {
+            holders.iter().any(|holder| {
+                reservations
+                    .reservation(*holder)
+                    .is_ok_and(|holder| !holder.claimed_at().follows(commit.committed_at))
+            })
+        })
+        .map(|commit| commit.commit.clone())
+        .collect::<Vec<_>>();
+    EnteringCommitSet::try_from(entering).map_or(
+        PathCommitAuthorship::NoEnteringCommits,
+        PathCommitAuthorship::Entering,
+    )
+}
+
+fn origin_for_commit(
+    batch: &IncursionAttributionBatch,
+    reservation_id: ReservationId,
+    commit: &GitObjectId,
+) -> IncursionCommitOrigin {
+    batch
+        .origin_targets
+        .get(&reservation_id)
+        .and_then(|target| batch.origin_membership.get(target))
+        .map_or(IncursionCommitOrigin::Unknown, |membership| {
+            commit_origin(membership, commit)
+        })
+}
+
 /// When one path was last committed to inside the phase range starting at `phase_start`.
 ///
 /// `None` when the batch did not read that range — its phase start is unknown to git or is
 /// not an ancestor of the target — or when no commit in it touched the path.
 pub(super) fn latest_commit(
     batch: &IncursionAttributionBatch,
+    reservation_id: ReservationId,
     phase_start: &GitObjectId,
     path: &ReservationScopePath,
 ) -> Option<CommitterTime> {
@@ -203,26 +298,29 @@ pub(super) fn latest_commit(
         .iter()
         .filter(|commit| anchor.range_commits.contains(&commit.commit))
         .filter(|commit| commit.paths.contains(path))
+        .filter(|commit| {
+            origin_for_commit(batch, reservation_id, &commit.commit)
+                != IncursionCommitOrigin::AlreadyOnTrunk
+        })
         .map(|commit| commit.committed_at)
         .max()
 }
 
 /// Name the commits behind every entered path an incursion took from the phase range.
 ///
-/// The message a reader acts on names paths and reservation ids only, so a path that
-/// arrived on a replayed upstream commit and a path this worktree wrote read the same.
-/// Only the committed component can carry a path the worktree never opened, so only
-/// those paths are looked up, and a working-tree incursion is left as it was.
+/// Target-reachable commits have already been excluded from classification and are also
+/// omitted here. Paths in both the committed and working-tree components retain their
+/// entering commits; a working-tree-only incursion has none.
 ///
 /// Nothing is read here. `batch` is what [`read_committed_foreign_paths`] took before the
 /// lock, and the commits it yields are cut to those made while a named holder stood.
 pub(super) fn name_incursion_commits(
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
-    batch: Option<&IncursionAttributionBatch>,
+    history: &CommittedForeignPathHistory,
     report: &mut DriftReport,
 ) {
-    let Some(batch) = batch else {
+    let CommittedForeignPathHistory::Read(batch) = history else {
         return;
     };
     for result in &mut report.results {
@@ -376,6 +474,10 @@ fn commits_for_paths(
         .commits
         .iter()
         .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter(|commit| {
+            origin_for_commit(batch, reservation_id, &commit.commit)
+                != IncursionCommitOrigin::AlreadyOnTrunk
+        })
         .filter(|commit| !earliest_claim.is_some_and(|claim| claim.follows(commit.committed_at)))
         .filter_map(|commit| {
             let mut paths = commit
@@ -434,6 +536,44 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
     use crate::ledger::IntegrationTarget;
+
+    #[test]
+    fn absent_committed_paths_are_not_reported_as_unavailable_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservations = crate::reservation::RetainedReservationSet::replay(&[])?;
+        let reservation = ReservationId::new();
+        let phase_start = "1111111111111111111111111111111111111111".parse()?;
+        let path = "src/lib.rs".parse()?;
+        let authorship = super::path_commit_authorship(
+            &super::CommittedForeignPathHistory::NoCommittedPaths,
+            reservation,
+            &phase_start,
+            &path,
+            &reservations,
+            &[],
+        );
+        assert!(matches!(
+            authorship,
+            super::PathCommitAuthorship::NoEnteringCommits
+        ));
+        for history in [
+            super::CommittedForeignPathHistory::NotRead,
+            super::CommittedForeignPathHistory::Unavailable,
+        ] {
+            assert!(matches!(
+                super::path_commit_authorship(
+                    &history,
+                    reservation,
+                    &phase_start,
+                    &path,
+                    &reservations,
+                    &[]
+                ),
+                super::PathCommitAuthorship::HistoryUnavailable
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn origin_targets_batch_by_session_or_reporting_reservations()

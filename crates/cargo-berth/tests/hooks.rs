@@ -4297,6 +4297,121 @@ fn post_tool_use_reports_only_new_widening_after_an_incursion_is_answered() -> T
     post_tool_use_states_a_widening_after_the_incursion_was_answered(&incursion)
 }
 
+/// The public bulk answer suppresses the next hook's STOP for a committed entry too.
+#[test]
+fn post_tool_use_stays_silent_after_resolve_every_committed_incursion() -> TestResult {
+    let incursion = incursion_after_bash(1)?;
+    // A first commit records the working-tree write. A second is a new entering event,
+    // establishing committed coverage before the public bulk answer.
+    run_git(&incursion.straying_root, &["add", "path-0.rs"])?;
+    let committed = git_command(BERTH_EXECUTABLE)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "entered foreign path",
+        ])
+        .current_dir(&incursion.straying_root)
+        .env("GIT_COMMITTER_DATE", "2030-01-01T00:00:00Z")
+        .output()?;
+    require_success(&committed, "committed foreign entry")?;
+    fs::write(
+        incursion.straying_root.join("path-0.rs"),
+        "// further committed entry\n",
+    )?;
+    commit_foreign_write(&incursion, "further committed entry")?;
+    let observed = incursion.report_another_bash_call()?;
+    assert!(
+        String::from_utf8_lossy(&observed.stdout).contains("STOP"),
+        "the committed entry must first be observable: {observed:?}"
+    );
+    let answered = run_berth_with_session(
+        &incursion.straying_root,
+        &[
+            "resolve",
+            &incursion.straying_reservation_id,
+            "--every-incursion",
+            "--json",
+        ],
+        INCURSION_SESSION,
+    )?;
+    require_success(&answered, "bulk incursion answer")?;
+
+    let repeated = incursion.report_another_bash_call()?;
+
+    assert_hook_stayed_silent(&repeated, POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY)?;
+    Ok(())
+}
+
+/// Committing the write already answered in the working tree must not issue another STOP.
+#[test]
+fn committing_an_answered_working_tree_incursion_keeps_the_hook_silent() -> TestResult {
+    let incursion = answered_working_tree_incursion()?;
+    commit_foreign_write(&incursion, "record answered write")?;
+
+    let repeated = incursion.report_another_bash_call()?;
+
+    assert_hook_stayed_silent(&repeated, POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY)?;
+    Ok(())
+}
+
+/// A further write committed to the answered path must issue a fresh STOP.
+#[test]
+fn a_second_commit_to_an_answered_working_tree_incursion_reopens_it() -> TestResult {
+    let incursion = answered_working_tree_incursion()?;
+    commit_foreign_write(&incursion, "record answered write")?;
+    assert_hook_stayed_silent(
+        &incursion.report_another_bash_call()?,
+        POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY,
+    )?;
+    fs::write(
+        incursion.straying_root.join("path-0.rs"),
+        "// another entering write\n",
+    )?;
+    commit_foreign_write(&incursion, "another entering write")?;
+
+    let reopened = incursion.report_another_bash_call()?;
+
+    assert!(
+        String::from_utf8_lossy(&reopened.stdout).contains("STOP"),
+        "a second entering commit must reopen the incident: {reopened:?}"
+    );
+    let incidents = observed_incursions(incursion.repository.path(), 1)?;
+    assert_ne!(incidents[0].incident_id, incursion.incidents[0].incident_id);
+    Ok(())
+}
+
+fn answered_working_tree_incursion() -> TestResult<IncursionAfterBash> {
+    let incursion = incursion_after_bash(1)?;
+    assert!(String::from_utf8_lossy(&incursion.output.stdout).contains("STOP"));
+    let answered = run_berth_with_session(
+        &incursion.straying_root,
+        &[
+            "resolve",
+            &incursion.straying_reservation_id,
+            "--every-incursion",
+            "--json",
+        ],
+        INCURSION_SESSION,
+    )?;
+    require_success(&answered, "bulk working-tree incursion answer")?;
+    Ok(incursion)
+}
+
+fn commit_foreign_write(incursion: &IncursionAfterBash, subject: &str) -> TestResult {
+    run_git(&incursion.straying_root, &["add", "path-0.rs"])?;
+    let committed = git_command(BERTH_EXECUTABLE)
+        .args(["commit", "--quiet", "-m", subject])
+        .current_dir(&incursion.straying_root)
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, INCURSION_SESSION)
+        .env("GIT_COMMITTER_DATE", "2030-01-01T00:00:00Z")
+        .output()?;
+    require_success(&committed, "commit foreign write")?;
+    Ok(())
+}
+
 fn post_tool_use_stops_repeating_an_answered_incursion(
     incursion: &IncursionAfterBash,
 ) -> TestResult {

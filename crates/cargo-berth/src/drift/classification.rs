@@ -6,7 +6,8 @@ use super::observation::ObservedDriftChanges;
 use super::observation::ReservationPhaseHistory;
 use super::ordering;
 use super::provenance;
-use super::provenance::IncursionAttributionBatch;
+use super::provenance::CommittedForeignPathHistory;
+use super::provenance::PathCommitAuthorship;
 use super::report::DriftComparisonMode;
 use super::report::DriftEffect;
 use super::report::DriftEffectSet;
@@ -27,6 +28,7 @@ use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
+use crate::ledger::IncursionCoverageEvidence;
 use crate::ledger::JournalOperation;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeAdditionSet;
@@ -52,8 +54,32 @@ enum WideningAttempt {
 struct ForeignPathCandidate {
     reservation_id: ReservationId,
     path:           ReservationScopePath,
-    /// The path reached the observation only through the subject's phase range.
-    committed_only: bool,
+    write_origin:   ForeignPathWriteOrigin,
+}
+
+/// Which observation components establish a foreign write.
+enum ForeignPathWriteOrigin {
+    WorkingTree,
+    CommittedOnly,
+    CommittedAndWorkingTree,
+}
+
+impl ForeignPathWriteOrigin {
+    fn from_changes(
+        changes: &ObservedDriftChanges,
+        reservation_id: ReservationId,
+        path: &ReservationScopePath,
+    ) -> Self {
+        if changes.committed_only(reservation_id, path) {
+            Self::CommittedOnly
+        } else if matches!(changes.reservation_phase_history(reservation_id),
+            ReservationPhaseHistory::Compared(paths) if paths.contains(path))
+        {
+            Self::CommittedAndWorkingTree
+        } else {
+            Self::WorkingTree
+        }
+    }
 }
 
 /// What the pre-lock pass established about each subject's observed paths.
@@ -65,7 +91,7 @@ struct ForeignPathCandidate {
 /// ledger nothing it cannot answer from memory.
 pub(super) struct PreLockForeignPathClassification {
     candidates:        Vec<ForeignPathCandidate>,
-    committed_history: Option<IncursionAttributionBatch>,
+    committed_history: CommittedForeignPathHistory,
 }
 
 impl PreLockForeignPathClassification {
@@ -90,7 +116,11 @@ impl PreLockForeignPathClassification {
                         candidates.push(ForeignPathCandidate {
                             reservation_id: *reservation_id,
                             path:           path.clone(),
-                            committed_only: changes.committed_only(*reservation_id, path),
+                            write_origin:   ForeignPathWriteOrigin::from_changes(
+                                changes,
+                                *reservation_id,
+                                path,
+                            ),
                         });
                     },
                 }
@@ -98,7 +128,7 @@ impl PreLockForeignPathClassification {
         }
         Ok(Self {
             candidates,
-            committed_history: None,
+            committed_history: CommittedForeignPathHistory::NotRead,
         })
     }
 
@@ -106,7 +136,9 @@ impl PreLockForeignPathClassification {
     pub(super) fn committed_foreign_paths(&self) -> Vec<(ReservationId, ReservationScopePath)> {
         self.candidates
             .iter()
-            .filter(|candidate| candidate.committed_only)
+            .filter(|candidate| {
+                !matches!(candidate.write_origin, ForeignPathWriteOrigin::WorkingTree)
+            })
             .map(|candidate| (candidate.reservation_id, candidate.path.clone()))
             .collect()
     }
@@ -114,14 +146,14 @@ impl PreLockForeignPathClassification {
     /// Attach the commits read for [`Self::committed_foreign_paths`].
     pub(super) fn with_committed_history(
         mut self,
-        committed_history: Option<IncursionAttributionBatch>,
+        committed_history: CommittedForeignPathHistory,
     ) -> Self {
         self.committed_history = committed_history;
         self
     }
 
-    pub(super) const fn committed_history(&self) -> Option<&IncursionAttributionBatch> {
-        self.committed_history.as_ref()
+    pub(super) const fn committed_history(&self) -> &CommittedForeignPathHistory {
+        &self.committed_history
     }
 
     /// Which holders block the path, as of the moment the subject wrote it.
@@ -140,17 +172,74 @@ impl PreLockForeignPathClassification {
         subject: &Reservation,
         path: &ReservationScopePath,
     ) -> Option<CommitterTime> {
-        let batch = self.committed_history.as_ref()?;
+        let CommittedForeignPathHistory::Read(batch) = &self.committed_history else {
+            return None;
+        };
         self.candidates
             .iter()
             .find(|candidate| {
-                candidate.committed_only
-                    && candidate.reservation_id == subject.id()
+                matches!(
+                    candidate.write_origin,
+                    ForeignPathWriteOrigin::CommittedOnly
+                ) && candidate.reservation_id == subject.id()
                     && candidate.path == *path
             })
             .and_then(|_| {
-                provenance::latest_commit(batch, subject.phase_start_head().as_ref(), path)
+                provenance::latest_commit(
+                    batch,
+                    subject.id(),
+                    subject.phase_start_head().as_ref(),
+                    path,
+                )
             })
+    }
+
+    /// Evidence for this write, or target-only history that must raise no incident.
+    fn coverage_evidence(
+        &self,
+        subject: &Reservation,
+        path: &ReservationScopePath,
+        reservations: &RetainedReservationSet,
+        holders: &[ReservationId],
+    ) -> ForeignPathAuthorship {
+        let Some(candidate) = self
+            .candidates
+            .iter()
+            .find(|candidate| candidate.reservation_id == subject.id() && candidate.path == *path)
+        else {
+            return ForeignPathAuthorship::Entered(IncursionCoverageEvidence::HistoryUnavailable);
+        };
+        if matches!(candidate.write_origin, ForeignPathWriteOrigin::WorkingTree) {
+            return ForeignPathAuthorship::Entered(IncursionCoverageEvidence::WorkingTreeWrites);
+        }
+        match provenance::path_commit_authorship(
+            &self.committed_history,
+            subject.id(),
+            subject.phase_start_head().as_ref(),
+            path,
+            reservations,
+            holders,
+        ) {
+            PathCommitAuthorship::NoEnteringCommits
+                if matches!(
+                    candidate.write_origin,
+                    ForeignPathWriteOrigin::CommittedOnly
+                ) =>
+            {
+                ForeignPathAuthorship::Inherited
+            },
+            PathCommitAuthorship::NoEnteringCommits => {
+                ForeignPathAuthorship::Entered(IncursionCoverageEvidence::WorkingTreeWrites)
+            },
+            PathCommitAuthorship::Entering(commits) => {
+                ForeignPathAuthorship::Entered(IncursionCoverageEvidence::KnownEnteringCommits {
+                    commits,
+                })
+            },
+            PathCommitAuthorship::HistoryUnavailable => {
+                ForeignPathAuthorship::Entered(IncursionCoverageEvidence::HistoryUnavailable)
+            },
+        }
     }
 
     /// Whether a present foreign holder stood on the path when the invocation began.
@@ -161,10 +250,22 @@ impl PreLockForeignPathClassification {
     }
 }
 
+enum ForeignPathAuthorship {
+    Inherited,
+    Entered(IncursionCoverageEvidence),
+}
+
+/// One foreign write with its present blockers and durable coverage evidence.
+struct IncursionPathObservation {
+    path:     ReservationScopePath,
+    holders:  Vec<ReservationId>,
+    coverage: IncursionCoverageEvidence,
+}
+
 #[derive(Default)]
 struct DriftEffectBuilder {
     widened_paths:          Vec<ReservationScopePath>,
-    incursions:             Vec<(ReservationScopePath, Vec<ReservationId>)>,
+    incursions:             Vec<IncursionPathObservation>,
     collision_paths:        Vec<ReservationScopePath>,
     collision_reservations: Vec<ReservationId>,
 }
@@ -175,10 +276,15 @@ struct DriftEffectBuilder {
 /// holders that actually block each path. A path observed more than once keeps its
 /// first holders; a path no holder blocks is not an incursion and is dropped.
 fn pair_incursions_with_holders(
-    incursions: Vec<(ReservationScopePath, Vec<ReservationId>)>,
+    incursions: Vec<IncursionPathObservation>,
 ) -> Vec<BlockedIncursionPath> {
     let mut blocked_paths: Vec<BlockedIncursionPath> = Vec::new();
-    for (path, holders) in incursions {
+    for IncursionPathObservation {
+        path,
+        holders,
+        coverage,
+    } in incursions
+    {
         if blocked_paths.iter().any(|blocked| blocked.path == path) {
             continue;
         }
@@ -187,7 +293,11 @@ fn pair_incursions_with_holders(
         ) else {
             continue;
         };
-        blocked_paths.push(BlockedIncursionPath { path, holders });
+        blocked_paths.push(BlockedIncursionPath {
+            path,
+            holders,
+            coverage,
+        });
     }
     blocked_paths.sort_by_cached_key(|blocked| blocked.path.to_string());
     blocked_paths
@@ -220,6 +330,32 @@ fn group_blocked_paths_by_holders(
 }
 
 impl DriftEffectBuilder {
+    /// Record a new collision or the evidence for entering an existing holder's path.
+    fn observe_foreign_path(
+        &mut self,
+        prior: &PreLockForeignPathClassification,
+        reservation: &Reservation,
+        path: &ReservationScopePath,
+        reservations: &RetainedReservationSet,
+        blockers: Vec<ReservationId>,
+    ) {
+        if prior.was_foreign(reservation.id(), path) {
+            let ForeignPathAuthorship::Entered(coverage) =
+                prior.coverage_evidence(reservation, path, reservations, &blockers)
+            else {
+                return;
+            };
+            self.incursions.push(IncursionPathObservation {
+                path: path.clone(),
+                holders: blockers,
+                coverage,
+            });
+        } else {
+            self.collision_paths.push(path.clone());
+            self.collision_reservations.extend(blockers);
+        }
+    }
+
     fn finish(
         mut self,
         reservations: &RetainedReservationSet,
@@ -415,12 +551,7 @@ pub(super) fn classify_locked(
                     {
                         return;
                     }
-                    if prior.was_foreign(*reservation_id, path) {
-                        builder.incursions.push((path.clone(), blockers));
-                    } else {
-                        builder.collision_paths.push(path.clone());
-                        builder.collision_reservations.extend(blockers);
-                    }
+                    builder.observe_foreign_path(prior, reservation, path, reservations, blockers);
                 },
             }
         });
@@ -720,8 +851,10 @@ fn blocking_coverage(
 
 #[cfg(test)]
 mod tests {
+    use super::IncursionPathObservation;
     use super::pair_incursions_with_holders;
     use crate::ids::ReservationId;
+    use crate::ledger::IncursionCoverageEvidence;
 
     const FIRST_HOLDER: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22";
     const SECOND_HOLDER: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a24";
@@ -736,8 +869,16 @@ mod tests {
         let first = FIRST_HOLDER.parse::<ReservationId>()?;
         let second = SECOND_HOLDER.parse::<ReservationId>()?;
         let blocked = pair_incursions_with_holders(vec![
-            ("src/other.rs".parse()?, vec![second, first, second]),
-            ("src/lib.rs".parse()?, vec![first]),
+            IncursionPathObservation {
+                path:     "src/other.rs".parse()?,
+                holders:  vec![second, first, second],
+                coverage: IncursionCoverageEvidence::HistoryUnavailable,
+            },
+            IncursionPathObservation {
+                path:     "src/lib.rs".parse()?,
+                holders:  vec![first],
+                coverage: IncursionCoverageEvidence::WorkingTreeWrites,
+            },
         ]);
 
         let reported = blocked
@@ -774,14 +915,31 @@ mod tests {
         let first = FIRST_HOLDER.parse::<ReservationId>()?;
         let second = SECOND_HOLDER.parse::<ReservationId>()?;
         let blocked = pair_incursions_with_holders(vec![
-            ("src/lib.rs".parse()?, vec![first]),
-            ("src/lib.rs".parse()?, vec![second]),
-            ("src/free.rs".parse()?, Vec::new()),
+            IncursionPathObservation {
+                path:     "src/lib.rs".parse()?,
+                holders:  vec![first],
+                coverage: IncursionCoverageEvidence::WorkingTreeWrites,
+            },
+            IncursionPathObservation {
+                path:     "src/lib.rs".parse()?,
+                holders:  vec![second],
+                coverage: IncursionCoverageEvidence::HistoryUnavailable,
+            },
+            IncursionPathObservation {
+                path:     "src/free.rs".parse()?,
+                holders:  Vec::new(),
+                coverage: IncursionCoverageEvidence::WorkingTreeWrites,
+            },
         ]);
 
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].path.to_string(), "src/lib.rs");
         assert_eq!(blocked[0].holders.as_slice(), [first]);
+        assert_eq!(
+            blocked[0].coverage,
+            IncursionCoverageEvidence::WorkingTreeWrites,
+            "a repeated path retains the original write evidence with its holders"
+        );
         Ok(())
     }
 }

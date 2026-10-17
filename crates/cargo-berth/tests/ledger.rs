@@ -690,6 +690,38 @@ fn init_creates_a_missing_common_info_directory() {
 }
 
 #[test]
+fn init_recovers_after_the_common_exclude_write_fails() {
+    let repository = scratch_repository();
+    let info = repository.path().join(".git/info");
+    fs::remove_dir_all(&info).expect("initial info directory should remove");
+    fs::write(&info, "obstruction\n").expect("exclude parent obstruction should write");
+
+    let failed = run_berth(repository.path(), ["init", "--json"]);
+    assert!(
+        !failed.status.success(),
+        "init must report the exclude failure"
+    );
+    assert!(repository.path().join(CONFIGURATION_PATH).is_file());
+    assert!(repository.path().join(JOURNAL_PATH).is_file());
+    let configuration = fs::read(repository.path().join(CONFIGURATION_PATH))
+        .expect("configuration written before exclude failure should read");
+    fs::remove_file(info).expect("exclude parent obstruction should remove");
+
+    assert_success(&run_berth(repository.path(), ["init", "--json"]));
+    assert_success(&run_berth(repository.path(), ["init", "--json"]));
+
+    assert_eq!(
+        fs::read_to_string(repository.path().join(EXCLUDE_PATH)).expect("repaired exclude reads"),
+        format!("/{CONFIGURATION_PATH}\n")
+    );
+    assert_eq!(
+        fs::read(repository.path().join(CONFIGURATION_PATH)).expect("configuration reads"),
+        configuration
+    );
+    assert_eq!(git_stdout(repository.path(), &["status", "--short"]), "");
+}
+
+#[test]
 fn init_keeps_tracked_configuration_changes_visible() {
     let repository = initialized_repository();
     let configuration_path = repository.path().join(CONFIGURATION_PATH);

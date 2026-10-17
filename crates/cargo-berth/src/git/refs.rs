@@ -12,6 +12,7 @@ use std::path::Path;
 
 use super::command;
 use super::command::GitHookExecutionPolicy;
+use super::constants::GIT_COMMIT_PEEL_SUFFIX;
 use super::constants::GIT_FOR_EACH_REF_COMMAND;
 use super::constants::GIT_FULL_REF_FORMAT_ARG;
 use super::constants::GIT_HEAD_REVISION;
@@ -25,6 +26,7 @@ use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_SYMBOLIC_REF_COMMAND;
 use super::constants::GIT_UPDATE_REF_COMMAND;
+use super::constants::GIT_UPSTREAM_SELECTOR_SUFFIX;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
 use super::error;
 use super::error::GitError;
@@ -42,6 +44,21 @@ const GIT_MISSING_REFERENCE_EXIT_CODE: i32 = 2;
 const GIT_QUIET_ARG: &str = "--quiet";
 const GIT_SHOW_REF_COMMAND: &str = "show-ref";
 const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
+
+/// The target's upstream commit, if its ref and object are available locally.
+pub(crate) enum LocalTargetUpstream {
+    Available(GitObjectId),
+    Unavailable,
+}
+
+pub(crate) fn local_target_upstream(repository_root: &Path, branch: &str) -> LocalTargetUpstream {
+    // Git's upstream selector takes a branch name, not its refs/heads/ reference.
+    let revision = format!("{branch}{GIT_UPSTREAM_SELECTOR_SUFFIX}{GIT_COMMIT_PEEL_SUFFIX}");
+    object::object_id(repository_root, &revision).map_or(
+        LocalTargetUpstream::Unavailable,
+        LocalTargetUpstream::Available,
+    )
+}
 
 /// Read the full object id currently named by `HEAD`.
 pub(crate) fn head_object_id(repository_root: &Path) -> Result<GitObjectId, GitError> {

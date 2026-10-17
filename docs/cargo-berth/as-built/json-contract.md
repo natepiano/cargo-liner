@@ -1217,12 +1217,28 @@ These operation fields use the following tagged values:
   heads are ordered by their persisted attempt generation, and every transient
   attempt records a new generation so an unavailable head rotates behind other
   pending heads instead of starving them. A deferred head remains not incorporated.
-- Incursion `blocked_paths` is a non-empty array of `{ "path", "holders" }`
-  objects: a repository-relative path string and the non-empty array of
-  reservation-id strings whose scopes cover that path. Records written before
-  the pairing carry two independent arrays instead, `foreign_reservation_ids`
-  and `paths`; the reader still accepts that layout and pairs every path with
-  the whole holder set, so replay decides coverage for it as it always did.
+- Incursion `blocked_paths` is a non-empty array of `{ "path", "holders", "coverage" }`
+  objects. `path` is repository-relative and `holders` is the non-empty array of
+  reservation-id strings whose scopes cover that path. `coverage` has one of four
+  tagged layouts:
+  - `{ "kind": "known_entering_commits", "commits": [<commit-oid>, ...] }`:
+    the commit array is non-empty. An answer covers subsequent observations of
+    those commits on the same path, even when the blocking holder set grows.
+    A later working-tree-only observation is also covered; a new entering commit
+    is uncovered and can create a new incident.
+  - `{ "kind": "working_tree_writes" }`: repeated working-tree writes without
+    known entering commits share path coverage. The single commit recording that
+    answered write is covered too; two or more entering commits reopen the path.
+  - `{ "kind": "history_unavailable" }`: repeated observations with unavailable
+    history share path coverage.
+  - `{ "kind": "legacy_holder_coverage" }`: coverage uses the earlier rule,
+    requiring current holders to be a subset of the recorded holders.
+  Paired records written before coverage evidence omit `coverage` and decode as
+  `legacy_holder_coverage`. Still older records carry independent arrays,
+  `foreign_reservation_ids` and `paths`; the reader pairs each path with the
+  whole holder set and assigns the same legacy evidence. Both earlier layouts
+  therefore retain their original coverage decisions on replay. Coverage always
+  belongs to the entering run and worktree, across its sibling reservations.
 - `skipped_holds.kind` is `ordering_edges` with non-empty `edges`; `deferrals`
   with non-empty `deferrals`; or `ordering_edges_and_deferrals` with both.
   An edge is `{ "edge_id": <uuid-v7>, "predecessor": <uuid-v7> }`; a
