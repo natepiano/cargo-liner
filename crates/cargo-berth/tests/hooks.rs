@@ -5,8 +5,14 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
+#[path = "support/lock_contention.rs"]
+mod lock_contention;
 #[path = "support/reader_compat_hooks.rs"]
 mod reader_compat_hooks;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -69,6 +75,8 @@ const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
                 &[
                     "-c",
                     "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
                     "commit",
                     "--quiet",
                     "-m",
@@ -93,16 +101,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use serde_json::Value;
 use tempfile::TempDir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
@@ -1003,7 +1010,7 @@ const NORMALIZED_EDITS: [(&str, &str, &str, NormalizedEdit); 10] = [
 #[test]
 fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestResult {
     let repository = initialized_repository()?;
-    for path in [
+    let paths = [
         "real/held.rs",
         "linked/held.rs",
         "held.rs",
@@ -1011,18 +1018,13 @@ fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestR
         "sub/alias/held.rs",
         "src/held.rs",
         "absent/deep/held.rs",
-    ] {
-        let holder = run_berth(
-            repository.path(),
-            &[
-                "claim",
-                &format!("file:{path}"),
-                "--run",
-                FIRST_RUN,
-                "--json",
-            ],
-        )?;
-        require_success(&holder, "path normalization holder")?;
+    ];
+    let scopes = paths.map(|path| format!("file:{path}"));
+    let mut arguments = vec!["claim", "--run", FIRST_RUN, "--json"];
+    arguments.extend(scopes.iter().map(String::as_str));
+    let holder = run_berth(repository.path(), &arguments)?;
+    require_success(&holder, "path normalization holder")?;
+    for path in paths {
         dirty_source(repository.path(), path)?;
     }
     let (_requester_directory, requester_root) =
@@ -1608,9 +1610,19 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 }
 
 fn git_binary() -> TestResult<String> {
-    let output = Command::new("sh").args(["-c", "command -v git"]).output()?;
-    require_success(&output, "git path lookup")?;
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    let path = std::env::var_os("PATH").ok_or_else(|| failure("test PATH should exist"))?;
+    let git = std::env::split_paths(&path)
+        .map(|directory| directory.join("git"))
+        .find(|candidate| {
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .ok_or_else(|| failure("executable git should exist on PATH"))?;
+    Ok(git
+        .to_str()
+        .ok_or_else(|| failure("git path should be UTF-8"))?
+        .to_owned())
 }
 
 struct AmbiguityHookOutput {
@@ -2198,8 +2210,10 @@ fn build_initialized_repository(root: &Path) -> TestResult {
 
 fn build_git_repository(root: &Path) -> TestResult {
     run_git(root, &["init", "--quiet", "--initial-branch", "main"])?;
-    run_git(root, &["config", "user.name", "Hook Acceptance Test"])?;
-    run_git(root, &["config", "user.email", "hooks@example.invalid"])?;
+    git_configuration::append_git_configuration(
+        root,
+        "\n[user]\n name = Hook Acceptance Test\n email = hooks@example.invalid\n",
+    )?;
     fs::write(root.join("README.md"), "hook fixture\n")?;
     run_git(root, &["add", "README.md"])?;
     run_git(
@@ -4326,6 +4340,9 @@ fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult 
 #[test]
 fn post_tool_use_leaves_a_trial_merge_unreserved_and_its_abort_clear() -> TestResult {
     let trial = PendingPeerOperation::new(&PeerOperationSetup::Merge)?;
+    // This case intentionally has no subject claim to enroll the clean checkout.
+    let enrolled = run_berth(trial.repository.path(), &["init", "--json"])?;
+    require_success(&enrolled, "enroll clean operation worktrees")?;
     let before = journal_events(trial.repository.path())?;
     trial.start_trial_merge()?;
 
@@ -4453,12 +4470,22 @@ impl PendingPeerOperation {
     fn new(setup: &PeerOperationSetup) -> TestResult<Self> {
         let repository = initialized_repository()?;
         let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
-        let peer_root = worktrees.path().join("operation-peer");
+        let peer_root = repository.path().to_path_buf();
         let subject_root = worktrees.path().join("operation-subject");
-        add_named_worktree(&repository, "operation-peer", &peer_root)?;
+        // Keep the peer on its own branch without creating another linked
+        // checkout and enrolling a second worktree identity for the holder.
+        run_git(
+            &peer_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "switch",
+                "--quiet",
+                "-c",
+                "operation-peer",
+            ],
+        )?;
         add_named_worktree(&repository, "operation-subject", &subject_root)?;
-        let enrolled = run_berth(repository.path(), &["init", "--json"])?;
-        require_success(&enrolled, "enroll clean operation worktrees")?;
         if matches!(setup, PeerOperationSetup::ConflictingCherryPick) {
             fs::write(subject_root.join("peer.rs"), "// subject version\n")?;
             run_git(&subject_root, &["add", "peer.rs"])?;

@@ -5,6 +5,9 @@
 
 //! End-to-end drift fingerprint, selection, classification, replay, and hook tests.
 
+#[path = "support/lock_contention.rs"]
+mod lock_contention;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -40,9 +43,9 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Instant;
 
+use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use tempfile::TempDir;
 use tempfile::tempdir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;

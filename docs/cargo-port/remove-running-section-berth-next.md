@@ -245,3 +245,38 @@
 
 **Ruled out:**
 - Spawning a shell to locate git: it costs real time per lookup; the PATH scan replaces it.
+
+### Phase 8 — The last 18 cargo-berth tests under a second  · status: done
+
+**Depends on:** Phase 7 (every phase edits `crates/cargo-berth/tests/`)
+
+#### Work Order
+
+**Goal:** No cargo-berth test takes a second or more in the GitHub CI Test Suite job, where the whole workspace suite (4741 tests) runs at once.
+
+**Spec:**
+1. The CI Test Suite job on main at d1ced22c (run 39031609525) ran 1110 of the 1128 cargo-berth tests under a second. All 1128 times are in `/tmp/claude/berth_ci_times_d1ced22c.txt`, as `<seconds> cargo-berth::<binary> <test>`. The target set is the 18 at 1 s or more, plus the 7 at 0.8–1.0 s, which another CI run would push over:
+   - `tests/hooks.rs`: `path_normalization_preserves_scope_and_filesystem_parent_semantics` 3.609, `post_commit_judges_a_completed_peer_merge_after_a_cached_clean_check` 2.985, `hooks_state_the_rewritten_trunk_evidence_recovery` 1.923, `hooks_state_the_unresolvable_trunk_evidence_recovery` 1.867, `post_tool_use_defers_a_cherry_pick_stopped_on_a_real_conflict` 1.797, `post_tool_use_does_not_charge_a_trial_merge_to_an_active_reservation` 1.647
+   - `tests/lifecycle.rs`: `merge_extent::a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends` 1.406, `checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward` 1.387, `interactive_split_keeps_both_protected_hunks_in_the_active_phase` 1.358, `checkpoint_ranges_survive_two_rebases_reconciled_during_integration` 1.344, `interactive_split_keeps_both_protected_hunks_in_the_checkpoint` 1.253, `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` 1.126, `merge_extent::a_diverged_holder_never_covers_changes_made_only_on_trunk` 1.068, `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` 1.042, `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` 1.003, `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` 0.937, `lock_contention_is_retryable_while_corrupt_journal_is_unreadable` 0.862
+   - `tests/edges.rs`: `successor_round_robin_covers_every_head` 1.329, `successor_board_has_fixed_cold_cost` 0.894, `witness_survives_pruning_and_controls_successors` 0.847
+   - `tests/liveness.rs`: `recovery_dispositions_validate_evidence_and_remain_distinct_after_replay` 1.312, `released_integration_target_witness_can_be_replaced` 0.852
+   - `tests/answers.rs`: `an_answer_to_a_holder_with_many_scopes_records` 1.049
+   - `tests/board.rs`: `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` 0.939
+   - `tests/gate.rs`: `trunk_gate_remembers_first_target_landing_after_target_revalidation` 0.903
+2. For each target, find where its time goes and cut it at the cause. Likely causes: repeated `init`, per-test repository setup a template could hold, git process count, rebases and splits that could run on a smaller history, journal replay, waits and retries. CI starts every test binary with a cold template cache, so a test that builds a template pays for the build and for the `build.lock` wait: check whether a target is slow because it is the first to build a shared template. Shared costs go into shared fixtures in `crates/cargo-berth-test-support` or `tests/support/`, never into a weaker assertion. A test keeps the behavior it names.
+3. A cut keeps every behavior distinction in the shared constraints from prior phases: upstream reachability filters authorship only; pre-phase-2 incidents keep holder-subset coverage; a working-tree answer covers one entering commit, and a further commit reopens the incident. `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` (`tests/gate.rs`) stays 17. `successor_board_has_fixed_cold_cost` and `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` keep their cost bounds as asserted.
+4. A test whose floor is set by product behavior, such as a real timeout or a deadline the product enforces, stays. Name it in the phase summary with its measured duration and its cause.
+5. Local timing: time every target alone, with one `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth --filter <target>` run per target, the runs one after another and the templates warm. One run naming all 25 targets measures the targets slowing each other, not each test's own cost: the first pass cut that run from 8.2 s to 3.5 s while its per-test times fell only about 30%. Each target alone takes under 0.5 s on natedev. The summary lists each target's CI time and its time alone. Measured during the phase: `path_normalization_preserves_scope_and_filesystem_parent_semantics` read 0.06 s and 1.49 s in two alone runs, both at load 27, and the 25 alone runs spanned load 17 to 230, so natedev cannot judge this bar either. The local evidence is git work removed from each target; the CI log decides.
+6. Docs: a CHANGELOG `[Unreleased]` line only if a public test-support API changed.
+
+**Files:**
+- `crates/cargo-berth/tests/` — slow tests and their fixtures
+- `crates/cargo-berth-test-support/src/` — shared fixture costs
+- `crates/cargo-berth/src/` — only a test-configurable value a slow test needs, for example a deadline it can shorten
+- `crates/cargo-berth/CHANGELOG.md`
+
+**Workers:** 2 writers. Ownership is by whole file, so no test file has two writers.
+- `impl` — `src/`, `crates/cargo-berth-test-support/`, `tests/support/`, `tests/hooks.rs`, `tests/edges.rs`, `tests/board.rs`, `tests/gate.rs`, and CHANGELOG. Runs the before measurement first and posts it, then lint and the after measurement.
+- `test` — `tests/lifecycle.rs`, `tests/liveness.rs`, `tests/answers.rs`. Waits for the before measurement, and asks `impl` for any shared fixture change.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, and each target's work is cut at its cause per item 2. The binding gate is the CI Test Suite nextest log on main after merge: no cargo-berth test at 1 s or more.

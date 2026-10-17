@@ -42,13 +42,33 @@ const REWRITE_MAIN: RepositoryTemplate = RepositoryTemplate {
 };
 
 fn build_rewrite_main(root: &Path) {
+    // Build directly under this template's lock. Instantiating another template
+    // here adds its build-lock wait, a second repository copy and index refresh
+    // to every cold rewrite-template build.
     super::build_initialized_repository(root, super::GitReferenceStorage::Loose);
-    for (key, value) in [("maintenance.auto", "false"), ("gc.auto", "0")] {
-        GIT.run(root, ["config", key, value]);
-    }
-    commit_file(root, "phase.txt", &contents("base", "base"), "phase base");
-    GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-    GIT.run(root, ["commit", "--quiet", "-m", "policy configuration"]);
+    super::git_configuration::append_git_configuration(
+        root,
+        "\n[maintenance]\n auto = false\n[gc]\n auto = 0\n",
+    )
+    .expect("git configuration should write");
+    fs::write(root.join("phase.txt"), contents("base", "base")).expect("phase base should write");
+    GIT.run(
+        root,
+        ["add", "--force", "phase.txt", ".claude/config/berth.toml"],
+    );
+    GIT.run(
+        root,
+        [
+            "commit",
+            "--quiet",
+            "-m",
+            "phase base and policy configuration",
+        ],
+    );
+    // Keep the linked checkout inside the ignored Git directory so the template
+    // can relocate both Git pointers together without adding untracked work to
+    // main. No reservation or holder identity exists until each test claims it.
+    GIT.add_worktree_without_hooks(root, &root.join(".git/fixture-holder"), "holder", "HEAD");
 }
 
 /// A linked holder whose managed hooks consult a different policy checkout.
@@ -62,19 +82,15 @@ impl RewriteFixture {
     fn new() -> Self {
         let repository = REWRITE_MAIN.instantiate();
         let worktrees = tempdir().expect("linked checkout parent should exist");
-        let holder = worktrees.path().join("holder");
-        GIT.add_worktree_without_hooks(repository.path(), &holder, "holder", "HEAD");
+        let holder = repository.path().join(".git/fixture-holder");
         assert!(
             repository
                 .path()
                 .join(".git/hooks/reference-transaction")
                 .is_file()
         );
-        let administrative_directory = GIT.stdout(&holder, ["rev-parse", "--absolute-git-dir"]);
-        assert_ne!(
-            Path::new(&administrative_directory),
-            repository.path().join(".git")
-        );
+        let administrative_directory = super::linked_checkout::administrative_directory(&holder);
+        assert_ne!(administrative_directory, repository.path().join(".git"));
         Self {
             repository,
             worktrees,
@@ -84,7 +100,18 @@ impl RewriteFixture {
 
     fn root(&self) -> &Path { self.repository.path() }
 
-    fn head(&self) -> String { GIT.stdout(&self.holder, ["rev-parse", "HEAD"]) }
+    fn head(&self) -> String {
+        // This fixture creates loose refs. Reading its own HEAD avoids spawning
+        // Git merely to remember the tip before the next real rewrite command.
+        let administrative_directory =
+            super::linked_checkout::administrative_directory(&self.holder);
+        let head = fs::read_to_string(administrative_directory.join("HEAD"))
+            .expect("holder HEAD should read");
+        head.trim().strip_prefix("ref: ").map_or_else(
+            || head.trim().to_owned(),
+            |reference| super::loose_refs::read_loose_ref(self.root(), reference),
+        )
+    }
 
     fn start_phase(&self) -> String {
         let claimed = claim(&self.holder, "file:phase.txt", FIRST_RUN);
@@ -97,11 +124,19 @@ impl RewriteFixture {
     }
 
     fn commit(&self, first: &str, later: &str) {
-        commit_file(
+        fs::write(self.holder.join("phase.txt"), contents(first, later))
+            .expect("tracked phase should write");
+        GIT.run(
             &self.holder,
-            "phase.txt",
-            &contents(first, later),
-            "holder phase",
+            [
+                "commit",
+                "--quiet",
+                "--only",
+                "-m",
+                "holder phase",
+                "--",
+                "phase.txt",
+            ],
         );
     }
 
@@ -116,11 +151,19 @@ impl RewriteFixture {
     }
 
     fn upstream_conflict(&self) {
-        commit_file(
+        fs::write(self.root().join("phase.txt"), contents("base", "upstream"))
+            .expect("tracked upstream phase should write");
+        GIT.run(
             self.root(),
-            "phase.txt",
-            &contents("base", "upstream"),
-            "upstream changes later hunk",
+            [
+                "commit",
+                "--quiet",
+                "--only",
+                "-m",
+                "upstream changes later hunk",
+                "--",
+                "phase.txt",
+            ],
         );
     }
 
@@ -163,7 +206,6 @@ impl RewriteFixture {
         let old_tip = self.head();
         fs::write(self.holder.join("phase.txt"), contents(first, later))
             .expect("amend source should write");
-        GIT.run(&self.holder, ["add", "phase.txt"]);
         let journal = self.root().join(JOURNAL_PATH);
         let permissions = make_read_only(&journal);
         let amended = GIT.output(
@@ -174,6 +216,9 @@ impl RewriteFixture {
                 "--quiet",
                 "-m",
                 "deferred rewritten checkpoint",
+                "--only",
+                "--",
+                "phase.txt",
             ],
         );
         fs::set_permissions(&journal, permissions).expect("journal permissions should restore");
@@ -2010,7 +2055,7 @@ fn board_with_rewrite_trace(root: &Path) -> Value {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let trunk = GIT.stdout(root, ["rev-parse", "main"]);
+    let trunk = super::loose_refs::read_loose_ref(root, "refs/heads/main");
     let trace = fs::read_to_string(trace_path).expect("git trace should read");
     let mapped_comparisons = trace
         .lines()
@@ -2056,10 +2101,7 @@ fn pending_markers(root: &Path) -> Vec<PathBuf> {
 }
 
 fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
-    GIT.stdout(
-        fixture.root(),
-        ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")],
-    )
+    super::loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
 }
 
 fn make_read_only(path: &Path) -> fs::Permissions {
