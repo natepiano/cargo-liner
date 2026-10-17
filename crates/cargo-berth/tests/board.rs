@@ -674,7 +674,7 @@ fn waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hol
 #[test]
 fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -794,7 +794,7 @@ fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavaila
 #[test]
 fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -842,7 +842,7 @@ fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadabl
 #[test]
 fn outstanding_reservation_report_retains_protected_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -985,7 +985,7 @@ fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
 #[test]
 fn released_abandoned_reservation_reports_its_merge_extent_at_release_while_active_stays_live() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -1801,7 +1801,10 @@ fn board_json_renders_a_retained_scoped_patch_equivalence_proof() {
 #[test]
 fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -1876,7 +1879,10 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
 #[test]
 fn unconstrained_holders_show_all_liveness_states_and_distinct_history_failures() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     GIT.run_without_hooks(
         repository.path(),
         ["commit", "--quiet", "-m", "configure berth"],
@@ -2685,7 +2691,10 @@ fn unappendable_decoded_marker_stays_visible_as_a_timed_alert() {
 #[test]
 fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -2769,7 +2778,7 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
 #[test]
 fn drift_widen_under_existing_answers_adds_no_overlap_answer_or_ordering() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
     git(
         repository.path(),
         &[
@@ -2952,7 +2961,10 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
 #[test]
 fn board_git_cost_separates_each_scaling_dimension() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -3329,7 +3341,7 @@ struct HistoricalIntegrationFixture {
 fn historical_integration_fixture() -> HistoricalIntegrationFixture {
     let repository = initialized_repository();
     let root = repository.path();
-    git(root, &["add", CONFIGURATION_PATH]);
+    git(root, &["add", "--force", CONFIGURATION_PATH]);
     git(
         root,
         &[
@@ -4486,7 +4498,7 @@ fn released_phase_amended_outside_its_scope() -> AmendedPhaseFixture {
     let reserved_base =
         "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n";
     fs::write(root.join("src/lib.rs"), reserved_base).expect("reserved source should write");
-    git(root, &["add", CONFIGURATION_PATH, "src/lib.rs"]);
+    git(root, &["add", "--force", CONFIGURATION_PATH, "src/lib.rs"]);
     git(
         root,
         &[
@@ -5542,7 +5554,7 @@ struct OrphanAlertFixture {
 fn orphan_alert_fixture() -> OrphanAlertFixture {
     let repository = initialized_repository();
     let root = repository.path();
-    GIT.run(root, ["add", CONFIGURATION_PATH]);
+    GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
     GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "configure berth"]);
     let worktrees = tempdir().expect("orphan worktree parent");
     let holder = add_worktree(root, worktrees.path(), "orphan-alert");
@@ -5592,7 +5604,10 @@ fn assert_orphan_alert_text(answer: &serde_json::Value, expected: &str) {
 #[test]
 fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
@@ -6648,6 +6663,9 @@ fn reachable_outstanding_reservations_fixture(
     reservation_count: usize,
 ) -> OutstandingReservationFixture {
     let repository = initialized_repository();
+    // Retain coverage for configurations left untracked by pre-upgrade init.
+    fs::remove_file(repository.path().join(".git/info/exclude"))
+        .expect("configuration exclude should remove for the legacy fixture");
     let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let scopes = (0..reservation_count)
         .map(|index| format!("src/reachable-{index}.rs"))
@@ -7159,7 +7177,10 @@ fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
 
 fn ordered_fixture() -> OrderedFixture {
     let repository = initialized_repository();
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(
+        repository.path(),
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     GIT.run_without_hooks(
         repository.path(),
         ["commit", "--quiet", "-m", "configure berth"],
@@ -7368,7 +7389,7 @@ fn build_integration_main(root: &Path) {
     git.run(root, ["add", "README.md"]);
     git.run(root, ["commit", "--quiet", "-m", "initial"]);
     assert_success(&run_berth(root, &["init", "--json"]));
-    git.run(root, ["add", CONFIGURATION_PATH]);
+    git.run(root, ["add", "--force", CONFIGURATION_PATH]);
     git.run_without_hooks(
         root,
         ["commit", "--quiet", "-m", "track berth configuration"],

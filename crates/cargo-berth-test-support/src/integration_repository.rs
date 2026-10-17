@@ -99,7 +99,7 @@ impl IntegrationRepository {
         integration_repository.commit_file(root, "README.md", "initial\n", "initial");
         let initialized = integration_repository.run(root, &["init", "--json"]);
         assert_success(&initialized);
-        integration_repository.git(root, &["add", ".claude/config/berth.toml"]);
+        integration_repository.git(root, &["add", "--force", ".claude/config/berth.toml"]);
         // With no reservation yet the hooks write nothing for this commit, which the gate test
         // `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged`
         // proves. The `integration start` commit keeps them: its post-commit check records the

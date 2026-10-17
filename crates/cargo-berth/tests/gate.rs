@@ -5682,7 +5682,7 @@ fn build_staged_configuration_repository(repository_root: &Path) {
             .status
             .success()
     );
-    git(repository_root, &["add", CONFIGURATION_PATH]);
+    git(repository_root, &["add", "--force", CONFIGURATION_PATH]);
 }
 
 fn scratch_repository() -> TempDir { SCRATCH_REPOSITORY.instantiate() }

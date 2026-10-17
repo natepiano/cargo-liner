@@ -1584,7 +1584,7 @@ fn initialized_repository() -> TempDir {
     GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "initial"]);
     let initialized = run_berth_with_session(root, &["init", "--json"], DIRECTOR_SESSION);
     assert_success(&initialized);
-    GIT.run(root, ["add", CONFIGURATION_PATH]);
+    GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
     GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "configure berth"]);
     repository
 }

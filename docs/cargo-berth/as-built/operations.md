@@ -24,6 +24,13 @@ main file is written. An uncommitted configuration file at that path, untracked
 or tracked and modified, is excluded from enrollment and merge-extent
 observations; committed changes to it still count.
 
+Every plain `init` ensures `/.claude/config/berth.toml` appears once in the
+common Git directory's `info/exclude`, creating `info/` when absent. An existing
+entry with or without the leading `/` is preserved. This keeps the untracked
+configuration out of `git status` in every worktree without moving or changing
+the file; tracked configurations remain visible. Run `init` again in a
+repository initialized by an older version to add the exclude entry.
+
 Enrollment reserves the exact file paths merging the branch into its recorded target would
 change or conflict on, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
 ended ones, prevent a worktree from being enrolled again. Re-run `init` after
@@ -199,6 +206,7 @@ way when it is invoked directly.
 `init` has four branches:
 
 - Plain `cargo berth init` creates a missing ledger and main-worktree config,
+  ensures the configuration is excluded through the common Git `info/exclude`,
   installs or refreshes each managed hook without replacing an unmanaged hook,
   and enrolls existing worktree work as described under
   [Worktree enrollment](#worktree-enrollment). A hook change alone needs no

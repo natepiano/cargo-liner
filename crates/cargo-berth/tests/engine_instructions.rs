@@ -363,6 +363,12 @@ fn post_tool_use_invalid_payload_envelope() -> TestResult<Value> {
 /// engine answers with the commands that re-establish the session's identity.
 fn post_tool_use_identity_recovery_envelope() -> TestResult<Value> {
     let repository = initialized_repository()?;
+    fs::create_dir_all(repository.path().join("shared"))?;
+    fs::write(
+        repository.path().join("shared/child.rs"),
+        "// shared work\n",
+    )?;
+    fs::write(repository.path().join("other.rs"), "// other phase work\n")?;
     for scope in ["tree:shared", "file:other.rs"] {
         let candidate = run_berth(
             repository.path(),
@@ -372,8 +378,7 @@ fn post_tool_use_identity_recovery_envelope() -> TestResult<Value> {
         require_success(&candidate, "post-tool-use attribution candidate")?;
     }
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))?;
-    fs::create_dir_all(repository.path().join("shared"))?;
-    fs::write(repository.path().join("shared/child.rs"), "// changed\n")?;
+    fs::write(repository.path().join("outside.rs"), "// unclaimed work\n")?;
 
     let payload = serde_json::json!({
         "hook_event_name": "PostToolUse",

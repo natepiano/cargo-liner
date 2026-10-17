@@ -2488,7 +2488,7 @@ impl OrphanedReservations {
 /// never froze.
 fn committed_configuration_repository() -> TestResult<TempDir> {
     let repository = initialized_repository()?;
-    run_git(repository.path(), &["add", CONFIGURATION_PATH])?;
+    run_git(repository.path(), &["add", "--force", CONFIGURATION_PATH])?;
     run_git(
         repository.path(),
         &[
