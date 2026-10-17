@@ -3,10 +3,15 @@
 //! and saved after edits.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use toml::Table;
+use toml::Value;
+use toml_edit::DocumentMut;
+use toml_edit::TableLike;
 
 use super::constants::CONFIG_FILENAME;
 use super::identity::AppIdentity;
@@ -48,7 +53,7 @@ impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
                     config,
                     error: None,
                 };
-                loaded.restate(path, &text);
+                loaded.save_to(Some(path));
                 loaded
             },
         )
@@ -75,28 +80,80 @@ impl<C: Serialize> LoadedConfig<C> {
 
     /// [`Self::save`] against an explicit path.
     fn save_to(&mut self, path: Option<PathBuf>) { self.error = write_config(&self.config, path); }
+}
 
-    /// Write the parsed config back over the file it came from when the
-    /// file does not already say the same thing.
-    ///
-    /// A file written before a setting existed does not mention it,
-    /// which leaves that setting editable only by someone who already
-    /// knows its name. Writing the parsed config back spells out every
-    /// section at its default, so the file lists the whole of what can
-    /// be set. It is a no-op once the file holds everything, and it is
-    /// only reached on a file that parsed -- one with a typo in it is
-    /// left alone for its author to fix rather than overwritten.
-    fn restate(&mut self, path: PathBuf, text: &str) {
-        match toml::to_string_pretty(&self.config) {
-            Ok(restated) if restated == text => {},
-            Ok(_) => self.save_to(Some(path)),
-            Err(error) => self.error = Some(error.to_string()),
+/// Whether a merged document needs a filesystem write.
+enum ConfigRewrite {
+    /// Every known setting already has its requested value.
+    Unchanged,
+    /// The document with known settings updated and user text retained.
+    Changed(String),
+}
+
+/// Merge known keys without replacing the surrounding document or its unknown keys.
+fn merge_config(text: &str, serialized: &str) -> Result<ConfigRewrite, String> {
+    let mut document = text
+        .parse::<DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let desired = serialized
+        .parse::<DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let current_values = toml::from_str::<toml::Table>(text).map_err(|error| error.to_string())?;
+    let desired_values =
+        toml::from_str::<toml::Table>(serialized).map_err(|error| error.to_string())?;
+    merge_table(
+        document.as_table_mut(),
+        desired.as_table(),
+        &current_values,
+        &desired_values,
+    );
+    let merged = document.to_string();
+    Ok(if merged == text {
+        ConfigRewrite::Unchanged
+    } else {
+        ConfigRewrite::Changed(merged)
+    })
+}
+
+/// Semantic equality keeps existing quoting and number formatting for unchanged values.
+fn merge_table(
+    current: &mut dyn TableLike,
+    desired: &dyn TableLike,
+    current_values: &Table,
+    desired_values: &Table,
+) {
+    for (key, value) in desired.iter() {
+        let Some(desired_value) = desired_values.get(key) else {
+            continue;
+        };
+        if current_values.get(key) == Some(desired_value) {
+            continue;
+        }
+        match (current.get_mut(key), current_values.get(key), desired_value) {
+            (Some(existing), Some(Value::Table(old)), Value::Table(new)) => {
+                if let (Some(existing), Some(desired)) =
+                    (existing.as_table_like_mut(), value.as_table_like())
+                {
+                    merge_table(existing, desired, old, new);
+                } else {
+                    current.insert(key, value.clone());
+                }
+            },
+            (Some(existing), _, _) => {
+                let mut replacement = value.clone();
+                if let (Some(old), Some(new)) = (existing.as_value(), replacement.as_value_mut()) {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                *existing = replacement;
+            },
+            (None, _, _) => {
+                current.insert(key, value.clone());
+            },
         }
     }
 }
 
-/// Serialize `config` to `path`, creating its directory. Returns the
-/// failure text, if any.
+/// Merge `config` into `path`, creating its directory only when a write is needed.
 fn write_config<C: Serialize>(config: &C, path: Option<PathBuf>) -> Option<String> {
     let Some(path) = path else {
         return Some(format!(
@@ -106,6 +163,17 @@ fn write_config<C: Serialize>(config: &C, path: Option<PathBuf>) -> Option<Strin
     let text = match toml::to_string_pretty(config) {
         Ok(text) => text,
         Err(error) => return Some(error.to_string()),
+    };
+    let rewrite = match fs::read_to_string(&path) {
+        Ok(existing) => match merge_config(&existing, &text) {
+            Ok(rewrite) => rewrite,
+            Err(error) => return Some(format!("{}: {error}", path.display())),
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => ConfigRewrite::Changed(text),
+        Err(error) => return Some(format!("{}: {error}", path.display())),
+    };
+    let ConfigRewrite::Changed(text) = rewrite else {
+        return None;
     };
     if let Some(parent) = path.parent()
         && let Err(error) = fs::create_dir_all(parent)
@@ -257,5 +325,126 @@ mod tests {
             loaded.error.as_deref(),
             Some("no OS config directory: cannot write config.toml")
         );
+    }
+
+    #[derive(Default, Deserialize, Serialize)]
+    #[serde(default)]
+    struct Sectioned {
+        name:     String,
+        settings: Sample,
+    }
+
+    #[test]
+    fn config_restate_and_save_preserve_unknown_keys_and_comments() {
+        let scratch = Scratch::new("preserve_document");
+        let path = scratch.config_path();
+        let original = "# user's heading\nfuture = 'kept' # top-level note\nname='old' # name note\n\n[settings] # section note\nextra = 42 # nested note\nname = 'section'\n";
+        fs::write(&path, original).expect("fixture writes");
+
+        let mut loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        let restated = read(&path);
+        assert!(restated.starts_with(original), "{restated}");
+        assert!(restated.contains("count = 3"), "{restated}");
+
+        loaded.config.name = "new".into();
+        loaded.config.settings.count = 9;
+        loaded.save_to(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        let saved = read(&path);
+        assert_eq!(
+            saved,
+            restated
+                .replace("name='old'", "name=\"new\"")
+                .replace("count = 3", "count = 9")
+        );
+        let parsed: Sectioned = toml::from_str(&saved).expect("saved config parses");
+        assert_eq!(parsed.name, "new");
+        assert_eq!(parsed.settings.count, 9);
+    }
+
+    #[test]
+    fn complete_config_skips_restate_and_save_writes() {
+        let scratch = Scratch::new("preserve_no_write");
+        let path = scratch.config_path();
+        let original =
+            "# formatting is intentional\ncount=0x3 # three\nunknown=true\nname='sample'\n";
+        fs::write(&path, original).expect("fixture writes");
+        let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("fixture opens")
+            .set_modified(timestamp)
+            .expect("fixture modification time sets");
+
+        let mut loaded = LoadedConfig::<Sample>::load_from(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("fixture exists")
+                .modified()
+                .expect("mtime reads"),
+            timestamp
+        );
+        loaded.save_to(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        assert_eq!(read(&path), original);
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("fixture exists")
+                .modified()
+                .expect("mtime reads"),
+            timestamp
+        );
+    }
+
+    #[test]
+    fn config_restate_adds_a_missing_section_without_reordering_existing_keys() {
+        let scratch = Scratch::new("missing_section");
+        let path = scratch.config_path();
+        let original = "future = 7\n# retained name\nname='existing'\n";
+        fs::write(&path, original).expect("fixture writes");
+
+        let loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        let saved = read(&path);
+        assert!(saved.starts_with(original), "{saved}");
+        let parsed: Sectioned = toml::from_str(&saved).expect("restated config parses");
+        assert_eq!(parsed.settings, Sample::default());
+        assert!(saved.contains("[settings]"), "{saved}");
+    }
+
+    #[test]
+    fn config_save_preserves_inline_section_unknowns_and_spacing() {
+        let scratch = Scratch::new("inline_section");
+        let path = scratch.config_path();
+        let original =
+            "name = ''\nsettings = { name='sample', count=3, future='kept' } # inline note\n";
+        fs::write(&path, original).expect("fixture writes");
+
+        let mut loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        assert_eq!(read(&path), original);
+        loaded.config.settings.count = 4;
+        loaded.save_to(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        assert_eq!(read(&path), original.replace("count=3", "count=4"));
+    }
+
+    #[test]
+    fn config_save_leaves_a_malformed_existing_document_untouched() {
+        let scratch = Scratch::new("save_malformed");
+        let path = scratch.config_path();
+        let malformed = "# repair me\n[unterminated\n";
+        fs::write(&path, malformed).expect("fixture writes");
+        let mut loaded = LoadedConfig {
+            config: Sample::default(),
+            error:  None,
+        };
+
+        loaded.save_to(Some(path.clone()));
+        assert!(loaded.error.is_some());
+        assert_eq!(read(&path), malformed);
     }
 }

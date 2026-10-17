@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use super::Account;
 use super::Agent;
+use super::AgentActivity;
 use super::AgentRow;
 use super::HierarchyEdges;
 use super::HierarchySource;
@@ -70,7 +71,7 @@ impl From<ProbeAgentRow> for AgentRow {
             name:            row.name,
             activity:        row
                 .activity
-                .unwrap_or_else(|| super::AgentActivity::from_legacy(row.status.as_deref())),
+                .unwrap_or_else(|| AgentActivity::from(row.status.as_deref())),
             started:         row.started,
             process_started: row.process_started.unwrap_or(row.started),
             pid:             row.pid,
@@ -273,7 +274,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
-                    activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity:        AgentActivity::from(Some("idle")),
                     started:         1_790_000_100,
                     process_started: 1_790_000_100,
                     pid:             80_020,
@@ -332,7 +333,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "worker".to_string(),
-                    activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
+                    activity:        AgentActivity::from(Some("busy")),
                     started:         1_790_000_130,
                     process_started: 1_790_000_130,
                     pid:             81_020,

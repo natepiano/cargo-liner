@@ -39,7 +39,7 @@ pub enum FrameworkSetting {
     InitialRows,
     /// `tiles.fill`: `add_new`, `redistribute`.
     TileFill,
-    /// `tiles.view`: `auto`, `summary`, `cells`.
+    /// `tiles.view`: `summary`, `cells`.
     TileView,
     /// `tiles.widen_summary`: `true`, `false`.
     WidenSummary,
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn the_view_row_steps_through_auto_summary_and_cells() {
+    fn the_view_row_steps_through_summary_and_cells() {
         install_test_state();
         let mut loaded = loaded_config();
         let mut notice = None;
@@ -290,7 +290,7 @@ mod tests {
             &mut loaded,
             &mut notice,
         );
-        assert_eq!(loaded.config.tile_view, TileView::Auto);
+        assert_eq!(loaded.config.tile_view, TileView::Summary);
     }
 
     #[test]

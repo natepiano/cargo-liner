@@ -19,7 +19,10 @@ use crate::census::VisibleParent;
 use crate::census::command_text::CommandText;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::process_identity::CaptureMembership;
-use crate::constants::UNAVAILABLE_MEASUREMENT;
+use crate::census::scan::InvocationResourceUse;
+use crate::constants::COMMAND_COLUMN;
+use crate::constants::CPU_COLUMN;
+use crate::constants::TABLE_HEADERS;
 use crate::progress::capture_read::CaptureLookup;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::render;
@@ -41,9 +44,9 @@ fn collision_roster() -> Roster {
         id:  lead.invocation_id.clone(),
         pid: PARENT_PID,
     };
-    child.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    child.subtree_cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    child.compiler = CompilerObservation::Unknown;
+    child.resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    child.subtree_resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    child.resource_use.compiler = CompilerObservation::Unknown;
     child.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
     let ancestry = (0..6)
         .map(|level| Ancestor {
@@ -76,11 +79,16 @@ fn invocation(pid: u32, marker: &str) -> CargoProcess {
         start: "11:04".to_owned(),
         started: RunStart::Known(0),
         duration: "00:18".to_owned(),
-        cpu: Measurement::Reading("12%".to_owned()),
-        subtree_cpu: Measurement::Reading("12%".to_owned()),
-        memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        compiler: CompilerObservation::None,
+        resource_use: InvocationResourceUse {
+            cpu:      Measurement::Reading(12.0),
+            memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+            compiler: CompilerObservation::None,
+        },
+        subtree_resource_use: InvocationResourceUse {
+            cpu:      Measurement::Reading(12.0),
+            memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+            compiler: CompilerObservation::None,
+        },
         state: CaptureLookup::Unregistered,
         managed: Measurement::Reading(0),
         nested: false,
@@ -125,11 +133,21 @@ fn assert_child_measurements(inner: Rect) {
         .filter(|line| line.contains(CHILD_MARKER))
         .collect();
     assert_eq!(child_lines.len(), 1, "{lines:#?}");
-    assert_eq!(
-        child_lines[0].matches(UNAVAILABLE_MEASUREMENT).count(),
-        4,
-        "the rows readout must leave CPU, mem, compiler, and runs cells intact: {lines:#?}"
-    );
+    let headers: Vec<_> = lines
+        .iter()
+        .filter(|line| {
+            line.contains(TABLE_HEADERS[CPU_COLUMN]) && line.contains(TABLE_HEADERS[COMMAND_COLUMN])
+        })
+        .collect();
+    assert_eq!(headers.len(), 1, "{lines:#?}");
+    let rendered = lines.join("\n");
+    for label in ["cpu", "mem", "compiler", "runs"] {
+        assert_eq!(
+            crate::census::measurement_cell(headers[0], child_lines[0], label, &rendered),
+            "",
+            "{label}: {lines:#?}"
+        );
+    }
     assert!(
         lines
             .last()

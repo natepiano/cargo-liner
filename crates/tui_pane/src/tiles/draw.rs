@@ -193,6 +193,11 @@ pub trait TileCells<Id> {
         CellReadoutFade::Unfaded
     }
 
+    /// Set frame-wide content widths before demand and allocation measurements.
+    /// Call `allocations` only when preparation needs the current allocation layout.
+    /// Areas exclude borders and foot rows, using the same calculation as painting.
+    fn prepare_frame(&self, _allocations: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>) {}
+
     /// Rows each cell's contents would take given all the room they
     /// want, each measured at the width `widths` gives that cell.
     ///
@@ -269,6 +274,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     cells: &impl TileCells<Id>,
 ) {
     grid.set_draw_layout(area, growth);
+    cells.prepare_frame(|| grid.preparation_allocations(area, growth));
     let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
     let mut cells_demands = cells.demands(&cells_widths);
     let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
@@ -288,6 +294,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     if display == GridDisplay::SummaryAlone
         && (contents == TileGridContents::Hidden || frame_inner(area).is_empty())
     {
+        grid.record_painted_summary_frames(Vec::new());
         return;
     }
     let (widths, demands) = match display {
@@ -295,7 +302,8 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         GridDisplay::SummaryAlone => (&alone_widths, &alone_demands),
     };
     let drawing = grid.drawing_at(area, growth, progress);
-    draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
+    let frames = draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
+    grid.record_painted_summary_frames(frames);
 }
 
 /// Widths used to measure the display that will be drawn this frame.
@@ -328,7 +336,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     widths: &[(TileContent<Id>, u16)],
     contents: TileGridContents,
     cells: &impl TileCells<Id>,
-) {
+) -> Vec<Rect> {
     // Painted solid only while the work is shown: the attract screen
     // draws over bare panes, and keeps the terminal's own background.
     let painted_ground = if contents == TileGridContents::Shown {
@@ -341,6 +349,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     }
     let mut grid_lines = GridLines::new(area);
     let mut summary_frames = Vec::new();
+    let mut painted_summary_frames = Vec::new();
     for &column in &drawing.column_bands {
         grid_lines.add(PaneFrame::new(column));
     }
@@ -410,6 +419,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                     grid_lines.add(line_frame);
                 }
                 if contents == TileGridContents::Shown {
+                    painted_summary_frames.push(line_frame.rect());
                     for label in cells.summary_labels(line_frame.rect()) {
                         grid_lines.add_label(line_frame, label);
                     }
@@ -440,6 +450,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         ..chrome
     });
     grid_lines.render(buffer, chrome, PaneBorders::Shared);
+    painted_summary_frames
 }
 
 /// Whether a placement has a pane-interior row visible between its
@@ -787,15 +798,20 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::ops::Range;
 
     use ratatui::symbols::line;
 
     use super::*;
+    use crate::FRAME_POLL_MILLIS;
+    use crate::PaneFocusState;
     use crate::TileAction;
     use crate::TileDemand;
     use crate::TileFill;
     use crate::TileView;
+    use crate::ToastActivation;
+    use crate::ToastStyle;
     use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
     use crate::tiles::constants::COLUMN_FOOT_TEST_BODY_STEP;
     use crate::tiles::constants::COLUMN_FOOT_TEST_GROUP_COUNT;
@@ -815,6 +831,13 @@ mod tests {
     use crate::tiles::constants::CONTENT_CHANGE_TEST_SPARE_SPANS;
     use crate::tiles::constants::DEPARTED_ENTRY_TEST_SPANS;
     use crate::tiles::constants::EMPTY_DONOR_TEST_SPANS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_GROUPS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_INITIAL_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_MEASUREMENT_BOUND;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROW_STEP;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_WIDTHS;
     use crate::tiles::constants::LENDING_TEST_CUT_GROUP;
     use crate::tiles::constants::LENDING_TEST_DEMANDS;
     use crate::tiles::constants::LENDING_TEST_DRAWN;
@@ -836,6 +859,7 @@ mod tests {
     use crate::tiles::constants::SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS;
     use crate::tiles::constants::SUMMARY_STEP_TEST_PIECES;
     use crate::tiles::constants::SUMMARY_STEP_TEST_ROWS;
+    use crate::tiles::constants::TILE_ANIMATION_MILLIS;
     use crate::tiles::grid::PieceHeightSnap;
     use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
@@ -856,6 +880,93 @@ mod tests {
         fill:          TileFill::Redistribute,
         widen_summary: false,
     };
+
+    #[test]
+    fn a_shifted_summary_returns_only_the_frame_its_buffer_paints()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct ToastFrameApp {
+            framework: crate::Framework<Self>,
+        }
+        impl crate::AppContext for ToastFrameApp {
+            type AppPaneId = ();
+            type ToastAction = crate::NoToastAction;
+            fn framework(&self) -> &crate::Framework<Self> { &self.framework }
+            fn framework_mut(&mut self) -> &mut crate::Framework<Self> { &mut self.framework }
+        }
+        let area = Rect::new(0, 0, 64, 24);
+        let base = Rect::new(0, 1, 64, 8);
+        let clip = Rect::new(0, 15, 64, 8);
+        let drawing = TileDrawing {
+            pieces:       vec![tile_piece(
+                TileContent::Summary,
+                PaneFrame::shifted(base, 14, clip),
+                PieceName::Shown,
+            )],
+            column_bands: vec![],
+        };
+        let cells = StubCells::new([]);
+        let widths = [(TileContent::Summary, 62)];
+        let mut buffer = Buffer::empty(area);
+        let frames = draw_placements(
+            &mut buffer,
+            area,
+            &drawing,
+            &cells.demands(&widths),
+            &widths,
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert_eq!(buffer[(0, 15)].symbol(), "┌");
+        assert_ne!(buffer[(0, 1)].symbol(), "┌");
+        assert_eq!(frames, vec![clip]);
+        let mut toasts =
+            crate::Toasts::<ToastFrameApp>::with_settings(crate::ToastSettings::from_table(
+                &"[toasts]\nplacement = 'top_right'\nwidth = 24\n".parse()?,
+            )?);
+        toasts.push_persistent(
+            "toast",
+            "body",
+            ToastStyle::Normal,
+            ToastActivation::Informational,
+            3,
+        );
+        let allowed = toasts.area_avoiding_frames(frame_inner(area), &frames);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(64, 24))?;
+        terminal.draw(|frame| {
+            *frame.buffer_mut() = buffer.clone();
+            crate::Renderable::render(
+                &mut toasts,
+                frame,
+                allowed,
+                &crate::ToastsRenderCtx {
+                    now:              std::time::Instant::now() + std::time::Duration::from_secs(1),
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let card = toasts.hits()[0].card_rect;
+        assert_eq!(terminal.backend().buffer()[(card.x, card.y)].symbol(), "┌");
+        assert!(card.bottom() < clip.top());
+        assert!(
+            card.top() < base.bottom(),
+            "the unshifted frame would exclude these rows"
+        );
+        for x in 0..64 {
+            assert_eq!(terminal.backend().buffer()[(x, 21)], buffer[(x, 21)]);
+        }
+        let mut hidden = Buffer::empty(area);
+        let frames = draw_placements(
+            &mut hidden,
+            area,
+            &drawing,
+            &cells.demands(&widths),
+            &widths,
+            TileGridContents::Hidden,
+            &cells,
+        );
+        assert_eq!(frames, []);
+        Ok(())
+    }
 
     struct StubCells {
         summary_foot:  SummaryFoot,
@@ -916,6 +1027,114 @@ mod tests {
                     .map(|x| buffer[(x, y)].fg)
             });
             assert_eq!(actual, Some(ink));
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct ContentAllocationQuery {
+        content:  TileContent<u32>,
+        width:    u16,
+        height:   u16,
+        retained: bool,
+    }
+
+    struct CountedRowCells {
+        rows:           u16,
+        maximum_height: u16,
+        queries:        RefCell<Vec<ContentAllocationQuery>>,
+    }
+
+    impl CountedRowCells {
+        fn measure(&self, content: &TileContent<u32>, area: Rect, retained: bool) -> u16 {
+            assert!(
+                area.height == u16::MAX || area.height <= self.maximum_height,
+                "measurement exceeds the frame's content height: {} > {}",
+                area.height,
+                self.maximum_height
+            );
+            let mut queries = self.queries.borrow_mut();
+            let key = ContentAllocationQuery {
+                content: content.clone(),
+                width: area.width,
+                height: area.height,
+                retained,
+            };
+            assert!(
+                !queries.contains(&key),
+                "repeated content allocation: {key:?}"
+            );
+            queries.push(key);
+            let count = queries
+                .iter()
+                .filter(|query| &query.content == content)
+                .count();
+            assert!(
+                count <= LARGE_CONTENT_TEST_MEASUREMENT_BOUND,
+                "content exceeds the frame measurement bound: {content:?}"
+            );
+            match content {
+                TileContent::Summary => {
+                    area.height.min(self.rows) / LARGE_CONTENT_TEST_ROW_STEP
+                        * LARGE_CONTENT_TEST_ROW_STEP
+                },
+                TileContent::Group(_) => area.height.min(1),
+                TileContent::Empty(_) => 0,
+            }
+        }
+    }
+
+    impl TileCells<u32> for CountedRowCells {
+        fn summary_title(&self) -> &str { LENDING_TEST_SUMMARY_TITLE }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(self.rows),
+                summary_width: 0,
+                groups:        (1..=LARGE_CONTENT_TEST_GROUPS)
+                    .map(|id| TileDemand {
+                        id,
+                        rows: usize::from(self.rows),
+                    })
+                    .collect(),
+            }
+        }
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            self.measure(content, area, false)
+        }
+        fn rows_kept(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            self.measure(content, area, true)
+        }
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    #[test]
+    fn a_large_cell_frame_measures_each_content_allocation_once() {
+        for width in LARGE_CONTENT_TEST_WIDTHS {
+            for rows in LARGE_CONTENT_TEST_ROWS {
+                let area = Rect::new(0, 0, width, LARGE_CONTENT_TEST_HEIGHT);
+                let cells = CountedRowCells {
+                    rows,
+                    maximum_height: content_area(frame_inner(area)).height,
+                    queries: RefCell::new(Vec::new()),
+                };
+                let mut grid = TileGrid::new();
+                grid.set_view(TileView::Cells);
+                let growth = TileGrowth {
+                    initial_rows: LARGE_CONTENT_TEST_INITIAL_ROWS,
+                    ..TileGrowth::default()
+                };
+                let mut buffer = Buffer::empty(area);
+                draw_tile_grid(
+                    &mut buffer,
+                    &mut grid,
+                    area,
+                    growth,
+                    TileGridContents::Shown,
+                    &cells,
+                );
+                let display = std::thread::scope(|readers| readers.spawn(|| grid.display()).join());
+                assert!(matches!(display, Ok(GridDisplay::Cells)));
+                assert!(!cells.queries.borrow().is_empty());
+            }
         }
     }
 
@@ -980,7 +1199,22 @@ mod tests {
             self.row_counts
                 .iter()
                 .find(|count| &count.content == content)
-                .map_or(area.height, |count| count.count.min(area.height))
+                .map_or_else(
+                    || {
+                        let rows = match content {
+                            TileContent::Summary => self.demands.summary,
+                            TileContent::Group(id) => self
+                                .demands
+                                .groups
+                                .iter()
+                                .find(|group| &group.id == id)
+                                .map_or(0, |group| group.rows),
+                            TileContent::Empty(_) => 0,
+                        };
+                        u16::try_from(rows).unwrap_or(u16::MAX).min(area.height)
+                    },
+                    |count| count.count.min(area.height),
+                )
         }
 
         fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
@@ -1012,15 +1246,23 @@ mod tests {
         }
 
         fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
-            match content {
+            // The grid reserves the foot row outside this content allocation.
+            let drawn = match content {
                 TileContent::Summary if area.width >= 80 => 13.min(area.height),
                 TileContent::Summary if area.height == u16::MAX => 18,
                 TileContent::Summary if area.height >= 18 => 18,
-                TileContent::Summary if area.height >= 14 => 13,
-                TileContent::Summary if area.height >= 10 => 9,
-                TileContent::Summary if area.height >= 6 => 5,
-                TileContent::Summary | TileContent::Group(_) => area.height,
+                TileContent::Summary if area.height >= 13 => 13,
+                TileContent::Summary if area.height >= 9 => 9,
+                TileContent::Summary if area.height >= 5 => 5,
+                TileContent::Summary => area.height,
+                TileContent::Group(_) => 18.min(area.height),
                 TileContent::Empty(_) => 0,
+            };
+            match content {
+                TileContent::Summary => {
+                    drawn.min(u16::try_from(self.summary_rows).unwrap_or(u16::MAX))
+                },
+                TileContent::Group(_) | TileContent::Empty(_) => drawn,
             }
         }
 
@@ -1744,7 +1986,8 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_width_summary_never_draws_compact_with_room_above_its_foot() {
+    fn a_toast_width_summary_never_draws_compact_with_room_above_its_foot()
+    -> Result<(), Box<dyn std::error::Error>> {
         let area = Rect::new(0, 0, 64, 50);
         let growth = TileGrowth {
             initial_rows:  12,
@@ -1776,7 +2019,17 @@ mod tests {
         grid.collapse_queued_changes_for_test();
 
         let mut mates_hide_rows = false;
-        for raw in 0..=PROGRESS_SCALE {
+        // Sample the runner's 8 ms FRAME_POLL_MILLIS stride across the default
+        // 720 ms TILE_ANIMATION_MILLIS motion, including its first and last frame.
+        let frame_stride = usize::try_from(FRAME_POLL_MILLIS)?;
+        let frame_progress = (0..TILE_ANIMATION_MILLIS)
+            .step_by(frame_stride)
+            .map(|elapsed| {
+                u32::try_from(elapsed * u64::from(PROGRESS_SCALE) / TILE_ANIMATION_MILLIS)
+            })
+            .chain([Ok(PROGRESS_SCALE)]);
+        for raw in frame_progress {
+            let raw = raw?;
             let drawing = fixed_motion_drawing(&mut grid, &after, area, growth, raw);
             let summary = drawing
                 .placements()
@@ -1795,6 +2048,7 @@ mod tests {
             );
         }
         assert!(mates_hide_rows, "the motion hides rows from a command cell");
+        Ok(())
     }
 
     #[test]
@@ -1842,7 +2096,7 @@ mod tests {
         let min_tile_height = 14;
         let cells = StubCells::demanding(50, (1..=5).map(|id| (id, 1)))
             .with_rows_drawn(TileContent::Summary, 50);
-        let (grid, buffer) = settled_grid_in_view(area, &cells, TileView::Auto, min_tile_height);
+        let (grid, buffer) = settled_grid_in_view(area, &cells, TileView::Cells, min_tile_height);
 
         assert_eq!(grid.display(), GridDisplay::Cells);
         assert!(buffer_text(&buffer).contains("group body"));
@@ -1876,7 +2130,7 @@ mod tests {
         let large = Rect::new(0, 0, 100, 40);
         let narrow = Rect::new(0, 0, TEST_TILE_WIDTH - 1, 40);
 
-        for view in [TileView::Auto, TileView::Summary, TileView::Cells] {
+        for view in [TileView::Summary, TileView::Cells] {
             let mut grid = TileGrid::new();
             grid.set_min_tile_width(TEST_TILE_WIDTH);
             grid.set_view(view);
@@ -1915,7 +2169,7 @@ mod tests {
             .with_rows_drawn(TileContent::Summary, 1);
         let busy = StubCells::demanding(50, (1..=5).map(|id| (id, 1)))
             .with_rows_drawn(TileContent::Summary, 50);
-        let (mut grid, _) = settled_grid_in_view(area, &quiet, TileView::Auto, min_tile_height);
+        let (mut grid, _) = settled_grid_in_view(area, &quiet, TileView::Cells, min_tile_height);
         assert_eq!(grid.display(), GridDisplay::Cells);
 
         let mut buffer = Buffer::empty(area);

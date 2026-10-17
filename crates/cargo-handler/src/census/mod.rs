@@ -15,6 +15,7 @@
 //! loop as a [`CensusUpdate`].
 
 pub(crate) mod account;
+pub(crate) mod accounts;
 pub(crate) mod activity;
 mod branch;
 pub(crate) mod classify;
@@ -690,7 +691,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: "enh/handler".to_string(),
-            activity: crate::census::AgentActivity::from_legacy(Some("busy")),
+            activity: AgentActivity::from(Some("busy")),
             started,
             process_started: started,
             pid: 428_044,
@@ -831,7 +832,7 @@ mod tests {
         assert!(!census.lists_an_agent(&configured));
 
         let idle = AgentRow {
-            activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+            activity: AgentActivity::from(Some("idle")),
             ..row(2)
         };
         census.apply(CensusUpdate::Remote {

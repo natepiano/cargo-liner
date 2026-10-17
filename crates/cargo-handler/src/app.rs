@@ -44,6 +44,7 @@ use crate::census::HierarchyCommand;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchySource;
 use crate::census::RemoteMachines;
+use crate::census::accounts::AccountsMonitor;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -125,6 +126,8 @@ pub(crate) struct App {
     /// The agents on this machine and each remote, as of each one's
     /// latest answer.
     pub(crate) census:            Census,
+    /// Account readings refreshed independently of the frame and census scan.
+    pub(crate) accounts:          AccountsMonitor,
     /// Footer colors cached between census scans.
     pub(crate) footer_colors:     FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
@@ -178,6 +181,9 @@ impl App {
         let hierarchy_command = HierarchyCommand::new(HierarchySource::from(
             loaded_config.config.census.hierarchy_command.clone(),
         ));
+        let accounts = census::accounts::AccountsMonitor::new(
+            loaded_config.config.census.accounts_command.clone(),
+        );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
@@ -193,6 +199,7 @@ impl App {
             attract: Attract::new(),
             favorites_overlay: FavoritesOverlay::default(),
             census,
+            accounts,
             remote_machines,
             hierarchy_command,
             footer_colors: FooterColorFile::default(),

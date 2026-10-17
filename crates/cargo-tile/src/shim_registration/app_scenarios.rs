@@ -45,12 +45,13 @@ use crate::census::scan::ProcessField;
 use crate::census::scan::ProcessObservation;
 use crate::census::scan::ProcessObservations;
 use crate::constants::BYTES_PER_GIBIBYTE;
+use crate::constants::CPU_COLUMN;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::SUMMARY_WITH_SHORT_ROWS_READOUT_WIDTH;
 use crate::constants::SUMMARY_WITHOUT_ROWS_READOUT_WIDTH;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
-use crate::constants::UNAVAILABLE_MEASUREMENT;
+use crate::constants::TABLE_HEADERS;
 use crate::hook;
 use crate::hook::NewerShim;
 use crate::hook::Startup;
@@ -64,6 +65,116 @@ use crate::render;
 use crate::root_scan::RootOwner;
 use crate::settings;
 use crate::tiles::TileContent;
+
+/// Missing readings leave mandatory cells blank and optional cells blank or absent.
+fn assert_blank_measurements(rendered: &str, row: &str, columns: &[&str]) {
+    let header = rendered
+        .lines()
+        .find(|line| line.contains(TABLE_HEADERS[CPU_COLUMN]) && line.contains("command"))
+        .expect("column titles");
+    for column in columns {
+        assert_eq!(
+            crate::census::measurement_cell(header, row, column, rendered),
+            "",
+            "{column}: {rendered}"
+        );
+    }
+}
+
+/// Run the reader's actual predicates without starting its terminal or writers.
+fn assert_reader_measurement_predicate(assertions: &str) {
+    let output = std::process::Command::new("python3")
+        .args([
+            "-S",
+            "-c",
+            r"from __future__ import annotations
+import ast
+import re
+from pathlib import Path
+import sys
+source = ast.parse(Path(sys.argv[1]).read_text())
+functions = [node for node in source.body if isinstance(node, ast.FunctionDef)
+             and node.name in ('measurement_cell', 'carrier_source_in_rendered')]
+exec(compile(ast.Module(body=functions, type_ignores=[]), sys.argv[1], 'exec'))
+exec(sys.argv[2])
+",
+        ])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shim_registration/reader_scenario.py"
+        ))
+        .arg(assertions)
+        .output()
+        .expect("run reader predicates");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_reader_registration_row_requires_its_memory_title() {
+    assert_reader_measurement_predicate(
+        r"
+writer = (None, Path('carrier'), None, [], None)
+rendered = '│ pid parent cpu command │\n│ 200 100        carrier │'
+try:
+    carrier_source_in_rendered(writer, 'registration', rendered)
+except AssertionError as error:
+    assert 'mem' in str(error) and rendered in str(error), str(error)
+else:
+    raise AssertionError('registration row accepted its missing mem title')
+",
+    );
+}
+
+#[test]
+fn a_reader_process_row_accepts_runs_without_memory() {
+    assert_reader_measurement_predicate(
+        r"
+writer = (None, Path('carrier'), None, [], None)
+header = '│ pid parent cpu mem command          compiler runs │'
+row = list(' ' * len(header))
+row[0] = row[-1] = '│'
+row[header.index('command'):header.index('command') + 7] = 'carrier'
+row[header.index('runs')] = '1'
+rendered = header + '\n' + ''.join(row)
+assert carrier_source_in_rendered(writer, 'process', rendered), rendered
+",
+    );
+}
+
+#[test]
+fn reader_measurement_cells_include_their_full_reading() {
+    assert_reader_measurement_predicate(
+        r"
+header = '│ cpu mem command compiler  runs │'
+row = list(' ' * len(header))
+row[0] = row[-1] = '│'
+start = header.index('compiler')
+row[start:start + 9] = 'sccache×6'
+row[header.index('runs')] = '1'
+row = ''.join(row)
+assert measurement_cell(header, row, 'compiler', row) == 'sccache×6', row
+assert measurement_cell(header, row, 'runs', row) == '1', row
+",
+    );
+}
+
+#[test]
+fn reader_state_alignment_keeps_memory_cells_separate() {
+    assert_reader_measurement_predicate(
+        r"
+header = '│ cpu mem       state command │'
+for row, expected, state in [('│             blocked cargo   │', '', 'blocked'),
+                             ('│     0.5G    blocked cargo   │', '0.5G', 'blocked'),
+                             ('│     0.5G            cargo   │', '0.5G', '')]:
+    assert measurement_cell(header, row, 'mem', row) == expected, row
+    assert measurement_cell(header, row, 'state', row) == state, row
+",
+    );
+}
 
 #[test]
 fn settings_scroll_reaches_every_account_and_later_settings() {
@@ -385,11 +496,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
             .lines()
             .find(|line| line.contains("older-command"))
             .expect("v2 row");
-        assert_eq!(
-            older.matches(UNAVAILABLE_MEASUREMENT).count(),
-            4,
-            "{rendered}"
-        );
+        assert_blank_measurements(&rendered, older, &["cpu", "mem", "compiler", "runs"]);
         for (pid, content) in panes {
             let rendered = draw_content(&app, &content, 8);
             let entry = rows
@@ -402,11 +509,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
                     .lines()
                     .find(|line| line.contains("older-command"))
                     .expect("v2 command row");
-                assert_eq!(
-                    row.matches(UNAVAILABLE_MEASUREMENT).count(),
-                    4,
-                    "{rendered}"
-                );
+                assert_blank_measurements(&rendered, row, &["cpu", "mem", "compiler", "runs"]);
             }
         }
         let keymap = Rc::clone(&app.keymap);
@@ -426,9 +529,9 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
 fn assert_current_process(row: &CargoProcess) {
     assert_eq!(row.pid, 101);
     assert_eq!(row.managed, Measurement::Reading(0));
-    assert_eq!(row.compiler, CompilerObservation::None);
+    assert_eq!(row.resource_use.compiler, CompilerObservation::None);
     assert_eq!(
-        row.cpu,
+        row.resource_use.cpu,
         Measurement::Unavailable(MeasurementAbsence::Unproven)
     );
 }
@@ -481,20 +584,12 @@ fn assert_mixed_command_pane(
             .lines()
             .find(|line| line.contains("older-command"))
             .expect("v2 row in shared command pane");
-        assert_eq!(
-            older.matches(UNAVAILABLE_MEASUREMENT).count(),
-            4,
-            "{rendered}"
-        );
+        assert_blank_measurements(&rendered, older, &["cpu", "mem", "compiler", "runs"]);
         let current = rendered
             .lines()
             .find(|line| line.contains("current-command"))
             .expect("v3 process row in shared command pane");
-        assert_eq!(
-            current.matches(UNAVAILABLE_MEASUREMENT).count(),
-            2,
-            "{rendered}"
-        );
+        assert_blank_measurements(&rendered, current, &["cpu", "mem", "compiler", "runs"]);
     }
 }
 
@@ -526,10 +621,10 @@ fn summary_registration_row_keeps_measurements_above_the_footer() {
             fallback < sentinel && sentinel < lines.len() - 1,
             "{rendered}"
         );
-        assert_eq!(
-            lines[fallback].matches(UNAVAILABLE_MEASUREMENT).count(),
-            4,
-            "{rendered}"
+        assert_blank_measurements(
+            &rendered,
+            lines[fallback],
+            &["cpu", "mem", "compiler", "runs"],
         );
         assert!(
             !lines[fallback].contains(TILE_ROWS_CONTENT_LABEL),
@@ -616,7 +711,8 @@ fn app_with_summary_memory() -> App {
         Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2),
         Measurement::Reading(0),
     ]) {
-        group.lead.memory = memory;
+        group.lead.resource_use.memory = memory;
+        group.lead.subtree_resource_use.memory = memory;
     }
     let mut app = App::new_for_test().expect("summary memory app");
     app.roster.observe(groups, Instant::now());

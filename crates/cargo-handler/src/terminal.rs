@@ -144,6 +144,7 @@ impl Ticker {
         let shown = app
             .census
             .lists_an_agent(&app.loaded_config.config.machines.remote);
+        let shown = shown || app.accounts.table.is_visible();
         if !shown || self.shown_second == Some(unix_now) {
             return false;
         }
@@ -153,6 +154,7 @@ impl Ticker {
 
     /// [`PollWork::poll`] at `unix_now` in unix seconds.
     fn poll_at(&mut self, app: &mut App, now: Instant, unix_now: u64) -> Repaint {
+        let accounts_changed = app.accounts.refresh();
         let census_changed = self.drain_census(app);
         let appearance_changed = self.drain_appearances(app);
         let ages_moved = self.ages_moved(app, unix_now);
@@ -166,7 +168,8 @@ impl Ticker {
         // it is on the screen, and for one more at the end of the quiet
         // it waits out before coming back.
         let attract = app.attract.frame_due();
-        if census_changed
+        if accounts_changed
+            || census_changed
             || appearance_changed
             || ages_moved
             || favorites == Repaint::Needed
@@ -205,12 +208,29 @@ mod tests {
     use crate::agent_cell::TreeColumn;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::HierarchyEdges;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::accounts::AccountsFailure;
+    use crate::census::accounts::AccountsTable;
     use crate::sort::TreeSort;
     use crate::tiles::TileKey;
+
+    #[test]
+    fn failed_accounts_without_agents_repaint_each_new_second() {
+        let mut app = App::new_for_test().expect("test app");
+        app.census.apply(CensusUpdate::LocalScanCompleted(
+            Vec::new(),
+            HierarchyEdges::default(),
+        ));
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        assert!(ticker.ages_moved(&app, 100));
+        assert!(!ticker.ages_moved(&app, 100));
+        assert!(ticker.ages_moved(&app, 101));
+    }
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -392,7 +412,7 @@ mod tests {
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "enh/handler".to_string(),
-            activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
+            activity:        AgentActivity::from(Some("busy")),
             started:         90,
             process_started: 90,
             pid:             428_044,

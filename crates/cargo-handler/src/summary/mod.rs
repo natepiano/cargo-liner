@@ -5,6 +5,7 @@
 //! Each agent's name is drawn in the hue of its cell, so a row and that
 //! agent's cell can be paired at a glance.
 
+mod accounts;
 pub(crate) mod age;
 
 use std::cmp::Ordering;
@@ -39,6 +40,7 @@ use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::Machine;
 use crate::census::MachineState;
+use crate::census::accounts::AccountsTable;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
 use crate::constants::GROUP_GAP_HEIGHT;
@@ -61,7 +63,7 @@ use crate::theme::Role;
 
 /// Rows the summary draws for `machines`: each machine's heading and
 /// table, and a gap between one machine and the next.
-pub(crate) fn height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> usize {
+fn machine_height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> usize {
     let groups: usize = machines
         .iter()
         .map(|machine| {
@@ -73,8 +75,8 @@ pub(crate) fn height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -
 }
 
 /// Columns the summary's widest line takes for `machines`: a machine's
-/// heading, or the table with every column at its fitted width and every
-/// directory written out in full.
+/// heading, an agents table with fitted columns and full directories,
+/// or the accounts table including its source notes and failure line.
 ///
 /// This is what the summary asks the grid for across, so a directory is
 /// only cut short once the summary has reached the right edge.
@@ -84,6 +86,7 @@ pub(crate) fn width(
     now: u64,
     account_column: AccountColumn,
     sort: SummarySort,
+    accounts: &AccountsTable,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -94,7 +97,7 @@ pub(crate) fn width(
         .iter()
         .all(|machine| root_rows(*machine, placement).next().is_none())
     {
-        return headings;
+        return headings.max(accounts::width(accounts, now));
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
@@ -102,7 +105,24 @@ pub(crate) fn width(
         .map(|column| widths.get(column))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
-    headings.max(table)
+    headings.max(table).max(accounts::width(accounts, now))
+}
+
+/// Both stacked sections, with the same gap used between machine groups.
+pub(crate) fn height(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    accounts: &AccountsTable,
+) -> usize {
+    let agents = machine_height(machines, placement);
+    let usage = accounts::height(accounts);
+    agents
+        + usage
+        + if agents > 0 && usage > 0 {
+            usize::from(GROUP_GAP_HEIGHT)
+        } else {
+            0
+        }
 }
 
 /// Rows a machine's table takes for `rows` agents: none when it lists
@@ -137,6 +157,7 @@ struct SummaryColumns<'a> {
 
 /// The census, palette and ordering shared throughout one summary draw.
 pub(crate) struct SummaryFrame<'a, 'data> {
+    pub(crate) accounts:       &'a AccountsTable,
     pub(crate) machines:       &'a [Machine<'data>],
     pub(crate) placement:      &'a AgentPlacement<'data>,
     pub(crate) cells:          &'a [AgentEntry<'data>],
@@ -162,6 +183,25 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     for machine in machines {
         draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
+    let agent_height = machine_height(frame.machines, frame.placement);
+    let offset = agent_height
+        + if agent_height > 0 {
+            usize::from(GROUP_GAP_HEIGHT)
+        } else {
+            0
+        };
+    let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
+    accounts::draw(
+        buffer,
+        Rect {
+            y: area.y.saturating_add(offset),
+            height: area.height.saturating_sub(offset),
+            ..area
+        },
+        frame.accounts,
+        frame.now,
+        frame.footer_colors,
+    );
 }
 
 /// A visible machine group with its heading, table and rows resolved together.
@@ -538,6 +578,7 @@ mod tests {
 
     use super::*;
     use crate::census::Account;
+    use crate::census::AgentActivity;
     use crate::census::Census;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyEdge;
@@ -545,6 +586,7 @@ mod tests {
     use crate::census::HierarchyRole;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::accounts::AccountsTable;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -574,7 +616,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            activity: crate::census::AgentActivity::from_legacy(status),
+            activity: AgentActivity::from(status),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -698,14 +740,17 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
+                &AccountsTable::NotConfigured,
             ),
-            u16::try_from(height(machines, &placement)).expect("the summary height should fit"),
+            u16::try_from(height(machines, &placement, &AccountsTable::NotConfigured))
+                .expect("the summary height should fit"),
         );
         let mut buffer = Buffer::empty(area);
         draw(
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts: &AccountsTable::NotConfigured,
                 machines,
                 placement: &placement,
                 cells: &cells,
@@ -848,6 +893,7 @@ mod tests {
             NOW,
             AccountColumn::Hidden,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
         let mut census = Census::new("natedev".to_string());
 
@@ -881,6 +927,7 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
+                &AccountsTable::NotConfigured,
             );
             if expected.len() == 1 {
                 assert_eq!(
@@ -957,8 +1004,8 @@ mod tests {
         ]
         .map(|(name, state)| Machine { name, state });
         let placement = AgentPlacement::from_machines(&machines);
-        let height =
-            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
+        let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+            .expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
         let cells = agent_cell::cell_order_placed(&placement);
@@ -967,6 +1014,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &cells,
@@ -1073,8 +1121,8 @@ mod tests {
             state: &natedev,
         }];
         let placement = AgentPlacement::from_machines(&machines);
-        let height =
-            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
+        let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+            .expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
 
@@ -1082,6 +1130,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &agent_cell::cell_order_placed(&placement),
@@ -1130,15 +1179,17 @@ mod tests {
             NOW,
             AccountColumn::Hidden,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
-        let height =
-            u16::try_from(height(&machines, &placement)).expect("the height should fit a u16");
+        let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+            .expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
         draw(
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &agent_cell::cell_order_placed(&placement),
@@ -1180,7 +1231,8 @@ mod tests {
                 &AgentPlacement::from_machines(&machines),
                 NOW,
                 AccountColumn::Hidden,
-                SummarySort::default()
+                SummarySort::default(),
+                &AccountsTable::NotConfigured
             )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
@@ -1204,7 +1256,8 @@ mod tests {
                 &AgentPlacement::from_machines(&machines),
                 NOW,
                 AccountColumn::Hidden,
-                SummarySort::default()
+                SummarySort::default(),
+                &AccountsTable::NotConfigured
             )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
@@ -1227,3 +1280,9 @@ mod unassigned_summary_tests;
 #[cfg(test)]
 #[path = "activity_summary_tests.rs"]
 mod activity_summary_tests;
+
+#[cfg(test)]
+mod accounts_tests;
+
+#[cfg(test)]
+mod accounts_refresh_tests;

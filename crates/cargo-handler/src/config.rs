@@ -69,8 +69,7 @@ pub(crate) struct TilesConfig {
     /// How the cells spread over the columns once there is more than
     /// one: `add_new` or `redistribute`.
     pub(crate) fill:          TileFill,
-    /// Whether the grid chooses its view, always shows the summary, or
-    /// shows cells whenever they fit.
+    /// Whether the grid shows the summary alone or uses cells whenever they fit.
     pub(crate) view:          TileView,
     /// Whether the summary widens over the next columns when its widest
     /// line does not fit its own; see [`TileGrowth::widen_summary`].
@@ -117,6 +116,8 @@ pub(crate) struct CensusConfig {
     /// One line of shell that prints this machine's hierarchy edges;
     /// empty disables hierarchy discovery.
     pub(crate) hierarchy_command: String,
+    /// Optional command printing stored account roles and usage as JSON.
+    pub(crate) accounts_command:  String,
 }
 
 /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
@@ -192,7 +193,7 @@ transparent = true
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
-view = \"auto\"
+view = \"cells\"
 widen_summary = true
 
 [machines]
@@ -200,6 +201,7 @@ remote = []
 
 [census]
 hierarchy_command = \"\"
+accounts_command = \"\"
 
 [accounts]
 ";

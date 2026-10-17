@@ -214,6 +214,7 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::AgentRow;
     use crate::census::ServiceTier;
     use crate::constants::UNREADABLE_PROBE_REASON;
@@ -242,7 +243,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
-                    activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity:        AgentActivity::from(Some("idle")),
                     started:         5,
                     process_started: 5,
                     pid:             80_020,

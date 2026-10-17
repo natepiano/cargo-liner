@@ -9,9 +9,11 @@ use ratatui::style::Color;
 
 use super::*;
 use crate::census::Account;
+use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
 
 /// Fixed census time for deterministic age labels.
@@ -36,7 +38,7 @@ fn row(
         service_tier: ServiceTier::Unrecorded,
         account: Account::Unrecorded,
         name: name.to_string(),
-        activity: crate::census::AgentActivity::from_legacy(status),
+        activity: AgentActivity::from(status),
         started: NOW - age,
         process_started: NOW - age,
         pid,
@@ -97,14 +99,17 @@ fn rendered_with_colors(
             NOW,
             account_column,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         ),
-        u16::try_from(height(&machines, &placement)).expect("fixture height"),
+        u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+            .expect("fixture height"),
     );
     let mut buffer = Buffer::empty(area);
     draw(
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts: &AccountsTable::NotConfigured,
             machines: &machines,
             placement: &placement,
             cells: &agent_cell::cell_order_placed(&placement),

@@ -121,11 +121,12 @@ iterm2_profile = "cargo-tile"   # "" to leave the session alone
 ```
 
 Make a profile by that name in iTerm2 (Settings -> Profiles -> **+**) and set it
-up however you like. With `transparent` on, nothing in the grid is painted, so
-the window's transparency shows through every tile as it is. With it off, untick
-**"Only the default background color uses transparency"** to see the tints
-through a transparent window -- ticked, it means painted cells are opaque, and
-every cell in the grid is painted.
+up however you like, and tick **"Keep background colors opaque"** (Profiles ->
+Window). With `transparent` on, nothing in the grid
+is painted, so the window's transparency shows through every tile. With it off,
+every cell in the grid is painted, and that box is what makes painted cells
+opaque: unticked, iTerm2 applies the profile's transparency to them too, and the
+two settings look almost the same.
 
 The profile to return to is read from `ITERM_PROFILE`, which iTerm2 sets in
 every session. If it is missing, cargo-tile does not switch at all rather than

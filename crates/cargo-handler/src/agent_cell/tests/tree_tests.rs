@@ -8,6 +8,7 @@ use summary::SummaryFrame;
 use super::*;
 use crate::census::AccountColumn;
 use crate::census::AgentActivity;
+use crate::census::accounts::AccountsTable;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -746,13 +747,18 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             NOW,
             frame_account_column,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
-        let rect = area(width, summary::height(&machines, &placement));
+        let rect = area(
+            width,
+            summary::height(&machines, &placement, &AccountsTable::NotConfigured),
+        );
         let mut buffer = Buffer::empty(rect);
         summary::draw(
             &mut buffer,
             rect,
             &SummaryFrame {
+                accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &cells,

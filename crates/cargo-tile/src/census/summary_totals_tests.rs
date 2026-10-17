@@ -16,7 +16,9 @@ use super::InvocationId;
 use super::Measurement;
 use super::invocation_cpu_accounting::MeasurementAbsence;
 use super::process_identity::ProcessIdentity;
+use super::scan;
 use super::scan::CensusSequence;
+use super::scan::InvocationResourceUse;
 use super::scan::ProcessField;
 use super::scan::ProcessObservation;
 use super::scan::ProcessObservations;
@@ -152,7 +154,11 @@ impl SummaryTree {
             } else {
                 Measurement::Reading(rate.to_owned())
             };
-            assert_eq!(row.cpu, expected, "sample {scan}, pid {pid}");
+            assert_eq!(
+                row.resource_use.cpu.map(scan::cpu_label),
+                expected,
+                "sample {scan}, pid {pid}"
+            );
         }
         let parent_cpu = match parent {
             Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
@@ -182,8 +188,22 @@ impl SummaryTree {
             rows.contains(&(first, parent_cpu.map(str::to_owned))),
             "sample {scan}: {rows:?}"
         );
+        assert_eq!(
+            roster.groups()[0]
+                .lead
+                .process
+                .subtree_resource_use
+                .cpu
+                .map(scan::cpu_label),
+            group_cpu.map(str::to_owned)
+        );
+        let driver_cpu = if scan == 0 {
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        } else {
+            Measurement::Reading("0%".to_owned())
+        };
         assert!(
-            rows.contains(&(driver, group_cpu.map(str::to_owned))),
+            rows.contains(&(driver, driver_cpu)),
             "sample {scan}: {rows:?}"
         );
         assert_cpu_rows(
@@ -248,7 +268,12 @@ fn command_cpu(roster: &Roster) -> Vec<(u32, Measurement<String>)> {
         .groups()
         .iter()
         .flat_map(TrackedGroup::rows)
-        .map(|row| (row.process.pid, row.process.cpu.clone()))
+        .map(|row| {
+            (
+                row.process.pid,
+                row.process.resource_use.cpu.map(scan::cpu_label),
+            )
+        })
         .collect()
 }
 
@@ -266,11 +291,11 @@ fn unproven_row(roster: &Roster, pid: u32) -> CargoProcess {
         pid,
         observation: Uuid::now_v7(),
     });
-    process.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    process.subtree_cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    process.memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    process.subtree_memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
-    process.compiler = CompilerObservation::Unknown;
+    process.resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.subtree_resource_use.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.resource_use.memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.subtree_resource_use.memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.resource_use.compiler = CompilerObservation::Unknown;
     process.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
     process
 }
@@ -309,7 +334,7 @@ fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric()
     assert_cpu_rows(
         command_cpu(&roster),
         &[
-            (driver, Measurement::Reading("150%")),
+            (driver, Measurement::Reading("0%")),
             (first, Measurement::Reading("0%")),
             (nested, Measurement::Reading("100%")),
             (deep, Measurement::Reading("0%")),
@@ -345,7 +370,7 @@ fn unreadable_parent_counter_keeps_its_promoted_total_unavailable_despite_busy_l
 }
 
 #[test]
-fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total() {
+fn command_rows_keep_own_attributions_and_the_summary_keeps_the_group_total() {
     let tree = SummaryTree::new();
     let roster = tree.roster(&SummaryTree::readings());
     let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
@@ -353,7 +378,7 @@ fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total()
     assert_cpu_rows(
         command_cpu(&roster),
         &[
-            (driver, Measurement::Reading("183%")),
+            (driver, Measurement::Reading("128%")),
             (first, Measurement::Reading("1%")),
             (nested, Measurement::Reading("2%")),
             (deep, Measurement::Reading("4%")),
@@ -407,7 +432,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
             SummaryTree::assert_summary(&roster, first_total, second_total);
 
             let expected = [
-                (driver, Measurement::Unavailable(reason)),
+                (driver, Measurement::Reading("128%")),
                 (first, Measurement::Reading("1%")),
                 (nested, Measurement::Reading("2%")),
                 (deep, Measurement::Reading("4%")),
@@ -425,6 +450,10 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
                 )
             });
             assert_cpu_rows(command_cpu(&roster), &expected);
+            assert_eq!(
+                roster.groups()[0].lead.process.subtree_resource_use.cpu,
+                Measurement::Unavailable(reason)
+            );
         }
     }
 }
@@ -473,7 +502,7 @@ fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
 
     let lead = &roster.groups()[0].lead.process;
     assert_eq!(
-        lead.cpu,
+        lead.subtree_resource_use.cpu,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         "the command lead cannot replace a missing member contribution with zero"
     );
@@ -510,15 +539,18 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
         .flat_map(TrackedGroup::rows)
         .find(|row| row.process.invocation_id == registration.invocation_id)
         .expect("the unproven contribution remains in the assembled subtree");
-    assert_eq!(injected.process.cpu, registration.cpu);
-    assert_eq!(injected.process.compiler, registration.compiler);
+    assert_eq!(
+        injected.process.resource_use.cpu,
+        registration.resource_use.cpu
+    );
+    assert_eq!(
+        injected.process.resource_use.compiler,
+        registration.resource_use.compiler
+    );
     assert_cpu_rows(
         command_cpu(&roster),
         &[
-            (
-                driver,
-                Measurement::Unavailable(MeasurementAbsence::Unproven),
-            ),
+            (driver, Measurement::Reading("128%")),
             (first, Measurement::Reading("1%")),
             (nested, Measurement::Reading("2%")),
             (deep, Measurement::Unavailable(MeasurementAbsence::Unproven)),
@@ -568,20 +600,40 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
         .iter()
         .find(|row| row.process.invocation_id == registration.invocation_id)
         .expect("the unproven row retains its distinct invocation identity");
-    assert_eq!(injected.process.cpu, registration.cpu);
-    assert_eq!(injected.process.compiler, registration.compiler);
+    assert_eq!(
+        injected.process.resource_use.cpu,
+        registration.resource_use.cpu
+    );
+    assert_eq!(
+        injected.process.resource_use.compiler,
+        registration.resource_use.compiler
+    );
     let process_rows = roster
         .groups()
         .iter()
         .flat_map(TrackedGroup::rows)
         .filter(|row| row.process.invocation_id != registration.invocation_id)
-        .map(|row| (row.process.pid, row.process.cpu.clone()))
+        .map(|row| {
+            (
+                row.process.pid,
+                row.process.resource_use.cpu.map(scan::cpu_label),
+            )
+        })
         .collect();
+    let known = InvocationResourceUse::sum(
+        roster
+            .groups()
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .filter(|row| row.process.invocation_id != registration.invocation_id)
+            .map(|row| row.process.resource_use.clone()),
+    );
+    assert_eq!(known.cpu, Measurement::Reading(183.0));
     // The second invocation identity must not charge the same process twice.
     assert_cpu_rows(
         process_rows,
         &[
-            (driver, Measurement::Reading("183%")),
+            (driver, Measurement::Reading("128%")),
             (first, Measurement::Reading("1%")),
             (nested, Measurement::Reading("2%")),
             (deep, Measurement::Reading("4%")),
@@ -595,7 +647,7 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
     );
     SummaryTree::assert_summary(
         &roster,
-        Measurement::Unavailable(MeasurementAbsence::Unproven),
+        Measurement::Reading("7%"),
         Measurement::Reading("48%"),
     );
 }
@@ -610,8 +662,11 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
     let lead = &roster.groups()[0].lead.process;
 
     assert_eq!(lead.invocation_id, registration.invocation_id);
-    assert_eq!(lead.cpu, registration.cpu);
-    assert_eq!(lead.compiler, registration.compiler);
+    assert_eq!(lead.resource_use.cpu, registration.resource_use.cpu);
+    assert_eq!(
+        lead.resource_use.compiler,
+        registration.resource_use.compiler
+    );
     assert_cpu_rows(
         command_cpu(&roster),
         &[
@@ -639,7 +694,7 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
         Measurement::Reading("48%"),
     );
     assert_eq!(
-        lead.subtree_cpu,
+        lead.subtree_resource_use.cpu,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         "an unproven lead cannot seed a numeric subtree total from its pid bucket"
     );
@@ -683,6 +738,12 @@ fn subtree_totals_round_once_after_summing_raw_attributions() {
     let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
 
     // 85.75 and 83.25 round to 86 and 83; summing the row labels yields 85 and 84.
+    let total = roster.groups()[0].lead.process.subtree_resource_use.cpu;
+    assert_eq!(total, Measurement::Reading(270.25));
+    assert_eq!(
+        total.map(scan::cpu_label),
+        Measurement::Reading("270%".to_owned())
+    );
     SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("86%"),
@@ -691,7 +752,7 @@ fn subtree_totals_round_once_after_summing_raw_attributions() {
     assert_cpu_rows(
         command_cpu(&roster),
         &[
-            (driver, Measurement::Reading("270%")),
+            (driver, Measurement::Reading("101%")),
             (first, Measurement::Reading("11%")),
             (nested, Measurement::Reading("31%")),
             (deep, Measurement::Reading("43%")),

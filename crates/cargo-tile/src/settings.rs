@@ -1265,7 +1265,7 @@ mod layout_tests {
         "[Tiles]",
         "4 Stepper initial rows = 4",
         "5 Stepper fill = redistribute",
-        "6 Stepper view = auto",
+        "6 Stepper view = cells",
         "7 Stepper widen summary = false",
         "8 Stepper fade seconds = 3",
         "[Capture]",
