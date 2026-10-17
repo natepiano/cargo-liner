@@ -136,9 +136,11 @@ use crate::registration::WorkingDirectoryIdentity;
 use crate::root_scan::RootIncarnation;
 use crate::roster::FamilyHead;
 use crate::roster::ParentFamily;
+#[cfg(test)]
 use crate::roster::Roster;
 use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
+use crate::roster::VisibleRoster;
 use crate::sccache::LabelRunKind;
 use crate::sccache::SccacheStats;
 use crate::settings;
@@ -255,16 +257,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    // What gets a cell, not what the roster holds: a command held back
-    // by `commands.hidden_when_idle` keeps a summary line and draws no
-    // cell, and a screen with nothing but that on it is one the reader
-    // reads as idle. `groups` counts it and would keep the attract
-    // screen off for as long as a `cargo port` watcher sat there.
-    let work = if app
+    let roster = app
         .roster
-        .tiled_ids(&app.loaded_config.config.commands.hidden_when_idle)
-        .is_empty()
-    {
+        .visible(&app.loaded_config.config.commands.hidden);
+    let work = if roster.groups().is_empty() {
         AttractWork::Idle
     } else {
         AttractWork::Running
@@ -272,7 +268,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let updates = app.updates;
     let mut summary_frames = DrawnSummaryFrames(Vec::new());
     draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
-        summary_frames = draw_panes(frame, app, body, contents);
+        summary_frames = draw_visible_panes(frame, app, body, contents, roster);
     });
     draw_status_line(frame, app, keymap, status);
     let toast_area = app
@@ -297,16 +293,29 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// titles remain and the tables, the readouts and the cache figures go
 /// -- which is what the grid looks like while the attract screen is
 /// arriving or leaving.
+#[cfg(test)]
 fn draw_panes(
     frame: &mut Frame,
     app: &mut App,
     area: Rect,
     contents: TileGridContents,
 ) -> DrawnSummaryFrames {
+    let roster = app
+        .roster
+        .visible(&app.loaded_config.config.commands.hidden);
+    draw_visible_panes(frame, app, area, contents, roster)
+}
+
+fn draw_visible_panes(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    contents: TileGridContents,
+    roster: VisibleRoster,
+) -> DrawnSummaryFrames {
     let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells::for_frame(
-        &app.roster,
-        &app.loaded_config.config.commands.hidden_when_idle,
+        roster,
         app.tree,
         &app.sccache,
         area.height.saturating_sub(3),
@@ -331,43 +340,43 @@ struct DrawnSummaryFrames(Vec<Rect>);
 struct Cells<'a> {
     /// Every command group, which the summary gathers and each group's
     /// own cell draws.
-    roster:           &'a Roster,
-    /// `commands.hidden_when_idle`, which settles whether a driver draws
-    /// as a row or as the last step of its chain.
-    hidden_when_idle: &'a [String],
+    roster:   VisibleRoster,
     /// What sccache reports, written along the summary cell's top border.
-    sccache:          &'a SccacheStats,
+    sccache:  &'a SccacheStats,
     /// Content-row answers already computed during this draw.
-    row_uses:         RefCell<HashMap<(CellRowIdentity, u16), PreparedCellRows>>,
+    row_uses: RefCell<HashMap<(CellRowIdentity, u16), PreparedCellRows>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
-    grids:            FrameColumnGrids,
+    grids:    FrameColumnGrids,
 }
 
 impl<'a> Cells<'a> {
     #[cfg(test)]
     fn new(
-        roster: &'a Roster,
-        hidden_when_idle: &'a [String],
+        roster: &Roster,
+        hidden_commands: &[String],
         tree: ProcessTree,
         sccache: &'a SccacheStats,
     ) -> Self {
-        Self::for_frame(roster, hidden_when_idle, tree, sccache, u16::MAX)
+        Self::for_frame(
+            roster.clone().visible(hidden_commands),
+            tree,
+            sccache,
+            u16::MAX,
+        )
     }
 
     /// Cell provider with an empty cache for this draw.
     fn for_frame(
-        roster: &'a Roster,
-        hidden_when_idle: &'a [String],
+        roster: VisibleRoster,
         tree: ProcessTree,
         sccache: &'a SccacheStats,
         height: u16,
     ) -> Self {
         Self {
-            roster,
-            hidden_when_idle,
             sccache,
             row_uses: RefCell::new(HashMap::new()),
-            grids: FrameColumnGrids::for_frame(roster, hidden_when_idle, tree, height),
+            grids: FrameColumnGrids::for_frame(&roster, tree, height),
+            roster,
         }
     }
 
@@ -381,15 +390,7 @@ impl<'a> Cells<'a> {
         let mut layouts = self.row_uses.borrow_mut();
         let prepared = layouts
             .entry((CellRowIdentity::from(content), width))
-            .or_insert_with(|| {
-                PreparedCellRows::new(
-                    self.roster,
-                    content,
-                    width,
-                    self.hidden_when_idle,
-                    &self.grids,
-                )
-            });
+            .or_insert_with(|| PreparedCellRows::new(&self.roster, content, width, &self.grids));
         read(prepared)
     }
 
@@ -421,8 +422,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             let area = *area;
             match content {
                 TileContent::Summary => {
-                    let rows = summary_rows(self.roster, self.hidden_when_idle);
-                    let rows: Vec<_> = rows.iter().map(AsRef::as_ref).collect();
+                    let rows = summary_rows(&self.roster);
                     summary_cut |= table_needs_continuation(
                         &self.grids.summary.0,
                         area,
@@ -435,8 +435,8 @@ impl TileCells<InvocationId> for Cells<'_> {
                     else {
                         continue;
                     };
-                    let leads = group.leads_as_ancestor(self.hidden_when_idle);
-                    let rows: Vec<_> = group.rows().skip(usize::from(leads)).collect();
+
+                    let rows: Vec<_> = group.rows().collect();
                     let grid = &self.grids.commands.0;
                     let demand = frame_table_height(
                         &rows,
@@ -444,9 +444,9 @@ impl TileCells<InvocationId> for Cells<'_> {
                         PinnedGroup::Lead(&group.lead.process),
                         grid,
                     );
-                    let ancestry = drawn_ancestry(group, leads, grid.tree);
+                    let ancestry = drawn_ancestry(group, grid.tree);
                     let used = ancestry_source_row_use(
-                        AncestrySource::for_group(&ancestry, group, leads, grid.tree),
+                        AncestrySource::for_group(&ancestry, group, grid.tree),
                         area,
                         demand,
                     )
@@ -496,7 +496,7 @@ impl TileCells<InvocationId> for Cells<'_> {
         tests::ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
     }
 
-    fn summary_foot(&self) -> SummaryFoot { memory_total(self.roster).foot() }
+    fn summary_foot(&self) -> SummaryFoot { memory_total(&self.roster).foot() }
 
     fn content_extent(&self, content: &TileContent) -> CellContentExtent {
         let cut = match content {
@@ -524,17 +524,14 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
         let faded = match content {
             TileContent::Summary => {
-                let rows = summary_rows(self.roster, self.hidden_when_idle);
-                heading_fade(&rows.iter().map(AsRef::as_ref).collect::<Vec<_>>())
+                let rows = summary_rows(&self.roster);
+                heading_fade(&rows)
             },
             TileContent::Group(id) => {
                 let Some(group) = self.roster.groups().iter().find(|group| &group.id == id) else {
                     return CellReadoutFade::Unfaded;
                 };
-                let rows: Vec<_> = group
-                    .rows()
-                    .skip(usize::from(group.leads_as_ancestor(self.hidden_when_idle)))
-                    .collect();
+                let rows: Vec<_> = group.rows().collect();
                 group_fade(group, &rows)
             },
             TileContent::Empty(_) => return CellReadoutFade::Unfaded,
@@ -559,8 +556,7 @@ impl TileCells<InvocationId> for Cells<'_> {
                 .find(|(known, _)| known == content)
                 .map_or(narrowest, |(_, width)| *width)
         };
-        let summary = summary_rows(self.roster, self.hidden_when_idle);
-        let summary: Vec<_> = summary.iter().map(AsRef::as_ref).collect();
+        let summary = summary_rows(&self.roster);
         TileDemands {
             summary:       self.prepared_rows(
                 &TileContent::Summary,
@@ -570,7 +566,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             summary_width: frame_summary_width(&summary, &self.grids.summary.0),
             groups:        self
                 .roster
-                .tiled_ids(self.hidden_when_idle)
+                .tiled_ids()
                 .into_iter()
                 .map(|id| {
                     let content = TileContent::Group(id.clone());
@@ -596,15 +592,7 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-        frame_draw_contents(
-            buffer,
-            self.roster,
-            content,
-            inner,
-            ground,
-            self.hidden_when_idle,
-            &self.grids,
-        );
+        frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
     }
 
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
@@ -667,16 +655,14 @@ impl AncestryTableRows {
 
 impl PreparedCellRows {
     fn new(
-        roster: &Roster,
+        roster: &VisibleRoster,
         content: &TileContent,
         width: u16,
-        hidden_when_idle: &[String],
         grids: &FrameColumnGrids,
     ) -> Self {
         match content {
             TileContent::Summary => {
-                let rows = summary_rows(roster, hidden_when_idle);
-                let rows: Vec<_> = rows.iter().map(AsRef::as_ref).collect();
+                let rows = summary_rows(roster);
                 Self::Summary(PreparedSummaryRows::new(&rows, width, &grids.summary.0))
             },
             TileContent::Group(id) => {
@@ -684,11 +670,11 @@ impl PreparedCellRows {
                     return Self::Empty;
                 };
                 let grid = &grids.commands.0;
-                let leads = group.leads_as_ancestor(hidden_when_idle);
-                let rows: Vec<_> = group.rows().skip(usize::from(leads)).collect();
-                let walk = drawn_ancestry(group, leads, grid.tree);
+
+                let rows: Vec<_> = group.rows().collect();
+                let walk = drawn_ancestry(group, grid.tree);
                 let ancestry = PreparedAncestryRows::new(
-                    AncestrySource::for_group(&walk, group, leads, grid.tree),
+                    AncestrySource::for_group(&walk, group, grid.tree),
                     width,
                 );
                 let pinned = PinnedGroup::Lead(&group.lead.process);
@@ -1142,10 +1128,10 @@ fn content_rows_drawn(
     roster: &Roster,
     content: &TileContent,
     area: Rect,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) -> u16 {
-    content_row_use(roster, content, area, hidden_when_idle, tree).drawn
+    content_row_use(roster, content, area, hidden_commands, tree).drawn
 }
 
 /// Painted and retained rows for one cell allocation.
@@ -1154,11 +1140,11 @@ fn content_row_use(
     roster: &Roster,
     content: &TileContent,
     area: Rect,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) -> GroupRowUse {
     let stats = SccacheStats::default();
-    let cells = Cells::new(roster, hidden_when_idle, tree, &stats);
+    let cells = Cells::new(roster, hidden_commands, tree, &stats);
     cells.prepare_frame(|| vec![(content.clone(), area)]);
     cells.row_use(content, area)
 }
@@ -1169,10 +1155,10 @@ fn content_rows_kept(
     roster: &Roster,
     content: &TileContent,
     area: Rect,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) -> u16 {
-    content_row_use(roster, content, area, hidden_when_idle, tree).kept
+    content_row_use(roster, content, area, hidden_commands, tree).kept
 }
 
 /// Painted and retained rows across one command cell's two sections.
@@ -1213,14 +1199,14 @@ impl GroupRowUse {
 fn tile_demands(
     roster: &Roster,
     widths: &[(TileContent, u16)],
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) -> TileDemands {
     frame_tile_demands(
         roster,
         widths,
-        hidden_when_idle,
-        &FrameColumnGrids::new(roster, hidden_when_idle, tree),
+        hidden_commands,
+        &FrameColumnGrids::new(roster, hidden_commands, tree),
     )
 }
 
@@ -1228,9 +1214,11 @@ fn tile_demands(
 fn frame_tile_demands(
     roster: &Roster,
     widths: &[(TileContent, u16)],
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     grids: &FrameColumnGrids,
 ) -> TileDemands {
+    let visible = roster.clone().visible(hidden_commands);
+    let roster = &visible;
     let narrowest = widths
         .iter()
         .map(|&(_, width)| width)
@@ -1242,8 +1230,7 @@ fn frame_tile_demands(
             .find(|(content, _)| *content == wanted)
             .map_or(narrowest, |&(_, width)| width)
     };
-    let summary = summary_rows(roster, hidden_when_idle);
-    let summary: Vec<&TrackedRow> = summary.iter().map(AsRef::as_ref).collect();
+    let summary = summary_rows(roster);
     TileDemands {
         summary:       frame_table_height(
             &summary,
@@ -1253,14 +1240,14 @@ fn frame_tile_demands(
         ),
         summary_width: frame_summary_width(&summary, &grids.summary.0),
         groups:        roster
-            .tiled_ids(hidden_when_idle)
+            .tiled_ids()
             .into_iter()
             .filter_map(|id| roster.groups().iter().find(|group| group.id == id))
             .map(|group| {
                 let width = width_of(TileContent::Group(group.id.clone()));
                 TileDemand {
                     id:   group.id.clone(),
-                    rows: frame_group_height(group, width, hidden_when_idle, &grids.commands.0),
+                    rows: frame_group_height(group, width, &grids.commands.0),
                 }
             })
             .collect(),
@@ -1309,37 +1296,22 @@ fn frame_summary_width(rows: &[&TrackedRow], grid: &FrameTableColumnGrid) -> u16
 ///
 /// The whole chain counts, not the levels a cell of some particular
 /// height has room for -- the ask is what the cell wants, and what it is
-/// given is the answer. A lead drawn as the foot of its own chain is
-/// left out of the table, the same as [`frame_draw_group`] leaves it out.
+/// given is the answer.
 #[cfg(test)]
-fn group_height(
-    group: &TrackedGroup,
-    width: u16,
-    hidden_when_idle: &[String],
-    tree: ProcessTree,
-) -> usize {
-    let rows: Vec<_> = group
-        .rows()
-        .skip(usize::from(group.leads_as_ancestor(hidden_when_idle)))
-        .collect();
+fn group_height(group: &TrackedGroup, width: u16, tree: ProcessTree) -> usize {
+    let rows: Vec<_> = group.rows().collect();
     let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, tree);
-    frame_group_height(group, width, hidden_when_idle, &grid)
+    frame_group_height(group, width, &grid)
 }
 
 #[cfg(test)]
-fn frame_group_height(
-    group: &TrackedGroup,
-    width: u16,
-    hidden_when_idle: &[String],
-    grid: &FrameTableColumnGrid,
-) -> usize {
-    let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
-    let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
+fn frame_group_height(group: &TrackedGroup, width: u16, grid: &FrameTableColumnGrid) -> usize {
+    let rows: Vec<&TrackedRow> = group.rows().collect();
     // The same steps [`frame_draw_group`] draws, measured the same way: a
     // command wrapping down the cell wants the rows it wraps onto, and
     // asking for one row a level would leave the block short of what it
     // would have drawn with the room.
-    let ancestry = drawn_ancestry(group, leads_as_ancestor, grid.tree);
+    let ancestry = drawn_ancestry(group, grid.tree);
     let table_grid = if ancestry.as_slice().is_empty() {
         table_grid_after_ancestry(grid, 0)
     } else {
@@ -1352,7 +1324,7 @@ fn frame_group_height(
         &table_grid,
     );
     ancestry_source_demand(
-        AncestrySource::for_group(&ancestry, group, leads_as_ancestor, grid.tree),
+        AncestrySource::for_group(&ancestry, group, grid.tree),
         width,
     )
     .saturating_add(table)
@@ -1480,13 +1452,7 @@ pub(crate) fn draw_cell_for_test(
     );
 }
 
-/// What a cell holds inside its borders. `ground` is the colour the
-/// cell is painted on, which a finished row's text fades toward, and
-/// `hidden_when_idle` is what settles whether a command's own cell
-/// draws it as a row or as the last step of its chain. `tree` says how
-/// much of what stands above the command goes over the table; the
-/// summary cell has no such block, so it never reads it. An empty cell
-/// holds only its number, which [`tui_pane::draw_tile_cell`] draws.
+/// Draw cell contents through the same visible roster boundary as a frame.
 #[cfg(test)]
 fn draw_contents(
     buffer: &mut Buffer,
@@ -1494,48 +1460,33 @@ fn draw_contents(
     content: &TileContent,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) {
+    let visible = roster.clone().visible(hidden_commands);
+    let roster = &visible;
     frame_draw_contents(
         buffer,
         roster,
         content,
         inner,
         ground,
-        hidden_when_idle,
-        &FrameColumnGrids::new(roster, hidden_when_idle, tree),
+        &FrameColumnGrids::for_frame(roster, tree, u16::MAX),
     );
 }
 
 fn frame_draw_contents(
     buffer: &mut Buffer,
-    roster: &Roster,
+    roster: &VisibleRoster,
     content: &TileContent,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
     grids: &FrameColumnGrids,
 ) {
     match content {
-        TileContent::Summary => frame_draw_summary(
-            buffer,
-            roster,
-            inner,
-            ground,
-            hidden_when_idle,
-            &grids.summary.0,
-        ),
+        TileContent::Summary => frame_draw_summary(buffer, roster, inner, ground, &grids.summary.0),
         TileContent::Group(id) => {
-            frame_draw_group(
-                buffer,
-                roster,
-                id,
-                inner,
-                ground,
-                hidden_when_idle,
-                &grids.commands.0,
-            );
+            frame_draw_group(buffer, roster, id, inner, ground, &grids.commands.0);
         },
         TileContent::Empty(_) => {},
     }
@@ -1556,16 +1507,17 @@ fn draw_summary(
     roster: &Roster,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) {
+    let visible = roster.clone().visible(hidden_commands);
+    let roster = &visible;
     frame_draw_summary(
         buffer,
         roster,
         inner,
         ground,
-        hidden_when_idle,
-        &FrameColumnGrids::for_frame(roster, hidden_when_idle, tree, inner.height)
+        &FrameColumnGrids::for_frame(roster, tree, inner.height)
             .summary
             .0,
     );
@@ -1573,69 +1525,22 @@ fn draw_summary(
 
 fn frame_draw_summary(
     buffer: &mut Buffer,
-    roster: &Roster,
+    roster: &VisibleRoster,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
     grid: &FrameTableColumnGrid,
 ) {
-    let rows = summary_rows(roster, hidden_when_idle);
-    frame_draw_process_table(
-        buffer,
-        inner,
-        &rows.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-        ground,
-        PinnedGroup::Unpinned,
-        grid,
-    );
+    let rows = summary_rows(roster);
+    frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid);
 }
 
-/// Every row the summary draws: one per command, and for an active
-/// driver the commands it is driving instead.
-///
-/// A driver `commands.hidden_when_idle` names gives up its own row while
-/// it has work beneath it, the same as [`TrackedGroup::leads_as_ancestor`]
-/// gives it up in the driver's cell. The invocations it drives say where
-/// the work is, from the directories they are building in. With no such
-/// invocation, its own row remains so the summary still reports that the
-/// driver is running.
-///
-/// Every other command gives its lead row and nothing under it. What a
-/// command started is its cell's business -- one `cargo nextest run`
-/// whose suite runs `cargo mend` per case would otherwise put every one
-/// of them in the summary and bury the handful of commands actually
-/// worth reading. The lead carries the reading either way, since a row
-/// takes the state of the nearest capture at or above it.
-///
-/// Read by [`frame_draw_summary`] and by [`Cells::demands`] both, so the cell is
-/// measured over exactly the rows it goes on to lay out.
-///
-/// Promoted copies read the worker's subtree total while the roster retains
-/// the command table's individual invocation measurements and row display state.
-fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<Cow<'a, TrackedRow>> {
-    let mut rows = Vec::new();
-    for group in roster.groups() {
-        if group.leads_as_ancestor(hidden_when_idle) {
-            let before = rows.len();
-            rows.extend(
-                group
-                    .rows()
-                    .skip(1)
-                    .filter(|row| !row.process.nested)
-                    .map(Cow::Borrowed),
-            );
-            if rows.len() == before {
-                rows.push(Cow::Borrowed(&group.lead));
-            }
-        } else {
-            rows.push(Cow::Borrowed(&group.lead));
-        }
-    }
-    rows
+/// One lead per visible command group, shared by measurement and drawing.
+fn summary_rows(roster: &VisibleRoster) -> Vec<&TrackedRow> {
+    roster.groups().iter().map(|group| &group.lead).collect()
 }
 
 /// The summary's memory total: every running command's group total.
-fn memory_total(roster: &Roster) -> SummaryMemoryTotal {
+fn memory_total(roster: &VisibleRoster) -> SummaryMemoryTotal {
     let mut running_groups = 0usize;
     let mut unreadable_groups = 0usize;
     let mut bytes = 0u64;
@@ -1719,13 +1624,7 @@ fn run_color(kind: LabelRunKind) -> Color {
     }
 }
 
-/// One command's own cell: what launched the command, then every
-/// invocation the summary put behind that command's single row.
-///
-/// The command itself is usually the first of those rows. A driver
-/// that `commands.hidden_when_idle` names is the exception -- see
-/// [`crate::roster::TrackedGroup::leads_as_ancestor`] -- and closes the chain instead,
-/// leaving the table to the invocations the cell was opened for.
+/// One visible command's ancestry and invocation table.
 #[cfg(test)]
 fn draw_group(
     buffer: &mut Buffer,
@@ -1733,17 +1632,18 @@ fn draw_group(
     id: &InvocationId,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
     tree: ProcessTree,
 ) {
+    let visible = roster.clone().visible(hidden_commands);
+    let roster = &visible;
     frame_draw_group(
         buffer,
         roster,
         id,
         inner,
         ground,
-        hidden_when_idle,
-        &FrameColumnGrids::new(roster, hidden_when_idle, tree)
+        &FrameColumnGrids::for_frame(roster, tree, u16::MAX)
             .commands
             .0,
     );
@@ -1751,33 +1651,19 @@ fn draw_group(
 
 fn frame_draw_group(
     buffer: &mut Buffer,
-    roster: &Roster,
+    roster: &VisibleRoster,
     id: &InvocationId,
     inner: Rect,
     ground: Color,
-    hidden_when_idle: &[String],
     grid: &FrameTableColumnGrid,
 ) {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
         return;
     };
-    let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
-    let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let ancestry = drawn_ancestry(group, leads_as_ancestor, grid.tree);
-    // Where the driver stands at the foot of its own chain, that is
-    // where its pid is written, and the rows pointing at it in the
-    // table below need it in the colour they are pointing with.
-    let foot = if leads_as_ancestor {
-        match group.lead.family() {
-            FamilyHead::Heads(family) => AncestryFoot::ColoredCommand(theme::family_color(family)),
-            FamilyHead::NoChildren => AncestryFoot::PlainCommand,
-        }
-    } else {
-        AncestryFoot::Other
-    };
-    // The lead's own fade goes into the block whether or not it is a
-    // row there: the chain stands over the whole cell, and the cell
-    // goes out when the command does.
+
+    let rows: Vec<&TrackedRow> = group.rows().collect();
+    let ancestry = drawn_ancestry(group, grid.tree);
+    // The chain and table fade together when their command finishes.
     let faded = group_fade(group, &rows);
     // The same measurement [`frame_group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
@@ -1791,10 +1677,9 @@ fn frame_draw_group(
     let used = draw_ancestry_source(
         buffer,
         inner,
-        AncestrySource::for_group(&ancestry, group, leads_as_ancestor, grid.tree),
+        AncestrySource::for_group(&ancestry, group, grid.tree),
         faded,
         ground,
-        foot,
         table_rows,
     );
     let table = Rect {
@@ -1802,9 +1687,7 @@ fn frame_draw_group(
         height: inner.height.saturating_sub(used),
         ..inner
     };
-    // The directory pinned to the top of the cell is the command's own,
-    // drawn as a row there or not: the invocations under a driver run
-    // wherever the work is, and none of those is what the cell is about.
+    // The command's directory stays above its invocation table.
     let table_grid = table_grid_after_ancestry(grid, used);
     frame_draw_process_table(
         buffer,
@@ -1831,9 +1714,7 @@ fn table_grid_after_ancestry(
     }
 }
 
-/// The steps `group`'s cell puts above its table: its chain, closed by
-/// the command itself where the command is a driver, with the steps
-/// that only passed something through taken out.
+/// The steps above the group's table, omitting pass-through ancestors.
 ///
 /// Read here rather than off [`crate::roster::TrackedGroup::ancestry`]
 /// directly so the cell's height is asked for against the steps it will
@@ -1842,42 +1723,33 @@ fn table_grid_after_ancestry(
 ///
 /// Short view names the nearest session runner by executable file name.
 /// A chain consisting only of shells and wrappers retains its known steps.
-fn drawn_ancestry(
-    group: &TrackedGroup,
-    leads_as_ancestor: bool,
-    tree: ProcessTree,
-) -> AncestryWalk<Ancestor> {
-    let mut chain = group.ancestry().as_slice().to_vec();
-    if leads_as_ancestor {
-        chain.push(as_ancestor(&group.lead.process));
-    }
+fn drawn_ancestry(group: &TrackedGroup, tree: ProcessTree) -> AncestryWalk<Ancestor> {
+    let chain = group.ancestry().as_slice().to_vec();
     let chain = match tree {
         ProcessTree::Long => carried(chain),
         ProcessTree::Short => {
-            let runner = chain.iter().rev().find(|ancestor| {
-                let program = ancestor
-                    .command
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default();
-                let name = Path::new(program)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(program)
-                    .trim_start_matches('-');
-                !TRANSPARENT_PROCESS_NAMES.contains(&name)
-                    && !EXEC_WRAPPER_PROCESS_NAMES.contains(&name)
-            });
-            match runner {
-                Some(runner) if leads_as_ancestor && runner.pid == group.lead.process.pid => {
-                    vec![Ancestor {
-                        command: displayed_short_name(&group.lead.process.command).words,
-                        ..runner.clone()
-                    }]
-                },
-                Some(runner) => vec![shortened(runner)],
-                None => carried(chain).iter().map(shortened).collect(),
-            }
+            let runner = chain
+                .iter()
+                .rev()
+                .find(|ancestor| {
+                    let program = ancestor
+                        .command
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default();
+                    let name = Path::new(program)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(program)
+                        .trim_start_matches('-');
+                    !TRANSPARENT_PROCESS_NAMES.contains(&name)
+                        && !EXEC_WRAPPER_PROCESS_NAMES.contains(&name)
+                })
+                .map(shortened);
+            runner.map_or_else(
+                || carried(chain).iter().map(shortened).collect(),
+                |runner| vec![runner],
+            )
         },
     };
     match group.ancestry() {
@@ -1896,18 +1768,6 @@ fn shortened(ancestor: &Ancestor) -> Ancestor {
     }
 }
 
-/// A command as the last step of its own cell's chain: its pid, and the
-/// whole line it was typed as.
-fn as_ancestor(process: &CargoProcess) -> Ancestor {
-    Ancestor {
-        pid:            process.pid,
-        command:        displayed_command(&process.command, SummaryDetail::Full, ProcessTree::Long),
-        // The command is what the chain is a chain *to*, so it is never
-        // one of the steps the chain passes through.
-        passes_through: false,
-    }
-}
-
 /// The steps of `chain` a cell draws: everything that started
 /// something, plus whatever stands at the foot.
 ///
@@ -1917,11 +1777,6 @@ fn as_ancestor(process: &CargoProcess) -> Ancestor {
 /// a command run by hand from one an editor or an agent ran. Every
 /// shell further up did only pass a command through, and says no more
 /// than that a terminal was involved.
-///
-/// Which step is the foot is why this runs here rather than in the
-/// scan: a driver closes its own cell's chain, and that puts the
-/// driver at the foot and the shell that started it back among the
-/// steps passed through.
 fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
     let last = chain.len().saturating_sub(1);
     chain
@@ -1939,23 +1794,6 @@ fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
 /// The block fades the way a heading does -- with the least-faded row
 /// under it -- so it holds its colour while a single invocation in the
 /// cell is still running, and sinks with the cell when none is.
-///
-/// A pid here is drawn the way a pid in the table below is: the foot of
-/// the chain is the very number the first row's `parent` cell names, so
-/// the two are read as one thing or not at all. Where that foot heads a
-/// family, `foot` carries the colour its `parent` cells point with; the
-/// rest of the chain heads nothing, and takes the same plain text
-/// [`pid_style`] leaves an unfamilied pid in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AncestryFoot {
-    /// The lead command closes its own chain with a family colour.
-    ColoredCommand(Color),
-    /// The lead command closes its own chain without a family colour.
-    PlainCommand,
-    /// A shell or other ordinary ancestor closes the chain.
-    Other,
-}
-
 #[cfg(test)]
 fn draw_ancestry(
     buffer: &mut Buffer,
@@ -1963,7 +1801,6 @@ fn draw_ancestry(
     ancestry: &[Ancestor],
     faded: u8,
     ground: Color,
-    foot: AncestryFoot,
     table: usize,
 ) -> u16 {
     draw_ancestry_source(
@@ -1976,7 +1813,6 @@ fn draw_ancestry(
         },
         faded,
         ground,
-        foot,
         table,
     )
 }
@@ -1987,7 +1823,6 @@ fn draw_ancestry_source(
     source: AncestrySource<'_>,
     faded: u8,
     ground: Color,
-    foot: AncestryFoot,
     table: usize,
 ) -> u16 {
     let area = cleared(area);
@@ -1999,32 +1834,23 @@ fn draw_ancestry_source(
     }
     let pid = blend_color(text_default(), ground, faded);
     let command = cut_mark_ink(ground, faded);
-    let last = levels.len().saturating_sub(1);
     let indentation = AncestryIndentation::of(&levels);
     let mut blocks: Vec<Vec<Line<'static>>> = levels
         .iter()
         .enumerate()
         .map(|(level, ancestor)| {
-            let ink = match foot {
-                AncestryFoot::ColoredCommand(color) if level == last => {
-                    blend_color(color, ground, faded)
-                },
-                AncestryFoot::ColoredCommand(_)
-                | AncestryFoot::PlainCommand
-                | AncestryFoot::Other => pid,
-            };
             if matches!(source.wrapping, AncestryWrapping::SingleRow) {
                 vec![short_ancestry_line(
                     *ancestor,
                     level,
                     area.width,
-                    ink,
+                    pid,
                     command,
                     &indentation,
                     source.visibility,
                 )]
             } else {
-                ancestry_lines(*ancestor, level, area.width, ink, command, &indentation)
+                ancestry_lines(*ancestor, level, area.width, pid, command, &indentation)
             }
         })
         .collect();
@@ -2457,20 +2283,17 @@ impl<'a> AncestrySource<'a> {
     fn for_group(
         walk: &'a AncestryWalk<Ancestor>,
         group: &TrackedGroup,
-        leads_as_ancestor: bool,
         tree: ProcessTree,
     ) -> Self {
         let mut source = Self::for_tree(walk, tree);
         let hidden = tree == ProcessTree::Short
-            && match walk.as_slice().last() {
-                Some(kept) if leads_as_ancestor => kept.pid != group.lead.process.pid,
-                Some(kept) => group
+            && walk.as_slice().last().is_some_and(|kept| {
+                group
                     .ancestry()
                     .as_slice()
                     .last()
-                    .is_some_and(|last| last.pid != kept.pid),
-                None => false,
-            };
+                    .is_some_and(|last| last.pid != kept.pid)
+            });
         source.visibility = match (walk, hidden) {
             (AncestryWalk::Ended(_), false) => AncestryVisibility::Whole,
             (AncestryWalk::Ended(_), true) => AncestryVisibility::LevelsHidden,
@@ -3173,7 +2996,7 @@ impl<'a> ProcessRowValues<'a> {
 }
 
 /// Metadata widths held for the lifetime of the terminal session.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SessionColumnWidths {
     cpu:      u16,
     memory:   u16,
@@ -3274,40 +3097,27 @@ struct FrameSummaryColumnGrid(FrameTableColumnGrid);
 struct FrameColumnGrids {
     /// Every row belonging to a command cell participates in this grid.
     commands: FrameCommandColumnGrid,
-    /// Only promoted summary rows participate in this grid.
+    /// Only visible summary rows participate in this grid.
     summary:  FrameSummaryColumnGrid,
 }
 
 impl FrameColumnGrids {
     #[cfg(test)]
-    fn new(roster: &Roster, hidden_when_idle: &[String], tree: ProcessTree) -> Self {
-        Self::for_frame(roster, hidden_when_idle, tree, u16::MAX)
+    fn new(roster: &Roster, hidden_commands: &[String], tree: ProcessTree) -> Self {
+        Self::for_frame(&roster.clone().visible(hidden_commands), tree, u16::MAX)
     }
 
     /// Fit intrinsic widths once over the rows this frame can possibly draw.
-    fn for_frame(
-        roster: &Roster,
-        hidden_when_idle: &[String],
-        tree: ProcessTree,
-        height: u16,
-    ) -> Self {
+    fn for_frame(roster: &VisibleRoster, tree: ProcessTree, height: u16) -> Self {
         let mut command_rows = Vec::new();
         let mut command_tables = Vec::new();
         let mut command_progress = Vec::new();
         let mut parent_links = AncestryParentLinks::default();
-        let tiled_ids = roster.tiled_ids(hidden_when_idle);
         for group in roster.groups() {
-            if !tiled_ids.contains(&group.id) {
-                continue;
-            }
-            let rows: Vec<_> = group
-                .rows()
-                .skip(usize::from(group.leads_as_ancestor(hidden_when_idle)))
-                .collect();
+            let rows: Vec<_> = group.rows().collect();
             command_progress.extend(invocation_progress_rows(&rows, TableKind::Command));
             if tree == ProcessTree::Short {
-                let ancestry =
-                    drawn_ancestry(group, group.leads_as_ancestor(hidden_when_idle), tree);
+                let ancestry = drawn_ancestry(group, tree);
                 for row in &rows {
                     if let VisibleParent::Ancestor(pid) = row.process.parent
                         && ancestry
@@ -3324,8 +3134,7 @@ impl FrameColumnGrids {
             command_tables.push(possible.clone());
             command_rows.extend(possible);
         }
-        let summary = summary_rows(roster, hidden_when_idle);
-        let summary: Vec<_> = summary.iter().map(AsRef::as_ref).collect();
+        let summary = summary_rows(roster);
         let summary_progress = invocation_progress_rows(&summary, TableKind::Summary);
         let summary_groups = group_by_path(&summary, PinnedGroup::Unpinned);
         let summary = possible_frame_rows(&summary_groups, height);
@@ -3357,7 +3166,7 @@ impl FrameColumnGrids {
             grid.intrinsic_widths[COMPILER_COLUMN] =
                 grid.intrinsic_widths[COMPILER_COLUMN].max(roster.column_widths().compiler);
         }
-        if !tiled_ids.is_empty() {
+        if !roster.groups().is_empty() {
             summary.separation = DirectorySeparation::YieldEarliest;
         }
         commands.fit_planned_compilers(&command_rows);
@@ -3921,7 +3730,7 @@ impl FrameTableColumnGrid {
         })
     }
 
-    /// Choose this table's gap after its column reductions, as main does.
+    /// Choose this table's gap after its column reductions.
     fn preferred_column_spacing(&self, width: u16) -> u16 {
         let fitted = self.columns_for_command_name(width);
         table_column_spacing(
@@ -6210,10 +6019,12 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
 #[cfg(test)]
 pub(crate) fn summary_cpu_for_test(
     roster: &Roster,
-    hidden_when_idle: &[String],
+    hidden_commands: &[String],
 ) -> Vec<(u32, Measurement<String>)> {
-    let summary = summary_rows(roster, hidden_when_idle);
-    let rows: Vec<_> = summary.iter().map(AsRef::as_ref).collect();
+    let visible = roster.clone().visible(hidden_commands);
+    let roster = &visible;
+    let summary = summary_rows(roster);
+    let rows = summary;
     let contributions: Vec<_> = roster
         .groups()
         .iter()
@@ -6239,6 +6050,7 @@ pub(crate) fn summary_cpu_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::TILE_ROWS_CONTENT_LABEL;
     std::thread_local! {
         /// Intrinsic demand queries made by the live frame on this thread.
         pub(super) static FRAME_DEMAND_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -6294,6 +6106,7 @@ mod tests {
     use crate::census::scan::ProcessField;
     use crate::census::scan::ProcessObservation;
     use crate::census::scan::ProcessObservations;
+    use crate::config::Config;
     use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::LARGE_TABLE_TEST_AREA;
     use crate::constants::LARGE_TABLE_TEST_COMMAND;
@@ -6835,7 +6648,7 @@ mod tests {
             toml::from_str::<crate::config::TilesConfig>("initial_rows = 12")
                 .expect("tile config")
                 .initial_rows;
-        app.loaded_config.config.commands.hidden_when_idle.clear();
+        app.loaded_config.config.commands.hidden.clear();
         app.tree = tree;
         app.roster = Roster::for_test(SessionColumnWidths::for_machine(
             64,
@@ -7312,7 +7125,7 @@ mod tests {
         let roster = forty_column_summary_roster();
         let area = Rect::new(0, 0, 40, 49);
         let sccache = SccacheStats::new();
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         let cells = Cells::new(&roster, &hidden, ProcessTree::Short, &sccache);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placements = grid.placements(
@@ -7433,7 +7246,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(&roster, &[], ProcessTree::Long, &stats, 50);
+        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 50);
         let area = Rect::new(0, 0, 200, 50);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placement = grid
@@ -7490,7 +7303,7 @@ mod tests {
             .collect();
         app.roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(&app.roster, &[], ProcessTree::Short, &stats, 120);
+        let cells = Cells::for_frame(app.roster.visible(&[]), ProcessTree::Short, &stats, 120);
         let area = Rect::new(0, 0, 46, 30);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -7648,7 +7461,7 @@ mod tests {
         .collect();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(&roster, &[], ProcessTree::Long, &stats, 32);
+        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 32);
         let allocations: Vec<_> = roster
             .groups()
             .iter()
@@ -7669,9 +7482,9 @@ mod tests {
 
     #[test]
     fn blocked_frames_keep_ordinary_cell_gaps_at_two_hundred_columns() {
-        let app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 4_180_000);
+        let mut app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 4_180_000);
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(&app.roster, &[], ProcessTree::Short, &stats, 120);
+        let cells = Cells::for_frame(app.roster.visible(&[]), ProcessTree::Short, &stats, 120);
         let area = Rect::new(0, 0, 198, 8);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -7869,7 +7682,7 @@ mod tests {
         }
         {
             let stats = SccacheStats::default();
-            let cells = Cells::for_frame(&app.roster, &[], tree, &stats, height);
+            let cells = Cells::for_frame(app.roster.visible(&[]), tree, &stats, height);
             cells.grids.commands.0.row_end.set(TableRowEnd::Reserved);
             cells.grids.summary.0.row_end.set(TableRowEnd::Reserved);
             assert_main_state_columns(&cells, shot_width, &mut failures);
@@ -8245,8 +8058,7 @@ mod tests {
         let stats = SccacheStats::default();
         let area = LARGE_TABLE_TEST_AREA;
         let cells = Cells::for_frame(
-            &roster,
-            &[],
+            roster.visible(&[]),
             ProcessTree::Short,
             &stats,
             area.height.saturating_sub(3),
@@ -8997,15 +8809,7 @@ mod tests {
         )];
         let area = Rect::new(0, 0, 44, 1);
         let mut buffer = Buffer::empty(area);
-        draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestors,
-            0,
-            Color::Reset,
-            AncestryFoot::Other,
-            0,
-        );
+        draw_ancestry(&mut buffer, area, &ancestors, 0, Color::Reset, 0);
         let line = buffer_line(&buffer, 0);
         let mark = line.find(ELISION).unwrap();
         assert!(!line[..mark].ends_with(' '), "{line}");
@@ -9956,7 +9760,7 @@ mod tests {
                 &roster,
                 &TileContent::Summary,
                 content,
-                &hidden_when_idle(),
+                &hidden_commands(),
                 ProcessTree::Long,
             );
             let spare = placements.iter().any(|placement| {
@@ -10205,9 +10009,9 @@ mod tests {
 
     #[test]
     fn a_height_cut_keeps_its_hidden_childs_compiler_column() {
-        let roster = reading_scope_roster();
+        let mut roster = reading_scope_roster();
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(&roster, &[], ProcessTree::Long, &stats, 3);
+        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 3);
         let area = Rect::new(0, 0, 200, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(
@@ -10326,9 +10130,9 @@ mod tests {
 
     #[test]
     fn a_summary_alone_uses_its_last_row_for_a_separator_before_its_foot() {
-        let roster = directory_rich_roster(&[1; 26]);
+        let mut roster = directory_rich_roster(&[1; 26]);
         let stats = SccacheStats::new();
-        let cells = Cells::for_frame(&roster, &[], ProcessTree::Short, &stats, 46);
+        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Short, &stats, 46);
         let area = Rect::new(0, 0, 40, 49);
         let mut buffer = Buffer::empty(area);
         let mut grid = TileGrid::new();
@@ -10561,7 +10365,7 @@ mod tests {
         );
         let mut roster = Roster::new();
         roster.observe(CensusSequence::default().sample(&records), Instant::now());
-        let hidden = vec!["p20driver".to_string()];
+        let hidden = Vec::new();
         let area = Rect::new(0, 0, 160, 12);
         let mut buffer = Buffer::empty(area);
         draw_group(
@@ -10577,7 +10381,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("200 cargo p20driver")),
+                .any(|line| line.contains("200") && line.contains("cargo p20driver")),
             "{lines:#?}"
         );
         let line = lines
@@ -10596,8 +10400,9 @@ mod tests {
             id:  lead.invocation_id.clone(),
             pid: lead.pid,
         };
-        let roster = roster_of(lead, vec![child]);
-        let source = roster.groups()[0].rows().nth(1).expect("child row");
+        let mut roster = roster_of(lead, vec![child]);
+        let visible = roster.visible(&[]);
+        let source = visible.groups()[0].rows().nth(1).expect("child row");
         assert!(matches!(source.parent_family(), ParentFamily::Member(_)));
         let area = Rect::new(0, 0, 160, 6);
         let mut buffer = Buffer::empty(area);
@@ -10649,8 +10454,8 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_driver_keeps_the_parent_before_its_child_under_a_cut() {
-        let driver = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
+    fn an_unlisted_lead_keeps_the_parent_before_its_child_under_a_cut() {
+        let driver = invocation(4100, &["nextest", "run"]);
         let mut parent = invocation(4200, &["nextest", "run"]);
         parent.parent = VisibleParent::Invocation {
             id:  driver.invocation_id.clone(),
@@ -10662,7 +10467,7 @@ mod tests {
             pid: parent.pid,
         };
         let roster = roster_with_ancestry(driver, vec![child, parent], vec![]);
-        for height in [3, 12] {
+        for height in [4, 12] {
             let area = Rect::new(0, 0, 160, height);
             let mut buffer = Buffer::empty(area);
             draw_group(
@@ -10671,16 +10476,14 @@ mod tests {
                 &InvocationId::for_test(4100),
                 area,
                 Color::Reset,
-                &hidden_when_idle(),
+                &hidden_commands(),
                 ProcessTree::Long,
             );
             let lines = buffer_rows(&buffer);
-            let parent_row = lines
-                .iter()
-                .position(|line| line.contains("cargo nextest run"));
+            let parent_row = lines.iter().position(|line| line.contains("4200"));
             let child_row = lines.iter().position(|line| line.contains("cargo check"));
             assert!(parent_row.is_some(), "{height}: {lines:#?}");
-            if height == 3 {
+            if height == 4 {
                 assert!(child_row.is_none(), "{lines:#?}");
                 let y = u16::try_from(parent_row.unwrap()).unwrap();
                 assert_eq!(
@@ -10742,7 +10545,7 @@ mod tests {
                 .0,
         );
         assert_eq!(
-            group_height(&roster.groups()[0], area.width, &[], ProcessTree::Short),
+            group_height(&roster.groups()[0], area.width, ProcessTree::Short),
             table_rows + 2
         );
     }
@@ -10754,15 +10557,7 @@ mod tests {
             let area = Rect::new(0, 0, width, 2);
             let mut buffer = Buffer::empty(area);
             let ground = pane_background(true);
-            draw_ancestry(
-                &mut buffer,
-                area,
-                &ancestors,
-                160,
-                ground,
-                AncestryFoot::Other,
-                1,
-            );
+            draw_ancestry(&mut buffer, area, &ancestors, 160, ground, 1);
             let marker = (0..width)
                 .find(|&x| buffer[(x, 0)].symbol() == ELISION)
                 .expect("cut mark");
@@ -10788,7 +10583,7 @@ mod tests {
         let sccache = SccacheStats::new();
         for tree in [ProcessTree::Short, ProcessTree::Long] {
             let area = Rect::new(0, 0, 46, 16);
-            let cells = Cells::for_frame(&roster, &[], tree, &sccache, area.height);
+            let cells = Cells::for_frame(roster.visible(&[]), tree, &sccache, area.height);
             let mut buffer = Buffer::empty(area);
             cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
             let text = buffer_rows(&buffer).join("\n");
@@ -10865,7 +10660,7 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::for_frame(&roster, &[], ProcessTree::Long, &sccache, 3);
+        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &sccache, 3);
         let area = Rect::new(0, 0, 160, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
@@ -10992,7 +10787,7 @@ mod tests {
         );
         let sccache = SccacheStats::new();
         let area = Rect::new(1, 1, width - 2, 8);
-        let cells = Cells::for_frame(&roster, &[], tree, &sccache, area.height);
+        let cells = Cells::for_frame(roster.visible(&[]), tree, &sccache, area.height);
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, 10));
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         buffer
@@ -11056,15 +10851,7 @@ mod tests {
         for budget in 2..=4 {
             let area = Rect::new(0, 0, 80, budget);
             let mut cut = Buffer::empty(area);
-            draw_ancestry(
-                &mut cut,
-                area,
-                &ancestors,
-                160,
-                pane_background(true),
-                AncestryFoot::Other,
-                0,
-            );
+            draw_ancestry(&mut cut, area, &ancestors, 160, pane_background(true), 0);
             let whole_area = Rect::new(0, 0, 80, budget + 1);
             let mut whole = Buffer::empty(whole_area);
             draw_ancestry(
@@ -11073,7 +10860,6 @@ mod tests {
                 &ancestors[..usize::from(budget)],
                 160,
                 pane_background(true),
-                AncestryFoot::Other,
                 0,
             );
             let pid_column = |buffer: &Buffer, y| {
@@ -11110,15 +10896,7 @@ mod tests {
             let area = Rect::new(0, 0, 80, budget);
             let mut buffer = Buffer::empty(area);
             assert_eq!(
-                draw_ancestry(
-                    &mut buffer,
-                    area,
-                    &ancestors,
-                    160,
-                    pane_background(true),
-                    AncestryFoot::Other,
-                    0,
-                ),
+                draw_ancestry(&mut buffer, area, &ancestors, 160, pane_background(true), 0,),
                 budget
             );
             let mut previous = None;
@@ -11169,15 +10947,7 @@ mod tests {
         let plan = source.plan(area, 0);
         let expected = source.height(&plan.levels, area.width);
         let mut buffer = Buffer::empty(area);
-        let used = draw_ancestry_source(
-            &mut buffer,
-            area,
-            source,
-            160,
-            pane_background(true),
-            AncestryFoot::Other,
-            0,
-        );
+        let used = draw_ancestry_source(&mut buffer, area, source, 160, pane_background(true), 0);
         assert_eq!(usize::from(used), expected + usize::from(plan.gap));
         let mut command_start = 0;
         for y in 0..u16::try_from(expected).unwrap() {
@@ -11472,7 +11242,7 @@ mod tests {
             ),
         ] {
             let roster = roster_with_ancestry(invocation(20, &["check"]), vec![], chain);
-            let ancestors = drawn_ancestry(&roster.groups()[0], false, ProcessTree::Short);
+            let ancestors = drawn_ancestry(&roster.groups()[0], ProcessTree::Short);
             assert_eq!(ancestors.as_slice().len(), 1);
             assert_eq!(
                 format!(
@@ -11497,7 +11267,7 @@ mod tests {
         ];
         let roster = roster_with_ancestry(invocation(20, &["check"]), vec![], chain.clone());
         assert_eq!(
-            drawn_ancestry(&roster.groups()[0], false, ProcessTree::Long).as_slice(),
+            drawn_ancestry(&roster.groups()[0], ProcessTree::Long).as_slice(),
             chain.as_slice()
         );
     }
@@ -11830,13 +11600,13 @@ mod tests {
     }
 
     #[test]
-    fn a_driver_keeps_its_profile_at_the_foot_of_its_chain() {
+    fn an_unlisted_driver_keeps_its_profile_in_its_table() {
         let roster = roster_of(
             invocation(500, &[PORT_SUBCOMMAND_NAME, "--release"]),
             vec![invocation(501, &["build"])],
         );
         let sccache = SccacheStats::new();
-        let hidden = hidden_when_idle();
+        let hidden = Vec::new();
         for tree in [ProcessTree::Short, ProcessTree::Long] {
             let cells = Cells::new(&roster, &hidden, tree, &sccache);
             let area = Rect::new(0, 0, 160, 16);
@@ -11944,15 +11714,7 @@ mod tests {
         let ancestry = vec![ancestor(100, &"root ".repeat(20)), ancestor(200, "nearest")];
         let area = Rect::new(0, 0, 40, 5);
         let mut buffer = Buffer::empty(area);
-        draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestry,
-            0,
-            Color::Reset,
-            AncestryFoot::Other,
-            3,
-        );
+        draw_ancestry(&mut buffer, area, &ancestry, 0, Color::Reset, 3);
         assert!(buffer_line(&buffer, 0).contains("100"));
         assert!(buffer_line(&buffer, 0).ends_with(ELISION));
         assert!(buffer_line(&buffer, 1).contains("200 nearest"));
@@ -11962,15 +11724,7 @@ mod tests {
     fn the_ancestry_mark_takes_its_rows_faded_ink() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 2));
         let area = buffer.area;
-        draw_ancestry(
-            &mut buffer,
-            area,
-            &chain(6),
-            160,
-            pane_background(true),
-            AncestryFoot::Other,
-            1,
-        );
+        draw_ancestry(&mut buffer, area, &chain(6), 160, pane_background(true), 1);
         let marker = (0..area.width)
             .find(|&x| buffer[(x, 0)].symbol() == ELISION)
             .unwrap();
@@ -11986,15 +11740,7 @@ mod tests {
         for available in 1..=3 {
             let area = Rect::new(0, 0, 80, available + 3);
             let mut buffer = Buffer::empty(area);
-            let used = draw_ancestry(
-                &mut buffer,
-                area,
-                &ancestors,
-                0,
-                pane_background(false),
-                AncestryFoot::Other,
-                3,
-            );
+            let used = draw_ancestry(&mut buffer, area, &ancestors, 0, pane_background(false), 3);
             assert_eq!(used, available);
             assert_ne!(buffer_line(&buffer, used - 1), "");
         }
@@ -12200,8 +11946,9 @@ mod tests {
             id:  lead.invocation_id.clone(),
             pid: 500,
         };
-        let roster = roster_of(lead, vec![child]);
-        let group = &roster.groups()[0];
+        let mut roster = roster_of(lead, vec![child]);
+        let visible = roster.visible(&[]);
+        let group = &visible.groups()[0];
         let rows: Vec<_> = group.rows().collect();
         for (height, ink) in [
             (3, text_default()),
@@ -12738,7 +12485,7 @@ mod tests {
                 &id,
                 area,
                 Color::Reset,
-                &hidden_when_idle(),
+                &hidden_commands(),
                 ProcessTree::Long,
             ),
             TableKind::Summary => draw_summary(
@@ -12746,7 +12493,7 @@ mod tests {
                 &roster,
                 area,
                 Color::Reset,
-                &hidden_when_idle(),
+                &hidden_commands(),
                 ProcessTree::Long,
             ),
         }
@@ -12820,16 +12567,19 @@ mod tests {
     /// A complete total adds each live group's aggregate memory.
     #[test]
     fn summary_memory_total_is_complete_when_every_running_group_is_readable() {
-        let roster = memory_roster(&[
+        let mut roster = memory_roster(&[
             (4100, Measurement::Reading(BYTES_PER_GIBIBYTE)),
             (4200, Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2)),
         ]);
 
         assert_eq!(
-            memory_total(&roster),
+            memory_total(&roster.visible(&[])),
             SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE * 5 / 2)
         );
-        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 2.5G");
+        assert_eq!(
+            summary_foot_text(memory_total(&roster.visible(&[])).foot()),
+            "mem 2.5G"
+        );
     }
 
     /// The light summary value reads on both its transparent and painted grounds.
@@ -12875,16 +12625,19 @@ mod tests {
         roster.observe(vec![cargo_group(live)], Instant::now());
 
         assert_eq!(
-            memory_total(&roster),
+            memory_total(&roster.visible(&[])),
             SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE)
         );
-        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G");
+        assert_eq!(
+            summary_foot_text(memory_total(&roster.visible(&[])).foot()),
+            "mem 1.0G"
+        );
     }
 
     /// Readable groups remain useful while an unreadable group marks the sum as partial.
     #[test]
     fn summary_memory_total_is_at_least_the_readable_groups() {
-        let roster = memory_roster(&[
+        let mut roster = memory_roster(&[
             (4100, Measurement::Reading(BYTES_PER_GIBIBYTE)),
             (
                 4200,
@@ -12893,31 +12646,37 @@ mod tests {
         ]);
 
         assert_eq!(
-            memory_total(&roster),
+            memory_total(&roster.visible(&[])),
             SummaryMemoryTotal::AtLeast(BYTES_PER_GIBIBYTE)
         );
-        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G+");
+        assert_eq!(
+            summary_foot_text(memory_total(&roster.visible(&[])).foot()),
+            "mem 1.0G+"
+        );
     }
 
     /// Running groups with no readable memory retain their distinct state.
     #[test]
     fn summary_memory_total_names_when_no_command_is_readable() {
-        let roster = memory_roster(&[(
+        let mut roster = memory_roster(&[(
             4100,
             Measurement::Unavailable(MeasurementAbsence::ReadFailed),
         )]);
 
         assert_eq!(
-            memory_total(&roster),
+            memory_total(&roster.visible(&[])),
             SummaryMemoryTotal::NoReadableCommands
         );
-        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "");
+        assert_eq!(
+            summary_foot_text(memory_total(&roster.visible(&[])).foot()),
+            ""
+        );
     }
 
     /// An empty roster has no memory total.
     #[test]
     fn summary_memory_total_names_when_nothing_is_running() {
-        let total = memory_total(&Roster::new());
+        let total = memory_total(&Roster::new().visible(&[]));
 
         assert_eq!(total, SummaryMemoryTotal::NoRunningCommands);
         assert_eq!(total.foot(), SummaryFoot::Empty);
@@ -13266,15 +13025,7 @@ mod tests {
             ancestor(3_577_444, "sh"),
         ];
 
-        let used = draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestry,
-            0,
-            pane_background(false),
-            AncestryFoot::Other,
-            1,
-        );
+        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false), 1);
 
         assert_eq!(used, 1, "the cut ancestry yields its gap");
         assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION} 3577444 sh"));
@@ -13302,15 +13053,7 @@ mod tests {
         let area = buffer.area;
         let ancestry = vec![ancestor(3334, "systemd"), ancestor(4445, "sh")];
 
-        let used = draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestry,
-            0,
-            pane_background(false),
-            AncestryFoot::Other,
-            1,
-        );
+        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false), 1);
 
         assert_eq!(used, 1);
         assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION} 4445 sh"));
@@ -13351,7 +13094,6 @@ mod tests {
                 &[],
                 0,
                 pane_background(false),
-                AncestryFoot::Other,
                 usize::from(area.height - area.height / 2),
             ),
             0
@@ -13376,7 +13118,6 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -13426,15 +13167,7 @@ mod tests {
             "cargo nextest run --workspace --all-features",
         )];
 
-        draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestry,
-            0,
-            pane_background(false),
-            AncestryFoot::Other,
-            1,
-        );
+        draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false), 1);
 
         assert!(buffer_line(&buffer, 0).ends_with(ELISION));
     }
@@ -13459,15 +13192,7 @@ mod tests {
         for width in 0..=90 {
             let area = Rect::new(0, 0, width, 16);
             let mut buffer = Buffer::empty(area);
-            draw_ancestry(
-                &mut buffer,
-                area,
-                &ancestry,
-                0,
-                pane_background(false),
-                AncestryFoot::Other,
-                0,
-            );
+            draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false), 0);
             let digits: Vec<String> = (0..area.height)
                 .flat_map(|y| digit_runs(&buffer_line(&buffer, y)))
                 .collect();
@@ -13494,12 +13219,7 @@ mod tests {
         }
     }
 
-    /// The foot of the chain is the pid the first row's `parent` cell
-    /// names, so the two have to be drawn alike: the family colour
-    /// where that foot heads a family, and otherwise the same plain
-    /// text an unfamilied pid takes in the table. The column headers'
-    /// colour is what this used to draw, and it tied the chain to the
-    /// headings instead of to the rows underneath.
+    /// Ancestor pids share the table's ordinary pid ink.
     #[test]
     fn a_chain_writes_its_pids_the_way_the_table_writes_its_own() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
@@ -13513,7 +13233,6 @@ mod tests {
             &ancestry,
             0,
             ground,
-            AncestryFoot::ColoredCommand(theme::family_color(0)),
             usize::from(area.height - area.height / 2),
         );
 
@@ -13521,8 +13240,8 @@ mod tests {
         assert_ne!(buffer[(1, 0)].fg, blend_color(label_color(), ground, 0));
         assert_eq!(
             buffer[(2, 1)].fg,
-            blend_color(theme::family_color(0), ground, 0),
-            "the foot is drawn in the colour its parent cells point with"
+            blend_color(text_default(), ground, 0),
+            "the nearest ancestor has no visible cargo family"
         );
     }
 
@@ -13542,7 +13261,6 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -13569,7 +13287,6 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -13600,7 +13317,6 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -13632,7 +13348,6 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -13702,8 +13417,8 @@ mod tests {
         roster
     }
 
-    /// `commands.hidden_when_idle` as the config hands it over.
-    fn hidden_when_idle() -> Vec<String> { vec![PORT_SUBCOMMAND_NAME.to_string()] }
+    /// `commands.hidden` as the config hands it over.
+    fn hidden_commands() -> Vec<String> { vec![PORT_SUBCOMMAND_NAME.to_string()] }
 
     /// A roster carrying one command, with `rest` running under it.
     fn roster_of(lead: CargoProcess, rest: Vec<CargoProcess>) -> Roster {
@@ -13715,19 +13430,480 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_driver_keeps_one_summary_row() {
+    fn a_hidden_busy_group_does_not_take_a_visible_familys_colour() {
+        let make_family = |pid, command| {
+            let mut lead = invocation(pid, &[command]);
+            lead.managed = Measurement::Reading(1);
+            let mut child = invocation(pid + 1, &["check"]);
+            child.parent = VisibleParent::Invocation {
+                id: lead.invocation_id.clone(),
+                pid,
+            };
+            CargoGroup {
+                lead,
+                rest: vec![child],
+                ancestry: AncestryWalk::Ended(Vec::new()),
+            }
+        };
+        let mut baseline = Roster::new();
+        let mut roster = Roster::new();
+        let visible = make_family(6100, "test");
+        baseline.observe(vec![visible.clone()], Instant::now());
+        roster.observe(
+            vec![make_family(6000, PORT_SUBCOMMAND_NAME), visible],
+            Instant::now(),
+        );
+        let stats = SccacheStats::default();
+        let hidden = hidden_commands();
+        let area = Rect::new(0, 0, 160, 15);
+        let content = TileContent::Group(InvocationId::for_test(6100));
+        let mut expected = Buffer::empty(area);
+        Cells::for_frame(
+            baseline.visible(&hidden),
+            ProcessTree::Long,
+            &stats,
+            area.height,
+        )
+        .draw(&mut expected, &content, area, Color::Reset);
+        let mut actual = Buffer::empty(area);
+        Cells::for_frame(
+            roster.visible(&hidden),
+            ProcessTree::Long,
+            &stats,
+            area.height,
+        )
+        .draw(&mut actual, &content, area, Color::Reset);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_fading_siblings_parent_mark_matches_its_visible_lead() {
+        let mut lead = invocation(6100, &["test"]);
+        lead.managed = Measurement::Reading(2);
+        let mut hidden = invocation(6200, &[PORT_SUBCOMMAND_NAME]);
+        let mut sibling = invocation(6300, &["check"]);
+        for child in [&mut hidden, &mut sibling] {
+            child.parent = VisibleParent::Invocation {
+                id:  lead.invocation_id.clone(),
+                pid: lead.pid,
+            };
+        }
+        let now = Instant::now();
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![CargoGroup {
+                lead:     lead.clone(),
+                rest:     vec![hidden.clone(), sibling],
+                ancestry: AncestryWalk::Ended(Vec::new()),
+            }],
+            now,
+        );
+        lead.managed = Measurement::Reading(1);
+        roster.observe(
+            vec![CargoGroup {
+                lead,
+                rest: vec![hidden],
+                ancestry: AncestryWalk::Ended(Vec::new()),
+            }],
+            now,
+        );
+        let stats = SccacheStats::default();
+        let area = Rect::new(0, 0, 160, 15);
+        let mut buffer = Buffer::empty(area);
+        Cells::new(&roster, &hidden_commands(), ProcessTree::Long, &stats).draw(
+            &mut buffer,
+            &TileContent::Group(InvocationId::for_test(6100)),
+            area,
+            Color::Reset,
+        );
+        let lead_line = buffer_rows(&buffer)
+            .iter()
+            .position(|line| line.contains("6100"))
+            .expect("lead row");
+        let child_line = buffer_rows(&buffer)
+            .iter()
+            .position(|line| line.contains("6300"))
+            .expect("fading sibling row");
+        let lead_x = buffer_line(&buffer, u16::try_from(lead_line).unwrap())
+            .find("6100")
+            .unwrap();
+        let parent_x = buffer_line(&buffer, u16::try_from(child_line).unwrap())
+            .find("6100")
+            .expect("parent mark");
+        let lead_ink = buffer[(
+            u16::try_from(lead_x).unwrap(),
+            u16::try_from(lead_line).unwrap(),
+        )]
+            .fg;
+        let parent_ink = buffer[(
+            u16::try_from(parent_x).unwrap(),
+            u16::try_from(child_line).unwrap(),
+        )]
+            .fg;
+        assert_eq!(lead_ink, theme::family_color(0));
+        assert_eq!(parent_ink, lead_ink);
+    }
+
+    #[test]
+    fn removing_a_hidden_branch_keeps_cyclic_subtree_readings_unproven() {
+        let mut lead = memory_invocation(6100, Measurement::Reading(10));
+        let mut sibling = memory_invocation(6200, Measurement::Reading(20));
+        let mut hidden = memory_invocation(6300, Measurement::Reading(30));
+        lead.parent = VisibleParent::Invocation {
+            id:  sibling.invocation_id.clone(),
+            pid: sibling.pid,
+        };
+        sibling.parent = VisibleParent::Invocation {
+            id:  lead.invocation_id.clone(),
+            pid: lead.pid,
+        };
+        hidden.parent = VisibleParent::Invocation {
+            id:  lead.invocation_id.clone(),
+            pid: lead.pid,
+        };
+        hidden.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
+        let mut roster = roster_of(lead, vec![sibling, hidden]);
+        let visible = roster.visible(&hidden_commands());
+        assert_eq!(visible.groups()[0].rows().count(), 2);
+        for row in visible.groups()[0].rows() {
+            assert_eq!(
+                row.process.subtree_resource_use.memory,
+                Measurement::Unavailable(MeasurementAbsence::Unproven)
+            );
+            assert_eq!(
+                row.process.subtree_resource_use.cpu,
+                Measurement::Unavailable(MeasurementAbsence::Unproven)
+            );
+        }
+        let stats = SccacheStats::default();
+        let area = Rect::new(0, 0, 160, 15);
+        let cells = Cells::for_frame(visible, ProcessTree::Long, &stats, area.height);
+        let mut buffer = Buffer::empty(area);
+        cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
+        assert_eq!(
+            cells.summary_foot(),
+            SummaryMemoryTotal::NoReadableCommands.foot()
+        );
+        let text = buffer_rows(&buffer).join("\n");
+        assert!(text.contains("6100"), "{text}");
+        assert!(!text.contains("6300"), "{text}");
+    }
+
+    /// Read both saved-key spellings through the display's hidden-roster boundary.
+    fn assert_leading_options_hide_build(arguments: &[&str]) {
+        for key in ["hidden", "hidden_when_idle"] {
+            let config: Config = toml::from_str(&format!("[commands]\n{key} = [\"build\"]\n"))
+                .unwrap_or_else(|error| panic!("invalid config: {error}"));
+            let roster = roster_of(invocation(4100, arguments), Vec::new());
+            let stats = SccacheStats::default();
+            let cells = Cells::new(&roster, &config.commands.hidden, ProcessTree::Long, &stats);
+            assert_eq!(cells.demands(&[]).groups.len(), 0, "{key}: {arguments:?}");
+            let area = Rect::new(0, 0, 160, 12);
+            for content in [
+                TileContent::Summary,
+                TileContent::Group(InvocationId::for_test(4100)),
+            ] {
+                let mut buffer = Buffer::empty(area);
+                cells.draw(&mut buffer, &content, area, Color::Reset);
+                let text = buffer_rows(&buffer).join("\n");
+                assert!(!text.contains("4100"), "{key}: {arguments:?}\n{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hidden_command_stays_hidden_after_a_global_flag() {
+        for flag in [
+            "--offline",
+            "--frozen",
+            "--locked",
+            "-q",
+            "--quiet",
+            "--verbose",
+        ] {
+            assert_leading_options_hide_build(&[flag, "build"]);
+        }
+    }
+
+    #[test]
+    fn a_hidden_command_stays_hidden_after_a_separate_global_option_value() {
+        for (option, value) in [
+            ("--config", "net.offline=true"),
+            ("--color", "always"),
+            ("-Z", "unstable-options"),
+            ("-C", "/project"),
+        ] {
+            assert_leading_options_hide_build(&[option, value, "build"]);
+        }
+    }
+
+    #[test]
+    fn a_hidden_command_stays_hidden_after_an_assigned_global_option_value() {
+        for option in [
+            "--config=net.offline=true",
+            "--color=always",
+            "-Z=unstable-options",
+            "-C=/project",
+            "-Zunstable-options",
+            "-C/project",
+        ] {
+            assert_leading_options_hide_build(&[option, "build"]);
+        }
+    }
+
+    #[test]
+    fn a_hidden_command_stays_hidden_after_repeated_verbosity_flags() {
+        assert_leading_options_hide_build(&["-v", "-v", "build"]);
+        assert_leading_options_hide_build(&["-vv", "build"]);
+    }
+
+    #[test]
+    fn a_hidden_command_stays_hidden_after_a_toolchain_and_global_options() {
+        assert_leading_options_hide_build(&["+nightly", "--offline", "--color", "always", "build"]);
+    }
+
+    #[test]
+    fn a_visible_command_with_leading_global_options_still_draws() {
+        for key in ["hidden", "hidden_when_idle"] {
+            let config: Config = toml::from_str(&format!("[commands]\n{key} = [\"build\"]\n"))
+                .unwrap_or_else(|error| panic!("invalid config: {error}"));
+            let roster = roster_of(
+                invocation(
+                    4100,
+                    &["+nightly", "--offline", "--config", "build", "check"],
+                ),
+                Vec::new(),
+            );
+            let stats = SccacheStats::default();
+            let cells = Cells::new(&roster, &config.commands.hidden, ProcessTree::Long, &stats);
+            assert_eq!(
+                cells.demands(&[]).groups[0].id,
+                InvocationId::for_test(4100)
+            );
+            let area = Rect::new(0, 0, 160, 12);
+            for content in [
+                TileContent::Summary,
+                TileContent::Group(InvocationId::for_test(4100)),
+            ] {
+                let mut buffer = Buffer::empty(area);
+                cells.draw(&mut buffer, &content, area, Color::Reset);
+                let text = buffer_rows(&buffer).join("\n");
+                assert!(text.contains("4100"), "{key}\n{text}");
+                assert!(text.contains("check"), "{key}\n{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hidden_command_is_hidden_while_busy() {
+        let mut lead = memory_invocation(4100, Measurement::Reading(3 * BYTES_PER_GIBIBYTE));
+        lead.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
+        lead.subtree_resource_use.memory = Measurement::Reading(8 * BYTES_PER_GIBIBYTE);
+        let mut child = memory_invocation(4200, Measurement::Reading(5 * BYTES_PER_GIBIBYTE));
+        child.parent = VisibleParent::Invocation {
+            id:  lead.invocation_id.clone(),
+            pid: lead.pid,
+        };
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![
+                CargoGroup {
+                    lead,
+                    rest: vec![child],
+                    ancestry: AncestryWalk::Ended(Vec::new()),
+                },
+                cargo_group(memory_invocation(
+                    4300,
+                    Measurement::Reading(BYTES_PER_GIBIBYTE),
+                )),
+            ],
+            Instant::now(),
+        );
+        let hidden = hidden_commands();
+        let stats = SccacheStats::default();
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &stats);
+        let area = Rect::new(0, 0, 160, 12);
+        for content in [
+            TileContent::Summary,
+            TileContent::Group(InvocationId::for_test(4100)),
+        ] {
+            let mut buffer = Buffer::empty(area);
+            cells.draw(&mut buffer, &content, area, Color::Reset);
+            let text = buffer_rows(&buffer).join("\n");
+            assert!(!text.contains("4100"), "{text}");
+            assert!(!text.contains("4200"), "{text}");
+            if matches!(content, TileContent::Summary) {
+                assert!(text.contains("4300"), "{text}");
+            }
+        }
+        assert_eq!(
+            cells
+                .demands(&[])
+                .groups
+                .iter()
+                .map(|demand| demand.id.clone())
+                .collect::<Vec<_>>(),
+            [InvocationId::for_test(4300)]
+        );
+        assert_eq!(
+            cells.summary_foot(),
+            SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE).foot()
+        );
+    }
+
+    #[test]
+    fn a_listed_command_nested_under_an_unlisted_lead_leaves_with_its_subtree() {
+        let mut lead = memory_invocation(5100, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        lead.command = CommandText::of("cargo", &["nextest", "run"]);
+        lead.subtree_resource_use.memory = Measurement::Reading(5 * BYTES_PER_GIBIBYTE);
+        lead.managed = Measurement::Reading(4);
+        let mut hidden = memory_invocation(5200, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        hidden.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
+        hidden.parent = VisibleParent::Invocation {
+            id:  lead.invocation_id.clone(),
+            pid: lead.pid,
+        };
+        let mut child = memory_invocation(5300, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        child.parent = VisibleParent::Invocation {
+            id:  hidden.invocation_id.clone(),
+            pid: hidden.pid,
+        };
+        child.nested = true;
+        let mut grandchild = memory_invocation(5400, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        grandchild.parent = VisibleParent::Invocation {
+            id:  child.invocation_id.clone(),
+            pid: child.pid,
+        };
+        grandchild.nested = true;
+        let mut sibling = memory_invocation(5500, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        sibling.parent = VisibleParent::Invocation {
+            id:  lead.invocation_id.clone(),
+            pid: lead.pid,
+        };
+        let roster = roster_with_ancestry(
+            lead,
+            vec![grandchild, sibling, child, hidden],
+            vec![ancestor(5000, "claude")],
+        );
+        let hidden = hidden_commands();
+        let stats = SccacheStats::default();
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &stats);
+        let area = Rect::new(0, 0, 160, 20);
+        let mut buffer = Buffer::empty(area);
+        cells.draw(
+            &mut buffer,
+            &TileContent::Group(InvocationId::for_test(5100)),
+            area,
+            Color::Reset,
+        );
+        let text = buffer_rows(&buffer).join("\n");
+        for pid in [5200, 5300, 5400] {
+            assert!(!text.contains(&pid.to_string()), "{text}");
+        }
+        for pid in [5000, 5100, 5500] {
+            assert!(text.contains(&pid.to_string()), "{text}");
+        }
+        let sibling = text
+            .lines()
+            .find(|line| line.contains("5500"))
+            .expect("visible sibling row");
+        assert!(sibling.contains("5100"), "{sibling}");
+        assert!(sibling.contains("1.0G"), "{sibling}");
+        assert_eq!(
+            cells.summary_foot(),
+            SummaryMemoryTotal::Complete(2 * BYTES_PER_GIBIBYTE).foot()
+        );
+        let mut buffer = Buffer::empty(area);
+        cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
+        assert_eq!(
+            memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+            "2.0G"
+        );
+        assert!(!buffer_rows(&buffer).join("\n").contains("5200"));
+    }
+
+    #[test]
+    fn a_hidden_rows_reading_never_widens_the_retained_columns() {
+        let initial = SessionColumnWidths::for_machine(1, BYTES_PER_GIBIBYTE);
+        let visible = cargo_group(memory_invocation(
+            6100,
+            Measurement::Reading(BYTES_PER_GIBIBYTE),
+        ));
+        let mut hidden = memory_invocation(6200, Measurement::Reading(u64::MAX));
+        hidden.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
+        hidden.resource_use.cpu = Measurement::Reading(123_456_789.0);
+        hidden.resource_use.compiler = CompilerObservation::Running(Compiler {
+            name:  "rustc",
+            count: usize::MAX,
+        });
+        hidden.subtree_resource_use = hidden.resource_use.clone();
+        let mut nested = hidden.clone();
+        nested.invocation_id = InvocationId::for_test(6300);
+        nested.pid = 6300;
+        nested.parent = VisibleParent::Invocation {
+            id:  visible.lead.invocation_id.clone(),
+            pid: visible.lead.pid,
+        };
+        let nested = CargoGroup {
+            rest: vec![nested],
+            ..visible.clone()
+        };
+        let mut baseline = Roster::for_test(initial);
+        let mut roster = Roster::for_test(initial);
+        let now = Instant::now();
+        let hidden_commands = hidden_commands();
+        let stats = SccacheStats::default();
+        for scan in [
+            vec![visible.clone(), cargo_group(hidden)],
+            vec![nested],
+            vec![visible.clone()],
+        ] {
+            baseline.observe(vec![visible.clone()], now);
+            roster.observe(scan, now);
+            let expected = Cells::for_frame(
+                baseline.visible(&hidden_commands),
+                ProcessTree::Long,
+                &stats,
+                u16::MAX,
+            );
+            let actual = Cells::for_frame(
+                roster.visible(&hidden_commands),
+                ProcessTree::Long,
+                &stats,
+                u16::MAX,
+            );
+            for content in [
+                TileContent::Summary,
+                TileContent::Group(InvocationId::for_test(6100)),
+            ] {
+                let area = Rect::new(0, 0, 200, 12);
+                let mut expected_buffer = Buffer::empty(area);
+                let mut actual_buffer = Buffer::empty(area);
+                expected.draw(&mut expected_buffer, &content, area, Color::Reset);
+                actual.draw(&mut actual_buffer, &content, area, Color::Reset);
+                assert_eq!(
+                    buffer_line(&actual_buffer, 0),
+                    buffer_line(&expected_buffer, 0)
+                );
+            }
+            assert_eq!(roster.column_widths(), baseline.column_widths());
+        }
+    }
+
+    #[test]
+    fn an_idle_hidden_command_has_no_summary_row() {
         let roster = roster_of(invocation(4100, &[PORT_SUBCOMMAND_NAME]), Vec::new());
 
-        let pids = summary_cpu_for_test(&roster, &hidden_when_idle())
+        let pids = summary_cpu_for_test(&roster, &hidden_commands())
             .into_iter()
             .map(|(pid, _)| pid)
             .collect::<Vec<_>>();
 
-        assert_eq!(pids, vec![4100]);
+        assert_eq!(pids, Vec::<u32>::new());
     }
 
     #[test]
-    fn an_active_driver_summarizes_its_direct_work() {
+    fn an_active_hidden_command_has_no_summary_row_for_its_work() {
         let mut nested = invocation(4300, &["check"]);
         nested.nested = true;
         let roster = roster_of(
@@ -13735,35 +13911,12 @@ mod tests {
             vec![invocation(4200, &["build"]), nested],
         );
 
-        let pids = summary_cpu_for_test(&roster, &hidden_when_idle())
+        let pids = summary_cpu_for_test(&roster, &hidden_commands())
             .into_iter()
             .map(|(pid, _)| pid)
             .collect::<Vec<_>>();
 
-        assert_eq!(pids, vec![4200]);
-    }
-
-    #[test]
-    fn a_promoted_summary_row_draws_its_subtree_memory() {
-        let mut work = invocation(4200, &["build"]);
-        work.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
-        work.subtree_resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 1234 / 100);
-        let lead = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
-
-        let mut nested = invocation(4300, &["check"]);
-        nested.parent = VisibleParent::Invocation {
-            id:  work.invocation_id.clone(),
-            pid: work.pid,
-        };
-        nested.resource_use.memory =
-            Measurement::Reading(BYTES_PER_GIBIBYTE * 1234 / 100 - BYTES_PER_GIBIBYTE);
-        nested.nested = true;
-        let buffer = measurement_group_buffer(lead, vec![work, nested], TableKind::Summary);
-
-        assert_eq!(
-            memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
-            "12.3G"
-        );
+        assert_eq!(pids, Vec::<u32>::new());
     }
 
     /// Aggregate member samples before the roster carries them to either layout.
@@ -13889,14 +14042,14 @@ mod tests {
     #[test]
     fn a_cell_asks_for_the_rows_its_chain_actually_draws() {
         let width = 60;
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         let roster = roster_with_ancestry(
             invocation(4100, &["build"]),
             vec![invocation(4212, &["test"])],
             long_chain(),
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, &hidden, ProcessTree::Long);
+        let demand = group_height(group, width, ProcessTree::Long);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
@@ -13923,13 +14076,13 @@ mod tests {
     #[test]
     fn a_cell_whose_chain_fits_asks_for_all_of_it() {
         let width = 60;
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         let roster = roster_of(
             invocation(4100, &["build"]),
             vec![invocation(4212, &["test"])],
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, &hidden, ProcessTree::Long);
+        let demand = group_height(group, width, ProcessTree::Long);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
@@ -14039,15 +14192,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 4));
         let area = buffer.area;
 
-        let used = draw_ancestry(
-            &mut buffer,
-            area,
-            &ancestry,
-            0,
-            pane_background(false),
-            AncestryFoot::PlainCommand,
-            1,
-        );
+        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false), 1);
 
         assert_eq!(used, 2, "the root and marked nearest level");
         assert_eq!(buffer_line(&buffer, 0), " 0 sh");
@@ -14089,40 +14234,32 @@ mod tests {
         );
     }
 
-    /// A driver that `commands.hidden_when_idle` names closes its
-    /// cell's chain rather than taking a row in the table: its row
-    /// would say the same thing on every scan and cost the cell one of
-    /// the invocations it was opened for.
     #[test]
-    fn a_driver_closes_its_cells_chain_instead_of_heading_its_table() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 14));
+    fn an_unlisted_driver_heads_its_own_table() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 160, 14));
         let area = buffer.area;
         let roster = roster_of(
             invocation(4100, &[PORT_SUBCOMMAND_NAME]),
             vec![invocation(4212, &["build"])],
         );
-
         draw_group(
             &mut buffer,
             &roster,
             &InvocationId::for_test(4100),
             area,
             Color::Reset,
-            &hidden_when_idle(),
+            &[],
             ProcessTree::Long,
         );
-
-        // The driver is the foot of the chain now, so the shell above
-        // it is a step passed through like any other.
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
-        assert_eq!(buffer_line(&buffer, 1), "  4100 cargo port");
-        let table: Vec<String> = (2..area.height).map(|y| buffer_line(&buffer, y)).collect();
-        let table = table.join("\n");
-        assert!(table.contains("4212"), "{table}");
+        let table = buffer_rows(&buffer).join("\n");
         assert!(
-            !table.contains("4100"),
-            "the driver is not a row too: {table}"
+            table
+                .lines()
+                .any(|line| line.contains("4100") && line.contains("cargo port")),
+            "{table}"
         );
+        assert!(table.contains("4212"), "{table}");
     }
 
     /// A short tree draws every step the long one does. What it takes
@@ -14142,7 +14279,7 @@ mod tests {
             &InvocationId::for_test(4100),
             area,
             Color::Reset,
-            &hidden_when_idle(),
+            &hidden_commands(),
             ProcessTree::Short,
         );
 
@@ -14175,7 +14312,7 @@ mod tests {
             &InvocationId::for_test(4100),
             area,
             Color::Reset,
-            &hidden_when_idle(),
+            &hidden_commands(),
             ProcessTree::Short,
         );
 
@@ -14206,7 +14343,7 @@ mod tests {
             &InvocationId::for_test(4100),
             area,
             Color::Reset,
-            &hidden_when_idle(),
+            &hidden_commands(),
             ProcessTree::Short,
         );
 
@@ -14228,7 +14365,7 @@ mod tests {
     #[test]
     fn a_short_tree_asks_for_fewer_rows_than_a_long_one() {
         let width = 60;
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         let roster = roster_with_ancestry(
             invocation(4100, &["build"]),
             vec![invocation(
@@ -14239,8 +14376,8 @@ mod tests {
         );
         let group = roster.groups().first().unwrap();
 
-        let short = group_height(group, width, &hidden, ProcessTree::Short);
-        let long = group_height(group, width, &hidden, ProcessTree::Long);
+        let short = group_height(group, width, ProcessTree::Short);
+        let long = group_height(group, width, ProcessTree::Long);
 
         assert!(
             short < long,
@@ -14279,7 +14416,7 @@ mod tests {
             &InvocationId::for_test(4100),
             area,
             Color::Reset,
-            &hidden_when_idle(),
+            &hidden_commands(),
             ProcessTree::Long,
         );
 
@@ -15719,8 +15856,8 @@ mod tests {
         let mut grid = tui_pane::TileGrid::new();
         grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
         let sccache = SccacheStats::new();
-        let hidden_when_idle = hidden_when_idle();
-        let cells = Cells::new(roster, &hidden_when_idle, tree, &sccache);
+        let hidden_commands = hidden_commands();
+        let cells = Cells::new(roster, &hidden_commands, tree, &sccache);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
@@ -15781,68 +15918,64 @@ mod tests {
     /// Draw a settled production grid for the command-cell content checks.
     fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
         let sccache = SccacheStats::new();
-        let hidden_when_idle = hidden_when_idle();
-        let cells = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
+        let hidden_commands = hidden_commands();
+        let cells = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
         settled_buffer_with_cells(&cells, area)
     }
 
     #[test]
     fn a_finished_commands_cell_reports_the_fade_its_contents_use() {
-        for hidden in [Vec::new(), hidden_when_idle()] {
-            let now = Instant::now();
-            let lead = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
-            let child = invocation(4200, &["build"]);
-            let mut roster = Roster::new();
-            roster.observe(
-                vec![CargoGroup {
-                    lead:     lead.clone(),
-                    rest:     vec![child],
-                    ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
-                }],
-                now,
-            );
-            roster.observe(vec![cargo_group(lead)], now);
-            roster.advance(
-                now + std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
-            );
-            let sccache = SccacheStats::new();
-            let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
-            let group = &roster.groups()[0];
-            assert!(group.rows().skip(1).any(|row| row.faded() > 0));
-            assert_eq!(
-                cells.readout_fade(&TileContent::Group(group.id.clone())),
-                CellReadoutFade::Unfaded,
-                "a live lead holds the cell ink"
-            );
-            roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
-            roster.advance(
-                now + std::time::Duration::from_secs(2),
-                std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
-            );
-            let group = &roster.groups()[0];
-            let rows: Vec<_> = group
-                .rows()
-                .skip(usize::from(group.leads_as_ancestor(&hidden)))
-                .collect();
-            let fade = heading_fade(&rows).min(group.lead.faded());
-            assert!(fade > 0);
-            let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
-            assert_eq!(
-                cells.readout_fade(&TileContent::Group(group.id.clone())),
-                CellReadoutFade::Fading(CellFadeProgress::new(fade))
-            );
-            assert_eq!(
-                cells.readout_fade(&TileContent::Empty(3)),
-                CellReadoutFade::Unfaded
-            );
-        }
+        let hidden = hidden_commands();
+        let now = Instant::now();
+        let lead = invocation(4100, &["test"]);
+        let child = invocation(4200, &["build"]);
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![CargoGroup {
+                lead:     lead.clone(),
+                rest:     vec![child],
+                ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+            }],
+            now,
+        );
+        roster.observe(vec![cargo_group(lead)], now);
+        roster.advance(
+            now + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+        );
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let group = &roster.groups()[0];
+        assert!(group.rows().skip(1).any(|row| row.faded() > 0));
+        assert_eq!(
+            cells.readout_fade(&TileContent::Group(group.id.clone())),
+            CellReadoutFade::Unfaded,
+            "a live lead holds the cell ink"
+        );
+        roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
+        roster.advance(
+            now + std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+        );
+        let group = &roster.groups()[0];
+        let rows: Vec<_> = group.rows().collect();
+        let fade = heading_fade(&rows).min(group.lead.faded());
+        assert!(fade > 0);
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        assert_eq!(
+            cells.readout_fade(&TileContent::Group(group.id.clone())),
+            CellReadoutFade::Fading(CellFadeProgress::new(fade))
+        );
+        assert_eq!(
+            cells.readout_fade(&TileContent::Empty(3)),
+            CellReadoutFade::Unfaded
+        );
     }
 
     #[test]
-    fn the_summary_foot_fades_with_its_rows() {
+    fn the_summary_readout_fades_without_reporting_finished_memory() {
         let now = Instant::now();
-        let mut driver = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
+        let mut driver = invocation(4100, &["test"]);
         driver.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         driver.subtree_resource_use.memory = driver.resource_use.memory;
         let mut roster = Roster::new();
@@ -15854,15 +15987,16 @@ mod tests {
             }],
             now,
         );
-        roster.observe(vec![cargo_group(driver.clone())], now);
+        roster.observe(Vec::new(), now);
         roster.advance(
             now + std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
         );
-        let hidden = hidden_when_idle();
-        let rows = summary_rows(&roster, &hidden);
-        let fade = heading_fade(&rows.iter().map(AsRef::as_ref).collect::<Vec<_>>());
-        assert!(fade > 0, "promoted rows fade while the driver stays live");
+        let hidden = hidden_commands();
+        let visible = roster.visible(&hidden);
+        let rows = summary_rows(&visible);
+        let fade = heading_fade(&rows);
+        assert!(fade > 0, "finished summary rows fade");
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
         assert_eq!(
@@ -15878,20 +16012,19 @@ mod tests {
             .expect("summary is drawn");
         let inner = summary.frame.inner();
         let foot_y = inner.bottom() - 1;
-        let SummaryFoot::Text(foot) = cells.summary_foot() else {
-            panic!("the summary reports its memory total");
-        };
-        let mut x = inner.x + 1;
-        for span in foot.spans {
-            let ink = span.style.fg.or(foot.style.fg).unwrap_or_else(text_default);
-            for _ in span.content.chars() {
-                assert_eq!(
-                    buffer[(x, foot_y)].fg,
-                    blend_color(ink, pane_background(summary.frame.is_focused()), fade)
-                );
-                x += 1;
-            }
-        }
+        assert_eq!(cells.summary_foot(), SummaryFoot::Empty);
+        let foot = buffer_line(&buffer, foot_y);
+        let label = TILE_ROWS_CONTENT_LABEL;
+        let x = u16::try_from(foot.find(label).expect("summary row-count readout"))
+            .expect("terminal column");
+        assert_eq!(
+            buffer[(x, foot_y)].fg,
+            blend_color(
+                label_color(),
+                pane_background(summary.frame.is_focused()),
+                fade
+            )
+        );
         roster.observe(
             vec![CargoGroup {
                 lead:     driver,
@@ -16058,9 +16191,9 @@ mod tests {
         (TileGrid<InvocationId>, Buffer),
     ) {
         let sccache = SccacheStats::new();
-        let hidden_when_idle = hidden_when_idle();
-        let production = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
-        let mut former = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
+        let hidden_commands = hidden_commands();
+        let production = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
+        let mut former = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
         former.grids.summary.0.separation = DirectorySeparation::KeepTogether;
         let without_report = CellsWithoutRowReport(former);
         (
@@ -16138,7 +16271,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        let demands = tile_demands(roster, &widths, &hidden_commands(), ProcessTree::Long);
         placements
             .iter()
             .filter(|placement| {
@@ -16207,7 +16340,7 @@ mod tests {
             .find(|placement| placement.content == TileContent::Summary)
             .expect("the summary is placed");
         let widths = [(TileContent::Summary, summary.frame.inner().width)];
-        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
 
         assert_eq!(demands.summary, 18, "{}", buffer_rows(&buffer).join("\n"));
         assert_eq!(
@@ -16287,7 +16420,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
 
         assert!(former.contains(&TileContent::Summary));
         assert!(!repaired.contains(&TileContent::Summary));
@@ -16391,7 +16524,7 @@ mod tests {
             ..donor.frame.inner()
         };
         let content = &donor.content;
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         assert_eq!(
             (
                 content_rows_drawn(&roster, content, content_area, &hidden, ProcessTree::Long),
@@ -16406,7 +16539,7 @@ mod tests {
     #[test]
     fn painted_and_retained_rows_share_one_measurement() {
         let roster = ancestry_transfer_roster(1);
-        let hidden = hidden_when_idle();
+        let hidden = hidden_commands();
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
         let content = TileContent::Group(roster.groups()[0].id.clone());
@@ -16445,7 +16578,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
         let hidden = placements
             .iter()
             .filter(|placement| {
@@ -16513,8 +16646,8 @@ mod tests {
         grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
         grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
         let sccache = SccacheStats::new();
-        let hidden_when_idle = hidden_when_idle();
-        let cells = Cells::new(&roster, &hidden_when_idle, ProcessTree::Long, &sccache);
+        let hidden_commands = hidden_commands();
+        let cells = Cells::new(&roster, &hidden_commands, ProcessTree::Long, &sccache);
         let short = Rect::new(0, 0, 40, 6);
         let mut buffer = Buffer::empty(short);
         tui_pane::draw_tile_grid(
@@ -16615,8 +16748,7 @@ mod tests {
                     .iter()
                     .map(|placement| (placement.content.clone(), placement.frame.inner().width))
                     .collect();
-                let demands =
-                    tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+                let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
                 assert_eq!(demands.summary, expected, "{area:?}");
             }
             let commands: Vec<_> = placements
@@ -16961,7 +17093,7 @@ mod tests {
         let roster = roster_with_ancestry(lead, rest, Vec::new());
         let group = roster.groups().first().unwrap();
         let inner_width = 64;
-        let content_rows = group_height(group, inner_width, &[], ProcessTree::Long);
+        let content_rows = group_height(group, inner_width, ProcessTree::Long);
         let inner = Rect::new(
             0,
             0,
@@ -17859,16 +17991,16 @@ mod tests {
             [
                 "┌ Settings ────────────────────────────────────────────────┐",
                 "│ Appearance:                                              │",
-                "│ ▶ mode              < auto >                             │",
-                "│   light theme       < Default Light >                    │",
-                "│   dark theme        < Default Dark >                     │",
-                "│   transparent       < true >                             │",
+                "│ ▶ mode                   < auto >                        │",
+                "│   light theme            < Default Light >               │",
+                "│   dark theme             < Default Dark >                │",
+                "│   transparent            < true >                        │",
                 "│ Tiles:                                                   │",
-                "│   initial rows      < 4 >                                │",
-                "│   fill              < redistribute >                     │",
-                "│   view              < cells >                            │",
-                "│   widen summary     < false >                            │",
-                "│   fade seconds      < 3 >                                │",
+                "│   initial rows           < 4 >                           │",
+                "│   fill                   < redistribute >                │",
+                "│   view                   < cells >                       │",
+                "│   widen summary          < false >                       │",
+                "│   fade seconds           < 3 >                           │",
                 "│ Capture:                                                 │",
                 "└──────────────────────────────────────────────────────────┘",
             ],

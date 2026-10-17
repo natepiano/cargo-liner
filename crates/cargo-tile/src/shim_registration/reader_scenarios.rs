@@ -243,7 +243,7 @@ fn reader_scenario_deadline_names_a_wait_still_pending_in_another_thread() {
 fn settings_click_after_navigation_selects_the_row_still_drawn() {
     let mut app = App::new_for_test().expect("build isolated settings app");
     app.loaded_config.config.commands.excluded = vec!["wrapped-command ".repeat(24)];
-    app.loaded_config.config.commands.hidden_when_idle = vec!["port".to_owned()];
+    app.loaded_config.config.commands.hidden = vec!["port".to_owned()];
     let rows = settings::rows(&app).rows().to_vec();
     let selection = |label| {
         rows.iter()
@@ -256,7 +256,7 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
             .expect("find selectable settings row")
     };
     let excluded = selection("excluded");
-    let hidden_when_idle = selection("hidden when idle");
+    let hidden_commands = selection("hidden cargo commands");
     let keymap = Rc::clone(&app.keymap);
     keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
     let mut terminal = Terminal::new(TestBackend::new(80, POPUP_CHROME_HEIGHT + 3))
@@ -264,15 +264,15 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
     terminal
         .draw(|frame| render::draw(frame, &mut app, &keymap))
         .expect("draw settings layout");
-    app.framework.settings_pane.select_row(hidden_when_idle);
+    app.framework.settings_pane.select_row(hidden_commands);
     terminal
         .draw(|frame| render::draw(frame, &mut app, &keymap))
-        .expect("draw hidden-when-idle selection");
+        .expect("draw hidden commands selection");
     let pane = &app.framework.settings_pane;
     let area = pane.viewport().content_area();
     let offset = pane.viewport().scroll_offset();
     assert_eq!(area.height, 3);
-    assert_eq!(pane.viewport().pos(), hidden_when_idle);
+    assert_eq!(pane.viewport().pos(), hidden_commands);
     assert_eq!(
         pane.line_target(offset + 1),
         SettingsLineTarget::Row(SettingsRowPayload::new(excluded))
@@ -290,7 +290,7 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
     assert!(app.framework.settings_pane.viewport().scroll_offset() > offset);
     assert_eq!(
         app.framework.settings_pane.viewport().pos(),
-        hidden_when_idle + 1
+        hidden_commands + 1
     );
     app.click(click);
 

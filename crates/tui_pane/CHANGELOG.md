@@ -24,6 +24,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- Config writes remove the app’s declared retired keys while preserving unknown keys, comments and unchanged files.
 - Removed the `auto` tile view because it drew the same as `cells`; a saved `auto` view loads as `cells`.
 - `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.
 - A summary that borrows a row protects its retained content while its separators yield to a mate's hidden content; separators use a mate's blank spare row first.

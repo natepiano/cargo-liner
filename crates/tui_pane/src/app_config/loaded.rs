@@ -30,16 +30,16 @@ pub struct LoadedConfig<C> {
 impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
     /// Read [`AppIdentity::config_path`], falling back to defaults when
     /// it is absent; a file that parses but does not already spell out
-    /// every setting is written back (restated).
+    /// every setting, or still holds retired keys, is written back (restated).
     ///
     /// A parse error is not fatal: the app runs on defaults and reports
     /// the error through [`Self::error`], because the terminal is not
     /// yet in raw mode here and a panic would leave nothing on screen.
     #[must_use]
-    pub fn load<I: AppIdentity>() -> Self { Self::load_from(I::config_path()) }
+    pub fn load<I: AppIdentity>() -> Self { Self::load_from::<I>(I::config_path()) }
 
     /// [`Self::load`] against an explicit path.
-    fn load_from(path: Option<PathBuf>) -> Self {
+    fn load_from<I: AppIdentity>(path: Option<PathBuf>) -> Self {
         let Some(path) = path else {
             return Self::defaults(None);
         };
@@ -53,7 +53,7 @@ impl<C: Default + DeserializeOwned + Serialize> LoadedConfig<C> {
                     config,
                     error: None,
                 };
-                loaded.save_to(Some(path));
+                loaded.save_to::<I>(Some(path));
                 loaded
             },
         )
@@ -76,10 +76,12 @@ impl<C: Serialize> LoadedConfig<C> {
     /// The failure is kept as text for the settings overlay rather than
     /// returned as an error type: every caller renders it, none of them
     /// recover.
-    pub fn save<I: AppIdentity>(&mut self) { self.save_to(I::config_path()); }
+    pub fn save<I: AppIdentity>(&mut self) { self.save_to::<I>(I::config_path()); }
 
     /// [`Self::save`] against an explicit path.
-    fn save_to(&mut self, path: Option<PathBuf>) { self.error = write_config(&self.config, path); }
+    fn save_to<I: AppIdentity>(&mut self, path: Option<PathBuf>) {
+        self.error = write_config::<C, I>(&self.config, path);
+    }
 }
 
 /// Whether a merged document needs a filesystem write.
@@ -90,8 +92,8 @@ enum ConfigRewrite {
     Changed(String),
 }
 
-/// Merge known keys without replacing the surrounding document or its unknown keys.
-fn merge_config(text: &str, serialized: &str) -> Result<ConfigRewrite, String> {
+/// Merge known keys and retire declared paths, retaining unknown keys and user text.
+fn merge_config<I: AppIdentity>(text: &str, serialized: &str) -> Result<ConfigRewrite, String> {
     let mut document = text
         .parse::<DocumentMut>()
         .map_err(|error| error.to_string())?;
@@ -107,12 +109,30 @@ fn merge_config(text: &str, serialized: &str) -> Result<ConfigRewrite, String> {
         &current_values,
         &desired_values,
     );
+    for path in I::RETIRED_CONFIG_KEYS {
+        remove_retired_key(document.as_table_mut(), path);
+    }
     let merged = document.to_string();
     Ok(if merged == text {
         ConfigRewrite::Unchanged
     } else {
         ConfigRewrite::Changed(merged)
     })
+}
+
+/// Remove only the exact table path declared by the app.
+fn remove_retired_key(current: &mut dyn TableLike, path: &[&str]) {
+    let Some((key, parents)) = path.split_first() else {
+        return;
+    };
+    if parents.is_empty() {
+        current.remove(key);
+    } else if let Some(table) = current
+        .get_mut(key)
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        remove_retired_key(table, parents);
+    }
 }
 
 /// Semantic equality keeps existing quoting and number formatting for unchanged values.
@@ -154,7 +174,7 @@ fn merge_table(
 }
 
 /// Merge `config` into `path`, creating its directory only when a write is needed.
-fn write_config<C: Serialize>(config: &C, path: Option<PathBuf>) -> Option<String> {
+fn write_config<C: Serialize, I: AppIdentity>(config: &C, path: Option<PathBuf>) -> Option<String> {
     let Some(path) = path else {
         return Some(format!(
             "no OS config directory: cannot write {CONFIG_FILENAME}"
@@ -165,7 +185,7 @@ fn write_config<C: Serialize>(config: &C, path: Option<PathBuf>) -> Option<Strin
         Err(error) => return Some(error.to_string()),
     };
     let rewrite = match fs::read_to_string(&path) {
-        Ok(existing) => match merge_config(&existing, &text) {
+        Ok(existing) => match merge_config::<I>(&existing, &text) {
             Ok(rewrite) => rewrite,
             Err(error) => return Some(format!("{}: {error}", path.display())),
         },
@@ -215,6 +235,14 @@ mod tests {
         }
     }
 
+    impl AppIdentity for Sample {
+        const BINARY_NAME: &'static str = "sample";
+        const CONFIG_DIRNAME: &'static str = "sample";
+        const DEFAULT_LIGHT_THEME: &'static str = "light";
+        const DEFAULT_DARK_THEME: &'static str = "dark";
+        const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] = &[&["settings", "retired"]];
+    }
+
     /// A directory of the test's own under the system temp directory,
     /// removed when dropped. Named by process and test so tests running
     /// side by side never share one.
@@ -255,11 +283,23 @@ mod tests {
         permissions.set_readonly(true);
         fs::set_permissions(&path, permissions).expect("the config file should be made read-only");
 
-        let loaded = LoadedConfig::<Sample>::load_from(Some(path.clone()));
+        let loaded = LoadedConfig::<Sample>::load_from::<Sample>(Some(path.clone()));
 
         assert_eq!(loaded.error, None);
         assert_eq!(loaded.config, Sample::default());
         assert_eq!(read(&path), complete);
+    }
+
+    #[test]
+    fn loading_a_retired_key_removes_it_and_preserves_the_document() {
+        let scratch = Scratch::new("retired_key");
+        let path = scratch.config_path();
+        let original = "# user's heading\nname='sample' # name note\ncount=3\nunknown='kept' # future note\n\n[settings] # section note\nretired = 7\nfuture = true # nested note\n";
+        fs::write(&path, original).expect("fixture writes");
+        let loaded = LoadedConfig::<Sample>::load_from::<Sample>(Some(path.clone()));
+        assert_eq!(loaded.error, None);
+        assert_eq!(loaded.config, Sample::default());
+        assert_eq!(read(&path), original.replace("retired = 7\n", ""));
     }
 
     /// A file missing a key comes back carrying it, and keeps what it
@@ -270,7 +310,7 @@ mod tests {
         let path = scratch.config_path();
         fs::write(&path, "name = \"kept\"\n").expect("the config file should be written");
 
-        let loaded = LoadedConfig::<Sample>::load_from(Some(path.clone()));
+        let loaded = LoadedConfig::<Sample>::load_from::<Sample>(Some(path.clone()));
 
         assert_eq!(loaded.error, None);
         assert_eq!(read(&path), "name = \"kept\"\ncount = 3\n");
@@ -286,7 +326,7 @@ mod tests {
         let broken = "count = \"three\"\n";
         fs::write(&path, broken).expect("the config file should be written");
 
-        let loaded = LoadedConfig::<Sample>::load_from(Some(path.clone()));
+        let loaded = LoadedConfig::<Sample>::load_from::<Sample>(Some(path.clone()));
 
         assert_eq!(loaded.config, Sample::default());
         let error = loaded.error.expect("a parse error should be kept");
@@ -304,7 +344,7 @@ mod tests {
             error:  Some("stale".to_string()),
         };
 
-        loaded.save_to(Some(path.clone()));
+        loaded.save_to::<Sample>(Some(path.clone()));
 
         assert_eq!(loaded.error, None);
         assert_eq!(read(&path), "name = \"sample\"\ncount = 3\n");
@@ -319,7 +359,7 @@ mod tests {
             error:  None,
         };
 
-        loaded.save_to(None);
+        loaded.save_to::<Sample>(None);
 
         assert_eq!(
             loaded.error.as_deref(),
@@ -341,7 +381,7 @@ mod tests {
         let original = "# user's heading\nfuture = 'kept' # top-level note\nname='old' # name note\n\n[settings] # section note\nextra = 42 # nested note\nname = 'section'\n";
         fs::write(&path, original).expect("fixture writes");
 
-        let mut loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        let mut loaded = LoadedConfig::<Sectioned>::load_from::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         let restated = read(&path);
         assert!(restated.starts_with(original), "{restated}");
@@ -349,7 +389,7 @@ mod tests {
 
         loaded.config.name = "new".into();
         loaded.config.settings.count = 9;
-        loaded.save_to(Some(path.clone()));
+        loaded.save_to::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         let saved = read(&path);
         assert_eq!(
@@ -378,7 +418,7 @@ mod tests {
             .set_modified(timestamp)
             .expect("fixture modification time sets");
 
-        let mut loaded = LoadedConfig::<Sample>::load_from(Some(path.clone()));
+        let mut loaded = LoadedConfig::<Sample>::load_from::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         assert_eq!(
             fs::metadata(&path)
@@ -387,7 +427,7 @@ mod tests {
                 .expect("mtime reads"),
             timestamp
         );
-        loaded.save_to(Some(path.clone()));
+        loaded.save_to::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         assert_eq!(read(&path), original);
         assert_eq!(
@@ -406,7 +446,7 @@ mod tests {
         let original = "future = 7\n# retained name\nname='existing'\n";
         fs::write(&path, original).expect("fixture writes");
 
-        let loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        let loaded = LoadedConfig::<Sectioned>::load_from::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         let saved = read(&path);
         assert!(saved.starts_with(original), "{saved}");
@@ -423,11 +463,11 @@ mod tests {
             "name = ''\nsettings = { name='sample', count=3, future='kept' } # inline note\n";
         fs::write(&path, original).expect("fixture writes");
 
-        let mut loaded = LoadedConfig::<Sectioned>::load_from(Some(path.clone()));
+        let mut loaded = LoadedConfig::<Sectioned>::load_from::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         assert_eq!(read(&path), original);
         loaded.config.settings.count = 4;
-        loaded.save_to(Some(path.clone()));
+        loaded.save_to::<Sample>(Some(path.clone()));
         assert_eq!(loaded.error, None);
         assert_eq!(read(&path), original.replace("count=3", "count=4"));
     }
@@ -443,7 +483,7 @@ mod tests {
             error:  None,
         };
 
-        loaded.save_to(Some(path.clone()));
+        loaded.save_to::<Sample>(Some(path.clone()));
         assert!(loaded.error.is_some());
         assert_eq!(read(&path), malformed);
     }
