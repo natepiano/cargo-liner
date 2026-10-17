@@ -40,6 +40,7 @@ pub(crate) use handle::CoverClaimActor;
 pub(crate) use handle::Ledger;
 pub(crate) use handle::LedgerCommittedActionOutcome;
 pub(crate) use handle::LedgerInitialization;
+pub(crate) use handle::LedgerReconciliationOutcome;
 pub(crate) use handle::LedgerTransactionOutcome;
 pub(crate) use handle::ReconciliationValidation;
 pub(crate) use handle::RecoverableReconciliationAppendFailures;

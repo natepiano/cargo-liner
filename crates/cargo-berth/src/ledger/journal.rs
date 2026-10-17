@@ -799,6 +799,7 @@ impl JournalOperation {
                 ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
                 | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
                 | ConflictAuthorization::Defer { .. }
                 | ConflictAuthorization::Override { .. } => true,
                 ConflictAuthorization::NoConflict
@@ -1301,6 +1302,17 @@ pub(crate) struct ReservationScopeSet(#[schemars(length(min = 1))] Vec<Reservati
 impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
     pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
+
+    /// Union two nonempty footprints without weakening their construction guarantee.
+    pub(crate) fn with_added(&self, added: &Self) -> Self {
+        let mut scopes = self.0.clone();
+        for scope in &added.0 {
+            if !scopes.contains(scope) {
+                scopes.push(scope.clone());
+            }
+        }
+        Self(scopes)
+    }
 
     /// Return whether any scope covers a case-sensitive raw repository path.
     pub(crate) fn covers_path(&self, repository_path: &[u8]) -> bool {

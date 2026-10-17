@@ -2578,14 +2578,6 @@ impl OutputEnvelope {
         }
     }
 
-    /// Refuse a named claim's repeated ordering with the same policy as `sequence`.
-    pub(crate) fn claim_duplicate_ordering(before: ReservationId, after: ReservationId) -> Self {
-        let mut output = Self::sequence_rejected(before, after, SequenceRejectionKind::Duplicate);
-        output.verb = CommandVerb::Claim;
-        output.payload = OutputPayload::from_facts(OutputFacts::NoFacts);
-        output
-    }
-
     /// Build an integration rejection that retains the inactive identity source.
     pub(crate) fn integration_rejected(
         reservation_id: ReservationId,

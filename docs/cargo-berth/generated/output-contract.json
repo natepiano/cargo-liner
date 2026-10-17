@@ -5252,6 +5252,9 @@
                 "direction": {
                   "$ref": "#/$defs/OrderingDirection"
                 },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
                 },
@@ -5268,6 +5271,7 @@
               },
               "required": [
                 "answer",
+                "edge_id",
                 "reservation_id",
                 "blocker",
                 "direction",
@@ -13393,6 +13397,9 @@
                 "direction": {
                   "$ref": "#/$defs/OrderingDirection"
                 },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
                 },
@@ -13409,6 +13416,7 @@
               },
               "required": [
                 "answer",
+                "edge_id",
                 "reservation_id",
                 "blocker",
                 "direction",

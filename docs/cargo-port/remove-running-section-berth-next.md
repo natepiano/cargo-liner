@@ -109,34 +109,29 @@
 
 **Depends on:** Phase 2 (shared CHANGELOG, `src/drift/`, as-built docs)
 
-#### Work Order
+#### As-built
 
-**Goal:** While git records a pending operation in an enrolled worktree — a merge in progress (`MERGE_HEAD`, including `git merge --no-commit --no-ff <peer tip>`, the production's trial merge), or a cherry-pick or revert stopped with `CHERRY_PICK_HEAD`/`REVERT_HEAD` — no hook or drift check creates a first-touch reservation or raises an incursion for the changes it brought in, and after `git merge --abort` nothing remains.
-
-**Spec:**
-1. Repro (handler-enh, 2026-10-16): a trial merge in an enrolled worktree raised incursions on paths tile-fixes and berth-parallel held and created first-touch reservation 01a147a4. Drift stands aside only for a rebase: `git::rewrite_in_progress` (`src/git/discovery.rs:118`) checks only `rebase-merge`/`rebase-apply` (`src/git/constants.rs:164-167`), used by `comparable_worktree` (`src/drift/execution.rs:510`, check at `:527`), which returns `DeferredPendingRewrite`, and `prepare_worktree_comparison` (`:534-550`) turns it into an unchanged empty report. `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD` sit in `OPERATION_IN_PROGRESS_MARKERS` (`src/worktree/constants.rs:10-16`), read only by enrollment (`src/worktree/enrollment.rs:343`). The post-tool-use hook (`src/hook/post_tool_use.rs:229`) runs drift, whose `claim_post_write_paths` (`execution.rs:552`, called at `:331` and `:398`) acquires the first touch.
-2. Drift defers whenever git records a pending operation — rebase, merge, cherry-pick, revert — through one shared marker set and one semantic type naming which operation is pending, used by drift, enrollment and rewrite reconciliation; never a second list. The deferred report is the same unchanged empty report a pending rebase gives today, so no first touch and no incursion. The guarantee covers only operations git leaves observable state for: a cherry-pick or revert run with `--no-commit` that completes writes no `CHERRY_PICK_HEAD`/`REVERT_HEAD` and leaves only a dirty tree, which drift reads as this worktree's edit by design, since git records no pending operation.
-3. The deferral stays in `comparable_worktree`, inside `prepare_drift_execution` (`execution.rs:208`), ahead of `classify_foreign_paths_before_lock` (`execution.rs:440`) and its `provenance::read_committed_foreign_paths` (`src/drift/provenance.rs:118`), so a pending operation causes no upstream lookup and no committed-history read.
-4. Rewrite reconciliation keeps its rebase-only deferral: `reconcile::prepare_rewrite_reconciliation` (`src/reconcile.rs:1854`, filter at `:1863`) reads the same shared operation type and skips a pending branch-rewrite marker only when that type names a rebase. Drift and enrollment defer for every pending operation.
-5. Once the operation ends, drift resumes: after an abort the tree is clean and nothing is reported; after a completed merge commit the merged-in commits are judged by phase 2's committed-origin rules.
-6. Tests: (a) a trial merge of a peer's held paths, then a post-tool-use check: no reservation, no incursion; (b) a `git cherry-pick` of a peer commit that stops on a conflict (so git writes `CHERRY_PICK_HEAD`), then a post-tool-use check: no reservation, no incursion; (c) after `git merge --abort` the next check reports nothing; (d) a merge completed with a commit is judged as a commit, not deferred forever; (e) extend `drift_reports_no_change_while_a_rewrite_is_pending` (`src/drift/execution.rs:984`) to each operation; (f) a unit test that the shared operation type names a rebase only for `rebase-merge`/`rebase-apply`, so rewrite reconciliation still processes a branch-rewrite marker while a merge is pending. The integration tests (a)–(d) reach each state through real git commands, never a written marker file.
-7. Docs: CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/worktree-coordination.md` (Drift ~374-406, invariants ~516-517), `rebase-settlement.md` (~128), `worktree-enrollment.md` (~85, 93, 113). The docs state that a completed `--no-commit` cherry-pick or revert reads as this worktree's edit.
+- `WorktreeOperation` (`pub(crate)`: `Idle` / `Rebase` / `Merge` / `CherryPick` / `Revert`) and `WorktreeOperation::observe(worktree_administrative_directory: &Path) -> Self` read one marker set — `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` — whose path constants live in `src/git/constants.rs`. A rebase marker wins when a stopped replay also exposes another operation's marker. It replaces `git::rewrite_in_progress` and enrollment's `OPERATION_IN_PROGRESS_MARKERS`; drift, enrollment and rewrite reconciliation all read it.
+- Drift: `comparable_worktree` returns `WorktreeComparability::DeferredPendingOperation` for any operation other than `Idle`, and `prepare_worktree_comparison` turns it into the unchanged empty report. The decision runs inside `prepare_drift_execution` before fingerprint observation, the upstream lookup and `read_committed_foreign_paths`, so a pending operation creates no first touch, no incursion and no fingerprint cache entry. After `--abort` the clean tree reports nothing; a completed merge commit is judged by the committed-origin incursion rules.
+- Enrollment: `check_enrollment_operation` rejects with `WorktreeEnrollmentFailureReason::OperationInProgress` and a diagnostic in words ("a merge is in progress"); the wire reason is unchanged.
+- Rewrite reconciliation: `prepare_rewrite_reconciliation` skips a branch-rewrite marker only when `observe` returns `Rebase`, so a pending merge, cherry-pick or revert does not stop reconciliation.
+- CHANGELOG `[Unreleased]` `Fixed`, `worktree-coordination.md`, `rebase-settlement.md` and `worktree-enrollment.md` state the deferral and that a completed `--no-commit` cherry-pick or revert reads as this worktree's edit.
 
 **Files:**
-- `crates/cargo-berth/src/git/discovery.rs`, `crates/cargo-berth/src/git/constants.rs`, `crates/cargo-berth/src/worktree/constants.rs`, `crates/cargo-berth/src/worktree/enrollment.rs` — the shared in-progress operation type
-- `crates/cargo-berth/src/drift/execution.rs` — deferral and its unit test
-- `crates/cargo-berth/src/reconcile.rs` — `prepare_rewrite_reconciliation` reads the shared type and keeps its rebase-only deferral
-- `crates/cargo-berth/tests/` — the Spec 6 integration tests
-- `crates/cargo-berth/CHANGELOG.md`
-- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/rebase-settlement.md`, `docs/cargo-berth/as-built/worktree-enrollment.md`
+- `crates/cargo-berth/src/git/worktree_operation.rs` — `WorktreeOperation`, the marker set, `observe` and its unit test
+- `crates/cargo-berth/src/git/constants.rs`, `src/git/mod.rs`, `src/git/discovery.rs` — marker path constants, re-export, `rewrite_in_progress` removed
+- `crates/cargo-berth/src/drift/execution.rs` — `DeferredPendingOperation` and `drift_reports_no_change_while_a_git_operation_is_pending`
+- `crates/cargo-berth/src/worktree/enrollment.rs`, `src/worktree/constants.rs` — `check_enrollment_operation` and `enrollment_names_pending_operations_in_words`
+- `crates/cargo-berth/src/reconcile.rs` — rebase-only deferral through the shared type
+- `crates/cargo-berth/tests/hooks.rs` — trial merge unreserved and its abort clear, trial merge not charged to an active reservation, cherry-pick stopped on a real conflict, completed peer merge judged after a cached clean check
+- `crates/cargo-berth/CHANGELOG.md`, `docs/cargo-berth/as-built/worktree-coordination.md`, `rebase-settlement.md`, `worktree-enrollment.md`
 
-**Workers:** 1 writer + 1 tester
-- `impl` — `src/` (the unit tests included), CHANGELOG, as-built docs; runs lint and the full gate.
-- `test` — the Spec 6 integration tests in `tests/`.
+**Gotchas:**
+- A completed `--no-commit` cherry-pick or revert leaves no marker and reads as an ordinary dirty tree, by design: git records no pending operation.
+- The integration tests reach each state through real git commands (a conflicting cherry-pick writes `CHERRY_PICK_HEAD`), never a written marker file.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; a trial merge in an enrolled worktree leaves the board unchanged.
-
-### Phase 4 — Claiming a new path behind a holder you already sequenced against succeeds  · status: todo
+**Ruled out:** separate cache invalidation for a completed merge — git unlinks `MERGE_HEAD` before `post-commit` runs, so the installed hook judges the merge commit in full even after a cached clean fingerprint.
+### Phase 4 — Claiming a new path behind a holder you already sequenced against succeeds  · status: done
 
 **Depends on:** Phase 3 (shared CHANGELOG and as-built docs)
 
@@ -183,7 +178,7 @@
 3. A rebuild keeps the selected pane and each pane's scroll offset, clamped to the new document length.
 4. The Overview pane shows only the Reservations table. The five `OVERVIEW_FIELDS` (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`) leave the terminal board entirely, with no new pane: `board --json` already carries them for anyone diagnosing (showrunner, 2026-10-16: fewer things on screen wins). Each `BoardSection` also serializes its own `journal_position` (`src/board/rows.rs:161-163`); drop that nested field from every pane document too. `BoardPaneDocuments::from_model` drops these fields by name instead of failing on them as unassigned, so every other model field still has exactly one pane, and `board --json` output is unchanged. Update `reassembled_model_value` (no Overview split at `"\n\n"`) and `every_model_fact_is_reachable_through_exact_pane_documents` (every model field except the five is reachable), and retire `recovered_bypasses_render_only_in_the_model_that_reports_them`, whose fact the board no longer renders, unless `board --json` lacks a test for it.
 5. Tests (unit tests in `tui.rs`, `TestBackend`): (a) a model rebuilt with one more reservation renders that reservation in the Overview and Reservations panes; (b) no pane's text contains any of the five fields (`git_cost`, `journal_position`, …), nested section positions included; (c) every other model field is reachable through exactly one pane; (d) a failed rebuild keeps the previous rows and position, shows the failure, and the next check retries; (e) selection and scroll survive a rebuild, clamped; (f) a check with an unchanged position runs no reconcile; (g) sustained input with no idle gap still refreshes by the deadline. The loop reads events and the clock through a trait the tests implement, so no test sleeps.
-6. Docs: README "Board" (~382–420) states the live refresh and that the raw diagnostics are in `board --json`, not the terminal board; CHANGELOG `Fixed` line; `docs/cargo-berth/as-built/parallel-phases.md` (~96–108, 137, and the known-defect lines ~151–152) and `worktree-coordination.md` (~434) describe the refresh and the Overview that shows only the table.
+6. Docs: README "Board" (~382–420) states the live refresh and that the raw diagnostics are in `board --json`, not the terminal board; CHANGELOG `Fixed` line; `docs/cargo-berth/as-built/parallel-phases.md` (~96–108, 137, and the known-defect lines ~151–152) and `worktree-coordination.md` (~440) describe the refresh and the Overview that shows only the table.
 
 **Files:**
 - `crates/cargo-berth/src/board/tui.rs` — event loop, refresh, panes, unit tests
@@ -210,10 +205,10 @@
 **Spec:**
 1. `ReservationReportSnapshot` (`src/output.rs` ~1058) gains `ordering_edges` and `overlap_answers`. `ordering_edges` holds every declared ordering constraint naming the reservation as predecessor or successor, waiting and settled, each in the same JSON shape the full board uses (`WaitingHold::OrderingEdge` fields, `SettledOrderingConstraint`); `overlap_answers` holds every live `RecordedOverlapAnswer` naming it. Empty arrays when none.
 2. Compute both from the same report the lifecycle read already reconciles (`execute_reservation_lifecycle` → `reservation_lifecycle_snapshot`), through the helpers `BoardModel::build` uses (`declared_ordering_constraints`, `board_overlap_answers`), filtered to the reservation — one derivation for both board answers, not a second copy. When extracting the shared answer projection, replace two `Option`s with semantic outcome enums: `board/answers.rs::reservation_answers` (`src/board/answers.rs:442`), whose `Option<(ReservationId, &[ConflictAuthorization])>` conflates an operation that records no answer with an answer that has no reservation binding, gets one variant for each; and `DeferralConsequence::from_lifecycles` (`src/board/rows.rs:462`), whose `None` means both endpoints have released, returns an enum with a variant for that case. Every wire layout stays unchanged.
-3. The JSON envelope's rendered `presentation` (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle details. The selector still requires `--json` (`worktree-coordination.md:436`).
+3. The JSON envelope's rendered `presentation` (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle details. The selector still requires `--json` (`worktree-coordination.md:442`).
 4. Regenerate the output contract; follow the versioning rule in `docs/cargo-berth/as-built/json-contract.md` for an added payload field.
 5. Tests in `tests/board.rs`: (a) a successor with a declared `--after` edge reports that edge from both the predecessor's and successor's `board --reservation` answers, for a waiting edge and a settled one; (b) an edge or answer between two other reservations is absent; (c) a reservation with a recorded overlap answer reports it, whether it asked or was answered about, and a released answer from history is not reported as live; (d) a reservation with neither reports empty arrays; (e) each entry equals the full board's entry for the same edge or answer, including an answer bound to an existing edge by a claim that widened behind it (phase 4), compared between the full board and both endpoints' `board --reservation` answers; (f) extend `reservation_report_and_presentation`'s exact presentation assertion (~2094); (g) unit tests in `src/board/answers.rs` and `src/board/rows.rs`: an answer with no reservation binding, and an answer whose endpoints have both released, never become live reservation answers. Extend `reservation_report`'s helper rather than adding a second one.
-6. Docs: json-contract.md "Named reservation lifecycle" (~560–620) and worktree-coordination.md (~436) describe the new fields; CHANGELOG `Fixed` line.
+6. Docs: json-contract.md "Named reservation lifecycle" (~560–620) and worktree-coordination.md (~442) describe the new fields; CHANGELOG `Fixed` line.
 
 **Files:**
 - `crates/cargo-berth/src/output.rs` — snapshot fields

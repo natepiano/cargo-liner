@@ -97,12 +97,14 @@ pub(crate) enum ClaimReservationSelection {
 | Answer | Paths to add | Record | `acquisition.kind` | Envelope status |
 | --- | --- | --- | --- | --- |
 | none, `--before`, `--after`, `--override` | some | `Widen { cause: Explicit { reason: "claim --reservation" } }` | `widened` | `widened` |
-| none, `--before`, `--after`, `--override` | none | `Answer { reservation_id: Some(id) }` | `already_held` | `answered` |
+| existing `--before`/`--after` with every scope already approved | none | no append | `already_held` | `answered` |
+| none, `--before`, `--after`, `--override`, otherwise | none | `Answer { reservation_id: Some(id) }` | `already_held` | `answered` |
 | `--defer` or default answer | any | `Answer { reservation_id: Some(id) }` | `answered` | `answered` |
 
 - The selected reservation keeps its recorded target, phase-start head, purpose and plan/phase. Widening needs no reservation slot, so it succeeds at `maximum_reservations`.
 - `consume` publishes the selected reservation to the session mapping for `already_held` and `answered` results itself, because `apply_journal_event` publishes nothing for an `Answer` event; a `Widen` publishes through the journal event as usual.
-- A repeated `--before` or `--after` that would add an endpoint pair the ordering graph already holds (`OrderingGraph::contains_sequence`) refuses as `duplicate_ordering_edge`, exit 2, before any journal write (`OutputEnvelope::claim_duplicate_ordering`).
+- A repeated `--before` or `--after` reuses the existing directed edge through `SequenceWithExistingEdges`. Its holder bindings distinguish `ExistingEdge` from `NewEdge`; reused edges keep their identity, direction and original reason, and authorize the newly approved scopes. Replay adds only new edges, and only those count toward the edge limit. The board records an answer row for each holder's new scopes against its bound edge.
+- When the selected reservation already holds every requested path and recorded answers cover the overlaps under those exact edges, validation returns `CommittedActionValidation::AlreadySatisfied`; the ledger returns `LedgerCommittedActionOutcome::AlreadySatisfied` without appending. `consume` still publishes the explicit session selection. An opposite-direction answer retains the existing contradiction refusal and `--replace` behavior. The `sequence` verb still refuses duplicate endpoint pairs.
 
 Replay binds an `Answer` event's authorizations to its `reservation_id`, and the board's replaced-edge view (`replaced_edges`, `src/board/answers.rs`) reads `Answer` events through `reservation_answers`.
 
@@ -166,8 +168,8 @@ With several active reservations and no selecting mapping, `from_unmapped_active
 | `src/session/mod.rs` | `FirstTouchSessionReservationMapping`, `SessionIdentityMappingPublication::LeftUnmapped`, `apply_journal_event`, `phase_reservation_sessions` |
 | `src/drift/selection.rs`, `src/hook/post_tool_use.rs` | `SoleRunCandidate` |
 | `src/drift/classification.rs`, `src/drift/observation.rs` | released-sibling checkpoint guard |
-| `src/edge/graph.rs` | `contains_sequence` |
-| `src/output.rs` | `overlap_holder_description`, `selected_claim`, `check_reservation_limit_reached`, `claim_duplicate_ordering`, `blocked_claim_with_answer_recovery`, `ambiguous_active_run_reservations` |
+| `src/edge/graph.rs` | `bind_claim_sequence` |
+| `src/output.rs` | `overlap_holder_description`, `selected_claim`, `check_reservation_limit_reached`, `blocked_claim_with_answer_recovery`, `ambiguous_active_run_reservations` |
 | `tests/parallel_phases.rs` | two-phase end-to-end, `left_unmapped`, sibling coverage, limit, released-sibling checkpoint, named claims |
 | `tests/hooks.rs`, `tests/lifecycle.rs`, `tests/overlap.rs` | hook selection, single-phase lifecycle, refusal text, ambiguity session labels |
 | `tests/answers.rs` | incomplete answers: before, defer, named phase, mixed, chooser after holder facts |

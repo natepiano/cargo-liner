@@ -46,8 +46,8 @@ use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::ReservationScopeSet;
@@ -768,8 +768,8 @@ fn transact_classification(
         |report, _, _| Ok::<DriftReport, Infallible>(report),
     );
     match outcome {
-        Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),
-        Ok(LedgerCommittedActionOutcome::Rejected(rejection)) => Err(rejection.into()),
+        Ok(LedgerReconciliationOutcome::Appended { output: report, .. }) => Ok(report),
+        Ok(LedgerReconciliationOutcome::Rejected(rejection)) => Err(rejection.into()),
         Err(LedgerCommittedActionError::Transaction(error)) => {
             Err(DriftExecutionError::Transaction(error))
         },

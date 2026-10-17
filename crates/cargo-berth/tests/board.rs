@@ -1554,6 +1554,95 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
 }
 
 #[test]
+fn widening_under_an_existing_before_edge_lists_its_new_scope_answer() {
+    assert_existing_ordering_widen_answer("--before", "requester_before_holder");
+}
+
+#[test]
+fn widening_under_an_existing_after_edge_lists_its_new_scope_answer() {
+    assert_existing_ordering_widen_answer("--after", "holder_before_requester");
+}
+
+fn assert_existing_ordering_widen_answer(flag: &str, direction: &str) {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "subject");
+    dirty_source(root, "shared/first.rs");
+    dirty_source(root, "shared/extra.rs");
+    let holder = claim(root, "tree:shared", FIRST_RUN);
+    assert_success(&holder);
+    let holder_id = reservation_id(&holder);
+    let initial = answered_claim(
+        &subject_root,
+        "file:shared/first.rs",
+        SECOND_RUN,
+        flag,
+        &holder_id,
+        "the original integration order",
+    );
+    assert_success(&initial);
+    let subject_id = reservation_id(&initial);
+    let initial_board = board_data(root);
+    let edge_id = initial_board["waiting"]["entries"][0]["edge_id"].clone();
+    let holder_scope_revision = initial_board["live_overlap_answers"]["entries"][0]
+        ["exact_approved_scopes"][0]["scope_revision"]
+        .as_str()
+        .expect("the initial answer records the unchanged holder's scope revision")
+        .to_owned();
+    let widened = run_berth_with_run(
+        &subject_root,
+        &[
+            "claim",
+            "file:shared/extra.rs",
+            "--reservation",
+            &subject_id,
+            flag,
+            &holder_id,
+            "--overlap-why",
+            "reuse the earlier order",
+            "--json",
+        ],
+        SECOND_RUN,
+    );
+    assert_success(&widened);
+
+    let data = board_data(root);
+    let answers = data["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live overlap answers");
+    let new_scopes = serde_json::json!([{
+        "reservation_id": holder_id,
+        "scope_revision": holder_scope_revision,
+        "scopes": [{"kind": "file", "path": "shared/extra.rs"}]
+    }]);
+    let added_answers = answers
+        .iter()
+        .filter(|answer| {
+            answer["reservation_id"] == subject_id && answer["exact_approved_scopes"] == new_scopes
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        added_answers.len(),
+        1,
+        "one answer names exactly the new scopes: {answers:?}"
+    );
+    let answer = added_answers[0];
+    assert_eq!(answer["blocker"], holder_id);
+    assert_eq!(answer["edge_id"], edge_id);
+    assert_eq!(answer["direction"], direction);
+    assert_eq!(
+        answer["authorization_reason"],
+        "the original integration order"
+    );
+    assert_eq!(answer["acquisition"]["origin"], "widen");
+    let edges = data["waiting"]["entries"]
+        .as_array()
+        .expect("one live edge");
+    assert_eq!(edges.len(), 1, "the new answer reuses the old edge: {data}");
+    assert_eq!(edges[0]["edge_id"], edge_id);
+}
+
+#[test]
 fn independent_ready_reservations_are_an_unnumbered_tie() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
