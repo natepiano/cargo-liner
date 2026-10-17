@@ -561,7 +561,7 @@ fraying = "leading"
         "│       │ Tiles:                                                       │       │",
         "│       │   initial rows       < 4 >                                   │       │",
         "│       │   fill               < redistribute >                        │       │",
-        "│       │   view               < auto >                                │       │",
+        "│       │   view               < cells >                               │       │",
         "│       │   widen summary      < true >                                │       │",
         "│       │ Machines:                                                    │       │",
         "│       │   remote             none                                    │       │",

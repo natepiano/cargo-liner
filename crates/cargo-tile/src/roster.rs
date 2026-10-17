@@ -548,6 +548,7 @@ mod tests {
     use crate::census::process_identity::ProcessIdentities;
     use crate::census::process_identity::ProcessIdentity;
     use crate::census::scan::AncestryWalk;
+    use crate::census::scan::InvocationResourceUse;
     use crate::constants::DEFAULT_FADE_SECONDS;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::MIN_FINISHED_ROW_CONTRAST;
@@ -965,11 +966,16 @@ mod tests {
             start: "10:00".to_string(),
             started: RunStart::Known(0),
             duration: "00:01".to_string(),
-            cpu: Measurement::Reading("0%".to_string()),
-            subtree_cpu: Measurement::Reading("0%".to_string()),
-            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            compiler: CompilerObservation::None,
+            resource_use: InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
+            subtree_resource_use: InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
             state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),
             nested: false,

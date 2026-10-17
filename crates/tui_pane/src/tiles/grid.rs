@@ -44,10 +44,16 @@
 //! line between them rather than sitting flush. [`crate::GridLines`]
 //! draws that line once for both.
 
+use std::cell::OnceCell;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::num::NonZeroU16;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use ratatui::layout::Layout;
@@ -224,7 +230,17 @@ struct FrameContentRowUsage {
     /// Whether the allocation is filled or contains the whole value.
     fit:      FrameHeightFit,
     /// Rows retained before a column mate may use the rest.
-    retained: RetainedRows,
+    retained: OnceLock<u16>,
+}
+
+impl FrameContentRowUsage {
+    fn retained_rows(&self) -> RetainedRows {
+        self.retained
+            .get()
+            .map_or(RetainedRows::Unmeasured, |rows| {
+                RetainedRows::Measured(*rows)
+            })
+    }
 }
 
 /// Whether an allocation has a filled span within its retained height bounds.
@@ -290,7 +306,112 @@ struct FrameCellRowUsage<Id> {
     /// The content whose allocations were inspected.
     content: TileContent<Id>,
     /// Answers at only the sizes this frame considered.
-    rows:    Vec<FrameContentRowUsage>,
+    rows:    FrameCellRowAnswers,
+}
+
+/// Frame answers indexed by width and height, retaining only requested sizes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct FrameCellRowAnswers {
+    first_width:  FrameWidthRowAnswers,
+    other_widths: HashMap<u16, FrameHeightRowAnswers>,
+    answers:      Vec<FrameContentRowUsage>,
+}
+
+/// The first measured width avoids a map lookup on the common frame path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum FrameWidthRowAnswers {
+    #[default]
+    Unmeasured,
+    Measured {
+        width: u16,
+        rows:  FrameHeightRowAnswers,
+    },
+}
+
+/// Index of a fully measured allocation in the frame's answer sequence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum FrameRowIndex {
+    #[default]
+    Unmeasured,
+    Measured(usize),
+}
+
+/// Finite heights are indexed directly; the whole-content probe stands apart.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct FrameHeightRowAnswers {
+    finite: Vec<FrameRowIndex>,
+    whole:  FrameRowIndex,
+}
+
+impl FrameHeightRowAnswers {
+    fn at(&self, height: u16) -> FrameRowIndex {
+        if height == u16::MAX {
+            self.whole
+        } else {
+            self.finite
+                .get(usize::from(height))
+                .copied()
+                .unwrap_or_default()
+        }
+    }
+
+    fn record(&mut self, height: u16, index: usize) {
+        if height == u16::MAX {
+            self.whole = FrameRowIndex::Measured(index);
+        } else {
+            let height = usize::from(height);
+            if self.finite.len() <= height {
+                self.finite.resize(height + 1, FrameRowIndex::Unmeasured);
+            }
+            self.finite[height] = FrameRowIndex::Measured(index);
+        }
+    }
+}
+
+/// Whether this frame has measured a content allocation.
+enum FrameRowAnswer<'a> {
+    Unmeasured,
+    Measured(&'a FrameContentRowUsage),
+}
+
+impl FrameCellRowAnswers {
+    fn index(&self, area: Rect) -> FrameRowIndex {
+        match &self.first_width {
+            FrameWidthRowAnswers::Measured { width, rows } if *width == area.width => {
+                rows.at(area.height)
+            },
+            _ => self
+                .other_widths
+                .get(&area.width)
+                .map_or(FrameRowIndex::Unmeasured, |rows| rows.at(area.height)),
+        }
+    }
+
+    fn answer(&self, area: Rect) -> FrameRowAnswer<'_> {
+        match self.index(area) {
+            FrameRowIndex::Unmeasured => FrameRowAnswer::Unmeasured,
+            FrameRowIndex::Measured(index) => FrameRowAnswer::Measured(&self.answers[index]),
+        }
+    }
+
+    fn record(&mut self, answer: FrameContentRowUsage) -> usize {
+        let index = self.answers.len();
+        if self.first_width == FrameWidthRowAnswers::Unmeasured {
+            self.first_width = FrameWidthRowAnswers::Measured {
+                width: answer.width,
+                rows:  FrameHeightRowAnswers::default(),
+            };
+        }
+        let rows = match &mut self.first_width {
+            FrameWidthRowAnswers::Measured { width, rows } if *width == answer.width => rows,
+            _ => self.other_widths.entry(answer.width).or_default(),
+        };
+        rows.record(answer.height, index);
+        self.answers.push(answer);
+        index
+    }
+
+    fn values(&self) -> impl Iterator<Item = &FrameContentRowUsage> { self.answers.iter() }
 }
 
 /// Which row-usage pass controls a moving frame's divider placement.
@@ -324,7 +445,7 @@ impl<Id: Eq> HeightSnap<'_, Id> {
             &cell.content == content
                 && cell
                     .rows
-                    .iter()
+                    .values()
                     .any(|rows| rows.fit == FrameHeightFit::LeavesGap)
         })
     }
@@ -640,165 +761,156 @@ enum LastSettledCellGeometry {
 
 /// How one measured content allocation fits, with an unmeasured size rejected.
 fn frame_height_fit<Id: Eq>(
-    frame_row_usage: &[FrameCellRowUsage<Id>],
+    usage: &[FrameCellRowUsage<Id>],
     content: &TileContent<Id>,
     area: Rect,
 ) -> FrameHeightFit {
-    frame_row_usage
+    match usage
         .iter()
         .find(|cell| &cell.content == content)
-        .and_then(|cell| {
-            cell.rows
-                .iter()
-                .find(|rows| rows.width == area.width && rows.height == area.height)
-        })
-        .map_or(FrameHeightFit::LeavesGap, |rows| rows.fit)
+        .map(|cell| cell.rows.answer(area))
+    {
+        Some(FrameRowAnswer::Measured(rows)) => rows.fit,
+        _ => FrameHeightFit::LeavesGap,
+    }
 }
 
 /// The retained-row answer for one measured content allocation.
 fn frame_retained_rows<Id: Eq>(
-    frame_row_usage: &[FrameCellRowUsage<Id>],
+    usage: &[FrameCellRowUsage<Id>],
     content: &TileContent<Id>,
     area: Rect,
 ) -> RetainedRows {
-    frame_row_usage
+    match usage
         .iter()
         .find(|cell| &cell.content == content)
-        .and_then(|cell| {
-            cell.rows
-                .iter()
-                .find(|rows| rows.width == area.width && rows.height == area.height)
-        })
-        .map_or(RetainedRows::Unmeasured, |rows| rows.retained)
+        .map(|cell| cell.rows.answer(area))
+    {
+        Some(FrameRowAnswer::Measured(rows)) => rows.retained_rows(),
+        _ => RetainedRows::Unmeasured,
+    }
 }
 
 /// Painted rows at one recorded allocation, keeping unmeasured rows in place.
 fn frame_painted_rows<Id: Eq>(
-    frame_row_usage: &[FrameCellRowUsage<Id>],
+    usage: &[FrameCellRowUsage<Id>],
     content: &TileContent<Id>,
     area: Rect,
 ) -> u16 {
-    frame_row_usage
+    match usage
         .iter()
         .find(|cell| &cell.content == content)
-        .and_then(|cell| {
-            cell.rows
-                .iter()
-                .find(|rows| rows.width == area.width && rows.height == area.height)
+        .map(|cell| cell.rows.answer(area))
+    {
+        Some(FrameRowAnswer::Measured(rows)) => rows.drawn,
+        _ => area.height,
+    }
+}
+
+/// Frame-cache index for a content identity, retaining stable cell order.
+fn frame_cell_index<Id: Clone + Eq>(
+    usage: &mut Vec<FrameCellRowUsage<Id>>,
+    content: &TileContent<Id>,
+) -> usize {
+    usage
+        .iter()
+        .position(|cell| &cell.content == content)
+        .unwrap_or_else(|| {
+            usage.push(FrameCellRowUsage {
+                content: content.clone(),
+                rows:    FrameCellRowAnswers::default(),
+            });
+            usage.len() - 1
         })
-        .map_or(area.height, |rows| rows.drawn)
 }
 
 /// Record one content-area answer, reusing an answer already gathered this frame.
+#[cfg(test)]
 fn measure_frame_row_usage<Id: Clone + Eq>(
-    frame_row_usage: &mut Vec<FrameCellRowUsage<Id>>,
+    usage: &mut Vec<FrameCellRowUsage<Id>>,
     content: &TileContent<Id>,
     area: Rect,
     rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
 ) -> u16 {
-    let cell = frame_row_usage
-        .iter()
-        .position(|cell| &cell.content == content);
-    if let Some(drawn) = cell.and_then(|cell| {
-        frame_row_usage[cell]
-            .rows
-            .iter()
-            .find(|rows| rows.width == area.width && rows.height == area.height)
-            .map(|rows| rows.drawn)
-    }) {
-        return drawn;
-    }
-    let drawn = rows_drawn(content, area).min(area.height);
-    let fit = if drawn == area.height {
-        FrameHeightFit::Filled
-    } else {
-        let whole_area = Rect {
-            height: u16::MAX,
-            ..area
-        };
-        let cached_whole = frame_row_usage
-            .iter()
-            .find(|cell| &cell.content == content)
-            .and_then(|cell| {
-                cell.rows
-                    .iter()
-                    .find(|rows| rows.width == whole_area.width && rows.height == whole_area.height)
-            })
-            .map(|rows| rows.drawn);
-        let whole = cached_whole.unwrap_or_else(|| {
-            let whole = rows_drawn(content, whole_area);
-            let usage = FrameContentRowUsage {
-                width:    whole_area.width,
-                height:   whole_area.height,
-                drawn:    whole,
-                fit:      FrameHeightFit::Whole,
-                retained: RetainedRows::Unmeasured,
-            };
-            if let Some(cell) = cell {
-                frame_row_usage[cell].rows.push(usage);
+    let index = frame_cell_index(usage, content);
+    measured_content_rows(&mut usage[index].rows, content, area, rows_drawn).drawn
+}
+
+/// Supply one stored answer, including a whole-content answer when needed.
+fn measured_content_rows<'a, Id>(
+    answers: &'a mut FrameCellRowAnswers,
+    content: &TileContent<Id>,
+    area: Rect,
+    rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
+) -> &'a FrameContentRowUsage {
+    let index = match answers.index(area) {
+        FrameRowIndex::Measured(index) => index,
+        FrameRowIndex::Unmeasured => {
+            let drawn = rows_drawn(content, area).min(area.height);
+            let fit = if drawn == area.height {
+                FrameHeightFit::Filled
+            } else if area.height == u16::MAX {
+                FrameHeightFit::Whole
             } else {
-                frame_row_usage.push(FrameCellRowUsage {
-                    content: content.clone(),
-                    rows:    vec![usage],
-                });
-            }
-            whole
-        });
-        if drawn >= whole {
-            FrameHeightFit::Whole
-        } else {
-            FrameHeightFit::LeavesGap
-        }
+                let whole_area = Rect {
+                    height: u16::MAX,
+                    ..area
+                };
+                let whole = match answers.answer(whole_area) {
+                    FrameRowAnswer::Measured(rows) => rows.drawn,
+                    FrameRowAnswer::Unmeasured => {
+                        let whole = rows_drawn(content, whole_area);
+                        answers.record(FrameContentRowUsage {
+                            width:    area.width,
+                            height:   u16::MAX,
+                            drawn:    whole,
+                            fit:      FrameHeightFit::Whole,
+                            retained: OnceLock::new(),
+                        });
+                        whole
+                    },
+                };
+                if drawn >= whole {
+                    FrameHeightFit::Whole
+                } else {
+                    FrameHeightFit::LeavesGap
+                }
+            };
+            answers.record(FrameContentRowUsage {
+                width: area.width,
+                height: area.height,
+                drawn,
+                fit,
+                retained: OnceLock::new(),
+            })
+        },
     };
-    let usage = FrameContentRowUsage {
-        width: area.width,
-        height: area.height,
-        drawn,
-        fit,
-        retained: RetainedRows::Unmeasured,
-    };
-    if let Some(cell) = frame_row_usage
-        .iter()
-        .position(|cell| &cell.content == content)
-    {
-        frame_row_usage[cell].rows.push(usage);
-    } else {
-        frame_row_usage.push(FrameCellRowUsage {
-            content: content.clone(),
-            rows:    vec![usage],
-        });
-    }
-    drawn
+    &answers.answers[index]
 }
 
 /// Record painted and retained rows together, reusing this frame's answer.
 fn measure_frame_row_use<Id: Clone + Eq>(
-    frame_row_usage: &mut Vec<FrameCellRowUsage<Id>>,
+    usage: &mut Vec<FrameCellRowUsage<Id>>,
     content: &TileContent<Id>,
     area: Rect,
     rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
     rows_kept: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
 ) -> u16 {
-    measure_frame_row_usage(frame_row_usage, content, area, rows_drawn);
-    let Some(cell) = frame_row_usage
-        .iter()
-        .position(|cell| &cell.content == content)
-    else {
-        return area.height;
-    };
-    let Some(row) = frame_row_usage[cell]
-        .rows
-        .iter()
-        .position(|rows| rows.width == area.width && rows.height == area.height)
-    else {
-        return area.height;
-    };
-    if let RetainedRows::Measured(kept) = frame_row_usage[cell].rows[row].retained {
-        return kept;
-    }
-    let kept = rows_kept(content, area).min(area.height);
-    frame_row_usage[cell].rows[row].retained = RetainedRows::Measured(kept);
-    kept
+    let index = frame_cell_index(usage, content);
+    measure_cell_retained_rows(&mut usage[index], area, rows_drawn, rows_kept)
+}
+
+/// Record both purposes directly through a known frame cell index.
+fn measure_cell_retained_rows<Id>(
+    cell: &mut FrameCellRowUsage<Id>,
+    area: Rect,
+    rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
+    rows_kept: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
+) -> u16 {
+    let rows = measured_content_rows(&mut cell.rows, &cell.content, area, rows_drawn);
+    *rows
+        .retained
+        .get_or_init(|| rows_kept(&cell.content, area).min(area.height))
 }
 
 impl<Id> TileDrawing<Id> {
@@ -1117,6 +1229,8 @@ pub struct TileGrid<Id> {
     focus:                  Focus<Id>,
     /// The sizes and timings the grid is laid out and animated with.
     settings:               TileSettings,
+    /// Summary clip rectangles painted by the last grid draw.
+    painted_summary_frames: Vec<Rect>,
     /// Content-row usage at every size inspected during the current frame.
     frame_row_usage:        Vec<FrameCellRowUsage<Id>>,
     /// Cell geometry drawn by the last settled frame.
@@ -1153,6 +1267,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             next_slot:              0,
             focus:                  Focus::Summary,
             settings:               TileSettings::default(),
+            painted_summary_frames: Vec::new(),
             frame_row_usage:        Vec::new(),
             last_settled_geometry:  LastSettledCellGeometry::default(),
             motion_heights:         MotionHeightPath::default(),
@@ -1168,15 +1283,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Sets the rule that chooses command cells or the summary alone.
     ///
     /// A motion retains the view it began with. A settled grid applies
-    /// an explicit view at once; `auto` is committed by the next settled
-    /// frame.
+    /// a view at once.
     pub const fn set_view(&mut self, view: TileView) {
         self.settings.view = view;
         if !matches!(self.motion, GridMotion::Settled) {
             return;
         }
         match view {
-            TileView::Auto => {},
             TileView::Summary => self.held_display = GridDisplay::SummaryAlone,
             TileView::Cells => self.held_display = GridDisplay::Cells,
         }
@@ -1187,7 +1300,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
     }
 
-    /// Probe destination row steps, then the nearby heights this moving frame may use.
+    /// Probe destination row steps, then nearby heights this moving frame may use.
     pub(super) fn measure_row_steps(
         &mut self,
         area: Rect,
@@ -1208,41 +1321,40 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .into_iter()
             .map(|(content, _)| content)
             .collect();
-        let mut frame_row_usage = Vec::<FrameCellRowUsage<Id>>::new();
+        let mut frame_row_usage: Vec<_> = contents
+            .iter()
+            .cloned()
+            .map(|content| FrameCellRowUsage {
+                content,
+                rows: FrameCellRowAnswers::default(),
+            })
+            .collect();
         let held = self.drawn_held();
-        let cells_grid =
-            Grid::with_rows_kept(area, &held, growth, &self.settings, &mut |index, area| {
-                contents.get(index).map_or(area.height, |content| {
-                    measure_frame_row_use(
-                        &mut frame_row_usage,
-                        content,
+        let cells_grid = Grid::with_row_use(
+            area,
+            &held,
+            growth,
+            &self.settings,
+            &mut |index, area, purpose| {
+                contents.get(index).map_or(area.height, |_| {
+                    let kept = measure_cell_retained_rows(
+                        &mut frame_row_usage[index],
                         area,
                         &mut rows_drawn,
                         &mut rows_kept,
-                    )
+                    );
+                    match purpose {
+                        RowUsePurpose::RetainContent => kept,
+                        RowUsePurpose::PaintContent => {
+                            match frame_row_usage[index].rows.answer(area) {
+                                FrameRowAnswer::Measured(rows) => rows.drawn,
+                                FrameRowAnswer::Unmeasured => area.height,
+                            }
+                        },
+                    }
                 })
-            });
-        let cells_grid =
-            if cells_grid.has_content_gap_beside_cut(&held, &contents, &frame_row_usage) {
-                Grid::with_rows_kept(area, &held, growth, &self.settings, &mut |index, area| {
-                    contents.get(index).map_or(area.height, |content| {
-                        let kept = measure_frame_row_use(
-                            &mut frame_row_usage,
-                            content,
-                            area,
-                            &mut rows_drawn,
-                            &mut rows_kept,
-                        );
-                        if cells_grid.grows_content(index, area) {
-                            frame_painted_rows(&frame_row_usage, content, area)
-                        } else {
-                            kept
-                        }
-                    })
-                })
-            } else {
-                cells_grid
-            };
+            },
+        );
         let cells_grid = self.bound_retargeted_destination(
             cells_grid,
             &contents,
@@ -1405,10 +1517,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     !self.demands.holds(id)
                         && row_usage.iter().any(|cell| {
                             &cell.content == content
-                                && cell.rows.iter().any(|rows| {
+                                && cell.rows.values().any(|rows| {
                                     rows.height > 0 && rows.fit == FrameHeightFit::Whole
                                 })
-                                && cell.rows.iter().all(|rows| rows.drawn == 0)
+                                && cell.rows.values().all(|rows| rows.drawn == 0)
                         })
                 },
                 TileContent::Empty(_) => true,
@@ -1625,7 +1737,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         self.held_display = match self.settings.view {
             TileView::Summary => GridDisplay::SummaryAlone,
-            TileView::Auto | TileView::Cells => GridDisplay::Cells,
+            TileView::Cells => GridDisplay::Cells,
         };
     }
 
@@ -1654,27 +1766,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .into_iter()
             .map(|(content, _)| content)
             .collect();
-        let mut grid =
-            Grid::with_rows_kept(area, held, growth, &self.settings, &mut |index, area| {
+        let mut grid = Grid::with_row_use(
+            area,
+            held,
+            growth,
+            &self.settings,
+            &mut |index, area, purpose| {
                 contents
                     .get(index)
-                    .map_or(area.height, |content| self.frame_rows_kept(content, area))
-            });
+                    .map_or(area.height, |content| match purpose {
+                        RowUsePurpose::RetainContent => self.frame_rows_kept(content, area),
+                        RowUsePurpose::PaintContent => {
+                            frame_painted_rows(&self.frame_row_usage, content, area)
+                        },
+                    })
+            },
+        );
         if slots == self.slots && self.apply_retargeted_destination(&mut grid) {
             return grid;
         }
-        if !grid.has_content_gap_beside_cut(held, &contents, &self.frame_row_usage) {
-            return grid;
-        }
-        Grid::with_rows_kept(area, held, growth, &self.settings, &mut |index, area| {
-            contents.get(index).map_or(area.height, |content| {
-                if grid.grows_content(index, area) {
-                    frame_painted_rows(&self.frame_row_usage, content, area)
-                } else {
-                    self.frame_rows_kept(content, area)
-                }
-            })
-        })
+        grid
     }
 
     /// What the grid is drawn at, worked out fresh whenever no settled
@@ -1797,6 +1908,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     TileContent::Group(_) | TileContent::Empty(_) => width,
                 };
                 (content, width)
+            })
+            .collect()
+    }
+
+    /// Existing allocation layout used to prepare widths before the demand pass.
+    pub(super) fn preparation_allocations(
+        &self,
+        area: Rect,
+        growth: TileGrowth,
+    ) -> Vec<(TileContent<Id>, Rect)> {
+        if self.display() == GridDisplay::SummaryAlone {
+            return vec![(TileContent::Summary, draw::content_area(frame_inner(area)))];
+        }
+        let layout = self.resolved_grid(area, &self.demand_measurement_held(), growth);
+        cells(&self.slots)
+            .into_iter()
+            .filter_map(|(content, index)| {
+                layout
+                    .cell(index)
+                    .map(|rect| (content, draw::content_area(frame_inner(rect))))
             })
             .collect()
     }
@@ -2832,6 +2963,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect()
     }
 
+    /// Summary clip rectangles painted by the most recent `draw_tile_grid` call.
+    #[must_use]
+    pub fn painted_summary_frames(&self) -> &[Rect] { &self.painted_summary_frames }
+
+    pub(super) fn record_painted_summary_frames(&mut self, frames: Vec<Rect>) {
+        self.painted_summary_frames = frames;
+    }
+
     /// Every piece and column frame to draw at one reading of the
     /// transition clock.
     pub(super) fn drawing(&self, area: Rect, growth: TileGrowth) -> TileDrawing<Id> {
@@ -3141,6 +3280,13 @@ struct Grid {
     min_tile_height: u16,
 }
 
+/// Choose retained content for donors and painted content for receiving steps.
+#[derive(Clone, Copy)]
+enum RowUsePurpose {
+    RetainContent,
+    PaintContent,
+}
+
 /// Geometry needed to turn one proposed share into its content area.
 struct RowProbeLayout<'a> {
     area:         Rect,
@@ -3203,45 +3349,52 @@ fn column_layout(count: usize, held_depth: usize, growth: TileGrowth) -> ColumnL
     }
 }
 
+/// Content readings used to divide one grid into shared columns.
+enum GridRowReadings<'a> {
+    #[cfg(test)]
+    Intrinsic,
+    Measured(&'a mut dyn FnMut(usize, Rect, RowUsePurpose) -> u16),
+}
+
+impl GridRowReadings<'_> {
+    fn column_shares(
+        &mut self,
+        wants: &[CellRowDemand],
+        probe: &RowProbeLayout<'_>,
+        head: ColumnHead,
+        focused: ColumnFocus,
+    ) -> Vec<PaneAxisSize> {
+        match self {
+            #[cfg(test)]
+            Self::Intrinsic => shares(
+                wants,
+                probe.band.height,
+                head,
+                focused,
+                probe.settings.min_tile_height,
+            ),
+            Self::Measured(rows_use) => {
+                let first = probe.first_cell - TABLE_CELL;
+                let mut unused_rows = |row: usize, rows: u16, purpose: RowUsePurpose| {
+                    let available = probe.content_area(row, rows);
+                    let kept = rows_use(first.saturating_add(row), available, purpose)
+                        .min(available.height);
+                    available.height.saturating_sub(kept)
+                };
+                shares_with_directional_row_usage(
+                    wants,
+                    probe.band.height,
+                    head,
+                    focused,
+                    probe.settings.min_tile_height,
+                    &mut unused_rows,
+                )
+            },
+        }
+    }
+}
+
 impl Grid {
-    /// Whether a measured incomplete piece holds an unused row beside a cut mate.
-    fn has_content_gap_beside_cut<Id: Eq>(
-        &self,
-        held: &HeldCellLayout,
-        contents: &[TileContent<Id>],
-        row_usage: &[FrameCellRowUsage<Id>],
-    ) -> bool {
-        self.resolved.panes.iter().any(|pane| {
-            let Some(content) = contents.get(pane.pane.saturating_sub(TABLE_CELL)) else {
-                return false;
-            };
-            let area = draw::content_area(frame_inner(pane.area));
-            let leaves_gap = row_usage.iter().any(|cell| {
-                &cell.content == content
-                    && cell.rows.iter().any(|rows| {
-                        rows.width == area.width
-                            && rows.height == area.height
-                            && rows.fit == FrameHeightFit::LeavesGap
-                    })
-            });
-            leaves_gap
-                && self.resolved.panes.iter().any(|mate| {
-                    mate.pane != pane.pane
-                        && self.column_of(mate.pane) == self.column_of(pane.pane)
-                        && held
-                            .rows
-                            .get(mate.pane.saturating_sub(TABLE_CELL))
-                            .is_some_and(|demand| mate.area.height < demand.exact_framed())
-                })
-        })
-    }
-
-    /// Whether this allocation gives the cell more content rows than it holds.
-    fn grows_content(&self, index: usize, area: Rect) -> bool {
-        self.cell(index.saturating_add(TABLE_CELL))
-            .is_some_and(|cell| area.height > draw::content_area(frame_inner(cell)).height)
-    }
-
     /// Resolve the cells `held` describes against `area`.
     ///
     /// The first column is divided before the rest, because the summary
@@ -3251,16 +3404,33 @@ impl Grid {
     /// only what is left below it.
     #[cfg(test)]
     fn new(area: Rect, held: &HeldCellLayout, growth: TileGrowth, settings: &TileSettings) -> Self {
-        Self::with_rows_kept(area, held, growth, settings, &mut |_, area| area.height)
+        Self::with_row_readings(area, held, growth, settings, GridRowReadings::Intrinsic)
     }
 
     /// Resolve cells while moving room only in steps their contents retain.
-    fn with_rows_kept(
+    fn with_row_use(
         area: Rect,
         held: &HeldCellLayout,
         growth: TileGrowth,
         settings: &TileSettings,
-        rows_kept: &mut impl FnMut(usize, Rect) -> u16,
+        rows_use: &mut impl FnMut(usize, Rect, RowUsePurpose) -> u16,
+    ) -> Self {
+        Self::with_row_readings(
+            area,
+            held,
+            growth,
+            settings,
+            GridRowReadings::Measured(rows_use),
+        )
+    }
+
+    /// Resolve measured content or intrinsic demands at the same column geometry.
+    fn with_row_readings(
+        area: Rect,
+        held: &HeldCellLayout,
+        growth: TileGrowth,
+        settings: &TileSettings,
+        mut readings: GridRowReadings<'_>,
     ) -> Self {
         let count = held.rows.len();
         let ColumnLayout {
@@ -3307,19 +3477,7 @@ impl Grid {
                 summary_span: held.summary_span,
                 settings,
             };
-            let mut unused_rows = |row: usize, rows: u16| {
-                let available = probe.content_area(row, rows);
-                let kept = rows_kept(first.saturating_add(row), available).min(available.height);
-                available.height.saturating_sub(kept)
-            };
-            let shares = shares_with_row_usage(
-                wants,
-                band.height,
-                column_head,
-                focused,
-                settings.min_tile_height,
-                &mut unused_rows,
-            );
+            let shares = readings.column_shares(wants, &probe, column_head, focused);
             for (row, &cell) in Layout::vertical(constraints_for_sizes(&shares))
                 .split(band)
                 .iter()
@@ -3591,17 +3749,101 @@ fn shares(
     focused: ColumnFocus,
     floor: u16,
 ) -> Vec<PaneAxisSize> {
-    shares_with_row_usage(wants, height, head, focused, floor, &mut |_, _| 0)
+    solve_column_shares(
+        wants,
+        height,
+        head,
+        focused,
+        floor,
+        &mut DemandOnlyColumnRows {
+            exact: disjoint_demands(
+                wants.iter().map(|demand| demand.exact_framed()),
+                height,
+                floor,
+            ),
+        },
+    )
 }
 
-/// Divide one column with its content use answered at each considered height.
-fn shares_with_row_usage(
+/// Row-use readings available to a column's shared allocation solver.
+trait ColumnRowReadings {
+    fn unused(&mut self, index: usize, rows: u16, purpose: RowUsePurpose) -> u16;
+}
+
+/// Intrinsic content fills each allocation only up to its exact demand.
+struct DemandOnlyColumnRows {
+    exact: Vec<u16>,
+}
+
+impl ColumnRowReadings for DemandOnlyColumnRows {
+    fn unused(&mut self, index: usize, rows: u16, _: RowUsePurpose) -> u16 {
+        rows.saturating_sub(self.exact[index])
+    }
+}
+
+/// Whether a column has already asked for one content allocation.
+#[derive(Clone, Copy)]
+enum ColumnRowAnswer {
+    Unmeasured,
+    Measured(u16),
+}
+
+/// Lazily measured content use, indexed by tile, height and purpose.
+struct ColumnRowUse<'m, F> {
+    measure: &'m mut F,
+    answers: Vec<Vec<[ColumnRowAnswer; 2]>>,
+}
+
+impl<'m, F: FnMut(usize, u16, RowUsePurpose) -> u16> ColumnRowUse<'m, F> {
+    fn new(count: usize, measure: &'m mut F) -> Self {
+        Self {
+            measure,
+            answers: vec![Vec::new(); count],
+        }
+    }
+}
+
+impl<F: FnMut(usize, u16, RowUsePurpose) -> u16> ColumnRowReadings for ColumnRowUse<'_, F> {
+    fn unused(&mut self, index: usize, rows: u16, purpose: RowUsePurpose) -> u16 {
+        let purpose_index = match purpose {
+            RowUsePurpose::RetainContent => 0,
+            RowUsePurpose::PaintContent => 1,
+        };
+        let answers = &mut self.answers[index];
+        if answers.len() <= usize::from(rows) {
+            answers.resize(usize::from(rows) + 1, [ColumnRowAnswer::Unmeasured; 2]);
+        }
+        let answer = &mut answers[usize::from(rows)][purpose_index];
+        match *answer {
+            ColumnRowAnswer::Measured(unused) => unused,
+            ColumnRowAnswer::Unmeasured => {
+                let unused = (self.measure)(index, rows, purpose);
+                *answer = ColumnRowAnswer::Measured(unused);
+                unused
+            },
+        }
+    }
+}
+
+fn shares_with_directional_row_usage(
     wants: &[CellRowDemand],
     height: u16,
     head: ColumnHead,
     focused: ColumnFocus,
     floor: u16,
-    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+    unused_rows: &mut impl FnMut(usize, u16, RowUsePurpose) -> u16,
+) -> Vec<PaneAxisSize> {
+    let mut measured = ColumnRowUse::new(wants.len(), unused_rows);
+    solve_column_shares(wants, height, head, focused, floor, &mut measured)
+}
+
+fn solve_column_shares(
+    wants: &[CellRowDemand],
+    height: u16,
+    head: ColumnHead,
+    focused: ColumnFocus,
+    floor: u16,
+    measured: &mut impl ColumnRowReadings,
 ) -> Vec<PaneAxisSize> {
     let count = wants.len();
     if count == 0 {
@@ -3622,7 +3864,7 @@ fn shares_with_row_usage(
         height,
         floor,
     );
-    let minimum = disjoint_demands(std::iter::repeat_n(floor, count), height, floor);
+    let mut minimum = disjoint_demands(std::iter::repeat_n(floor, count), height, floor);
 
     let mut short: Vec<u16> = want
         .iter()
@@ -3674,9 +3916,20 @@ fn shares_with_row_usage(
         .collect();
     if let ColumnHead::Summary(depth) = head {
         let positions = count.saturating_add(depth.saturating_sub(1));
+        let held_summary = settled[0];
         lend_to_summary(&mut settled, &exact, height, positions, &minimum);
+        if settled[0] > held_summary
+            && settled[0] >= exact[0]
+            && measured.unused(0, settled[0], RowUsePurpose::PaintContent) == 0
+        {
+            minimum[0] = minimum[0].max(exact[0].saturating_sub(measured.unused(
+                0,
+                exact[0],
+                RowUsePurpose::RetainContent,
+            )));
+        }
     }
-    serve_exact_shortfalls(&mut settled, &exact, &minimum, unused_rows);
+    serve_directional_shortfalls(&mut settled, &exact, &minimum, measured);
     settled.into_iter().map(PaneAxisSize::Fixed).collect()
 }
 
@@ -3735,12 +3988,144 @@ fn lend_to_summary(
     }
 }
 
-/// Move available rows in the smallest units that let a recipient draw more.
-fn serve_exact_shortfalls(
+/// A donor's fixed, nonempty supply of rows that preserve protected content.
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct DonorSupply {
+    framed_height: u16,
+    index:         usize,
+    remaining:     NonZeroU16,
+}
+
+/// A recipient step that increases retained content, or preserves it and paints more.
+struct RecipientContentGain {
+    index:      usize,
+    rows:       u16,
+    protection: RowUsePurpose,
+}
+
+/// Whether a candidate allocation increases the column's content measure.
+enum RecipientRowStep {
+    NoContentGain,
+    Gain(RecipientContentGain),
+}
+
+impl RecipientRowStep {
+    fn measure(
+        index: usize,
+        rows: u16,
+        painted: u16,
+        retained: u16,
+        measured: &mut impl ColumnRowReadings,
+    ) -> Self {
+        let next_painted =
+            rows.saturating_sub(measured.unused(index, rows, RowUsePurpose::PaintContent));
+        if next_painted <= painted {
+            return Self::NoContentGain;
+        }
+        let next_retained =
+            rows.saturating_sub(measured.unused(index, rows, RowUsePurpose::RetainContent));
+        let protection = match next_retained.cmp(&retained) {
+            Ordering::Greater => RowUsePurpose::RetainContent,
+            Ordering::Equal => RowUsePurpose::PaintContent,
+            Ordering::Less => return Self::NoContentGain,
+        };
+        Self::Gain(RecipientContentGain {
+            index,
+            rows,
+            protection,
+        })
+    }
+}
+
+/// A content gain funded entirely by the plan's fixed donor supplies.
+enum ColumnTransfer<'a> {
+    Unfunded,
+    Funded {
+        gain:          RecipientContentGain,
+        donor_heights: &'a [u16],
+    },
+}
+
+impl ColumnTransfer<'_> {
+    const fn apply(self, settled: &mut [u16]) -> bool {
+        match self {
+            Self::Unfunded => false,
+            Self::Funded {
+                gain,
+                donor_heights,
+            } => {
+                settled.copy_from_slice(donor_heights);
+                settled[gain.index] = gain.rows;
+                true
+            },
+        }
+    }
+}
+
+/// An ordered sequence of donor rows, spending only its initial supplies.
+struct ColumnDonations {
+    heights:   Vec<u16>,
+    available: BinaryHeap<DonorSupply>,
+    donated:   u16,
+}
+
+impl ColumnDonations {
+    fn new(
+        recipient: usize,
+        settled: &[u16],
+        exact: &[u16],
+        minimum: &[u16],
+        protection: RowUsePurpose,
+        measured: &mut impl ColumnRowReadings,
+    ) -> Self {
+        let mut available = BinaryHeap::new();
+        for index in 0..settled.len() {
+            if index == recipient {
+                continue;
+            }
+            let free = directional_spare_rows(index, settled, exact, minimum, protection, measured);
+            if let Some(remaining) = NonZeroU16::new(free) {
+                available.push(DonorSupply {
+                    framed_height: settled[index]
+                        .saturating_add(u16::from(index + 1 < settled.len())),
+                    index,
+                    remaining,
+                });
+            }
+        }
+        Self {
+            heights: settled.to_vec(),
+            available,
+            donated: 0,
+        }
+    }
+
+    fn transfer(&mut self, gain: RecipientContentGain) -> ColumnTransfer<'_> {
+        let rows = gain.rows.saturating_sub(self.heights[gain.index]);
+        while self.donated < rows {
+            let Some(mut donor) = self.available.pop() else {
+                return ColumnTransfer::Unfunded;
+            };
+            self.heights[donor.index] -= 1;
+            self.donated += 1;
+            if let Some(remaining) = NonZeroU16::new(donor.remaining.get() - 1) {
+                donor.remaining = remaining;
+                donor.framed_height -= 1;
+                self.available.push(donor);
+            }
+        }
+        ColumnTransfer::Funded {
+            gain,
+            donor_heights: &self.heights,
+        }
+    }
+}
+
+fn serve_directional_shortfalls(
     settled: &mut [u16],
     exact: &[u16],
     minimum: &[u16],
-    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+    measured: &mut impl ColumnRowReadings,
 ) {
     loop {
         let mut recipients: Vec<usize> = (0..settled.len())
@@ -3750,15 +4135,53 @@ fn serve_exact_shortfalls(
             .sort_by_key(|&index| Reverse((exact[index].saturating_sub(settled[index]), index)));
         let mut moved = false;
         for recipient in recipients {
-            let free = (0..settled.len())
+            let held = settled[recipient];
+            let painted =
+                held.saturating_sub(measured.unused(recipient, held, RowUsePurpose::PaintContent));
+            let retained =
+                held.saturating_sub(measured.unused(recipient, held, RowUsePurpose::RetainContent));
+            let available = (0..settled.len())
                 .filter(|&index| index != recipient)
-                .map(|index| spare_rows(index, settled, exact, minimum, unused_rows))
+                .map(|index| {
+                    donation_row_limit(
+                        index,
+                        settled,
+                        exact,
+                        minimum,
+                        RowUsePurpose::RetainContent,
+                        measured,
+                    )
+                })
                 .fold(0, u16::saturating_add);
-            if let UsefulRowStep::Fits(step) =
-                next_useful_step(recipient, settled, exact, free, unused_rows)
-            {
-                moved = move_useful_step(recipient, step, settled, exact, minimum, unused_rows)
-                    == UsefulStepTransfer::Completed;
+            let retained_donations = OnceCell::new();
+            let painted_donations = OnceCell::new();
+            for step in 1..=exact[recipient].saturating_sub(held).min(available) {
+                let rows = held.saturating_add(step);
+                let RecipientRowStep::Gain(gain) =
+                    RecipientRowStep::measure(recipient, rows, painted, retained, measured)
+                else {
+                    continue;
+                };
+                let plan = match gain.protection {
+                    RowUsePurpose::RetainContent => &retained_donations,
+                    RowUsePurpose::PaintContent => &painted_donations,
+                };
+                let mut donations = plan
+                    .get_or_init(|| {
+                        RefCell::new(ColumnDonations::new(
+                            recipient,
+                            settled,
+                            exact,
+                            minimum,
+                            gain.protection,
+                            measured,
+                        ))
+                    })
+                    .borrow_mut();
+                if donations.transfer(gain).apply(settled) {
+                    moved = true;
+                    break;
+                }
             }
             if moved {
                 break;
@@ -3770,79 +4193,56 @@ fn serve_exact_shortfalls(
     }
 }
 
-/// Rows one cell can surrender at its current allocation.
-fn spare_rows(
+/// Consecutive removable rows whose lower allocations keep protected content.
+/// Paint-only gains also preserve donor retained content, so every transfer
+/// increases (total retained use, total painted use) in lexicographic order.
+fn directional_spare_rows(
     index: usize,
     settled: &[u16],
     exact: &[u16],
     minimum: &[u16],
-    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+    protection: RowUsePurpose,
+    measured: &mut impl ColumnRowReadings,
 ) -> u16 {
     let rows = settled[index];
-    let drawn = rows.saturating_sub(unused_rows(index, rows));
-    let retained = exact[index].min(drawn).max(minimum[index]);
-    rows.saturating_sub(retained)
+    let limit = donation_row_limit(index, settled, exact, minimum, protection, measured);
+    if limit == 0 {
+        return 0;
+    }
+    let used = rows.saturating_sub(measured.unused(index, rows, protection));
+    let retained = match protection {
+        RowUsePurpose::RetainContent => used,
+        RowUsePurpose::PaintContent => {
+            rows.saturating_sub(measured.unused(index, rows, RowUsePurpose::RetainContent))
+        },
+    };
+    (1..=limit)
+        .take_while(|&donated| {
+            let lower = rows - donated;
+            lower.saturating_sub(measured.unused(index, lower, protection)) == used
+                && (matches!(protection, RowUsePurpose::RetainContent)
+                    || lower.saturating_sub(measured.unused(
+                        index,
+                        lower,
+                        RowUsePurpose::RetainContent,
+                    )) == retained)
+        })
+        .last()
+        .unwrap_or_default()
 }
 
-/// Whether a recipient has a complete drawable step within the rows free.
-enum UsefulRowStep {
-    /// The number of rows that complete the next drawable step.
-    Fits(u16),
-    /// No drawable step fits the rows currently free.
-    NoFit,
-}
-
-/// Fewest additional rows that make one short cell draw more.
-fn next_useful_step(
-    recipient: usize,
+/// An upper bound on donor rows before lower allocations are measured.
+fn donation_row_limit(
+    index: usize,
     settled: &[u16],
     exact: &[u16],
-    free: u16,
-    unused_rows: &mut impl FnMut(usize, u16) -> u16,
-) -> UsefulRowStep {
-    let held = settled[recipient];
-    let drawn = held.saturating_sub(unused_rows(recipient, held));
-    let limit = exact[recipient].saturating_sub(held).min(free);
-    (1..=limit)
-        .find(|&step| {
-            let rows = held.saturating_add(step);
-            rows.saturating_sub(unused_rows(recipient, rows)) > drawn
-        })
-        .map_or(UsefulRowStep::NoFit, UsefulRowStep::Fits)
-}
-
-/// Result of gathering every row for one complete useful step.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum UsefulStepTransfer {
-    /// Every row moved as one unit.
-    Completed,
-    /// Remeasurement left too few spare rows to complete the unit.
-    InsufficientSpare,
-}
-
-/// Transfer one complete useful step from the tallest available donors.
-fn move_useful_step(
-    recipient: usize,
-    step: u16,
-    settled: &mut [u16],
-    exact: &[u16],
     minimum: &[u16],
-    unused_rows: &mut impl FnMut(usize, u16) -> u16,
-) -> UsefulStepTransfer {
-    let mut next = settled.to_vec();
-    for _ in 0..step {
-        let Some(donor) = (0..next.len())
-            .filter(|&index| index != recipient)
-            .filter(|&index| spare_rows(index, &next, exact, minimum, unused_rows) > 0)
-            .max_by_key(|&index| next[index].saturating_add(u16::from(index + 1 < next.len())))
-        else {
-            return UsefulStepTransfer::InsufficientSpare;
-        };
-        next[donor] = next[donor].saturating_sub(1);
-    }
-    next[recipient] = next[recipient].saturating_add(step);
-    settled.copy_from_slice(&next);
-    UsefulStepTransfer::Completed
+    protection: RowUsePurpose,
+    measured: &mut impl ColumnRowReadings,
+) -> u16 {
+    let rows = settled[index];
+    let used = rows.saturating_sub(measured.unused(index, rows, protection));
+    rows.saturating_sub(exact[index].min(used).max(minimum[index]))
 }
 
 /// Whether the positions of a grid retain a readable minimum size.
@@ -4692,6 +5092,9 @@ fn band_piece_dividers<Id: Eq>(
         }
         dividers
     };
+    if let Some(last) = dividers.last_mut() {
+        *last = (*last).min(floor);
+    }
     let resident_gap = min_tile_height.saturating_sub(1);
     let minimum_gaps = in_band
         .iter()
@@ -5312,6 +5715,12 @@ mod tests {
 
     use super::*;
     use crate::TileGridContents;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_CELLS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_INITIAL_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROW_STEP;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_WIDTHS;
     use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::SEVEN_CELL_MOVING_ROW_PROBE_COUNT;
     use crate::tiles::constants::SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT;
@@ -6367,7 +6776,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auto_view_keeps_cells_while_the_summary_draws_fewer_rows_beside_them() {
+    fn the_cells_view_keeps_cells_while_the_summary_draws_fewer_rows_beside_them() {
         let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(2), 20);
         let growth = TileGrowth::default();
         let cells = SameFrameSummaryCells { alone_rows: 8 };
@@ -6381,7 +6790,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auto_view_returns_to_cells_while_the_summary_is_cut_beside_them() {
+    fn the_cells_view_returns_while_the_summary_is_cut_beside_them() {
         let area = Rect::new(0, 0, TEST_WIDTH, 18);
         let growth = TileGrowth::default();
         let cells = ViewProbeCells {
@@ -6397,7 +6806,7 @@ mod tests {
         draw_view_frame(&mut grid, &cells, area, growth);
         assert_eq!(grid.display(), GridDisplay::SummaryAlone);
 
-        grid.set_view(TileView::Auto);
+        grid.set_view(TileView::Cells);
         draw_view_frame(&mut grid, &cells, area, growth);
 
         assert_eq!(grid.display(), GridDisplay::Cells);
@@ -6971,13 +7380,13 @@ mod tests {
     #[test]
     fn an_unusable_row_moves_when_its_cell_is_furthest_below_demand() {
         let wants = row_demands(&[100, 20, 20]);
-        let rows = shares_with_row_usage(
+        let rows = shares_with_directional_row_usage(
             &wants,
             TEST_HEIGHT,
             ColumnHead::Cell,
             ColumnFocus::Outside,
             MIN_TILE_HEIGHT,
-            &mut |index, rows| u16::from(index == 0 && rows == 13),
+            &mut |index, rows, _| u16::from(index == 0 && rows == 13),
         );
 
         assert_eq!(
@@ -6990,8 +7399,116 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_loaned_summary_yields_separators_to_hidden_process_rows() {
+        let wants = row_demands(&[12, 14]);
+        let rows = shares_with_directional_row_usage(
+            &wants,
+            21,
+            ColumnHead::Summary(1),
+            ColumnFocus::Outside,
+            MIN_TILE_HEIGHT,
+            &mut |index, rows, purpose| {
+                let used = match (index, purpose) {
+                    (0, RowUsePurpose::RetainContent) => rows.min(9),
+                    (0, RowUsePurpose::PaintContent) => rows.min(11),
+                    _ => rows.min(14),
+                };
+                rows.saturating_sub(used)
+            },
+        );
+        assert_eq!(rows, vec![PaneAxisSize::Fixed(9), PaneAxisSize::Fixed(12)]);
+    }
+
+    /// Row-use readings from a startup column whose transfers repeated.
+    #[derive(Default)]
+    struct StartupColumnRows {
+        readings: usize,
+    }
+
+    impl ColumnRowReadings for StartupColumnRows {
+        fn unused(&mut self, index: usize, rows: u16, purpose: RowUsePurpose) -> u16 {
+            self.readings += 1;
+            assert!(self.readings <= 512, "startup transfers do not finish");
+            let reading = match (index, rows) {
+                (0, 25..=31) => Some((rows - 25, 0)),
+                (0, 32) => Some((7, 0)),
+                (1, 6..=8) | (2, 5..=7) | (3, 6..=7) => Some((0, 0)),
+                (3, 8 | 10) => Some((1, 1)),
+                (3, 9) => Some((2, 1)),
+                _ => None,
+            };
+            let (retained, painted) = reading.expect("the startup fixture defines this allocation");
+            match purpose {
+                RowUsePurpose::RetainContent => retained,
+                RowUsePurpose::PaintContent => painted,
+            }
+        }
+    }
+
+    #[test]
+    fn a_donor_whose_row_use_jumps_as_it_shrinks_keeps_its_used_content() {
+        let exact = [32, 8, 7, 10];
+        let minimum = [5, 5, 5, 6];
+        let mut measured = StartupColumnRows::default();
+        for settled in [[29, 6, 5, 9], [30, 6, 5, 8], [28, 6, 5, 10]] {
+            for protection in [RowUsePurpose::PaintContent, RowUsePurpose::RetainContent] {
+                for index in [0, 3] {
+                    let held = settled[index];
+                    let used = held - measured.unused(index, held, protection);
+                    let spare = directional_spare_rows(
+                        index,
+                        &settled,
+                        &exact,
+                        &minimum,
+                        protection,
+                        &mut measured,
+                    );
+                    for donated in 1..=spare {
+                        let lower = held - donated;
+                        assert_eq!(
+                            lower - measured.unused(index, lower, protection),
+                            used,
+                            "tile {index} loses content at {held}->{lower}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_startup_column_with_nonmonotone_row_use_finishes_sharing() {
+        for mut settled in [[29, 6, 5, 9], [30, 6, 5, 8], [28, 6, 5, 10]] {
+            let mut measured = StartupColumnRows::default();
+            serve_directional_shortfalls(
+                &mut settled,
+                &[32, 8, 7, 10],
+                &[5, 5, 5, 6],
+                &mut measured,
+            );
+            assert_eq!(settled, [25, 7, 7, 10]);
+        }
+    }
+
+    #[test]
+    fn a_summary_separator_uses_a_mates_unpainted_spare_row() {
+        let mut shares = [10, 11];
+        let mut unused = |index, rows: u16, purpose| {
+            let used = match (index, purpose) {
+                (0, RowUsePurpose::RetainContent) => rows.min(9),
+                (0, RowUsePurpose::PaintContent) => rows.min(11),
+                _ => rows.min(10),
+            };
+            rows.saturating_sub(used)
+        };
+        let mut measured = ColumnRowUse::new(shares.len(), &mut unused);
+        serve_directional_shortfalls(&mut shares, &[11, 14], &[2, 3], &mut measured);
+        assert_eq!(shares, [11, 10]);
+    }
+
     /// Unused rows from the measured five-cell column at each considered height.
-    const fn measured_column_unused(index: usize, rows: u16) -> u16 {
+    const fn measured_column_unused(index: usize, rows: u16, _purpose: RowUsePurpose) -> u16 {
         match (index, rows) {
             (0 | 2 | 3, 6) => 1,
             _ => 0,
@@ -7004,7 +7521,9 @@ mod tests {
         let exact = [17, 11, 15, 15, 12];
         let minimum = [5, 5, 5, 5, 6];
 
-        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut measured_column_unused);
+        let mut unused = measured_column_unused;
+        let mut measured = ColumnRowUse::new(settled.len(), &mut unused);
+        serve_directional_shortfalls(&mut settled, &exact, &minimum, &mut measured);
 
         assert_eq!(settled, [7, 6, 5, 5, 6]);
     }
@@ -7015,7 +7534,9 @@ mod tests {
         let exact = [17, 11, 15, 15, 12];
         let minimum = [5, 5, 5, 5, 6];
 
-        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut measured_column_unused);
+        let mut unused = measured_column_unused;
+        let mut measured = ColumnRowUse::new(settled.len(), &mut unused);
+        serve_directional_shortfalls(&mut settled, &exact, &minimum, &mut measured);
 
         assert_eq!(settled[0], 7);
     }
@@ -7025,12 +7546,13 @@ mod tests {
         let mut settled = [6, 5, 5];
         let exact = [12, 12, 12];
         let minimum = [5, 5, 5];
-        let mut unused = |index, rows| match (index, rows) {
+        let mut unused = |index, rows, _| match (index, rows) {
             (0..=2, 6) => 1,
             _ => 0,
         };
 
-        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut unused);
+        let mut measured = ColumnRowUse::new(settled.len(), &mut unused);
+        serve_directional_shortfalls(&mut settled, &exact, &minimum, &mut measured);
 
         assert_eq!(settled, [6, 5, 5]);
     }
@@ -8889,6 +9411,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nonmonotone_starting_dividers_keep_every_piece_inside_its_band() {
+        let band = Rect::new(43, 79, 40, 14);
+        let rects = [
+            Rect::new(43, 79, 40, 12),
+            Rect::new(43, 85, 40, 2),
+            Rect::new(43, 86, 40, 7),
+        ];
+        let pieces: Vec<_> = rects
+            .iter()
+            .enumerate()
+            .map(|(index, &rect)| BandPiece {
+                column:   0,
+                motion:   BandPieceMotion::Resident {
+                    before: rect,
+                    after:  rect,
+                },
+                progress: 0,
+                drawn:    CellAppearance {
+                    content: TileContent::Group(index),
+                    focused: false,
+                },
+            })
+            .collect();
+        let held = HeldCellLayout {
+            rows: row_demands(&[4; 4]),
+            ..HeldCellLayout::default()
+        };
+        let grid = Grid::new(band, &held, TileGrowth::default(), &TileSettings::default());
+        let indices = [0, 1, 2];
+        let search = BandHeightSearch {
+            before_grid: &grid,
+            after_grid: &grid,
+            pieces: &pieces,
+            in_band: &indices,
+            band,
+            min_tile_height: 1,
+            height_snap: &HeightSnap::Off,
+        };
+        let dividers = band_piece_dividers(&search, band, band);
+        for (position, piece) in pieces.iter().enumerate() {
+            let rect = band_piece_rect(
+                &grid,
+                &grid,
+                piece,
+                band,
+                dividers[position],
+                dividers[position + 1],
+            );
+            let frame = piece_frame(piece.motion, rect, band);
+            assert_eq!(rect.intersection(band), rect, "{dividers:?}: {rect:?}");
+            assert_eq!(frame.clip().intersection(band), frame.clip());
+        }
+    }
+
     /// Draw one fixed progress point after probing a two-row content step.
     fn stepped_height_drawing(
         grid: &mut TileGrid<u32>,
@@ -9383,6 +9960,48 @@ mod tests {
             middle_rows, starting_rows,
             "the closing column keeps its rows"
         );
+    }
+
+    #[test]
+    fn a_large_cell_column_measures_each_allocation_once() {
+        for width in LARGE_CONTENT_TEST_WIDTHS {
+            for rows in LARGE_CONTENT_TEST_ROWS {
+                let area = Rect::new(0, 0, width, LARGE_CONTENT_TEST_HEIGHT);
+                let held = HeldCellLayout {
+                    rows:          row_demands(&[rows; LARGE_CONTENT_TEST_CELLS]),
+                    focused:       FocusLocation::Departing,
+                    summary_span:  1,
+                    summary_depth: 1,
+                };
+                let mut queries = Vec::new();
+                let grid = Grid::with_row_use(
+                    area,
+                    &held,
+                    add_new(LARGE_CONTENT_TEST_INITIAL_ROWS),
+                    &TileSettings::default(),
+                    &mut |index, area, purpose| {
+                        let retained = matches!(purpose, RowUsePurpose::RetainContent);
+                        let key = (index, area.width, area.height, retained);
+                        assert!(
+                            !queries.contains(&key),
+                            "repeated column allocation: {key:?}"
+                        );
+                        queries.push(key);
+                        if index == 0 {
+                            area.height.min(rows) / LARGE_CONTENT_TEST_ROW_STEP
+                                * LARGE_CONTENT_TEST_ROW_STEP
+                        } else {
+                            area.height.min(1)
+                        }
+                    },
+                );
+                assert_eq!(grid.resolved.panes.len(), held.rows.len());
+                assert!(
+                    (0..held.rows.len())
+                        .all(|index| queries.iter().any(|(known, ..)| *known == index))
+                );
+            }
+        }
     }
 
     #[test]

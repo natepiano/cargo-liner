@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
@@ -56,7 +57,9 @@ use super::invocation_cpu_accounting::InvocationCpuContributions;
 use super::invocation_cpu_accounting::InvocationMeasurements;
 use super::invocation_cpu_accounting::Measurement;
 use super::invocation_cpu_accounting::MeasurementAbsence;
+use super::process_identity;
 use super::process_identity::CaptureMembership;
+use super::process_identity::DispatchedProcess;
 use super::process_identity::InvocationId;
 #[cfg(test)]
 use super::process_identity::ProcessIdentities;
@@ -75,6 +78,7 @@ use crate::constants::CARGO_MESSAGE_FORMAT_FLAG;
 use crate::constants::CARGO_MESSAGE_FORMAT_JSON_PREFIX;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_QUIET_FLAGS;
+use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 #[cfg(test)]
 use crate::constants::CARGO_TARGET_DIR_FLAG;
 use crate::constants::COMPILER_PROCESS_NAMES;
@@ -115,6 +119,95 @@ pub(crate) enum CompilerObservation {
     None,
     /// The scanner observed this driver and count.
     Running(Compiler),
+}
+
+/// Disjoint invocation work: its process and descendants assigned to no other invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InvocationResourceUse {
+    /// Core percentage remains numeric until a table formats its final contributors.
+    pub(crate) cpu:      Measurement<f32>,
+    /// Resident bytes include only this invocation's attributed processes.
+    pub(crate) memory:   Measurement<u64>,
+    /// Compiler counts retain unavailable observations and driver priority.
+    pub(crate) compiler: CompilerObservation,
+}
+
+impl InvocationResourceUse {
+    /// Missing evidence prevents publishing a partial contribution.
+    const fn unavailable(reason: MeasurementAbsence) -> Self {
+        Self {
+            cpu:      Measurement::Unavailable(reason),
+            memory:   Measurement::Unavailable(reason),
+            compiler: CompilerObservation::Unknown,
+        }
+    }
+
+    /// Numeric contributors are formatted only after the table selects its rows.
+    pub(crate) fn sum(contributions: impl IntoIterator<Item = Self>) -> Self {
+        let mut total = Self {
+            cpu:      Measurement::Reading(0.0),
+            memory:   Measurement::Reading(0),
+            compiler: CompilerObservation::None,
+        };
+        for contribution in contributions {
+            total.cpu = total.cpu + contribution.cpu;
+            total.memory = total.memory + contribution.memory;
+            total.compiler = sum_compilers([total.compiler, contribution.compiler]);
+        }
+        total
+    }
+
+    /// Another invocation of the same pid can supply a missing observation.
+    fn retain_readings(&mut self, other: Self) {
+        if matches!(self.cpu, Measurement::Unavailable(_))
+            && matches!(other.cpu, Measurement::Reading(_))
+        {
+            self.cpu = other.cpu;
+        }
+        if matches!(self.memory, Measurement::Unavailable(_))
+            && matches!(other.memory, Measurement::Reading(_))
+        {
+            self.memory = other.memory;
+        }
+        if self.compiler == CompilerObservation::Unknown
+            && other.compiler != CompilerObservation::Unknown
+        {
+            self.compiler = other.compiler;
+        }
+    }
+
+    /// Each attributed bucket is disjoint from every nested cargo invocation.
+    fn observed(attributed: &InvocationMeasurements, pid: Pid) -> Self {
+        Self {
+            cpu:      aggregate(&attributed.cpu, std::iter::once(pid)),
+            memory:   aggregate(&attributed.memory, std::iter::once(pid)),
+            compiler: attributed
+                .compilers
+                .get(&pid)
+                .cloned()
+                .unwrap_or(CompilerObservation::Unknown),
+        }
+    }
+}
+
+/// Each pid contributes once, using any reading supplied by its invocations.
+pub(crate) fn sum_resource_use_once_per_pid(
+    contributions: impl IntoIterator<Item = (Pid, InvocationResourceUse)>,
+) -> InvocationResourceUse {
+    let mut indices: HashMap<Pid, usize> = HashMap::new();
+    let mut resources: Vec<InvocationResourceUse> = Vec::new();
+    for (pid, contribution) in contributions {
+        match indices.entry(pid) {
+            Entry::Occupied(index) => {
+                resources[*index.get()].retain_readings(contribution);
+            },
+            Entry::Vacant(index) => {
+                index.insert(resources.len());
+                resources.push(contribution);
+            },
+        }
+    }
+    InvocationResourceUse::sum(resources)
 }
 
 /// Missing cwd cannot establish equality or be formatted before metadata merging.
@@ -238,21 +331,21 @@ pub(crate) enum RunStart {
     Unavailable,
 }
 
-/// One running `cargo` invocation, preformatted for the table.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One running cargo invocation with numeric resource contributions.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CargoProcess {
     /// Row source and displayed pid do not change invocation continuity.
-    pub(crate) invocation_id:      InvocationId,
+    pub(crate) invocation_id:        InvocationId,
     /// Nested invocations share progress without inheriting registration metadata.
-    pub(crate) capture_membership: CaptureMembership,
+    pub(crate) capture_membership:   CaptureMembership,
     /// Account and root qualification do not grant enclosing rows metadata ownership.
-    pub(crate) provenance:         RowProvenance,
+    pub(crate) provenance:           RowProvenance,
     /// Working directory display, shortened only when the home prefix is unambiguous.
-    pub(crate) path:               String,
+    pub(crate) path:                 String,
     /// Raw absolute directory for grouping; display formatting cannot change membership.
-    pub(crate) directory_identity: WorkingDirectoryIdentity,
+    pub(crate) directory_identity:   WorkingDirectoryIdentity,
     /// Process id.
-    pub(crate) pid:                u32,
+    pub(crate) pid:                  u32,
     /// The nearest ancestor the cell draws: the cargo above this one
     /// where there is one, since that is a row of the same table, and
     /// otherwise the step of the chain block the command was started
@@ -260,41 +353,29 @@ pub(crate) struct CargoProcess {
     /// capture opened and is drawn nowhere.
     ///
     /// The named parent state distinguishes invocation identity from chain display.
-    pub(crate) parent:             VisibleParent,
+    pub(crate) parent:               VisibleParent,
     /// Local wall-clock start time, `hh:mm`.
-    pub(crate) start:              String,
+    pub(crate) start:                String,
     /// The same instant as seconds since the epoch, which is what
     /// orders one invocation against another. The label above it is
     /// only accurate to the minute and turns over at midnight, so it
     /// reads well and sorts badly.
-    pub(crate) started:            RunStart,
+    pub(crate) started:              RunStart,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
-    pub(crate) duration:           String,
-    /// Whole-number core percentage for the command table. A group lead
-    /// carries the group's total; managed rows carry only their own invocation
-    /// bucket, including non-cargo descendants attributed to that invocation.
-    pub(crate) cpu:                Measurement<String>,
-    /// This invocation's CPU bucket plus every assembled cargo descendant,
-    /// prepared on the worker for promotion into the summary. Any unavailable
-    /// contributor prevents publishing a partial total.
-    pub(crate) subtree_cpu:        Measurement<String>,
-    /// Resident bytes. A group lead carries the group's total; other rows carry their own bucket.
-    pub(crate) memory:             Measurement<u64>,
-    /// This invocation's bucket plus every assembled cargo descendant, for the summary.
-    pub(crate) subtree_memory:     Measurement<u64>,
-    /// Compiler processes this invocation currently owns, when observed. On the
-    /// invocation leading a group this is the whole group's tally, so
-    /// the summary reports the build rather than the driver process.
-    pub(crate) compiler:           CompilerObservation,
+    pub(crate) duration:             String,
+    /// Disjoint work attributed to this invocation, excluding nested cargo buckets.
+    pub(crate) resource_use:         InvocationResourceUse,
+    /// Numeric total of every assembled invocation below this row, including itself.
+    pub(crate) subtree_resource_use: InvocationResourceUse,
     /// What the command is doing, when a capture of its output is there
     /// to read it from. Read off the nearest capture at or above the
     /// invocation, so a cargo the enclosing run started -- which the
     /// shim declines to capture a second time -- reports the run it is
     /// inside rather than nothing at all.
-    pub(crate) state:              CaptureLookup,
+    pub(crate) state:                CaptureLookup,
     /// Cargo invocations running under this one. A measured zero names
     /// a plain command; an unavailable count cannot establish that it is idle.
-    pub(crate) managed:            Measurement<usize>,
+    pub(crate) managed:              Measurement<usize>,
     /// Whether another cargo stands between this invocation and the
     /// lead of its group. False for the lead itself and for the
     /// invocations it started directly.
@@ -304,9 +385,9 @@ pub(crate) struct CargoProcess {
     /// one table with every other command's, the deeper levels bury the
     /// runs they came from -- one `cargo nextest run` puts a `cargo
     /// mend` in the table for every test it runs.
-    pub(crate) nested:             bool,
+    pub(crate) nested:               bool,
     /// The command line, split so program and arguments style apart.
-    pub(crate) command:            CommandText,
+    pub(crate) command:              CommandText,
 }
 
 /// The compiler driver an invocation is running, and how many at once.
@@ -342,7 +423,7 @@ pub(crate) struct Ancestor {
 /// cargo commands is one group holding all of them, which is what lets
 /// the summary carry the command that was typed with a count beside it
 /// instead of the fan-out it became.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CargoGroup {
     /// The outermost invocation: the command that was typed, and the row
     /// the summary carries.
@@ -657,7 +738,7 @@ enum DetailPresence {
 pub(crate) struct ProcessObservation<'scan> {
     pub(super) pid:         Pid,
     pub(crate) parent:      ProcessField<Pid>,
-    pub(super) name:        ProcessField<&'scan OsStr>,
+    pub(crate) name:        ProcessField<&'scan OsStr>,
     pub(super) argv:        ProcessField<&'scan [OsString]>,
     pub(crate) directory:   ProcessField<&'scan Path>,
     pub(super) executable:  ProcessField<&'scan Path>,
@@ -858,6 +939,8 @@ pub(super) struct Census {
     parents:                  HashMap<Pid, Pid>,
     /// Cargo invocations retained for row construction after selection.
     cargo:                    Vec<Pid>,
+    /// Runs carried by hidden drivers to the process that represents their command.
+    dispatched_runs:          HashMap<Pid, usize>,
     /// Hidden invocations still establish CPU ownership and competing target evidence.
     rowless_cargo:            Vec<Pid>,
     /// Compiler processes paired with which driver they are.
@@ -884,6 +967,7 @@ impl Census {
         excluded: &[String],
     ) {
         self.include_registered_processes(records, capture);
+        self.include_dispatched_processes(records);
         self.identify_capture_wrappers(records, capture);
         self.collapse_shims(records);
         self.identify_captures(capture);
@@ -896,6 +980,55 @@ impl Census {
                 Some((pid, ProcessOwner::observe(process.uid, capture)))
             })
             .collect();
+    }
+
+    /// A cargo-launched script keeps its dispatched pid despite an interpreter's native name.
+    fn include_dispatched_processes(&mut self, records: &ProcessObservations<'_>) {
+        let dispatched: Vec<_> = records
+            .processes()
+            .iter()
+            .filter_map(|(&pid, process)| {
+                let parent = self.parents.get(&pid)?;
+                if !self.cargo.contains(parent) {
+                    return None;
+                }
+                let shim = records.process(*parent)?;
+                match Self::dispatch(shim, process) {
+                    DispatchedProcess::Matched { pid, .. } => Some(pid),
+                    DispatchedProcess::NotObserved => None,
+                }
+            })
+            .collect();
+        for pid in dispatched {
+            if !self.cargo.contains(&pid) {
+                self.cargo.push(pid);
+            }
+        }
+    }
+
+    /// Exact forwarded arguments identify a dispatched child independently of its cwd.
+    fn dispatch(
+        shim: &ProcessObservation<'_>,
+        process: &ProcessObservation<'_>,
+    ) -> DispatchedProcess {
+        process_identity::dispatched_process(shim.cmd(), process.cmd(), process.pid())
+    }
+
+    /// Canonical external-tool arguments leave process identity and all sampled fields intact.
+    fn invocation_arguments<'records>(
+        &self,
+        records: &'records ProcessObservations<'_>,
+        process: &'records ProcessObservation<'_>,
+    ) -> &'records [OsString] {
+        if let Some(parent) = self.parents.get(&process.pid())
+            && let Some(shim) = records.process(*parent)
+            && let DispatchedProcess::Matched {
+                arguments_start, ..
+            } = Self::dispatch(shim, process)
+        {
+            return &process.cmd()[arguments_start..];
+        }
+        process.cmd()
     }
 
     /// Classify every process the last refresh saw.
@@ -911,6 +1044,7 @@ impl Census {
             parents:                        HashMap::new(),
             cargo:                          Vec::new(),
             rowless_cargo:                  Vec::new(),
+            dispatched_runs:                HashMap::new(),
             compilers:                      Vec::new(),
             cpu:                            HashMap::new(),
             memory:                         HashMap::new(),
@@ -933,7 +1067,12 @@ impl Census {
             census.cpu.insert(pid, process.cpu);
             census.memory.insert(pid, process.memory);
             let name = process.name();
-            if command_text::is_cargo_name(name) {
+            if command_text::is_cargo_name(name)
+                || (is_transparent(name)
+                    && command_text::cargo_split(process.cmd()).is_ok_and(|arguments| {
+                        arguments.start == 2 && arguments.follows_cargo_executable()
+                    }))
+            {
                 census.cargo.push(pid);
             } else if let Some(driver) = COMPILER_PROCESS_NAMES
                 .iter()
@@ -1534,6 +1673,36 @@ impl Census {
     /// Looping rather than one pass because a shim can stand in front of
     /// a shim, and dropping the outer one is what reveals the next.
     fn collapse_shims(&mut self, system: &ProcessObservations<'_>) {
+        // Main counts runs after cargo-named forwarding aliases have gone.
+        // Interpreted drivers admitted for dispatch naming keep their reading;
+        // the aliases themselves must never become runs in that reading.
+        loop {
+            let children = self.cargo_children();
+            let aliases: Vec<_> = self
+                .cargo
+                .iter()
+                .copied()
+                .filter(|pid| {
+                    let Some(outer) = system.process(*pid) else {
+                        return false;
+                    };
+                    if !command_text::is_cargo_name(outer.name())
+                        || !Self::is_shim(system, &children, *pid)
+                    {
+                        return false;
+                    }
+                    let child = children[pid][0];
+                    let Some(inner) = system.process(child) else {
+                        return false;
+                    };
+                    observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
+                })
+                .collect();
+            if aliases.is_empty() {
+                break;
+            }
+            self.cargo.retain(|pid| !aliases.contains(pid));
+        }
         loop {
             let children = self.cargo_children();
             let shims: Vec<Pid> = self
@@ -1544,6 +1713,35 @@ impl Census {
                 .collect();
             if shims.is_empty() {
                 return;
+            }
+            for &shim in &shims {
+                let child = children[&shim][0];
+                let Some(outer) = system.process(shim) else {
+                    continue;
+                };
+                let mut representative = child;
+                while shims.contains(&representative) {
+                    representative = children[&representative][0];
+                }
+                let Some(inner) = system.process(representative) else {
+                    continue;
+                };
+                // Preserve the runs of an external dispatch chain. Aliases of a
+                // built-in cargo command were already rowless before dispatch naming.
+                if !matches!(
+                    Self::dispatch(outer, inner),
+                    DispatchedProcess::Matched { .. }
+                ) && !self.dispatched_runs.contains_key(&shim)
+                {
+                    continue;
+                }
+                let runs = Self::descendants(&children, shim)
+                    .len()
+                    .max(self.dispatched_runs.get(&shim).copied().unwrap_or_default());
+                self.dispatched_runs
+                    .entry(representative)
+                    .and_modify(|carried| *carried = (*carried).max(runs))
+                    .or_insert(runs);
             }
             self.cargo.retain(|pid| !shims.contains(pid));
         }
@@ -1564,6 +1762,23 @@ impl Census {
         let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
             return false;
         };
+        if matches!(
+            Self::dispatch(outer, inner),
+            DispatchedProcess::Matched { .. }
+        ) {
+            return true;
+        }
+        if inner
+            .cmd()
+            .first()
+            .and_then(|program| Path::new(program).file_name())
+            .and_then(|program| program.to_str())
+            .is_some_and(|name| {
+                name.starts_with(CARGO_SUBCOMMAND_PREFIX) && !CARGO_PROCESS_NAMES.contains(&name)
+            })
+        {
+            return false;
+        }
         observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
     }
 
@@ -1670,6 +1885,11 @@ impl Census {
     fn detailed(&self) -> Vec<Pid> {
         let mut pids = self.cargo.clone();
         pids.extend(self.compilers.iter().map(|&(pid, _)| pid));
+        for (&pid, parent) in &self.parents {
+            if self.cargo.contains(parent) && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
         for &pid in &self.cargo {
             for &ancestor in self.ancestor_pids(pid).as_slice() {
                 if !pids.contains(&ancestor) {
@@ -1729,7 +1949,7 @@ impl Census {
     ) -> AncestryWalk<Ancestor> {
         self.ancestor_pids(pid).filter_map(|pid| {
             let process = system.process(pid)?;
-            if command_text::names_cargo(process.cmd()) {
+            if command_text::names_cargo(self.invocation_arguments(system, process)) {
                 return None;
             }
             Some(Ancestor {
@@ -1870,7 +2090,10 @@ impl Census {
                     .iter()
                     .find(|confirmed| confirmed.key == key)
                     .filter(|confirmed| {
-                        !forwards_capture_command(process.cmd(), confirmed.registration.record())
+                        !forwards_capture_command(
+                            self.invocation_arguments(system, process),
+                            confirmed.registration.record(),
+                        )
                     })
                     .map(|_| pid)
             })
@@ -1890,7 +2113,10 @@ impl Census {
                     .iter()
                     .find(|confirmed| confirmed.key == key)
                     .filter(|confirmed| {
-                        forwards_capture_command(process.cmd(), confirmed.registration.record())
+                        forwards_capture_command(
+                            self.invocation_arguments(system, process),
+                            confirmed.registration.record(),
+                        )
                     })
                     .map(|_| pid)
             })
@@ -1984,7 +2210,8 @@ impl Census {
             let process = system
                 .process(pid)
                 .map_or(Err(RowAbsence::ArgvUnavailable), |process| {
-                    command_text::select_cargo(process.cmd(), excluded).map(|_| ())
+                    command_text::select_cargo(self.invocation_arguments(system, process), excluded)
+                        .map(|_| ())
                 });
             let eligibility = match self.direct_capture(capture, pid) {
                 DirectAssociation::Direct(direct) => {
@@ -2007,7 +2234,8 @@ impl Census {
             .filter(|pid| !matches!(self.eligibility.get(pid), Some(Ok(()))))
             .filter(|pid| {
                 system.process(*pid).is_none_or(|process| {
-                    process.cmd().is_empty() || command_text::names_cargo(process.cmd())
+                    process.cmd().is_empty()
+                        || command_text::names_cargo(self.invocation_arguments(system, process))
                 })
             })
             .collect();
@@ -2058,6 +2286,17 @@ impl Census {
                         &key,
                         &confirmed.registration,
                     ));
+                } else if pid.as_u32() != key.pid
+                    && (self.capture_boundaries.contains(&Pid::from_u32(key.pid))
+                        || self
+                            .ancestor_pids(pid)
+                            .as_slice()
+                            .iter()
+                            .rev()
+                            .take_while(|ancestor| ancestor.as_u32() != key.pid)
+                            .any(|ancestor| self.capture_boundaries.contains(ancestor)))
+                {
+                    row.capture_membership = CaptureMembership::EnclosingUnconfirmed;
                 }
             },
         }
@@ -2095,51 +2334,26 @@ impl Census {
         rows.extend_from_slice(&self.registration_rows);
         let mut groups = self.assemble_groups(system, home, rows);
         for group in &mut groups {
-            let members: Vec<_> = std::iter::once(&group.lead).chain(&group.rest).collect();
-            let cpu_totals = subtree_totals(&attributed.cpu, &members, &process_rows);
-            let memory_totals = subtree_totals(&attributed.memory, &members, &process_rows);
-            if process_rows.contains(&group.lead.invocation_id) {
-                let pids: Vec<_> = members.iter().map(|row| Pid::from_u32(row.pid)).collect();
-                let proven: HashSet<_> = members
-                    .iter()
-                    .filter(|row| process_rows.contains(&row.invocation_id))
-                    .map(|row| row.pid)
-                    .collect();
-                let (cpu, memory) = if members.iter().all(|row| proven.contains(&row.pid)) {
-                    (
-                        aggregate(&attributed.cpu, pids.iter().copied()).map(cpu_label),
-                        aggregate(&attributed.memory, pids.iter().copied()),
-                    )
-                } else {
-                    (
-                        Measurement::Unavailable(MeasurementAbsence::Unproven),
-                        Measurement::Unavailable(MeasurementAbsence::Unproven),
-                    )
-                };
-                let compiler = aggregate_compilers(&attributed.compilers, pids.into_iter());
-                group.lead.cpu = cpu;
-                group.lead.memory = memory;
-                group.lead.compiler = compiler;
-            }
-            for ((row, cpu), memory) in std::iter::once(&mut group.lead)
-                .chain(&mut group.rest)
-                .zip(cpu_totals)
-                .zip(memory_totals)
-            {
-                row.subtree_cpu = cpu.map(cpu_label);
-                row.subtree_memory = memory;
-            }
-            for row in &mut group.rest {
-                if process_rows.contains(&row.invocation_id) {
-                    let pid = Pid::from_u32(row.pid);
-                    row.cpu = aggregate(&attributed.cpu, std::iter::once(pid)).map(cpu_label);
-                    row.memory = aggregate(&attributed.memory, std::iter::once(pid));
-                    row.compiler = attributed
-                        .compilers
-                        .get(&pid)
-                        .cloned()
-                        .unwrap_or(CompilerObservation::Unknown);
+            for row in std::iter::once(&mut group.lead).chain(&mut group.rest) {
+                if let Some(&runs) = self.dispatched_runs.get(&Pid::from_u32(row.pid)) {
+                    row.managed = Measurement::Reading(match row.managed {
+                        Measurement::Reading(managed) => managed.max(runs),
+                        Measurement::Unavailable(_) => runs,
+                    });
                 }
+                row.resource_use = if process_rows.contains(&row.invocation_id) {
+                    InvocationResourceUse::observed(attributed, Pid::from_u32(row.pid))
+                } else {
+                    InvocationResourceUse::unavailable(MeasurementAbsence::Unproven)
+                };
+            }
+            let members: Vec<_> = std::iter::once(&group.lead).chain(&group.rest).collect();
+            let totals = subtree_resource_totals(&members);
+            for (row, total) in std::iter::once(&mut group.lead)
+                .chain(&mut group.rest)
+                .zip(totals)
+            {
+                row.subtree_resource_use = total;
             }
         }
         groups
@@ -2302,32 +2516,19 @@ impl Census {
             return Err(GroupAbsence::Excluded);
         }
         let managed = Self::descendants(children, root);
-        let whole_group = std::iter::once(root).chain(managed.clone());
+        let process = system.process(root).ok_or(GroupAbsence::NoProcess)?;
         let mut lead = row(
-            system.process(root).ok_or(GroupAbsence::NoProcess)?,
+            process,
+            self.invocation_arguments(system, process),
             self.identities
                 .get(&root)
                 .ok_or(GroupAbsence::NoIdentity)?
                 .clone(),
-            attributed
-                .compilers
-                .get(&root)
-                .cloned()
-                .unwrap_or(CompilerObservation::Unknown),
             Measurement::Reading(managed.len()),
             home,
-            ResourceUse {
-                cpu:    aggregate(&attributed.cpu, whole_group.clone()),
-                memory: aggregate(&attributed.memory, whole_group.clone()),
-            },
+            InvocationResourceUse::observed(attributed, root),
             &self.direct_capture(capture, root),
         )?;
-        // The lead reports the whole group's compilers: what a developer
-        // wants off the summary row is how much work the command they
-        // typed is doing, and for a manager none of that work is running
-        // under the manager's own pid. Its CPU share is the same story
-        // told in cores rather than in processes.
-        lead.compiler = aggregate_compilers(&attributed.compilers, whole_group);
         self.annotate_capture(&mut lead, capture, home);
         let ancestry = self.ancestry(system, home, root);
         lead.parent = self.drawn_parent(root, ancestry.as_slice());
@@ -2339,18 +2540,11 @@ impl Census {
                 let under = Self::descendants(children, pid).len();
                 let mut managed_row = row(
                     process,
+                    self.invocation_arguments(system, process),
                     self.identities.get(&pid)?.clone(),
-                    attributed
-                        .compilers
-                        .get(&pid)
-                        .cloned()
-                        .unwrap_or(CompilerObservation::Unknown),
                     Measurement::Reading(under),
                     home,
-                    ResourceUse {
-                        cpu:    aggregate(&attributed.cpu, std::iter::once(pid)),
-                        memory: aggregate(&attributed.memory, std::iter::once(pid)),
-                    },
+                    InvocationResourceUse::observed(attributed, pid),
                     &self.direct_capture(capture, pid),
                 )
                 .ok()?;
@@ -2484,13 +2678,24 @@ fn observed_shim_match(
 
 /// One compiler tally across a whole group: the highest-priority driver
 /// any member is running, totalled over all of them.
+#[cfg(test)]
 fn aggregate_compilers(
     counts: &HashMap<Pid, CompilerObservation>,
     members: impl Iterator<Item = Pid>,
 ) -> CompilerObservation {
+    sum_compilers(members.map(|pid| {
+        counts
+            .get(&pid)
+            .cloned()
+            .unwrap_or(CompilerObservation::Unknown)
+    }))
+}
+
+/// Keep the highest-priority observed driver without publishing a partial count.
+fn sum_compilers(counts: impl IntoIterator<Item = CompilerObservation>) -> CompilerObservation {
     let mut running = Vec::new();
-    for pid in members {
-        match counts.get(&pid).unwrap_or(&CompilerObservation::Unknown) {
+    for observation in counts {
+        match observation {
             CompilerObservation::Unknown => return CompilerObservation::Unknown,
             CompilerObservation::None => {},
             CompilerObservation::Running(compiler) => running.push(compiler),
@@ -2531,39 +2736,18 @@ pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
     )
 }
 
-/// Sum each pid bucket once per subtree while retaining unavailable identities.
-/// The membership order also indexes the returned totals, independently of row age.
-fn subtree_totals<T: Copy + Default + Add<Output = T>>(
-    measurements: &HashMap<Pid, Measurement<T>>,
-    members: &[&CargoProcess],
-    process_rows: &HashSet<InvocationId>,
-) -> Vec<Measurement<T>> {
+/// Each pid contributes once to every ancestor's numeric subtree total.
+fn subtree_resource_totals(members: &[&CargoProcess]) -> Vec<InvocationResourceUse> {
     let indices: HashMap<_, _> = members
         .iter()
         .enumerate()
         .map(|(index, row)| (&row.invocation_id, index))
         .collect();
-    let mut totals: Vec<_> = members
+    let mut contributions: Vec<_> = members
         .iter()
-        .map(|row| {
-            if process_rows.contains(&row.invocation_id) {
-                aggregate(measurements, std::iter::once(Pid::from_u32(row.pid)))
-            } else {
-                Measurement::Unavailable(MeasurementAbsence::Unproven)
-            }
-        })
+        .map(|row| vec![(Pid::from_u32(row.pid), row.resource_use.clone())])
         .collect();
     let mut remaining_children = vec![0_usize; members.len()];
-    let mut contributors: Vec<HashSet<Pid>> = members
-        .iter()
-        .map(|row| {
-            if process_rows.contains(&row.invocation_id) {
-                HashSet::from([Pid::from_u32(row.pid)])
-            } else {
-                HashSet::new()
-            }
-        })
-        .collect();
     for row in members {
         if let VisibleParent::Invocation { id, .. } = &row.parent
             && let Some(&parent) = indices.get(id)
@@ -2580,50 +2764,38 @@ fn subtree_totals<T: Copy + Default + Add<Output = T>>(
         if let VisibleParent::Invocation { id, .. } = &members[index].parent
             && let Some(&parent) = indices.get(id)
         {
-            let additional: Vec<_> = contributors[index]
-                .difference(&contributors[parent])
-                .copied()
-                .collect();
-            totals[parent] = totals[parent]
-                + match totals[index] {
-                    Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
-                    Measurement::Reading(_) => aggregate(measurements, additional.iter().copied()),
-                };
-            contributors[parent].extend(additional);
+            let descendants = contributions[index].clone();
+            contributions[parent].extend(descendants);
             remaining_children[parent] -= 1;
             if remaining_children[parent] == 0 {
                 ready.push(parent);
             }
         }
     }
-    // A cyclic parent chain cannot establish a complete subtree measurement.
-    for (total, children) in totals.iter_mut().zip(remaining_children) {
-        if children > 0 {
-            *total = Measurement::Unavailable(MeasurementAbsence::Unproven);
-        }
-    }
-    totals
-}
-
-/// Processor share and resident bytes summed over the processes one row reports.
-#[derive(Clone, Copy)]
-struct ResourceUse {
-    cpu:    Measurement<f32>,
-    memory: Measurement<u64>,
+    contributions
+        .into_iter()
+        .zip(remaining_children)
+        .map(|(resources, children)| {
+            if children > 0 {
+                InvocationResourceUse::unavailable(MeasurementAbsence::Unproven)
+            } else {
+                sum_resource_use_once_per_pid(resources)
+            }
+        })
+        .collect()
 }
 
 /// Format one cargo process into its table row.
 fn row(
     process: &ProcessObservation<'_>,
+    arguments: &[OsString],
     invocation_id: InvocationId,
-    compiler: CompilerObservation,
     managed: Measurement<usize>,
     home: ScannerHome<'_>,
-    resource_use: ResourceUse,
+    resource_use: InvocationResourceUse,
     direct: &DirectAssociation,
 ) -> Result<CargoProcess, RowAbsence> {
-    let (directory_identity, path, command) =
-        row_fields(process.cwd(), process.cmd(), direct, home)?;
+    let (directory_identity, path, command) = row_fields(process.cwd(), arguments, direct, home)?;
     let (started, start, duration) = match direct {
         DirectAssociation::Direct(direct) => registration_timing(direct, SystemTime::now()),
         DirectAssociation::None => (
@@ -2643,11 +2815,8 @@ fn row(
         start,
         started,
         duration,
-        cpu: resource_use.cpu.map(cpu_label),
-        subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        memory: resource_use.memory,
-        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        compiler,
+        resource_use,
+        subtree_resource_use: InvocationResourceUse::unavailable(MeasurementAbsence::Unproven),
         state: CaptureLookup::Unregistered,
         managed,
         nested: false,
@@ -2762,11 +2931,8 @@ fn registration_row(
         start,
         started,
         duration,
-        cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        compiler: CompilerObservation::Unknown,
+        resource_use: InvocationResourceUse::unavailable(MeasurementAbsence::Unproven),
+        subtree_resource_use: InvocationResourceUse::unavailable(MeasurementAbsence::Unproven),
         state: capture.read(&direct.key),
         managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
         nested: false,
@@ -2888,7 +3054,7 @@ pub(crate) struct CensusSequence {
 #[cfg(test)]
 impl CensusSequence {
     /// Supplied rates exercise selection and assembly without invoking OS accounting.
-    pub(super) fn sample(&mut self, records: &ProcessObservations<'_>) -> Vec<CargoGroup> {
+    pub(crate) fn sample(&mut self, records: &ProcessObservations<'_>) -> Vec<CargoGroup> {
         self.sample_with_capture(records, &Capture::default(), &[], ScannerHome::Unavailable)
     }
 
@@ -3068,6 +3234,7 @@ mod tests {
     use crate::constants::COMPILER_COLUMN;
     use crate::constants::CPU_COLUMN;
     use crate::constants::MANAGED_COLUMN;
+    use crate::constants::MEMORY_COLUMN;
     use crate::constants::PID_SEPARATOR;
     use crate::constants::RUN_LOG_PREFIX;
     use crate::constants::RUN_LOG_SUFFIX;
@@ -3131,6 +3298,564 @@ mod tests {
     }
 
     #[test]
+    fn an_installed_shim_pipeline_keeps_the_driver_and_child_pids() {
+        let shim = [
+            OsString::from("/bin/sh"),
+            "/home/u/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo".into(),
+            "p20bdrv".into(),
+        ];
+        let driver = [
+            OsString::from("/bin/sh"),
+            "/tools/drvbin/cargo-p20bdrv".into(),
+            "p20bdrv".into(),
+        ];
+        let nextest = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let tee = [
+            OsString::from("tee"),
+            "-a".into(),
+            "/capture/run.log".into(),
+        ];
+        let records = ProcessObservations::new(
+            [
+                (2_928_730, 1, "sh", shim.as_slice()),
+                (2_929_160, 2_928_730, "sh", shim.as_slice()),
+                (2_929_161, 2_929_160, "sh", shim.as_slice()),
+                (2_929_162, 2_929_161, "cargo-p20bdrv", driver.as_slice()),
+                (2_929_286, 2_929_162, "cargo-nextest", nextest.as_slice()),
+                (2_929_163, 2_929_160, "tee", tee.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 2_929_162);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 2_929_286);
+        assert_eq!(
+            groups[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  groups[0].lead.invocation_id.clone(),
+                pid: 2_929_162,
+            }
+        );
+    }
+
+    #[test]
+    fn a_rustup_shim_dispatched_nextest_counts_only_its_managed_run() {
+        let shim = [
+            "/bin/sh",
+            "/home/u/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "nextest",
+            "run",
+            "--locked",
+        ]
+        .map(OsString::from);
+        let nextest = ["cargo-nextest", "nextest", "run", "--locked"].map(OsString::from);
+        let test = ["cargo", "test", "--no-run"].map(OsString::from);
+        let records = ProcessObservations::new(
+            [
+                (3_214_500, 1, "cargo", shim.as_slice()),
+                (3_215_101, 3_214_500, "cargo", shim.as_slice()),
+                (3_215_102, 3_215_101, "cargo", shim.as_slice()),
+                (3_215_108, 3_215_102, "cargo-nextest", nextest.as_slice()),
+                (3_262_399, 3_215_108, "cargo", test.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 3_215_108);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 3_262_399);
+        assert_eq!(groups[0].lead.managed, Measurement::Reading(1));
+    }
+
+    #[test]
+    fn a_dispatched_nextest_keeps_its_hidden_ci_drivers_runs() {
+        let shim = [
+            OsString::from("/bin/sh"),
+            "/tools/bin/cargo".into(),
+            "nextest".into(),
+            "run".into(),
+            "--profile".into(),
+            "ci".into(),
+        ];
+        let nextest = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+            "--profile".into(),
+            "ci".into(),
+        ];
+        let records = ProcessObservations::new(
+            [
+                (172_043, 170_718, "sh", shim.as_slice()),
+                (172_044, 172_043, "sh", shim.as_slice()),
+                (172_047, 172_044, "cargo-nextest", nextest.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record
+            }),
+        );
+        let discovered = Census::take(records.processes().values());
+        assert_eq!(
+            discovered.cargo.len(),
+            3,
+            "both interpreted drivers must enter discovery"
+        );
+        let children = discovered.cargo_children();
+        assert_eq!(
+            Census::descendants(&children, Pid::from_u32(172_043)).len(),
+            2
+        );
+        assert_eq!(
+            Census::descendants(&children, Pid::from_u32(172_044)).len(),
+            1
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 172_047);
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
+        assert_eq!(groups[0].lead.managed, Measurement::Reading(2));
+    }
+
+    #[test]
+    fn a_driver_row_carries_the_dispatched_process_pid() {
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [OsString::from("/tools/cargo-p20driver"), "p20driver".into()];
+        let child = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let records = ProcessObservations::new(
+            [
+                (100, 1, "cargo", shim.as_slice()),
+                (200, 100, "cargo-p20driver", driver.as_slice()),
+                (300, 200, "cargo-nextest", child.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                if pid == 200 {
+                    record.directory = ProcessField::Unavailable;
+                }
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 200);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 300);
+        assert_eq!(
+            groups[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  groups[0].lead.invocation_id.clone(),
+                pid: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn an_interpreted_driver_carries_its_dispatched_pid_and_capture_identity() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            100,
+            "driver-generation",
+            "/work",
+            "/writer",
+            "p20driver",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [
+            OsString::from("python3"),
+            "/tools/cargo-p20driver".into(),
+            "p20driver".into(),
+        ];
+        let child = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let records = ProcessObservations::new(
+            [
+                (100, 1, "cargo", shim.as_slice()),
+                (200, 100, "python3", driver.as_slice()),
+                (300, 200, "cargo-nextest", child.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample_capture(&records, &capture);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 200);
+        assert!(
+            matches!(&groups[0].lead.invocation_id, InvocationId::Captured(run) if run.shim_pid == 100)
+        );
+        assert_eq!(
+            groups[0].lead.command,
+            CommandText::of("cargo", &["p20driver"])
+        );
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 300);
+        assert_eq!(
+            groups[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  groups[0].lead.invocation_id.clone(),
+                pid: 200,
+            }
+        );
+        assert!(matches!(
+            groups[0].rest[0].capture_membership,
+            CaptureMembership::Enclosing(_)
+        ));
+    }
+
+    #[test]
+    fn a_driver_that_changes_directory_keeps_its_dispatched_pid() {
+        let root = tempdir().expect("directories");
+        let parent_directory = root.path().join("parent");
+        let child_directory = root.path().join("child");
+        fs::create_dir(&parent_directory).expect("parent directory");
+        fs::create_dir(&child_directory).expect("child directory");
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [OsString::from("/tools/cargo-p20driver"), "p20driver".into()];
+        let nextest = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let mut parent = ProcessObservation::cargo(100, &shim);
+        parent.directory = ProcessField::Observed(&parent_directory);
+        let mut child = ProcessObservation::cargo(200, &driver);
+        child.name = ProcessField::Observed(OsStr::new("cargo-p20driver"));
+        child.directory = ProcessField::Observed(&child_directory);
+        child.parent = ProcessField::Observed(Pid::from_u32(100));
+        let mut nested = ProcessObservation::cargo(300, &nextest);
+        nested.name = ProcessField::Observed(OsStr::new("cargo-nextest"));
+        nested.parent = ProcessField::Observed(Pid::from_u32(200));
+        let groups =
+            CensusSequence::default().sample(&ProcessObservations::new([parent, child, nested]));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 200);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 300);
+        assert_eq!(
+            groups[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  groups[0].lead.invocation_id.clone(),
+                pid: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn an_interpreter_with_flags_keeps_the_driver_and_child_pids() {
+        let shim = [OsString::from("cargo"), "p20driver".into()];
+        let driver = [
+            OsString::from("python3"),
+            "-u".into(),
+            "/tools/cargo-p20driver".into(),
+            "p20driver".into(),
+        ];
+        let nextest = [
+            OsString::from("cargo-nextest"),
+            "nextest".into(),
+            "run".into(),
+        ];
+        let records = ProcessObservations::new(
+            [
+                (100, 1, "cargo", shim.as_slice()),
+                (200, 100, "python3", driver.as_slice()),
+                (300, 200, "cargo-nextest", nextest.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 200);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 300);
+        assert_eq!(
+            groups[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  groups[0].lead.invocation_id.clone(),
+                pid: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn a_shared_pid_contributes_once_to_its_parent_subtree() {
+        let mut parent = directory_row();
+        parent.resource_use = InvocationResourceUse {
+            cpu:      Measurement::Reading(10.0),
+            memory:   Measurement::Reading(100),
+            compiler: CompilerObservation::None,
+        };
+        let mut unproven = directory_row();
+        unproven.invocation_id = InvocationId::for_test(21);
+        unproven.pid = 20;
+        unproven.parent = VisibleParent::Invocation {
+            id:  parent.invocation_id.clone(),
+            pid: parent.pid,
+        };
+        unproven.resource_use = InvocationResourceUse::unavailable(MeasurementAbsence::Unproven);
+        let mut known = unproven.clone();
+        known.invocation_id = InvocationId::for_test(20);
+        known.resource_use = InvocationResourceUse {
+            cpu:      Measurement::Reading(20.0),
+            memory:   Measurement::Reading(200),
+            compiler: CompilerObservation::Running(Compiler {
+                name:  SCCACHE_BINARY,
+                count: 2,
+            }),
+        };
+        let mut also_known = known.clone();
+        also_known.invocation_id = InvocationId::for_test(22);
+        for children in [
+            [&unproven, &known],
+            [&known, &unproven],
+            [&known, &also_known],
+        ] {
+            let totals = subtree_resource_totals(&[&parent, children[0], children[1]]);
+            assert_eq!(totals[0].cpu, Measurement::Reading(30.0));
+            assert_eq!(totals[0].memory, Measurement::Reading(300));
+            assert_eq!(totals[0].compiler, known.resource_use.compiler);
+        }
+    }
+
+    #[test]
+    fn different_external_arguments_keep_both_invocations() {
+        let shim = [
+            OsString::from("cargo"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "2".into(),
+        ];
+        let driver = [
+            OsString::from("/tools/cargo-p20driver"),
+            "p20driver".into(),
+            "--jobs".into(),
+            "4".into(),
+        ];
+        let parent = ProcessObservation::cargo(100, &shim);
+        let mut child = ProcessObservation::cargo(200, &driver);
+        child.name = ProcessField::Observed(OsStr::new("cargo-p20driver"));
+        child.parent = ProcessField::Observed(Pid::from_u32(100));
+        let groups = CensusSequence::default().sample(&ProcessObservations::new([parent, child]));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 100);
+        assert_eq!(groups[0].rest.len(), 1);
+        assert_eq!(groups[0].rest[0].pid, 200);
+    }
+
+    #[test]
+    fn each_invocation_keeps_its_own_resource_use_including_the_lead() {
+        let parent = [OsString::from("cargo"), "build".into()];
+        let child = [OsString::from("cargo"), "check".into()];
+        let compiler = [OsString::from("sccache"), "rustc".into()];
+        let records = ProcessObservations::new(
+            [
+                (100, 1, "cargo", parent.as_slice(), 10.25, 100),
+                (200, 100, "cargo", child.as_slice(), 89.75, 200),
+                (300, 200, "sccache", compiler.as_slice(), 0.0, 300),
+            ]
+            .map(|(pid, parent, name, argv, cpu, memory)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.name = ProcessField::Observed(OsStr::new(name));
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record.cpu = Measurement::Reading(cpu);
+                record.memory = memory;
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        let lead = &groups[0].lead;
+        assert_eq!(lead.resource_use.cpu, Measurement::Reading(10.25));
+        assert_eq!(lead.resource_use.memory, Measurement::Reading(100));
+        assert_eq!(lead.resource_use.compiler, CompilerObservation::None);
+        let child = &groups[0].rest[0];
+        assert_eq!(child.resource_use.cpu, Measurement::Reading(89.75));
+        assert_eq!(child.resource_use.memory, Measurement::Reading(500));
+        assert_eq!(
+            child.resource_use.compiler,
+            CompilerObservation::Running(Compiler {
+                name:  SCCACHE_BINARY,
+                count: 1,
+            })
+        );
+        assert_eq!(lead.subtree_resource_use.cpu, Measurement::Reading(100.0));
+        assert_eq!(lead.subtree_resource_use.memory, Measurement::Reading(600));
+        assert_eq!(
+            lead.subtree_resource_use.compiler,
+            child.resource_use.compiler
+        );
+    }
+
+    #[test]
+    fn an_unavailable_contributor_keeps_the_total_unavailable_and_the_lead_known() {
+        let parent = [OsString::from("cargo"), "build".into()];
+        let child = [OsString::from("cargo"), "check".into()];
+        let records = ProcessObservations::new(
+            [
+                (100, 1, parent.as_slice(), Measurement::Reading(12.5)),
+                (
+                    200,
+                    100,
+                    child.as_slice(),
+                    Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                ),
+            ]
+            .map(|(pid, parent, argv, cpu)| {
+                let mut record = ProcessObservation::cargo(pid, argv);
+                record.parent = ProcessField::Observed(Pid::from_u32(parent));
+                record.cpu = cpu;
+                record
+            }),
+        );
+        let groups = CensusSequence::default().sample(&records);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].lead.subtree_resource_use.cpu,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        );
+        assert_eq!(groups[0].lead.resource_use.cpu, Measurement::Reading(12.5));
+    }
+
+    #[test]
+    fn resource_use_sums_numeric_contributions_before_rounding() {
+        let total = InvocationResourceUse::sum([
+            InvocationResourceUse {
+                cpu:      Measurement::Reading(0.375),
+                memory:   Measurement::Reading(100),
+                compiler: CompilerObservation::Running(Compiler {
+                    name:  SCCACHE_BINARY,
+                    count: 2,
+                }),
+            },
+            InvocationResourceUse {
+                cpu:      Measurement::Reading(0.375),
+                memory:   Measurement::Reading(200),
+                compiler: CompilerObservation::Running(Compiler {
+                    name:  SCCACHE_BINARY,
+                    count: 3,
+                }),
+            },
+        ]);
+        assert_eq!(total.cpu, Measurement::Reading(0.75));
+        assert_eq!(
+            total.cpu.map(cpu_label),
+            Measurement::Reading("1%".to_owned())
+        );
+        assert_eq!(total.memory, Measurement::Reading(300));
+        assert_eq!(
+            total.compiler,
+            CompilerObservation::Running(Compiler {
+                name:  SCCACHE_BINARY,
+                count: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn shared_pid_readings_replace_only_their_missing_measurements() {
+        let first = InvocationResourceUse {
+            cpu:      Measurement::Reading(10.0),
+            memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+            compiler: CompilerObservation::Unknown,
+        };
+        let second = InvocationResourceUse {
+            cpu:      Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            memory:   Measurement::Reading(200),
+            compiler: CompilerObservation::Running(Compiler {
+                name:  SCCACHE_BINARY,
+                count: 2,
+            }),
+        };
+        for readings in [
+            [first.clone(), second.clone()],
+            [second.clone(), first.clone()],
+        ] {
+            let total =
+                sum_resource_use_once_per_pid(readings.map(|reading| (Pid::from_u32(10), reading)));
+            assert_eq!(total.cpu, first.cpu);
+            assert_eq!(total.memory, second.memory);
+            assert_eq!(total.compiler, second.compiler);
+        }
+        let total = sum_resource_use_once_per_pid([
+            (Pid::from_u32(10), first),
+            (Pid::from_u32(20), second),
+        ]);
+        assert_eq!(
+            total.cpu,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        );
+        assert_eq!(
+            total.memory,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(total.compiler, CompilerObservation::Unknown);
+    }
+
+    #[test]
+    fn resource_use_sums_keep_each_unavailable_measurement() {
+        let total = InvocationResourceUse::sum([
+            InvocationResourceUse {
+                cpu:      Measurement::Reading(10.0),
+                memory:   Measurement::Reading(100),
+                compiler: CompilerObservation::None,
+            },
+            InvocationResourceUse {
+                cpu:      Measurement::Unavailable(MeasurementAbsence::FirstObservation),
+                memory:   Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                compiler: CompilerObservation::Unknown,
+            },
+        ]);
+        assert_eq!(
+            total.cpu,
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        assert_eq!(
+            total.memory,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        );
+        assert_eq!(total.compiler, CompilerObservation::Unknown);
+    }
+
+    #[test]
     fn confirmed_registration_sources_directory_command_time_and_unknown_measurements() {
         let root = tempdir().expect("root");
         write_versioned_capture(
@@ -3158,14 +3883,14 @@ mod tests {
         assert!(matches!(row.started, RunStart::Known(_)));
         assert!(matches!(row.provenance, RowProvenance::Direct(_)));
         assert_eq!(
-            row.cpu,
+            row.resource_use.cpu,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         assert_eq!(
             row.managed,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
-        assert_eq!(row.compiler, CompilerObservation::Unknown);
+        assert_eq!(row.resource_use.compiler, CompilerObservation::Unknown);
         assert_eq!(
             row.state,
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
@@ -3350,23 +4075,24 @@ mod tests {
         assert_eq!(process.cwd(), WorkingDirectoryObservation::Unavailable);
         let row = row(
             process,
+            process.cmd(),
             InvocationId::for_test(pid.as_u32()),
-            CompilerObservation::None,
             Measurement::Reading(3),
             ScannerHome::Known(Path::new("/writer")),
-            ResourceUse {
-                cpu:    Measurement::Reading(42.0),
-                memory: Measurement::Reading(1_024),
+            InvocationResourceUse {
+                cpu:      Measurement::Reading(42.0),
+                memory:   Measurement::Reading(1_024),
+                compiler: CompilerObservation::None,
             },
             &capture.row_source(10),
         )
         .expect("merged process row");
         assert_eq!(row.pid, pid.as_u32());
         assert_eq!(row.path, "~/project");
-        assert_eq!(row.cpu, Measurement::Reading("42%".into()));
-        assert_eq!(row.memory, Measurement::Reading(1_024));
+        assert_eq!(row.resource_use.cpu, Measurement::Reading(42.0));
+        assert_eq!(row.resource_use.memory, Measurement::Reading(1_024));
         assert_eq!(row.managed, Measurement::Reading(3));
-        assert_eq!(row.compiler, CompilerObservation::None);
+        assert_eq!(row.resource_use.compiler, CompilerObservation::None);
     }
 
     #[test]
@@ -3840,18 +4566,18 @@ mod tests {
         assert_eq!(row.command, CommandText::of("cargo", &["build"]));
         assert_eq!(row.path, "~/project");
         assert_eq!(
-            row.cpu,
+            row.resource_use.cpu,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         assert_eq!(
-            row.memory,
+            row.resource_use.memory,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         assert_eq!(
-            row.subtree_memory,
+            row.subtree_resource_use.memory,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
-        assert_eq!(row.compiler, CompilerObservation::Unknown);
+        assert_eq!(row.resource_use.compiler, CompilerObservation::Unknown);
         assert_eq!(
             row.managed,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
@@ -3874,18 +4600,10 @@ mod tests {
             1,
             "{text}"
         );
-        for column in [CPU_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
-            let start = header
-                .find(TABLE_HEADERS[column])
-                .expect("measurement column");
-            let end = TABLE_HEADERS[column + 1..]
-                .iter()
-                .filter_map(|label| header.find(label))
-                .min()
-                .unwrap_or(rendered.len());
+        for column in [CPU_COLUMN, MEMORY_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
             assert_eq!(
-                rendered[start..end].trim(),
-                UNAVAILABLE_MEASUREMENT,
+                crate::census::measurement_cell(header, rendered, TABLE_HEADERS[column], &text),
+                "",
                 "{text}"
             );
         }
@@ -4027,19 +4745,25 @@ mod tests {
                 CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
             );
             if index == 1 {
-                assert_eq!(scan[0].lead.cpu, Measurement::Reading("42%".into()));
+                assert_eq!(scan[0].lead.resource_use.cpu, Measurement::Reading(42.0));
                 assert_eq!(scan[0].lead.managed, Measurement::Reading(0));
-                assert_eq!(scan[0].lead.compiler, CompilerObservation::None);
+                assert_eq!(
+                    scan[0].lead.resource_use.compiler,
+                    CompilerObservation::None
+                );
             } else {
                 assert_eq!(
-                    scan[0].lead.cpu,
+                    scan[0].lead.resource_use.cpu,
                     Measurement::Unavailable(MeasurementAbsence::Unproven)
                 );
                 assert_eq!(
                     scan[0].lead.managed,
                     Measurement::Unavailable(MeasurementAbsence::Unproven)
                 );
-                assert_eq!(scan[0].lead.compiler, CompilerObservation::Unknown);
+                assert_eq!(
+                    scan[0].lead.resource_use.compiler,
+                    CompilerObservation::Unknown
+                );
             }
             roster.observe(scan.clone(), Instant::now());
             assert_eq!(roster.groups().len(), 1);
@@ -4251,12 +4975,18 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lead.pid, pid.as_u32());
         assert_eq!(
-            groups[0].lead.cpu,
+            groups[0].lead.resource_use.cpu,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
-        assert_eq!(groups[0].lead.subtree_cpu, groups[0].lead.cpu);
+        assert_eq!(
+            groups[0].lead.subtree_resource_use.cpu,
+            groups[0].lead.resource_use.cpu
+        );
         let unobserved = CensusSequence::default().sample(&system);
-        assert_eq!(unobserved[0].lead.cpu, groups[0].lead.cpu);
+        assert_eq!(
+            unobserved[0].lead.resource_use.cpu,
+            groups[0].lead.resource_use.cpu
+        );
         let mut census = census_of(&[]);
         let children = HashMap::new();
         let capture = Capture::default();
@@ -4638,6 +5368,70 @@ mod tests {
         Capture::take_from(root, |pid| {
             KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
         })
+    }
+
+    #[test]
+    fn an_unconfirmed_driver_capture_belongs_only_to_its_enclosing_invocation() {
+        for (program, arguments) in [
+            ("cargo-mend", vec!["cargo-mend", "mend"]),
+            ("cargo-nextest", vec!["cargo-nextest", "nextest", "run"]),
+        ] {
+            let root = capture_root(&[(10, "Building [=>] 998/1000: checking\r")]);
+            let capture = Capture::take_from(root.path(), |pid| {
+                KernelObservation::for_test(pid, Observation::Unknown)
+            });
+            let shell = [OsString::from("bash")];
+            let lead = arguments
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            let child = ["cargo", "check"].map(OsString::from);
+            let records = ProcessObservations::new(
+                [
+                    (9, 1, "bash", shell.as_slice()),
+                    (10, 9, program, lead.as_slice()),
+                    (11, 10, "cargo", child.as_slice()),
+                ]
+                .map(|(pid, parent, name, argv)| {
+                    let mut process = ProcessObservation::cargo(pid, argv);
+                    process.name = ProcessField::Observed(OsStr::new(name));
+                    process.parent = ProcessField::Observed(Pid::from_u32(parent));
+                    process.uid = ProcessField::Observed(2000);
+                    process.directory = ProcessField::Observed(Path::new("/runner/project"));
+                    process
+                }),
+            );
+            let mut census = Census::take(records.processes().values());
+            census.prepare(&records, &capture, &[]);
+            let NearestRegistration::Registered(lead_key) =
+                census.captured_run(&capture, Pid::from_u32(10))
+            else {
+                panic!("driver capture");
+            };
+            assert_eq!(lead_key.pid, 10);
+            assert_eq!(
+                census.captured_run(&capture, Pid::from_u32(11)),
+                NearestRegistration::Registered(lead_key)
+            );
+            assert_eq!(
+                census.direct_capture(&capture, Pid::from_u32(10)),
+                DirectAssociation::None
+            );
+            assert_eq!(
+                census.direct_capture(&capture, Pid::from_u32(11)),
+                DirectAssociation::None
+            );
+            let groups = CensusSequence::default().sample_capture(&records, &capture);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].lead.capture_membership,
+                CaptureMembership::Outside
+            );
+            assert_eq!(
+                groups[0].rest[0].capture_membership,
+                CaptureMembership::EnclosingUnconfirmed
+            );
+        }
     }
 
     #[test]
@@ -5598,6 +6392,7 @@ mod tests {
                 .collect(),
             cargo:                    Vec::new(),
             rowless_cargo:            Vec::new(),
+            dispatched_runs:          HashMap::new(),
             compilers:                Vec::new(),
             cpu:                      HashMap::new(),
             memory:                   HashMap::new(),
@@ -5639,25 +6434,30 @@ mod tests {
     /// A process-table row whose absolute cwd is independent of display shortening.
     fn directory_row() -> CargoProcess {
         CargoProcess {
-            invocation_id:      InvocationId::for_test(10),
-            capture_membership: CaptureMembership::Outside,
-            provenance:         RowProvenance::Uncaptured(ProcessOwner::Unavailable),
-            path:               "~/project".to_owned(),
-            directory_identity: WorkingDirectoryIdentity::Absolute("/writer/project".into()),
-            pid:                10,
-            parent:             VisibleParent::None,
-            start:              "10:00".to_owned(),
-            started:            RunStart::Known(0),
-            duration:           "00:01".to_owned(),
-            cpu:                Measurement::Reading("0%".to_owned()),
-            subtree_cpu:        Measurement::Reading("0%".to_owned()),
-            memory:             Measurement::Unavailable(MeasurementAbsence::Unproven),
-            subtree_memory:     Measurement::Unavailable(MeasurementAbsence::Unproven),
-            compiler:           CompilerObservation::None,
-            state:              CaptureLookup::Unregistered,
-            managed:            Measurement::Reading(0),
-            nested:             false,
-            command:            CommandText::of("cargo", &["build"]),
+            invocation_id:        InvocationId::for_test(10),
+            capture_membership:   CaptureMembership::Outside,
+            provenance:           RowProvenance::Uncaptured(ProcessOwner::Unavailable),
+            path:                 "~/project".to_owned(),
+            directory_identity:   WorkingDirectoryIdentity::Absolute("/writer/project".into()),
+            pid:                  10,
+            parent:               VisibleParent::None,
+            start:                "10:00".to_owned(),
+            started:              RunStart::Known(0),
+            duration:             "00:01".to_owned(),
+            resource_use:         InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
+            subtree_resource_use: InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
+            state:                CaptureLookup::Unregistered,
+            managed:              Measurement::Reading(0),
+            nested:               false,
+            command:              CommandText::of("cargo", &["build"]),
         }
     }
 
@@ -6871,14 +7671,17 @@ mod tests {
                 .all(|groups| groups.len() == 1 && groups[0].rest.is_empty())
         );
         assert_eq!(
-            samples[0][0].lead.cpu,
+            samples[0][0].lead.resource_use.cpu,
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
-        assert_eq!(samples[1][0].lead.cpu, Measurement::Reading("20%".into()));
+        assert_eq!(
+            samples[1][0].lead.resource_use.cpu,
+            Measurement::Reading(20.0)
+        );
         assert_eq!(samples[0][0].id(), samples[1][0].id());
         assert_ne!(samples[1][0].id(), samples[2][0].id());
         assert_eq!(
-            samples[2][0].lead.cpu,
+            samples[2][0].lead.resource_use.cpu,
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
         assert_eq!(

@@ -57,8 +57,8 @@ fn assert_row_memory(
             .chain(&group.rest)
             .any(|process| {
                 process.pid == pid
-                    && process.memory == expected_memory
-                    && process.subtree_memory == expected_subtree_memory
+                    && process.resource_use.memory == expected_memory
+                    && process.subtree_resource_use.memory == expected_subtree_memory
             }),
         "pid {pid} must carry {expected_memory:?} and subtree {expected_subtree_memory:?}"
     );
@@ -76,8 +76,14 @@ fn command_memory_includes_its_non_cargo_children() {
     let groups = CensusSequence::default().sample(&records);
 
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].lead.memory, Measurement::Reading(12_288));
-    assert_eq!(groups[0].lead.subtree_memory, Measurement::Reading(12_288));
+    assert_eq!(
+        groups[0].lead.resource_use.memory,
+        Measurement::Reading(12_288)
+    );
+    assert_eq!(
+        groups[0].lead.subtree_resource_use.memory,
+        Measurement::Reading(12_288)
+    );
 }
 
 #[test]
@@ -96,8 +102,11 @@ fn group_rows_keep_buckets_while_subtrees_include_nested_invocations() {
     assert_eq!(groups.len(), 1);
     let group = &groups[0];
     assert_eq!(group.lead.pid, 100);
-    assert_eq!(group.lead.memory, Measurement::Reading(600));
-    assert_eq!(group.lead.subtree_memory, Measurement::Reading(600));
+    assert_eq!(group.lead.resource_use.memory, Measurement::Reading(100));
+    assert_eq!(
+        group.lead.subtree_resource_use.memory,
+        Measurement::Reading(600)
+    );
     assert_row_memory(
         group,
         101,
@@ -125,7 +134,11 @@ fn zero_own_memory_makes_the_invocation_and_group_total_unavailable() {
 
     let unavailable = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].lead.memory, unavailable);
+    assert_eq!(groups[0].lead.subtree_resource_use.memory, unavailable);
+    assert_eq!(
+        groups[0].lead.resource_use.memory,
+        Measurement::Reading(1_000)
+    );
     assert_row_memory(&groups[0], 101, unavailable, unavailable);
 }
 
@@ -233,7 +246,7 @@ fn scanned_memory_changes_only_when_the_cpu_reading_falls_due() {
             ProcessObservations::new([cargo(100, &command, ProcessField::Unavailable, memory)]);
         let groups = sequence.sample_counters(&mut records, start + elapsed);
         assert_eq!(groups.len(), 1);
-        groups[0].lead.memory
+        groups[0].lead.resource_use.memory
     };
 
     assert_eq!(scan(100, Duration::ZERO), Measurement::Reading(100));
@@ -250,12 +263,19 @@ fn registration_only_row_has_no_reading_and_withholds_its_group_total() {
         cargo(100, &driver, ProcessField::Unavailable, 1_000),
         cargo(101, &child, parent(100), 500),
     ]));
-    assert_eq!(baseline[0].lead.memory, Measurement::Reading(1_500));
+    assert_eq!(
+        baseline[0].lead.subtree_resource_use.memory,
+        Measurement::Reading(1_500)
+    );
+    assert_eq!(
+        baseline[0].lead.resource_use.memory,
+        Measurement::Reading(1_000)
+    );
     // What `registration_row` builds: verified metadata with no measured process.
     let mut registration = baseline[0].rest[0].clone();
     registration.invocation_id = InvocationId::for_test(201);
-    registration.memory = unproven;
-    registration.subtree_memory = unproven;
+    registration.resource_use.memory = unproven;
+    registration.subtree_resource_use.memory = unproven;
     let mut sequence = CensusSequence::default();
     sequence.registration_rows = vec![registration];
 
@@ -271,7 +291,7 @@ fn registration_only_row_has_no_reading_and_withholds_its_group_total() {
     assert_eq!(groups.len(), 1);
     let group = &groups[0];
     assert_eq!(group.lead.pid, 100);
-    assert_eq!(group.lead.memory, unproven);
-    assert_eq!(group.lead.subtree_memory, unproven);
+    assert_eq!(group.lead.resource_use.memory, Measurement::Reading(1_000));
+    assert_eq!(group.lead.subtree_resource_use.memory, unproven);
     assert_row_memory(group, 101, unproven, unproven);
 }

@@ -138,7 +138,7 @@ impl CommandText {
     /// Keeps the toolchain selector, which is part of what runs rather
     /// than an argument to it -- `+nightly fmt` says something `fmt`
     /// alone does not.
-    pub(crate) fn named(&self) -> String {
+    pub(crate) fn named(&self) -> CommandName {
         named_arguments(self.arguments.iter().map(String::as_str))
     }
 
@@ -217,29 +217,66 @@ impl CommandText {
 ///
 /// Short view names executables by file name. Cargo retains its subcommands;
 /// other session runners omit arguments and mark that omission.
-pub(crate) fn command_name(line: &str) -> String {
+pub(crate) fn command_name(line: &str) -> CommandName {
     let mut words = line.split_whitespace();
     let Some(program) = words.next() else {
-        return String::new();
+        return CommandName {
+            words:     String::new(),
+            arguments: ArgumentOmission::Kept,
+        };
     };
     let program = program_name(program);
     let arguments =
         if CARGO_PROCESS_NAMES.contains(&program) || program.starts_with(CARGO_SUBCOMMAND_PREFIX) {
             named_arguments(words)
-        } else if words.next().is_some() {
-            ELISION.to_string()
         } else {
-            String::new()
+            CommandName {
+                words:     String::new(),
+                arguments: if words.next().is_some() {
+                    ArgumentOmission::Dropped
+                } else {
+                    ArgumentOmission::Kept
+                },
+            }
         };
-    if arguments.is_empty() {
+    let kept = if arguments.words.is_empty() {
         program.to_string()
     } else {
-        format!("{program} {arguments}")
+        format!("{program} {}", arguments.words)
+    };
+    CommandName {
+        words:     kept,
+        arguments: arguments.arguments,
+    }
+}
+
+/// Whether the Short name omitted arguments from its source command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArgumentOmission {
+    Kept,
+    Dropped,
+}
+
+/// Kept command words together with the meaning of their terminal mark.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CommandName {
+    pub(crate) words:     String,
+    pub(crate) arguments: ArgumentOmission,
+}
+
+impl CommandName {
+    /// Convert the named omission to its displayed argument mark.
+    pub(crate) fn marked(&self) -> String {
+        match self.arguments {
+            ArgumentOmission::Kept => self.words.clone(),
+            ArgumentOmission::Dropped if self.words.is_empty() => ELISION.to_string(),
+            ArgumentOmission::Dropped => format!("{} {ELISION}", self.words),
+        }
     }
 }
 
 /// Skip global options before the name, then keep consecutive command words.
-fn named_arguments<'word>(words: impl IntoIterator<Item = &'word str>) -> String {
+fn named_arguments<'word>(words: impl IntoIterator<Item = &'word str>) -> CommandName {
     let mut kept = Vec::new();
     let mut dropped = false;
     let mut words = words.into_iter();
@@ -257,10 +294,14 @@ fn named_arguments<'word>(words: impl IntoIterator<Item = &'word str>) -> String
             }
         }
     }
-    if dropped {
-        kept.push(ELISION);
+    CommandName {
+        words:     kept.join(" "),
+        arguments: if dropped {
+            ArgumentOmission::Dropped
+        } else {
+            ArgumentOmission::Kept
+        },
     }
-    kept.join(" ")
 }
 
 /// Convert a path-bearing executable name at the path API boundary.
@@ -398,6 +439,13 @@ pub(super) struct CargoArguments {
     layout:           ArgumentLayout,
 }
 
+impl CargoArguments {
+    /// The forwarded slice follows cargo itself, including an interpreted shim.
+    pub(super) const fn follows_cargo_executable(&self) -> bool {
+        matches!(self.layout, ArgumentLayout::Cargo)
+    }
+}
+
 /// Wrappers may precede the cargo binary; empty argv and a rejected program differ.
 pub(super) fn cargo_split(argv: &[OsString]) -> Result<CargoArguments, CargoArgvAbsence> {
     if let Some(start) = argv.iter().position(is_cargo_binary) {
@@ -507,15 +555,24 @@ fn base_name(argument: &OsString) -> String {
 )]
 mod tests {
     #[test]
+    fn kept_words_and_argument_omissions_have_distinct_states() {
+        let kept = CommandText::of("cargo", &["…"]).named();
+        assert_eq!(kept.words, "…");
+        assert_eq!(kept.arguments, ArgumentOmission::Kept);
+        let dropped = CommandText::of("cargo", &["check", "--workspace"]).named();
+        assert_eq!(dropped.words, "check");
+        assert_eq!(dropped.arguments, ArgumentOmission::Dropped);
+    }
+    #[test]
     fn the_short_name_ends_before_subcommand_options() {
         assert_eq!(
-            command_name("cargo check --locked --offline -j 1"),
+            command_name("cargo check --locked --offline -j 1").marked(),
             "cargo check …"
         );
         assert_eq!(
             command_name(
                 "cargo nextest run --test-threads 32 --bin hana -E 'package(hana) & (test(arrange_glyph) | …)'"
-            ),
+            ).marked(),
             "cargo nextest run …"
         );
         assert_eq!(
@@ -532,29 +589,33 @@ mod tests {
                     "package(hana) & (test(arrange_glyph) | …)",
                 ],
             )
-            .named(),
+            .named()
+            .marked(),
             "nextest run …"
         );
         assert_eq!(
-            command_name("cargo --config profile.p19.inherits=\"dev\" build --profile p19 -j 1"),
+            command_name("cargo --config profile.p19.inherits=\"dev\" build --profile p19 -j 1")
+                .marked(),
             "cargo build …"
         );
         assert_eq!(
             command_name(
                 "cargo test -p cargo-tile --test cli_lifecycle --test shim_modes --test unit_tests"
-            ),
+            )
+            .marked(),
             "cargo test …"
         );
         assert_eq!(
-            command_name("cargo --config x=1 -Z unstable-options build --release"),
+            command_name("cargo --config x=1 -Z unstable-options build --release").marked(),
             "cargo build …"
         );
         assert_eq!(
-            command_name("cargo --color always -C /tmp/project check"),
+            command_name("cargo --color always -C /tmp/project check").marked(),
             "cargo check …"
         );
         assert_eq!(
-            command_name("cargo --config=x=1 -Zunstable-options -C/tmp/project +nightly fmt"),
+            command_name("cargo --config=x=1 -Zunstable-options -C/tmp/project +nightly fmt")
+                .marked(),
             "cargo +nightly fmt …"
         );
     }
@@ -566,7 +627,7 @@ mod tests {
             assert_eq!(text.line(detail), "build --release --locked");
         }
         assert_eq!(text.profile(), CargoProfile::Release);
-        assert_eq!(text.named(), "build …");
+        assert_eq!(text.named().marked(), "build …");
     }
 
     #[test]
@@ -576,7 +637,7 @@ mod tests {
             assert_eq!(text.line(detail), "build --profile p19c --config x");
         }
         assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
-        assert_eq!(text.named(), "build …");
+        assert_eq!(text.named().marked(), "build …");
     }
 
     #[test]
@@ -586,7 +647,7 @@ mod tests {
             assert_eq!(text.line(detail), "build --profile=p19c");
         }
         assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
-        assert_eq!(text.named(), "build …");
+        assert_eq!(text.named().marked(), "build …");
     }
 
     #[test]
@@ -599,7 +660,7 @@ mod tests {
         ] {
             let text = CommandText::of("cargo", &arguments);
             assert_eq!(text.profile(), CargoProfile::Release);
-            assert_eq!(text.named(), "build …");
+            assert_eq!(text.named().marked(), "build …");
             assert_eq!(text.line(SummaryDetail::Full), arguments.join(" "));
             assert_eq!(text.line(SummaryDetail::Trimmed), arguments.join(" "));
         }
@@ -691,25 +752,36 @@ mod tests {
     #[test]
     fn the_short_name_keeps_a_subcommand_after_a_flag() {
         assert_eq!(
-            CommandText::of("cargo", &["--color", "always", "nextest", "run"]).named(),
+            CommandText::of("cargo", &["--color", "always", "nextest", "run"])
+                .named()
+                .marked(),
             "nextest run …"
         );
         assert_eq!(
-            CommandText::of("cargo", &["--locked", "check"]).named(),
+            CommandText::of("cargo", &["--locked", "check"])
+                .named()
+                .marked(),
             "check …"
         );
         assert_eq!(
-            CommandText::of("cargo", &["--color=always", "+nightly", "nextest", "run"]).named(),
+            CommandText::of("cargo", &["--color=always", "+nightly", "nextest", "run"])
+                .named()
+                .marked(),
             "+nightly nextest run …"
         );
     }
 
     #[test]
     fn the_short_name_marks_dropped_arguments_only_when_it_drops_some() {
-        assert_eq!(command_name("cargo check --workspace"), "cargo check …");
-        assert_eq!(command_name("cargo check"), "cargo check");
         assert_eq!(
-            CommandText::of("cargo", &["check", "--", "child", "--release"]).named(),
+            command_name("cargo check --workspace").marked(),
+            "cargo check …"
+        );
+        assert_eq!(command_name("cargo check").marked(), "cargo check");
+        assert_eq!(
+            CommandText::of("cargo", &["check", "--", "child", "--release"])
+                .named()
+                .marked(),
             "check …"
         );
     }
@@ -718,17 +790,17 @@ mod tests {
     fn a_short_view_program_is_named_by_its_file_name() {
         let cargo = CommandText::of("/nix/store/cargo/bin/cargo", &["check", "--workspace"]);
         assert_eq!(cargo.program_name(), "cargo");
-        assert_eq!(cargo.named(), "check …");
+        assert_eq!(cargo.named().marked(), "check …");
         assert_eq!(
-            command_name("/nix/store/runner/bin/Runner.Worker spawnclient 166 175"),
+            command_name("/nix/store/runner/bin/Runner.Worker spawnclient 166 175").marked(),
             "Runner.Worker …"
         );
         assert_eq!(
-            command_name("/nix/store/cargo/bin/cargo check --workspace"),
+            command_name("/nix/store/cargo/bin/cargo check --workspace").marked(),
             "cargo check …"
         );
         assert_eq!(
-            command_name("/nix/store/runner/bin/Runner.Listener"),
+            command_name("/nix/store/runner/bin/Runner.Listener").marked(),
             "Runner.Listener"
         );
     }
@@ -1085,11 +1157,15 @@ mod tests {
     #[test]
     fn a_named_command_keeps_its_subcommands_and_its_toolchain() {
         assert_eq!(
-            CommandText::of("cargo", &["nextest", "run", "--workspace"]).named(),
+            CommandText::of("cargo", &["nextest", "run", "--workspace"])
+                .named()
+                .marked(),
             "nextest run …",
         );
         assert_eq!(
-            CommandText::of("cargo", &["+nightly", "fmt", "--all"]).named(),
+            CommandText::of("cargo", &["+nightly", "fmt", "--all"])
+                .named()
+                .marked(),
             "+nightly fmt …",
         );
     }
@@ -1098,12 +1174,12 @@ mod tests {
     #[test]
     fn a_named_chain_step_uses_the_program_file_name() {
         assert_eq!(
-            command_name("~/.claude/local/claude --setting on --setting off"),
+            command_name("~/.claude/local/claude --setting on --setting off").marked(),
             "claude …",
         );
-        assert_eq!(command_name("zsh -c cargo nextest run"), "zsh …");
-        assert_eq!(command_name("zed"), "zed");
-        assert_eq!(command_name(""), "");
+        assert_eq!(command_name("zsh -c cargo nextest run").marked(), "zsh …");
+        assert_eq!(command_name("zed").marked(), "zed");
+        assert_eq!(command_name("").marked(), "");
     }
 
     #[test]
@@ -1174,7 +1250,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(mend.named(), "mend …");
+        assert_eq!(mend.named().marked(), "mend …");
         assert!(
             mend.line(SummaryDetail::Full).contains("--json"),
             "and the long line still carries every one of them",

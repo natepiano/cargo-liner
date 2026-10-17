@@ -186,9 +186,8 @@ impl<S: Copy> SettingsRows<S> {
         );
     }
 
-    /// Push the `view` stepper, which walks `auto`, `summary` and
-    /// `cells`. No section: the app places it under a section of its
-    /// own.
+    /// Push the `view` stepper, which walks `summary` and `cells`. No section: the app places it
+    /// under a section of its own.
     pub fn tile_view(&mut self, view: TileView) {
         self.push_stepper(
             SettingTarget::Framework(FrameworkSetting::TileView),
@@ -347,7 +346,6 @@ mod tests {
     #[test]
     fn the_view_row_shows_the_file_spelling() {
         let mut rows = SettingsRows::<TestSetting>::new();
-        rows.tile_view(TileView::Auto);
         rows.tile_view(TileView::Summary);
         rows.tile_view(TileView::Cells);
         let shown: Vec<_> = rows
@@ -355,10 +353,7 @@ mod tests {
             .iter()
             .map(|row| (row.label.as_str(), row.value.as_str()))
             .collect();
-        assert_eq!(
-            shown,
-            [("view", "auto"), ("view", "summary"), ("view", "cells")]
-        );
+        assert_eq!(shown, [("view", "summary"), ("view", "cells")]);
     }
 
     /// The `widen summary` row shows the value the way `config.toml`

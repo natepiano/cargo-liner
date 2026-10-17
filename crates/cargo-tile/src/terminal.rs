@@ -339,6 +339,7 @@ mod tests {
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::census::scan::InvocationResourceUse;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
@@ -407,11 +408,16 @@ fraying = "leading"
             start: "10:00".to_owned(),
             started: RunStart::Known(0),
             duration: "00:01".to_owned(),
-            cpu: Measurement::Reading("0%".to_owned()),
-            subtree_cpu: Measurement::Reading("0%".to_owned()),
-            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            compiler: CompilerObservation::None,
+            resource_use: InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
+            subtree_resource_use: InvocationResourceUse {
+                cpu:      Measurement::Reading(0.0),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::None,
+            },
             state,
             managed: Measurement::Reading(0),
             nested: false,
@@ -466,10 +472,16 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app");
         let reading = scan_process(InvocationId::for_test(11), CaptureLookup::Unregistered);
         let unavailable = CargoProcess {
-            cpu: Measurement::Unavailable(MeasurementAbsence::ReadFailed),
-            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
-            compiler: CompilerObservation::Unknown,
+            resource_use: InvocationResourceUse {
+                cpu:      Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::Unknown,
+            },
+            subtree_resource_use: InvocationResourceUse {
+                cpu:      Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
+                compiler: CompilerObservation::Unknown,
+            },
             managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
             ..reading.clone()
         };

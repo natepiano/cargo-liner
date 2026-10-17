@@ -226,3 +226,32 @@ pub(super) const EMPTY_DEPARTURE_TEST_SPANS: [u16; 5] = [11, 5, 10, 11, 11];
 /// Source spans of a command lending two rows before the resident trace anchor.
 #[cfg(test)]
 pub(super) const RESIDENT_EMPTY_TEST_START_SPANS: [u16; 8] = [11, 5, 7, 5, 5, 5, 5, 5];
+
+/// Frame widths from the large-content measurement regression.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_WIDTHS: [u16; 3] = [70, 53, 57];
+/// Frame height from the large-content measurement regression.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_HEIGHT: u16 = 30;
+/// Content sizes checked independently of frame height.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_ROWS: [u16; 2] = [602, 6002];
+/// Number of command cells beside the summary in the measurement regression.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_GROUPS: u32 = 3;
+/// Rows occupied by one complete content entry in the measurement regression.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_ROW_STEP: u16 = 3;
+
+/// Cells that force the large summary to request its column mates' spare rows.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_CELLS: usize = 4;
+
+/// Keep the regression's four cells in one column.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_INITIAL_ROWS: usize = 5;
+
+/// Two purposes at every frame height, including the whole-content probe.
+#[cfg(test)]
+pub(super) const LARGE_CONTENT_TEST_MEASUREMENT_BOUND: usize =
+    (LARGE_CONTENT_TEST_HEIGHT as usize + 2) * 2;

@@ -1,9 +1,135 @@
 // Reader scenarios sampled without subprocess timing or terminal polling.
 
 use super::*;
+use crate::census;
 use crate::render;
 use crate::roster::Roster;
 use crate::tiles::TileContent;
+
+#[test]
+fn a_nextest_with_unmeasured_cpu_keeps_its_measured_metadata_child() {
+    let nextest = [OsString::from("cargo"), "nextest".into(), "run".into()];
+    let metadata = [OsString::from("cargo"), "metadata".into()];
+    let records = ProcessObservations::new([
+        cpu_record(1_878_002, 1, "cargo", &nextest, 100),
+        cpu_record(1_878_502, 1_878_002, "cargo", &metadata, 100),
+    ]);
+    let groups = CensusSequence::default().sample_cpu(
+        &records,
+        &[
+            (
+                1_878_002,
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            ),
+            (1_878_502, Measurement::Reading(0.0)),
+        ],
+    );
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].lead.pid, 1_878_002);
+    assert_eq!(
+        groups[0].lead.resource_use.cpu,
+        Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+    );
+    assert_eq!(groups[0].rest[0].pid, 1_878_502);
+    assert_eq!(
+        groups[0].rest[0].resource_use.cpu,
+        Measurement::Reading(0.0)
+    );
+    // Check the measured child first: an unavailable parent must not erase its zero.
+    assert_cpu_rows(&groups, 200, &[(1_878_502, "0%"), (1_878_002, "")]);
+}
+
+#[test]
+fn a_nested_test_keeps_its_compiler_cpu_beside_its_idle_nextest_parent() {
+    let nextest = [OsString::from("cargo"), "nextest".into(), "run".into()];
+    let test = [OsString::from("cargo"), "test".into()];
+    let compiler = [OsString::from("sccache"), "rustc".into()];
+    let mut sequence = CensusSequence::default();
+    let now = Instant::now();
+    for sample in 0..3 {
+        let mut records = vec![
+            cpu_record(2_228_006, 1, "cargo", &nextest, 100),
+            cpu_record(2_232_653, 2_228_006, "cargo", &test, 100),
+        ];
+        for record in &mut records {
+            record.memory = 1;
+        }
+        records.extend((0..32).map(|index| {
+            let millis = if index == 31 { 220 } else { 90 };
+            let mut record = cpu_record(
+                3_000_000 + index,
+                2_232_653,
+                "sccache",
+                &compiler,
+                100 + sample * millis,
+            );
+            record.memory = 32 * 1024 * 1024;
+            record
+        }));
+        let groups = sequence.sample_counters(
+            &mut ProcessObservations::new(records),
+            now + Duration::from_secs(sample),
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].rest.len(), 1);
+        let child = &groups[0].rest[0];
+        assert_eq!(child.pid, 2_232_653);
+        assert_eq!(
+            child.resource_use.compiler,
+            CompilerObservation::Running(Compiler {
+                name:  SCCACHE_BINARY,
+                count: 32,
+            })
+        );
+        if sample > 0 {
+            assert_eq!(
+                child.resource_use.memory,
+                Measurement::Reading(1024 * 1024 * 1024 + 1)
+            );
+            assert_eq!(groups[0].lead.resource_use.cpu, Measurement::Reading(0.0));
+            assert_eq!(
+                child.resource_use.cpu.map(cpu_label),
+                Measurement::Reading("301%".into())
+            );
+            assert_cpu_rows(&groups, 126, &[(2_228_006, "0%"), (2_232_653, "301%")]);
+        }
+    }
+}
+
+/// Inspect real table cells after census grouping and roster observation.
+fn assert_cpu_rows(groups: &[CargoGroup], width: u16, expected: &[(u32, &str)]) {
+    let mut roster = Roster::new();
+    roster.observe(groups.to_vec(), Instant::now());
+    let area = ratatui::layout::Rect::new(0, 0, width, 16);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    render::draw_cell_for_test(
+        &mut buffer,
+        &roster,
+        &TileContent::Group(groups[0].id()),
+        area,
+        4,
+    );
+    let lines: Vec<String> = (0..area.height)
+        .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    let text = lines.join("\n");
+    let header = lines
+        .iter()
+        .find(|line| line.contains("cpu") && line.contains("command"))
+        .expect("CPU header");
+    for &(pid, reading) in expected {
+        let pid = pid.to_string();
+        let row = lines
+            .iter()
+            .find(|line| line.split_whitespace().next() == Some(pid.as_str()))
+            .expect("process row");
+        assert_eq!(
+            census::measurement_cell(header, row, "cpu", &text),
+            reading,
+            "{text}"
+        );
+    }
+}
 
 #[test]
 fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
@@ -95,13 +221,13 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
     );
     assert_ne!(identities[0], identities[8]);
     assert_eq!(
-        samples[0][0].lead.cpu,
+        samples[0][0].lead.resource_use.cpu.map(cpu_label),
         Measurement::Unavailable(MeasurementAbsence::FirstObservation)
     );
     for (index, groups) in samples.iter().enumerate().skip(1) {
         // Exact deltas detect both stranded credit and replay of accumulated history.
         assert_eq!(
-            groups[0].lead.cpu,
+            groups[0].lead.resource_use.cpu.map(cpu_label),
             Measurement::Reading("20%".into()),
             "sample {index}"
         );
@@ -174,7 +300,11 @@ fn cpu_turnover_preserves_every_sample_as_busy_and_idle_children_change() {
         } else {
             Measurement::Reading("20%".into())
         };
-        assert_eq!(groups[0].lead.cpu, expected, "sample {index}");
+        assert_eq!(
+            groups[0].lead.resource_use.cpu.map(cpu_label),
+            expected,
+            "sample {index}"
+        );
     }
 }
 
@@ -358,7 +488,8 @@ fn assert_shared_target_refusal(command: &str, excluded: &[String]) {
                 Measurement::Reading("0%".into())
             };
             assert_eq!(
-                group.lead.cpu, expected,
+                group.lead.resource_use.cpu.map(cpu_label),
+                expected,
                 "sample {index}, pid {}",
                 group.lead.pid
             );
@@ -419,15 +550,29 @@ fn assert_nested_source_samples(samples: &[Vec<CargoGroup>], capture: &Capture) 
             );
         }
         if index == 1 {
-            assert_eq!(group.lead.cpu, Measurement::Reading("42%".into()));
-            assert_eq!(group.lead.compiler, CompilerObservation::None);
+            assert_eq!(
+                group.lead.resource_use.cpu.map(cpu_label),
+                Measurement::Reading("42%".into())
+            );
+            assert_eq!(group.lead.resource_use.compiler, CompilerObservation::None);
         } else {
             assert_eq!(
-                group.lead.cpu,
+                group.lead.resource_use.cpu.map(cpu_label),
                 Measurement::Unavailable(MeasurementAbsence::Unproven)
             );
-            assert_eq!(group.lead.compiler, CompilerObservation::Unknown);
+            assert_eq!(
+                group.lead.resource_use.compiler,
+                CompilerObservation::Unknown
+            );
         }
+        assert_eq!(
+            group.lead.resource_use.memory,
+            Measurement::Unavailable(if index == 1 {
+                MeasurementAbsence::ReadFailed
+            } else {
+                MeasurementAbsence::Unproven
+            })
+        );
         roster.observe(groups.clone(), Instant::now());
         assert_eq!(roster.groups().len(), 1);
         assert_eq!(roster.groups()[0].rows().count(), 3);
@@ -484,10 +629,20 @@ fn assert_nested_render(
         .collect();
     assert_eq!(cells[0], "10");
     assert_eq!(cells.last(), Some(&"2"));
-    assert_eq!(
-        cells.iter().filter(|&&cell| cell == "--").count(),
-        if index == 1 { 1 } else { 3 }
-    );
+    let header = lines
+        .iter()
+        .find(|line| {
+            line.contains(TABLE_HEADERS[CPU_COLUMN]) && line.contains(TABLE_HEADERS[MEMORY_COLUMN])
+        })
+        .expect("measurement titles");
+    for column in [CPU_COLUMN, MEMORY_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
+        let cell = census::measurement_cell(header, parent, TABLE_HEADERS[column], &text);
+        match column {
+            MANAGED_COLUMN => assert_eq!(cell, "2", "{text}"),
+            CPU_COLUMN if index == 1 => assert_eq!(cell, "42%", "{text}"),
+            _ => assert_eq!(cell, "", "{text}"),
+        }
+    }
     for (pid, marker) in [("20", "probe-nested-check"), ("30", "probe-nested-test")] {
         let row = lines
             .iter()

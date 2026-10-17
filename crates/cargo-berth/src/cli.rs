@@ -1719,6 +1719,11 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                                 Ok(worktree_context) => worktree_context,
                                 Err(error) => return initialization_error(error),
                             };
+                        if let Err(error) =
+                            BerthConfig::exclude_from_git(worktree_context.common_git_directory())
+                        {
+                            return initialization_error(LedgerError::Config(error));
+                        }
                         let berth_config =
                             match BerthConfig::read(&worktree_context.configuration_lookup()) {
                                 Ok(Enrollment::Enrolled(berth_config)) => berth_config,

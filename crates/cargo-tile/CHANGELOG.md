@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - A panic is appended to `panic.log` beside `config.toml` -- the time, where it was raised, its message and a backtrace -- and the file's path is printed after the terminal is restored, so the report is not lost with the alternate screen.
-- `[tiles] view`, stepped under Tiles in the settings overlay, selects `auto`, `summary` or `cells`; `auto` is the default.
-- The summary cell's bottom row shows the memory of running commands, with `+` when only part of the total is readable and `--` when none of it is.
+- `[tiles] view`, stepped under Tiles in the settings overlay, selects `summary` or `cells`; `cells` is the default; a saved `auto` loads as `cells`.
+- The summary cell's bottom row shows the memory of running commands, with `+` when only part of the total is readable and no memory entry when none is readable.
 - A `mem` column: the command's resident memory, its compilers and tests included, in gibibytes.
 - `[appearance] transparent`, on by default and stepped under Appearance in the settings overlay: the grid paints nothing under its tiles, the focused tile's tint included, so a transparent terminal window shows the desktop behind every tile, and the focused tile's border lights to mark focus. Off, the grid is painted solid in the theme's background while its tiles are shown, and focus is the tint as before. The attract screen draws the same either way.
 - `[tiles] fill` decides how the grid's cells spread over its columns, stepped under Tiles in the settings overlay. `redistribute`, the default, keeps every column within one cell of the others, the taller ones first: twelve cells stand as three columns of four, thirteen as four, three, three and three, fourteen as four, four, three and three. `add_new` fills a column at a time, so the cell that opens a new column stands in it alone. The number of columns is the same either way.
@@ -59,11 +59,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- A nested cargo borrowing an unverified driver capture leaves the reading in the driver's cell heading and on its summary row, once per invocation.
+- Command tables choose one column set per frame, reserving any state slot in every table so `cpu`, `mem` and `runs` stay aligned. Optional columns leave before a subcommand is cut, including blocked commands, release profiles and Long view; argument tails yield before resource columns, `start` and `dur` leave together, and state leaves before parent. Short command words and their argument marks wrap within the column, including when the mark needs its own line.
+- A command cell keeps its invocation progress in its heading; children sharing an unconfirmed capture never repeat the reading, and summary rows show only their own invocation progress.
+- Narrow mixed-account summaries retain complete directory segments, dropping each account's tags together when needed.
+- Short commands cut on the last visible row drop whole trailing words and keep the argument mark separated from the subcommand.
+- Fully drawn Short command cells retain the two row-end cells when the shared reservation would shorten a whole profiled command name.
+- Command cells share continuation clearance before allocation probes and reuse solved layouts and wrapped rows for measurement and painting.
+- Narrow Long summaries keep command names ahead of state readings.
+- Empty compiler and runs slots give their width to commands that would otherwise be cut.
+- Continuation marks remain inside the buffer while panes move.
+- A summary that hides directories uses any remaining row for a separator between the directories it draws.
+- Tables reserve row-end cells only when their frame grid hides process rows; a cut command and later hidden rows keep separate marks unless a Long command needs their shared edge space to retain memory.
+- A narrow summary keeps command names before progress readings when both columns cannot fit.
+- Missing memory, compiler and run readings leave blank cells; an unreadable memory total leaves no entry in the summary foot.
+- Toasts use room below the summary when their columns overlap it and keep their original area in other columns.
+- Empty state slots in command tables reserve the frame's column offsets while their headers stay blank.
+- Tables reserve the hidden-row mark's cell before fitting, so adjacent counts remain whole.
+- A hidden child's compiler count joins its drawn ancestor before compiler columns are selected.
+- Summary progress readings appear once beside their command rows; command cells keep their heading gauges.
+- State readings and their title align at the percent sign.
+- Short ancestry marks hidden lower levels separately from cut executable names and walk limits, and a wholly hidden ancestry leaves the parent pid in its table.
+- A Long ancestry cut fills its final row and places its mark after the last drawn character.
+- Short command names keep whole subcommands and spaced argument marks before wrapping between words.
+- Readable headings of one account use the same account-tag form within a table; other accounts and unreadable-directory labels retain their identification.
+- Driver rows name the dispatched process, and parent pids without a table row use plain ink.
+- Hidden process rows are marked at the row's right end in both views.
+- Toast placement and its cleared gap preserve the summary foot and count.
+- A column's spare rows restore summary separators before remaining unused above a cell's foot.
+- CPU cells stay blank until a measurement is available.
+- Whole column-width words wrap intact, and a later slash takes the break before an earlier hyphen.
+- Summary and command cells show equal numbers when they represent the same contributors.
+- CPU, memory and compiler readings include only a row's own contribution and descendants without another drawn row; a cut transfers hidden contributions to their nearest drawn ancestor.
 - Commands keep their own progress, profile and parent order; Short view names the session runner, ancestry cuts stay inline, and metadata columns retain their session widths.
 - Built-in grid inks meet their contrast floors, pid families use at least five distinct hues clear of table semantic inks in each theme, finished rows stay readable through the first half of their fade, and cell and summary foot readouts fade with their contents.
 - The capture toast explains progress reporting in plain words and highlights `cargo tile uninstall` on one line.
 - Command cells share column widths across each frame, keep compiler and runs beside the command, leave the right frame clear, and label only columns with visible values. Summary and command tables share column drops that keep command names whole, and shortened directory headings fit their terminal-cell width.
-- In `auto` and `cells`, the grid shows command cells whenever they meet their size floor, and summary rows that do not fit go to its hidden-rows count; `summary` always shows it alone.
+- In `cells`, the grid shows command cells whenever they meet their size floor, and summary rows that do not fit go to its hidden-rows count; `summary` always shows it alone.
 - The summary stays at its current grid depth when it is no more than half a position short and the cells in its column can spare the rows, and cells hiding rows receive available column height before a shorter cell gains a blank trailing row.
 - Vertically cut tables fill the last command line before its `…`, and use an inter-directory blank row for the next heading and process when those rows would otherwise be hidden.
 - Toasts stay inside the tile frame, and shortened ancestry always marks its cut and uses the rows available to it.
@@ -79,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
-- In `auto`, busy command cells no longer switch the grid to the summary alone; summary rows that do not fit beside them go to its hidden-rows count.
+- In `cells`, busy command cells no longer switch the grid to the summary alone; summary rows that do not fit beside them go to its hidden-rows count.
 - A tile entering a column waits for its first body row before drawing its border, so the column foot never shows two stacked rules during motion.
 - Grid motion no longer leaves an empty row above a cell's foot while that cell hides content.
 - Vertically constrained tables either keep every directory gap or yield them all, leaving any spare rows together above the foot.

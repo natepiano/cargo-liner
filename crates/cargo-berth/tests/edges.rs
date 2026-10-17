@@ -2878,7 +2878,10 @@ fn defer_answer(repository_root: &Path, scope: &str, run: &str, blocker: &str) -
 /// Commit the policy without hooks: before any reservation exists, the trunk gate and the
 /// post-commit drift check write no berth state.
 fn commit_configuration(repository_root: &Path) {
-    git(repository_root, &["add", ".claude/config/berth.toml"]);
+    git(
+        repository_root,
+        &["add", "--force", ".claude/config/berth.toml"],
+    );
     git(
         repository_root,
         &[

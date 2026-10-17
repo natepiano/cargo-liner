@@ -214,7 +214,7 @@ fn build_initialized_repository(root: &Path) -> TestResult {
     GIT.run(root, ["add", "README.md", HELD_PATH]);
     commit(root, "initial");
     assert_success(&run(root, &["init", "--json"])?);
-    GIT.run(root, ["add", ".claude/config/berth.toml"]);
+    GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
     commit(root, "track berth configuration");
     Ok(())
 }
