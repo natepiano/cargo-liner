@@ -278,26 +278,191 @@
 
 **Depends on:** none (cargo-port only; runs after phase 8 by the showrunner's call)
 
-#### Work Order
+#### As-built
 
-**Goal:** Selecting a linked worktree whose `.git` file points at a gitdir that no longer exists shows the Git pane's red `Error` row, `broken .git — gitdir target missing`.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-17, found by the cargo-liner-style types-unit and confirmed on main. `DetailField::WorktreeError` (`crates/cargo-port/src/tui/panes/pane_data/detail_field.rs:46`; label `Error` at 79, value at 129) is never constructed; only match arms and the style branch in `tui/panes/git/render.rs:738` name it. 9e1c19f3 added the row; 86c9fd94 ("replace DetailCache with DetailCacheKey and remove dead code") removed `worktree_health` from the detail info and the `fields.push(DetailField::WorktreeError)` that read it, and 27c7995c and e8ae3acb moved the renderer, which still styles and word-wraps the row.
-2. Detection still runs: `get_worktree_health` (`project/git/discovery.rs:100`) yields `WorktreeHealth::{Normal, Broken}` (`project/info.rs:23`), stored on each project's info and read by the project list (`tui/panes/project_list/tree_rows.rs`: `item.worktree_health()` at 415, `worktree_health_for_entry` at 675). Carry the selected project's health into `GitData` (`tui/panes/pane_data/git_data.rs:81`) where the git detail data is built (`build_git_detail_fields`, 313, and the `GitData` it fills), as a `WorktreeHealth` value, never a `bool`. For a linked worktree entry, use that entry's own health, as the project list does.
-3. `git_fields_from_data` (`git_data.rs:217`) emits `DetailField::WorktreeError` first, before `Head`, when the health is `Broken`. The renderer's existing style (default text on the error background) and word wrap stay as they are.
-4. A broken worktree has no readable gitdir, so its other git rows may be absent; the Error row shows whether or not they are.
-5. Tests: a unit test that `git_fields_from_data` lists `WorktreeError` first for `Broken` and omits it for `Normal`; and a test that builds a real worktree directory whose `.git` file names a missing gitdir, selects it, and reads the rendered Git pane text for `Error` and `broken .git — gitdir target missing`. Each test runs under a second.
-6. Docs: a `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `Fixed` line.
+- Selecting a linked worktree whose `.git` file names a missing gitdir shows the Git pane's red `Error` row, `broken .git — gitdir target missing`, first and no Branch row, also after the live checkout probe arrives. The pane title names no branch for it.
+- `GitCheckout::{Broken, AwaitingProbe, Readable { head: HeadState, relation: Option<HeadRelation> }}` replaces the `head` / `head_relation` pair on `GitData` and `GitDetailFields`. `build_git_detail_fields` builds it with `GitCheckout::from_probe(WorktreeHealth, Option<HeadState>, Option<HeadRelation>)` from the selected entry's own `WorktreeHealth` (`project_list.at_path(..)`, default `Normal`); a broken worktree cannot carry a HEAD by construction. `AwaitingProbe` is a pending probe or a path with no checkout info.
+- `git_fields_from_data` emits `DetailField::WorktreeError` first when `Broken` and `Head` only when `Readable`. `git_panel_title`, `copy_data` and Git pane availability read the same `GitCheckout`; `PaneId::Git` is available whenever `checkout` is not `AwaitingProbe`, so a broken worktree with no remotes or worktrees still reaches the Git pane.
+- `tui_pane::SemanticTheme::on_error` (serde default white) with the `on_error_color()` accessor, re-exported from `tui_pane`; every built-in theme in tui_pane, cargo-port, cargo-tile and cargo-handler sets it white. The Error row draws `fg(on_error_color()).bg(error_color())`, about 7.7:1 in the light theme.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs`
-- `crates/cargo-port/src/tui/panes/pane_data/detail_field.rs`
-- `crates/cargo-port/src/tui/panes/git/`
-- `crates/cargo-port/src/tui/app/mod.rs` — only where `GitData` is filled or tested
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — `GitCheckout`, `from_probe`, `git_fields_from_data`, test `broken_worktree_error_precedes_head_and_normal_worktree_omits_it`
+- `crates/cargo-port/src/tui/panes/pane_data/{detail_data,detail_field,copy_data,mod}.rs`, `crates/cargo-port/src/tui/panes/mod.rs` — carry and re-export `GitCheckout`
+- `crates/cargo-port/src/tui/panes/git/render.rs` — Error row style; `git_panel_title` over `GitCheckout`
+- `crates/cargo-port/src/tui/app/mod.rs` — Git pane availability; test `selecting_worktree_with_missing_gitdir_renders_git_error` (real missing-gitdir directory, live probe, rendered text and Error cell colors in dark and light)
+- `crates/tui_pane/src/theme/{mod,accessors,fallback,loader}.rs`, `crates/tui_pane/src/lib.rs` — `on_error` token, accessor, defaults, test `existing_theme_files_default_on_error_and_allow_an_override`
+- `crates/cargo-port/src/themes/builtins.rs`, `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-handler/src/theme.rs` — `on_error` in each `SemanticTheme` literal
+
+**Binds later work:** `SemanticTheme::on_error` and `tui_pane::on_error_color()` are the foreground for text on the error red; the phase "cargo-port's broken-worktree rows in the project list draw white text on the error red" applies them to the remaining error-red text sites and adds `on_error` to the shipped theme templates.
+
+**Gotchas:**
+- `make_app`'s quiet startup skips the git probe; a test of Git rows for a real checkout applies the probe result (`CheckoutInfo::get` → `BackgroundMsg::CheckoutInfo`), or it reads unfetched metadata.
+- `CheckoutInfo::get` accepts a gitfile whose gitdir is missing, and `resolve_head_state` (`project/git/checkout.rs:272`) reports any unresolvable HEAD as `HeadState::Unborn`; `GitCheckout::from_probe` drops it when health is `Broken`. Other readers of that `Unborn` (finder label, CI and project-list `branch_name()`) treat it as no branch.
+- A new `SemanticTheme` field is set in every theme literal across tui_pane, cargo-port, cargo-tile and cargo-handler and needs a serde default so existing theme files load; run all four suites.
+
+**Ruled out:**
+- Default text on the error red: black on the light theme's error red reads 2.71:1.
+
+### Phase 10 — Every refused check or claim leaves one typed journal record naming its requester, paths and holders  · status: todo
+
+**Depends on:** Phase 8 (shares `crates/cargo-berth/tests/`)
+
+#### Work Order
+
+**Goal:** A `check` or `claim` refused with `blocked_by_overlap` appends exactly one `overlap_refused` journal record: requester in the record's `actor` and `identity_inputs`, the refused paths in `scopes`, and each holder with its overlapping scopes in `holders`. Replay, compaction and the board read the record and never count it as a reservation.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-17, asking from natedev for the style pilot. Today a refusal appends nothing. `check` refuses at `verb/check.rs:226-233`, `reconcile_and_retry`'s else branch, from the unlocked `decide` snapshot (`Ledger::read_for_edit_check`, check.rs:291). `check` also refuses at `render_acquisition` (check.rs:266-273), when the locked first-touch retry returns `FirstTouchClaimExecution::Blocked`. `claim` refuses at `validate_claim_transaction` (`verb/claim/mod.rs:1477`, `ClaimRejection::Conflict`) and through `ClaimRejection::IncompleteAnswer`. Both reach `claim_rejection_execution` (~1361), from `acquire_new` (~889-920) and from `named::acquire` (`verb/claim/named.rs:166`). `Ledger::transact_tolerating` (`ledger/handle.rs:731`) handles `TransactionValidation::Reject` at 757-763: it publishes only a required rebuild and appends nothing.
+2. **Where the record is written (decided):** at the verb, after the verb has settled on its refusal and before it returns the blocked envelope. The record goes in its own record-only transaction. The verb opens the ledger and calls `Ledger::transact` with a validator that always returns `TransactionValidation::<Infallible>::Append(Box::new(JournalOperation::OverlapRefused { .. }))`. `gate/permit.rs:263-273` writes the bypass audit the same way. `TransactionValidation::Reject` stays append-free. Writing inside the rejecting transaction loses on three counts:
+   - The common `check` refusal (226-233) is decided from an unlocked snapshot, so no lock is held there.
+   - A first `check` attempt that comes back `Blocked` (check.rs:157) is retried after reconciliation. An in-lock write would record a refusal the caller never received, and the retry could record a second.
+   - `FirstTouchClaimRejection::Blocked` (claim/mod.rs:1717, 2090) also serves post-write first touch. Post-write first touch is an incursion, not a refusal.
+   Exactly one record is written per `blocked_by_overlap` envelope that `check` or `claim` returns, and none for any other status.
+3. **The operation.** `ledger/journal.rs`, inside `declare_journal_operations!` (389-685), after `Answer`:
+   ```rust
+   /// Record a check or claim refused because foreign reservations hold overlapping paths.
+   ///
+   /// The record's `actor` and `identity_inputs` name the requester. Replay reads it and
+   /// changes no reservation, edge, answer or incident.
+   OverlapRefused {
+       /// The command whose request was refused.
+       verb:    RefusedVerb,
+       /// The requested paths the refusal reported.
+       scopes:  ReservationScopeSet,
+       /// Each foreign holder with the scopes of its own that overlap the request.
+       holders: RefusingHolderSet,
+   },
+   ```
+   - `RefusedVerb::{Check, Claim}` has `#[serde(rename_all = "snake_case")]`, so `"verb": "check" | "claim"`. It is a separate two-variant enum, not `output::CommandVerb`, so no other verb can be recorded.
+   - `RefusingHolder { reservation_id: ReservationId, scopes: ReservationScopeSet }`: the holder and its `ReservationConflict::overlapping_scopes`. It pairs each holder with its own paths, as `BlockedIncursionPath` (journal.rs:1509) does, so a union of several holders' scopes cannot be represented.
+   - `RefusingHolderSet` and `EmptyRefusingHolderSet` come from `nonempty_journal_set!` (1361), next to `ForeignReservationIdSet` (1422).
+   - The checked constructor `RefusingHolderSet::from_conflicts(&[ReservationConflict]) -> Result<Self, EmptyRefusingHolderSet>` keeps conflict order. Every refusal path builds its envelope from a non-empty conflict list, so `Err` cannot arise there. The caller appends nothing on `Err`.
+   - None of the three new types derives `JsonSchema`, because no envelope carries them.
+4. **Requester (decided):** the record's existing `actor` (`repository`, `worktree`, `run`) plus `identity_inputs`, which every new record writes (`JournalMutationIdentityInputs::record`, journal.rs:185: `CARGO_BERTH_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CARGO_BERTH_RUN`, invocation directory). Copying the requester into the operation would let a record name a requester that differs from its own actor. The actor is the `ResolvedJournalMutationActor` (`ledger/authorization.rs:69`) of the refused request:
+   - `claim`: `journal_mutation_actor` in `acquire_new` (claim/mod.rs:837), and the matching actor in `named::acquire`.
+   - `check`: `resolved_edit_authorization.journal_mutation_actor_for(resolved_edit_authorization.coordination_run_id)`, from `decide` (check.rs:310). An unidentified caller gets a fresh run id per process, because that caller presented no run.
+5. **Recording function.** New `crates/cargo-berth/src/verb/refusal.rs` (declared in `verb/mod.rs`): `pub(super) fn record(worktree_context: &WorktreeContext, requester: ResolvedJournalMutationActor, verb: RefusedVerb, scopes: &ReservationScopeSet, conflicts: &[ReservationConflict])`.
+   - It opens the ledger with `Ledger::open_from_discovered_worktree` and appends through `Ledger::transact`, which waits up to `MUTATING_VERB_CONTENTION_TOLERANCE` like every mutating verb.
+   - It returns nothing. A failed append (lock contention, unreadable ledger, `Err` from `from_conflicts`) leaves the refusal envelope byte-for-byte as today. The requester's remedy does not depend on the record, and hook output stays one accurate refusal.
+   - Call sites:
+     - `check.rs`: `CheckDecision` (48) gains `requester: ResolvedJournalMutationActor` and `worktree_context: WorktreeContext`, filled in `decide`. The else branch at 226 records `retried_decision.scopes` and `.conflicts`. `render_acquisition` takes the decision's requester and context; its `Blocked` arm (266-273) records `scopes` and `conflicts` before `blocked_check`. The `PostWriteIncursion` arm shares that match arm but cannot occur under `FirstTouchConflictHandling::RefuseRequest`. Split it out so only `Blocked` records.
+     - `claim/mod.rs` `acquire_new` and `named.rs` `acquire`: when the execution is `ClaimExecution::Blocked { conflicts, .. }` or `ClaimExecution::IncompleteAnswer { rejection, .. }` (`rejection.conflicts`), record with `RefusedVerb::Claim`. Use the normalized claim `scopes` (claim/mod.rs:840; named.rs:79) and the claim's actor. Record after the refusing transaction returns.
+6. **Readers (replay, board, compaction):**
+   - `RetainedReservationSet::apply` (`reservation/retention.rs:1032`): add `OverlapRefused` to the no-op arm at 1083-1087.
+   - `OrderingGraph::replay` (`edge/graph.rs:155-180`): add it to the no-op list.
+   - `JournalOperation::record_ceiling` (journal.rs:750-775): `Declared`, since the request bounds `scopes` and `holders`.
+   - `is_coordination_record` (793-826): `false`. Coordination readers never see it, so no board answer, alert, edge or enrollment history reads it.
+   - `session::apply_journal_event` (`session/mod.rs:441` wildcard) maps no session.
+   - Compaction keeps it (it drops only superseded merge extents).
+   - `CURRENT_SCHEMA_VERSION` (`ledger/constants.rs:87`) stays `2`. Precedent: `HolderMergeExtentObserved` was added without a bump (fd71b778).
+   - Existing journals decode and replay unchanged, and `tests/fixtures/reader_compat` bytes do not change.
+   - The append moves `JournalPosition`, so an open terminal board rebuilds once on its next refresh. Phase 5's rule (no reconcile on an unchanged journal) still holds.
+7. **Unit tests** (impl writer, `ledger/journal.rs` `mod tests`):
+   - An `overlap_refused` event round-trips through serde in the current schema.
+   - `is_coordination_record` is false.
+   - Folding a journal of one claim then one `OverlapRefused` naming it yields the same `RetainedReservationSet` as the claim alone.
+   - `RefusingHolderSet::from_conflicts(&[])` is `Err`.
+8. **Integration tests** (test writer):
+   - New `crates/cargo-berth/tests/support/overlap_refusal.rs`, included by `#[path]` from `overlap.rs` and `answers.rs` as `git_configuration.rs` is: `assert_one_refusal_appended(journal_before: &[u8], journal_after: &[u8], verb: &str, envelope: &Value) -> Value`. It asserts:
+     - `journal_after` starts with `journal_before` and adds exactly one line.
+     - That line's `op` is `"overlap_refused"` and its `verb` is `verb`.
+     - Its `holders` reservation ids equal `envelope["blocked_by"]` in order.
+     - Each holder's `scopes` equals the matching `envelope["payload"]["data"]["conflicts"][i]["overlapping_scopes"]`.
+     It returns the record.
+   - New test in `tests/overlap.rs`, `a_refused_claim_journals_its_requester_paths_and_holders`, modeled on `blocked_claim_names_holder_provenance_and_appends_nothing` (334) and using the same `initialized_repository()` template and `foreign_worktree`.
+     - Setup: FIRST_RUN claims `tree:crates/hana_kana`. From the second worktree, `claim file:crates/hana_kana/src/lib.rs --run SECOND_RUN --json` exits 1 with `blocked_by_overlap`.
+     - Requester: `actor.run == SECOND_RUN`. `actor.worktree` differs from the holder claim record's `actor.worktree`. `identity_inputs.status == "recorded"`.
+     - Paths: `scopes == [{"path":"crates/hana_kana/src/lib.rs","kind":"file"}]`.
+     - Holder: `holders[0].reservation_id` is the first claim's id, and `holders[0].scopes` equals the envelope conflict's `overlapping_scopes`.
+     - Board: the reservation ids across `board --json`'s `ready_now`, `waiting`, `unconstrained_reservations` and `resolved` sections (as `cargo_berth_test_support::reservation_row` walks them) are the same before and after the refusal.
+   - Rename `blocked_claim_names_holder_provenance_and_appends_nothing` to `..._and_journals_one_refusal`, and `blocked_check_returns_holder_decision_facts_without_appending` (1200) to `..._and_journals_one_refusal`. Replace each unchanged-journal assertion with `assert_one_refusal_appended`, verb `"claim"` and `"check"` respectively. The check test also asserts `scopes == [{"path":"shared.rs","kind":"file"}]`.
+   - In `tests/answers.rs`, these tests assert `journal_bytes(...) == journal_before` after a `blocked_by_overlap` claim:
+     - `an_answer_naming_one_holder_is_refused_while_another_holder_conflicts` (~766)
+     - `incomplete_before_answer_prints_a_complete_executable_claim` (~799)
+     - `incomplete_answer_keeps_the_configured_chooser_after_holder_facts` (~867)
+     - `incomplete_defer_answer_prints_a_complete_executable_claim` (~917)
+     - `incomplete_named_phase_answer_prints_a_complete_executable_claim` (~991)
+     - `incomplete_mixed_answer_prints_a_choice_for_the_missing_holder` (~1085)
+     - `released_holders_are_no_longer_answered_and_naming_them_is_refused` (~1369)
+     - `a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused` (~1433)
+     Each becomes `assert_one_refusal_appended(.., "claim", &envelope)`. The no-append assertions on other statuses stay as they are: invalid input (exit 5), `ambiguous_active_run_reservations`, `contention`, `ledger_unreadable`.
+   - Any further test the package run shows failing only because a refused check or claim now appends this record gets its expectation updated to include the record. No shared `journal_events` helper filters `overlap_refused` out.
+   - Each new or edited test runs under a second.
+9. **Wire contract:**
+   - No envelope, `--json` payload or `output_contract_version` changes. `docs/cargo-berth/generated/output-contract.json` stays byte-identical, and `generated_artifacts_are_reproducible_from_the_checked_in_contract` stays green without regeneration.
+   - The journal gains one operation. An older cargo-berth decodes an `overlap_refused` line as a corrupt interior record, which makes the ledger unreadable. Every machine sharing a repository must run this version before any refusal is recorded. Install on natedev and the Mac together after the checkpoint, under the berth standing approval.
+10. **Docs:**
+    - `docs/cargo-berth/as-built/json-contract.md` "The journal record" (998): add an `overlap_refused` row (`verb`, `scopes`, `holders`) to the op table (after `answer`, ~1096). Add a tagged-value bullet: `verb` is `check` or `claim`; each `holders` entry is `{ "reservation_id": <uuid-v7>, "scopes": [scope...] }`, non-empty; the requester is the record's `actor` and `identity_inputs`.
+    - `docs/cargo-berth/as-built/worktree-coordination.md`:
+      - "The journal operation union" (62): add `OverlapRefused` and correct the variant count.
+      - "Journal replay" (70): add it to the records read only by the reservation fold, as a no-op.
+      - "Claiming and the first-touch path" (251): one sentence saying each refused check or claim appends one record, in its own transaction after the refusal.
+    - `crates/cargo-berth/README.md` "Claims and collisions" (246): one paragraph saying every refused `check` or `claim` appends an `overlap_refused` journal record naming the requester, the paths and each holder.
+    - `crates/cargo-berth/CHANGELOG.md` `[Unreleased]` `### Added` (10): one entry with the older-binary sentence from item 9, worded like the `replace_release_disposition` entry (~134).
+
+Retention (unit director's call, 2026-10-17): refusal records are kept forever. - Refusal records are kept forever: compaction drops only superseded merge extents, so every refused hook check adds about 0.5 KB to the journal for good. Recommendation: keep them, because the style pilot needs the full count. If journal growth later shows up in replay timings, add a retention rule then (for example, compaction drops refusals older than the pilot window).
+
+**Files:**
+- `crates/cargo-berth/src/ledger/journal.rs` — `OverlapRefused`, `RefusedVerb`, `RefusingHolder`, `RefusingHolderSet`, `record_ceiling`, `is_coordination_record`, unit tests
+- `crates/cargo-berth/src/ledger/mod.rs` — re-exports of the new types
+- `crates/cargo-berth/src/reservation/retention.rs` — no-op arm in `apply`
+- `crates/cargo-berth/src/edge/graph.rs` — no-op arm in `OrderingGraph::replay`
+- `crates/cargo-berth/src/verb/refusal.rs` — new; `record`
+- `crates/cargo-berth/src/verb/mod.rs`
+- `crates/cargo-berth/src/verb/check.rs` — `CheckDecision` fields, both refusal sites
+- `crates/cargo-berth/src/verb/claim/mod.rs` — claim refusal recording
+- `crates/cargo-berth/src/verb/claim/named.rs`
+- `crates/cargo-berth/tests/support/overlap_refusal.rs` — new
+- `crates/cargo-berth/tests/overlap.rs`
+- `crates/cargo-berth/tests/answers.rs`
+- `docs/cargo-berth/as-built/json-contract.md`
+- `docs/cargo-berth/as-built/worktree-coordination.md`
+- `crates/cargo-berth/README.md`
+- `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/tests/` — any further expectation a refusal record changes (owner: `test`)
+
+**Workers:** 1 writer + 1 tester. Product code and docs split from the integration tests. Spec items 3, 8 and 9 fix the wire shape, so the tests can be written before the code exists.
+- `impl`: every `src/` file above, the item 7 unit tests, `json-contract.md`, `worktree-coordination.md`, README and CHANGELOG. Hub: `crates/cargo-berth/src/ledger/mod.rs` (re-exports).
+- `test`: `tests/support/overlap_refusal.rs`, the new and renamed tests in `tests/overlap.rs`, and the eight `tests/answers.rs` edits from item 8. After `impl` lands, it runs the package tests and updates any further expectation that a refusal record changes, in any `tests/*.rs` file.
+
+**Constraints from prior phases:** see Delegation Context. In particular, phase 5's terminal board rebuilds only on `JournalPosition` movement. A refusal record moves it, and that rebuild is expected.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The passing tests include:
+- `a_refused_claim_journals_its_requester_paths_and_holders`
+- both renamed `..._and_journals_one_refusal` tests
+- the eight `answers.rs` tests
+- the item 7 unit tests
+- `generated_artifacts_are_reproducible_from_the_checked_in_contract`, with `output-contract.json` unchanged
+
+
+### Phase 12 — cargo-port's broken-worktree rows in the project list draw white text on the error red  · status: todo
+
+**Depends on:** phase 9 (the `on_error` theme token); runs beside phase 10
+
+#### Work Order
+
+**Goal:** A broken linked worktree's row in the project list reads in both themes: its text is drawn in the theme's on-error foreground on the error red, the same style as the Git pane's Error row.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-17. Phase 9 added `SemanticTheme::on_error` and `tui_pane::on_error_color()` (white in every built-in theme) and switched the Git pane's Error row to it. The showrunner grepped the workspace: the two sites below are the only other text-on-error-red fills, and both still draw `fg(text_default()).bg(error_color())`, black on `Rgb(170, 0, 0)` in the light theme (about 2.7:1).
+2. `crates/cargo-port/src/tui/columns/project.rs:482` — the name-column `broken_style` applied to every span of a `WorktreeHealth::Broken` row — takes `fg(on_error_color())`.
+3. `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs:668` — the ` [broken]` disk-column suffix style — takes `fg(on_error_color())`.
+4. Nothing else changes: the row's text, the suffix, and which rows count as broken stay as they are.
+5. Test: render the project list for a broken worktree entry and read back the styles of the name cell and the ` [broken]` suffix cell from the buffer: foreground `on_error_color()`, background `error_color()`. Under a second.
+6. Theme templates (showrunner add-on, 2026-10-17): every shipped theme template — `themes/*.toml` in cargo-port, cargo-tile and cargo-handler, `starter.toml` included — sets `on_error` in its `[semantic]` table, so a user copying a template sees the key. Today they load only through the serde default.
+7. Test speed (showrunner add-on, 2026-10-17): `tui::app::tests::worktrees::refreshed_worktree_metadata_appends_into_existing_group` (`crates/cargo-port/src/tui/app/mod.rs:15523`) took 1.107 s; bring it under a second, keeping every assertion. Find where its time goes before cutting.
+8. Docs: a `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `Fixed` line.
+
+**Files:**
+- `crates/cargo-port/src/tui/columns/project.rs`
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs`
+- `crates/cargo-port/src/tui/app/mod.rs` — the new test and the item 7 test
 - `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/themes/`
+- `crates/cargo-tile/themes/` (owner tile-fixes-unit; through berth)
+- `crates/cargo-handler/themes/` (owner handler-enh-unit; through berth)
 
-**Workers:** 1 writer. The change and its tests share `git_data.rs` and the Git pane tests, so a second writer has no file of its own.
-- `impl` — every file above, lint, and the package test.
+**Workers:** 1 writer.
+- `impl` or whichever worker phase 10 leaves free — every file above, lint, and the package test.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with both tests from item 5. Shots: the unit director's dark and light shots of the Git pane for a broken worktree show the Error row.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the item 5 test. Shots: the unit director's dark and light shots of the project list with a broken worktree row show white text on the error red.
