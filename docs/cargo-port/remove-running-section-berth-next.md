@@ -274,7 +274,7 @@
 **Ruled out:**
 - A speedup that drops a proof: the clean-claim and many-scope answer tests keep proving the behavior they name.
 
-### Phase 9 — cargo-port's Git pane shows the Error row for a worktree whose gitdir target is missing  · status: todo
+### Phase 9 — cargo-port's Git pane shows the Error row for a worktree whose gitdir target is missing  · status: done
 
 **Depends on:** none (cargo-port only; runs after phase 8 by the showrunner's call)
 

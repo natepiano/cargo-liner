@@ -70,6 +70,7 @@ pub(super) use pane_data::CargoPackageInvocation;
 pub(super) use pane_data::CiFetchKind;
 pub(super) use pane_data::DetailField;
 pub(super) use pane_data::DetailPaneData;
+pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
 pub(super) use pane_data::PackageData;

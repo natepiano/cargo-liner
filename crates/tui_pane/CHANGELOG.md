@@ -13,6 +13,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
 
 ### Added
+- `SemanticTheme::on_error` and `on_error_color()` supply the foreground for error backgrounds; existing theme files default it to white.
 - The provided `TileCells::prepare_frame` requests current allocations lazily and sets shared content widths before demand and allocation measurements; `TileGrid::painted_summary_frames` returns the summary clips painted by the shared `draw_tile_grid` pipeline.
 - `Toasts::area_avoiding_frames` keeps cards and their cleared gaps outside frame feet, while allowing room below short frames and in other columns.
 - `TileGridHost::cell_clicked` receives `CellPoint` coordinates relative to a cell’s content after a left press focuses it; border presses only focus. Existing hosts keep their current behavior.

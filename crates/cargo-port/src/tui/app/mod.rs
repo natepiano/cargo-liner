@@ -1274,7 +1274,9 @@ impl App {
                             .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
-                    g.head.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
+                    !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
+                        || !g.remotes.is_empty()
+                        || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
@@ -2733,6 +2735,7 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
+        use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
@@ -2910,7 +2913,10 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
             app.panes.git.set_content(GitData {
-                head: Some(HeadState::Branch("main".to_string())),
+                checkout: GitCheckout::Readable {
+                    head:     HeadState::Branch("main".to_string()),
+                    relation: None,
+                },
                 ..GitData::default()
             });
             app
@@ -4335,7 +4341,10 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
             app.panes.git.set_content(GitData {
-                head: Some(HeadState::Branch("main".to_string())),
+                checkout: GitCheckout::Readable {
+                    head:     HeadState::Branch("main".to_string()),
+                    relation: None,
+                },
                 ..GitData::default()
             });
             app.set_focus(FocusedPane::App(AppPaneId::Package));
@@ -4588,9 +4597,11 @@ mod tests {
         use crossterm::event::MouseEventKind;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
+        use ratatui::buffer::Buffer;
         use ratatui::layout::Position;
         use tempfile::TempDir;
         use tui_pane::AppContext;
+        use tui_pane::Appearance;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
         use tui_pane::FocusedPane;
@@ -4606,6 +4617,7 @@ mod tests {
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
+        use super::apply_bg_msg;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -4621,6 +4633,7 @@ mod tests {
         use crate::project;
         use crate::project::AbsolutePath;
         use crate::project::Cargo;
+        use crate::project::CargoParseResult;
         use crate::project::CheckoutInfo;
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
@@ -4661,6 +4674,8 @@ mod tests {
         use crate::tui::integration::NavAction;
         use crate::tui::interaction;
         use crate::tui::panes;
+        use crate::tui::panes::DetailField;
+        use crate::tui::panes::GitData;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
@@ -6196,6 +6211,148 @@ mod tests {
 
             assert_eq!(app.focused_pane_id(), PaneId::Targets);
             assert_eq!(app.panes.targets.viewport.pos(), 1);
+        }
+
+        fn render_selected_git(app: &mut App) -> Buffer {
+            app.ensure_detail_cached();
+            let mut terminal =
+                Terminal::new(TestBackend::new(80, 8)).expect("create Git pane terminal");
+            let animation_elapsed = app.animation_started.elapsed();
+            let selected_path = app
+                .selected_project_path_for_render()
+                .map(Path::to_path_buf);
+            let ci_status_lookup = app.ci.status_lookup();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    let split = app.split_for_render(
+                        selected_path.as_deref(),
+                        animation_elapsed,
+                        &ci_status_lookup,
+                        OverlayRenderInputs::none(),
+                        SyncedDescriptionHeight::default(),
+                    );
+                    tui_pane::Renderable::render(
+                        split.registry.git,
+                        frame,
+                        area,
+                        &split.pane_render_ctx,
+                    );
+                })
+                .expect("render selected Git pane");
+            terminal.backend().buffer().clone()
+        }
+
+        fn assert_git_error_colors(app: &mut App, error_value: &str) {
+            let original_theme = tui_pane::theme();
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                tui_pane::set_active_theme(std::sync::Arc::new(tui_pane::fallback_theme(
+                    appearance,
+                )));
+                let buffer = render_selected_git(app);
+                let area = buffer.area;
+                let value_position = (0..area.height)
+                    .find_map(|y| {
+                        let row = (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>();
+                        row.find(error_value).map(|byte| {
+                            (
+                                u16::try_from(row[..byte].chars().count())
+                                    .expect("Error value position fits in the buffer"),
+                                y,
+                            )
+                        })
+                    })
+                    .expect("Error value should be rendered");
+                let cell = &buffer[value_position];
+                assert_eq!(cell.fg, tui_pane::on_error_color());
+                assert_eq!(cell.bg, tui_pane::error_color());
+            }
+            tui_pane::set_active_theme(original_theme);
+        }
+
+        #[test]
+        fn selecting_worktree_with_missing_gitdir_renders_git_error() {
+            let error_label = DetailField::WorktreeError.label();
+            let error_value = DetailField::WorktreeError.git_value(&GitData::default());
+            let buffer_text = |buffer: &Buffer| {
+                let area = buffer.area;
+                (0..area.height)
+                    .map(|y| {
+                        (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let tmp = tempfile::tempdir().expect("create test directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join("linked");
+            std::fs::create_dir_all(primary_path.join(".git"))
+                .expect("create primary git directory");
+            std::fs::create_dir(&linked_path).expect("create linked worktree directory");
+            std::fs::write(
+                linked_path.join(".git"),
+                "gitdir: ../primary/.git/worktrees/missing\n",
+            )
+            .expect("write broken worktree gitfile");
+
+            std::fs::write(
+                linked_path.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write linked project manifest");
+            let primary = make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            let Ok(CargoParseResult::Package(linked)) =
+                project::from_cargo_toml(&linked_path.join("Cargo.toml"))
+            else {
+                panic!("linked project manifest should load as a package");
+            };
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list
+                .select_project_in_tree(&primary_path, false);
+            app.sync_selected_project();
+            assert!(!buffer_text(&render_selected_git(&mut app)).contains(&error_value));
+
+            app.project_list.select_project_in_tree(&linked_path, false);
+            app.sync_selected_project();
+            assert_eq!(
+                app.project_list.selected_project_path(),
+                Some(linked_path.as_path())
+            );
+            let info = CheckoutInfo::get(&linked_path, None)
+                .expect("the live checkout probe accepts the broken gitfile");
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::CheckoutInfo {
+                    path: linked_path.clone().into(),
+                    info,
+                },
+            );
+            let rendered = buffer_text(&render_selected_git(&mut app));
+            assert!(app.is_pane_tabbable(PaneId::Git));
+            let data = app.panes.git.content().expect("selected Git pane content");
+            assert!(
+                matches!(data.checkout, crate::tui::panes::GitCheckout::Broken),
+                "an unreadable gitdir supplies no HEAD row"
+            );
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| line.contains(error_label) && line.contains(&error_value)),
+                "Git pane should render the broken worktree error: {rendered}"
+            );
+            assert!(
+                !rendered.contains(DetailField::Head.label()),
+                "a failed HEAD probe must not produce a Branch row: {rendered}"
+            );
+
+            assert_git_error_colors(&mut app, &error_value);
         }
 
         #[test]

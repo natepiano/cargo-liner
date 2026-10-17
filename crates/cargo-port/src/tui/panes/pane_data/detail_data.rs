@@ -323,8 +323,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             ci_display:               CiDisplay::default(),
         },
         git:     GitData {
-            head: git_detail.head,
-            head_relation: git_detail.head_relation,
+            checkout: git_detail.checkout,
             bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
@@ -910,8 +909,7 @@ pub(super) fn assemble_detail_pane_data(
     DetailPaneData {
         package,
         git: GitData {
-            head: git_detail.head,
-            head_relation: git_detail.head_relation,
+            checkout: git_detail.checkout,
             bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,

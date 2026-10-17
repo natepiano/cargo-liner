@@ -1,3 +1,4 @@
+use super::GitCheckout;
 use super::copy_data;
 use super::formatting;
 use super::git_data::GitData;
@@ -126,12 +127,12 @@ impl DetailField {
             Self::License => package_data::or_dash(data.license.as_deref()),
             Self::Homepage => package_data::or_dash(data.homepage.as_deref()),
             Self::Repository => package_data::or_dash(data.repository.as_deref()),
-            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             // Git fields, Lint, and Ci — should not be called with
             // package_value. Lint and Ci are rendered directly from
             // their typed-enum fields (`PackageData.lint_display` /
             // `ci_display`) at render time.
-            Self::Head
+            Self::WorktreeError
+            | Self::Head
             | Self::Bisect
             | Self::Tracks
             | Self::Pinned
@@ -151,10 +152,21 @@ impl DetailField {
     /// Get the display value for a git field from `GitData`.
     pub fn git_value(self, data: &GitData) -> String {
         match self {
-            Self::Head => match data.head.as_ref() {
-                None | Some(HeadState::Unborn) => "unborn".to_string(),
-                Some(HeadState::Detached { short_sha }) => format!("detached @ {short_sha}"),
-                Some(HeadState::Branch(name)) => data.head_relation.map_or_else(
+            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
+            Self::Head => match &data.checkout {
+                GitCheckout::Broken | GitCheckout::AwaitingProbe => String::new(),
+                GitCheckout::Readable {
+                    head: HeadState::Unborn,
+                    ..
+                } => "unborn".to_string(),
+                GitCheckout::Readable {
+                    head: HeadState::Detached { short_sha },
+                    ..
+                } => format!("detached @ {short_sha}"),
+                GitCheckout::Readable {
+                    head: HeadState::Branch(name),
+                    relation,
+                } => relation.map_or_else(
                     || name.clone(),
                     |relation| format!("{name} · {}", relation.label()),
                 ),
@@ -200,8 +212,7 @@ impl DetailField {
             | Self::Edition
             | Self::License
             | Self::Homepage
-            | Self::Repository
-            | Self::WorktreeError => String::new(),
+            | Self::Repository => String::new(),
         }
     }
 }
@@ -303,6 +314,7 @@ mod tests {
 #[cfg(test)]
 mod git_detail_field_tests {
     use super::DetailField;
+    use super::GitCheckout;
     use crate::project::BisectProgress;
     use crate::project::GitStatus;
     use crate::tui::panes::pane_data::GitData;
@@ -311,8 +323,7 @@ mod git_detail_field_tests {
 
     fn git_data() -> GitData {
         GitData {
-            head:               None,
-            head_relation:      None,
+            checkout:           GitCheckout::AwaitingProbe,
             bisect:             None,
             submodule_ctx:      None,
             status:             None,

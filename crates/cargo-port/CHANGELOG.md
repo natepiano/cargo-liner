@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Broken worktrees no longer show a misleading unborn Branch row, and the Git pane Error row uses a readable foreground in both themes.
+- Show the Git pane’s Error row when the selected worktree’s `.git` file points to a missing gitdir, even when no other Git details are available.
+
 ## [0.8.0] - 2026-10-06
 
 ### Added

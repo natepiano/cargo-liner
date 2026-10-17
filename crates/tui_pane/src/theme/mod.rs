@@ -26,6 +26,7 @@ mod watch;
 
 use std::collections::BTreeMap;
 
+use ratatui::style::Color;
 use serde::Deserialize;
 
 pub use self::accessors::accent_color;
@@ -38,6 +39,7 @@ pub use self::accessors::inactive_border_color;
 pub use self::accessors::inactive_title_color;
 pub use self::accessors::inline_error_color;
 pub use self::accessors::label_color;
+pub use self::accessors::on_error_color;
 pub use self::accessors::remembered_focus_color;
 pub use self::accessors::role_color;
 pub use self::accessors::role_spec;
@@ -136,6 +138,9 @@ pub struct SemanticTheme {
     pub accent:       StyleSpec,
     /// Error text, failure icons, error backgrounds.
     pub error:        StyleSpec,
+    /// Foreground for text drawn on the error background.
+    #[serde(default = "default_on_error")]
+    pub on_error:     StyleSpec,
     /// Inline errors on selected settings rows (where `error` would
     /// clash with the selection highlight background).
     pub inline_error: StyleSpec,
@@ -149,6 +154,8 @@ pub struct SemanticTheme {
     /// "this is degraded but recoverable."
     pub warning:      StyleSpec,
 }
+
+const fn default_on_error() -> StyleSpec { StyleSpec::from_color(Color::White) }
 
 /// Foreground text styles (default, secondary, dim, bright, focus bg).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
