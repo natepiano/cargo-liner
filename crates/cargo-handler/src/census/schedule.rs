@@ -313,6 +313,7 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::HierarchyEdges;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
@@ -398,7 +399,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: "worker".to_string(),
-            status: None,
+            activity: AgentActivity::Unreported,
             started: 1,
             process_started: 1,
             pid,

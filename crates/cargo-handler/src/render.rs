@@ -403,6 +403,7 @@ mod tests {
     use crate::agent_cell::TreeColumn;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::AgentRow;
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
@@ -415,8 +416,8 @@ mod tests {
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
-    use crate::census::ThreadState;
     use crate::census::worker_dispatch::WorkerDispatch;
+    use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
     use crate::sort::SortDirection;
     use crate::sort::SummaryColumn;
@@ -837,8 +838,9 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
-            thread_state: ThreadState::Idle,
+            activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
@@ -855,7 +857,7 @@ fraying = "leading"
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "boss of bosses".to_string(),
-            status:          Some("idle".to_string()),
+            activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
             started:         NOW - age,
             process_started: NOW - age,
             pid:             1_579_022,
