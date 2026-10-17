@@ -7,6 +7,7 @@ use crate::census::Activity;
 use crate::census::AgentActivity;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
 
 /// A probe account fixture, independent of the machine's configuration.
 fn account(label: &str) -> Account {
@@ -57,41 +58,50 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
         (
             RoleLabel::Stated(HierarchyRole::Showrunner),
             "showrunner",
-            Color::Red,
+            FooterRole::Showrunner,
         ),
         (
             RoleLabel::Inferred(HierarchyRole::Showrunner),
             "showrunner",
-            Color::Red,
+            FooterRole::Showrunner,
         ),
-        (RoleLabel::Stated(HierarchyRole::Unit), "unit", Color::Green),
+        (
+            RoleLabel::Stated(HierarchyRole::Unit),
+            "unit",
+            FooterRole::UnitDirector,
+        ),
         (
             RoleLabel::Inferred(HierarchyRole::Unit),
             "unit",
-            Color::Green,
+            FooterRole::UnitDirector,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Impl),
             "impl",
-            Color::Indexed(208),
+            FooterRole::Worker,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Test),
             "test",
-            Color::Indexed(208),
+            FooterRole::Worker,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Review),
             "review",
-            Color::Indexed(208),
+            FooterRole::Worker,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Fix),
             "fix",
-            Color::Indexed(208),
+            FooterRole::Worker,
         ),
-        (RoleLabel::Unlabeled, "session", Color::Indexed(141)),
+        (RoleLabel::Unlabeled, "session", FooterRole::Unassigned),
     ] {
+        let expected = colors
+            .role(expected)
+            .style(text_default().into())
+            .fg
+            .expect("resolved footer color");
         let mut cell = entry(&root, None);
         cell.lines.push(TreeLine {
             dispatch_label: DispatchLabel::Original,

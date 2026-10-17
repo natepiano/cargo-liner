@@ -3,7 +3,8 @@
 //! Each submodule owns one git concept and the types that describe its answers:
 //! subprocess execution and its literal arguments, the single failure type, object
 //! resolution, commit reachability, path attribution, scoped patch comparison,
-//! merge-conflict coverage, reference reads and updates, and repository discovery.
+//! merge-conflict coverage, reference reads and updates, repository discovery, and
+//! pending worktree operations.
 //! This root declares them and re-exports the names the rest of the crate uses.
 
 mod command;
@@ -16,6 +17,7 @@ mod patch;
 mod paths;
 mod reachability;
 mod refs;
+mod worktree_operation;
 
 #[cfg(test)]
 mod fixture;
@@ -25,7 +27,6 @@ pub(crate) use command::git_execution as execute_read_only_git;
 pub(crate) use discovery::common_directory;
 pub(crate) use discovery::hooks_directory;
 pub(crate) use discovery::repository_root;
-pub(crate) use discovery::rewrite_in_progress;
 pub(crate) use discovery::worktree_list_porcelain;
 pub(crate) use error::GitError;
 pub(crate) use object::commit_is_available;
@@ -66,12 +67,14 @@ pub(crate) use reachability::unmerged_branch_path_queries;
 pub(crate) use reachability::unmerged_branch_paths;
 pub(crate) use refs::HeadAttachment;
 pub(crate) use refs::LocalBranchRenameTargetResolution;
+pub(crate) use refs::LocalTargetUpstream;
 pub(crate) use refs::ReferenceLookup;
 pub(crate) use refs::ReservationRetentionRefRepair;
 pub(crate) use refs::branch_object_id;
 pub(crate) use refs::head_attachment;
 pub(crate) use refs::head_object_id;
 pub(crate) use refs::local_branch_rename_target_resolution;
+pub(crate) use refs::local_target_upstream;
 pub(crate) use refs::reference_lookup;
 pub(crate) use refs::reservation_retention_ref_name;
 pub(crate) use refs::symbolic_head_reference;
@@ -79,3 +82,4 @@ pub(crate) use refs::update_local_branch;
 pub(crate) use refs::update_reservation_retention_refs;
 pub(crate) use refs::update_reservation_retention_refs_from_resolved_batch;
 pub(crate) use refs::write_reservation_retention_ref;
+pub(crate) use worktree_operation::WorktreeOperation;

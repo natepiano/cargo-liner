@@ -40,7 +40,8 @@ fn unassigned_forest() -> MachineState {
             manager: "boss-id".into(),
             member:  "impl-id".into(),
             role:    HierarchyRole::Impl,
-        }]),
+        }])
+        .into(),
     )
 }
 
@@ -82,7 +83,7 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
     // A repeated pid on another machine is a different session and tile.
     let remote = MachineState::Answered(
         vec![agent(20, "remote-session", 3 * HOUR, None)],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let machines = [
         Machine {
@@ -323,7 +324,7 @@ fn assigned_or_empty_machines_do_not_leave_an_empty_unassigned_tile() {
     if let MachineState::Answered(rows, _) = &mut state {
         rows.retain(|row| row.pid == 10 || row.pid == 11);
     }
-    let empty = MachineState::Answered(Vec::new(), HierarchyEdges::default());
+    let empty = MachineState::Answered(Vec::new(), HierarchyEdges::default().into());
     let machines = [
         Machine {
             name:  "natedev",

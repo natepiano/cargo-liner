@@ -799,6 +799,7 @@ impl JournalOperation {
                 ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
                 | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
                 | ConflictAuthorization::Defer { .. }
                 | ConflictAuthorization::Override { .. } => true,
                 ConflictAuthorization::NoConflict
@@ -1302,6 +1303,17 @@ impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
     pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
 
+    /// Union two nonempty footprints without weakening their construction guarantee.
+    pub(crate) fn with_added(&self, added: &Self) -> Self {
+        let mut scopes = self.0.clone();
+        for scope in &added.0 {
+            if !scopes.contains(scope) {
+                scopes.push(scope.clone());
+            }
+        }
+        Self(scopes)
+    }
+
     /// Return whether any scope covers a case-sensitive raw repository path.
     pub(crate) fn covers_path(&self, repository_path: &[u8]) -> bool {
         self.0
@@ -1447,6 +1459,47 @@ nonempty_journal_set!(
     "The non-empty repository path set entered by one incursion.",
     "an incursion must name at least one path"
 );
+nonempty_journal_set!(
+    EnteringCommitSet,
+    GitObjectId,
+    EmptyEnteringCommitSet,
+    "The non-empty commits that entered one foreign path.",
+    "entering commit evidence must name at least one commit"
+);
+
+/// Whether entering history only records the initial write or includes later writes.
+pub(crate) enum EnteringWriteProgress {
+    InitialWriteCommitted,
+    FurtherCommitsEntered,
+}
+
+impl EnteringCommitSet {
+    /// A working-tree answer also accounts for the commit recording that initial write.
+    pub(crate) fn write_progress(&self) -> EnteringWriteProgress {
+        let first = &self.0[0];
+        if self.0.iter().all(|commit| commit == first) {
+            EnteringWriteProgress::InitialWriteCommitted
+        } else {
+            EnteringWriteProgress::FurtherCommitsEntered
+        }
+    }
+}
+
+/// What an incident's answer covers when the path is observed again.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum IncursionCoverageEvidence {
+    /// Older records covered only the recorded holders, irrespective of commits.
+    #[default]
+    LegacyHolderCoverage,
+    /// These commits entered the path; later holder growth does not change that event.
+    KnownEnteringCommits { commits: EnteringCommitSet },
+    /// The path has working-tree writes and no entering commit yet; its first commit is covered.
+    WorkingTreeWrites,
+    /// Committed history could not establish which commits entered the path.
+    HistoryUnavailable,
+}
+
 /// One entered path and the foreign reservations whose scopes cover it.
 ///
 /// The relation an incursion records is per path: each entered path is blocked by the
@@ -1455,9 +1508,12 @@ nonempty_journal_set!(
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct BlockedIncursionPath {
     /// The repository path the write entered.
-    pub(crate) path:    ReservationScopePath,
+    pub(crate) path:     ReservationScopePath,
     /// The foreign reservations whose scopes cover that path.
-    pub(crate) holders: ForeignReservationIdSet,
+    pub(crate) holders:  ForeignReservationIdSet,
+    /// Evidence used to recognize an observation the incident already covers.
+    #[serde(default)]
+    pub(crate) coverage: IncursionCoverageEvidence,
 }
 
 nonempty_journal_set!(
@@ -1548,8 +1604,9 @@ impl From<IncursionBlockedPathsWire> for IncursionBlockedPaths {
                         .as_slice()
                         .iter()
                         .map(|path| BlockedIncursionPath {
-                            path:    path.clone(),
-                            holders: foreign_reservation_ids.clone(),
+                            path:     path.clone(),
+                            holders:  foreign_reservation_ids.clone(),
+                            coverage: IncursionCoverageEvidence::LegacyHolderCoverage,
                         })
                         .collect(),
                 ),
@@ -3031,8 +3088,9 @@ mod tests {
             incident_id:    "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23".parse()?,
             reservation_id: "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f".parse()?,
             blocked_paths:  BlockedIncursionPathSet::try_from(vec![BlockedIncursionPath {
-                path:    "src/lib.rs".parse()?,
-                holders: ForeignReservationIdSet::try_from(vec![holder])?,
+                path:     "src/lib.rs".parse()?,
+                holders:  ForeignReservationIdSet::try_from(vec![holder])?,
+                coverage: super::IncursionCoverageEvidence::LegacyHolderCoverage,
             }])?
             .into(),
         };
@@ -3043,10 +3101,24 @@ mod tests {
                 "op": "incursion",
                 "incident_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23",
                 "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
-                "blocked_paths": [{"path": "src/lib.rs", "holders": [holder.to_string()]}],
+                "blocked_paths": [{"path": "src/lib.rs", "holders": [holder.to_string()],
+                    "coverage": {"kind": "legacy_holder_coverage"}}],
             })
         );
-        assert_eq!(serde_json::from_value::<JournalOperation>(written)?, paired);
+        assert_eq!(
+            serde_json::from_value::<JournalOperation>(written.clone())?,
+            paired
+        );
+        let mut earlier_paired = written;
+        earlier_paired["blocked_paths"][0]
+            .as_object_mut()
+            .ok_or("blocked path should be an object")?
+            .remove("coverage");
+        assert_eq!(
+            serde_json::from_value::<JournalOperation>(earlier_paired)?,
+            paired,
+            "paired records before coverage evidence retain legacy holder coverage"
+        );
 
         let independent = serde_json::json!({
             "op": "incursion",
@@ -3076,6 +3148,18 @@ mod tests {
         assert!(serde_json::from_str::<ForeignReservationIdSet>("[]").is_err());
         assert!(serde_json::from_str::<IncursionPathSet>("[]").is_err());
         assert!(serde_json::from_str::<BlockedIncursionPathSet>("[]").is_err());
+        assert!(
+            serde_json::from_str::<super::IncursionCoverageEvidence>(
+                r#"{"kind":"known_entering_commits","commits":[]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<super::IncursionCoverageEvidence>(
+                r#"{"kind":"known_entering_commits"}"#
+            )
+            .is_err()
+        );
         assert!(serde_json::from_str::<CollisionPathSet>("[]").is_err());
 
         let reason = "  reviewed expansion  "

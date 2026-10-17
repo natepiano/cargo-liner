@@ -8,6 +8,7 @@
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::observes_merge_extent_of;
 
@@ -19,6 +20,14 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// An initialized main checkout with untracked policy and no reservations.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
 };
 
 use std::collections::HashSet;
@@ -2568,28 +2577,17 @@ fn reconcile_fixture(root: &Path) {
     assert!(run_berth(root, ["board", "--json"]).status.success());
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
-    git(
-        repository.path(),
-        ["init", "--quiet", "--initial-branch=main"],
-    );
-    git(repository.path(), ["config", "user.name", "Berth Test"]);
-    git(
-        repository.path(),
-        ["config", "user.email", "berth@example.invalid"],
-    );
-    git(repository.path(), ["config", "core.ignoreCase", "false"]);
-    fs::write(repository.path().join("README.md"), "scratch repository\n")
-        .expect("scratch file should write");
-    git(repository.path(), ["add", "README.md"]);
-    git(repository.path(), ["commit", "--quiet", "-m", "initial"]);
-    assert!(
-        run_berth(repository.path(), ["init", "--json"])
-            .status
-            .success()
-    );
-    repository
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(root: &Path) {
+    git(root, ["init", "--quiet", "--initial-branch=main"]);
+    git(root, ["config", "user.name", "Berth Test"]);
+    git(root, ["config", "user.email", "berth@example.invalid"]);
+    git(root, ["config", "core.ignoreCase", "false"]);
+    fs::write(root.join("README.md"), "scratch repository\n").expect("scratch file should write");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "--quiet", "-m", "initial"]);
+    assert!(run_berth(root, ["init", "--json"]).status.success());
 }
 
 fn claim(

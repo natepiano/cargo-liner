@@ -138,7 +138,7 @@ fn grouped_text(dispatch: &WorkerDispatch) -> String {
             {"kind":"thread","depth":0,"pid":null,"thread_id":THREAD,"name":THREAD,"started":900,"timer":null}
         ]
     }])).expect("probe-compatible grouped rows");
-    let state = MachineState::Answered(rows, HierarchyEdges::default());
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
     let machines = [Machine {
         name:  "fixture",
         state: &state,

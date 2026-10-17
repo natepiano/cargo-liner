@@ -8,6 +8,7 @@ use summary::SummaryFrame;
 use super::*;
 use crate::census::AccountColumn;
 use crate::census::AgentActivity;
+use crate::census::accounts::AccountsTable;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -74,7 +75,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     .collect();
     MachineState::Answered(
         vec![root, dashboard, diagrams, carrier],
-        HierarchyEdges(edges),
+        HierarchyEdges(edges).into(),
     )
 }
 
@@ -310,7 +311,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
             account: home("codex2"),
             ..agent(50, "isolated", HOUR, None)
         }],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let cells = cell_order(&[
         Machine {
@@ -393,7 +394,7 @@ fn working_group() -> MachineState {
         children: vec![child(0, ChildKind::Shell, Some(107), "root command", HOUR)],
         ..agent(10, "production", 3 * HOUR, None)
     };
-    MachineState::Answered(vec![root, worker], HierarchyEdges::default())
+    MachineState::Answered(vec![root, worker], HierarchyEdges::default().into())
 }
 
 #[test]
@@ -731,7 +732,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
                     ..agent(30, "gamma", HOUR, None)
                 },
             ],
-            HierarchyEdges::default(),
+            HierarchyEdges::default().into(),
         );
         let machines = [Machine {
             name:  "natedev",
@@ -746,13 +747,18 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             NOW,
             frame_account_column,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         );
-        let rect = area(width, summary::height(&machines, &placement));
+        let rect = area(
+            width,
+            summary::height(&machines, &placement, &AccountsTable::NotConfigured),
+        );
         let mut buffer = Buffer::empty(rect);
         summary::draw(
             &mut buffer,
             rect,
             &SummaryFrame {
+                accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
                 cells:          &cells,

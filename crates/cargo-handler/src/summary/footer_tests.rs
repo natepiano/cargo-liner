@@ -9,9 +9,11 @@ use ratatui::style::Color;
 
 use super::*;
 use crate::census::Account;
+use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
 
 /// Fixed census time for deterministic age labels.
@@ -36,7 +38,7 @@ fn row(
         service_tier: ServiceTier::Unrecorded,
         account: Account::Unrecorded,
         name: name.to_string(),
-        activity: crate::census::AgentActivity::from_legacy(status),
+        activity: AgentActivity::from(status),
         started: NOW - age,
         process_started: NOW - age,
         pid,
@@ -97,14 +99,17 @@ fn rendered_with_colors(
             NOW,
             account_column,
             SummarySort::default(),
+            &AccountsTable::NotConfigured,
         ),
-        u16::try_from(height(&machines, &placement)).expect("fixture height"),
+        u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
+            .expect("fixture height"),
     );
     let mut buffer = Buffer::empty(area);
     draw(
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts: &AccountsTable::NotConfigured,
             machines: &machines,
             placement: &placement,
             cells: &agent_cell::cell_order_placed(&placement),
@@ -149,7 +154,7 @@ fn machine_headings_count_top_level_agents_instead_of_all_sessions() {
                 ..session(20, "nested-session")
             });
         }
-        let state = MachineState::Answered(rows, HierarchyEdges::default());
+        let state = MachineState::Answered(rows, HierarchyEdges::default().into());
         let buffer = rendered_with_colors(&state, AccountColumn::Hidden, &FooterColors::default());
         assert_eq!(lines(&buffer)[0], expected);
     }
@@ -169,7 +174,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
                 ..row(20, Agent::Codex, "worker", None, MINUTE, "~")
             },
         ],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let colors = FooterColors::parse(
         "account.claude1=orange\naccount.codex1=bright-cyan\n\
@@ -185,7 +190,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
     );
     let unrecorded = MachineState::Answered(
         vec![row(30, Agent::Claude, "unrecorded", None, MINUTE, "~")],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let program = rendered_with_colors(&unrecorded, AccountColumn::Shown, &colors);
     assert_color(
@@ -214,7 +219,7 @@ fn summary_accounts_without_a_footer_entry_keep_the_program_style() {
             account: account("claude1"),
             ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
         }],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     let buffer = rendered_with_colors(&state, AccountColumn::Shown, &FooterColors::default());
     assert_color(

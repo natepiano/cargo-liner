@@ -25,6 +25,12 @@ const ROSTER_FILE: &str = "mesh_roster.json";
 const LAUNCHER_INTERPRETER: &str = "bash";
 /// The launcher path suffix shared by literal commands and process argv.
 const LAUNCHER_SCRIPT: &str = ".claude/scripts/delegate/implement.sh";
+/// Prompt boilerplate introduces a prescribed board role call rather than a task.
+const ROLE_PREAMBLE: &str = "You are slot ";
+const BOARD_SCRIPT: &str = "board.sh";
+const BOARD_ROLE: &str = "role";
+/// Arguments after board.sh: role, session directory, slot, responsibility, job.
+const BOARD_JOB_INDEX: usize = 4;
 
 /// The responsibilities a mesh worker seat can carry.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -154,8 +160,8 @@ pub(crate) struct ResolvedWorkerDispatch {
     seat:                 String,
     /// The recorded thread belonging to that seat.
     pub(super) thread_id: String,
-    /// The responsibility passed after the launcher's task argument.
-    job:                  String,
+    /// The extracted responsibility, or a preamble with no usable job.
+    job:                  JobText,
     /// The seat with its worktree directory prefix removed.
     short_seat:           String,
     /// The roster responsibility, falling back to the short seat's role stem.
@@ -203,7 +209,7 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
         Self {
             seat: probe.seat,
             thread_id: probe.thread_id,
-            job: probe.job,
+            job: JobText::parse(&probe.job, JobSource::DispatchJob),
             short_seat: probe.short_seat,
             role,
         }
@@ -212,10 +218,7 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
 
 impl ResolvedWorkerDispatch {
     /// The worker row's display name, on one line however the job was written.
-    pub(crate) fn label(&self) -> String {
-        let job = self.job.split_whitespace().collect::<Vec<_>>().join(" ");
-        task_label(&self.short_seat, &job)
-    }
+    pub(crate) fn label(&self) -> String { self.job.label(&self.short_seat) }
 }
 
 /// The task-backed fallback name, resolved with the final hierarchy role at draw time.
@@ -236,18 +239,16 @@ impl WorkerTask {
 
     /// Resolve a task line once at the rollout boundary.
     pub(crate) fn from_prompt(prompt: &str) -> Self {
-        let line = first_task_line(prompt);
-        if line.is_empty() {
-            Self::RoleOnly
-        } else {
-            Self::Task(line)
+        match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
+            JobText::Unrecorded => Self::RoleOnly,
+            JobText::Recorded(job) => Self::Task(job),
         }
     }
     /// A final role names every thread, including unreadable or old raw-id rows.
     pub(crate) fn label(&self, role: WorkerRoleSource, original: &str) -> String {
         match self {
             Self::RoleOnly => role.text().to_owned(),
-            Self::Task(job) => task_label(role.text(), job),
+            Self::Task(job) => format!("{} · {job}", role.text()),
             Self::Unrecorded => {
                 let uuid = original.len() == UUID_TEXT_LENGTH
                     && original.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -336,7 +337,7 @@ impl WorkerNames {
                     ResolvedWorkerDispatch {
                         seat:       seat.clone(),
                         thread_id:  thread_id.to_owned(),
-                        job:        first_task_line(prompt),
+                        job:        JobText::parse(prompt, JobSource::FirstTaskPrompt),
                         short_seat: short.to_owned(),
                         role:       match worker.role {
                             DispatchRole::Unroled => DispatchRole::from_short_seat(short),
@@ -362,30 +363,97 @@ impl WorkerNames {
     ) -> String {
         match self.resolve(thread_id, prompt, worktree) {
             WorkerDispatch::Worker(dispatch) => dispatch.label(),
-            WorkerDispatch::Plain => task_label(role.text(), prompt),
+            WorkerDispatch::Plain => {
+                JobText::parse(prompt, JobSource::FirstTaskPrompt).label(role.text())
+            },
         }
     }
 }
 
-/// First nonempty task line without heading markers; context is excluded upstream.
-fn first_task_line(prompt: &str) -> String {
-    prompt
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default()
-        .trim()
-        .trim_start_matches('#')
-        .trim_start()
-        .to_owned()
+/// A usable job, distinct from a preamble whose opening names no task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum JobText {
+    Recorded(String),
+    Unrecorded,
 }
 
-/// A role remains useful even when the rollout prompt cannot be read.
-fn task_label(role: &str, prompt: &str) -> String {
-    let job = first_task_line(prompt);
-    if job.is_empty() {
-        role.to_owned()
-    } else {
-        format!("{role} · {job}")
+/// Rollouts supply a first task line; dispatch arguments already contain the full job.
+#[derive(Clone, Copy)]
+enum JobSource {
+    FirstTaskPrompt,
+    DispatchJob,
+}
+
+impl JobText {
+    /// Validate and flatten extracted text once, before it becomes a drawn job.
+    fn from_line(line: &str) -> Self {
+        let text = line
+            .trim()
+            .trim_start_matches('#')
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.is_empty() {
+            Self::Unrecorded
+        } else {
+            Self::Recorded(text)
+        }
+    }
+
+    /// One extraction serves roster, fallback and dispatch names.
+    fn parse(prompt: &str, source: JobSource) -> Self {
+        let first = prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim();
+        if first.starts_with('#') {
+            return Self::from_line(first);
+        }
+        if !first.starts_with(ROLE_PREAMBLE) {
+            return Self::from_line(match source {
+                JobSource::FirstTaskPrompt => first,
+                JobSource::DispatchJob => prompt,
+            });
+        }
+        // The first prescribed board role call carries the director's actual job.
+        for (offset, _) in prompt.match_indices(BOARD_SCRIPT) {
+            let command = &prompt[offset + BOARD_SCRIPT.len()..];
+            if let Ok(words) = shell_words(command, CommandBoundary::PromptLine)
+                && words.first().is_some_and(|word| word == BOARD_ROLE)
+                && let Some(job) = words.get(BOARD_JOB_INDEX)
+            {
+                return Self::from_line(job);
+            }
+        }
+        // Some dispatches put a title after the role instructions instead.
+        if let Some(heading) = prompt
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .find(|line| line.starts_with("# "))
+        {
+            return Self::from_line(heading);
+        }
+        Self::Unrecorded
+    }
+
+    /// Absence stays semantic until the final role-only label is drawn.
+    fn label(&self, role: &str) -> String {
+        match self {
+            Self::Unrecorded => role.to_owned(),
+            Self::Recorded(job) => format!("{role} · {job}"),
+        }
+    }
+}
+
+impl Serialize for JobText {
+    /// Keep the legacy probe's string field; empty text exists only on the wire.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Recorded(job) => job,
+            Self::Unrecorded => "",
+        })
     }
 }
 
@@ -551,7 +619,7 @@ impl ParsedDispatch {
         WorkerDispatch::Worker(ResolvedWorkerDispatch {
             seat: seat.clone(),
             thread_id: entry.thread_id.clone(),
-            job: self.job.clone(),
+            job: JobText::parse(&self.job, JobSource::DispatchJob),
             role: match entry.role {
                 DispatchRole::Unroled => DispatchRole::from_short_seat(&short_seat),
                 role @ DispatchRole::Worker(_) => role,
@@ -893,6 +961,18 @@ fn read_ansi_c_escape(
 /// Split one literal command into launcher argv, consuming leading assignments.
 /// Expansions and command operators cannot establish a safe worker identity.
 pub(super) fn command_words(command: &str) -> Result<Vec<String>, NotWorkerDispatch> {
+    shell_words(command, CommandBoundary::WholeInvocation)
+}
+
+/// Literal launchers consume the whole input; prompt examples stop at prose delimiters.
+#[derive(Clone, Copy)]
+enum CommandBoundary {
+    WholeInvocation,
+    PromptLine,
+}
+
+/// Quoted segments consume their own delimiters before command boundaries are checked.
+fn shell_words(command: &str, boundary: CommandBoundary) -> Result<Vec<String>, NotWorkerDispatch> {
     let mut words = Vec::new();
     let mut word = WordBeingLexed::Empty;
     let mut chars = command.chars().peekable();
@@ -912,6 +992,7 @@ pub(super) fn command_words(command: &str) -> Result<Vec<String>, NotWorkerDispa
                 Some(escaped) => word.push_quoted(&escaped.to_string()),
                 None => return Err(NotWorkerDispatch),
             },
+            '\n' | '`' if matches!(boundary, CommandBoundary::PromptLine) => break,
             '\n' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>' => {
                 return Err(NotWorkerDispatch);
             },
@@ -935,3 +1016,6 @@ mod naming_tests;
 
 #[cfg(test)]
 mod dispatch_form_tests;
+
+#[cfg(test)]
+mod prompt_opening_tests;

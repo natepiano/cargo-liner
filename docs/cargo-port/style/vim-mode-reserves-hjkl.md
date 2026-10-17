@@ -1,3 +1,8 @@
+---
+tier: C
+family: values
+mechanism: llm
+---
 # Vim mode reserves bare hjkl
 
 When vim navigation is enabled, `h`, `j`, `k`, `l` without modifiers are reserved for navigation. They cannot be used as action keys.

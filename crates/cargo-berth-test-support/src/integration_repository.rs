@@ -90,26 +90,50 @@ impl IntegrationRepository {
             worktrees,
             integration,
         };
-        let root = integration_repository.root();
-        integration_repository.git(root, &["init", "--quiet", "--initial-branch=main"]);
-        integration_repository.git(root, &["config", "user.name", "Berth Test"]);
-        integration_repository.git(root, &["config", "user.email", "berth@example.invalid"]);
-        integration_repository.git(root, &["config", "maintenance.auto", "false"]);
-        integration_repository.git(root, &["config", "gc.auto", "0"]);
-        integration_repository.commit_file(root, "README.md", "initial\n", "initial");
-        let initialized = integration_repository.run(root, &["init", "--json"]);
+        Self::build_main_template(integration_repository.root(), executable);
+        integration_repository.add_integration_worktree();
+        integration_repository
+    }
+
+    /// Build the initialized `main` checkout shared by integration-target fixtures.
+    ///
+    /// Its configuration is committed and its ledger is empty, so a
+    /// [`RepositoryTemplate`] can copy it without replaying setup in each test.
+    /// Linked worktrees and their hooked commits are added by [`Self::from_template`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture file cannot be written or git or berth fails.
+    pub fn build_main_template(root: &Path, executable: &'static str) {
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Taken,
+            cleared_environment: CLEARED_GIT_ENVIRONMENT,
+        };
+        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
+        // Write fixture-only identity and maintenance policy together, instead of
+        // starting four git processes before the first commit.
+        let configuration = root.join(".git/config");
+        let mut contents = fs::read_to_string(&configuration).expect("git config should read");
+        contents.push_str("\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n");
+        fs::write(configuration, contents).expect("git config should write");
+        write_file(root, "README.md", "initial\n");
+        git.run(root, ["add", "README.md"]);
+        git.run(root, ["commit", "--quiet", "-m", "initial"]);
+        let initialized = berth_command::berth_command(executable)
+            .args(["init", "--json"])
+            .current_dir(root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .output()
+            .expect("cargo-berth init should run");
         assert_success(&initialized);
-        integration_repository.git(root, &["add", "--force", ".claude/config/berth.toml"]);
-        // With no reservation yet the hooks write nothing for this commit, which the gate test
-        // `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged`
-        // proves. The `integration start` commit keeps them: its post-commit check records the
-        // `integration` worktree's identity.
-        integration_repository.git_driver().run_without_hooks(
+        git.run(root, ["add", "--force", ".claude/config/berth.toml"]);
+        // The gate's unreserved-trunk test proves these hooks write no state.
+        git.run_without_hooks(
             root,
             ["commit", "--quiet", "-m", "track berth configuration"],
         );
-        integration_repository.add_integration_worktree();
-        integration_repository
     }
 
     /// Copy an initialized `main` template with its berth policy already committed.

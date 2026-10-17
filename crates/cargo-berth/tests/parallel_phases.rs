@@ -818,13 +818,127 @@ fn named_claim_after_attaches_only_to_the_selected_phase() {
 }
 
 #[test]
-fn named_claim_repeated_before_refuses_duplicate_ordering_without_mutation() {
-    assert_repeated_named_ordering_is_refused("--before");
+fn named_claim_reuses_before_edge_and_repeats_without_journalling() {
+    assert_repeated_named_ordering_widens_and_replays("--before");
 }
 
 #[test]
-fn named_claim_repeated_after_refuses_duplicate_ordering_without_mutation() {
-    assert_repeated_named_ordering_is_refused("--after");
+fn named_claim_reuses_after_edge_and_repeats_without_journalling() {
+    assert_repeated_named_ordering_widens_and_replays("--after");
+}
+
+#[test]
+fn named_claim_counts_only_new_holder_edges_toward_the_limit() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    fixture.hold_extra_path();
+    assert_success(&fixture.answer(&fixture.r16, "--before", &[]));
+    let initial = phase_board(root);
+    let original_edge = initial["payload"]["data"]["waiting"]["entries"][0]["edge_id"].clone();
+    let second_root = fixture.worktrees.path().join("second-holder");
+    GIT.add_worktree_without_hooks(root, &second_root, "second-holder", "HEAD");
+    let second = run_berth_with_session(
+        &second_root,
+        &["claim", "file:other.rs", "--json"],
+        "second-holder-session",
+    );
+    assert_success(&second);
+    let second_id = json(&second)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("second holder")
+        .to_owned();
+    fs::write(second_root.join("other.rs"), "// second holder work\n")
+        .expect("second holder's work");
+    fs::write(
+        root.join(CONFIGURATION_PATH),
+        r#"trunk = "main"
+maximum_ordering_edges = 2
+"#,
+    )
+    .expect("two-edge limit");
+    let widened = run_berth_with_session(
+        root,
+        &[
+            "claim",
+            "file:extra.rs",
+            "file:other.rs",
+            "--reservation",
+            &fixture.r16,
+            "--before",
+            &fixture.holder,
+            "--after",
+            &second_id,
+            "--overlap-why",
+            "one existing edge and one new edge",
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&widened);
+    let checked = run_berth_with_session(
+        root,
+        &[
+            "check",
+            "file:extra.rs",
+            "file:other.rs",
+            "--reservation",
+            &fixture.r16,
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&checked);
+    assert_eq!(json(&checked)["status"], "clear");
+    let board = phase_board(root);
+    let edges = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("two ordering holds");
+    assert_eq!(
+        edges.len(),
+        2,
+        "only the new holder gets a new edge: {board}"
+    );
+    assert!(edges.iter().any(|edge| edge["edge_id"] == original_edge
+        && edge["predecessor"] == fixture.r16
+        && edge["successor"] == fixture.holder));
+    assert!(edges.iter().any(|edge| edge["edge_id"] != original_edge
+        && edge["predecessor"] == second_id
+        && edge["successor"] == fixture.r16));
+}
+
+#[test]
+fn named_claim_refuses_the_opposite_direction_without_adding_the_path() {
+    let fixture = NamedPhaseOverlap::new();
+    let root = fixture.root();
+    fixture.hold_extra_path();
+    assert_success(&fixture.answer(&fixture.r16, "--before", &[]));
+    let initial = phase_board(root);
+    let edge = initial["payload"]["data"]["waiting"]["entries"][0]["edge_id"].clone();
+    let before = journal_events(root);
+    let refused = fixture.claim_extra_path("--after");
+    assert!(!refused.status.success());
+    assert_eq!(json(&refused)["status"], "contradicts_live_ordering");
+    let events = journal_events(root);
+    assert!(
+        !events[before.len()..].iter().any(|event| {
+            event["reservation_id"] == fixture.r16
+                && matches!(
+                    event["op"].as_str(),
+                    Some("claim" | "widen" | "answer" | "declare_ordering_edge")
+                )
+        }),
+        "a refused direction must acquire no scopes or edge: {events:?}"
+    );
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &fixture.r16)["scopes"],
+        serde_json::json!([{"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}])
+    );
+    let edges = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("retained edge");
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["edge_id"], edge);
 }
 
 #[test]
@@ -1386,6 +1500,41 @@ impl NamedPhaseOverlap {
         run_berth_with_session(self.root(), &arguments, DIRECTOR_SESSION)
     }
 
+    fn hold_extra_path(&self) {
+        let holder_root = self.worktrees.path().join("holder");
+        assert_success(&run_berth_with_session(
+            &holder_root,
+            &[
+                "claim",
+                "file:extra.rs",
+                "--reservation",
+                &self.holder,
+                "--json",
+            ],
+            "holder-session",
+        ));
+        fs::write(holder_root.join("extra.rs"), "// another held path\n")
+            .expect("holder's extra work");
+    }
+
+    fn claim_extra_path(&self, flag: &str) -> Output {
+        run_berth_with_session(
+            self.root(),
+            &[
+                "claim",
+                "file:extra.rs",
+                "--reservation",
+                &self.r16,
+                flag,
+                &self.holder,
+                "--overlap-why",
+                "new path under prior order",
+                "--json",
+            ],
+            DIRECTOR_SESSION,
+        )
+    }
+
     fn assert_refused_selection(&self, selected: &str) {
         let _ = phase_board(self.root());
         let events = journal_events(self.root());
@@ -1427,63 +1576,78 @@ fn assert_director_mapping(root: &Path, selected: &str) {
     );
 }
 
-fn assert_repeated_named_ordering_is_refused(flag: &str) {
+fn assert_repeated_named_ordering_widens_and_replays(flag: &str) {
     let fixture = NamedPhaseOverlap::new();
     let root = fixture.root();
-    let first = run_berth_with_session(
+    fixture.hold_extra_path();
+    assert_success(&fixture.answer(&fixture.r16, flag, &[]));
+    let edge = answer_authorization(
+        journal_events(root)
+            .iter()
+            .rev()
+            .find(|event| event["op"] == "widen" && event["reservation_id"] == fixture.r16)
+            .expect("initial ordering widen"),
+    )["edge_id"]
+        .clone();
+    assert_success(&fixture.claim_extra_path(flag));
+    let checked = run_berth_with_session(
         root,
         &[
-            "claim",
-            "file:shared.rs",
+            "check",
+            "file:extra.rs",
             "--reservation",
             &fixture.r16,
-            flag,
-            &fixture.holder,
-            "--overlap-why",
-            "initial phase ordering",
             "--json",
         ],
-        "dir-sid.phase-16",
+        DIRECTOR_SESSION,
     );
-    assert_success(&first);
-    let edge =
-        answer_authorization(journal_events(root).last().expect("first ordering"))["edge_id"]
-            .clone();
-    assert_director_mapping(root, &fixture.r15);
-    let events = journal_events(root);
-    let mappings = session_mappings(root);
-    // Refuse both a zero-growth repeat and a repeat that would otherwise widen.
-    for extra in [vec![], vec!["file:extra.rs"]] {
-        let refused = fixture.answer(&fixture.r16, flag, &extra);
-        assert_eq!(refused.status.code(), Some(2));
-        let refused = json(&refused);
-        assert_eq!(refused["verb"], "claim");
-        assert_eq!(refused["status"], "duplicate_ordering_edge");
-        let (before, after) = if flag == "--before" {
-            (&fixture.r16, &fixture.holder)
-        } else {
-            (&fixture.holder, &fixture.r16)
-        };
-        assert_eq!(
-            refused["message"],
-            format!("Ordering edge {before} before {after} already exists.")
-        );
-        assert_eq!(journal_events(root), events);
-        assert_eq!(session_mappings(root), mappings);
-    }
+    assert_success(&checked);
+    assert_eq!(json(&checked)["status"], "clear");
+
+    // Discard the snapshot: the reused edge must authorize the new scope on journal replay too.
     fs::remove_file(root.join(".git/cargo-berth/reservations.json")).expect("force replay");
     let board = phase_board(root);
     let waiting = board["payload"]["data"]["waiting"]["entries"]
         .as_array()
         .expect("live ordering holds");
-    assert_eq!(waiting.len(), 1);
+    assert_eq!(
+        waiting.len(),
+        1,
+        "a widen must create no second edge: {board}"
+    );
     assert_eq!(waiting[0]["edge_id"], edge);
     assert_eq!(
         reservation_row(&board, &fixture.r16)["scopes"],
         serde_json::json!([
-            {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"shared.rs"}
+            {"kind":"file", "path":"b.rs"},
+            {"kind":"file", "path":"shared.rs"},
+            {"kind":"file", "path":"extra.rs"}
         ])
     );
+    let replayed_check = run_berth_with_session(
+        root,
+        &[
+            "check",
+            "file:extra.rs",
+            "--reservation",
+            &fixture.r16,
+            "--json",
+        ],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&replayed_check);
+    assert_eq!(json(&replayed_check)["status"], "clear");
+
+    // Selection publication is required even when the claim appends no journal record.
+    fixture.map_director_to_r15();
+    let _ = phase_board(root);
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("settled journal bytes");
+    assert_success(&fixture.claim_extra_path(flag));
+    assert_eq!(
+        fs::read(root.join(JOURNAL_PATH)).expect("repeated journal bytes"),
+        before
+    );
+    assert_director_mapping(root, &fixture.r16);
 }
 
 fn answer_authorization(event: &Value) -> &Value {

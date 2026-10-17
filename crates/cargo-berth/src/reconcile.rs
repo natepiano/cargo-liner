@@ -61,6 +61,7 @@ use crate::git::ReservationRetentionRefRepair;
 use crate::git::ResolvedBatchCommitCandidates;
 use crate::git::ScopedPatchComparison;
 use crate::git::ScopedPatchTargetHistory;
+use crate::git::WorktreeOperation;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::JournalByteOffset;
@@ -81,8 +82,8 @@ use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ObservedReservation;
@@ -1599,14 +1600,14 @@ fn reconcile_with_open_ledger_once(
                     LedgerCommittedActionError::Action(error) => error,
                 })?;
             match outcome {
-                LedgerCommittedActionOutcome::Appended {
+                LedgerReconciliationOutcome::Appended {
                     output: mut report,
                     session_mapping_publication,
                 } => {
                     report.session_mapping_publication = session_mapping_publication;
                     Ok(report)
                 },
-                LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
+                LedgerReconciliationOutcome::Rejected(error) => Err(error.into()),
             }
         },
         |error| matches!(error, ReconcileError::RewriteSubjectChanged(_)),
@@ -1860,7 +1861,8 @@ pub(crate) fn prepare_rewrite_reconciliation(
         .map_err(LedgerError::Io)?
         .into_iter()
         .filter(|marker| {
-            !git::rewrite_in_progress(&marker.rewrite.worktree_administrative_directory)
+            WorktreeOperation::observe(&marker.rewrite.worktree_administrative_directory)
+                != WorktreeOperation::Rebase
         })
         .collect::<Vec<_>>();
     let mut preflight = RewriteReconciliationPreflight::default();

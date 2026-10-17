@@ -389,7 +389,7 @@ fn ansi_c_quoted_live_repair_jobs_fold_with_or_without_assignments() {
         assert_eq!(
             worker.label(),
             "impl7 · Phase 69 repair round 3 Screen Capture status card fits its text",
-            "the folded label keeps a multi-line job on one line"
+            "the folded label retains every word of the dispatch job"
         );
         assert_eq!(
             scan::find_worker_dispatches(&[wrapper]).get(&600),
@@ -403,7 +403,12 @@ fn ansi_c_quoted_live_repair_jobs_fold_with_or_without_assignments() {
         thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
         thread.pid = None;
         let text = drawn_tiles(vec![agent(10, &[shell, thread])]).join("\n");
-        assert!(text.contains("impl7 · Phase 69 repair round 3"), "{text}");
+        assert!(
+            text.contains(
+                "impl7 · Phase 69 repair round 3 Screen Capture status card fits its text"
+            ),
+            "{text}"
+        );
         assert!(!text.contains("ANSI-C dispatch shell"), "{text}");
         assert!(!text.contains("original ANSI-C worker title"), "{text}");
     }
@@ -582,7 +587,7 @@ fn drawn_tiles(rows: Vec<AgentRow>) -> Vec<String> {
 }
 
 fn drawn_tiles_with_edges(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
-    let state = MachineState::Answered(rows, edges);
+    let state = MachineState::Answered(rows, edges.into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,
@@ -923,8 +928,10 @@ fn folded_worker_role_reaches_the_final_tile_through_placement() {
         let mut thread = child("thread", "original thread");
         thread.thread_id = CodexThreadId::Recorded("worker-thread".to_string());
         thread.pid = None;
-        let state =
-            MachineState::Answered(vec![agent(10, &[shell, thread])], HierarchyEdges::default());
+        let state = MachineState::Answered(
+            vec![agent(10, &[shell, thread])],
+            HierarchyEdges::default().into(),
+        );
         let placement = AgentPlacement::from_machines(&[Machine {
             name:  "fixture",
             state: &state,
@@ -967,7 +974,7 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
     } else {
         HierarchyEdges::default()
     };
-    let state = MachineState::Answered(vec![root], edges);
+    let state = MachineState::Answered(vec![root], edges.into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,
@@ -1076,7 +1083,8 @@ fn folded_dispatches_sort_as_single_worker_rows() {
         thread.started = started;
         children.extend([shell, thread]);
     }
-    let state = MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default());
+    let state =
+        MachineState::Answered(vec![agent(10, &children)], HierarchyEdges::default().into());
     let placement = AgentPlacement::from_machines(&[Machine {
         name:  "fixture",
         state: &state,
@@ -1206,4 +1214,30 @@ fn pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible() {
         dispatches.get(&701),
         Some(WorkerDispatch::Worker(_))
     ));
+}
+
+#[test]
+fn multiline_dispatch_jobs_draw_every_word_on_one_worker_line() {
+    let directory = roster_fixture();
+    for job in [
+        "fix the handover\nand retain its state",
+        "  fix the handover\r\n\tand retain its state  ",
+    ] {
+        let literal = command(directory.path(), &format!("--to {SEAT}")).replace(JOB, job);
+        let parsed = ParsedDispatch::parse(&literal).expect("multiline job parses");
+        let dispatch = parsed.resolve(&WorkerRoster::read(directory.path()), 701);
+        let mut shell = child("shell", "multiline dispatch shell");
+        shell.dispatch = dispatch;
+        let mut thread = child("thread", "original multiline worker");
+        thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+        thread.pid = None;
+        let text = drawn_tiles(vec![agent(10, &[shell, thread])]).join("\n");
+        assert!(
+            text.lines()
+                .any(|line| line.contains("impl7 · fix the handover and retain its state")),
+            "{text}"
+        );
+        assert!(!text.contains("multiline dispatch shell"), "{text}");
+        assert!(!text.contains("original multiline worker"), "{text}");
+    }
 }

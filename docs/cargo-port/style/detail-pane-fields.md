@@ -1,3 +1,9 @@
+---
+tier: C
+family: types
+input_scope: file
+mechanism: llm
+---
 # Detail-pane fields store the value, not a placeholder
 
 Fields on the detail-pane structs (`PackageData`, `GitData`) that may not be loaded yet — type, version, disk — are `Option<T>` or a typed enum, never a `String` pre-filled with `""` / `"-"` / `"0 B"`. A pre-filled `String` can't tell "not loaded" from "loaded but empty".

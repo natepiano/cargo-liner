@@ -44,6 +44,9 @@ use crate::census::HierarchyCommand;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchySource;
 use crate::census::RemoteMachines;
+use crate::census::accounts::AccountsMonitor;
+#[cfg(test)]
+use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -125,6 +128,8 @@ pub(crate) struct App {
     /// The agents on this machine and each remote, as of each one's
     /// latest answer.
     pub(crate) census:            Census,
+    /// Account readings refreshed independently of the frame and census scan.
+    pub(crate) accounts:          AccountsMonitor,
     /// Footer colors cached between census scans.
     pub(crate) footer_colors:     FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
@@ -178,6 +183,9 @@ impl App {
         let hierarchy_command = HierarchyCommand::new(HierarchySource::from(
             loaded_config.config.census.hierarchy_command.clone(),
         ));
+        let accounts = census::accounts::AccountsMonitor::new(
+            loaded_config.config.census.accounts_command.clone(),
+        );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
@@ -193,6 +201,7 @@ impl App {
             attract: Attract::new(),
             favorites_overlay: FavoritesOverlay::default(),
             census,
+            accounts,
             remote_machines,
             hierarchy_command,
             footer_colors: FooterColorFile::default(),
@@ -213,7 +222,11 @@ impl App {
             None,
             {
                 let mut census = Census::new("natedev".to_string());
-                census.apply(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()));
+                census.apply(CensusUpdate::Local {
+                    rows:      Vec::new(),
+                    hierarchy: HierarchyEdges::default().into(),
+                    stage:     ScanStage::Classified,
+                });
                 census
             },
         )
@@ -370,6 +383,7 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
+    use crate::census::scan::ScanStage;
     use crate::config::Config;
     use crate::sort::SummaryColumn;
 
@@ -400,7 +414,11 @@ mod tests {
                 });
                 rows.extend([root, child]);
             }
-            CensusUpdate::LocalScanCompleted(rows, HierarchyEdges(edges))
+            CensusUpdate::Local {
+                rows,
+                hierarchy: HierarchyEdges(edges).into(),
+                stage: ScanStage::Completed,
+            }
         };
         let mut app = App::new_for_test().expect("a test app");
         let first = row(10, 100);
@@ -441,10 +459,11 @@ mod tests {
         assert_eq!(app.tree_sorts.get(&first_id), Some(&first_sort));
         assert_eq!(app.summary_sort, summary_sort);
 
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            Vec::new(),
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      Vec::new(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
         app.prune_tree_sorts();
         assert!(app.tree_sorts.is_empty());
         assert_eq!(

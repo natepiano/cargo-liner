@@ -18,6 +18,7 @@ use serde::Serialize;
 use super::FullRefName;
 use crate::git;
 use crate::git::GitError;
+use crate::git::LocalTargetUpstream;
 use crate::git::ReferenceLookup;
 
 /// A local branch into which reserved work integrates.
@@ -56,6 +57,11 @@ impl IntegrationTarget {
 
     /// The complete local ref.
     pub(crate) const fn reference(&self) -> &FullRefName { &self.0 }
+
+    /// Read upstream authorship evidence without changing the local judging target.
+    pub(crate) fn local_upstream(&self, repository_root: &Path) -> LocalTargetUpstream {
+        git::local_target_upstream(repository_root, self.short_name())
+    }
 
     /// The local branch name without `refs/heads/`.
     pub(crate) fn short_name(&self) -> &str {

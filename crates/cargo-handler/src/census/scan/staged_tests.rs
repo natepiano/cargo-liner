@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use super::ProcessEntry;
+use super::ScanStage;
 use super::SessionRecord;
 use crate::census::Account;
 use crate::census::Agent;
@@ -87,7 +88,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         )),
         service_tier:    ServiceTier::Unrecorded,
         name:            "handler".to_string(),
-        activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
+        activity:        AgentActivity::from(Some("busy")),
         started:         100,
         process_started: 100,
         pid:             428_044,
@@ -107,14 +108,21 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         Some(Path::new("/home/test")),
         |rows| {
             sender
-                .send(CensusUpdate::Local(rows, HierarchyEdges::default()))
+                .send(CensusUpdate::Local {
+                    rows,
+                    hierarchy: HierarchyEdges::default().into(),
+                    stage: ScanStage::Classified,
+                })
                 .expect("the census receiver should remain open");
         },
         |_, rows| {
             let first = updates
                 .try_recv()
                 .expect("classified agents must be sent before any detail read begins");
-            let CensusUpdate::Local(first_rows, _) = first else {
+            let CensusUpdate::Local {
+                rows: first_rows, ..
+            } = first
+            else {
                 panic!("a local scan must publish a local answer");
             };
             assert_eq!(first_rows.as_slice(), std::slice::from_ref(&classified));
@@ -127,7 +135,11 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
     let detailed = updates
         .try_recv()
         .expect("the enriched agents must be sent after their details are read");
-    let CensusUpdate::Local(detailed_rows, _) = detailed else {
+    let CensusUpdate::Local {
+        rows: detailed_rows,
+        ..
+    } = detailed
+    else {
         panic!("a local scan must publish a local answer");
     };
     assert_eq!(

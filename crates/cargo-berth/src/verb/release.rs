@@ -303,6 +303,10 @@ fn execute_release(
         LedgerCommittedActionOutcome::Appended {
             output,
             session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
+            output,
+            session_mapping_publication,
         } => Ok(Enrollment::Enrolled(
             output.into_payload(session_mapping_publication),
         )),

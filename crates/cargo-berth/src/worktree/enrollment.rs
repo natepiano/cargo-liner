@@ -11,7 +11,6 @@ use serde::Serialize;
 use super::WorktreeRegistry;
 use super::constants::ENROLLMENT_SEQUENCE_REASON;
 use super::constants::MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE;
-use super::constants::OPERATION_IN_PROGRESS_MARKERS;
 use super::liveness::WorktreeEnrollmentCandidate;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
@@ -24,6 +23,7 @@ use crate::git;
 use crate::git::GitCommandOutputAvailability;
 use crate::git::GitError;
 use crate::git::HeadAttachment;
+use crate::git::WorktreeOperation;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -327,6 +327,22 @@ fn observe_footprint(
     )
 }
 
+/// Reject intermediate Git state before reading the candidate's footprint.
+fn check_enrollment_operation(context: &WorktreeContext) -> Result<(), WorktreeEnrollmentFailure> {
+    let label = match WorktreeOperation::observe(context.administrative_directory()) {
+        WorktreeOperation::Idle => return Ok(()),
+        WorktreeOperation::Rebase => "a rebase",
+        WorktreeOperation::Merge => "a merge",
+        WorktreeOperation::CherryPick => "a cherry-pick",
+        WorktreeOperation::Revert => "a revert",
+    };
+    Err(failure(
+        context.repository_root(),
+        WorktreeEnrollmentFailureReason::OperationInProgress,
+        format!("{label} is in progress"),
+    ))
+}
+
 fn observe_target_footprint(
     context: WorktreeContext,
     worktree_id: WorktreeId,
@@ -340,15 +356,7 @@ fn observe_target_footprint(
         selection: target,
         commit: trunk,
     } = footprint_target;
-    for marker in OPERATION_IN_PROGRESS_MARKERS {
-        if context.administrative_directory().join(marker).exists() {
-            return Err(failure(
-                root,
-                WorktreeEnrollmentFailureReason::OperationInProgress,
-                format!("{marker} exists in the worktree administrative directory"),
-            ));
-        }
-    }
+    check_enrollment_operation(&context)?;
     let merge_base = observe_merge_base(root, &trunk, &head)?;
     let committed = git::unmerged_branch_paths(root, &trunk, &head).map_err(|error| {
         failure(
@@ -812,4 +820,50 @@ fn unresolved_enrollment_overlaps(events: &[JournalEvent]) -> Vec<EnrollmentOver
         }
     }
     pending
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::WorktreeEnrollmentFailureReason;
+    use super::check_enrollment_operation;
+    use crate::ledger::WorktreeContext;
+
+    #[test]
+    fn enrollment_names_pending_operations_in_words() -> Result<(), Box<dyn std::error::Error>> {
+        let repository = tempfile::tempdir()?;
+        let administrative_directory = repository.path().join(".git");
+        fs::create_dir(&administrative_directory)?;
+        fs::write(
+            administrative_directory.join("HEAD"),
+            "ref: refs/heads/main\n",
+        )?;
+        fs::create_dir(administrative_directory.join("objects"))?;
+        fs::create_dir(administrative_directory.join("refs"))?;
+        let context = WorktreeContext::discover(repository.path())?;
+        assert!(check_enrollment_operation(&context).is_ok());
+        for (marker, diagnostic) in [
+            ("rebase-merge", "a rebase is in progress"),
+            ("rebase-apply", "a rebase is in progress"),
+            ("MERGE_HEAD", "a merge is in progress"),
+            ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
+            ("REVERT_HEAD", "a revert is in progress"),
+        ] {
+            let marker_path = administrative_directory.join(marker);
+            fs::write(&marker_path, "pending")?;
+            let failure = check_enrollment_operation(&context)
+                .err()
+                .ok_or("pending operation should defer enrollment")?;
+            assert!(matches!(
+                failure.reason,
+                WorktreeEnrollmentFailureReason::OperationInProgress
+            ));
+            assert_eq!(failure.worktree_root, context.repository_root());
+            assert_eq!(failure.diagnostic, diagnostic);
+            fs::remove_file(marker_path)?;
+        }
+        assert!(check_enrollment_operation(&context).is_ok());
+        Ok(())
+    }
 }

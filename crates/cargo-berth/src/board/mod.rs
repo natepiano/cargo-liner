@@ -11,8 +11,11 @@ pub(crate) mod tui;
 #[cfg(test)]
 mod test_support;
 
+pub(crate) use answers::RecordedOverlapAnswer;
+pub(crate) use error::BoardError;
 pub(crate) use report::reservation_lifecycle_presentation;
 pub(crate) use report::reservation_lifecycle_snapshot;
 pub(crate) use rows::BoardModel;
 pub(crate) use rows::BoardReportRendering;
 pub(crate) use rows::LiveIncursionMembership;
+pub(crate) use rows::ReservationOrderingEdge;

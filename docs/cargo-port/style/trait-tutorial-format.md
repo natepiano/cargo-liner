@@ -1,3 +1,8 @@
+---
+tier: D
+family: types
+mechanism: llm
+---
 # Trait tutorial format
 
 When walking through a Rust trait as a tutorial — explaining its surface to a

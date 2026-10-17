@@ -2,6 +2,11 @@
 
 use serde::Serialize;
 
+use super::answers::RecordedOverlapAnswer;
+use super::error::BoardError;
+use super::rows::BoardCoordinationProjection;
+use super::rows::ReservationCoordination;
+use super::rows::ReservationOrderingEdge;
 use crate::ids::ReservationId;
 use crate::output::ReservationReportSnapshot;
 use crate::presentation;
@@ -11,19 +16,22 @@ use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::MergeExtent;
 use crate::reservation::RaceExtent;
 use crate::reservation::ReservationLifecycleSnapshot;
-use crate::reservation::ReservationReplayError;
 
 /// One reservation's placement-independent lifecycle and extent report.
 #[derive(Serialize)]
 struct ReservationReport<'reservation> {
     #[serde(rename = "Reservation")]
-    reservation_id: ReservationId,
+    reservation_id:  ReservationId,
     #[serde(rename = "Lifecycle")]
-    lifecycle:      &'reservation ReservationLifecycleSnapshot,
+    lifecycle:       &'reservation ReservationLifecycleSnapshot,
     #[serde(rename = "Race extent")]
-    race_extent:    &'reservation RaceExtent,
+    race_extent:     &'reservation RaceExtent,
     #[serde(flatten)]
-    merge_extent:   HumanMergeExtent<'reservation>,
+    merge_extent:    HumanMergeExtent<'reservation>,
+    #[serde(rename = "Ordering edges")]
+    ordering_edges:  &'reservation [ReservationOrderingEdge],
+    #[serde(rename = "Overlap answers")]
+    overlap_answers: &'reservation [RecordedOverlapAnswer],
 }
 
 /// The single-reservation report's merge extent, labeled by whether it still protects anything.
@@ -56,6 +64,8 @@ pub(crate) fn reservation_lifecycle_presentation(
         lifecycle: &snapshot.lifecycle,
         race_extent: &snapshot.race_extent,
         merge_extent: HumanMergeExtent::from(&snapshot.merge_extent),
+        ordering_edges: &snapshot.ordering_edges,
+        overlap_answers: &snapshot.overlap_answers,
     };
     serde_json::to_string_pretty(&reservation_report).map_or_else(
         |error| {
@@ -79,15 +89,21 @@ pub(crate) fn reservation_lifecycle_presentation(
 pub(crate) fn reservation_lifecycle_snapshot(
     report: &ReconciliationReport,
     reservation_id: ReservationId,
-) -> Result<ReservationReportSnapshot, ReservationReplayError> {
+) -> Result<ReservationReportSnapshot, BoardError> {
     let reservation = report
         .journal_snapshot
         .reservations()
         .reservation(reservation_id)?;
+    let ReservationCoordination {
+        ordering_edges,
+        overlap_answers,
+    } = BoardCoordinationProjection::from_report(report)?.for_reservation(reservation_id);
     Ok(ReservationReportSnapshot {
         reservation_id,
         lifecycle: ReservationLifecycleSnapshot::from(reservation.evidence_state()?),
         race_extent: reservation.race_extent(),
         merge_extent: reservation.effective_merge_extent(),
+        ordering_edges,
+        overlap_answers,
     })
 }

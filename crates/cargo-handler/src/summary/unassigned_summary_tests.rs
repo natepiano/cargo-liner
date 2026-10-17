@@ -15,6 +15,8 @@ use crate::census::CensusUpdate;
 use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
+use crate::census::accounts::AccountsTable;
+use crate::census::scan::ScanStage;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
@@ -78,10 +80,11 @@ fn text_row(buffer: &Buffer, label: &str) -> String {
 }
 
 fn apply_local(app: &mut App, rows: Vec<AgentRow>) {
-    app.census.apply(CensusUpdate::LocalScanCompleted(
+    app.census.apply(CensusUpdate::Local {
         rows,
-        HierarchyEdges::default(),
-    ));
+        hierarchy: HierarchyEdges::default().into(),
+        stage: ScanStage::Completed,
+    });
     app.prune_tree_sorts();
 }
 
@@ -198,7 +201,7 @@ fn unassigned_machine_sorts_are_independent_and_one_machine_disappearing_preserv
     apply_local(&mut app, vec![older.clone(), younger.clone()]);
     app.census.apply(CensusUpdate::Remote {
         host:  "mac".into(),
-        state: MachineState::Answered(vec![older, younger], HierarchyEdges::default()),
+        state: MachineState::Answered(vec![older, younger], HierarchyEdges::default().into()),
     });
     click_pool_header(&mut app, "natedev", TreeColumn::Session);
     let local = app_pool_buffer(&app, "natedev");
@@ -229,7 +232,7 @@ fn unassigned_machine_sorts_are_independent_and_one_machine_disappearing_preserv
     );
     app.census.apply(CensusUpdate::Remote {
         host:  "mac".into(),
-        state: MachineState::Answered(Vec::new(), HierarchyEdges::default()),
+        state: MachineState::Answered(Vec::new(), HierarchyEdges::default().into()),
     });
     app.prune_tree_sorts();
     assert!(app.tree_sorts.is_empty());
@@ -247,11 +250,12 @@ fn summary_states() -> [MachineState; 2] {
             manager: "session-10".into(),
             member:  "session-11".into(),
             role:    HierarchyRole::Impl,
-        }]),
+        }])
+        .into(),
     );
     let remote = MachineState::Answered(
         vec![session(20, "remote-session", 1800)],
-        HierarchyEdges::default(),
+        HierarchyEdges::default().into(),
     );
     [local, remote]
 }
@@ -313,6 +317,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
         &mut buffer,
         AREA,
         &SummaryFrame {
+            accounts:       &AccountsTable::NotConfigured,
             machines:       &machines,
             placement:      &placement,
             cells:          &agents,

@@ -2,11 +2,26 @@
 
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// The clean checkout used by each independent rendered-instruction scenario.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            |root| {
+        let built = build_initialized_repository(root);
+        assert!(
+            built.is_ok(),
+            "instruction repository should build: {built:?}"
+        );
+    },
+};
 
 /// How this file adds a fixture worktree: optional locks taken, nothing held back from git.
 const GIT: GitDriver = GitDriver {
@@ -580,33 +595,29 @@ fn is_shell_command(span: &str) -> bool {
 
 fn initialized_repository() -> TestResult<TempDir> {
     fs::create_dir_all(SCRATCH_ROOT)?;
-    let repository = TempDir::new_in(SCRATCH_ROOT)?;
-    run_git(repository.path(), &["init", "-b", "main"])?;
+    Ok(INITIALIZED_REPOSITORY.instantiate())
+}
+
+fn build_initialized_repository(root: &Path) -> TestResult {
+    run_git(root, &["init", "-b", "main"])?;
     run_git(
-        repository.path(),
+        root,
         &[
             "config",
             "user.email",
             "engine-instructions@example.invalid",
         ],
     )?;
+    run_git(root, &["config", "user.name", "Engine Instructions Test"])?;
+    fs::write(root.join("README.md"), "scratch repository\n")?;
+    run_git(root, &["add", "README.md"])?;
     run_git(
-        repository.path(),
-        &["config", "user.name", "Engine Instructions Test"],
-    )?;
-    fs::write(repository.path().join("README.md"), "scratch repository\n")?;
-    run_git(repository.path(), &["add", "README.md"])?;
-    run_git(
-        repository.path(),
+        root,
         &["-c", "commit.gpgsign=false", "commit", "-m", "initial"],
     )?;
-    let initialized = run_berth(
-        repository.path(),
-        &["init", "--json"],
-        "engine-instructions-init",
-    )?;
+    let initialized = run_berth(root, &["init", "--json"], "engine-instructions-init")?;
     require_success(&initialized, "cargo-berth init")?;
-    Ok(repository)
+    Ok(())
 }
 
 fn add_worktree(repository: &TempDir, branch: &str) -> TestResult<(TempDir, PathBuf)> {

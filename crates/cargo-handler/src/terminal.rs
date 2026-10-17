@@ -21,6 +21,7 @@ use crate::census;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::account::AccountLabels;
+use crate::census::scan::ScanStage;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
@@ -111,11 +112,10 @@ impl Ticker {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
             match &update {
-                CensusUpdate::Local(rows, _) => {
-                    startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
-                },
-                CensusUpdate::LocalScanCompleted(rows, _) => {
-                    changed |= app.footer_colors.refresh();
+                CensusUpdate::Local { rows, stage, .. } => {
+                    if matches!(stage, ScanStage::Completed) {
+                        changed |= app.footer_colors.refresh();
+                    }
                     startup_log::startup_event(&format!("local_applied rows={}", rows.len()));
                 },
                 CensusUpdate::Remote { host, .. } => {
@@ -128,8 +128,17 @@ impl Ticker {
                 continue;
             }
             match update {
-                CensusUpdate::Local(_, _) => changed |= app.census.apply(update),
-                CensusUpdate::LocalScanCompleted(_, _) | CensusUpdate::Remote { .. } => {
+                CensusUpdate::Local {
+                    stage: ScanStage::Classified,
+                    ..
+                } => {
+                    changed |= app.census.apply(update);
+                },
+                CensusUpdate::Local {
+                    stage: ScanStage::Completed,
+                    ..
+                }
+                | CensusUpdate::Remote { .. } => {
                     changed |= app.census.apply(update);
                     app.prune_tree_sorts();
                 },
@@ -144,6 +153,11 @@ impl Ticker {
         let shown = app
             .census
             .lists_an_agent(&app.loaded_config.config.machines.remote);
+        let shown = shown
+            || app.accounts.table.is_visible()
+            || app
+                .census
+                .has_hierarchy_notice(&app.loaded_config.config.machines.remote);
         if !shown || self.shown_second == Some(unix_now) {
             return false;
         }
@@ -153,6 +167,7 @@ impl Ticker {
 
     /// [`PollWork::poll`] at `unix_now` in unix seconds.
     fn poll_at(&mut self, app: &mut App, now: Instant, unix_now: u64) -> Repaint {
+        let accounts_changed = app.accounts.refresh();
         let census_changed = self.drain_census(app);
         let appearance_changed = self.drain_appearances(app);
         let ages_moved = self.ages_moved(app, unix_now);
@@ -166,7 +181,8 @@ impl Ticker {
         // it is on the screen, and for one more at the end of the quiet
         // it waits out before coming back.
         let attract = app.attract.frame_due();
-        if census_changed
+        if accounts_changed
+            || census_changed
             || appearance_changed
             || ages_moved
             || favorites == Repaint::Needed
@@ -205,12 +221,30 @@ mod tests {
     use crate::agent_cell::TreeColumn;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::HierarchyEdges;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::accounts::AccountsFailure;
+    use crate::census::accounts::AccountsTable;
     use crate::sort::TreeSort;
     use crate::tiles::TileKey;
+
+    #[test]
+    fn failed_accounts_without_agents_repaint_each_new_second() {
+        let mut app = App::new_for_test().expect("test app");
+        app.census.apply(CensusUpdate::Local {
+            rows:      Vec::new(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        assert!(ticker.ages_moved(&app, 100));
+        assert!(!ticker.ages_moved(&app, 100));
+        assert!(ticker.ages_moved(&app, 101));
+    }
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -234,17 +268,22 @@ mod tests {
             let before = app.footer_colors.revision_checks();
             for _ in 0..interim_answers {
                 sender
-                    .send(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()))
+                    .send(CensusUpdate::Local {
+                        rows:      Vec::new(),
+                        hierarchy: HierarchyEdges::default().into(),
+                        stage:     ScanStage::Classified,
+                    })
                     .expect("publish an interim local answer");
             }
             ticker.drain_census(&mut app);
             assert_eq!(app.footer_colors.revision_checks(), before);
 
             sender
-                .send(CensusUpdate::LocalScanCompleted(
-                    Vec::new(),
-                    HierarchyEdges::default(),
-                ))
+                .send(CensusUpdate::Local {
+                    rows:      Vec::new(),
+                    hierarchy: HierarchyEdges::default().into(),
+                    stage:     ScanStage::Completed,
+                })
                 .expect("publish the completed scan");
             let changed = ticker.drain_census(&mut app);
             assert_eq!(app.footer_colors.revision_checks(), before + 1);
@@ -275,10 +314,11 @@ mod tests {
         let (_appearance_sender, appearances) = mpsc::channel();
         let ticker = Ticker::new(updates, appearances);
         sender
-            .send(CensusUpdate::LocalScanCompleted(
-                vec![row.clone()],
-                HierarchyEdges::default(),
-            ))
+            .send(CensusUpdate::Local {
+                rows:      vec![row.clone()],
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Completed,
+            })
             .expect("publish a completed scan");
         ticker.drain_census(&mut app);
         let mut sort = TreeSort::default();
@@ -286,16 +326,21 @@ mod tests {
         app.tree_sorts.insert(id.clone(), sort);
 
         sender
-            .send(CensusUpdate::Local(Vec::new(), HierarchyEdges::default()))
+            .send(CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            })
             .expect("publish an interim answer");
         ticker.drain_census(&mut app);
         assert_eq!(app.tree_sorts.get(&id), Some(&sort));
 
         sender
-            .send(CensusUpdate::LocalScanCompleted(
-                Vec::new(),
-                HierarchyEdges::default(),
-            ))
+            .send(CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Completed,
+            })
             .expect("publish a completed scan");
         ticker.drain_census(&mut app);
         assert!(app.tree_sorts.is_empty());
@@ -304,7 +349,7 @@ mod tests {
         sender
             .send(CensusUpdate::Remote {
                 host:  "mac".to_string(),
-                state: MachineState::Answered(vec![row], HierarchyEdges::default()),
+                state: MachineState::Answered(vec![row], HierarchyEdges::default().into()),
             })
             .expect("publish a remote answer");
         ticker.drain_census(&mut app);
@@ -323,7 +368,7 @@ mod tests {
         sender
             .send(CensusUpdate::Remote {
                 host:  "mac".to_string(),
-                state: MachineState::Answered(Vec::new(), HierarchyEdges::default()),
+                state: MachineState::Answered(Vec::new(), HierarchyEdges::default().into()),
             })
             .expect("publish a completed remote answer");
         ticker.drain_census(&mut app);
@@ -356,10 +401,11 @@ mod tests {
         let (_appearance_sender, appearance_receiver) = mpsc::channel();
         let mut ticker = Ticker::new(receiver, appearance_receiver);
         let (manager, worker) = census::mesh_worker_fixture();
-        app.census.apply(CensusUpdate::Local(
-            worker.rows().to_vec(),
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      worker.rows().to_vec(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         app.loaded_config.config.machines.remote = vec!["mac".to_string()];
         app.census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
@@ -392,7 +438,7 @@ mod tests {
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "enh/handler".to_string(),
-            activity:        crate::census::AgentActivity::from_legacy(Some("busy")),
+            activity:        AgentActivity::from(Some("busy")),
             started:         90,
             process_started: 90,
             pid:             428_044,
@@ -403,10 +449,11 @@ mod tests {
             children:        Vec::new(),
         };
         sender
-            .send(CensusUpdate::Local(
-                vec![row.clone()],
-                HierarchyEdges::default(),
-            ))
+            .send(CensusUpdate::Local {
+                rows:      vec![row.clone()],
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            })
             .expect("the ticker should hold the receiver");
 
         assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::Needed);
@@ -414,20 +461,22 @@ mod tests {
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
 
         sender
-            .send(CensusUpdate::Local(
-                vec![row.clone()],
-                HierarchyEdges::default(),
-            ))
+            .send(CensusUpdate::Local {
+                rows:      vec![row.clone()],
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            })
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::NotNeeded);
         sender
-            .send(CensusUpdate::Local(
-                vec![census::AgentRow {
+            .send(CensusUpdate::Local {
+                rows:      vec![census::AgentRow {
                     activity: crate::census::AgentActivity::Unreported,
                     ..row
                 }],
-                HierarchyEdges::default(),
-            ))
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            })
             .expect("the ticker should hold the receiver");
         assert_eq!(ticker.poll_at(&mut app, now, 101), Repaint::Needed);
     }

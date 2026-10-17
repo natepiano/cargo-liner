@@ -57,6 +57,13 @@ const SCRATCH_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     ..INITIALIZED_REPOSITORY
 };
 
+/// An initialized main checkout with committed policy, before integration lanes exist.
+const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
+    name: "integration-main",
+    build: |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
+    ..INITIALIZED_REPOSITORY
+};
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -104,8 +111,9 @@ const OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION: &str = "cargo-berth (observ
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// Attribution and merge observations remain fixed for these two holder checkouts, including
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
-/// lacks. Every branch path read is those two invocations.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 16;
+/// lacks. Every branch path read is those two invocations. Authorship also reads the
+/// locally available upstream once per distinct integration target.
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 17;
 const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -208,7 +216,7 @@ struct TargetPair {
 }
 
 fn target_pair(merge_predecessor: bool) -> TargetPair {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repository.lane("target-a", "integration");
     let successor = repository.lane("target-b", "integration");
     let integration_before =
@@ -291,7 +299,7 @@ struct MainPredecessorIntegrationSuccessor {
 }
 
 fn main_predecessor_integration_successor() -> MainPredecessorIntegrationSuccessor {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repository.main_lane("main-predecessor");
     let successor = repository.lane("integration-successor", "integration");
     let main_before = repository.git_stdout(repository.root(), &["rev-parse", "main"]);
@@ -448,7 +456,7 @@ fn cross_target_main_predecessor_recovery_prescribes_integrate() {
 
 #[test]
 fn renamed_trunk_refusal_names_its_branch() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     repository.git(repository.root(), &["branch", "develop", "main"]);
     repository.set_trunk("develop");
     assert_success(&repository.run(repository.root(), &["init", "--json"]));
@@ -493,7 +501,7 @@ fn renamed_trunk_refusal_names_its_branch() {
 
 #[test]
 fn reinitialization_clears_gate_targets() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repository.lane("reset-target", "integration");
     write_file(&lane, "held.txt", "held\n");
     assert_success(&repository.claim(&lane, "file:held.txt", FIRST_RUN, Some("integration")));
@@ -507,7 +515,7 @@ fn reinitialization_clears_gate_targets() {
 
 #[test]
 fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let listed_lane = repository.lane("listed-source", "integration");
     write_file(&listed_lane, "listed.txt", "listed\n");
     assert_success(&repository.claim(
@@ -567,7 +575,7 @@ fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
 fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
     let default = initialized_repository();
     assert_eq!(gate_targets(default.path()), [] as [String; 0]);
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repository.lane("target-list-lane", "integration");
     write_file(&lane, "listed.txt", "listed\n");
     let claimed = repository.claim(&lane, "file:listed.txt", FIRST_RUN, Some("integration"));
@@ -640,7 +648,7 @@ fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
 /// the requester lands first, then the holder lands after merging that work in.
 #[test]
 fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let holder = repository.lane("target-a", "integration");
     let requester = repository.lane("target-b", "integration");
     let integration_before =
@@ -702,7 +710,7 @@ fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
 /// requester's update is refused until the holder lands, then admitted.
 #[test]
 fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let holder = repository.lane("target-a", "integration");
     let requester = repository.lane("target-b", "integration");
     let integration_before =
@@ -790,7 +798,7 @@ fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
 /// predecessor's reserved scopes.
 #[test]
 fn target_gate_holds_the_successor_of_an_unanswered_sequenced_pair() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repository.lane("target-a", "integration");
     let successor = repository.lane("target-b", "integration");
     let integration_before =
@@ -927,7 +935,7 @@ fn target_gate_observe_and_enforce_messages_name_the_target() {
 
 #[test]
 fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repository.lane("filter-lane", "integration");
     let claimed = repository.claim(&lane, "file:filter.txt", FIRST_RUN, Some("integration"));
     assert_success(&claimed);
@@ -1015,7 +1023,7 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
 /// of the new branch and its worktree reads the same after it.
 #[test]
 fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repository.lane("claimed-lane", "integration");
     let claimed = repository.claim(&lane, "file:lane.txt", FIRST_RUN, Some("integration"));
     assert_success(&claimed);
@@ -1305,7 +1313,7 @@ fn two_gated_refs_in_one_transaction_refuse_before_journal_changes() {
 #[test]
 fn integrate_moves_the_present_target_and_missing_target_falls_back_to_main() {
     for remove_target in [false, true] {
-        let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
         let lane = repository.lane(
             if remove_target {
                 "missing-lane"
@@ -1414,7 +1422,7 @@ fn integrate_from_an_observing_checkout_is_blocked_under_the_main_gate_mode() {
 
 #[test]
 fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repository.lane("noop-a", "integration");
     let successor = repository.lane("noop-b", "integration");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -1475,7 +1483,7 @@ fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
 
 #[test]
 fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
-    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repository.lane("proof-a", "integration");
     let successor = repository.main_lane("proof-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -1558,7 +1566,7 @@ fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
 
 #[test]
 fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let predecessor = repo.lane("gate-a", "integration");
     let successor = repo.main_lane("gate-x");
     write_file(&predecessor, "shared.txt", "A\n");

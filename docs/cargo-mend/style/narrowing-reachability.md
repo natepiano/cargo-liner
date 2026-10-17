@@ -1,3 +1,8 @@
+---
+tier: C
+family: modules
+mechanism: llm
+---
 ## Narrowing must follow every reachability indirection
 
 `unused_pub`, `narrow_to_pub_crate`, and `suspicious_pub` all answer one

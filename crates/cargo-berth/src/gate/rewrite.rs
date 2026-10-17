@@ -30,8 +30,8 @@ use crate::ledger::FullRefName;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::WorktreeContext;
@@ -504,8 +504,8 @@ pub(super) fn reanchor_rewritten_phases(
             LedgerCommittedActionError::Action(error) => match error {},
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended { output: (), .. } => Ok(()),
-        LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
+        LedgerReconciliationOutcome::Appended { output: (), .. } => Ok(()),
+        LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
     }
 }
 

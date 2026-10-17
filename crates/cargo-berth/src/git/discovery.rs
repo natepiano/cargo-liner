@@ -2,8 +2,7 @@
 //!
 //! Every function here answers "where does git keep this?" for one invocation: the
 //! worktree root, the shared administrative directory, the hook directory git resolves
-//! after `core.hooksPath`, the registered-worktree listing, and whether the invoking
-//! worktree is part-way through a rewrite.
+//! after `core.hooksPath`, and the registered-worktree listing.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -15,8 +14,6 @@ use super::constants::GIT_NUL_TERMINATED_ARG;
 use super::constants::GIT_PATH_ARG;
 use super::constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use super::constants::GIT_PORCELAIN_ARG;
-use super::constants::GIT_REBASE_APPLY_STATE_PATH;
-use super::constants::GIT_REBASE_MERGE_STATE_PATH;
 use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_SHOW_TOPLEVEL_ARG;
 use super::constants::GIT_WORKTREE_COMMAND;
@@ -106,17 +103,4 @@ pub(crate) fn worktree_list_porcelain(repository_root: &Path) -> Result<Vec<u8>,
         });
     }
     Ok(output.stdout)
-}
-
-/// Report whether git is part-way through replaying commits onto a moved base.
-///
-/// A rebase moves the worktree onto its new base and replays each commit from there, and
-/// git runs `post-commit` for every one of them. Until the branch reference moves at the
-/// end, the phase's anchor still describes the history the branch is being lifted off, so
-/// a comparison taken now reads the new base's commits as this phase's work. There is no
-/// drift answer worth giving about a history that is still being written.
-pub(crate) fn rewrite_in_progress(worktree_administrative_directory: &Path) -> bool {
-    [GIT_REBASE_MERGE_STATE_PATH, GIT_REBASE_APPLY_STATE_PATH]
-        .iter()
-        .any(|state_path| worktree_administrative_directory.join(state_path).exists())
 }

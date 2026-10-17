@@ -1957,6 +1957,7 @@ mod tests {
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::scan::ScanStage;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::TRUNCATION_MARK;
@@ -2004,7 +2005,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            activity: crate::census::AgentActivity::from_legacy(Some("busy")),
+            activity: AgentActivity::from(Some("busy")),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -2561,7 +2562,7 @@ mod tests {
                     ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity: AgentActivity::from(Some("idle")),
                     branch: Some("enh/arrange".to_string()),
                     directory: "~/rust/ui-arrange".to_string(),
                     children: vec![child(
@@ -2574,12 +2575,12 @@ mod tests {
                     ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity: AgentActivity::from(Some("idle")),
                     directory: "~/scratch/impl".to_string(),
                     ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
                 },
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         )
     }
 
@@ -2610,8 +2611,12 @@ mod tests {
         let reused = older_row(NOW);
         assert_eq!(first.process_started, first.started);
         assert_eq!(reused.process_started, reused.started);
-        let first = MachineState::Answered(vec![first], crate::census::HierarchyEdges::default());
-        let reused = MachineState::Answered(vec![reused], crate::census::HierarchyEdges::default());
+        let first =
+            MachineState::Answered(vec![first], crate::census::HierarchyEdges::default().into());
+        let reused = MachineState::Answered(
+            vec![reused],
+            crate::census::HierarchyEdges::default().into(),
+        );
         assert_ne!(natedev_cells(&first)[0].id, natedev_cells(&reused)[0].id);
     }
 
@@ -2619,14 +2624,16 @@ mod tests {
     fn a_resumed_claude_session_keeps_its_cell_key_when_its_age_moves_earlier() {
         let row = agent(BOSS, "resumed", HOUR, None);
         let process_started = row.process_started;
-        let classified =
-            MachineState::Answered(vec![row.clone()], crate::census::HierarchyEdges::default());
+        let classified = MachineState::Answered(
+            vec![row.clone()],
+            crate::census::HierarchyEdges::default().into(),
+        );
         let detailed = MachineState::Answered(
             vec![AgentRow {
                 started: process_started - HOUR,
                 ..row.clone()
             }],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         let classified_cells = natedev_cells(&classified);
         let detailed_cells = natedev_cells(&detailed);
@@ -2642,7 +2649,7 @@ mod tests {
                 process_started: process_started + 1,
                 ..row
             }],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         assert_ne!(classified_cells[0].id, natedev_cells(&reused_pid)[0].id);
     }
@@ -3002,11 +3009,11 @@ mod tests {
                 agent(3_600_000, "left", 30 * MINUTE, Some(3_700_000)),
                 agent(3_700_000, "right", 20 * MINUTE, Some(3_600_000)),
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         let mac = MachineState::Answered(
             vec![agent(12_055, "natemccoy-30", HOUR, None)],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         (natedev, mac)
     }
@@ -3238,14 +3245,14 @@ mod tests {
                     ..identified(7, "local unit", HOUR, None)
                 },
             ],
-            links(&[("production", "local unit")]),
+            links(&[("production", "local unit")]).into(),
         );
         let mac = MachineState::Answered(
             vec![AgentRow {
                 children: vec![child(0, ChildKind::Shell, Some(99), "remote work", MINUTE)],
                 ..identified(7, "remote unit", 2 * HOUR, None)
             }],
-            links(&[("production", "remote unit")]),
+            links(&[("production", "remote unit")]).into(),
         );
         let cells = natedev_and_mac_cells(&natedev, &mac);
         assert_eq!(cells.len(), 1);
@@ -3337,7 +3344,7 @@ mod tests {
                     ..identified(3, "worker", HOUR, Some(1))
                 },
             ],
-            links(&[("manager", "worker")]),
+            links(&[("manager", "worker")]).into(),
         );
         let cells = natedev_cells(&state);
         assert_eq!(
@@ -3383,7 +3390,8 @@ mod tests {
             thread_id: CodexThreadId::Recorded("thread-id".to_string()),
             ..child(0, ChildKind::Thread, None, "implementation worker", MINUTE)
         };
-        let natedev = MachineState::Answered(vec![identified(1, "unit", HOUR, None)], links(&[]));
+        let natedev =
+            MachineState::Answered(vec![identified(1, "unit", HOUR, None)], links(&[]).into());
         let mac = MachineState::Answered(
             vec![AgentRow {
                 agent: Agent::Codex,
@@ -3393,7 +3401,7 @@ mod tests {
                 ],
                 ..agent(1, "app-server", HOUR, None)
             }],
-            links(&[("unit", "thread-id")]),
+            links(&[("unit", "thread-id")]).into(),
         );
         let cells = natedev_and_mac_cells(&natedev, &mac);
         assert_eq!(cells.len(), 2);
@@ -3451,7 +3459,7 @@ mod tests {
                     ..agent(2, "app-server", HOUR, None)
                 },
             ],
-            links(&[("unit", "fast-id"), ("unit", "standard-id")]),
+            links(&[("unit", "fast-id"), ("unit", "standard-id")]).into(),
         );
         let cells = natedev_cells(&state);
         let manager = &cells[0];
@@ -3501,7 +3509,8 @@ mod tests {
                     member:  "nested".to_string(),
                     role:    HierarchyRole::Showrunner,
                 },
-            ]),
+            ])
+            .into(),
         );
         let cells = natedev_cells(&state);
         assert!(matches!(
@@ -3580,7 +3589,7 @@ mod tests {
                 identified(2, "launched", 2 * HOUR, Some(1)),
                 identified(3, "orphan", HOUR, Some(99)),
             ],
-            links(&[("absent", "launched"), ("absent", "orphan")]),
+            links(&[("absent", "launched"), ("absent", "orphan")]).into(),
         );
         let cells = natedev_cells(&state);
         assert_eq!(
@@ -3609,7 +3618,8 @@ mod tests {
                 ("missing", "worker"),
                 ("b", "worker"),
                 ("a", "worker"),
-            ]),
+            ])
+            .into(),
         );
         let cells = natedev_cells(&state);
         assert_eq!(cells.len(), 1);
@@ -3636,7 +3646,7 @@ mod tests {
         assert_eq!(identities, [("natedev", 1), ("natedev", 2), ("natedev", 3)]);
         let reversed = MachineState::Answered(
             state.rows().to_vec(),
-            HierarchyEdges(state.edges().iter().rev().cloned().collect()),
+            HierarchyEdges(state.edges().iter().rev().cloned().collect()).into(),
         );
         assert_eq!(
             natedev_cells(&reversed)[0]
@@ -3669,10 +3679,14 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        census.apply(CensusUpdate::Local(vec![member.clone()], links(&[])));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![member.clone()],
+            hierarchy: links(&[]).into(),
+            stage:     ScanStage::Classified,
+        });
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![manager.clone()], links(&[])),
+            state: MachineState::Answered(vec![manager.clone()], links(&[]).into()),
         });
         assert_eq!(
             roots(&census),
@@ -3681,20 +3695,26 @@ mod tests {
                 ("mac".to_string(), "production".to_string(), 0)
             ]
         );
-        census.apply(CensusUpdate::Local(
-            vec![member.clone()],
-            links(&[("production", "unit")]),
-        ));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![member.clone()],
+            hierarchy: links(&[("production", "unit")]).into(),
+            stage:     ScanStage::Classified,
+        });
         assert_eq!(
             roots(&census),
             [("mac".to_string(), "production".to_string(), 1)]
         );
-        census.apply(CensusUpdate::Local(vec![member.clone()], links(&[])));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![member.clone()],
+            hierarchy: links(&[]).into(),
+            stage:     ScanStage::Classified,
+        });
         assert_eq!(roots(&census).len(), 2);
-        census.apply(CensusUpdate::Local(
-            vec![member],
-            links(&[("production", "unit")]),
-        ));
+        census.apply(CensusUpdate::Local {
+            rows:      vec![member],
+            hierarchy: links(&[("production", "unit")]).into(),
+            stage:     ScanStage::Classified,
+        });
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
             state: MachineState::Failed("offline".to_string()),
@@ -3705,7 +3725,7 @@ mod tests {
         );
         census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
-            state: MachineState::Answered(vec![manager], links(&[])),
+            state: MachineState::Answered(vec![manager], links(&[]).into()),
         });
         assert_eq!(
             roots(&census),
@@ -3721,7 +3741,7 @@ mod tests {
                 identified(1, "launcher", 2 * HOUR, None),
                 identified(2, "launched manager", HOUR, Some(1)),
             ],
-            links(&[("launched manager", "launcher")]),
+            links(&[("launched manager", "launcher")]).into(),
         );
         let cells = natedev_cells(&state);
         assert_eq!(cells.len(), 1);

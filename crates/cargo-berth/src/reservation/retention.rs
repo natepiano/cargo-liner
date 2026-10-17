@@ -58,6 +58,8 @@ use crate::ledger::BlockedIncursionPath;
 use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
+use crate::ledger::EnteringWriteProgress;
+use crate::ledger::IncursionCoverageEvidence;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
@@ -878,27 +880,55 @@ impl RetainedReservationSet {
 
     /// Decide whether any retained incident already accounts for one entered path.
     ///
-    /// The holders are compared by containment rather than equality, matching the
-    /// other-run suppression in drift classification: an incident naming, against this
-    /// path, every holder observed against it now already covers what this observation
-    /// would report.
+    /// New evidence covers entering commits regardless of holder growth. Older incidents
+    /// retain their holder-subset rule; working-tree and unavailable-history observations
+    /// have distinct coverage states rather than pretending to have an empty commit set.
     fn incursion_path_coverage(
         incidents: &[&IncursionIncident],
         blocked: &BlockedIncursionPath,
     ) -> IncursionPathCoverage {
         let mut answered = false;
         for incident in incidents {
-            if !incident
+            let Some(recorded) = incident
                 .blocked_paths()
-                .holders_of(&blocked.path)
-                .is_some_and(|recorded| {
-                    blocked
-                        .holders
-                        .as_slice()
-                        .iter()
-                        .all(|holder| recorded.as_slice().contains(holder))
-                })
-            {
+                .as_slice()
+                .iter()
+                .find(|recorded| recorded.path == blocked.path)
+            else {
+                continue;
+            };
+            let covered = match (&recorded.coverage, &blocked.coverage) {
+                (IncursionCoverageEvidence::LegacyHolderCoverage, _) => blocked
+                    .holders
+                    .as_slice()
+                    .iter()
+                    .all(|holder| recorded.holders.as_slice().contains(holder)),
+                (
+                    IncursionCoverageEvidence::KnownEnteringCommits { commits: recorded },
+                    IncursionCoverageEvidence::KnownEnteringCommits { commits: observed },
+                ) => observed
+                    .as_slice()
+                    .iter()
+                    .all(|commit| recorded.as_slice().contains(commit)),
+                (
+                    IncursionCoverageEvidence::WorkingTreeWrites,
+                    IncursionCoverageEvidence::KnownEnteringCommits { commits },
+                ) => matches!(
+                    commits.write_progress(),
+                    EnteringWriteProgress::InitialWriteCommitted
+                ),
+                (
+                    IncursionCoverageEvidence::KnownEnteringCommits { .. }
+                    | IncursionCoverageEvidence::WorkingTreeWrites,
+                    IncursionCoverageEvidence::WorkingTreeWrites,
+                )
+                | (
+                    IncursionCoverageEvidence::HistoryUnavailable,
+                    IncursionCoverageEvidence::HistoryUnavailable,
+                ) => true,
+                _ => false,
+            };
+            if !covered {
                 continue;
             }
             match incident.status() {
@@ -2072,6 +2102,7 @@ mod tests {
     use crate::ledger::BlockedIncursionPath;
     use crate::ledger::BlockedIncursionPathSet;
     use crate::ledger::ForeignReservationIdSet;
+    use crate::ledger::IncursionCoverageEvidence;
     use crate::ledger::IncursionIncidentId;
     use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
@@ -3716,8 +3747,9 @@ mod tests {
             (0..64)
                 .map(|index| {
                     Ok(BlockedIncursionPath {
-                        path:    format!("entered/file-{:03}.rs", 599 - index).parse()?,
-                        holders: holders.clone(),
+                        path:     format!("entered/file-{:03}.rs", 599 - index).parse()?,
+                        holders:  holders.clone(),
+                        coverage: IncursionCoverageEvidence::LegacyHolderCoverage,
                     })
                 })
                 .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,
@@ -3817,6 +3849,48 @@ mod tests {
             ),
             "the straying edit stays on disk, so a fresh incident could never be cleared"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_working_tree_answer_covers_its_first_commit_but_not_a_further_commit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, ..] = lifecycle_events()?;
+        let incursion = journal_event(
+            2,
+            &json!({
+                "op": "incursion", "incident_id": INCIDENT_ID,
+                "reservation_id": RESERVATION_ID,
+                "blocked_paths": [{"path": "src/lib.rs", "holders": [FOREIGN_RESERVATION_ID],
+                    "coverage": {"kind": "working_tree_writes"}}],
+            }),
+        )?;
+        let resolution = journal_event(
+            3,
+            &json!({"op": "resolve_incursion", "incident_id": INCIDENT_ID}),
+        )?;
+        let answered = RetainedReservationSet::replay(&[claim, incursion, resolution])?;
+        let incident = answered.incursion_incident(INCIDENT_ID.parse()?)?;
+        let mut path = incident.blocked_paths().as_slice()[0].clone();
+        let first = "1111111111111111111111111111111111111111".parse::<GitObjectId>()?;
+        let second = "2222222222222222222222222222222222222222".parse::<GitObjectId>()?;
+        path.coverage = IncursionCoverageEvidence::KnownEnteringCommits {
+            commits: vec![first.clone()].try_into()?,
+        };
+        let first_observation = vec![path.clone()].try_into()?;
+        assert!(matches!(
+            answered.observe_incursion(answered.reservation(reservation_id)?, &first_observation),
+            IncursionObservation::AlreadyAnswered
+        ));
+        path.coverage = IncursionCoverageEvidence::KnownEnteringCommits {
+            commits: vec![first, second].try_into()?,
+        };
+        let further_observation = vec![path].try_into()?;
+        assert!(matches!(
+            answered.observe_incursion(answered.reservation(reservation_id)?, &further_observation),
+            IncursionObservation::NewlyObserved { .. }
+        ));
         Ok(())
     }
 
@@ -4151,8 +4225,9 @@ mod tests {
                 .iter()
                 .map(|(path, holders)| {
                     Ok(BlockedIncursionPath {
-                        path:    path.parse::<ReservationScopePath>()?,
-                        holders: (*holders).clone(),
+                        path:     path.parse::<ReservationScopePath>()?,
+                        holders:  (*holders).clone(),
+                        coverage: IncursionCoverageEvidence::LegacyHolderCoverage,
                     })
                 })
                 .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,

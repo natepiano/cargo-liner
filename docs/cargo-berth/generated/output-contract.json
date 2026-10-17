@@ -4811,6 +4811,16 @@
           ],
           "type": "object"
         },
+        "OrderingEdgeHold": {
+          "description": "The wire discriminator of a waiting declared edge.",
+          "oneOf": [
+            {
+              "const": "ordering_edge",
+              "description": "A declared predecessor/successor constraint.",
+              "type": "string"
+            }
+          ]
+        },
         "OrderingOverlapScopeSet": {
           "$ref": "#/$defs/ReservationScopeSet",
           "description": "A validated non-empty set of paths covered by one ordering edge."
@@ -5252,6 +5262,9 @@
                 "direction": {
                   "$ref": "#/$defs/OrderingDirection"
                 },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
                 },
@@ -5268,6 +5281,7 @@
               },
               "required": [
                 "answer",
+                "edge_id",
                 "reservation_id",
                 "blocker",
                 "direction",
@@ -5725,6 +5739,59 @@
             }
           ]
         },
+        "ReservationOrderingEdge": {
+          "anyOf": [
+            {
+              "description": "An edge that holds its live successor.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "$ref": "#/$defs/OrderingEdgeHold"
+                },
+                "predecessor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/EdgeDeclaration"
+                },
+                "reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet"
+                },
+                "successor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "hold",
+                "edge_id",
+                "predecessor",
+                "successor",
+                "scopes",
+                "reason",
+                "action",
+                "provenance",
+                "declaration_event_id"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SettledOrderingConstraint",
+              "description": "An edge whose integration constraint has ended."
+            }
+          ],
+          "description": "One declared edge, in the same waiting or settled shape as the full board."
+        },
         "ReservationPurpose": {
           "description": "Whether the caller supplied an explanation for the protected work.",
           "oneOf": [
@@ -5772,6 +5839,20 @@
               "$ref": "#/$defs/effective_merge_extent",
               "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
+            "ordering_edges": {
+              "description": "Declared ordering edges naming either endpoint, waiting or settled.",
+              "items": {
+                "$ref": "#/$defs/ReservationOrderingEdge"
+              },
+              "type": "array"
+            },
+            "overlap_answers": {
+              "description": "Every live overlap answer naming this reservation.",
+              "items": {
+                "$ref": "#/$defs/RecordedOverlapAnswer"
+              },
+              "type": "array"
+            },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
               "description": "The run's effective editing scope, independent of branch integration."
@@ -5785,7 +5866,9 @@
             "reservation_id",
             "lifecycle",
             "race_extent",
-            "merge_extent"
+            "merge_extent",
+            "ordering_edges",
+            "overlap_answers"
           ],
           "type": "object"
         },
@@ -13030,6 +13113,16 @@
           ],
           "type": "object"
         },
+        "OrderingEdgeHold": {
+          "description": "The wire discriminator of a waiting declared edge.",
+          "oneOf": [
+            {
+              "const": "ordering_edge",
+              "description": "A declared predecessor/successor constraint.",
+              "type": "string"
+            }
+          ]
+        },
         "OrderingOverlapScopeSet": {
           "$ref": "#/$defs/ReservationScopeSet",
           "description": "A validated non-empty set of paths covered by one ordering edge."
@@ -13393,6 +13486,9 @@
                 "direction": {
                   "$ref": "#/$defs/OrderingDirection"
                 },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
                 },
@@ -13409,6 +13505,7 @@
               },
               "required": [
                 "answer",
+                "edge_id",
                 "reservation_id",
                 "blocker",
                 "direction",
@@ -13866,6 +13963,59 @@
             }
           ]
         },
+        "ReservationOrderingEdge": {
+          "anyOf": [
+            {
+              "description": "An edge that holds its live successor.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "$ref": "#/$defs/OrderingEdgeHold"
+                },
+                "predecessor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/EdgeDeclaration"
+                },
+                "reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet"
+                },
+                "successor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "hold",
+                "edge_id",
+                "predecessor",
+                "successor",
+                "scopes",
+                "reason",
+                "action",
+                "provenance",
+                "declaration_event_id"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SettledOrderingConstraint",
+              "description": "An edge whose integration constraint has ended."
+            }
+          ],
+          "description": "One declared edge, in the same waiting or settled shape as the full board."
+        },
         "ReservationPurpose": {
           "description": "Whether the caller supplied an explanation for the protected work.",
           "oneOf": [
@@ -13913,6 +14063,20 @@
               "$ref": "#/$defs/effective_merge_extent",
               "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
+            "ordering_edges": {
+              "description": "Declared ordering edges naming either endpoint, waiting or settled.",
+              "items": {
+                "$ref": "#/$defs/ReservationOrderingEdge"
+              },
+              "type": "array"
+            },
+            "overlap_answers": {
+              "description": "Every live overlap answer naming this reservation.",
+              "items": {
+                "$ref": "#/$defs/RecordedOverlapAnswer"
+              },
+              "type": "array"
+            },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
               "description": "The run's effective editing scope, independent of branch integration."
@@ -13926,7 +14090,9 @@
             "reservation_id",
             "lifecycle",
             "race_extent",
-            "merge_extent"
+            "merge_extent",
+            "ordering_edges",
+            "overlap_answers"
           ],
           "type": "object"
         },
@@ -18210,6 +18376,177 @@
     },
     "reservation_lifecycle_query": {
       "$defs": {
+        "AnswerAcquisition": {
+          "oneOf": [
+            {
+              "properties": {
+                "origin": {
+                  "const": "claim",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A claim recorded an answer on this reservation without widening it.",
+              "properties": {
+                "origin": {
+                  "const": "answer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "origin": {
+                  "const": "enrollment",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "added_scopes": {
+                  "items": {
+                    "$ref": "#/$defs/ReservationScope"
+                  },
+                  "type": "array"
+                },
+                "cause": {
+                  "$ref": "#/$defs/WidenCause"
+                },
+                "edit_blocking_status": {
+                  "$ref": "#/$defs/EditBlockingStatus"
+                },
+                "origin": {
+                  "const": "widen",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin",
+                "added_scopes",
+                "cause",
+                "edit_blocking_status"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "AuthorizedOverlap": {
+          "description": "One exact holder and scope revision covered by an authorization.",
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The existing holder named by the authorization."
+            },
+            "scope_revision": {
+              "$ref": "#/$defs/OverlapScopeRevision",
+              "description": "The holder's scope-only revision when the authorization was shown."
+            },
+            "scopes": {
+              "$ref": "#/$defs/AuthorizedOverlapScopeSet",
+              "description": "The normalized overlap scopes that this answer covers."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "scope_revision",
+            "scopes"
+          ],
+          "type": "object"
+        },
+        "AuthorizedOverlapScopeSet": {
+          "$ref": "#/$defs/ReservationScopeSet",
+          "description": "The non-empty normalized scopes covered for one holder."
+        },
+        "AuthorizedOverlapSet": {
+          "description": "A non-empty set of holder-specific overlap bindings.",
+          "items": {
+            "$ref": "#/$defs/AuthorizedOverlap"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "DeferralConsequence": {
+          "description": "Which integrations one unresolved deferral holds until `sequence` orders the pair.",
+          "oneOf": [
+            {
+              "const": "both_integrations_held_until_sequence",
+              "description": "Neither side is released, so both integrations are held.",
+              "type": "string"
+            },
+            {
+              "const": "deferred_integration_held_until_sequence",
+              "description": "The blocker is released, so only the deferred side's integration is held.",
+              "type": "string"
+            },
+            {
+              "const": "blocker_integration_held_until_sequence",
+              "description": "The deferred side is released, so only the blocker's integration is held.",
+              "type": "string"
+            }
+          ]
+        },
+        "EdgeDeclaration": {
+          "description": "Whether an edge was born with an acquisition, resolved a prior deferral, or ordered a pair.",
+          "oneOf": [
+            {
+              "const": "acquisition",
+              "description": "A claim or widen carried the ordering decision itself.",
+              "type": "string"
+            },
+            {
+              "const": "deferred_resolution",
+              "description": "A later `sequence` operation converted a deferral into an order.",
+              "type": "string"
+            },
+            {
+              "const": "sequence",
+              "description": "A later `sequence` operation ordered two live reservations that no pending deferral\njoined.",
+              "type": "string"
+            }
+          ]
+        },
+        "EdgeSettlement": {
+          "enum": [
+            "cancelled_constraint_ended",
+            "fulfilled_successor_contains_predecessor",
+            "successor_no_longer_active"
+          ],
+          "type": "string"
+        },
+        "EditBlockingStatus": {
+          "description": "The effective edit decision derived from reservation lifecycle and integration evidence.",
+          "oneOf": [
+            {
+              "const": "blocking",
+              "description": "The reservation still blocks foreign edits.",
+              "type": "string"
+            },
+            {
+              "const": "clear",
+              "description": "The reservation is released or its outstanding evidence permits foreign edits.",
+              "type": "string"
+            }
+          ]
+        },
+        "ExplicitWidenReason": {
+          "description": "A non-empty explanation for one explicit reservation widening.",
+          "minLength": 1,
+          "type": "string"
+        },
         "HolderMergeExtentCoverage": {
           "description": "Whether a cached extent covers the holder or depends on sibling shares.",
           "oneOf": [
@@ -18362,6 +18699,114 @@
           ],
           "type": "object"
         },
+        "OrderingConsequence": {
+          "oneOf": [
+            {
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "state": {
+                  "const": "holding",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "cancelled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "fulfilled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A later `--replace` answer retired this edge and ordered the same holder the other way.",
+              "properties": {
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation whose answer retired the edge."
+                },
+                "state": {
+                  "const": "replaced",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reservation_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "OrderingDirection": {
+          "description": "The ordering direction selected for two conflicting reservations.",
+          "oneOf": [
+            {
+              "const": "requester_before_holder",
+              "description": "The requesting reservation must integrate before the holder.",
+              "type": "string"
+            },
+            {
+              "const": "holder_before_requester",
+              "description": "The holder must integrate before the requesting reservation.",
+              "type": "string"
+            }
+          ]
+        },
+        "OrderingEdgeHold": {
+          "description": "The wire discriminator of a waiting declared edge.",
+          "oneOf": [
+            {
+              "const": "ordering_edge",
+              "description": "A declared predecessor/successor constraint.",
+              "type": "string"
+            }
+          ]
+        },
+        "OrderingReason": {
+          "description": "Why one reservation was declared to precede another.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "OverlapAuthorizationReason": {
+          "description": "Why the caller chose one specific overlap answer.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "OverlapScopeRevision": {
+          "description": "A deterministic revision that changes only when a reservation's scopes change.\n\nThe revision is the SHA-256 digest of the canonically ordered scopes, so a record naming a\nholder's revision stays the same size however many scopes that holder protects.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "OverrideConsequence": {
+          "enum": [
+            "editing_authorized_without_integration_order"
+          ],
+          "type": "string"
+        },
         "RaceExtent": {
           "description": "The effective editing scope, whose lifetime follows checkpoint and release.",
           "oneOf": [
@@ -18398,6 +18843,265 @@
             }
           ]
         },
+        "RecordedOverlapAnswer": {
+          "description": "One durable answer to an overlap with another reservation's scopes.\n\nA widen that overlaps no foreign reservation, or whose overlaps earlier answers already cover,\nanswers nothing: it is scope growth, kept in the journal and never listed here.",
+          "oneOf": [
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
+                  "const": "enrollment",
+                  "type": "string"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/DeferralConsequence"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "reservation_id",
+                "exact_approved_scopes",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
+                  "const": "sequence",
+                  "type": "string"
+                },
+                "authorization_reason": {
+                  "$ref": "#/$defs/OverlapAuthorizationReason"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/OrderingConsequence"
+                },
+                "direction": {
+                  "$ref": "#/$defs/OrderingDirection"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "replaced": {
+                  "description": "The earlier edges to `blocker` this answer's `--replace` retired; empty without it.",
+                  "items": {
+                    "$ref": "#/$defs/contradicted_ordering"
+                  },
+                  "type": "array"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "edge_id",
+                "reservation_id",
+                "blocker",
+                "direction",
+                "exact_approved_scopes",
+                "authorization_reason",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
+                  "const": "defer",
+                  "type": "string"
+                },
+                "authorization_reason": {
+                  "$ref": "#/$defs/OverlapAuthorizationReason"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/DeferralConsequence"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "reservation_id",
+                "blocker",
+                "exact_approved_scopes",
+                "authorization_reason",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
+                  "const": "override",
+                  "type": "string"
+                },
+                "authorization_reason": {
+                  "$ref": "#/$defs/OverlapAuthorizationReason"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/OverrideConsequence"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "reservation_id",
+                "blocker",
+                "exact_approved_scopes",
+                "authorization_reason",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "answer": {
+                  "const": "ordering_created_from_deferral",
+                  "type": "string"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/OrderingConsequence"
+                },
+                "deferral_reasons": {
+                  "items": {
+                    "$ref": "#/$defs/OverlapAuthorizationReason"
+                  },
+                  "type": "array"
+                },
+                "deferred": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "direction": {
+                  "$ref": "#/$defs/OrderingDirection"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "exact_approved_scopes": {
+                  "items": {
+                    "$ref": "#/$defs/AuthorizedOverlap"
+                  },
+                  "type": "array"
+                },
+                "ordering_reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                }
+              },
+              "required": [
+                "answer",
+                "edge_id",
+                "deferred",
+                "blocker",
+                "direction",
+                "exact_approved_scopes",
+                "deferral_reasons",
+                "ordering_reason",
+                "consequence"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ReservationOrderingEdge": {
+          "anyOf": [
+            {
+              "description": "An edge that holds its live successor.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "$ref": "#/$defs/OrderingEdgeHold"
+                },
+                "predecessor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/EdgeDeclaration"
+                },
+                "reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet"
+                },
+                "successor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "hold",
+                "edge_id",
+                "predecessor",
+                "successor",
+                "scopes",
+                "reason",
+                "action",
+                "provenance",
+                "declaration_event_id"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SettledOrderingConstraint",
+              "description": "An edge whose integration constraint has ended."
+            }
+          ],
+          "description": "One declared edge, in the same waiting or settled shape as the full board."
+        },
         "ReservationReportSnapshot": {
           "description": "One reservation's lifecycle and protection, independent of its board placement.",
           "properties": {
@@ -18408,6 +19112,20 @@
             "merge_extent": {
               "$ref": "#/$defs/effective_merge_extent",
               "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
+            },
+            "ordering_edges": {
+              "description": "Declared ordering edges naming either endpoint, waiting or settled.",
+              "items": {
+                "$ref": "#/$defs/ReservationOrderingEdge"
+              },
+              "type": "array"
+            },
+            "overlap_answers": {
+              "description": "Every live overlap answer naming this reservation.",
+              "items": {
+                "$ref": "#/$defs/RecordedOverlapAnswer"
+              },
+              "type": "array"
             },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
@@ -18422,7 +19140,9 @@
             "reservation_id",
             "lifecycle",
             "race_extent",
-            "merge_extent"
+            "merge_extent",
+            "ordering_edges",
+            "overlap_answers"
           ],
           "type": "object"
         },
@@ -18540,6 +19260,169 @@
             }
           ]
         },
+        "SettledOrderingConstraint": {
+          "properties": {
+            "declaration_event_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "edge_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "predecessor": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "provenance": {
+              "$ref": "#/$defs/EdgeDeclaration"
+            },
+            "reason": {
+              "$ref": "#/$defs/OrderingReason"
+            },
+            "scopes": {
+              "$ref": "#/$defs/ReservationScopeSet"
+            },
+            "settlement": {
+              "$ref": "#/$defs/EdgeSettlement"
+            },
+            "successor": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            }
+          },
+          "required": [
+            "edge_id",
+            "predecessor",
+            "successor",
+            "scopes",
+            "reason",
+            "settlement",
+            "provenance",
+            "declaration_event_id"
+          ],
+          "type": "object"
+        },
+        "WaitingAction": {
+          "oneOf": [
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "predecessor_checkpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "predecessor_not_integrated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "trunk_evidence_rewritten",
+                  "type": "string"
+                },
+                "resolve_flag": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction",
+                "resolve_flag"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "predecessor_object_unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "successor_must_incorporate_predecessor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "WidenCause": {
+          "description": "Why an existing reservation received more scopes.",
+          "oneOf": [
+            {
+              "description": "Reconciliation observed paths not covered by the claim.",
+              "properties": {
+                "kind": {
+                  "const": "drift",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The caller deliberately expanded the reservation.",
+              "properties": {
+                "kind": {
+                  "const": "explicit",
+                  "type": "string"
+                },
+                "reason": {
+                  "$ref": "#/$defs/ExplicitWidenReason",
+                  "description": "The caller's explanation."
+                }
+              },
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "WorkingTreeFingerprint": {
           "description": "The modified path sets shared by drift comparison and merge-extent cache keys.",
           "properties": {
@@ -18561,6 +19444,29 @@
           "required": [
             "tracked_paths",
             "untracked_paths"
+          ],
+          "type": "object"
+        },
+        "contradicted_ordering": {
+          "description": "One live ordering edge between a holder a sequence answer named and a nonterminal reservation\nof the claimant's own coordination run and worktree, pointing the opposite way to that answer.\n\nA claim without `--replace` is refused with these in its payload; a claim with it records them\nas `replaced`, and replay retires each `edge_id` before adding the claim's own edges.",
+          "properties": {
+            "edge_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The live edge the new answer contradicts."
+            },
+            "holder": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The holder the new answer named, at one endpoint of the edge."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The claimant's earlier reservation at the other endpoint of the edge."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "edge_id",
+            "holder"
           ],
           "type": "object"
         },

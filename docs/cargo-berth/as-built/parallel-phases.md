@@ -6,6 +6,12 @@ Two or more phase reservations (harness sessions `<sid>.phase-N` in one coordina
 
 ## How it works
 
+### Incursions across phase history
+
+A phase's committed range can contain work merged from its integration target. Incursion authorship excludes commits reachable from the local target or its upstream ref already available locally; no fetch occurs. An absent upstream or unavailable upstream object falls back to the local target alone. Committed-only paths carried entirely by those commits raise no incursion. History is also read for paths that are both committed and dirty, while present working-tree writes still count as writes. This authorship filter leaves the local branch used for release and integration judgments unchanged.
+
+Each incident records coverage evidence per entered path. Known entering commits form a non-empty set: once answered, the same commits stay answered as holders or sibling reservations join, and only a new entering commit reopens that path. Working-tree writes and unavailable history have distinct evidence variants. A working-tree answer covers the first commit recording the answered write; two or more entering commits reopen the path. Records from either earlier journal layout retain their holder-subset coverage rule. Coverage is shared only by reservations of the same run and worktree, so `resolve --every-incursion` answers the run's recorded backlog for the next hook check too.
+
 ### Each reservation's share of the worktree observation (`crates/cargo-berth/src/reconcile.rs`)
 
 - `derive_merge_extents` calls `derive_merge_extents_with_observer`, whose observer can be swapped out in unit tests. `observe_holder_merge_extents` observes once per holder key `(WorktreeId, IntegrationTarget)`, using the first unreleased reservation it finds for that key. All keys are observed at the same time under `std::thread::scope`.
@@ -105,7 +111,8 @@ On both checkpoint variants, `message_with_session_mapping_publication` appends 
   - Session labels and paths are passed through `escape_debug`.
 - `overview_short_id` keeps the last `-`-separated group of the identity before any `.phase-` suffix, then appends the suffix. For example, `…-123.phase-2` becomes `123.phase-2`.
 - `overview_reservation_table(model)` collects rows from `ready_now`, `waiting` and `unconstrained_reservations`, drops `BoardReservationVisibility::ResolvedAudit` (terminal) rows, then sorts and dedups by id, so a waiting reservation with several holds appears once. Columns are padded by Unicode width under the title "Reservations". An empty table gets a "no reservations" row.
-- `BoardPaneDocuments::from_model` puts the table at the top of the Overview pane text, followed by a blank line and the `OVERVIEW_FIELDS` JSON. The Reservations pane, `board --json` and the no-TTY pointer are unchanged.
+- `BoardPaneDocuments::from_model` makes the Reservations table the entire Overview document. It removes `journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, and `git_cost` by name before assigning the remaining fields to panes, and removes each section's nested `journal_position`. Unassigned fields still fail document construction; `board --json` retains every field.
+- `event_loop` polls events until a monotonic one-second deadline and checks that deadline even under sustained input. `ReconciledBoardSource` owns the invocation directory; its position read uses `Ledger::current_journal_position` without reconciliation. Only a changed journal rebuilds through reconciliation and `BoardModel::build`. The application publishes documents and their position together after a successful rebuild, preserving pane selection and clamping each pane's scroll offsets when it is drawn. A failure keeps the last good board and position, displays the failure in the status line, and retries at the next check.
 
 ## Invariants
 
@@ -137,6 +144,13 @@ Key end-to-end tests:
 - `src/board/tui.rs` unit tests:
   - `overview_distinguishes_sibling_phase_sessions_in_one_run`
   - `overview_phase_session_and_alias_leave_race_paths_visible_at_100_columns`
+  - `refresh_renders_a_new_reservation_in_overview_and_reservations`
+  - `pane_documents_omit_raw_diagnostics_and_nested_positions`
+  - `every_model_fact_is_reachable_through_exact_pane_documents`
+  - `failed_refresh_keeps_rows_and_position_and_retries`
+  - `refresh_preserves_pane_selection_and_clamps_every_scroll_offset`
+  - `unchanged_journal_position_skips_model_reconciliation`
+  - `sustained_input_refreshes_at_the_monotonic_deadline`
 
 ## Calibration / gotchas
 
@@ -148,8 +162,8 @@ Key end-to-end tests:
 - **With siblings, expect several `HolderMergeExtentObserved` records per holder per pass**, one per distinct changed share.
 - **A checkout-less orphan never settles on its own.** With no checkout its extent is `Unavailable`, so the journal's judgment is `ObjectUnknown` and it stays outstanding until `resolve`, even when its work reached trunk. Its repository snapshot keeps the committed-work proof, so the board row's `integration_evidence` reads `integrated` when the work is in trunk, while `lifecycle.stage` stays `outstanding`, the extent reads `unavailable`, and a repeated `release` answers `evidence_revalidated` with the `orphaned_outstanding` alert (`release_retains_an_orphan_without_a_fresh_merge_extent` in `tests/liveness.rs`). Landed work suggests `VerifyResolvedTrunk`; work not shown to have landed keeps the unproven alert.
 - **Session column fallbacks.** A board deserialized from JSON has no session identity and shows `unavailable`. A failed session-store read shows `run <short>`.
-- **The raw Overview metadata JSON still appears below the table** (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`; `BoardPaneDocuments::from_model`). The TUI draws one model and never rebuilds it (`event_loop`), so reservations created after the board opens do not appear.
-- **The Overview table must contain no blank line.** The test helper `reassembled_model_value` recovers the JSON by splitting the Overview text at the first `"\n\n"`.
+- **Raw diagnostics belong to `board --json`.** The Overview is only a table; `reassembled_model_value` reconstructs the other model fields directly from the five JSON pane documents, without splitting Overview text.
+- **An unchanged journal does not refresh repository observations.** The live terminal checks a journal movement stamp (`JournalPosition`) rather than reconciling on every tick. A failed rebuild retains the old position so the next check retries.
 - **Ruled out: an empty `pending_paths` list for an unavailable extent.** It would read as nothing pending; `CheckpointedPendingPathsUnavailable` and `ResnapshottedPendingPathsUnavailable` exist instead.
 
 ## Why

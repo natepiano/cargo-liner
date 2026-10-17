@@ -1,3 +1,8 @@
+---
+tier: D
+family: modules
+mechanism: llm
+---
 # Frontend Boundaries
 
 The repo is split into two crates:

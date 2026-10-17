@@ -405,6 +405,17 @@ constraints**, **Answers and bypasses**, **Incursions**, and **Alerts**. Press
 `q` to quit, `Tab` or `Shift-Tab` to move between panes, arrows to scroll or pan,
 `Home`/`End` to jump, and `PageUp`/`PageDown` to page.
 
+The terminal checks the journal once a second, including while keys or resize
+events arrive. A changed journal triggers reconciliation and refreshes every
+pane, so new reservations appear without reopening the board. Selection and
+scroll positions survive a refresh, clamped to the new content. A failed refresh
+keeps the last good board, shows the error in the status line, and retries on the
+next check.
+
+Overview contains only the Reservations table. Raw diagnostics, including
+journal positions, recovered bypasses, integration order, targets, and Git cost,
+remain available through `board --json`; they are omitted from terminal panes.
+
 If the terminal fails before its first frame, the command exits 0 and its
 envelope still carries the board with a terminal diagnostic; rerun with
 `--json`. If it fails after a frame was visible, it prints no facts and exits 7;

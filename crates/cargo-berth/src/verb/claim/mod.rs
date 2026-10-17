@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
+use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
 use crate::answer::DeferAnswerRequest;
@@ -63,7 +64,6 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
-use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
@@ -1151,6 +1151,10 @@ fn first_touch_execution_from_outcome(
         LedgerCommittedActionOutcome::Appended {
             output,
             session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
+            output,
+            session_mapping_publication,
         } => Ok(first_touch_acquired_execution(
             output,
             coordination_run_id,
@@ -1380,9 +1384,6 @@ fn claim_rejection_execution(
         },
         ClaimRejection::Replay(error) => Err(ClaimError::ReservationReplay(error)),
         ClaimRejection::EdgeReplay(error) => Err(ClaimError::EdgeReplay(error)),
-        ClaimRejection::DuplicateOrdering { before, after } => {
-            Err(ClaimError::DuplicateOrdering { before, after })
-        },
         ClaimRejection::CoordinationIdentity(rejection) => {
             Err(ClaimError::CoordinationIdentity(rejection))
         },
@@ -1648,6 +1649,7 @@ fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedRes
                 | ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
                 | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
             })
             .collect(),
@@ -2333,30 +2335,46 @@ fn bind_claim_authorization(
             ),
         )));
     }
-    if let (
-        ClaimReservationSelection::Existing(requester),
-        PermissiveOverlapAnswer::Sequence { blockers, .. },
-    ) = (ordering_context.reservation_selection, &answer)
-        && let Some(blocker) = blockers.iter().find(|blocker| {
-            ordering_context
-                .ordering_graph
-                .contains_sequence(requester, **blocker)
-        })
-    {
-        let (before, after) = match blocker.direction {
-            OrderingDirection::RequesterBeforeHolder => (requester, blocker.blocker),
-            OrderingDirection::HolderBeforeRequester => (blocker.blocker, requester),
-        };
-        return Err(ClaimRejection::DuplicateOrdering { before, after });
-    }
     let replaced = replaced_orderings(&answer, ordering_context)?;
-    if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
+    let authorization = match (ordering_context.reservation_selection, &answer) {
+        (
+            ClaimReservationSelection::Existing(requester),
+            PermissiveOverlapAnswer::Sequence { blockers, .. },
+        ) => ConflictAuthorization::sequence_with_bindings(
+            overlaps,
+            blockers
+                .iter()
+                .map(|blocker| {
+                    ordering_context
+                        .ordering_graph
+                        .bind_claim_sequence(requester, *blocker, &reason)
+                })
+                .collect(),
+            reason,
+            replaced,
+        ),
+        _ => ConflictAuthorization::answered(&answer, overlaps, reason, replaced),
+    };
+    let new_edge_count = match &authorization {
+        ConflictAuthorization::Sequence { .. } => 1,
+        ConflictAuthorization::SequencePerHolder { holders, .. } => holders.len(),
+        ConflictAuthorization::SequenceWithExistingEdges { holders, .. } => holders
+            .iter()
+            .filter(|binding| matches!(binding, ClaimSequenceBinding::NewEdge { .. }))
+            .count(),
+        ConflictAuthorization::NoConflict
+        | ConflictAuthorization::Enrollment { .. }
+        | ConflictAuthorization::Defer { .. }
+        | ConflictAuthorization::Override { .. }
+        | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => 0,
+    };
+    if new_edge_count != 0
         && additions_exceed_limit(
             ordering_context
                 .ordering_graph
                 .edge_count()
-                .saturating_sub(replaced.len()),
-            conflicts.len(),
+                .saturating_sub(authorization.replaced().len()),
+            new_edge_count,
             maximum_ordering_edges,
         )
     {
@@ -2364,9 +2382,7 @@ fn bind_claim_authorization(
             maximum_ordering_edges,
         ));
     }
-    Ok(ConflictAuthorization::answered(
-        &answer, overlaps, reason, replaced,
-    ))
+    Ok(authorization)
 }
 
 /// The locked facts a sequence answer is checked against for contradicted live edges.
@@ -2866,10 +2882,6 @@ enum ClaimRejection {
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
     EdgeReplay(EdgeReplayError),
-    DuplicateOrdering {
-        before: ReservationId,
-        after:  ReservationId,
-    },
 }
 
 #[derive(Debug)]
@@ -2884,10 +2896,6 @@ pub(crate) enum ClaimError {
     Transaction(LedgerTransactionError),
     ReservationReplay(ReservationReplayError),
     EdgeReplay(EdgeReplayError),
-    DuplicateOrdering {
-        before: ReservationId,
-        after:  ReservationId,
-    },
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidGitObjectId(InvalidGitObjectId),
     InvalidHeadReference,
@@ -2921,12 +2929,6 @@ impl Display for ClaimError {
                 write!(formatter, "reservation replay failed: {error}")
             },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
-            Self::DuplicateOrdering { before, after } => {
-                write!(
-                    formatter,
-                    "Ordering edge {before} before {after} already exists."
-                )
-            },
             Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
             Self::InvalidHeadReference => {
@@ -2981,9 +2983,6 @@ impl ClaimError {
             },
             Self::InvalidRepositoryTrunk(error) => {
                 OutputEnvelope::invalid_input(command_verb, &error)
-            },
-            Self::DuplicateOrdering { before, after } => {
-                OutputEnvelope::claim_duplicate_ordering(before, after)
             },
             Self::Transaction(error) => match error {
                 LedgerTransactionError::CorrectableInput(error) => {

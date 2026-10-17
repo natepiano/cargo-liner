@@ -70,7 +70,7 @@ pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
             status: Some(0),
             stdout,
         } => probe::parse_report(&stdout).map_or_else(MachineState::Failed, |(rows, edges)| {
-            MachineState::Answered(rows, edges)
+            MachineState::Answered(rows, edges.into())
         }),
         ProbeOutcome::Finished {
             status: Some(SSH_UNREACHABLE_STATUS),
@@ -214,6 +214,7 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
+    use crate::census::AgentActivity;
     use crate::census::AgentRow;
     use crate::census::ServiceTier;
     use crate::constants::UNREADABLE_PROBE_REASON;
@@ -242,7 +243,7 @@ mod tests {
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
                     name:            "natemccoy-30".to_string(),
-                    activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
+                    activity:        AgentActivity::from(Some("idle")),
                     started:         5,
                     process_started: 5,
                     pid:             80_020,
@@ -252,7 +253,7 @@ mod tests {
                     launched_by:     None,
                     children:        Vec::new(),
                 }],
-                crate::census::HierarchyEdges::default()
+                crate::census::HierarchyEdges::default().into()
             )
         );
         assert_eq!(

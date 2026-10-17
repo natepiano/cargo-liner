@@ -40,14 +40,14 @@ use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::RepositorySnapshot;
-use crate::git;
+use crate::git::WorktreeOperation;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::ReservationScopeSet;
@@ -484,12 +484,12 @@ fn validated_drift_identity(
 /// Whether this run can compare the current worktree now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorktreeComparability {
-    /// The worktree has an identity and git is not rewriting it.
+    /// The worktree has an identity and Git has no pending operation.
     Comparable(WorktreeId),
     /// No identity has been recorded yet for the worktree.
     IdentityNotRecorded,
-    /// Git is still replaying commits, so comparison waits for the final reference move.
-    DeferredPendingRewrite,
+    /// Git has a pending operation, so its intermediate changes are not lane work.
+    DeferredPendingOperation,
 }
 
 /// Whether drift should observe the worktree or return its completed no-change report.
@@ -503,10 +503,10 @@ enum WorktreeComparisonReadiness {
 /// Determine whether this run can compare the current worktree now.
 ///
 /// A post-commit run stands aside for a worktree with no recorded identity, and every run
-/// stands aside while git is still replaying commits onto a moved base: git runs
-/// `post-commit` for each replayed commit, and nothing re-anchors the phase until the
-/// branch reference moves at the end, so a comparison taken now reads the new base's
-/// commits as this phase's work and acquires the paths they touch.
+/// stands aside while Git records a rebase, merge, cherry-pick, or revert in progress.
+/// Their intermediate paths and history are not this phase's edits. This decision
+/// precedes fingerprint observation and committed-path attribution, including upstream
+/// lookup, so none of those reads can acquire or accuse paths from a pending operation.
 fn comparable_worktree(
     worktree_context: &WorktreeContext,
     request: &DriftRequest,
@@ -524,10 +524,15 @@ fn comparable_worktree(
             },
             Err(error) => return Err(error.into()),
         };
-    if git::rewrite_in_progress(worktree_context.administrative_directory()) {
-        return Ok(WorktreeComparability::DeferredPendingRewrite);
-    }
-    Ok(WorktreeComparability::Comparable(worktree_id))
+    Ok(
+        match WorktreeOperation::observe(worktree_context.administrative_directory()) {
+            WorktreeOperation::Idle => WorktreeComparability::Comparable(worktree_id),
+            WorktreeOperation::Rebase
+            | WorktreeOperation::Merge
+            | WorktreeOperation::CherryPick
+            | WorktreeOperation::Revert => WorktreeComparability::DeferredPendingOperation,
+        },
+    )
 }
 
 /// Convert worktree comparability into either observation readiness or a final report.
@@ -540,7 +545,7 @@ fn prepare_worktree_comparison(
             WorktreeComparisonReadiness::Ready(worktree_id)
         },
         WorktreeComparability::IdentityNotRecorded
-        | WorktreeComparability::DeferredPendingRewrite => {
+        | WorktreeComparability::DeferredPendingOperation => {
             WorktreeComparisonReadiness::CompletedUnchanged(Box::new(DriftReport::unchanged(
                 comparison.report_mode(),
                 &[],
@@ -763,8 +768,8 @@ fn transact_classification(
         |report, _, _| Ok::<DriftReport, Infallible>(report),
     );
     match outcome {
-        Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),
-        Ok(LedgerCommittedActionOutcome::Rejected(rejection)) => Err(rejection.into()),
+        Ok(LedgerReconciliationOutcome::Appended { output: report, .. }) => Ok(report),
+        Ok(LedgerReconciliationOutcome::Rejected(rejection)) => Err(rejection.into()),
         Err(LedgerCommittedActionError::Transaction(error)) => {
             Err(DriftExecutionError::Transaction(error))
         },
@@ -981,30 +986,36 @@ mod tests {
     }
 
     #[test]
-    fn drift_reports_no_change_while_a_rewrite_is_pending() {
+    fn drift_reports_no_change_while_a_git_operation_is_pending() {
         let fixture = WorktreeComparisonFixture::new();
         ledger::resolve_identity(&fixture.worktree_context)
             .expect("worktree identity should be available");
-        fs::create_dir(
-            fixture
+        for marker in [
+            "rebase-merge",
+            "rebase-apply",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+        ] {
+            let marker_path = fixture
                 .worktree_context
                 .administrative_directory()
-                .join("rebase-merge"),
-        )
-        .expect("rewrite marker should exist");
-        let request = post_commit_request();
+                .join(marker);
+            fs::write(&marker_path, "pending").expect("operation marker should exist");
 
-        let prepared = prepare_drift_execution(
-            request,
-            &fixture.worktree_context,
-            RetainedReservationSet::default(),
-            &RecoveryCommandLine::current_process(),
-        )
-        .expect("pending rewrite should defer comparison");
+            let prepared = prepare_drift_execution(
+                post_commit_request(),
+                &fixture.worktree_context,
+                RetainedReservationSet::default(),
+                &RecoveryCommandLine::current_process(),
+            )
+            .expect("pending operation should defer comparison");
 
-        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
-        assert_unchanged_empty_report(prepared);
-        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+            assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+            assert_unchanged_empty_report(prepared);
+            assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
+            fs::remove_file(marker_path).expect("operation should end");
+        }
     }
 
     fn post_commit_request() -> DriftRequest {

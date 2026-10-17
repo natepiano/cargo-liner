@@ -39,6 +39,9 @@ use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
+use crate::census::accounts::AccountsTable;
+#[cfg(test)]
+use crate::census::scan::ScanStage;
 use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
@@ -70,11 +73,15 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    // The listed agents are the grid's work, so the attract screen comes
-    // on by itself only once no machine lists any.
+    // Agent rows and visible account readings or failures keep the summary
+    // present; only an empty watcher returns to the attract screen.
     let work = if app
         .census
         .lists_an_agent(&app.loaded_config.config.machines.remote)
+        || app.accounts.table.is_visible()
+        || app
+            .census
+            .has_hierarchy_notice(&app.loaded_config.config.machines.remote)
     {
         AttractWork::Running
     } else {
@@ -109,7 +116,8 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
-    );
+    )
+    .with_accounts(&app.accounts.table);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -141,7 +149,8 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
-    );
+    )
+    .with_accounts(&app.accounts.table);
     match content {
         TileContent::Summary => {
             if let HeaderHit::Column(column) =
@@ -180,6 +189,8 @@ struct Cells<'a> {
     footer_colors:  &'a FooterColors,
     /// Ordering shared by all machine groups in the summary.
     summary_sort:   SummarySort,
+    /// Account readings share the summary cell, independent of agent placement.
+    accounts:       &'a AccountsTable,
 }
 
 impl<'a> Cells<'a> {
@@ -204,12 +215,20 @@ impl<'a> Cells<'a> {
             now,
             footer_colors,
             summary_sort,
+            accounts: &AccountsTable::NotConfigured,
         }
+    }
+
+    /// Attach the UI's current account reading to this frame's cells.
+    const fn with_accounts(mut self, accounts: &'a AccountsTable) -> Self {
+        self.accounts = accounts;
+        self
     }
 
     /// The inputs shared by summary drawing and header hit testing.
     fn summary_frame(&self) -> SummaryFrame<'_, 'a> {
         SummaryFrame {
+            accounts:       self.accounts,
             machines:       &self.machines,
             placement:      &self.placement,
             cells:          &self.agents,
@@ -261,13 +280,14 @@ impl TileCells<TileKey> for Cells<'_> {
                 .map_or(narrowest, |&(_, width)| width)
         };
         TileDemands {
-            summary:       summary::height(&self.machines, &self.placement),
+            summary:       summary::height(&self.machines, &self.placement, self.accounts),
             summary_width: summary::width(
                 &self.machines,
                 &self.placement,
                 self.now,
                 self.account_column,
                 self.summary_sort,
+                self.accounts,
             ),
             groups:        self
                 .tiles
@@ -857,7 +877,7 @@ fraying = "leading"
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
             name:            "boss of bosses".to_string(),
-            activity:        crate::census::AgentActivity::from_legacy(Some("idle")),
+            activity:        AgentActivity::from(Some("idle")),
             started:         NOW - age,
             process_started: NOW - age,
             pid:             1_579_022,
@@ -927,10 +947,11 @@ fraying = "leading"
     #[test]
     fn content_clicks_select_and_reverse_only_the_named_tile_sort() {
         let mut app = App::new_for_test().expect("a test app");
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![boss(900)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(900)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
         let area = Rect::new(0, 0, 220, 30);
         let (id, point) = {
             let cells = Cells::new(
@@ -992,10 +1013,11 @@ fraying = "leading"
     #[test]
     fn attract_replacement_and_departure_ignore_tree_and_summary_header_clicks() {
         let mut app = App::new_for_test().expect("a test app");
-        app.census.apply(CensusUpdate::LocalScanCompleted(
-            vec![boss(900)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(900)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
         let area = Rect::new(0, 0, 220, 30);
         let clicks = {
             let cells = Cells::new(
@@ -1102,10 +1124,11 @@ fraying = "leading"
     #[test]
     fn an_unassigned_agent_gets_a_flat_row_in_the_machine_pool() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            crate::census::HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: crate::census::HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_grid(&mut app);
         app.tiles.settle_for_test();
 
@@ -1157,7 +1180,11 @@ fraying = "leading"
                     })
                     .collect(),
             );
-            app.census.apply(CensusUpdate::Local(rows.clone(), edges));
+            app.census.apply(CensusUpdate::Local {
+                rows:      rows.clone(),
+                hierarchy: edges.into(),
+                stage:     ScanStage::Classified,
+            });
             let body = Rect::new(0, 0, 160, 40);
             drawn_buffer_in(&mut app, body);
             app.tiles.settle_for_test();
@@ -1246,7 +1273,11 @@ fraying = "leading"
             })
             .collect();
         let (agents, edges) = production_roots(agents);
-        app.census.apply(CensusUpdate::Local(agents, edges));
+        app.census.apply(CensusUpdate::Local {
+            rows:      agents,
+            hierarchy: edges.into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_buffer_in(&mut app, body);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer_in(&mut app, body);
@@ -1288,10 +1319,11 @@ fraying = "leading"
     #[test]
     fn unassigned_grid_titles_name_the_machine_and_use_theme_title_color() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         app.loaded_config.config.machines.remote = vec!["mac".to_string()];
         app.census.apply(CensusUpdate::Remote {
             host:  "mac".to_string(),
@@ -1300,7 +1332,7 @@ fraying = "leading"
                     name: "remote-session".to_string(),
                     ..boss(3600)
                 }],
-                HierarchyEdges::default(),
+                HierarchyEdges::default().into(),
             ),
         });
         let body = Rect::new(0, 0, 160, 45);
@@ -1338,10 +1370,11 @@ fraying = "leading"
     #[test]
     fn an_unassigned_name_and_its_summary_row_share_a_hue() {
         let mut app = laid_out_app();
-        app.census.apply(CensusUpdate::Local(
-            vec![boss(21 * 60 * 60)],
-            HierarchyEdges::default(),
-        ));
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(21 * 60 * 60)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
         drawn_buffer(&mut app);
         app.tiles.settle_for_test();
         let buffer = drawn_buffer(&mut app);
@@ -1374,10 +1407,10 @@ fraying = "leading"
                     ..boss(20 * 60 * 60)
                 },
             ],
-            crate::census::HierarchyEdges::default(),
+            crate::census::HierarchyEdges::default().into(),
         );
         if let MachineState::Answered(rows, edges) = &mut natedev {
-            (*rows, *edges) = production_roots(std::mem::take(rows));
+            (*rows, edges.edges) = production_roots(std::mem::take(rows));
         }
         let footer_colors = FooterColors::default();
         let cells = Cells::new(
@@ -1428,3 +1461,7 @@ fraying = "leading"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "render/accounts_grid_tests.rs"]
+mod accounts_grid_tests;

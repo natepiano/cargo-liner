@@ -12,7 +12,228 @@ use std::time::UNIX_EPOCH;
 
 use ratatui::style::Color;
 
+use super::constants::BLUE_LUMINANCE_WEIGHT;
+use super::constants::CONTRAST_LUMINANCE_OFFSET;
+use super::constants::GREEN_LUMINANCE_WEIGHT;
+use super::constants::MINIMUM_CONTRAST;
+use super::constants::RED_LUMINANCE_WEIGHT;
+use super::constants::SRGB_ENCODED_OFFSET;
+use super::constants::SRGB_ENCODED_SCALE;
+use super::constants::SRGB_LINEAR_DIVISOR;
+use super::constants::SRGB_LINEAR_THRESHOLD;
+use super::constants::SRGB_POWER;
 use super::*;
+use crate::theme;
+
+/// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
+pub(crate) fn contrast_ratio(foreground: Color, background: Color) -> f64 {
+    fn rgb(color: Color) -> (u8, u8, u8) {
+        let index = match color {
+            Color::Black | Color::Reset => 0,
+            Color::Red => 1,
+            Color::Green => 2,
+            Color::Yellow => 3,
+            Color::Blue => 4,
+            Color::Magenta => 5,
+            Color::Cyan => 6,
+            Color::Gray => 7,
+            Color::DarkGray => 8,
+            Color::LightRed => 9,
+            Color::LightGreen => 10,
+            Color::LightYellow => 11,
+            Color::LightBlue => 12,
+            Color::LightMagenta => 13,
+            Color::LightCyan => 14,
+            Color::White => 15,
+            Color::Indexed(index) => index,
+            Color::Rgb(red, green, blue) => return (red, green, blue),
+        };
+        let ansi = [
+            (0, 0, 0),
+            (205, 0, 0),
+            (0, 205, 0),
+            (205, 205, 0),
+            (0, 0, 238),
+            (205, 0, 205),
+            (0, 205, 205),
+            (229, 229, 229),
+            (127, 127, 127),
+            (255, 0, 0),
+            (0, 255, 0),
+            (255, 255, 0),
+            (92, 92, 255),
+            (255, 0, 255),
+            (0, 255, 255),
+            (255, 255, 255),
+        ];
+        if let Some(channels) = ansi.get(usize::from(index)) {
+            return *channels;
+        }
+        if index >= 232 {
+            let gray = 8 + 10 * (index - 232);
+            return (gray, gray, gray);
+        }
+        let levels = [0, 95, 135, 175, 215, 255];
+        let offset = index - 16;
+        (
+            levels[usize::from(offset / 36)],
+            levels[usize::from((offset % 36) / 6)],
+            levels[usize::from(offset % 6)],
+        )
+    }
+    fn luminance(color: Color) -> f64 {
+        let (red, green, blue) = rgb(color);
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= SRGB_LINEAR_THRESHOLD {
+                value / SRGB_LINEAR_DIVISOR
+            } else {
+                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
+            }
+        };
+        RED_LUMINANCE_WEIGHT.mul_add(
+            linear(red),
+            GREEN_LUMINANCE_WEIGHT.mul_add(linear(green), BLUE_LUMINANCE_WEIGHT * linear(blue)),
+        )
+    }
+    assert_ne!(
+        foreground,
+        Color::Reset,
+        "text must have a measurable foreground"
+    );
+    assert_ne!(
+        background,
+        Color::Reset,
+        "the theme must supply a background"
+    );
+    let foreground = luminance(foreground);
+    let background = luminance(background);
+    (foreground.max(background) + CONTRAST_LUMINANCE_OFFSET)
+        / (foreground.min(background) + CONTRAST_LUMINANCE_OFFSET)
+}
+
+#[test]
+fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors() {
+    let previous = tui_pane::theme();
+    for variant in theme::builtins() {
+        let background = variant.theme.text.bg_focus.color;
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        for name in [
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "white",
+            "bright-black",
+            "bright-red",
+            "bright-green",
+            "bright-yellow",
+            "bright-blue",
+            "bright-magenta",
+            "bright-cyan",
+            "bright-white",
+            "orange",
+            "purple",
+            "pink",
+            "teal",
+            "brown",
+        ] {
+            let colors =
+                FooterColors::parse(&format!("account.fixture={name}\nrole.worker={name}"));
+            let original = Color::from(
+                name.parse::<FooterColor>()
+                    .expect("documented footer color"),
+            );
+            let account = colors
+                .account("fixture")
+                .style(Style::default())
+                .fg
+                .expect("account ink");
+            let role = colors
+                .role(FooterRole::Worker)
+                .style(Style::default())
+                .fg
+                .expect("role ink");
+            for foreground in [account, role] {
+                let ratio = contrast_ratio(foreground, background);
+                assert!(
+                    ratio >= MINIMUM_CONTRAST,
+                    "{} {name}: {foreground:?} on {background:?} is {ratio}:1",
+                    variant.id.as_str()
+                );
+                if contrast_ratio(original, background) >= MINIMUM_CONTRAST {
+                    assert_eq!(
+                        foreground,
+                        original,
+                        "{} {name} already meets contrast",
+                        variant.id.as_str()
+                    );
+                } else {
+                    assert!(
+                        matches!(foreground, Color::Rgb(..)),
+                        "{name} needs an explicit corrected RGB"
+                    );
+                }
+            }
+            let muted = colors
+                .account("fixture")
+                .subdued_style(Style::default().add_modifier(ratatui::style::Modifier::DIM));
+            assert!(!muted.add_modifier.contains(ratatui::style::Modifier::DIM));
+            let ratio = contrast_ratio(muted.fg.expect("subdued ink"), background);
+            assert!(
+                ratio >= MINIMUM_CONTRAST,
+                "{} subdued {name}: {ratio}:1",
+                variant.id.as_str()
+            );
+        }
+    }
+    tui_pane::set_active_theme(previous);
+}
+
+#[test]
+fn footer_contrast_uses_theme_ground_through_transparency_focus_and_theme_changes() {
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let colors = FooterColors::parse("account.fixture=blue");
+    let mut corrected = Vec::new();
+    for variant in theme::builtins() {
+        let background = variant.theme.text.bg_focus.color;
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        let expected = colors
+            .account("fixture")
+            .style(Style::default())
+            .fg
+            .expect("blue ink");
+        corrected.push(expected);
+        for transparent in [false, true] {
+            tui_pane::set_transparent_background(transparent);
+            for focused_tint in [false, true] {
+                tui_pane::set_focused_pane_tint(focused_tint);
+                let actual = colors
+                    .account("fixture")
+                    .style(Style::default())
+                    .fg
+                    .expect("blue ink");
+                assert_eq!(
+                    actual, expected,
+                    "pane decoration does not replace the theme ground"
+                );
+                assert!(contrast_ratio(actual, background) >= MINIMUM_CONTRAST);
+            }
+        }
+    }
+    assert_ne!(
+        corrected[0], corrected[1],
+        "blue must adapt between dark and light themes"
+    );
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_transparent_background(transparent);
+    tui_pane::set_focused_pane_tint(tinted);
+}
 
 #[test]
 fn every_footer_color_name_matches_its_terminal_code() {

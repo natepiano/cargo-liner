@@ -24,6 +24,8 @@ use crate::board;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
 use crate::board::LiveIncursionMembership;
+use crate::board::RecordedOverlapAnswer;
+use crate::board::ReservationOrderingEdge;
 use crate::config::DefaultAnswer;
 use crate::config::InitializationState;
 use crate::coordination_identity;
@@ -1057,13 +1059,17 @@ pub(crate) enum ReservationLifecycleQueryPayload {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct ReservationReportSnapshot {
     /// The reservation selected by the caller.
-    pub(crate) reservation_id: ReservationId,
+    pub(crate) reservation_id:  ReservationId,
     /// Its point-in-time lifecycle reading.
-    pub(crate) lifecycle:      ReservationLifecycleSnapshot,
+    pub(crate) lifecycle:       ReservationLifecycleSnapshot,
     /// The run's effective editing scope, independent of branch integration.
-    pub(crate) race_extent:    RaceExtent,
+    pub(crate) race_extent:     RaceExtent,
     /// The live branch surface, its evidence retained on failure, or the record kept at release.
-    pub(crate) merge_extent:   EffectiveMergeExtent,
+    pub(crate) merge_extent:    EffectiveMergeExtent,
+    /// Declared ordering edges naming either endpoint, waiting or settled.
+    pub(crate) ordering_edges:  Vec<ReservationOrderingEdge>,
+    /// Every live overlap answer naming this reservation.
+    pub(crate) overlap_answers: Vec<RecordedOverlapAnswer>,
 }
 
 /// Why a named reservation lifecycle query was rejected.
@@ -2576,14 +2582,6 @@ impl OutputEnvelope {
                 reason,
             })),
         }
-    }
-
-    /// Refuse a named claim's repeated ordering with the same policy as `sequence`.
-    pub(crate) fn claim_duplicate_ordering(before: ReservationId, after: ReservationId) -> Self {
-        let mut output = Self::sequence_rejected(before, after, SequenceRejectionKind::Duplicate);
-        output.verb = CommandVerb::Claim;
-        output.payload = OutputPayload::from_facts(OutputFacts::NoFacts);
-        output
     }
 
     /// Build an integration rejection that retains the inactive identity source.
