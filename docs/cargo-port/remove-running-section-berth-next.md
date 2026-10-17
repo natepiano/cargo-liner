@@ -250,33 +250,54 @@
 
 **Depends on:** Phase 7 (every phase edits `crates/cargo-berth/tests/`)
 
-#### Work Order
+#### As-built
 
-**Goal:** No cargo-berth test takes a second or more in the GitHub CI Test Suite job, where the whole workspace suite (4741 tests) runs at once.
-
-**Spec:**
-1. The CI Test Suite job on main at d1ced22c (run 39031609525) ran 1110 of the 1128 cargo-berth tests under a second. All 1128 times are in `/tmp/claude/berth_ci_times_d1ced22c.txt`, as `<seconds> cargo-berth::<binary> <test>`. The target set is the 18 at 1 s or more, plus the 7 at 0.8–1.0 s, which another CI run would push over:
-   - `tests/hooks.rs`: `path_normalization_preserves_scope_and_filesystem_parent_semantics` 3.609, `post_commit_judges_a_completed_peer_merge_after_a_cached_clean_check` 2.985, `hooks_state_the_rewritten_trunk_evidence_recovery` 1.923, `hooks_state_the_unresolvable_trunk_evidence_recovery` 1.867, `post_tool_use_defers_a_cherry_pick_stopped_on_a_real_conflict` 1.797, `post_tool_use_does_not_charge_a_trial_merge_to_an_active_reservation` 1.647
-   - `tests/lifecycle.rs`: `merge_extent::a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends` 1.406, `checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward` 1.387, `interactive_split_keeps_both_protected_hunks_in_the_active_phase` 1.358, `checkpoint_ranges_survive_two_rebases_reconciled_during_integration` 1.344, `interactive_split_keeps_both_protected_hunks_in_the_checkpoint` 1.253, `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` 1.126, `merge_extent::a_diverged_holder_never_covers_changes_made_only_on_trunk` 1.068, `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` 1.042, `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` 1.003, `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` 0.937, `lock_contention_is_retryable_while_corrupt_journal_is_unreadable` 0.862
-   - `tests/edges.rs`: `successor_round_robin_covers_every_head` 1.329, `successor_board_has_fixed_cold_cost` 0.894, `witness_survives_pruning_and_controls_successors` 0.847
-   - `tests/liveness.rs`: `recovery_dispositions_validate_evidence_and_remain_distinct_after_replay` 1.312, `released_integration_target_witness_can_be_replaced` 0.852
-   - `tests/answers.rs`: `an_answer_to_a_holder_with_many_scopes_records` 1.049
-   - `tests/board.rs`: `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` 0.939
-   - `tests/gate.rs`: `trunk_gate_remembers_first_target_landing_after_target_revalidation` 0.903
-2. For each target, find where its time goes and cut it at the cause. Likely causes: repeated `init`, per-test repository setup a template could hold, git process count, rebases and splits that could run on a smaller history, journal replay, waits and retries. CI starts every test binary with a cold template cache, so a test that builds a template pays for the build and for the `build.lock` wait: check whether a target is slow because it is the first to build a shared template. Shared costs go into shared fixtures in `crates/cargo-berth-test-support` or `tests/support/`, never into a weaker assertion. A test keeps the behavior it names.
-3. A cut keeps every behavior distinction in the shared constraints from prior phases: upstream reachability filters authorship only; pre-phase-2 incidents keep holder-subset coverage; a working-tree answer covers one entering commit, and a further commit reopens the incident. `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` (`tests/gate.rs`) stays 17. `successor_board_has_fixed_cold_cost` and `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` keep their cost bounds as asserted.
-4. A test whose floor is set by product behavior, such as a real timeout or a deadline the product enforces, stays. Name it in the phase summary with its measured duration and its cause.
-5. Local timing: time every target alone, with one `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth --filter <target>` run per target, the runs one after another and the templates warm. One run naming all 25 targets measures the targets slowing each other, not each test's own cost: the first pass cut that run from 8.2 s to 3.5 s while its per-test times fell only about 30%. Each target alone takes under 0.5 s on natedev. The summary lists each target's CI time and its time alone. Measured during the phase: `path_normalization_preserves_scope_and_filesystem_parent_semantics` read 0.06 s and 1.49 s in two alone runs, both at load 27, and the 25 alone runs spanned load 17 to 230, so natedev cannot judge this bar either. The local evidence is git work removed from each target; the CI log decides.
-6. Docs: a CHANGELOG `[Unreleased]` line only if a public test-support API changed.
+- The 25 slowest cargo-berth integration targets from the CI Test Suite log at d1ced22c do less git work, each cut at its cause; every behavior assertion stays. Alone on natedev with warm templates they run 0.05–0.27 s.
+- `tests/edges.rs` successor setup no longer re-reconciles the growing ledger. `tests/board.rs` reuses the historical proof fixture. `tests/hooks.rs` runs the peer on the main checkout.
+- `tests/support/reanchoring.rs` builds rewrite fixtures with `commit --only`, reads loose refs directly, and keeps the holder checkout inside the `REWRITE_MAIN` template. `tests/liveness.rs` instantiates the `RECOVERY_SOURCES` template and builds both recovery dispositions from one hooked commit.
+- `tests/gate.rs` `trunk_gate_remembers_first_target_landing_after_target_revalidation` records its ordering edge with one `claim --after` instead of a deferral plus `sequence`. `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` stays 17, and the cold-cost bounds of `successor_board_has_fixed_cold_cost` and `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` are unchanged.
+- `tests/lifecycle.rs` checks the admitted outsider before reading the session mapping. `tests/answers.rs` `an_answer_to_a_holder_with_many_scopes_records` protects 300 scopes with real work through one claim widened twice, asserts the journalled protection holds all 300, and asserts the answer binds the refusal's `overlap_scope_revision`.
+- No product code, `cargo-berth-test-support` API or CHANGELOG line changed.
 
 **Files:**
-- `crates/cargo-berth/tests/` — slow tests and their fixtures
-- `crates/cargo-berth-test-support/src/` — shared fixture costs
-- `crates/cargo-berth/src/` — only a test-configurable value a slow test needs, for example a deadline it can shorten
-- `crates/cargo-berth/CHANGELOG.md`
+- `crates/cargo-berth/tests/support/git_configuration.rs` — `append_git_configuration`, writes fixture git config without spawning git
+- `crates/cargo-berth/tests/support/linked_checkout.rs` — `administrative_directory`, resolves a linked checkout's gitdir pointer
+- `crates/cargo-berth/tests/support/loose_refs.rs` — `read_loose_ref`, reads a loose ref without spawning git
+- `crates/cargo-berth/tests/support/lock_contention.rs` — `LOCK_CONTENTION_TOLERANCE`, moved from `timing.rs`
+- `crates/cargo-berth/tests/support/reanchoring.rs` — the `REWRITE_MAIN` template with the holder checkout
+- `crates/cargo-berth/tests/{answers,board,drift,edges,gate,hooks,lifecycle,liveness}.rs` — the cut targets
 
-**Workers:** 2 writers. Ownership is by whole file, so no test file has two writers.
-- `impl` — `src/`, `crates/cargo-berth-test-support/`, `tests/support/`, `tests/hooks.rs`, `tests/edges.rs`, `tests/board.rs`, `tests/gate.rs`, and CHANGELOG. Runs the before measurement first and posts it, then lint and the after measurement.
-- `test` — `tests/lifecycle.rs`, `tests/liveness.rs`, `tests/answers.rs`. Waits for the before measurement, and asks `impl` for any shared fixture change.
+**Gotchas:**
+- Time each target alone, one `verify.sh test cargo-berth --filter <target>` run per target. A run naming many targets measures contention among them, not each test's cost.
+- natedev load (17 to 230 during this work) voids per-test times; the CI Test Suite nextest log on main after merge is the binding gate for the under-a-second bar, and a target still at 1 s or more there needs a fixture redesign in a new phase.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, and each target's work is cut at its cause per item 2. The binding gate is the CI Test Suite nextest log on main after merge: no cargo-berth test at 1 s or more.
+**Ruled out:**
+- A speedup that drops a proof: the clean-claim and many-scope answer tests keep proving the behavior they name.
+
+### Phase 9 — cargo-port's Git pane shows the Error row for a worktree whose gitdir target is missing  · status: todo
+
+**Depends on:** none (cargo-port only; runs after phase 8 by the showrunner's call)
+
+#### Work Order
+
+**Goal:** Selecting a linked worktree whose `.git` file points at a gitdir that no longer exists shows the Git pane's red `Error` row, `broken .git — gitdir target missing`.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-17, found by the cargo-liner-style types-unit and confirmed on main. `DetailField::WorktreeError` (`crates/cargo-port/src/tui/panes/pane_data/detail_field.rs:46`; label `Error` at 79, value at 129) is never constructed; only match arms and the style branch in `tui/panes/git/render.rs:738` name it. 9e1c19f3 added the row; 86c9fd94 ("replace DetailCache with DetailCacheKey and remove dead code") removed `worktree_health` from the detail info and the `fields.push(DetailField::WorktreeError)` that read it, and 27c7995c and e8ae3acb moved the renderer, which still styles and word-wraps the row.
+2. Detection still runs: `get_worktree_health` (`project/git/discovery.rs:100`) yields `WorktreeHealth::{Normal, Broken}` (`project/info.rs:23`), stored on each project's info and read by the project list (`tui/panes/project_list/tree_rows.rs`: `item.worktree_health()` at 415, `worktree_health_for_entry` at 675). Carry the selected project's health into `GitData` (`tui/panes/pane_data/git_data.rs:81`) where the git detail data is built (`build_git_detail_fields`, 313, and the `GitData` it fills), as a `WorktreeHealth` value, never a `bool`. For a linked worktree entry, use that entry's own health, as the project list does.
+3. `git_fields_from_data` (`git_data.rs:217`) emits `DetailField::WorktreeError` first, before `Head`, when the health is `Broken`. The renderer's existing style (default text on the error background) and word wrap stay as they are.
+4. A broken worktree has no readable gitdir, so its other git rows may be absent; the Error row shows whether or not they are.
+5. Tests: a unit test that `git_fields_from_data` lists `WorktreeError` first for `Broken` and omits it for `Normal`; and a test that builds a real worktree directory whose `.git` file names a missing gitdir, selects it, and reads the rendered Git pane text for `Error` and `broken .git — gitdir target missing`. Each test runs under a second.
+6. Docs: a `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `Fixed` line.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs`
+- `crates/cargo-port/src/tui/panes/pane_data/detail_field.rs`
+- `crates/cargo-port/src/tui/panes/git/`
+- `crates/cargo-port/src/tui/app/mod.rs` — only where `GitData` is filled or tested
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer. The change and its tests share `git_data.rs` and the Git pane tests, so a second writer has no file of its own.
+- `impl` — every file above, lint, and the package test.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with both tests from item 5. Shots: the unit director's dark and light shots of the Git pane for a broken worktree show the Error row.
