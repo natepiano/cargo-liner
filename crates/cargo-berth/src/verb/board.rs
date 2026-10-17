@@ -1,16 +1,21 @@
 //! Board command over one reconciled locked replay shared by both renderers.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::board;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
 use crate::board::tui;
+use crate::board::tui::BoardModelSource;
+use crate::board::tui::BoardRefreshFailure;
 use crate::board::tui::BoardTerminalViewRunFailure;
 use crate::board::tui::TerminalAttachment;
 use crate::cli::CliOutputFormat;
 use crate::config::Enrollment;
 use crate::ids::ReservationId;
+use crate::ledger::JournalPosition;
+use crate::ledger::Ledger;
 use crate::output::CommandVerb;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
@@ -19,6 +24,39 @@ use crate::reconcile;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationReplayError;
+
+/// Repository invocation retained for live terminal-board refreshes.
+struct ReconciledBoardSource {
+    invocation_directory: PathBuf,
+    ledger:               Ledger,
+}
+
+impl BoardModelSource for ReconciledBoardSource {
+    fn current_position(&mut self) -> Result<JournalPosition, BoardRefreshFailure> {
+        self.ledger
+            .current_journal_position()
+            .map_err(BoardRefreshFailure::LedgerRead)
+    }
+
+    fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure> {
+        let report = match reconcile::reconcile(
+            &self.invocation_directory,
+            RecoveredBypassReporting::Report,
+        )
+        .map_err(|error| BoardRefreshFailure::Reconcile(Box::new(error)))?
+        {
+            Enrollment::Enrolled(report) => report,
+            Enrollment::Unconfigured {
+                expected_configuration_path,
+            } => {
+                return Err(BoardRefreshFailure::RepositoryNotConfigured(
+                    expected_configuration_path,
+                ));
+            },
+        };
+        BoardModel::build(&self.invocation_directory, &report).map_err(BoardRefreshFailure::Model)
+    }
+}
 
 /// Which read-only board result the caller selected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,25 +148,41 @@ fn execute_complete_board(
             TerminalAttachment::Detached => BoardDisplayOutcome::TerminalDidNotOpen(
                 OutputEnvelope::board(board, &alert_routing, rendering),
             ),
-            TerminalAttachment::Attached => match tui::run(&board) {
-                Ok(()) => BoardDisplayOutcome::TerminalRestored,
-                Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
-                    BoardDisplayOutcome::TerminalDidNotOpen(
-                        OutputEnvelope::board_with_terminal_view_opening_failure(
-                            board,
-                            &alert_routing,
-                            rendering,
-                            &failure.to_string(),
-                        ),
-                    )
-                },
-                Err(BoardTerminalViewRunFailure::AfterOpening(failure)) => {
-                    BoardDisplayOutcome::TerminalFailedAfterOpening(
-                        OutputEnvelope::terminal_view_failed_after_board_opened(
-                            &failure.to_string(),
-                        ),
-                    )
-                },
+            TerminalAttachment::Attached => {
+                let ledger = match Ledger::open(invocation_directory) {
+                    Ok(ledger) => ledger,
+                    Err(error) => {
+                        return BoardDisplayOutcome::FactsUnavailable(
+                            OutputEnvelope::ledger_error(CommandVerb::Board, &error),
+                        );
+                    },
+                };
+                match tui::run(
+                    &mut ReconciledBoardSource {
+                        invocation_directory: invocation_directory.to_path_buf(),
+                        ledger,
+                    },
+                    &board,
+                ) {
+                    Ok(()) => BoardDisplayOutcome::TerminalRestored,
+                    Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
+                        BoardDisplayOutcome::TerminalDidNotOpen(
+                            OutputEnvelope::board_with_terminal_view_opening_failure(
+                                board,
+                                &alert_routing,
+                                rendering,
+                                &failure.to_string(),
+                            ),
+                        )
+                    },
+                    Err(BoardTerminalViewRunFailure::AfterOpening(failure)) => {
+                        BoardDisplayOutcome::TerminalFailedAfterOpening(
+                            OutputEnvelope::terminal_view_failed_after_board_opened(
+                                &failure.to_string(),
+                            ),
+                        )
+                    },
+                }
             },
         },
     }

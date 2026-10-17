@@ -55,6 +55,7 @@ use crate::ledger::ClaimSource;
 use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
+use crate::ledger::JournalPosition;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
@@ -510,6 +511,14 @@ struct PlacedReservationSections {
 }
 
 impl BoardModel {
+    /// Return the journal replay point represented by this model.
+    pub(crate) const fn journal_position(&self) -> JournalPosition {
+        JournalPosition::new(
+            self.journal_position.generation,
+            self.journal_position.journal_byte_offset,
+        )
+    }
+
     /// Classify one incident across the board's mutually exclusive live sections.
     pub(crate) fn live_incursion_membership(
         &self,
