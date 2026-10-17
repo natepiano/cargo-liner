@@ -3,7 +3,9 @@
 use ratatui::style::Color;
 
 use super::*;
-use crate::census::ThreadState;
+use crate::census::Activity;
+use crate::census::AgentActivity;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::footer_colors::FooterColors;
 
 /// A probe account fixture, independent of the machine's configuration.
@@ -175,6 +177,7 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
     let colors = FooterColors::parse("role.worker=orange\naccount.codex1=bright-cyan");
     let root = agent(10, "root", HOUR, None);
     let worker = ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         service_tier: ServiceTier::Fast,
         account: account("codex1"),
         ..child(0, ChildKind::Thread, None, "worker task", MINUTE)
@@ -236,11 +239,16 @@ fn tree_column(buffer: &Buffer, header: &str, y: u16) -> String {
 fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() {
     let colors = FooterColors::parse("account.codex1=bright-cyan");
     for (state, status, color) in [
-        (ThreadState::Busy, "busy", Role::Busy),
-        (ThreadState::Idle, "idle", Role::Idle),
+        (
+            AgentActivity::Active(Activity::Thinking),
+            "thinking",
+            Role::Busy,
+        ),
+        (AgentActivity::Idle, "idle", Role::Idle),
     ] {
         let worker = ChildRow {
-            thread_state: state,
+            worker_task: WorkerTask::Unrecorded,
+            activity: state,
             service_tier: ServiceTier::Fast,
             account: account("codex1"),
             ..child(0, ChildKind::Thread, None, "worker task", MINUTE)
@@ -324,6 +332,7 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
     let root = AgentRow {
         account: account("claude2"),
         children: vec![ChildRow {
+            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
             account: account("codex1"),
             ..child(0, ChildKind::Thread, None, "worker task", MINUTE)
         }],

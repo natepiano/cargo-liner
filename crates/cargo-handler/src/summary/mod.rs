@@ -41,7 +41,6 @@ use crate::census::Machine;
 use crate::census::MachineState;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
-use crate::constants::BUSY_STATUS;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::HEADING_SEPARATOR;
@@ -49,7 +48,6 @@ use crate::constants::MISSING_VALUE;
 use crate::constants::NAME_COLUMN_MAX;
 use crate::constants::NO_AGENTS_NOTE;
 use crate::constants::SCANNING_NOTE;
-use crate::constants::SHELL_STATUS;
 use crate::constants::SUMMARY_HEADERS;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
@@ -419,16 +417,10 @@ const fn agent_role(agent: Agent) -> Role {
 }
 
 /// The role an agent's status is drawn in.
-pub(crate) fn status_role(row: &AgentRow) -> Role {
-    match row.status.as_deref() {
-        Some(BUSY_STATUS) => Role::Busy,
-        Some(SHELL_STATUS) => Role::Shell,
-        _ => Role::Idle,
-    }
-}
+pub(crate) const fn status_role(row: &AgentRow) -> Role { row.activity.color_role() }
 
 /// The status cell: the status, or [`MISSING_VALUE`].
-pub(crate) fn status_text(row: &AgentRow) -> &str { row.status.as_deref().unwrap_or(MISSING_VALUE) }
+pub(crate) const fn status_text(row: &AgentRow) -> &str { row.activity.text() }
 
 /// The desktop cell: the desktop, or [`MISSING_VALUE`].
 pub(crate) fn desktop_text(row: &AgentRow) -> &str {
@@ -582,7 +574,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            status: status.map(str::to_string),
+            activity: crate::census::AgentActivity::from_legacy(status),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -989,15 +981,15 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 top-level agents",
-                " pid      agent   name                                  status  age ▼   desktop        directory",
-                " 1579022  claude  boss of bosses                        idle    21h     boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  berth_fix      ~/rust/cargo-handler",
-                " 428044   claude  enh/handler                           busy    1h 36m  cargo handler  ~/rust/handler",
-                " 4039085  codex   --model gpt-5                         —       12m     —              ~/rust/handler",
+                " pid      agent   name                                  status    age ▼   desktop        directory",
+                " 1579022  claude  boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude  tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
+                " 428044   claude  enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
+                " 4039085  codex   --model gpt-5                         —         12m     —              ~/rust/handler",
                 "",
                 " mac · 1 top-level agent",
-                " pid      agent   name                                  status  age ▼   desktop        directory",
-                " 12055    claude  natemccoy-30                          idle    23h     —              ~",
+                " pid      agent   name                                  status    age ▼   desktop        directory",
+                " 12055    claude  natemccoy-30                          idle      23h     —              ~",
                 "",
                 " studio · unreachable",
                 "",
@@ -1104,9 +1096,9 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                " pid      agent       name           status  age ▼  desktop  directory",
-                " 428044   claude      enh/handler    busy    1h     —        ~/rust/handler",
-                " 4039085  codex fast  --model gpt-5  —       12m    —        ~/rust/handler",
+                " pid      agent       name           status    age ▼  desktop  directory",
+                " 428044   claude      enh/handler    thinking  1h     —        ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  —         12m    —        ~/rust/handler",
             ]
         );
         for x in [10, 19] {
@@ -1231,3 +1223,7 @@ mod sort_tests;
 #[cfg(test)]
 #[path = "unassigned_summary_tests.rs"]
 mod unassigned_summary_tests;
+
+#[cfg(test)]
+#[path = "activity_summary_tests.rs"]
+mod activity_summary_tests;

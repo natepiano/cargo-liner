@@ -30,6 +30,7 @@ use super::tree::ThreadEntry;
 #[cfg(test)]
 use super::tree::TreeSources;
 use super::worker_dispatch::DispatchLabel;
+use super::worker_dispatch::WorkerDispatch;
 use crate::constants::HEADING_SEPARATOR;
 
 /// A listed agent's identity across the shown machines.
@@ -259,13 +260,19 @@ impl<'a> AgentPlacement<'a> {
     }
 
     /// The dispatch label for a thread matched in its final tile.
-    pub(crate) fn dispatch_label(&self, child: &super::ChildRow) -> DispatchLabel<'a> {
+    pub(crate) fn dispatch_label(&self, child: &'a super::ChildRow) -> DispatchLabel<'a> {
         self.dispatch_folds
             .iter()
             .find(|fold| std::ptr::eq(fold.thread, child))
-            .map_or(DispatchLabel::Original, |fold| {
-                DispatchLabel::Worker(fold.dispatch)
-            })
+            .map_or_else(
+                || match &child.dispatch {
+                    WorkerDispatch::Worker(dispatch) if child.kind == ChildKind::Thread => {
+                        DispatchLabel::Worker(dispatch)
+                    },
+                    _ => DispatchLabel::Original,
+                },
+                |fold| DispatchLabel::Worker(fold.dispatch),
+            )
     }
 
     /// Resolve `ManagedThread` entries, preferring listed owners over
@@ -560,7 +567,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         threads: HashMap::from([(
             30,
             vec![ThreadEntry {
-                thread_state: super::ThreadState::Idle,
+                activity:     super::AgentActivity::Idle,
                 thread_id:    CodexThreadId::Recorded("mesh-worker".to_string()),
                 name:         "mesh worker".to_string(),
                 started:      40,
@@ -588,6 +595,7 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
 mod tests {
     use super::*;
     use crate::census::Account;
+    use crate::census::AgentActivity;
     use crate::census::CensusUpdate;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
@@ -601,7 +609,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: id.to_string(),
-            status: None,
+            activity: AgentActivity::Unreported,
             started: u64::from(pid),
             process_started: u64::from(pid),
             pid,

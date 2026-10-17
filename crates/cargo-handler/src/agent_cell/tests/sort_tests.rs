@@ -3,6 +3,8 @@
 use tui_pane::CellPoint;
 
 use super::*;
+use crate::census::Activity;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
@@ -32,7 +34,7 @@ fn sorting_forest() -> MachineState {
     let older = AgentRow {
         session_id: SessionIdentity::Claude("older-id".into()),
         account: sort_account("z-account"),
-        status: Some("idle".into()),
+        activity: crate::census::AgentActivity::from_legacy(Some("idle")),
         branch: Some("z-branch".into()),
         directory: "/z-directory".into(),
         ..agent(20, "zeta", 8 * HOUR, Some(10))
@@ -40,7 +42,7 @@ fn sorting_forest() -> MachineState {
     let younger = AgentRow {
         session_id: SessionIdentity::Claude("younger-id".into()),
         account: sort_account("a-account"),
-        status: Some("busy".into()),
+        activity: crate::census::AgentActivity::from_legacy(Some("thinking")),
         branch: Some("a-branch".into()),
         directory: "/a-directory".into(),
         children: vec![child(0, ChildKind::Shell, Some(41), "a-shell", 2 * HOUR)],
@@ -129,11 +131,14 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "zeta",
             "├─ zeta fix idle z-account z-branch /z-directory 8h",
         ),
-        ("nested", "│ └─ nested session busy — — ~/rust/nested 5h"),
+        (
+            "nested",
+            "│ └─ nested session thinking — — ~/rust/nested 5h",
+        ),
         ("z-thread", "│ └─ z-thread worker idle — — — 3h"),
         (
             "alpha",
-            "└─ alpha impl busy a-account a-branch /a-directory 4h",
+            "└─ alpha impl thinking a-account a-branch /a-directory 4h",
         ),
         ("a-shell", "└─ a-shell — command — — — 2h"),
     ] {
@@ -180,8 +185,8 @@ fn assert_column_keeps_subtrees_and_hues(column: TreeColumn) {
     let baseline = sorted_buffer(&machines, 220, TreeSort::default());
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
-        let alpha_first =
-            matches!(direction, SortDirection::Ascending) != (column == TreeColumn::Role);
+        let alpha_first = matches!(direction, SortDirection::Ascending)
+            != matches!(column, TreeColumn::Role | TreeColumn::Status);
         let expected = if alpha_first {
             vec!["alpha", "a-shell", "zeta", "nested", "z-thread"]
         } else {
@@ -372,13 +377,15 @@ fn choosing_a_tree_column_uses_its_natural_direction_and_repeated_clicks_reverse
 #[test]
 fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
     let older = ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         account: sort_account("z-account"),
-        thread_state: ThreadState::Idle,
+        activity: AgentActivity::Idle,
         ..child(1, ChildKind::Thread, None, "z-work", HOUR)
     };
     let younger = ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         account: sort_account("a-account"),
-        thread_state: ThreadState::Busy,
+        activity: AgentActivity::Active(Activity::Thinking),
         ..child(1, ChildKind::Thread, None, "a-work", 30 * MINUTE)
     };
     let root = AgentRow {
@@ -399,10 +406,13 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
     for column in COLUMNS {
         for direction in [SortDirection::Ascending, SortDirection::Descending] {
             let buffer = sorted_buffer(&machines, 220, TreeSort { column, direction });
-            let alpha_first = matches!(
-                column,
-                TreeColumn::Session | TreeColumn::Status | TreeColumn::Account | TreeColumn::Age
-            ) && direction == SortDirection::Ascending;
+            let alpha_first = match column {
+                TreeColumn::Status => direction == SortDirection::Descending,
+                TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
+                    direction == SortDirection::Ascending
+                },
+                TreeColumn::Role | TreeColumn::Branch | TreeColumn::Directory => false,
+            };
             let expected = if alpha_first {
                 vec![
                     "work-parent",
@@ -442,8 +452,8 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
 fn equal_tree_keys_keep_the_default_start_and_pid_tie_break_in_both_directions() {
     let mut state = sorting_forest();
     if let MachineState::Answered(rows, _) = &mut state {
-        rows[1].status = Some("busy".into());
-        rows[2].status = Some("busy".into());
+        rows[1].activity = crate::census::AgentActivity::Active(Activity::Thinking);
+        rows[2].activity = crate::census::AgentActivity::Active(Activity::Thinking);
         rows[2].started = rows[1].started;
     }
     let machines = [Machine {
@@ -529,7 +539,7 @@ fn independent_sort_forest() -> MachineState {
             40,
             "dog",
             HierarchyRole::Review,
-            "busy",
+            "git",
             "a-account",
             "a-branch",
             "/c",
@@ -539,7 +549,7 @@ fn independent_sort_forest() -> MachineState {
             50,
             "cat",
             HierarchyRole::Test,
-            "paused",
+            "reading",
             "b-account",
             "b-branch",
             "/a",
@@ -549,7 +559,7 @@ fn independent_sort_forest() -> MachineState {
         let id = format!("id-{pid}");
         rows.push(AgentRow {
             session_id: SessionIdentity::Claude(id.clone()),
-            status: Some(status.into()),
+            activity: AgentActivity::from_legacy(Some(status)),
             account: sort_account(account),
             branch: Some(branch.into()),
             directory: directory.into(),

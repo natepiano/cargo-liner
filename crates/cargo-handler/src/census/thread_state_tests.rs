@@ -11,8 +11,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use super::Activity;
+use super::AgentActivity;
 use super::ChildRow;
-use super::ThreadState;
 use super::tier::Rollouts;
 
 const META: &str = r#"{"type":"session_meta","payload":{"timestamp":"2026-10-16T13:40:00Z"}}"#;
@@ -34,10 +35,14 @@ fn append(path: &Path, text: &str) {
 fn the_last_turn_event_determines_whether_a_thread_is_busy_or_idle() {
     let directory = TempDir::new().expect("temporary rollout directory");
     for (name, events, expected) in [
-        ("started", vec![COMPLETE, START], ThreadState::Busy),
-        ("completed", vec![START, COMPLETE], ThreadState::Idle),
-        ("aborted", vec![START, ABORT], ThreadState::Idle),
-        ("no-turn", Vec::new(), ThreadState::Idle),
+        (
+            "started",
+            vec![COMPLETE, START],
+            AgentActivity::Active(Activity::Thinking),
+        ),
+        ("completed", vec![START, COMPLETE], AgentActivity::Idle),
+        ("aborted", vec![START, ABORT], AgentActivity::Idle),
+        ("no-turn", Vec::new(), AgentActivity::Idle),
     ] {
         let path = directory.path().join(format!("{name}.jsonl"));
         append(&path, META);
@@ -54,7 +59,7 @@ fn the_last_turn_event_determines_whether_a_thread_is_busy_or_idle() {
             r#"{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}"#,
         );
         assert_eq!(
-            Rollouts::default().read(&path).thread_state,
+            Rollouts::default().read(&path).activity(),
             expected,
             "{name}"
         );
@@ -68,20 +73,29 @@ fn an_incremental_completion_changes_busy_to_idle_only_after_its_line_is_complet
     append(&path, META);
     append(&path, START);
     let mut rollouts = Rollouts::default();
-    assert_eq!(rollouts.read(&path).thread_state, ThreadState::Busy);
+    assert_eq!(
+        rollouts.read(&path).activity(),
+        AgentActivity::Active(crate::census::Activity::Thinking)
+    );
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(&path)
         .expect("rollout opens");
     write!(file, "{COMPLETE}").expect("partial completion writes");
-    assert_eq!(rollouts.read(&path).thread_state, ThreadState::Busy);
+    assert_eq!(
+        rollouts.read(&path).activity(),
+        AgentActivity::Active(crate::census::Activity::Thinking)
+    );
     writeln!(file).expect("completion line ends");
-    assert_eq!(rollouts.read(&path).thread_state, ThreadState::Idle);
+    assert_eq!(rollouts.read(&path).activity(), AgentActivity::Idle);
     append(&path, START);
-    assert_eq!(rollouts.read(&path).thread_state, ThreadState::Busy);
+    assert_eq!(
+        rollouts.read(&path).activity(),
+        AgentActivity::Active(crate::census::Activity::Thinking)
+    );
     // A truncated/replaced rollout must discard the old busy event.
     fs::write(&path, format!("{META}\n")).expect("rollout resets");
-    assert_eq!(rollouts.read(&path).thread_state, ThreadState::Idle);
+    assert_eq!(rollouts.read(&path).activity(), AgentActivity::Idle);
 }
 
 #[test]
@@ -91,10 +105,13 @@ fn probe_threads_preserve_activity_and_older_probes_default_to_idle() {
         "started":900, "timer":null, "thread_id":"worker-thread"
     }))
     .expect("older thread probe parses");
-    assert_eq!(thread.thread_state, ThreadState::Idle);
-    thread.thread_state = ThreadState::Busy;
+    assert_eq!(thread.activity, AgentActivity::Idle);
+    thread.activity = AgentActivity::Active(Activity::Thinking);
     let encoded = serde_json::to_string(&thread).expect("busy thread serializes");
     let decoded: ChildRow = serde_json::from_str(&encoded).expect("remote thread parses");
-    assert_eq!(decoded.thread_state, ThreadState::Busy);
+    assert_eq!(
+        decoded.activity,
+        AgentActivity::Active(crate::census::Activity::Thinking)
+    );
     assert_eq!(decoded.thread_id, thread.thread_id);
 }

@@ -217,6 +217,27 @@ pub(crate) const RAINBOW_BLUE_ROLE: &str = "rainbow_blue";
 pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 
 // census
+/// Verification launcher whose detached runs may override conversation activity.
+pub(crate) const VERIFY_SCRIPT: &str = "verify.sh";
+/// Mesh launcher used to select fresh and existing worker seats.
+pub(crate) const CODEX_MESH_SCRIPT: &str = "codex_mesh.py";
+/// Seat selectors accepted by the live mesh child.
+pub(crate) const MESH_SEAT_FLAGS: [&str; 2] = ["--name", "--to"];
+/// Processes whose argv is needed to identify verification and dispatch descendants.
+pub(crate) const ACTIVITY_PROCESS_NAMES: [&str; 6] =
+    ["sleep", "cargo", "ssh", "taplo", "bash", "python3"];
+/// A thread without a recorded task or supported responsibility.
+pub(crate) const WORKER_LABEL: &str = "worker";
+/// Only session directories named by the worker itself may be discovered.
+pub(crate) const SESSION_ROOTS: [&str; 2] = ["/tmp/claude/unit/", "/tmp/claude/delegate/"];
+/// Width of an unabridged UUID, including separators.
+pub(crate) const UUID_TEXT_LENGTH: usize = 36;
+/// Injected rollout context is not the worker's first task.
+pub(crate) const ROLLOUT_CONTEXT_PREFIXES: [&str; 3] = [
+    "# AGENTS.md",
+    "<environment_context>",
+    "<permissions instructions>",
+];
 /// The `agent` value of a Claude Code row, and the process name a
 /// Claude Code process runs under.
 pub(crate) const CLAUDE_AGENT: &str = "claude";
@@ -239,9 +260,6 @@ pub(crate) const CODEX_FAST_TIERS: [&str; 2] = ["fast", "priority"];
 /// Marks a Codex agent or thread that asked for the fast tier, after
 /// its program.
 pub(crate) const FAST_TIER_LABEL: &str = "fast";
-/// Marks a Codex agent or thread that asked for any other tier, after
-/// its program.
-pub(crate) const STANDARD_TIER_LABEL: &str = "--";
 /// The flags that pass `codex` one `key=value` setting in the next
 /// argument.
 pub(crate) const CODEX_CONFIG_FLAGS: [&str; 2] = ["-c", "--config"];
@@ -271,11 +289,6 @@ pub(crate) const CODEX_DESKTOP_APP: &str = "ChatGPT";
 /// itself `tmux: server`; on macOS renaming a process does nothing, so
 /// the server keeps the name `tmux`.
 pub(crate) const TMUX_SERVER_NAMES: [&str; 2] = ["tmux: server", "tmux"];
-/// The status a Claude Code session reports while it works.
-pub(crate) const BUSY_STATUS: &str = "busy";
-/// The status a Claude Code session reports while a shell command it
-/// ran is in the foreground.
-pub(crate) const SHELL_STATUS: &str = "shell";
 /// Characters of a Claude session id a row shows when the session has
 /// no name.
 pub(crate) const SESSION_ID_PREFIX_LENGTH: usize = 8;

@@ -7,6 +7,8 @@ use summary::SummaryFrame;
 
 use super::*;
 use crate::census::AccountColumn;
+use crate::census::AgentActivity;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH_HEADER;
@@ -37,8 +39,9 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     let mut diagrams = agent(30, "diagrams", 4 * HOUR, None);
     diagrams.session_id = SessionIdentity::Claude("diagrams-id".to_string());
     diagrams.account = home(claude_accounts[2]);
-    diagrams.status = Some("idle".to_string());
+    diagrams.activity = AgentActivity::Idle;
     let thread = ChildRow {
+        worker_task: WorkerTask::Unrecorded,
         thread_id: CodexThreadId::Recorded("dashboard-impl-id".to_string()),
         account: home("codex1"),
         ..child(
@@ -150,7 +153,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        ["├─", "dashboard", "unit", "busy", "claude1", "6h"]
+        ["├─", "dashboard", "unit", "thinking", "claude1", "6h"]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -173,7 +176,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         find(&buffer, "dashboard").expect("name").0
     );
     for (name, role, status, account, age) in [
-        ("dashboard", "unit", "busy", "claude1", "6h"),
+        ("dashboard", "unit", "thinking", "claude1", "6h"),
         ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5h"),
         ("diagrams", "unit", "idle", "claude3", "4h"),
     ] {
@@ -200,7 +203,7 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
     let buffer = rendered(&cells[0], &cells, 220, account_column(&cells));
     let text = lines(&buffer);
 
-    assert!(text[0].contains(" · claude2 · busy · "));
+    assert!(text[0].contains(" · claude2 · thinking · "));
     assert_eq!(text[1], " main · ~/rust/showrunner");
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -342,6 +345,7 @@ fn working_group() -> MachineState {
             HOUR,
         ),
         ChildRow {
+            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
             timer: Some(Timer {
                 started:  NOW - MINUTE,
                 deadline: NOW + MINUTE,
@@ -356,6 +360,7 @@ fn working_group() -> MachineState {
             10 * MINUTE,
         ),
         ChildRow {
+            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
             account: home("codex1"),
             ..child(2, ChildKind::Thread, None, "unheld worker", 9 * MINUTE)
         },
@@ -407,7 +412,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         assert!(!text.contains(hidden), "{hidden} is not a tree line");
     }
     for (name, role, status, account, age) in [
-        ("unit-member", "session", "busy", "claude1", "2h"),
+        ("unit-member", "session", "thinking", "claude1", "2h"),
         ("clock job", MISSING_VALUE, "◑ 1:00", "—", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
         ("review worker", "subagent", "claude", "—", "8m"),

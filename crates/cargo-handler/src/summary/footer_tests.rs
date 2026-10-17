@@ -36,7 +36,7 @@ fn row(
         service_tier: ServiceTier::Unrecorded,
         account: Account::Unrecorded,
         name: name.to_string(),
-        status: status.map(str::to_string),
+        activity: crate::census::AgentActivity::from_legacy(status),
         started: NOW - age,
         process_started: NOW - age,
         pid,

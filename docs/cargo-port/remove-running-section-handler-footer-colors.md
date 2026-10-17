@@ -107,39 +107,29 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 2
 
-#### Work Order
+#### As-built
 
-**Goal:** every top-level session with no production role draws as one row of a single tile per machine titled `unassigned`, instead of each having its own tile.
-
-**Source:** the user (via the showrunner), 2026-10-16: "unassigned top level should be grouped into their own cell as well … it can be called unassigned and it should have its own column names as all - they just aren't hierarchical so just a list of unassigned". Showrunner placement: its own phase right after the sort phase, ahead of the Claude add-ons.
-
-**Constraints from prior phases:**
-- Phase 2's per-tile sort: `sort.rs` `TreeSort` = `ColumnSort<TreeColumn>`, stored in `App::tree_sorts: HashMap<AgentCell, TreeSort>` (`app.rs` ≈110) and pruned per root by `App::prune_tree_sorts` (≈136) after a completed scan. Header spans, hit-test and arrows come from the shared tree header layout in `agent_cell.rs`; reuse it, never fork it.
-- Phase 1's role colors: `RoleLabel::Unlabeled` draws role text `session` today (`census/placement.rs` ≈86) in the `Unassigned` footer color (the unroled purple). This phase changes the text to `—` for a top-level unassigned row through `agent_cell.rs`'s typed `LineKind` classification, not by string replacement.
-- Summary name colors come from each session's own hue through `agent_cell::name_style`; grouping tiles must leave the summary's rows, counts and hues unchanged.
-
-**Spec:**
-1. One tile per machine titled `unassigned`, carrying the machine name the way the other tiles' titles carry it. It holds every top-level session whose role label is `RoleLabel::Unlabeled` (`census/placement.rs:72`); today's separate tiles for those sessions (ups, postmaster) collapse into it. Model the tile's identity as its own variant of the tile key (e.g. `enum TileKey { Agent(AgentCell), Unassigned { machine } }`), never a sentinel pid.
-2. Same header row and columns as the tree tiles: session, role, status, account, age, and branch and directory in the full view. The phase 2 sort and header clicks work on it. Its sort is stored under the tile key's `Unassigned { machine }` identity: it survives sessions joining or leaving the tile, is pruned when the machine's tile disappears, and never crosses machines.
-3. Rows are a flat list: no tree glyphs at the top level. Each session's own shells, subagents and Codex workers nest under it with rails, as in other tiles.
-4. Role shows `—` in the unroled purple for each top-level row.
-5. No unassigned session on a machine → no unassigned tile for it.
-6. Hues: each session keeps the hue it would have had as its own tile; the tile title takes the theme's title style.
-7. Tests (test slot, new files): sessions with no role land in one tile per machine and leave no tile of their own; rows draw flat with nested work under each; role cell `—`; no tile when none exist; header sort reorders the flat rows; the tile's sort survives a session joining and leaving, is pruned when the tile disappears, and two machines' tiles sort independently; the summary's rows, counts and name hues are unchanged by the grouping; read rows back from the buffer.
+- Every top-level session whose role label is `RoleLabel::Unlabeled` draws as one row of a single tile per machine titled `unassigned · <machine>` in the theme's `title_color()`; those sessions no longer get tiles of their own. A machine with no such session has no unassigned tile. The summary's rows, counts and name hues are unchanged.
+- `tiles::TileKey { Agent(AgentCell), Unassigned { machine } }` is the grid's tile identity (`TileGrid`, `TileContent`, `TileDemands`, `TileGridHost::TileId`) and the key of `App::tree_sorts: HashMap<TileKey, TreeSort>`. The pool's sort lives under `Unassigned { machine }`, so it survives sessions joining or leaving, never crosses machines, and is dropped by `prune_tree_sorts` through the key-only `agent_cell::tile_keys(&Placement) -> HashSet<TileKey>` once the machine's pool disappears.
+- `agent_cell::group_tiles` builds `AgentTile::Agent` / `AgentTile::Unassigned(UnassignedEntry)` after hues are assigned, so each pooled session keeps the hue it would have had as its own tile. Pooled roots draw with `Branch::Flat` (no glyph, rail ended); their shells, subagents and Codex workers nest below with rails as in other tiles.
+- A pooled root is `LineSubject::UnassignedSession` / `LineKind::UnassignedSession`; its role cell draws `—` in the `FooterRole::Unassigned` color.
+- The pool uses the same header row, columns, sort and header clicks as tree tiles. `SessionHeaderLead { OverBranch, Flush }` is threaded through header text, width measurement, header spans and draw: tree tiles use `OverBranch`, the pool uses `Flush` so its session header sits over its flush names. `CellView::tree_at_width` is the shared width fit for both.
 
 **Files:**
-- `crates/cargo-handler/src/tiles.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/sort.rs`
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/`
-- `crates/cargo-handler/src/summary/`
-- `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/tiles.rs` — `TileKey`
+- `crates/cargo-handler/src/agent_cell.rs` — `group_tiles`, `tile_keys`, `UnassignedEntry`, flat pool rows, `SessionHeaderLead`, `unassigned_header_spans`, `unassigned_height`, `draw_unassigned`
+- `crates/cargo-handler/src/render.rs` — `Cells` per `TileKey`, pool title, header click routing
+- `crates/cargo-handler/src/app.rs`, `terminal.rs` — sorts keyed by `TileKey`, pruning by `tile_keys`
+- `crates/cargo-handler/src/constants.rs` — `UNASSIGNED_CELL_TITLE`
+- `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs`, `crates/cargo-handler/src/summary/unassigned_summary_tests.rs` — grouping, flat rows, sort lifecycle, header alignment, unchanged summary
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — production files, edits to existing tests (including `app.rs`'s inline sort-pruning tests), and the `mod` lines wiring new test files.
-- `test` — new test files: grouping and flat rows under `agent_cell/tests/`, the sort lifecycle, and the unchanged-summary check under `summary/`.
+**Binds later work:** tile identity is `TileKey`, not `AgentCell`; drawn header spans are kept per `TileKey`, the pool included, and each tile's spans carry its `SessionHeaderLead`, since header layout differs between tree tiles and the pool. Status column changes reach the pool too, through the shared header and `CellView::tree_at_width`. A top-level session that should join the pool with its own role text needs its own `RoleLabel` variant and is grouped through `group_tiles`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot shows the unassigned tile beside the hana tile. The checkpoint carries `Change-Review: sessions with no production role are listed together in one "unassigned" tile per machine | look for the unassigned tile beside the hana tile and sort it by a column`.
+**Gotchas:** a header-layout signature change (e.g. `tree_widths`) breaks existing callers in `agent_cell/tests/`; whoever changes the signature migrates them. The `ONE_AGENT_CELL` golden in `render.rs` has a flush `│ session …` header line.
 
-### Phase 4 — Worker rows say who and what  · status: todo
+**Ruled out:** a sentinel pid for the pool's identity; recreating a pruned pool sort from a click on a vanished tile.
+
+### Phase 4 — Worker rows say who and what  · status: done
 
 **Depends on:** Phase 3
 
@@ -170,26 +160,32 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
    - `thinking`: in a turn with no tool call yet, or the last event is reasoning.
    - `running`: any other shell command.
    - `asking`: waiting on a permission prompt, only if Claude's session file exposes it; otherwise leave it out and say so in the summary.
+   - Precedence, one word per row: a live verify run beats the tool and turn words (a worker blocked on its gate shows the gate, even after its turn moved on); among several live runs for one worker (`mesh_runs.py` allows them) the most recently started record wins, ties broken by the higher pid; with no live run, the last tool call's word; with none, `thinking` inside an open turn; `idle` when the turn is closed. When the selected run finishes while another is still live, the other run's word shows next.
 3. Colors: every active word takes busy's color; verify steps share one accent so they read as gates; `waiting` takes the idle dim.
 4. Scope: Claude sessions (from the transcript's last `tool_use`) and Codex workers (from the rollout's last `function_call`). Read once per scan, never per frame. Linux first; on the Mac use what discovery already supports.
-5. Tests (test slot): name rules (a)–(c) from fixture rosters and rollouts, including the three discovery fixtures; each status word from fixture transcript and rollout tails and fixture process trees and run records; a detached verify run attributed through its record; a Mac step `(mac)`; `waiting`; a finished run clearing back to the next word; a turn completing, aborting and starting again; an older probe payload still read; Status sorting by the drawn word in a tile and in the summary; colors read back from the buffer in both.
+5. Tier mark (showrunner add-on, 2026-10-16; the user asked "what is the -- afer codex1 entries?"). The standard tier draws no mark and only the fast tier draws `fast`: an account or agent cell reads `codex1` or `codex`, never `codex1 --`. `ServiceTier::mark` (`census/mod.rs` ≈122) returns the program alone for `Standard` as for `Unrecorded`; remove `STANDARD_TIER_LABEL` (`constants.rs` ≈244). Keep the `Standard`/`Unrecorded` variants: `or_else` still needs the difference. No string check on the drawn text.
+6. Dispatch fold misses: change-review C15, returned by the user ("i'm not sure it's doing what you said"). Showrunner's live findings, about 17:00 2026-10-16:
+   - Folds correctly: hana's cables, lfo, startup and trunk-select, all `implement.sh --to <seat>` → `codex_mesh.py follow --to <seat>`.
+   - Misses, fresh seat: `implement.sh` with no `--to` → `codex_mesh.py start --name <seat>`: trunk's `Dispatch the portal fix to a fresh seat` (`start --name tool-based-ui-trunk-portal`), widget's merge-resolution seat (`start --name widget-enhancements-merge`), unit-board phase 1 (`start --name claude-build-followups-unit-board-…`). The worker draws as a GUID and the dispatch stays a separate command row.
+   - Misses even with `--to`/`follow`: berth-parallel phases 9 and 10 (`--to cargo-liner-berth-parallel-impl` and `-impl2`, session dir `/tmp/claude/unit/7393c2a2…`), style (`--to claude-build-followups-style-impl`, `/tmp/claude/unit/24e20a41…`), two-accounts (`--to claude-build-followups-two-accounts-test`, `/tmp/claude/delegate/8b4351c3…`). The dispatch rows stay separate; style's worker draws as a GUID; two-accounts' workers draw bare seat names with no `· job`.
+   Find, against live `ps` output and those sessions' rosters and run markers, what separates the misses from the hits (run markers, the `unit` versus `delegate` session dir form, the `start` versus `follow` path, or the roster entry written after the launcher starts). Fold every `implement.sh` dispatch form into its worker row and name every worker `<seat> · <job>`, never a GUID. Record each form and its cause in the summary; each form above gets a fixture test.
+7. Tests (test slot): name rules (a)–(c) from fixture rosters and rollouts, including the three discovery fixtures; each status word from fixture transcript and rollout tails and fixture process trees and run records; a detached verify run attributed through its record; a Mac step `(mac)`; `waiting`; a finished run clearing back to the next word; a turn completing, aborting and starting again; an older probe payload still read; Status sorting by the drawn word in a tile and in the summary; colors read back from the buffer in both, including a pooled root and its nested worker in the unassigned tile; the precedence rules, including two live runs for one worker where the selected one finishes; a standard-tier account cell drawn without a mark and a fast one with `fast`; each dispatch form Spec 6 found, folded into its worker row.
 
 **Files:**
-- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/tier.rs`, `crates/cargo-handler/src/census/thread_state.rs`, `crates/cargo-handler/src/census/thread_state_tests.rs`, `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/scan/`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/worker_dispatch/`
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/summary/`
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/tier.rs`, `crates/cargo-handler/src/census/thread_state.rs`, `crates/cargo-handler/src/census/thread_state_tests.rs`, `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/scan/`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/worker_dispatch/`
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/terminal.rs`
 - `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — all production files, including `worker_dispatch/mod.rs` and the probe conversion, edits to existing tests, and the `mod` lines wiring new tests.
+- `impl` — all production files, including `worker_dispatch/mod.rs`, `classify.rs` (copies `SessionRecord.status` into `AgentRow` ≈328) and the probe conversion; edits to existing tests and fixtures that build the replaced fields (`render.rs`, `terminal.rs`, existing `agent_cell/tests/` files); and the `mod` lines wiring new tests.
 - `test` — new discovery, activity, run-record, probe-compatibility and rendering fixtures and test files.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot shows a named worker row and a status word other than `busy`. The checkpoint carries `Change-Review: worker rows are named by seat or role and job, never a thread id | look under a unit for its impl, test and fix rows` and `Change-Review: the status column says what an agent is doing: a verify step, writing, reading, thinking, git and the like | watch a worker's status while it edits and runs verify`.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live shot shows a named worker row, a status word other than `busy`, and a fresh-seat dispatch folded into its worker row. The checkpoint carries `Change-Review: worker rows are named by seat or role and job, never a thread id | look under a unit for its impl, test and fix rows` and `Change-Review: the status column says what an agent is doing: a verify step, writing, reading, thinking, git and the like | watch a worker's status while it edits and runs verify`, `Change-Review: account and agent cells show no mark for the standard tier, only fast | look at a codex1 row's account cell` and `Change-Review: every implement.sh dispatch, fresh seat or follow-up, folds into its worker row named seat · job (C15) | look under the hana, widget, style and two-accounts units for Dispatch rows beside raw-id workers`.
 
 ### Phase 5 — Accounts table in the summary  · status: todo
 
 **Depends on:** Phase 4
 
-**Blocked by:** `accounts.py status --json` exists in natedev's `~/.claude` — asked of natedev 2026-10-16.
 
 #### Work Order
 
@@ -198,17 +194,18 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** the user (via the showrunner), 2026-10-16: "cargo handler should reprsent the output of /showrunner:accounts - the summary cell could maybe be subdivided to show a table of top level agents followed by a table of accounts (that updates itself as tokens are used)". Showrunner design and packaging ruling, same day (below).
 
 **Constraints from prior phases:**
-- Phase 1's account footer colors (`footer_colors.rs`) color account labels; reuse them.
+- Phase 1's account footer colors (`footer_colors/`) color account labels; reuse them.
 - Phase 2's summary header style, gap rule and `ColumnSort` header layout; the agents table stays as it is.
 - The configured-command pattern of `[census] hierarchy_command` (run off the frame thread, JSON on stdout) is the model for `accounts_command`.
 
 **Spec:**
 1. The summary cell holds two stacked tables under its one title: the agents table as today, then an `accounts` table with the same header style and gap rule.
-2. Columns: `account` (label such as `claude1`, `codex2`, in its footer color); `role` (units, showrunners, workers or spare; `—` when none); `weekly left` (percent, red at 10% or less); `resets` (short, e.g. `Mon 02:00`); `credits` (Codex only, `—` for Claude; dimmed when use_credits is off). No folder, login, on-credits or read columns, so no email address is drawn; a row whose reading is over an hour old is dimmed and shows its age.
+2. Columns: `account` (label such as `claude1`, `codex2`, in its footer color); `role` (the JSON's `roles` list joined with `, ` — one account can hold both groups; an unselected Claude account has `[]`, a Codex account `["workers"]` or `["spare"]`; `—` when empty); `weekly left` (percent, red at 10% or less); `resets` (the JSON's ISO 8601 UTC time drawn short in the local zone, e.g. `Mon 02:00`); `credits` (a number, `unlimited`, or JSON `null` drawn `—`, as for Claude; dimmed when `use_credits` is false, as it always is for Claude). No folder, login, on-credits or read columns, so no email address is drawn; a row whose reading is over an hour old is dimmed and shows its age.
 3. Rows follow accounts.py's own order and signed-in rule; its problem lines draw dimmed under the table.
-4. One source of truth: a configured `[census] accounts_command` printing accounts.py's own JSON; never re-derive the role map or the usage readings in Rust. Parse the JSON into typed rows at the boundary.
-5. Refresh off the frame thread every 60 s and whenever a row's reading time changes; never block a frame. Set the command in both machines' configs.
-6. Tests: buffer read-back of both tables, column colors (red at ≤10%, dimmed credits, dimmed stale row with its age), `—` cells, problem lines, row order from the JSON, a refresh that changes a reading, and a command that fails or prints bad JSON leaving the agents table intact.
+4. One source of truth: a configured `[census] accounts_command` printing accounts.py's own JSON; never re-derive the role map or the usage readings in Rust. Parse the JSON into typed rows at the boundary (`roles` into a list of a role enum, `credits` into an enum of amount, unlimited and none). The command (promoted to `~/.claude` on both machines at 49fde9b3) is `~/.claude/scripts/lib/py ~/.claude/scripts/accounts/accounts.py status --json [--stored]`; set `accounts_command` to the `--stored` form (no live reads, no subprocess, no ssh; 0.21 s on the Mac). Output: `{"accounts": [...], "problems": [string]}`, accounts in the table's order, `problems` the table's note lines. Keys per account: `label` (string); `tool` (`"claude"`|`"codex"`); `roles` (list: Claude `"units"`/`"showrunners"` or `[]`; Codex `["workers"]` or `["spare"]`); `weekly_left_percent` (number|null); `resets_at` (ISO 8601 UTC|null); `credits` (number|`"unlimited"`|null, null for Claude); `use_credits` (bool, false for Claude); `read_at` (ISO 8601 UTC|null). No email, folder or path. With no cached role map, `--stored` prints empty roles, puts the problem in `problems` and exits 0; plain `status --json` exits 1 with the reason on stderr when no role map can be read.
+5. Optional (showrunner ruling): with no `accounts_command` configured the summary shows only the agents table; when the command fails it also shows one dimmed line saying why. cargo-handler works fully without it. Refresh by running the command off the frame thread every 60 s; that run is the only change detection, and a changed reading shows on the next frame after it returns. Never block a frame. Model what the summary has as one state, e.g. `enum AccountsTable { NotConfigured, AwaitingFirstReading, Ready(AccountsReading), Failed(AccountsFailure), FailedKeepingLast { last: AccountsReading, failure: AccountsFailure } }`, never optional rows beside an optional error: before the first result the summary shows the agents table only; a failure after a good reading keeps the last rows (stale ones dimmed with their age, as in Spec 2) and adds the one dimmed why-line. Set the command in both machines' configs.
+6. `summary::height` and `summary::width` (`summary/mod.rs` ≈66, ≈83) measure only machine groups today and `render.rs` ≈264 hands them to the grid as the cell's demand: include the accounts heading, rows, problem lines and the why-line in both. A click on the accounts table's header changes no sort: neither the agents table's nor accounts.py's row order.
+7. Tests: a real grid-buffer read-back of both tables at their measured demand, column colors (red at ≤10%, dimmed credits, dimmed stale row with its age), `—` cells, problem lines, row order from the JSON, a refresh through the background scheduler that changes a reading, a command that fails or prints bad JSON leaving the agents table intact, every `AccountsTable` state drawn (including a failure after a good reading keeping the last rows), and an accounts-header click leaving both orders unchanged.
 
 **Files:**
 - `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/census/`
@@ -236,14 +233,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 2's cell-local click hook (`cell_content_at`, `tiles/host.rs`) resolves content from current slots and the destination layout through a crate-private settled-geometry helper in `tiles/grid.rs`. This phase moves it to the last-drawn record too, so the header hit-test matches what is on screen.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
+- Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render.rs` ≈229 `Cells::tile`/`header_spans`, `agent_cell.rs` ≈1384).
 - Before writing the Work Order's prompt, refresh the `grid.rs`/`draw.rs` line refs above against main after tile-fixes phase 20 merges.
 
 **Spec:**
 1. `draw_tile_grid` (`tiles/draw.rs`) records, for each drawn piece, the cell's stable content identity, its drawn rect, and its visible (clipped) hit region, in the grid's own state, replacing the previous frame's record. Where pieces overlap, the one drawn on top wins. Model the record's state as a type that tells "never drawn" apart from "a frame drew no interactive content" (e.g. `enum DrawnHits { NotDrawn, Drawn(Vec<DrawnPiece>) }`), never a bare `Option`.
 2. `TileGrid::cell_at(&self, Position) -> Option<usize>` keeps its public signature, as the compatibility boundary, and answers from that record. Before the first draw it answers from the layout as today.
 3. Phase 2's content lookup in `tiles/host.rs` uses the same record, and resolves the content by the identity recorded at draw time, not by the slot's current occupant.
-4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones.
-5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer. cargo-tile's suites pass.
+4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. If `Cells::tile` (`render.rs` ≈224) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
+5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort. cargo-tile's suites pass.
 
 **Files:**
 - `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/host_tests.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -256,31 +254,34 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean. A live click during motion lands on the drawn cell in cargo-handler and in cargo-tile. The checkpoint carries `Change-Review: clicks land on the tile drawn under the pointer, even while tiles move | add or remove a tile and click a moving one at once, in cargo-handler and cargo-tile`.
 
-### Phase 7 — Claude reviewers and Claude dispatch seats  · status: todo
+### Phase 7 — Reviewers and Claude dispatch seats  · status: todo
 
 **Depends on:** Phase 4
 
 #### Work Order
 
-**Goal:** an unnamed Claude plan-mode reviewer shows role `review`, and a dispatch to a Claude-backed seat folds into its row like a Codex seat does.
+**Goal:** a pool reviewer shows under its unit while it runs a review, an unnamed Claude plan-mode reviewer shows role `review`, and a dispatch to a Claude-backed seat folds into its row like a Codex seat does.
 
-**Source:** showrunner-approved add-ons, 2026-10-16, placed after the clicks phase.
+**Source:** showrunner-approved add-ons, 2026-10-16, placed after the clicks phase. Pool reviewers moved here from phase 4 on 2026-10-16 so all reviewer rows land together; the producer's reviewer edges (enh-showrunner checkpoint 3b2d8848 in `~/.claude`) must be merged and installed before the live check.
 
 **Constraints from prior phases:**
 - Dispatch resolution carries a Codex `thread_id` and folds the launcher shell's children into the thread's children; it cannot name a Claude session row today. `ParsedDispatch` drops the launcher's `--phase` argument.
 - The `["claude", "--print", "review"]` value in `census/tree.rs` is test fixture data, not a production rule. Today an unlisted Claude descendant can be treated as a carrier process rather than a visible row.
 
 **Spec:**
-1. A `claude --print --permission-mode plan` process with no other role mapping shows role `review`. Trace the real discovery-to-row path (`census/classify.rs`, `census/tree.rs`, `census/placement.rs`) and make such a process a visible row; the `review` fallback is typed and never overrides a role that already comes from the hierarchy edge or a roster.
+1. A `claude --print --permission-mode plan` process with no other role mapping shows role `review`. Trace the real discovery-to-row path (`census/classify.rs`, `census/tree.rs`, `census/placement.rs`) and make such a process a visible row; the `review` fallback is typed and never overrides a role that already comes from the hierarchy edge or a roster. Phase 3 groups top-level `RoleLabel::Unlabeled` roots into the unassigned tile and draws their role `—` (`agent_cell.rs` ≈460, ≈758): a top-level reviewer with no production role still joins that tile, but draws `review`, so the fallback is its own `RoleLabel` variant (or carried beside it) that grouping places with unlabeled roots and the role cell names.
 2. The dispatch fold resolves a Claude-backed seat through `<session dir>/phases/<id>/impl_worker_<slot>.json` (family `claude` → `worker_id` is the session id), joining the dispatch to that Claude session's row the way phase 1 joins a Codex seat through `mesh_roster.json`. Model the joined worker as a family-aware identity, e.g. `enum WorkerIdentity { CodexThread(ThreadId), ClaudeSession(SessionId) }`, so identical id text from the two families never matches. `ParsedDispatch` keeps `--phase` so the fold reads the current phase's file for the slot; a file from an earlier phase is ignored. Read the file's real shape from a live run (this session dir has `impl_worker_impl.json`) before writing the parser, and record it in the summary.
-3. Tests, with fixture files: a reviewer started with `--print --permission-mode plan` reaches the drawn Role column as `review` (render through the existing helpers in `worker_dispatch/tests.rs`, so this phase shares no file with phase 6 but the CHANGELOG); a hierarchy-given role still wins; a Claude-seat dispatch folds into its session's row; a stale earlier-phase identity file is ignored; a Codex thread id and a Claude session id with the same text stay apart.
+3. Pool reviewers (showrunner add-on, 2026-10-16, from the user's comparison: hana has 21 permanent pool reviewers and its tile shows none; revised the same day; the user: "i don't need to see them if they are not active - but if they are ruynning i expect to see them"). A pool reviewer is a leased Codex thread stored on disk, resumed for each review; `busy_pid` is the process running that review. cargo-handler shows running agents, so a stored thread is not a row. Source: `~/.local/state/review-pool/<production slug>/pool.json`, `reviewers.<name>` with `type`, `thread_id`, `lease.unit`, `busy_pid`; edges run from the leased unit to the reviewer with role `review`, emitted by the producer (`production_tree.py`, natedev's ruling 2026-10-16; enh-showrunner checkpoint 3b2d8848). `production_tree.py --json` (schema 1) adds an edge per leased reviewer: `manager` (director's Claude session id), `member` = `thread_id` (reviewer thread), `role` `review`, `unit` (lease unit), `state` `busy` while busy_pid runs else `idle`, `type` `code`|`design`; templates, unleased reviewers and directors on another machine are left out. Draw only `state: busy` edges. The user, later the same day: "i don't need to see pool reviewers that are idle … we should just only be showing active ssessions and certainly flag any that happens to have a reviewr role AS a reviewer when it's reviewing": the tile adds no row for a reviewer that is not running, and a running session that holds a reviewer lease draws role `review`, whichever row it would otherwise have. A unit can hold several reviewers (the pool forks one when all are busy); each busy one is its own row.
+   - A reviewer draws only while `busy_pid` names a live process: a `review` row under its unit, named `<reviewer> · <job>` by Spec 1, with its Spec 2 status word. A leased reviewer that is not busy, and every `templates` entry, draws nothing.
+4. Tests, with fixture files: a reviewer started with `--print --permission-mode plan` reaches the drawn Role column as `review` (rendered through grouped tiles, `agent_cell::group_tiles`, not only `cell_order_placed`, including a top-level reviewer inside the unassigned tile); a hierarchy-given role still wins; a Claude-seat dispatch folds into its session's row; a stale earlier-phase identity file is ignored; a Codex thread id and a Claude session id with the same text stay apart; from a fixture `production_tree.py --json` payload, a busy reviewer edge drawn as a `review` row under its unit, and an idle edge drawn as nothing.
 
 **Files:**
 - `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/render.rs`
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — production files.
+- `impl` — production files, migrations of existing tests outside the tester's files, `mod` lines.
 - `test` — `worker_dispatch/tests.rs` and new fixtures.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live tile shows a plan-mode reviewer as `review`. The checkpoint carries `Change-Review: Claude plan-mode reviewers show role review; dispatches to Claude seats fold into their row | open a tile running a Claude reviewer or a Claude-seat dispatch`.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live tile shows a plan-mode reviewer as `review` and a busy pool reviewer under its unit. The checkpoint carries `Change-Review: Claude plan-mode reviewers show role review; dispatches to Claude seats fold into their row | open a tile running a Claude reviewer or a Claude-seat dispatch` and `Change-Review: a pool reviewer shows under its unit as a review row while it runs a review, and not otherwise | look under a hana unit while its code review runs`.

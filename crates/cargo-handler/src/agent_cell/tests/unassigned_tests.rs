@@ -125,9 +125,9 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let buffer = draw_pool(pool(&tiles, "natedev"), 220);
     for (name, prefix) in [
-        ("ups", "ups — busy"),
-        ("postmaster", "postmaster — busy"),
-        ("opened-session", "├─ opened-session session busy"),
+        ("ups", "ups — thinking"),
+        ("postmaster", "postmaster — thinking"),
+        ("opened-session", "├─ opened-session session thinking"),
         ("ups-shell", "└─ ups-shell — command"),
         ("ups-codex", "└─ ups-codex worker idle"),
         ("post-task", "└─ post-task subagent claude"),

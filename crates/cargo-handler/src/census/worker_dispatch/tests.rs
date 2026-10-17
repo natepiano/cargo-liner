@@ -79,6 +79,77 @@ fn explicit_dispatch_seat_resolves_from_the_fixture_roster() {
 }
 
 #[test]
+fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
+    let base = Path::new("/tmp/claude/unit");
+    fs::create_dir_all(base).expect("session root exists");
+    let directory = tempfile::Builder::new()
+        .prefix("handler-job-heading-")
+        .tempdir_in(base)
+        .expect("isolated worker session");
+    fs::write(
+        directory.path().join(ROSTER_FILE),
+        serde_json::json!({SEAT:{"thread_id":"worker-thread", "launcher_pid":701}}).to_string(),
+    )
+    .expect("worker roster writes");
+    let mut names = WorkerNames::default();
+    let worktree = ThreadWorktree::Recorded("/fixture/cargo-liner-handler-enh".into());
+    for (heading, job) in [
+        (
+            "# Phase 6 repair round 1 — slot impl",
+            "Phase 6 repair round 1 — slot impl",
+        ),
+        ("  ###   Repair the worker  ", "Repair the worker"),
+        ("Repair the worker", "Repair the worker"),
+        ("###   ", ""),
+    ] {
+        let prompt = format!("{heading}\nBoard: {}/board.log", directory.path().display());
+        let role = WorkerRoleSource::Hierarchy(HierarchyRole::Fix);
+        let expected_role = if job.is_empty() {
+            "fix".to_owned()
+        } else {
+            format!("fix · {job}")
+        };
+        let expected_seat = if job.is_empty() {
+            "impl7".to_owned()
+        } else {
+            format!("impl7 · {job}")
+        };
+        let task = WorkerTask::from_prompt(&prompt);
+        assert_eq!(task.label(role, "worker-thread"), expected_role);
+        if job.is_empty() {
+            assert_eq!(task, WorkerTask::RoleOnly);
+        }
+        assert_eq!(
+            names.name("other-thread", &prompt, &worktree, role),
+            expected_role
+        );
+        assert_eq!(
+            names.name("worker-thread", &prompt, &worktree, role),
+            expected_seat
+        );
+
+        let literal = command(directory.path(), &format!("--to {SEAT}")).replace(JOB, heading);
+        let parsed = ParsedDispatch::parse(&literal).expect("heading job parses");
+        let WorkerDispatch::Worker(dispatch) =
+            parsed.resolve(&WorkerRoster::read(directory.path()), 701)
+        else {
+            panic!("the heading dispatch resolves its worker");
+        };
+        assert_eq!(dispatch.label(), expected_seat);
+        let mut shell = child("shell", "heading dispatch shell");
+        shell.dispatch = WorkerDispatch::Worker(dispatch);
+        let mut thread = child("thread", "original heading worker");
+        thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+        thread.pid = None;
+        let text = drawn_tiles(vec![agent(10, &[shell, thread])]).join("\n");
+        assert!(text.contains(&expected_seat), "{text}");
+        assert!(!text.contains('#'), "{text}");
+        assert!(!text.contains("heading dispatch shell"), "{text}");
+        assert!(!text.contains("original heading worker"), "{text}");
+    }
+}
+
+#[test]
 fn dispatch_without_to_selects_the_seat_by_its_launcher_pid() {
     let directory = roster_fixture();
     let parsed = ParsedDispatch::parse(&command(directory.path(), "--phase 1"))
@@ -1103,4 +1174,36 @@ fn older_probe_dispatches_infer_roles_only_when_the_role_field_is_absent() {
             );
         }
     }
+}
+
+#[test]
+fn pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible() {
+    let directory = roster_fixture();
+    let first = command(directory.path(), &format!("--to {SEAT}"));
+    let second = command(directory.path(), "--to cargo-liner-handler-enh-test2");
+    let parsed = ParsedDispatch::parse(&first).expect("first dispatch");
+    assert!(!parsed.is_final_command_of(&format!("{first} && {second}")));
+    assert!(parsed.is_final_command_of(&format!("export READY=1; {first}")));
+    let wrapper = process(
+        600,
+        10,
+        "zsh",
+        vec![
+            "zsh".into(),
+            "-c".into(),
+            format!(
+                "source /fixture/.claude/shell-snapshots/snapshot-test.sh && eval '{}'",
+                format!("{first} && {second}").replace('\'', "'\\''")
+            ),
+        ],
+    );
+    let mut argv = launcher_arguments(directory.path());
+    argv.splice(2..2, ["--to".to_owned(), SEAT.to_owned()]);
+    let launcher = process(701, 600, "bash", argv);
+    let dispatches = scan::find_worker_dispatches(&[wrapper, launcher]);
+    assert!(!dispatches.contains_key(&600));
+    assert!(matches!(
+        dispatches.get(&701),
+        Some(WorkerDispatch::Worker(_))
+    ));
 }

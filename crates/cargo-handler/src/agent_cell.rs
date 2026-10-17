@@ -29,6 +29,7 @@ use tui_pane::text_default;
 use crate::census::Account;
 use crate::census::AccountColumn;
 use crate::census::Agent;
+use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
@@ -38,7 +39,6 @@ use crate::census::Placement;
 use crate::census::RoleLabel;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
-use crate::census::ThreadState;
 use crate::census::Timer;
 use crate::census::worker_dispatch::DispatchLabel;
 use crate::census::worker_dispatch::WorkerRoleInput;
@@ -64,6 +64,7 @@ use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_SPACE;
 use crate::constants::TREE_STATUS_HEADER;
+use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
@@ -224,7 +225,7 @@ impl<'a> Work<'a> {
                 |timer| timer_label(timer, now),
             ),
             WorkKind::Subagent => self.child.runs_label().into_owned(),
-            WorkKind::Thread => self.child.thread_state.text().to_string(),
+            WorkKind::Thread => self.child.activity.text().to_string(),
         }
     }
 }
@@ -371,7 +372,19 @@ impl TreeLine<'_> {
             LineSubject::Work(work) => &work.child.name,
         };
         let name = match self.dispatch_label {
-            DispatchLabel::Original => original.clone(),
+            DispatchLabel::Original => match self.subject {
+                LineSubject::ManagedThread(child, role) => child.worker_task.label(
+                    WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)),
+                    original,
+                ),
+                LineSubject::Work(work) if matches!(work.kind, WorkKind::Thread) => {
+                    work.child.worker_task.label(
+                        WorkerRoleSource::resolve(WorkerRoleInput::Dispatch(self.dispatch_label)),
+                        original,
+                    )
+                },
+                _ => original.clone(),
+            },
             DispatchLabel::Worker(dispatch) => dispatch.label(),
         };
         match self.location {
@@ -510,7 +523,7 @@ impl TreeLine<'_> {
                 LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                     summary::status_text(self.row).to_string()
                 },
-                LineSubject::ManagedThread(child, _) => child.thread_state.text().to_string(),
+                LineSubject::ManagedThread(child, _) => child.activity.text().to_string(),
                 LineSubject::Work(work) => work.status(now),
             },
             TreeColumn::Account => match self.account() {
@@ -536,7 +549,7 @@ impl TreeLine<'_> {
     }
 
     /// The status color of the subject.
-    fn status_role(&self) -> Role {
+    const fn status_role(&self) -> Role {
         match self.subject {
             LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 summary::status_role(self.row)
@@ -545,7 +558,7 @@ impl TreeLine<'_> {
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread,
-            }) => thread_status_role(child.thread_state),
+            }) => thread_status_role(child.activity),
             LineSubject::Work(work) => runs_role(work.kind),
         }
     }
@@ -1501,7 +1514,18 @@ fn tree_header(
             let columns = TreeLayout::Compressed.columns(account_column);
             let mut widths = tree_widths(lines, columns, now, sort, lead);
             let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-            let spacing = TABLE_COLUMN_SPACING.min(tree.width.saturating_sub(1) / gaps);
+            let minimum_columns = widths[1..]
+                .iter()
+                .map(|&width| usize::from(width))
+                .sum::<usize>()
+                + usize::from(summary::cell_width(
+                    &columns[0].sorted_header_text(sort, lead),
+                ));
+            let spacing = TABLE_COLUMN_SPACING.min(
+                tree.width
+                    .saturating_sub(u16::try_from(minimum_columns).unwrap_or(u16::MAX))
+                    / gaps,
+            );
             let fixed = widths[1..]
                 .iter()
                 .map(|&width| usize::from(width))
@@ -1670,10 +1694,9 @@ fn above_tree(
     if *view == CellView::Compressed && row.launched_by.is_none() {
         return Vec::new();
     }
-    let mut lines = vec![
-        header_line_with_footer_colors(row, entry.machine, now, account_column, footer_colors),
-        place_line(row),
-    ];
+    let heading =
+        AgentHeading::new(row, entry.machine, now, account_column, footer_colors).fitted(width);
+    let mut lines = vec![heading, place_line(row)];
     if let Some(launcher) = row.launched_by {
         let name = entry
             .launcher
@@ -1714,28 +1737,92 @@ fn header_line_with_footer_colors(
     account_column: AccountColumn,
     footer_colors: &FooterColors,
 ) -> Line<'static> {
-    let text = Style::default().fg(text_default());
-    let separator = summary::separator;
-    let mut spans = vec![
-        Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(format!("{PID_LABEL} {}", row.pid), text),
-        separator(),
-    ];
-    spans.extend(summary::agent_label(row, account_column, footer_colors).spans);
-    spans.extend([
-        separator(),
-        Span::styled(
-            summary::status_text(row).to_string(),
-            summary::status_role(row).style(),
-        ),
-        separator(),
-        Span::styled(age::age_label(now.saturating_sub(row.started)), text),
-        separator(),
-        Span::styled(machine.to_string(), text),
-        separator(),
-        Span::styled(summary::desktop_text(row).to_string(), text),
-    ]);
-    Line::from(spans)
+    AgentHeading::new(row, machine, now, account_column, footer_colors).full()
+}
+
+/// Identity and activity stay together; the location suffix may be omitted.
+struct AgentHeading {
+    identity: Line<'static>,
+    location: Line<'static>,
+}
+
+/// A suffix is retained only when some of its own text can be drawn.
+enum HeadingLocation {
+    Shown(Line<'static>),
+    Cut(Line<'static>),
+    Omitted,
+}
+
+impl HeadingLocation {
+    fn fitted(line: Line<'static>, width: usize) -> Self {
+        if line.width() <= width {
+            Self::Shown(line)
+        } else if width > usize::from(summary::cell_width(&TRUNCATION_MARK.to_string())) {
+            Self::Cut(cut_line(
+                line.spans,
+                u16::try_from(width).unwrap_or(u16::MAX),
+            ))
+        } else {
+            Self::Omitted
+        }
+    }
+
+    fn append_to(self, mut identity: Line<'static>) -> Line<'static> {
+        match self {
+            Self::Shown(location) | Self::Cut(location) => {
+                identity.spans.push(summary::separator());
+                identity.spans.extend(location.spans);
+            },
+            Self::Omitted => {},
+        }
+        identity
+    }
+}
+
+impl AgentHeading {
+    fn new(
+        row: &AgentRow,
+        machine: &str,
+        now: u64,
+        account_column: AccountColumn,
+        footer_colors: &FooterColors,
+    ) -> Self {
+        let text = Style::default().fg(text_default());
+        let separator = summary::separator;
+        let mut spans = vec![
+            Span::raw(SECTION_HEADER_INDENT),
+            Span::styled(format!("{PID_LABEL} {}", row.pid), text),
+            separator(),
+        ];
+        spans.extend(summary::agent_label(row, account_column, footer_colors).spans);
+        spans.extend([
+            separator(),
+            Span::styled(
+                summary::status_text(row).to_string(),
+                summary::status_role(row).style(),
+            ),
+            separator(),
+            Span::styled(age::age_label(now.saturating_sub(row.started)), text),
+        ]);
+        Self {
+            identity: Line::from(spans),
+            location: Line::from(vec![
+                Span::styled(machine.to_string(), text),
+                separator(),
+                Span::styled(summary::desktop_text(row).to_string(), text),
+            ]),
+        }
+    }
+
+    fn full(self) -> Line<'static> {
+        HeadingLocation::Shown(self.location).append_to(self.identity)
+    }
+
+    fn fitted(self, width: u16) -> Line<'static> {
+        let remaining =
+            usize::from(width).saturating_sub(self.identity.width() + summary::separator().width());
+        HeadingLocation::fitted(self.location, remaining).append_to(self.identity)
+    }
 }
 
 /// Where `row` works, as one value: `<branch> · <directory>`, or the
@@ -1827,12 +1914,7 @@ fn time_left_label(left: u64) -> String {
 }
 
 /// The same activity colors used for a Claude session's busy and idle states.
-const fn thread_status_role(state: ThreadState) -> Role {
-    match state {
-        ThreadState::Busy => Role::Busy,
-        ThreadState::Idle => Role::Idle,
-    }
-}
+const fn thread_status_role(state: AgentActivity) -> Role { state.color_role() }
 
 /// The program color of a retained work line's status.
 const fn runs_role(kind: WorkKind) -> Role {
@@ -1855,6 +1937,8 @@ mod tests {
     use crate::census::Account;
     use crate::census::CodexThreadId;
 
+    #[path = "activity_tests.rs"]
+    mod activity_tests;
     #[path = "footer_color_tests.rs"]
     mod footer_color_tests;
     #[path = "sort_tests.rs"]
@@ -1874,6 +1958,7 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::worker_dispatch::WorkerDispatch;
+    use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::TRUNCATION_MARK;
 
     /// Every cell across `machines`, in the order the grid shows them:
@@ -1919,7 +2004,7 @@ mod tests {
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
             name: name.to_string(),
-            status: Some("busy".to_string()),
+            activity: crate::census::AgentActivity::from_legacy(Some("busy")),
             started: NOW - age,
             process_started: NOW - age,
             pid,
@@ -1935,8 +2020,9 @@ mod tests {
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
+            worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
-            thread_state: ThreadState::Idle,
+            activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             depth,
             kind,
@@ -2148,7 +2234,7 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " pid 3266367 · claude · busy · 23h · natedev · berth_fix",
+                " pid 3266367 · claude · thinking · 23h · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
                 "    session                                                                role      status   branch  directory  age ▼",
@@ -2158,7 +2244,7 @@ mod tests {
                 "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  —         command  —       —          45s",
             ]
         );
-        let heading = " pid 3266367 · claude · busy · 23h · natedev · berth_fix";
+        let heading = " pid 3266367 · claude · thinking · 23h · natedev · berth_fix";
         for (index, character) in heading.chars().enumerate() {
             if character == '·' {
                 assert_eq!(
@@ -2175,7 +2261,7 @@ mod tests {
         }
         for (text, role) in [
             ("claude", Role::Claude),
-            ("busy", Role::Busy),
+            ("thinking", Role::Busy),
             ("idle", Role::Idle),
             ("command", Role::Shell),
         ] {
@@ -2204,7 +2290,7 @@ mod tests {
         assert_eq!(
             lines(&drawn(&arrange, None, WIDE)),
             [
-                " pid 3337048 · claude · busy · 2h · natedev · —",
+                " pid 3337048 · claude · thinking · 2h · natedev · —",
                 " ~/rust/tool-based-ui-arrange",
                 " launched by pid 1579022",
                 " nothing running",
@@ -2220,6 +2306,7 @@ mod tests {
             agent: Agent::Codex,
             service_tier: ServiceTier::Fast,
             children: vec![ChildRow {
+                worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                 service_tier: ServiceTier::Standard,
                 ..child(0, ChildKind::Thread, None, "trunk mesh", 10 * MINUTE)
             }],
@@ -2250,7 +2337,7 @@ mod tests {
         assert_eq!(
             lines(&whole),
             [
-                " pid 1579022 · claude · busy · 2d · natedev · —",
+                " pid 1579022 · claude · thinking · 2d · natedev · —",
                 " ~/rust/boss of bosses",
                 " nothing running",
             ]
@@ -2474,7 +2561,7 @@ mod tests {
                     ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    status: Some("idle".to_string()),
+                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
                     branch: Some("enh/arrange".to_string()),
                     directory: "~/rust/ui-arrange".to_string(),
                     children: vec![child(
@@ -2487,7 +2574,7 @@ mod tests {
                     ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
                 },
                 AgentRow {
-                    status: Some("idle".to_string()),
+                    activity: crate::census::AgentActivity::from_legacy(Some("idle")),
                     directory: "~/scratch/impl".to_string(),
                     ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
                 },
@@ -2672,7 +2759,7 @@ mod tests {
         );
         assert!(rendered.iter().any(|line| line.contains(TRUNCATION_MARK)));
         assert_eq!(
-            Some(buffer[find(&buffer, "busy").expect("busy status")].fg),
+            Some(buffer[find(&buffer, "thinking").expect("thinking status")].fg),
             Role::Busy.style().fg
         );
         assert_eq!(
@@ -2821,9 +2908,9 @@ mod tests {
     }
 
     /// A launched session too narrow to lie flat keeps its header in its
-    /// compressed view as one line cut with the truncation mark, not a
-    /// block of labelled facts, above its branch and directory and the
-    /// agent that opened it, each cut to its one line.
+    /// compressed view as one line ending at the age when no location
+    /// text fits, above its branch and directory and the agent that
+    /// opened it, each cut to its one line.
     #[test]
     fn a_narrow_launched_cell_cuts_its_header_to_one_line() {
         let trunk = AgentRow {
@@ -2846,12 +2933,26 @@ mod tests {
         assert_eq!(
             lines(&buffer)[..3],
             [
-                format!(" pid 3266367 · claude · busy · 23h · {mark}"),
+                " pid 3266367 · claude · thinking · 23h".to_string(),
                 format!(" ~/rust/tool-based-ui-geometry-materi{mark}"),
                 " launched by boss of bosses".to_string(),
             ]
         );
         assert!(runs_in(&buffer, label_color()).contains(&LAUNCHED_BY_LABEL.to_string()));
+    }
+
+    /// A partial location retains its separator and mark; a mark alone is omitted.
+    #[test]
+    fn launched_heading_keeps_partial_location_and_omits_a_location_without_text() {
+        let trunk = trunk();
+        for (width, expected) in [
+            (NARROW, " pid 3266367 · claude · thinking · 23h"),
+            (42, " pid 3266367 · claude · thinking · 23h"),
+            (43, " pid 3266367 · claude · thinking · 23h · n…"),
+        ] {
+            let buffer = drawn(&trunk, Some("boss of bosses"), width);
+            assert_eq!(lines(&buffer)[0], expected, "heading at {width} cells");
+        }
     }
 
     /// A compressed top-level agent begins with its tree header row,
@@ -3076,6 +3177,7 @@ mod tests {
                     4 * MINUTE,
                 ),
                 ChildRow {
+                    worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                     timer: Some(Timer {
                         started:  NOW - 92,
                         deadline: NOW + 228,
@@ -3277,6 +3379,7 @@ mod tests {
     #[test]
     fn a_codex_thread_nests_under_its_unit_once_without_moving_its_app_server() {
         let thread = ChildRow {
+            worker_task: WorkerTask::Unrecorded,
             thread_id: CodexThreadId::Recorded("thread-id".to_string()),
             ..child(0, ChildKind::Thread, None, "implementation worker", MINUTE)
         };
@@ -3331,12 +3434,14 @@ mod tests {
                     agent: Agent::Codex,
                     children: vec![
                         ChildRow {
+                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                             thread_id: CodexThreadId::Recorded("fast-id".to_string()),
                             service_tier: ServiceTier::Fast,
                             account: Account::Unrecorded,
                             ..child(0, ChildKind::Thread, None, "fast worker", MINUTE)
                         },
                         ChildRow {
+                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                             thread_id: CodexThreadId::Recorded("standard-id".to_string()),
                             service_tier: ServiceTier::Standard,
                             account: Account::Unrecorded,

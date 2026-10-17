@@ -6,6 +6,7 @@ use std::iter::Peekable;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Chars;
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::Deserializer;
@@ -13,6 +14,10 @@ use serde::Serialize;
 use serde::de::IgnoredAny;
 
 use super::HierarchyRole;
+use super::tier::ThreadWorktree;
+use crate::constants::SESSION_ROOTS;
+use crate::constants::UUID_TEXT_LENGTH;
+use crate::constants::WORKER_LABEL;
 
 /// The roster filename inside a dispatch's session directory.
 const ROSTER_FILE: &str = "mesh_roster.json";
@@ -120,7 +125,7 @@ impl WorkerRoleSource {
         match self {
             Self::Hierarchy(role) => role.text(),
             Self::SeatToken(role) | Self::Dispatch(role) => role.text(),
-            Self::Unroled => "worker",
+            Self::Unroled => WORKER_LABEL,
         }
     }
 }
@@ -209,7 +214,178 @@ impl ResolvedWorkerDispatch {
     /// The worker row's display name, on one line however the job was written.
     pub(crate) fn label(&self) -> String {
         let job = self.job.split_whitespace().collect::<Vec<_>>().join(" ");
-        format!("{} · {job}", self.short_seat)
+        task_label(&self.short_seat, &job)
+    }
+}
+
+/// The task-backed fallback name, resolved with the final hierarchy role at draw time.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerTask {
+    /// An older probe has only its original name.
+    #[default]
+    Unrecorded,
+    /// No readable first task prompt exists.
+    RoleOnly,
+    /// The first task line; neither a UUID nor an arbitrary later prompt.
+    Task(String),
+}
+impl WorkerTask {
+    /// Older child payloads have no task naming extension.
+    pub(super) const fn is_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+
+    /// Resolve a task line once at the rollout boundary.
+    pub(crate) fn from_prompt(prompt: &str) -> Self {
+        let line = first_task_line(prompt);
+        if line.is_empty() {
+            Self::RoleOnly
+        } else {
+            Self::Task(line)
+        }
+    }
+    /// A final role names every thread, including unreadable or old raw-id rows.
+    pub(crate) fn label(&self, role: WorkerRoleSource, original: &str) -> String {
+        match self {
+            Self::RoleOnly => role.text().to_owned(),
+            Self::Task(job) => task_label(role.text(), job),
+            Self::Unrecorded => {
+                let uuid = original.len() == UUID_TEXT_LENGTH
+                    && original.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                if uuid {
+                    role.text().to_owned()
+                } else {
+                    original.to_owned()
+                }
+            },
+        }
+    }
+}
+
+/// A roster cached by its file modification time, never searched globally.
+#[derive(Debug, Default)]
+pub(super) struct WorkerNames {
+    rosters: BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
+}
+
+impl WorkerNames {
+    /// Session paths mentioned by the first task prompt, in either supported root.
+    pub(super) fn session_dirs(prompt: &str) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for root in SESSION_ROOTS {
+            for (index, _) in prompt.match_indices(root) {
+                let suffix = &prompt[index + root.len()..];
+                let id: String = suffix
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
+                if !id.is_empty() {
+                    paths.push(PathBuf::from(format!("{root}{id}")));
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    /// Read a discovered roster only when its modification time changes.
+    pub(super) fn roster(&mut self, directory: &Path) -> &WorkerRoster {
+        &self.roster_snapshot(directory).1
+    }
+
+    /// The roster and its timestamp come from the same metadata observation.
+    fn roster_snapshot(&mut self, directory: &Path) -> &(SystemTime, WorkerRoster) {
+        let path = directory.join(ROSTER_FILE);
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let cached = self
+            .rosters
+            .entry(path)
+            .or_insert_with(|| (modified, WorkerRoster::read(directory)));
+        if cached.0 != modified {
+            *cached = (modified, WorkerRoster::read(directory));
+        }
+        cached
+    }
+
+    /// Find this thread only in rosters its own task names; newest match wins.
+    pub(super) fn resolve(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        worktree: &ThreadWorktree,
+    ) -> WorkerDispatch {
+        let mut selected = None;
+        for directory in Self::session_dirs(prompt) {
+            let (modified, roster) = self.roster_snapshot(&directory);
+            let modified = *modified;
+            for (seat, worker) in &roster.seats {
+                if worker.thread_id != thread_id {
+                    continue;
+                }
+                if selected.as_ref().is_some_and(|(at, _)| *at >= modified) {
+                    continue;
+                }
+                let short = worktree
+                    .seat_prefix()
+                    .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
+                    .unwrap_or(seat);
+                selected = Some((
+                    modified,
+                    ResolvedWorkerDispatch {
+                        seat:       seat.clone(),
+                        thread_id:  thread_id.to_owned(),
+                        job:        first_task_line(prompt),
+                        short_seat: short.to_owned(),
+                        role:       match worker.role {
+                            DispatchRole::Unroled => DispatchRole::from_short_seat(short),
+                            role @ DispatchRole::Worker(_) => role,
+                        },
+                    },
+                ));
+            }
+        }
+        selected.map_or(WorkerDispatch::Plain, |(_, dispatch)| {
+            WorkerDispatch::Worker(dispatch)
+        })
+    }
+
+    /// Name a launcher-free worker using the same seat and job contract as a fold.
+    #[cfg(test)]
+    pub(super) fn name(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        worktree: &ThreadWorktree,
+        role: WorkerRoleSource,
+    ) -> String {
+        match self.resolve(thread_id, prompt, worktree) {
+            WorkerDispatch::Worker(dispatch) => dispatch.label(),
+            WorkerDispatch::Plain => task_label(role.text(), prompt),
+        }
+    }
+}
+
+/// First nonempty task line without heading markers; context is excluded upstream.
+fn first_task_line(prompt: &str) -> String {
+    prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('#')
+        .trim_start()
+        .to_owned()
+}
+
+/// A role remains useful even when the rollout prompt cannot be read.
+fn task_label(role: &str, prompt: &str) -> String {
+    let job = first_task_line(prompt);
+    if job.is_empty() {
+        role.to_owned()
+    } else {
+        format!("{role} · {job}")
     }
 }
 
@@ -240,6 +416,38 @@ pub(super) struct ParsedDispatch {
 pub(super) struct NotWorkerDispatch;
 
 impl ParsedDispatch {
+    /// The live mesh child names a fresh or follow-up seat authoritatively.
+    pub(super) fn select_seat(&mut self, seat: String) { self.seat = SeatSelection::Named(seat); }
+
+    /// A live launcher's wrapper may set variables before its final dispatch.
+    /// Commands following the dispatch still belong to the shell and must stay visible.
+    pub(super) fn is_final_command_of(&self, command: &str) -> bool {
+        if Self::parse(command).is_ok_and(|parsed| parsed == *self) {
+            return true;
+        }
+        let mut quote = None;
+        let mut escaped = false;
+        let mut start = 0;
+        for (offset, character) in command.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match (quote, character) {
+                (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+                (None, '\'' | '"') => quote = Some(character),
+                (Some('\''), _) => {},
+                (_, '\\') => escaped = true,
+                (None, ';' | '&' | '|' | '\n') => start = offset + character.len_utf8(),
+                _ => {},
+            }
+        }
+        // Values are already resolved in the observed launcher argv. Here variable
+        // spellings only establish that the wrapper ends with one dispatch command.
+        let final_command = command[start..].replace('$', "_");
+        Self::parse(&final_command).is_ok_and(|parsed| parsed == *self)
+    }
+
     /// Read literal assignments followed by bash implement.sh without executing them.
     pub(super) fn parse(command: &str) -> Result<Self, NotWorkerDispatch> {
         Self::from_arguments(&command_words(command)?)
@@ -354,7 +562,7 @@ impl ParsedDispatch {
 }
 
 /// Whether a roster entry records its launcher's process identity.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum LauncherIdentity {
     /// Finished seats may no longer have a launcher pid.
     Unrecorded,
@@ -363,7 +571,7 @@ enum LauncherIdentity {
 }
 
 /// A roster entry with a usable thread identity.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RosterWorker {
     /// The nonempty thread id to join to the census.
     thread_id: String,
@@ -411,7 +619,7 @@ enum RosterEntry {
 }
 
 /// The seat entries read once per session directory during a scan.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct WorkerRoster {
     /// Entries whose thread identity was validated at the JSON boundary.
     seats: BTreeMap<String, RosterWorker>,
@@ -684,7 +892,7 @@ fn read_ansi_c_escape(
 
 /// Split one literal command into launcher argv, consuming leading assignments.
 /// Expansions and command operators cannot establish a safe worker identity.
-fn command_words(command: &str) -> Result<Vec<String>, NotWorkerDispatch> {
+pub(super) fn command_words(command: &str) -> Result<Vec<String>, NotWorkerDispatch> {
     let mut words = Vec::new();
     let mut word = WordBeingLexed::Empty;
     let mut chars = command.chars().peekable();
@@ -720,3 +928,10 @@ fn command_words(command: &str) -> Result<Vec<String>, NotWorkerDispatch> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "naming_tests.rs"]
+mod naming_tests;
+
+#[cfg(test)]
+mod dispatch_form_tests;
