@@ -19,7 +19,7 @@
 - **Stack:** Rust workspace, cargo-nextest, ratatui + crossterm for the terminal board. The crate has no lib target, so unit tests live in `cargo-berth::bin/cargo-berth` and integration tests in `crates/cargo-berth/tests/`.
 - **Test lanes:** `crates/cargo-berth/tests/`.
 - **Key files:**
-  - `crates/cargo-berth/src/config.rs` — `BerthConfig::initialize` (~151), `BerthConfig::relative_path` (~142), `CLAUDE_DIRECTORY` / `CONFIGURATION_DIRECTORY` / `CONFIGURATION_FILE` (17–19); doc comment at ~43 says the configuration file is untracked and per-worktree.
+  - `crates/cargo-berth/src/config.rs` — `BerthConfig::relative_path` (145), `BerthConfig::exclude_from_git` (155), `BerthConfig::initialize` (187), `CLAUDE_DIRECTORY` / `CONFIGURATION_DIRECTORY` / `CONFIGURATION_FILE` (17–19).
   - `crates/cargo-berth/src/ledger/handle.rs` — `Ledger::initialize` (~256–267) calls `BerthConfig::initialize`.
   - `crates/cargo-berth/src/cli.rs` — `initialize_ledger` (~1711): ledger init, `pin_unrecorded_targets`, `gate::install::install_managed_hooks`, `worktree::enroll_worktrees`.
   - `crates/cargo-berth/src/drift/observation.rs` — `observe_merge_working_tree` (~560–583) drops `BerthConfig::relative_path()` from the merge working tree.
@@ -30,7 +30,7 @@
   - `crates/cargo-berth/src/board/report.rs` — `reservation_lifecycle_snapshot(report, id)` (79), `ReservationReport` (17, 50), `reservation_lifecycle_presentation`.
   - `crates/cargo-berth/src/output.rs` — `OutputFacts::Reservation(ReservationLifecycleQueryPayload)` (~762, payload kind `"reservation"`), `ReservationLifecycleQueryPayload` (~1049), `ReservationReportSnapshot` (~1058: `reservation_id`, `lifecycle`, `race_extent`, `merge_extent`), `OutputEnvelope::reservation_lifecycle` (~1748).
   - `crates/cargo-berth/src/output_contract.rs` — schemas `reservation_lifecycle` / `reservation_lifecycle_query` (~117–124); regenerate `docs/cargo-berth/generated/output-contract.json` with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1` (test at ~312).
-  - `crates/cargo-berth/tests/ledger.rs` — init tests; `clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line` (444) asserts the untracked list equals `.claude/config/berth.toml`; `CONFIGURATION_PATH` (42).
+  - `crates/cargo-berth/tests/ledger.rs` — init tests; `clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line` asserts a clean `git status` after `init`; `CONFIGURATION_PATH`, `EXCLUDE_PATH`.
   - `crates/cargo-berth/tests/board.rs` — `reservation_report` / `reservation_report_and_presentation` helpers (~2039–2044), `waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold` (614).
   - `crates/cargo-berth/README.md` — "First use" (10, init at 28–57), "Board" (382–420).
   - `crates/cargo-berth/CHANGELOG.md` — `[Unreleased]` `Fixed` (~87).
@@ -42,36 +42,35 @@
   - Invalid states are unrepresentable: fix with types, never procedural guards (user, 2026-10-15).
   - No test takes a second. Format with `cargo +nightly fmt` only. Run one `verify.sh` at a time.
   - `crates/cargo-berth/CHANGELOG.md` and `crates/cargo-berth/README.md` are shared by every phase, so the phases run in order.
+- **Constraints from prior phases (every remaining Work Order):**
+  - `init` adds `/.claude/config/berth.toml` to the common git `info/exclude`, so the configuration is ignored in every worktree. A fixture that commits the configuration on purpose uses `git add --force`; a fixture standing for a repository initialized before that change removes the exclude entry.
+  - A fixture that needs a dirty tree or uncommitted work creates real work files; untracked configuration no longer counts as work.
 
 ## Phases
 
 ### Phase 1 — Initializing berth leaves no untracked `.claude/` in trunk  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** After `cargo-berth init`, `git status --short` in the trunk worktree shows no `.claude/` entry, while the configuration stays at `.claude/config/berth.toml`.
-
-**Spec:**
-1. Every `init` (`initialize_ledger`, after `Ledger::initialize`, whether or not the configuration file already existed) makes git ignore that file for every worktree: append the line `/.claude/config/berth.toml` to the common `info/exclude` file (`git rev-parse --git-common-dir` + `info/exclude`; create `info/` when absent), once. A second `init` adds no second line, and an existing line (with or without the leading `/`) counts as present. A repository that tracks the file is unaffected: exclude never hides a tracked file.
-2. The configuration path and contents do not change. Keep `observe_merge_working_tree`'s drop of `BerthConfig::relative_path()` (a repository initialized before this change has no exclude line until `init` runs again).
-3. Write the exclude line through one place that owns the path string, built from `BerthConfig::relative_path()`, so the excluded path and the written path cannot diverge.
-4. Tests: (a) after a clean `init`, `git status --short` and `git ls-files --others --exclude-standard` list nothing under `.claude/` — update `clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line` (tests/ledger.rs:444), which asserts the opposite; (b) a second `init` leaves exactly one exclude line; (c) a linked worktree's `git status --short` shows no `.claude/` entry after `init`.
-5. Docs: README "First use" init text (~28–57) says init excludes the file from git status; CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/worktree-enrollment.md` (lines ~5, 12, 18, 84, 112, 119, 141) and `operations.md` (~14–28, 84–86) state the exclude.
+- `BerthConfig::exclude_from_git(common_git_directory: &Path) -> Result<(), ConfigError>` appends `/.claude/config/berth.toml` once to the common git `info/exclude`. The line is built from `BerthConfig::relative_path()`, so the excluded path and the written path cannot diverge. It creates `info/` when absent, keeps existing bytes (adding a newline separator when the file lacks a trailing one), and treats an anchored or unanchored line, with or without CRLF, as already present.
+- `initialize_ledger` calls it on every `init`, right after worktree-context discovery and before the configuration read, so rerunning `init` repairs a repository initialized before the exclude existed. A write failure returns `initialization_error(LedgerError::Config(..))` and `init` exits non-zero; rerunning `init` after removing the obstruction writes the line once.
+- The configuration path and contents are unchanged; `observe_merge_working_tree` still drops `BerthConfig::relative_path()`. A tracked configuration stays visible, since exclude never hides a tracked file.
+- README "First use", CHANGELOG `[Unreleased]` `Fixed`, and the as-built `worktree-enrollment.md` and `operations.md` state the exclude.
 
 **Files:**
-- `crates/cargo-berth/src/config.rs` — exclude path ownership and the exclude write
-- `crates/cargo-berth/src/cli.rs` — `initialize_ledger` calls the exclude write on every `init`, including one that finds the configuration already present
-- `crates/cargo-berth/tests/ledger.rs` — the Spec 4 tests
-- `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`
-- `docs/cargo-berth/as-built/worktree-enrollment.md`, `docs/cargo-berth/as-built/operations.md`
+- `crates/cargo-berth/src/config.rs` — exclude path ownership and the write
+- `crates/cargo-berth/src/cli.rs` — `initialize_ledger` calls the write on every `init`
+- `crates/cargo-berth/tests/ledger.rs` — clean init leaves nothing under `.claude/`, repeat init keeps one line, linked worktree is clean, existing patterns survive, missing `info/` is created, tracked configuration stays visible
+- `crates/cargo-berth-test-support/src/integration_repository.rs` and the integration test files that commit the configuration — `git add --force`
+- `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`, `docs/cargo-berth/as-built/worktree-enrollment.md`, `docs/cargo-berth/as-built/operations.md`
 
-**Workers:** 1 writer + 1 tester
-- `impl` — `src/`, README, CHANGELOG, as-built docs; runs lint and the full gate.
-- `test` — the Spec 4 tests in `tests/ledger.rs`.
+**Binds later work:** a fixture that commits `.claude/config/berth.toml` uses `git add --force`; a legacy-repository fixture removes `info/exclude`; a fixture that needs a dirty tree creates real work files, never relying on the configuration. The exclude-write failure and rerun repair is covered by the incursion phase's test (h).
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; after `init`, `git status --short` shows no `.claude/` entry.
+**Gotchas:**
+- A later `!` negation line in the exclude file is honored as the user's un-ignore.
+- Before this change the untracked configuration acted as implicit dirty work in several fixtures (drift root-head, engine instructions); those now create real work files.
+
+**Ruled out:** serializing concurrent `init` exclude writes — single-user race.
 
 ### Phase 2 — An incursion from commits already on the integration target is never raised, and a resolved one stays resolved  · status: todo
 
@@ -82,20 +81,21 @@
 **Goal:** A reservation whose committed range holds commits the integration target already reaches raises no incursion for them, and `resolve --every-incursion` stays resolved on the next hook check unless a new commit enters the path.
 
 **Spec:**
-1. Before classification, drop from a reservation's committed paths every commit the integration target reaches. Committed paths today come from a plain `phase_start..HEAD` diff (`src/drift/observation.rs:667`, `src/git/paths.rs:41-65`), so work merged in from the target counts as the phase's own. Classification raises an incursion on path and holder alone (`src/drift/classification.rs:418-419`); provenance (`src/drift/provenance.rs:391-421`) is computed only for the message. Move that commit-origin read (`commits_outside_origin_basis`) ahead of classification so a committed-only path whose in-range commits are all on the target is not an incursion.
-2. Judge target membership against the target's upstream (for example `origin/init/catalyst`) as well as the local ref (`src/ledger/target.rs:36-52`), so a local target that is behind its upstream does not mark upstream commits as "this phase authored it".
-3. An incursion answer covers its path and the commits that entered it: record the commit ids in each blocked path, so a holder set that grows later on the same commits (`src/reservation/retention.rs:885-913`, uncovered at ~854) does not open a new incident. Only a new commit into the path reopens it. Journal replay of existing incidents is unchanged (an old incident without commit ids keeps today's holder-subset rule).
-4. Tests: (a) invert `tests/drift.rs:1528`, which asserts today's behaviour, and extend `merged_integration_target_commits_are_not_attributed_to_the_lane` (~1601); (b) a resolved incursion whose holder set grows stays resolved, next to `incursion_incident_round_trip_deduplicates_and_resolves` (~577) and `an_answered_incursion_covers_a_sibling_claimed_after_the_answer` (~1086); (c) a drift test where the local target is behind its upstream; (d) a `tests/hooks.rs` case with no STOP after `resolve --every-incursion`; (e) a new commit into a resolved path reopens it.
-5. Docs: CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/worktree-coordination.md` and `parallel-phases.md` lines that describe incursion classification and resolution.
+1. Classification uses commit origin. Committed paths come from a plain `phase_start..HEAD` diff (`src/drift/observation.rs:667`, `src/git/paths.rs:41-65`), so work merged in from the target counts as the phase's own. The committed-path history is already read before the lock (`classify_foreign_paths_before_lock`, `src/drift/execution.rs:440-463`; origin membership at `src/drift/provenance.rs:160`), but classification raises an incursion on path and holder alone (`src/drift/classification.rs:418-419`) and uses that history only for the message. Make classification drop every in-range commit the integration target reaches, so a committed-only path whose in-range commits are all on the target is not an incursion. The history read covers every committed path, including one that is also dirty (today it selects only `committed_only` paths, `classification.rs:105-110`).
+2. Target reachability for incursion authorship counts commits reachable from the target's upstream (for example `origin/init/catalyst`) as well as the local target, so a local target behind its upstream does not mark upstream commits as "this phase authored it". Use the upstream ref already present locally; never fetch. This filters authorship only: `RepositorySnapshot::target_for` / `JudgedTargetTip` and `IntegrationTarget` keep the local branch for release, settlement and integration decisions, unchanged. No upstream configured, or an upstream whose objects are absent, falls back to the local target alone.
+3. An incursion answer covers its path and the commits that entered it, so a holder set that grows later on the same commits (`src/reservation/retention.rs:885-913`, uncovered at ~854) does not open a new incident; only a new commit into the path reopens it. Represent the coverage evidence as a semantic type with one variant per case — legacy holder coverage (an incident journalled before this change, which keeps today's holder-subset rule), known entering commits, working-tree writes, and history unavailable — replacing `Option<IncursionAttributionBatch>` in `PreLockForeignPathClassification` (`classification.rs:68`); never an optional commit list or an empty-set convention. Record it in the journal's `BlockedIncursionPath` (`src/ledger/journal.rs:1456`); journal replay of existing incidents is unchanged, and `docs/cargo-berth/as-built/json-contract.md` (~1220) documents the new wire layout.
+4. Tests: (a) invert `tests/drift.rs:1528`, which asserts today's behaviour, and extend `merged_integration_target_commits_are_not_attributed_to_the_lane` (~1601); (b) a resolved incursion whose holder set grows on unchanged commits stays resolved, next to `incursion_incident_round_trip_deduplicates_and_resolves` (~577) and `an_answered_incursion_covers_a_sibling_claimed_after_the_answer` (~1086); (c) upstream cases: local target behind its upstream, local and upstream diverged, no upstream configured, upstream objects unavailable; (d) a `tests/hooks.rs` case with no STOP after `resolve --every-incursion`; (e) a new commit entering a resolved path reopens it; (f) a path both committed and dirty; (g) replay of incidents journalled in both earlier layouts keeps their holder-subset coverage; (h) in `tests/ledger.rs`, an `init` whose exclude write fails (for example `info` is a file) exits non-zero, and a second `init` after the obstruction is removed succeeds and writes the line once.
+5. Docs: CHANGELOG `[Unreleased]` `Fixed` line; `docs/cargo-berth/as-built/worktree-coordination.md` and `parallel-phases.md` lines that describe incursion classification and resolution; `json-contract.md` for the journal layout.
 
 **Files:**
-- `crates/cargo-berth/src/drift/` — classification, observation and provenance ordering
-- `crates/cargo-berth/src/ledger/target.rs` — upstream-aware target membership
+- `crates/cargo-berth/src/drift/` — classification, observation, execution and provenance
+- `crates/cargo-berth/src/git/reachability.rs` — upstream-aware reachability for authorship
+- `crates/cargo-berth/src/ledger/target.rs`, `crates/cargo-berth/src/ledger/journal.rs` — upstream lookup; `BlockedIncursionPath` coverage evidence
 - `crates/cargo-berth/src/reservation/retention.rs` — commit-keyed incursion coverage
 - `crates/cargo-berth/src/output.rs` — incursion message, if the commit list changes
 - `crates/cargo-berth/tests/` — the Spec 4 tests
 - `crates/cargo-berth/CHANGELOG.md`
-- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/parallel-phases.md`
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/json-contract.md`
 
 **Workers:** 1 writer + 1 tester
 - `impl` — `src/`, CHANGELOG, as-built docs; runs lint and the full gate.
@@ -112,17 +112,18 @@
 **Goal:** A reservation created while the board is open appears in the Overview and Reservations panes without a restart, and the Overview shows only its Reservations table.
 
 **Spec:**
-1. `event_loop` waits with `event::poll` and a 1-second timeout instead of a blocking `event::read()`. On each timeout it checks whether the ledger moved (the journal position the model was built at against the ledger's current one) with a read that does not reconcile; only when it moved does it rebuild: re-run the same `reconcile::reconcile` + `BoardModel::build` path `verb::board::execute` uses, rebuild the pane documents, and redraw. An unchanged ledger costs no reconcile.
-2. `tui::run` takes a model source instead of one `&BoardModel`: a type owned by `verb/board.rs` (or `board/`) that holds the invocation directory and builds a fresh `BoardModel`. A rebuild that fails keeps the last good model on screen and shows the failure in the status line until the next good rebuild; it never exits the board.
+1. `event_loop` waits with `event::poll` up to the next refresh deadline instead of a blocking `event::read()`. Refresh checks run once a second against a monotonic deadline, whether or not events arrive, so sustained key or resize input never starves them. Each check asks whether the ledger moved (the journal position the model was built at against the ledger's current one) with a read that does not reconcile; only when it moved does it rebuild: re-run the same `reconcile::reconcile` + `BoardModel::build` path `verb::board::execute` uses, rebuild the pane documents, and redraw. An unchanged ledger costs no reconcile. `ValidatedJournal` (`src/ledger/handle.rs:80`) keeps no generation or offset and the projection's position fields are private to the ledger, so add a read-only ledger API that returns the current journal position as a semantic type the board compares with the one its model was built at.
+2. `tui::run` takes a model source instead of one `&BoardModel`: a type owned by `verb/board.rs` (or `board/`) that holds the invocation directory and builds a fresh `BoardModel`. A rebuild that fails keeps the last good model and its journal position on screen, so the next check retries, and shows the failure in the status line until the next good rebuild; it never exits the board.
 3. A rebuild keeps the selected pane and each pane's scroll offset, clamped to the new document length.
-4. The Overview pane shows only the Reservations table. The five `OVERVIEW_FIELDS` (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`) leave the terminal board entirely, with no new pane: `board --json` already carries them for anyone diagnosing (showrunner, 2026-10-16: fewer things on screen wins). `BoardPaneDocuments::from_model` drops those fields by name instead of failing on them as unassigned, so every other model field still has exactly one pane. Update `reassembled_model_value` (no Overview split at `"\n\n"`) and `every_model_fact_is_reachable_through_exact_pane_documents` (every model field except the five is reachable), and retire `recovered_bypasses_render_only_in_the_model_that_reports_them`, whose fact the board no longer renders, unless `board --json` lacks a test for it.
-5. Tests (unit tests in `tui.rs`, `TestBackend`): (a) a model rebuilt with one more reservation renders that reservation in the Overview and Reservations panes; (b) no pane's text contains any of the five fields (`git_cost`, `journal_position`, …); (c) every other model field is reachable through exactly one pane; (d) a failed rebuild keeps the previous rows and shows the failure; (e) selection and scroll survive a rebuild, clamped. The loop reads events and ticks through a trait the tests implement, so no test sleeps.
+4. The Overview pane shows only the Reservations table. The five `OVERVIEW_FIELDS` (`journal_position`, `recovered_bypasses_this_invocation`, `integration_order`, `targets`, `git_cost`) leave the terminal board entirely, with no new pane: `board --json` already carries them for anyone diagnosing (showrunner, 2026-10-16: fewer things on screen wins). Each `BoardSection` also serializes its own `journal_position` (`src/board/rows.rs:161-163`); drop that nested field from every pane document too. `BoardPaneDocuments::from_model` drops these fields by name instead of failing on them as unassigned, so every other model field still has exactly one pane, and `board --json` output is unchanged. Update `reassembled_model_value` (no Overview split at `"\n\n"`) and `every_model_fact_is_reachable_through_exact_pane_documents` (every model field except the five is reachable), and retire `recovered_bypasses_render_only_in_the_model_that_reports_them`, whose fact the board no longer renders, unless `board --json` lacks a test for it.
+5. Tests (unit tests in `tui.rs`, `TestBackend`): (a) a model rebuilt with one more reservation renders that reservation in the Overview and Reservations panes; (b) no pane's text contains any of the five fields (`git_cost`, `journal_position`, …), nested section positions included; (c) every other model field is reachable through exactly one pane; (d) a failed rebuild keeps the previous rows and position, shows the failure, and the next check retries; (e) selection and scroll survive a rebuild, clamped; (f) a check with an unchanged position runs no reconcile; (g) sustained input with no idle gap still refreshes by the deadline. The loop reads events and the clock through a trait the tests implement, so no test sleeps.
 6. Docs: README "Board" (~382–420) states the live refresh and that the raw diagnostics are in `board --json`, not the terminal board; CHANGELOG `Fixed` line; `docs/cargo-berth/as-built/parallel-phases.md` (~96–108, 137, and the known-defect lines ~151–152) and `worktree-coordination.md` (~434) describe the refresh and the Overview that shows only the table.
 
 **Files:**
 - `crates/cargo-berth/src/board/tui.rs` — event loop, refresh, panes, unit tests
 - `crates/cargo-berth/src/verb/board.rs` — model source passed to `tui::run`
-- `crates/cargo-berth/src/board/rows.rs` — only if the journal-position comparison needs an accessor
+- `crates/cargo-berth/src/board/rows.rs` — the model's journal position for comparison
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/projection.rs` — read-only current journal position
 - `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`
 - `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/worktree-coordination.md`
 
@@ -143,9 +144,9 @@
 **Spec:**
 1. `ReservationReportSnapshot` (`src/output.rs` ~1058) gains `ordering_edges` and `overlap_answers`. `ordering_edges` holds every declared ordering constraint naming the reservation as predecessor or successor, waiting and settled, each in the same JSON shape the full board uses (`WaitingHold::OrderingEdge` fields, `SettledOrderingConstraint`); `overlap_answers` holds every live `RecordedOverlapAnswer` naming it. Empty arrays when none.
 2. Compute both from the same report the lifecycle read already reconciles (`execute_reservation_lifecycle` → `reservation_lifecycle_snapshot`), through the helpers `BoardModel::build` uses (`declared_ordering_constraints`, `board_overlap_answers`), filtered to the reservation — one derivation for both board answers, not a second copy.
-3. Text mode (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle lines.
+3. The JSON envelope's rendered `presentation` (`reservation_lifecycle_presentation`) lists the edges and answers after the lifecycle details. The selector still requires `--json` (`worktree-coordination.md:436`).
 4. Regenerate the output contract; follow the versioning rule in `docs/cargo-berth/as-built/json-contract.md` for an added payload field.
-5. Tests in `tests/board.rs`: (a) a successor with a declared `--after` edge reports that edge from both the predecessor's and successor's `board --reservation` answers; (b) a reservation with a recorded overlap answer reports it; (c) a reservation with neither reports empty arrays. Extend `reservation_report`'s helper rather than adding a second one.
+5. Tests in `tests/board.rs`: (a) a successor with a declared `--after` edge reports that edge from both the predecessor's and successor's `board --reservation` answers, for a waiting edge and a settled one; (b) an edge or answer between two other reservations is absent; (c) a reservation with a recorded overlap answer reports it, whether it asked or was answered about, and a released answer from history is not reported as live; (d) a reservation with neither reports empty arrays; (e) each entry equals the full board's entry for the same edge or answer; (f) extend `reservation_report_and_presentation`'s exact presentation assertion (~2094). Extend `reservation_report`'s helper rather than adding a second one.
 6. Docs: json-contract.md "Named reservation lifecycle" (~560–620) and worktree-coordination.md (~436) describe the new fields; CHANGELOG `Fixed` line.
 
 **Files:**
@@ -163,3 +164,30 @@
 - `test` — the Spec 5 tests in `tests/board.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; `board --reservation <id> --json` on the live ledger shows `ordering_edges` and `overlap_answers`.
+
+### Phase 5 — Every cargo-berth test finishes in under a second  · status: todo
+
+**Depends on:** Phase 4 (every phase edits `crates/cargo-berth/tests/`)
+
+#### Work Order
+
+**Goal:** No cargo-berth test takes a second or more on a quiet machine, except where product behavior sets the floor, and each such exception is named with its cause.
+
+**Spec:**
+1. The phase 1 full gate listed 155 tests over one second (the slowest is `gate::observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints` at 7.7 s), recorded at `/tmp/claude/unit/a433b49e-d462-472a-9f5b-3e767f5be8b6/slow_tests_phase1.txt`. Before changing anything, measure every cargo-berth test on a quiet machine and take that list as the target set, slowest first. **Timing rule** (the baseline and the gate both use it): one `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` run, its nextest settings unchanged, while no other build or test runs on natedev; read each test's duration from the `PASS [ N.NNNs ]` lines of that run, and a test at 1.000 s or more fails the gate. Each test is timed as nextest runs it, one process per test, so a fixture cost that a warm in-process cache (for example `RepositoryTemplate`) hides only on a rerun still counts.
+2. For each slow test, find where its time goes (repeated `init`, repository setup, git process count, journal replay, waits) and cut it at the cause. Shared costs go into shared fixtures in `crates/cargo-berth-test-support` or `tests/support/`, never into a weaker assertion. A test keeps the behavior it names.
+3. A test whose floor is set by product behavior (a real timeout or a deadline the product enforces) stays. Name it in the phase summary with its measured duration and the cause.
+4. Tests: re-measure the whole package under the timing rule. Every test except the named exceptions finishes in under a second; the summary lists each test's before and after duration.
+5. Docs: a CHANGELOG `[Unreleased]` line only if a public test-support API changed.
+
+**Files:**
+- `crates/cargo-berth/tests/` — slow tests and their fixtures
+- `crates/cargo-berth-test-support/src/` — shared fixture costs
+- `crates/cargo-berth/src/` — only a test-configurable value a slow test needs, for example a deadline it can shorten
+- `crates/cargo-berth/CHANGELOG.md`
+
+**Workers:** 2 writers — ownership is by whole file, so no test file has two writers; move a file between slots after the fresh baseline only to balance the measured time.
+- `impl` — `src/`, `crates/cargo-berth-test-support/`, `tests/support/`, `tests/gate.rs`, `tests/board.rs`, `tests/edges.rs`, `tests/ledger.rs`, `tests/compaction.rs`, every test file not listed for `test`, and CHANGELOG; runs lint and the full gate.
+- `test` — `tests/lifecycle.rs`, `tests/drift.rs`, `tests/liveness.rs`, `tests/answers.rs`, `tests/hooks.rs`, `tests/overlap.rs`; asks `impl` for any shared fixture change.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green on a quiet machine, with no test at one second or more except the named exceptions.
