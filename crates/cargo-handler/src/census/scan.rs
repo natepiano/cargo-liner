@@ -55,6 +55,7 @@ use super::tier::Rollouts;
 use super::transcript;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
+use super::transcript::SubagentReads;
 use super::tree;
 use super::tree::ShellCall;
 use super::tree::ThreadEntry;
@@ -118,6 +119,7 @@ pub(super) struct LocalScanner {
     /// Each Codex rollout read for its tier, as far as it was read.
     rollouts:            Rollouts,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    subagent_reads:      SubagentReads,
     worker_names:        WorkerNames,
     /// What `KWin` and tmux last answered, kept for
     /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
@@ -234,6 +236,7 @@ impl LocalScanner {
             session_starts: HashMap::new(),
             rollouts: Rollouts::default(),
             transcript_activity: HashMap::new(),
+            subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
             desktops: None,
         }
@@ -325,7 +328,14 @@ impl LocalScanner {
                 transcripts
                     .iter()
                     .map(|(pid, path)| {
-                        (*pid, transcript::running_subagents(path, SystemTime::now()))
+                        (
+                            *pid,
+                            transcript::running_subagents(
+                                path,
+                                SystemTime::now(),
+                                &mut self.subagent_reads,
+                            ),
+                        )
                     })
                     .collect()
             });
@@ -360,7 +370,9 @@ impl LocalScanner {
         startup_log::startup_stage("attach_children", || {
             tree::attach_children(rows, processes, &sources);
         });
-        self.attach_activity_and_names(processes, &transcripts, rows);
+        startup_log::startup_stage("transcript_activity_and_worker_names", || {
+            self.attach_activity_and_names(processes, &transcripts, rows);
+        });
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
     }
@@ -383,6 +395,7 @@ impl LocalScanner {
                     .entry(path.clone())
                     .or_insert_with(|| activity::TranscriptRead::new(row.activity));
                 read.advance(path, row.activity);
+                startup_log::startup_event(&format!("transcript_bytes_read {}", read.bytes_read()));
                 // The session record is authoritative for a closed Claude turn.
                 if row.activity != AgentActivity::Idle
                     && read.activity() != AgentActivity::Unreported
@@ -1212,6 +1225,7 @@ mod tests {
             session_starts:      HashMap::new(),
             rollouts:            Rollouts::default(),
             transcript_activity: HashMap::new(),
+            subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
             desktops:            None,
         }

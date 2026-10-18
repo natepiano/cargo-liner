@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"A later follow-up is not the original task"}]}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"rg -n portal src\"}"}}

@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-10-16T15:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Inspect the portal before changing it."},{"type":"tool_use","id":"current-read","name":"Read","input":{"file_path":"/work/fixture/portal.rs"}}],"stop_reason":"tool_use"}}
