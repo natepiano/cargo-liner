@@ -33,7 +33,9 @@ use super::constants::GIT_STATUS_COMMAND;
 use super::constants::GIT_STATUS_IGNORED_MATCHING_ARG;
 use super::constants::GIT_STATUS_PORCELAIN_V1_ARG;
 use super::constants::GIT_STATUS_UNTRACKED_ALL_ARG;
+use super::constants::GIT_SYMBOLIC_REF_COMMAND;
 use super::constants::GIT_UNTRACKED_STATUS_CODE;
+use super::constants::GIT_VERIFY_ARG;
 use super::discovery;
 use super::repo::RemoteInfo;
 use super::repo::RepoInfo;
@@ -43,39 +45,43 @@ use crate::constants::GIT_STATUS_UNTRACKED;
 
 /// The resolved state of `HEAD` for a checkout.
 ///
-/// Replaces the older `branch: Option<String>` field, which conflated three
-/// distinct cases:
-/// - `Unborn`: repo exists but has no commits (`git rev-parse HEAD` fails).
+/// Replaces the older `branch: Option<String>` field, which conflated distinct cases:
+/// - `Unborn`: repo exists but has no commits.
+/// - `Unreadable`: git cannot read the HEAD file or the ref it names.
 /// - `Branch(name)`: `HEAD` points at the named branch.
 /// - `Detached { short_sha }`: `HEAD` is a detached commit; `short_sha` is the 8-char abbreviation
 ///   (matching `ls_tree_submodule_commits`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum HeadState {
+    /// git could not read `HEAD`: the HEAD file or the ref it names is missing or corrupt.
+    Unreadable,
     Unborn,
     Branch(String),
-    Detached { short_sha: String },
+    Detached {
+        short_sha: String,
+    },
 }
 
 impl HeadState {
     /// The branch name when `HEAD` points at one. `None` for detached
-    /// and unborn checkouts. Use for comparisons against
+    /// unborn, and unreadable checkouts. Use for comparisons against
     /// `local_main_branch` and other branch-name lookups.
     pub(crate) const fn branch_name(&self) -> Option<&str> {
         match self {
             Self::Branch(name) => Some(name.as_str()),
-            Self::Unborn | Self::Detached { .. } => None,
+            Self::Unreadable | Self::Unborn | Self::Detached { .. } => None,
         }
     }
 
     /// Short display label, suitable for compact UI like the finder
     /// column. `Branch(name)` → `name`, `Detached { short_sha }` →
-    /// `"detached @ <short_sha>"`, `Unborn` → `""`.
+    /// `"detached @ <short_sha>"`, `Unborn` / `Unreadable` → `""`.
     pub(crate) fn display_label(&self) -> String {
         match self {
             Self::Branch(name) => name.clone(),
             Self::Detached { short_sha } => format!("detached @ {short_sha}"),
-            Self::Unborn => String::new(),
+            Self::Unreadable | Self::Unborn => String::new(),
         }
     }
 }
@@ -86,7 +92,7 @@ impl HeadState {
 pub(crate) struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
     pub status:              GitStatus,
-    /// The resolved state of `HEAD` (branch, detached, or unborn).
+    /// The resolved state of `HEAD` (branch, detached, unborn, or unreadable).
     pub head:                HeadState,
     /// ISO 8601 date of the most recent commit on this branch.
     pub last_commit:         Option<String>,
@@ -265,29 +271,53 @@ fn parse_bisect_vars(stdout: &str) -> Option<BisectProgress> {
     })
 }
 
-/// Resolve `HEAD` to a `HeadState`:
-/// - `rev-parse --abbrev-ref HEAD` returns the branch name, or the literal `"HEAD"` when detached,
-///   or empty when unborn.
-/// - For detached, run `rev-parse --short=8 HEAD` to fetch the SHA.
-/// - For an unborn or otherwise-unresolvable HEAD, return `Unborn`.
+/// Resolve `HEAD` using the exit status of each git probe.
+///
+/// | Abbreviated HEAD | Follow-up | State |
+/// | --- | --- | --- |
+/// | Branch name, exit 0 | None | Branch |
+/// | HEAD, exit 0 | Verified short SHA, exit 0 and non-empty | Detached |
+/// | HEAD, exit 0 | Verification fails or is empty | Unreadable |
+/// | No successful abbreviated HEAD | symbolic-ref exits 0 | Unborn |
+/// | No successful abbreviated HEAD | symbolic-ref fails | Unreadable |
 fn resolve_head_state(repo_root: &Path) -> HeadState {
     let abbrev = branches::get_current_branch(repo_root);
     match abbrev.as_deref() {
-        None => HeadState::Unborn,
+        None => unborn_or_unreadable(repo_root),
         Some(GIT_HEAD) => command::git_output_logged(
             repo_root,
             "rev_parse_short_head",
-            [GIT_REV_PARSE_COMMAND, GIT_SHORT_HEAD_ARG, GIT_HEAD],
+            [
+                GIT_REV_PARSE_COMMAND,
+                GIT_VERIFY_ARG,
+                GIT_QUIET_SHORT_ARG,
+                GIT_SHORT_HEAD_ARG,
+                GIT_HEAD,
+            ],
         )
         .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if sha.is_empty() { None } else { Some(sha) }
         })
-        .map_or(HeadState::Unborn, |short_sha| HeadState::Detached {
+        .map_or(HeadState::Unreadable, |short_sha| HeadState::Detached {
             short_sha,
         }),
         Some(name) => HeadState::Branch(name.to_string()),
+    }
+}
+
+/// A symbolic HEAD with no readable commit is unborn; a failed symbolic
+/// reference probe means git cannot read HEAD.
+fn unborn_or_unreadable(repo_root: &Path) -> HeadState {
+    match command::git_output_logged(
+        repo_root,
+        "symbolic_ref_head",
+        [GIT_SYMBOLIC_REF_COMMAND, GIT_QUIET_SHORT_ARG, GIT_HEAD],
+    ) {
+        Ok(output) if output.status.success() => HeadState::Unborn,
+        Ok(_) | Err(_) => HeadState::Unreadable,
     }
 }
 
@@ -535,6 +565,7 @@ mod tests {
     #[test]
     fn head_state_serde_round_trip() {
         for state in [
+            HeadState::Unreadable,
             HeadState::Unborn,
             HeadState::Branch("feat/x".to_string()),
             HeadState::Detached {
@@ -545,6 +576,51 @@ mod tests {
             let back: HeadState = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(state, back);
         }
+    }
+
+    #[test]
+    fn resolve_head_state_reports_unreadable_head_not_unborn() {
+        let corrupt_head = tempfile::tempdir().expect("create corrupt HEAD fixture");
+        crate::test_support::init_git_repo(corrupt_head.path());
+        std::fs::write(corrupt_head.path().join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
+        assert_eq!(
+            resolve_head_state(corrupt_head.path()),
+            HeadState::Unreadable
+        );
+        assert_eq!(
+            CheckoutInfo::get(corrupt_head.path(), None)
+                .expect("probe corrupt checkout")
+                .head,
+            HeadState::Unreadable,
+        );
+
+        let corrupt_ref = tempfile::tempdir().expect("create corrupt ref fixture");
+        crate::test_support::init_git_repo(corrupt_ref.path());
+        let head = std::fs::read_to_string(corrupt_ref.path().join(".git/HEAD"))
+            .expect("read symbolic HEAD");
+        let branch_ref = head.trim().strip_prefix("ref: ").expect("HEAD names a ref");
+        std::fs::write(corrupt_ref.path().join(".git").join(branch_ref), "zzzz\n")
+            .expect("corrupt branch ref");
+        assert_eq!(
+            resolve_head_state(corrupt_ref.path()),
+            HeadState::Unreadable
+        );
+
+        let unborn = tempfile::tempdir().expect("create unborn fixture");
+        let output = std::process::Command::new(crate::test_support::git_binary())
+            .arg("init")
+            .current_dir(unborn.path())
+            .output()
+            .expect("initialize unborn repository");
+        assert!(output.status.success());
+        assert_eq!(resolve_head_state(unborn.path()), HeadState::Unborn);
+
+        let intact = tempfile::tempdir().expect("create intact fixture");
+        crate::test_support::init_git_repo(intact.path());
+        assert!(matches!(
+            resolve_head_state(intact.path()),
+            HeadState::Branch(_)
+        ));
     }
 
     #[test]

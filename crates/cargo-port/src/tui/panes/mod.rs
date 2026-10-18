@@ -75,6 +75,10 @@ pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
+#[cfg(test)]
+pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
+#[cfg(test)]
+pub(super) use pane_data::HeadRelation;
 pub(super) use pane_data::PackageData;
 #[cfg(test)]
 pub(super) use pane_data::PackagePresence;

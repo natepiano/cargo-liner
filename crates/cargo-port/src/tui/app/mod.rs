@@ -2712,7 +2712,6 @@ mod tests {
         use crate::config::NavigationKeys;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
-        use crate::project::HeadState;
         use crate::project::ProjectType;
         use crate::project::RootItem;
         use crate::project::Submodule;
@@ -2737,6 +2736,7 @@ mod tests {
         use crate::tui::panes::CiEmptyState;
         use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
+        use crate::tui::panes::HeadRelation;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::PackageData;
@@ -2913,9 +2913,9 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
             app.panes.git.set_content(GitData {
-                checkout: GitCheckout::Readable {
-                    head:     HeadState::Branch("main".to_string()),
-                    relation: None,
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
                 },
                 ..GitData::default()
             });
@@ -4341,9 +4341,9 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
             app.panes.git.set_content(GitData {
-                checkout: GitCheckout::Readable {
-                    head:     HeadState::Branch("main".to_string()),
-                    relation: None,
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
                 },
                 ..GitData::default()
             });
@@ -4680,6 +4680,7 @@ mod tests {
         use crate::tui::panes::BROKEN_WORKTREE_DISK_SUFFIX;
         use crate::tui::panes::DetailField;
         use crate::tui::panes::GitData;
+        use crate::tui::panes::HEAD_UNREADABLE_LABEL;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
@@ -6265,25 +6266,29 @@ mod tests {
             fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
         }
 
+        fn find_text_cell(buffer: &Buffer, text: &str) -> Option<(u16, u16)> {
+            for y in buffer.area.y..buffer.area.bottom() {
+                let mut row = String::new();
+                let mut starts = Vec::new();
+                for x in buffer.area.x..buffer.area.right() {
+                    starts.push((row.len(), x));
+                    row.push_str(buffer[(x, y)].symbol());
+                }
+                if let Some(byte) = row.find(text) {
+                    return starts
+                        .into_iter()
+                        .find_map(|(start, x)| (start == byte).then_some((x, y)));
+                }
+            }
+            None
+        }
+
         fn assert_git_error_colors(app: &mut App, error_value: &str) {
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let buffer = render_selected_git(app);
-                let area = buffer.area;
-                let value_position = (0..area.height)
-                    .find_map(|y| {
-                        let row = (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>();
-                        row.find(error_value).map(|byte| {
-                            (
-                                u16::try_from(row[..byte].chars().count())
-                                    .expect("Error value position fits in the buffer"),
-                                y,
-                            )
-                        })
-                    })
-                    .expect("Error value should be rendered");
+                let value_position =
+                    find_text_cell(&buffer, error_value).expect("Error value should be rendered");
                 let cell = &buffer[value_position];
                 assert_eq!(cell.fg, tui_pane::on_error_color());
                 assert_eq!(cell.bg, tui_pane::error_color());
@@ -6291,20 +6296,59 @@ mod tests {
         }
 
         #[test]
+        fn selecting_checkout_with_unreadable_head_renders_head_unreadable() {
+            let tmp = tempfile::tempdir().expect("create unreadable checkout");
+            let path = tmp.path();
+            std::fs::write(
+                path.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write project manifest");
+            crate::test_support::init_git_repo(path);
+            std::fs::write(path.join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
+            let Ok(CargoParseResult::Package(package)) =
+                project::from_cargo_toml(&path.join("Cargo.toml"))
+            else {
+                panic!("project manifest should load as a package");
+            };
+            let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
+            app.project_list.select_project_in_tree(path, false);
+            app.sync_selected_project();
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::CheckoutInfo {
+                    path: path.to_path_buf().into(),
+                    info: CheckoutInfo::get(path, None).expect("probe unreadable checkout"),
+                },
+            );
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let buffer = render_selected_git(&mut app);
+                let data = app.panes.git.content().expect("selected Git pane content");
+                assert!(matches!(data.checkout, panes::GitCheckout::UnreadableHead));
+                assert!(app.is_pane_tabbable(PaneId::Git));
+                let (x, y) = find_text_cell(&buffer, HEAD_UNREADABLE_LABEL)
+                    .expect("unreadable HEAD should render");
+                let (_, label_y) = find_text_cell(&buffer, DetailField::Head.label())
+                    .expect("unreadable HEAD should have a Branch label");
+                assert_eq!(label_y, y);
+                assert!(find_text_cell(&buffer, "local").is_none());
+                assert!(find_text_cell(&buffer, "unborn").is_none());
+                for column in x..x + u16::try_from(HEAD_UNREADABLE_LABEL.len()).expect("value fits")
+                {
+                    assert_eq!(
+                        buffer[(column, y)].fg,
+                        tui_pane::error_color(),
+                        "{appearance:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn selecting_worktree_with_missing_gitdir_renders_git_error() {
             let error_label = DetailField::WorktreeError.label();
             let error_value = DetailField::WorktreeError.git_value(&GitData::default());
-            let buffer_text = |buffer: &Buffer| {
-                let area = buffer.area;
-                (0..area.height)
-                    .map(|y| {
-                        (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>()
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
             let tmp = tempfile::tempdir().expect("create test directory");
             let primary_path = tmp.path().join("primary");
             let linked_path = tmp.path().join("linked");
@@ -6335,7 +6379,7 @@ mod tests {
             app.project_list
                 .select_project_in_tree(&primary_path, false);
             app.sync_selected_project();
-            assert!(!buffer_text(&render_selected_git(&mut app)).contains(&error_value));
+            assert!(find_text_cell(&render_selected_git(&mut app), &error_value).is_none());
 
             app.project_list.select_project_in_tree(&linked_path, false);
             app.sync_selected_project();
@@ -6352,22 +6396,21 @@ mod tests {
                     info,
                 },
             );
-            let rendered = buffer_text(&render_selected_git(&mut app));
+            let buffer = render_selected_git(&mut app);
             assert!(app.is_pane_tabbable(PaneId::Git));
             let data = app.panes.git.content().expect("selected Git pane content");
             assert!(
                 matches!(data.checkout, crate::tui::panes::GitCheckout::Broken),
                 "an unreadable gitdir supplies no HEAD row"
             );
+            let (_, error_y) = find_text_cell(&buffer, &error_value)
+                .expect("Git pane should render the broken worktree error");
+            let (_, label_y) = find_text_cell(&buffer, error_label)
+                .expect("Git pane should label the broken worktree error");
+            assert_eq!(error_y, label_y);
             assert!(
-                rendered
-                    .lines()
-                    .any(|line| line.contains(error_label) && line.contains(&error_value)),
-                "Git pane should render the broken worktree error: {rendered}"
-            );
-            assert!(
-                !rendered.contains(DetailField::Head.label()),
-                "a failed HEAD probe must not produce a Branch row: {rendered}"
+                find_text_cell(&buffer, DetailField::Head.label()).is_none(),
+                "a failed HEAD probe must not produce a Branch row",
             );
 
             assert_git_error_colors(&mut app, &error_value);
@@ -6416,23 +6459,15 @@ mod tests {
                 .draw(|frame| render::ui(frame, app))
                 .expect("render project list frame");
             let buffer = terminal.backend().buffer();
-            let row = (0..buffer.area.height)
-                .map(|y| {
-                    (0..buffer.area.width)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .find(|row| row.contains(label))
-                .expect("project list row should render");
-            let content = row.strip_prefix('│').expect("project list left border");
-            let label_end = content.find(label).expect("row label") + label.len();
-            let drawn_width = crate::tui::columns::display_width(&content[..label_end]);
+            let (column, _) =
+                find_text_cell(buffer, label).expect("project list row should render");
+            let drawn_width = usize::from(column) + crate::tui::columns::display_width(label) - 1;
             assert_eq!(
                 app.project_list
                     .cached_fit_widths
                     .get(crate::tui::columns::COL_NAME),
                 panes::name_width_with_gutter(drawn_width),
-                "fitted Name width must equal the drawn prefix and label plus its gutter: {row}"
+                "fitted Name width must equal the drawn prefix and label plus its gutter"
             );
         }
 
@@ -6450,20 +6485,13 @@ mod tests {
             ))]);
             app.project_list.expanded.insert(ExpandKey::Node(0));
             let (buffer, widths) = super::render_tree_buffer(&mut app);
-            let row = (0..buffer.area.height)
-                .map(|y| {
-                    (0..buffer.area.width)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .find(|row| row.contains(linked_name))
+            let (column, _) = find_text_cell(&buffer, linked_name)
                 .expect("linked package worktree should render");
-            let label_end = row.find(linked_name).expect("linked label") + linked_name.len();
-            let drawn_width = crate::tui::columns::display_width(&row[..label_end]);
+            let drawn_width = usize::from(column) + crate::tui::columns::display_width(linked_name);
             assert_eq!(
                 widths.get(crate::tui::columns::COL_NAME),
                 panes::name_width_with_gutter(drawn_width),
-                "fitted Name width must reserve the drawn prefix and label plus its gutter: {row}"
+                "fitted Name width must reserve the drawn prefix and label plus its gutter"
             );
         }
 
@@ -6497,24 +6525,20 @@ mod tests {
                     .draw(|frame| render::ui(frame, &mut app))
                     .expect("render project list frame");
                 let buffer = terminal.backend().buffer();
-                let (y, row) = (0..buffer.area.height)
-                    .find_map(|y| {
-                        let row = (0..buffer.area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>();
-                        row.contains(linked_name).then_some((y, row))
-                    })
+                let (_, name_y) = find_text_cell(buffer, linked_name)
                     .expect("broken worktree name should render");
-                assert!(
-                    row.contains(&format!("304 B{BROKEN_WORKTREE_DISK_SUFFIX}")),
-                    "{appearance:?}: broken worktree disk suffix should render whole: {row}"
-                );
-                let suffix_start = row
-                    .find(BROKEN_WORKTREE_DISK_SUFFIX)
+                let disk = format!("304 B{BROKEN_WORKTREE_DISK_SUFFIX}");
+                let (_, disk_y) = find_text_cell(buffer, &disk)
+                    .expect("broken worktree disk suffix should render whole");
+                assert_eq!(name_y, disk_y, "{appearance:?}");
+                let (column, y) = find_text_cell(buffer, BROKEN_WORKTREE_DISK_SUFFIX)
                     .expect("whole suffix should render");
-                let column = row[..suffix_start].chars().count();
-                for x in column..column + BROKEN_WORKTREE_DISK_SUFFIX.len() {
-                    let cell = &buffer[(u16::try_from(x).expect("suffix fits buffer"), y)];
+                for x in column
+                    ..column
+                        + u16::try_from(BROKEN_WORKTREE_DISK_SUFFIX.len())
+                            .expect("suffix fits buffer")
+                {
+                    let cell = &buffer[(x, y)];
                     assert_eq!(cell.fg, tui_pane::on_error_color(), "{appearance:?}");
                     assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}");
                 }
@@ -6542,26 +6566,13 @@ mod tests {
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
-                let area = buffer.area;
-                let (y, row, name_start) = (0..area.height)
-                    .find_map(|y| {
-                        let row = (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>();
-                        row.find(linked_name).map(|start| (y, row, start))
-                    })
-                    .expect("broken worktree name should render");
-                let suffix_start = row
-                    .find(BROKEN_WORKTREE_DISK_SUFFIX)
-                    .expect("the whole broken suffix should render");
-                for (start, text) in [
-                    (name_start, linked_name),
-                    (suffix_start, BROKEN_WORKTREE_DISK_SUFFIX),
-                ] {
-                    let column = row[..start].chars().count();
-                    assert!(row[start..].starts_with(text));
-                    for x in column..column + text.len() {
-                        let cell = &buffer[(u16::try_from(x).expect("ASCII text fits buffer"), y)];
+                for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
+                    let (column, y) =
+                        find_text_cell(&buffer, text).expect("whole broken row text should render");
+                    for x in
+                        column..column + u16::try_from(text.len()).expect("ASCII text fits buffer")
+                    {
+                        let cell = &buffer[(x, y)];
                         assert_eq!(
                             cell.fg,
                             tui_pane::on_error_color(),
@@ -7685,20 +7696,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, &mut app))
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
-            let area = buffer.area;
-
             // Find the tail row ("gamma") — the one-line selection while following.
-            let mut cursor_row = None;
-            for y in 0..area.height {
-                let row: String = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect();
-                if let Some(col) = row.find("gamma") {
-                    cursor_row = Some((u16::try_from(col).unwrap_or(0), y));
-                    break;
-                }
-            }
-            let (text_col, y) = cursor_row.expect("the tail row is rendered");
+            let (text_col, y) = find_text_cell(&buffer, "gamma").expect("the tail row is rendered");
 
             // A cell well past the 5-char text must carry the selection
             // background — the cursor row is a one-line selection, drawn in the
@@ -7728,19 +7727,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, &mut app))
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
-            let area = buffer.area;
-
-            let mut info_cell = None;
-            for y in 0..area.height {
-                let row: String = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect();
-                if let Some(col) = row.find("INFO") {
-                    info_cell = Some((u16::try_from(col).unwrap_or(0), y));
-                    break;
-                }
-            }
-            let (col, y) = info_cell.expect("the colored log line is rendered");
+            let (col, y) =
+                find_text_cell(&buffer, "INFO").expect("the colored log line is rendered");
 
             // The 'I' of the green "INFO" must carry the selection-row background
             // (the cursor row is a one-line selection), not the bare default
@@ -16773,7 +16761,7 @@ mod tests {
         assert_eq!(group.linked[0].path(), linked_dir.as_path());
     }
 
-    fn create_refresh_worktree(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
+    fn write_linked_worktree_layout(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
         kind.write_manifest(linked);
         let gitdir = primary.join(".git/worktrees").join(
             linked
@@ -16796,13 +16784,13 @@ mod tests {
         let linked_two_dir = tmp.path().join(kind.linked_name());
         kind.write_manifest(&primary_dir);
         std::fs::create_dir(primary_dir.join(".git")).expect("create primary git directory");
-        create_refresh_worktree(&primary_dir, &linked_one_dir, kind);
+        write_linked_worktree_layout(&primary_dir, &linked_one_dir, kind);
 
         let primary_item = WorktreeProjectKind::root_item(&primary_dir);
         let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
         let mut app = make_app(&[primary_item, linked_one_item]);
 
-        create_refresh_worktree(&primary_dir, &linked_two_dir, kind);
+        write_linked_worktree_layout(&primary_dir, &linked_two_dir, kind);
         let stale_discovery = match kind {
             WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
                 Some(kind.primary_name()),

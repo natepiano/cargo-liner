@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A checkout whose HEAD git cannot read shows `HEAD unreadable` in the Git pane's Branch row instead of reporting the checkout as unborn.
 - A broken worktree's `[broken]` suffix in the project list is no longer cut off; the Disk column's width now counts it.
 - Broken worktree names and their `[broken]` suffixes use the theme's on-error foreground on the error background, keeping project-list rows readable in both themes. Shipped theme templates now expose `on_error`.
 - Broken worktrees no longer show a misleading unborn Branch row, and the Git pane Error row uses a readable foreground in both themes.
