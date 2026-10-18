@@ -94,6 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Drift no longer widens a phase's reservation with paths introduced by a sibling phase's checkpoint commit while that sibling is outstanding.
+
 - `board --reservation <id> --json` includes every declared ordering edge and live overlap answer naming the reservation, matching the full board and retaining all scope answers bound to a reused edge. The rendered report lists both after lifecycle and extent details.
 
 - The terminal board checks for journal changes once a second and refreshes reservations without reopening. Refresh failures retain the last good board and retry; pane selection and scroll positions survive rebuilds. Overview shows only its Reservations table, with raw diagnostics available through `board --json`.

@@ -609,6 +609,8 @@
 - `crates/cargo-port/src/tui/panes/pane_data/detail_data.rs` — last commit and submodule version
 - `crates/cargo-port/src/tui/panes/pane_data/copy_data.rs` — copy values
 - `crates/cargo-port/src/tui/panes/pane_data/formatting.rs` — one ahead/behind formatter over `Comparison`, bisect text
+- `crates/cargo-port/src/tui/panes/pane_data/mod.rs` — re-exports `format_sync` and the `cfg(test)` `RemoteRows`
+- `crates/cargo-port/src/tui/panes/pane_data/package_data.rs` — submodule version carries the typed `PinnedCommit` (review round 1)
 - `crates/cargo-port/src/tui/panes/git/render.rs` — error color for unreadable values, remotes and worktree tables; `field_value_style` becomes a `match` on a style type
 - `crates/cargo-port/src/tui/app/mod.rs` — fixture literals, `render_selected_git` row count, `find_text_cell_in_row`, and the item 9 pane, broken-row, CI and Spec 11 tests
 - `crates/cargo-port/CHANGELOG.md` — two Fixed lines
@@ -693,6 +695,7 @@
 - `crates/cargo-berth-test-support/src/integration_repository.rs` — fixture worktree creation and its canonical paths (`:205`, `:651`)
 - `.config/nextest.toml` — add `nextest-version = { required = "0.9.138" }` (absent at HEAD), so an older nextest refuses the run instead of skipping the template builder
 - `crates/cargo-berth/tests/support/reanchoring.rs`, `crates/cargo-berth/tests/support/reanchoring_templates.rs`, `crates/cargo-berth/tests/support/split_rebase.rs` — the editor executables and hooks these fixtures write fresh per test, if the first-exec cost reaches them
+- `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/drift.rs` — tests that write a hook in place unlink it first, so a shared pre-executed hook inode is never overwritten
 - `crates/cargo-berth/tests/setup-recorded-templates.sh` — Spec 8: build the templates on a cold single-target run
 - `crates/cargo-berth/tests/recorded_templates.rs` — Spec 8: the builder and the test that proves a single-target cold run
 - `crates/cargo-berth-test-support/src/git_driver.rs` — `fixture_git_command` (`:42`), `git_command` (`:69`), `run_without_hooks` (`:196`), `add_worktree_without_hooks` (`:230`): every fixture git spawn
@@ -709,7 +712,7 @@
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. `phase16-mac-timing.md` holds a measured verdict for every Spec 4 candidate, recorded before the first code change, each row naming its route. The Spec 7 cold Mac run passes every test with each under 1.000 s, `successor_board_has_fixed_cold_cost` and `successor_round_robin_covers_every_head` included; the Spec 7 cold natedev run passes with every test under 1.000 s and no regression past the stated noise. A cold `cargo nextest run -p cargo-berth --test edges` (template directory deleted first) passes on natedev, and the Spec 8 test passes. A CI run of this branch's tip (pushed by the unit director on request) shows every cargo-berth test under 0.700 s. The diff raises no limit, adds no `#[ignore]`, skip, `cfg(target_os = "macos")` branch or nextest filter, and leaves the Spec 6 bounds unchanged. The phase report carries before/after tables for both machines.
 
-### Phase 17 — Drift never widens one phase's reservation with another phase's files, committed ones included  · status: todo
+### Phase 17 — Drift never widens one phase's reservation with another phase's files, committed ones included  · status: done
 
 #### Work Order
 
@@ -738,7 +741,12 @@
 
 **Files:**
 - `crates/cargo-berth/src/drift/classification.rs` — `UnheldWideningPath`, `WideningAdmission`, `DriftEffectBuilder::widened_paths`, `classify_locked` `Unclaimed` arm; removes `released_sibling_checkpoint_covers`
+- `crates/cargo-berth/src/drift/widening.rs` — new: `UnheldWideningPath`, `WideningPathAdmission`, `WideningAdmission` moved out of `classification.rs` (review round 1)
+- `crates/cargo-berth/src/drift/mod.rs` — declares `widening`
+- `crates/cargo-berth/src/drift/ordering.rs` — `normalize_paths` generic over a path key (review round 1)
 - `crates/cargo-berth/src/reservation/record.rs` — `Reservation::protected_checkpoint`
+- `crates/cargo-berth/src/reservation/retention.rs` — `RetainedProtectedTip` raised to `pub(crate)` (review round 1)
+- `crates/cargo-berth/src/reservation/mod.rs` — re-exports `RetainedProtectedTip` (review round 1)
 - `crates/cargo-berth/tests/parallel_phases.rs` — the two Spec 6 tests
 - `crates/cargo-berth/CHANGELOG.md` — `[Unreleased]` `Fixed` entry
 
