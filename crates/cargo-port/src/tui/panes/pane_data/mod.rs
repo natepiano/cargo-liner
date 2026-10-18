@@ -45,6 +45,8 @@ pub use git_data::GitCheckout;
 pub use git_data::GitData;
 pub use git_data::GitRow;
 #[cfg(test)]
+pub use git_data::HeadRelation;
+#[cfg(test)]
 pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
@@ -69,6 +71,8 @@ use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
 pub(super) use self::constants::CRATES_IO_UNREACHABLE;
+#[cfg(test)]
+pub(in crate::tui) use self::constants::HEAD_UNREADABLE_LABEL;
 use self::constants::PROJECT_LIBS_LABEL;
 use self::constants::PROJECT_MEMBERS_LABEL;
 use self::constants::PROJECT_PROC_MACROS_LABEL;

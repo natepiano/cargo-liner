@@ -7,7 +7,6 @@ use super::GitCheckout;
 use super::GitData;
 use super::GitRow;
 use super::GitStatus;
-use super::HeadState;
 use super::LintsData;
 use super::PackageData;
 use super::PackageRow;
@@ -107,18 +106,10 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
 fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
     match field {
         DetailField::Head => match &data.checkout {
-            GitCheckout::Readable {
-                head: HeadState::Branch(name),
-                ..
-            } => name.clone(),
-            GitCheckout::Readable {
-                head: HeadState::Detached { short_sha },
-                ..
-            } => short_sha.clone(),
-            GitCheckout::Readable {
-                head: HeadState::Unborn,
-                ..
-            }
+            GitCheckout::Branch { name, .. } => name.clone(),
+            GitCheckout::Detached { short_sha } => short_sha.clone(),
+            GitCheckout::Unborn
+            | GitCheckout::UnreadableHead
             | GitCheckout::Broken
             | GitCheckout::AwaitingProbe => String::new(),
         },

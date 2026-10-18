@@ -31,11 +31,8 @@ use super::package_data;
 use super::project;
 use crate::project::WorktreeHealth;
 
-/// How the current `HEAD` relates to the repo, rendered as a qualifier
-/// after the branch name in the Git pane's Branch row (`main · default`,
-/// `feature/x · feature`, `feature/x · worktree`). `None` for detached and
-/// unborn checkouts, whose value (`detached @ <sha>`, `unborn`) already
-/// describes the state without a qualifier.
+/// How a branch relates to the repo, rendered as a qualifier after its
+/// name in the Git pane's Branch row.
 #[derive(Clone, Copy)]
 pub enum HeadRelation {
     /// On the repo's default branch.
@@ -46,26 +43,41 @@ pub enum HeadRelation {
     Worktree,
 }
 
+/// Evidence that this checkout is a linked worktree.
+#[derive(Clone, Copy)]
+enum WorktreePlacement {
+    Linked,
+    NotLinked,
+}
+
+impl WorktreePlacement {
+    const fn of(status: Option<&WorktreeStatus>) -> Self {
+        match status {
+            Some(WorktreeStatus::Linked { .. }) => Self::Linked,
+            Some(WorktreeStatus::Primary { .. } | WorktreeStatus::NotGit) | None => Self::NotLinked,
+        }
+    }
+}
+
+/// Whether the checkout's first HEAD probe has arrived.
+enum HeadProbe<'a> {
+    Awaiting,
+    Probed(&'a HeadState),
+}
+
 impl HeadRelation {
-    /// Classify a branch `HEAD` against the repo's default branch and the
-    /// checkout's worktree status. `None` when `HEAD` is not on a branch.
-    fn classify(
-        head: &HeadState,
-        default_branch: Option<&str>,
-        worktree_status: Option<&WorktreeStatus>,
-    ) -> Option<Self> {
-        let HeadState::Branch(name) = head else {
-            return None;
-        };
-        Some(
-            if worktree_status.is_some_and(WorktreeStatus::is_linked_worktree) {
-                Self::Worktree
-            } else if default_branch == Some(name.as_str()) {
-                Self::Default
-            } else {
-                Self::Feature
+    /// Classify a branch against the default branch and linked-worktree evidence.
+    fn classify(branch: &str, default_branch: Option<&str>, placement: WorktreePlacement) -> Self {
+        match placement {
+            WorktreePlacement::Linked => Self::Worktree,
+            WorktreePlacement::NotLinked => {
+                if default_branch == Some(branch) {
+                    Self::Default
+                } else {
+                    Self::Feature
+                }
             },
-        )
+        }
     }
 
     pub(super) const fn label(self) -> &'static str {
@@ -103,29 +115,45 @@ pub struct GitData {
     pub submodule_ctx:      Option<SubmoduleContext>,
 }
 
-/// A broken worktree cannot supply a readable HEAD, even when a probe
-/// reports an unborn branch after its git command fails.
+/// The checkout as the Git pane draws it. `Broken` (a linked worktree
+/// whose gitdir is missing) wins over whatever the HEAD probe returned.
 #[derive(Clone, Default)]
 pub enum GitCheckout {
     Broken,
     #[default]
     AwaitingProbe,
-    Readable {
-        head:     HeadState,
-        relation: Option<HeadRelation>,
+    UnreadableHead,
+    Unborn,
+    Detached {
+        short_sha: String,
+    },
+    Branch {
+        name:     String,
+        relation: HeadRelation,
     },
 }
 
 impl GitCheckout {
     fn from_probe(
         health: WorktreeHealth,
-        head: Option<HeadState>,
-        relation: Option<HeadRelation>,
+        head: HeadProbe<'_>,
+        default_branch: Option<&str>,
+        placement: WorktreePlacement,
     ) -> Self {
         match (health, head) {
-            (WorktreeHealth::Broken, _) => Self::Broken,
-            (WorktreeHealth::Normal, None) => Self::AwaitingProbe,
-            (WorktreeHealth::Normal, Some(head)) => Self::Readable { head, relation },
+            (WorktreeHealth::Broken, HeadProbe::Awaiting | HeadProbe::Probed(_)) => Self::Broken,
+            (WorktreeHealth::Normal, HeadProbe::Awaiting) => Self::AwaitingProbe,
+            (WorktreeHealth::Normal, HeadProbe::Probed(head)) => match head {
+                HeadState::Unreadable => Self::UnreadableHead,
+                HeadState::Unborn => Self::Unborn,
+                HeadState::Detached { short_sha } => Self::Detached {
+                    short_sha: short_sha.clone(),
+                },
+                HeadState::Branch(name) => Self::Branch {
+                    name:     name.clone(),
+                    relation: HeadRelation::classify(name, default_branch, placement),
+                },
+            },
         }
     }
 }
@@ -243,11 +271,13 @@ pub enum GitRow<'a> {
 
 pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     let mut fields = Vec::new();
-    if matches!(data.checkout, GitCheckout::Broken) {
-        fields.push(DetailField::WorktreeError);
-    }
-    if matches!(data.checkout, GitCheckout::Readable { .. }) {
-        fields.push(DetailField::Head);
+    match data.checkout {
+        GitCheckout::Broken => fields.push(DetailField::WorktreeError),
+        GitCheckout::UnreadableHead
+        | GitCheckout::Unborn
+        | GitCheckout::Detached { .. }
+        | GitCheckout::Branch { .. } => fields.push(DetailField::Head),
+        GitCheckout::AwaitingProbe => {},
     }
     if data.bisect.is_some() {
         fields.push(DetailField::Bisect);
@@ -344,16 +374,9 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     let repo_info = git_repo.and_then(|repo| repo.repo_info.as_ref());
     let checkout = app.project_list.git_info_for(abs_path);
 
-    let head = checkout.map(|info| info.head.clone());
+    let head = checkout.map_or(HeadProbe::Awaiting, |info| HeadProbe::Probed(&info.head));
     let bisect = checkout.and_then(|info| info.bisect.clone());
     let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
-    let head_relation = head.as_ref().and_then(|head| {
-        HeadRelation::classify(
-            head,
-            local_main_branch.as_deref(),
-            app.project_list.worktree_status_for(abs_path),
-        )
-    });
     let local_main_label = local_main_branch
         .as_deref()
         .unwrap_or_else(|| app.config.current().tui.main_branch.as_str());
@@ -375,9 +398,8 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         .and_then(|repo| repo.last_fetched.as_deref())
         .map(formatting::format_timestamp);
     let default_host = app.config.current().tui.default_remote_host_url.clone();
-    let current_branch = head
-        .as_ref()
-        .and_then(HeadState::branch_name)
+    let current_branch = checkout
+        .and_then(|info| info.head.branch_name())
         .unwrap_or("-");
     let remotes = repo_info.map_or_else(Vec::new, |repo| {
         build_remote_rows(repo, &default_host, current_branch)
@@ -398,7 +420,8 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
                 .at_path(abs_path)
                 .map_or(WorktreeHealth::Normal, |info| info.worktree_health),
             head,
-            head_relation,
+            local_main_branch.as_deref(),
+            WorktreePlacement::of(app.project_list.worktree_status_for(abs_path)),
         ),
         bisect,
         path: app.project_list.git_status_for(abs_path),
@@ -637,6 +660,7 @@ mod git_field_tests {
     use super::*;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::DetailField;
+    use crate::tui::panes::pane_data::constants::HEAD_UNREADABLE_LABEL;
     use crate::tui::state::AvailabilityStatus;
 
     fn git_data() -> GitData {
@@ -665,8 +689,9 @@ mod git_field_tests {
         let mut data = GitData {
             checkout: GitCheckout::from_probe(
                 WorktreeHealth::Broken,
-                Some(HeadState::Unborn),
+                HeadProbe::Probed(&HeadState::Unreadable),
                 None,
+                WorktreePlacement::NotLinked,
             ),
             ..git_data()
         };
@@ -676,13 +701,71 @@ mod git_field_tests {
 
         data.checkout = GitCheckout::AwaitingProbe;
         assert!(!git_fields_from_data(&data).contains(&DetailField::WorktreeError));
-        data.checkout = GitCheckout::Readable {
-            head:     HeadState::Branch("main".to_string()),
-            relation: None,
+        data.checkout = GitCheckout::Branch {
+            name:     "main".to_string(),
+            relation: HeadRelation::Default,
         };
         let fields = git_fields_from_data(&data);
         assert_eq!(fields[0], DetailField::Head);
         assert!(!fields.contains(&DetailField::WorktreeError));
+    }
+
+    #[test]
+    fn unreadable_head_shows_branch_row_as_head_unreadable() {
+        let data = GitData {
+            checkout: GitCheckout::from_probe(
+                WorktreeHealth::Normal,
+                HeadProbe::Probed(&HeadState::Unreadable),
+                None,
+                WorktreePlacement::NotLinked,
+            ),
+            ..git_data()
+        };
+        assert!(matches!(data.checkout, GitCheckout::UnreadableHead));
+        let fields = git_fields_from_data(&data);
+        assert_eq!(fields[0], DetailField::Head);
+        assert!(!fields.contains(&DetailField::WorktreeError));
+        let value = DetailField::Head.git_value(&data);
+        assert_eq!(value, HEAD_UNREADABLE_LABEL);
+        assert_ne!(value, "unborn");
+        assert!(matches!(
+            GitCheckout::from_probe(
+                WorktreeHealth::Normal,
+                HeadProbe::Awaiting,
+                None,
+                WorktreePlacement::NotLinked,
+            ),
+            GitCheckout::AwaitingProbe,
+        ));
+        let head = HeadState::Branch("main".into());
+        assert!(matches!(
+            GitCheckout::from_probe(
+                WorktreeHealth::Normal,
+                HeadProbe::Probed(&head),
+                Some("main"),
+                WorktreePlacement::NotLinked,
+            ),
+            GitCheckout::Branch {
+                relation: HeadRelation::Default,
+                ..
+            },
+        ));
+        assert!(matches!(
+            GitCheckout::from_probe(
+                WorktreeHealth::Normal,
+                HeadProbe::Probed(&head),
+                Some("main"),
+                WorktreePlacement::Linked,
+            ),
+            GitCheckout::Branch {
+                relation: HeadRelation::Worktree,
+                ..
+            },
+        ));
+        assert!(matches!(
+            WorktreePlacement::of(None),
+            WorktreePlacement::NotLinked
+        ));
     }
 
     #[test]

@@ -30,7 +30,6 @@ use super::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
-use crate::project::HeadState;
 use crate::project::PullRequestCompleteness;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
@@ -671,7 +670,10 @@ struct RenderFlatArgs<'a> {
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
-        return if data.is_local() && !raw.is_empty() {
+        return if data.is_local()
+            && !raw.is_empty()
+            && !matches!(data.checkout, GitCheckout::UnreadableHead)
+        {
             format!("{raw} ({GIT_LOCAL} local)")
         } else {
             raw
@@ -704,6 +706,32 @@ const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str
     }
 }
 
+fn field_value_style(data: &GitData, field: DetailField, value: &str) -> Style {
+    let is_rate_limit_row = matches!(
+        field,
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+    );
+    if field == DetailField::VsLocal && value.starts_with(IN_SYNC) {
+        Style::default().fg(success_color())
+    } else if field == DetailField::VsLocal && value == NO_REMOTE_SYNC {
+        Style::default().fg(inactive_border_color())
+    } else if field == DetailField::WorktreeError {
+        Style::default().fg(on_error_color()).bg(error_color())
+    } else if field == DetailField::Head && matches!(data.checkout, GitCheckout::UnreadableHead) {
+        Style::default().fg(error_color())
+    } else if is_rate_limit_row && data.github_status.is_unauthenticated() {
+        // Unauthenticated is actionable, not an outage — warn (yellow)
+        // rather than error (red) like the unreachable / rate-limited rows.
+        Style::default().fg(warning_color())
+    } else if is_rate_limit_row && !data.github_status.is_available() {
+        Style::default().fg(error_color())
+    } else if field == DetailField::Stars && panes::github_stars_is_unreachable_placeholder(data) {
+        Style::default().fg(warning_color())
+    } else {
+        Style::default()
+    }
+}
+
 fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     let RenderFlatArgs {
         data,
@@ -731,26 +759,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = tui_pane::selection_state(pane, row_index, focus);
-        let base_value_style =
-            if matches!(*field, DetailField::VsLocal) && value.starts_with(IN_SYNC) {
-                Style::default().fg(success_color())
-            } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
-                Style::default().fg(inactive_border_color())
-            } else if *field == DetailField::WorktreeError {
-                Style::default().fg(on_error_color()).bg(error_color())
-            } else if is_rate_limit_row && data.github_status.is_unauthenticated() {
-                // Unauthenticated is actionable, not an outage — warn (yellow)
-                // rather than error (red) like the unreachable / rate-limited rows.
-                Style::default().fg(warning_color())
-            } else if is_rate_limit_row && !data.github_status.is_available() {
-                Style::default().fg(error_color())
-            } else if *field == DetailField::Stars
-                && panes::github_stars_is_unreachable_placeholder(data)
-            {
-                Style::default().fg(warning_color())
-            } else {
-                Style::default()
-            };
+        let base_value_style = field_value_style(data, *field, &value);
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
         if matches!(
@@ -1029,18 +1038,11 @@ fn worktree_row_line(
 
 fn git_panel_title(data: &GitData) -> String {
     match &data.checkout {
-        GitCheckout::Readable {
-            head: HeadState::Branch(name),
-            ..
-        } if !name.is_empty() => format!(" Git - {name} "),
-        GitCheckout::Readable {
-            head: HeadState::Detached { short_sha },
-            ..
-        } => format!(" Git - detached @ {short_sha} "),
-        GitCheckout::Readable {
-            head: HeadState::Branch(_) | HeadState::Unborn,
-            ..
-        }
+        GitCheckout::Branch { name, .. } if !name.is_empty() => format!(" Git - {name} "),
+        GitCheckout::Detached { short_sha } => format!(" Git - detached @ {short_sha} "),
+        GitCheckout::Branch { .. }
+        | GitCheckout::Unborn
+        | GitCheckout::UnreadableHead
         | GitCheckout::Broken
         | GitCheckout::AwaitingProbe => tui_pane::pane_title("Git", &PaneTitleCount::None),
     }

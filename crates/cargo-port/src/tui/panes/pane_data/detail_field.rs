@@ -1,4 +1,5 @@
 use super::GitCheckout;
+use super::constants::HEAD_UNREADABLE_LABEL;
 use super::copy_data;
 use super::formatting;
 use super::git_data::GitData;
@@ -6,7 +7,6 @@ use super::package_data;
 use super::package_data::PackageData;
 use super::package_data::PackageRow;
 use crate::project::GitStatus;
-use crate::project::HeadState;
 use crate::tui::render;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,21 +155,10 @@ impl DetailField {
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             Self::Head => match &data.checkout {
                 GitCheckout::Broken | GitCheckout::AwaitingProbe => String::new(),
-                GitCheckout::Readable {
-                    head: HeadState::Unborn,
-                    ..
-                } => "unborn".to_string(),
-                GitCheckout::Readable {
-                    head: HeadState::Detached { short_sha },
-                    ..
-                } => format!("detached @ {short_sha}"),
-                GitCheckout::Readable {
-                    head: HeadState::Branch(name),
-                    relation,
-                } => relation.map_or_else(
-                    || name.clone(),
-                    |relation| format!("{name} · {}", relation.label()),
-                ),
+                GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
+                GitCheckout::Unborn => "unborn".to_string(),
+                GitCheckout::Detached { short_sha } => format!("detached @ {short_sha}"),
+                GitCheckout::Branch { name, relation } => format!("{name} · {}", relation.label()),
             },
             Self::Bisect => data
                 .bisect

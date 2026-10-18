@@ -26,6 +26,7 @@ pub(super) fn get_current_branch(repo_root: &Path) -> Option<String> {
         [GIT_REV_PARSE_COMMAND, GIT_ABBREV_REF_ARG, GIT_HEAD],
     )
     .ok()
+    .filter(|output| output.status.success())
     .and_then(|o| {
         let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if b.is_empty() { None } else { Some(b) }
