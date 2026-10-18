@@ -284,7 +284,7 @@ enum ForeignProtectionPolicy {
 
 /// Whether replay has recorded a protected tip for this reservation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(super) enum RetainedProtectedTip {
+pub(crate) enum RetainedProtectedTip {
     /// An active reservation has not checkpointed a commit.
     NotCheckpointed,
     /// The checkpoint commit remains available after release.

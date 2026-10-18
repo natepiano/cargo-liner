@@ -732,6 +732,175 @@ fn a_phase_checkpoint_does_not_adopt_a_released_siblings_committed_paths() {
 }
 
 #[test]
+fn a_phase_checkpoint_does_not_adopt_an_outstanding_siblings_committed_paths() {
+    let repository = initialized_repository();
+    let trunk = repository.path();
+    let unit_directory = tempfile::tempdir().expect("unit worktree directory");
+    let unit = unit_directory.path();
+    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
+    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    fs::write(unit.join("a.rs"), "// phase A checkpoint\n").expect("phase A file");
+    fs::write(unit.join("b.rs"), "// phase B work\n").expect("phase B file");
+    GIT.run(unit, ["add", "a.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "phase A checkpoint"]);
+    let checkpoint =
+        run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
+    assert_success(&checkpoint);
+    let checkpoint = json(&checkpoint);
+    assert_eq!(
+        checkpoint["status"], "outstanding",
+        "phase A must remain outstanding on the unit branch: {checkpoint}"
+    );
+    assert_eq!(
+        checkpoint["payload"]["data"]["status"], "checkpointed",
+        "phase A must retain its checkpoint: {checkpoint}"
+    );
+
+    fs::write(unit.join("b-extra.rs"), "// phase B extra work\n").expect("extra phase B file");
+    let before = journal_events(trunk);
+    let drift = run_berth_with_session(
+        unit,
+        &["drift", "--full", "--reservation", &second, "--json"],
+        "dir-sid.phase-2",
+    );
+    assert_success(&drift);
+    let drift = json(&drift);
+    let events = journal_events(trunk);
+    let widens = events[before.len()..]
+        .iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        widens.len(),
+        1,
+        "only phase B's new file should widen: {drift}"
+    );
+    let widen = widens[0];
+    assert_eq!(
+        widen["reservation_id"], second,
+        "phase B must widen: {widen}"
+    );
+    assert_eq!(
+        widen["added_scopes"],
+        serde_json::json!([{"kind":"file", "path":"b-extra.rs"}]),
+        "phase B must not adopt phase A's committed path: {widen}"
+    );
+    let expected_scopes = serde_json::json!([
+        {"kind":"file", "path":"b.rs"}, {"kind":"file", "path":"b-extra.rs"}
+    ]);
+    let board = phase_board(unit);
+    assert_eq!(
+        reservation_row(&board, &second)["scopes"],
+        expected_scopes,
+        "phase B must hold only its own files: {board}"
+    );
+    assert_eq!(
+        reservation_row(&board, &first)["lifecycle"]["stage"],
+        "outstanding",
+        "phase A must remain outstanding after phase B's drift: {board}"
+    );
+
+    GIT.run(unit, ["add", "b.rs", "b-extra.rs"]);
+    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "phase B checkpoint"]);
+    assert_success(&run_berth_with_session(
+        unit,
+        &["drift", "--full", "--reservation", &second, "--json"],
+        "dir-sid.phase-2",
+    ));
+    let checkpoint =
+        run_berth_with_session(unit, &["release", &second, "--json"], "dir-sid.phase-2");
+    assert_success(&checkpoint);
+    let checkpoint = json(&checkpoint);
+    assert_eq!(
+        checkpoint["payload"]["data"]["status"], "checkpointed",
+        "phase B must retain its own checkpoint: {checkpoint}"
+    );
+    assert_no_widen_adopts_file(&journal_events(trunk), &second, "a.rs");
+    let board = phase_board(unit);
+    assert_eq!(
+        reservation_row(&board, &second)["scopes"],
+        expected_scopes,
+        "phase B's checkpoint must keep only its own files: {board}"
+    );
+}
+
+#[test]
+fn a_cheap_drift_for_one_phase_leaves_its_siblings_held_paths_alone() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
+    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
+    let baseline = run_berth_with_session(
+        root,
+        &["drift", "--reservation", &first, "--json"],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&baseline);
+    let baseline = json(&baseline);
+    assert_eq!(
+        baseline["payload"]["data"]["comparison"], "full_phase_start_fallback",
+        "the first drift must establish the phase fingerprint: {baseline}"
+    );
+    fs::write(root.join("a.rs"), "// phase A work\n").expect("phase A file");
+    fs::write(root.join("b.rs"), "// phase B work\n").expect("phase B file");
+    fs::write(root.join("a-extra.rs"), "// phase A extra work\n").expect("extra phase A file");
+    let before = journal_events(root);
+    let drift = run_berth_with_session(
+        root,
+        &["drift", "--reservation", &first, "--json"],
+        DIRECTOR_SESSION,
+    );
+    assert_success(&drift);
+    let drift = json(&drift);
+    assert_eq!(
+        drift["payload"]["data"]["comparison"], "cheap_delta",
+        "the second drift must use the published fingerprint: {drift}"
+    );
+    let events = journal_events(root);
+    let widens = events[before.len()..]
+        .iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        widens.len(),
+        1,
+        "only phase A's new file should widen: {drift}"
+    );
+    let widen = widens[0];
+    assert_eq!(
+        widen["reservation_id"], first,
+        "phase A must widen: {widen}"
+    );
+    assert_eq!(
+        widen["added_scopes"],
+        serde_json::json!([{"kind":"file", "path":"a-extra.rs"}]),
+        "phase A must leave its sibling's held path alone: {widen}"
+    );
+    let board = phase_board(root);
+    assert_eq!(
+        reservation_row(&board, &second)["scopes"],
+        serde_json::json!([{"kind":"file", "path":"b.rs"}]),
+        "phase B must retain its declared scope: {board}"
+    );
+}
+
+fn assert_no_widen_adopts_file(events: &[Value], reservation_id: &str, path: &str) {
+    for event in events
+        .iter()
+        .filter(|event| event["op"] == "widen" && event["reservation_id"] == reservation_id)
+    {
+        assert!(
+            !event["added_scopes"]
+                .as_array()
+                .expect("widen scopes")
+                .contains(&serde_json::json!({"kind":"file", "path":path})),
+            "the phase must never adopt its sibling's committed file {path}: {event}"
+        );
+    }
+}
+
+#[test]
 fn releasing_one_phase_retires_only_its_session_mapping() {
     let repository = initialized_repository();
     let root = repository.path();

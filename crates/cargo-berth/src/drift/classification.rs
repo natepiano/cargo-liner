@@ -18,6 +18,9 @@ use super::report::ReservationDriftResult;
 use super::report::UnattributedDriftPathSet;
 use super::selection::DriftWideningSelection;
 use super::selection::ResolvedDriftSubjects;
+use super::widening::UnheldWideningPath;
+use super::widening::WideningAdmission;
+use super::widening::WideningPathAdmission;
 use crate::coordination_identity::IssuingWorktreeRun;
 use crate::ids::CommitterTime;
 use crate::ids::ReservationId;
@@ -39,7 +42,6 @@ use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::DriftCoverageProbe;
 use crate::reservation::IncursionObservation;
 use crate::reservation::Reservation;
-use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
@@ -264,7 +266,7 @@ struct IncursionPathObservation {
 
 #[derive(Default)]
 struct DriftEffectBuilder {
-    widened_paths:          Vec<ReservationScopePath>,
+    widened_paths:          Vec<UnheldWideningPath>,
     incursions:             Vec<IncursionPathObservation>,
     collision_paths:        Vec<ReservationScopePath>,
     collision_reservations: Vec<ReservationId>,
@@ -380,7 +382,7 @@ impl DriftEffectBuilder {
             self.widened_paths
                 .into_iter()
                 .map(|path| ReservationScope {
-                    path,
+                    path: path.into_path(),
                     kind: ScopeKind::File,
                 })
                 .collect::<Vec<_>>(),
@@ -499,29 +501,27 @@ pub(super) fn classify_locked(
         let reservation = reservations.reservation(*reservation_id)?;
         let mut builder = DriftEffectBuilder::default();
         let drift_coverage_probe = subject_coverage_probe(reservations, reservation, path_case);
+        let widening_admission = WideningAdmission::new(reservations, reservation, changes);
         changes.visit_paths(*reservation_id, |path| {
             if reservation_covers_path(reservation, path, path_case) {
                 return;
             }
-            match prior.blocking_coverage(&drift_coverage_probe, reservation, path) {
+            let coverage = prior.blocking_coverage(&drift_coverage_probe, reservation, path);
+            match &coverage {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
-                    if !unclaimed_path_can_widen(
-                        reservations,
-                        reservation,
-                        changes,
-                        path,
-                        path_case,
-                    ) {
+                    let WideningPathAdmission::Admitted(admitted_path) =
+                        widening_admission.admit(path, &coverage)
+                    else {
                         return;
-                    }
+                    };
                     match widening_authorization {
                         DriftWideningAuthorization::WithheldFromRefusedRun => {},
                         DriftWideningAuthorization::Permitted => match &subjects.widening {
                             DriftWideningSelection::Selected(selected)
                                 if selected == reservation_id =>
                             {
-                                builder.widened_paths.push(path.clone());
+                                builder.widened_paths.push(admitted_path);
                             },
                             DriftWideningSelection::Ambiguous(_) => {
                                 unattributed_paths.push(path.clone());
@@ -575,44 +575,6 @@ pub(super) fn classify_locked(
             results,
             scope_acquisition: DriftScopeAcquisition::Permitted,
         },
-    })
-}
-
-/// Unclaimed work can widen unless it is only inherited committed history.
-fn unclaimed_path_can_widen(
-    reservations: &RetainedReservationSet,
-    subject: &Reservation,
-    changes: &ObservedDriftChanges,
-    path: &ReservationScopePath,
-    path_case: PathCase,
-) -> bool {
-    changes.carries_work(path)
-        && (!changes.committed_only(subject.id(), path)
-            || changes.head_commit_introduced(path)
-                && !released_sibling_checkpoint_covers(
-                    reservations,
-                    subject,
-                    changes,
-                    path,
-                    path_case,
-                ))
-}
-
-/// A sibling's completed checkpoint remains its work, even inside this phase's range.
-/// Dirty paths and later commits are classified normally, so editing the path again can
-/// still widen the current phase.
-fn released_sibling_checkpoint_covers(
-    reservations: &RetainedReservationSet,
-    subject: &Reservation,
-    changes: &ObservedDriftChanges,
-    path: &ReservationScopePath,
-    path_case: PathCase,
-) -> bool {
-    reservations.iter().any(|sibling| {
-        sibling.actor().has_coordination_identity(subject.actor().worktree, subject.actor().run)
-            && reservation_covers_path(sibling, path, path_case)
-            && matches!(sibling.evidence_state(), Ok(ReservationEvidenceState::Released { protected_tip, .. })
-                if changes.compares_to_checkpoint(protected_tip.as_ref()))
     })
 }
 
