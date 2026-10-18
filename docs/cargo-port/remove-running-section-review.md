@@ -6,6 +6,7 @@
 
 ## Delegation Context
 - **Project:** remove-running-section review unit
+- **Project started:** 2026-10-16T23:01:52.958+00:00
 
 ## Phases
 
