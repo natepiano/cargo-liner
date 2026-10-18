@@ -33,6 +33,9 @@ pub(crate) const WORKTREE: &str = "🌲";
 pub(crate) const GIT_STATUS_CLEAN: &str = "✨";
 pub(crate) const GIT_STATUS_UNTRACKED: &str = "🆕";
 pub(crate) const GIT_STATUS_MODIFIED: &str = "🟠";
+/// Git could not read the state this cell represents.
+pub(crate) const GIT_UNREADABLE_LABEL: &str = "unreadable";
+pub(crate) const GIT_STATUS_UNREADABLE: &str = "⛔";
 
 // ── CI constants ──────────────────────────────────────────────────────
 

@@ -35,14 +35,78 @@ use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::HeadState;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
+use crate::project::ResolvedBranch;
+use crate::project::TrackedRef;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
+
+/// Whether a repo branch lookup has arrived at the pane boundary.
+#[derive(Clone, Copy)]
+pub(in crate::tui) enum RepoBranchProbe<'a> {
+    Awaiting,
+    Probed(&'a ResolvedBranch),
+}
+
+/// Whether checkout metadata has reached a CI decision.
+#[derive(Clone, Copy)]
+pub(in crate::tui) enum CheckoutProbe<'a> {
+    Awaiting,
+    Probed(&'a CheckoutInfo),
+}
+
+/// Whether the parent repository's CI runs describe this checkout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::tui) enum CiApplicability {
+    Applies,
+    Unpublished,
+    UnreadableEvidence,
+}
+
+impl CiApplicability {
+    pub(in crate::tui) fn of(
+        checkout: CheckoutProbe<'_>,
+        default_branch: RepoBranchProbe<'_>,
+    ) -> Self {
+        let CheckoutProbe::Probed(checkout) = checkout else {
+            return Self::Applies;
+        };
+        match &checkout.head {
+            HeadState::Detached { .. } | HeadState::Unborn => Self::Applies,
+            HeadState::Unreadable => Self::UnreadableEvidence,
+            HeadState::Branch(name) => match (&checkout.primary_tracked_ref, default_branch) {
+                (
+                    TrackedRef::Unreadable,
+                    RepoBranchProbe::Awaiting | RepoBranchProbe::Probed(_),
+                )
+                | (
+                    TrackedRef::Ref(_) | TrackedRef::Untracked,
+                    RepoBranchProbe::Probed(ResolvedBranch::Unreadable),
+                ) => Self::UnreadableEvidence,
+                (
+                    TrackedRef::Ref(_),
+                    RepoBranchProbe::Awaiting
+                    | RepoBranchProbe::Probed(ResolvedBranch::Named(_) | ResolvedBranch::NotFound),
+                ) => Self::Applies,
+                (
+                    TrackedRef::Untracked,
+                    RepoBranchProbe::Probed(ResolvedBranch::Named(default)),
+                ) if name == default => Self::Applies,
+                (
+                    TrackedRef::Untracked,
+                    RepoBranchProbe::Awaiting
+                    | RepoBranchProbe::Probed(ResolvedBranch::Named(_) | ResolvedBranch::NotFound),
+                ) => Self::Unpublished,
+            },
+        }
+    }
+}
 
 /// Display value for the Ci row in the Package detail pane.
 ///
@@ -62,6 +126,7 @@ pub(in crate::tui) enum CiDisplay {
     #[default]
     NoWorkflow,
     UnpublishedBranch,
+    Unreadable,
     NoRuns,
     Runs {
         ci_status:    Option<CiStatus>,
@@ -245,8 +310,14 @@ impl Ci {
         if !has_workflows {
             return CiDisplay::NoWorkflow;
         }
-        if Self::is_unpublished_branch(git_info, repo_info) {
-            return CiDisplay::UnpublishedBranch;
+        let checkout = git_info.map_or(CheckoutProbe::Awaiting, CheckoutProbe::Probed);
+        let default_branch = repo_info.map_or(RepoBranchProbe::Awaiting, |repo| {
+            RepoBranchProbe::Probed(&repo.default_branch)
+        });
+        match CiApplicability::of(checkout, default_branch) {
+            CiApplicability::UnreadableEvidence => return CiDisplay::Unreadable,
+            CiApplicability::Unpublished => return CiDisplay::UnpublishedBranch,
+            CiApplicability::Applies => {},
         }
         let Some(info) = ci_info else {
             return CiDisplay::NoRuns;
@@ -263,21 +334,6 @@ impl Ci {
                 github_total,
             }
         }
-    }
-
-    /// True when the checkout's branch has no upstream tracking
-    /// and is not the repo's default branch — i.e. the parent
-    /// repo's CI doesn't apply to this checkout. Mirrors
-    /// `App::unpublished_ci_branch_name` returning `Some`.
-    fn is_unpublished_branch(
-        git_info: Option<&CheckoutInfo>,
-        repo_info: Option<&RepoInfo>,
-    ) -> bool {
-        let Some(git) = git_info else {
-            return false;
-        };
-        let default_branch = repo_info.and_then(|r| r.default_branch.as_deref());
-        git.primary_tracked_ref().is_none() && git.head.branch_name() != default_branch
     }
 
     /// Count `info.runs` after applying the display-mode

@@ -5,6 +5,8 @@ mod remote;
 mod workflow;
 
 pub(crate) use history::get_first_commit;
+pub(crate) use info::FirstCommit;
+pub(crate) use info::RemoteList;
 pub(crate) use info::RepoInfo;
 pub(crate) use push::PushDisabledReason;
 pub(crate) use push::PushState;

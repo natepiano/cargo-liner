@@ -152,7 +152,7 @@ impl App {
                 self.handle_repo_info(path.as_path(), info);
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
-                self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
+                self.handle_git_first_commit(path.as_path(), first_commit);
             },
             BackgroundMsg::ProjectDetailsDeclared { path } => {
                 self.mark_startup_project_details_declared(path);
@@ -298,6 +298,7 @@ mod tests {
 
     use super::*;
     use crate::project::Package;
+    use crate::project::PinnedCommit;
     use crate::project::ProjectInfo;
     use crate::project::RustProject;
     use crate::tui::project_list::ExpandKey;
@@ -309,7 +310,7 @@ mod tests {
             relative_path: name.to_string(),
             url:           None,
             branch:        None,
-            commit:        None,
+            commit:        PinnedCommit::NotPinned,
             project_info:  ProjectInfo::default(),
             git_repo:      None,
         }

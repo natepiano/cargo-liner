@@ -414,7 +414,7 @@
 - A broken linked worktree now probes as `Unreadable`; `GitCheckout::Broken` still wins, so its pane shows the Error row.
 - `CiState::is_unpublished_branch` answers `true` for every non-branch checkout (now including unreadable) while `ProjectList::unpublished_ci_branch_name` answers `None` for the same checkout.
 
-### Phase 14 — cargo-port shows every git read that fails as unreadable, never as clean, present or absent  · status: todo
+### Phase 14 — cargo-port shows every git read that fails as unreadable, never as clean, present or absent  · status: done
 
 **Depends on:** phases 15 and 13, both done and checkpointed (cargo-port order 12 → 15 → 13 → 14), so no file needs an `--after` claim. Phase 16 runs in this worktree at the same time and edits only `crates/cargo-berth/`, `crates/cargo-berth-test-support/` and `.config/nextest.toml`; it shares no file with this phase. Nothing is shared with phases 10 or 11.
 

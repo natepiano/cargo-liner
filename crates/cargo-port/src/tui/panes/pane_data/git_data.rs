@@ -9,7 +9,6 @@ use super::GIT_FORK;
 use super::GitStatus;
 use super::HashSet;
 use super::HeadState;
-use super::NO_REMOTE_SYNC;
 use super::Path;
 use super::ProjectPrData;
 use super::ProjectPrInfo;
@@ -27,9 +26,18 @@ use super::Visibility;
 use super::WorktreeStatus;
 use super::ci;
 use super::formatting;
+use super::formatting::GitReadFailures;
 use super::package_data;
 use super::project;
+use crate::constants::GIT_UNREADABLE_LABEL;
+use crate::project::CommitDate;
+use crate::project::Comparison;
+use crate::project::FirstCommit;
+use crate::project::PinnedCommit;
+use crate::project::ResolvedBranch;
+use crate::project::TrackedRef;
 use crate::project::WorktreeHealth;
+use crate::tui::state::RepoBranchProbe;
 
 /// How a branch relates to the repo, rendered as a qualifier after its
 /// name in the Git pane's Branch row.
@@ -41,6 +49,8 @@ pub enum HeadRelation {
     Feature,
     /// On a branch in a linked worktree checkout.
     Worktree,
+    Unreadable,
+    AwaitingRepoProbe,
 }
 
 /// Evidence that this checkout is a linked worktree.
@@ -67,15 +77,31 @@ enum HeadProbe<'a> {
 
 impl HeadRelation {
     /// Classify a branch against the default branch and linked-worktree evidence.
-    fn classify(branch: &str, default_branch: Option<&str>, placement: WorktreePlacement) -> Self {
-        match placement {
-            WorktreePlacement::Linked => Self::Worktree,
-            WorktreePlacement::NotLinked => {
-                if default_branch == Some(branch) {
+    fn classify(
+        branch: &str,
+        local_main_branch: RepoBranchProbe<'_>,
+        placement: WorktreePlacement,
+    ) -> Self {
+        match (placement, local_main_branch) {
+            (WorktreePlacement::Linked, RepoBranchProbe::Awaiting | RepoBranchProbe::Probed(_)) => {
+                Self::Worktree
+            },
+            (WorktreePlacement::NotLinked, RepoBranchProbe::Awaiting) => Self::AwaitingRepoProbe,
+            (
+                WorktreePlacement::NotLinked,
+                RepoBranchProbe::Probed(ResolvedBranch::Named(name)),
+            ) => {
+                if name == branch {
                     Self::Default
                 } else {
                     Self::Feature
                 }
+            },
+            (WorktreePlacement::NotLinked, RepoBranchProbe::Probed(ResolvedBranch::NotFound)) => {
+                Self::Feature
+            },
+            (WorktreePlacement::NotLinked, RepoBranchProbe::Probed(ResolvedBranch::Unreadable)) => {
+                Self::Unreadable
             },
         }
     }
@@ -85,34 +111,46 @@ impl HeadRelation {
             Self::Default => "default",
             Self::Feature => "feature",
             Self::Worktree => "worktree",
+            Self::Unreadable => GIT_UNREADABLE_LABEL,
+            Self::AwaitingRepoProbe => "awaiting repository probe",
         }
     }
+}
+
+/// A value that is absent only until its git probe completes.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum GitProbe<T> {
+    #[default]
+    AwaitingProbe,
+    Probed(T),
 }
 
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
-    pub checkout:           GitCheckout,
-    pub bisect:             Option<BisectProgress>,
-    pub status:             Option<GitStatus>,
-    pub vs_local:           Option<String>,
-    pub stars:              Option<u64>,
-    pub description:        Option<String>,
-    pub inception:          Option<String>,
-    pub last_commit:        Option<String>,
-    pub last_fetched:       Option<String>,
-    pub rate_limit_core:    Option<RateLimitQuota>,
-    pub rate_limit_graphql: Option<RateLimitQuota>,
-    pub github_status:      AvailabilityStatus,
-    pub pull_requests:      PullRequestSection,
-    pub remotes:            Vec<RemoteRow>,
-    pub worktrees:          Vec<WorktreeInfo>,
+    pub checkout:                    GitCheckout,
+    pub(in crate::tui) failed_reads: GitReadFailures,
+    pub bisect:                      Option<BisectProgress>,
+    pub status:                      Option<GitStatus>,
+    pub vs_local:                    GitProbe<Comparison>,
+    pub local_main_branch:           GitProbe<ResolvedBranch>,
+    pub stars:                       Option<u64>,
+    pub description:                 Option<String>,
+    pub inception:                   FirstCommit,
+    pub last_commit:                 GitProbe<CommitDate>,
+    pub last_fetched:                Option<String>,
+    pub rate_limit_core:             Option<RateLimitQuota>,
+    pub rate_limit_graphql:          Option<RateLimitQuota>,
+    pub github_status:               AvailabilityStatus,
+    pub pull_requests:               PullRequestSection,
+    pub remotes:                     RemoteRows,
+    pub worktrees:                   Vec<WorktreeInfo>,
     /// Submodule-specific overlay. `Some` only when this `GitData` is
     /// built for a submodule pane — the renderer reads this to decide
     /// whether to emit the `Tracks` / `Pinned` rows. Submodule identity
     /// is conveyed by the project-list `(s)` marker and the pane's
     /// "Submodule — \<name\>" title, not by an About-section line.
-    pub submodule_ctx:      Option<SubmoduleContext>,
+    pub submodule_ctx:               Option<SubmoduleContext>,
 }
 
 /// The checkout as the Git pane draws it. `Broken` (a linked worktree
@@ -134,10 +172,21 @@ pub enum GitCheckout {
 }
 
 impl GitCheckout {
+    pub const fn head_value_is_unreadable(&self) -> bool {
+        matches!(
+            self,
+            Self::UnreadableHead
+                | Self::Branch {
+                    relation: HeadRelation::Unreadable,
+                    ..
+                }
+        )
+    }
+
     fn from_probe(
         health: WorktreeHealth,
         head: HeadProbe<'_>,
-        default_branch: Option<&str>,
+        default_branch: RepoBranchProbe<'_>,
         placement: WorktreePlacement,
     ) -> Self {
         match (health, head) {
@@ -212,17 +261,37 @@ pub struct SubmoduleContext {
     /// Pinned commit SHA from `git ls-tree HEAD` in the parent repo.
     /// Always present when `SubmoduleContext` is built — without it
     /// there's no reason to render the overlay.
-    pub pinned_commit: String,
+    pub pinned_commit: PinnedCommit,
 }
 
 impl GitData {
     /// Whether the repo has no remotes — drives the `(📁 local)` branch
     /// annotation in the git pane.
-    pub const fn is_local(&self) -> bool { self.remotes.is_empty() }
+    pub const fn is_local(&self) -> bool {
+        matches!(&self.remotes, RemoteRows::Listed(rows) if rows.is_empty())
+    }
 }
 
-/// Per-remote row rendered in the Git pane's Remotes table. Pre-formatted
-/// for display — status and `tracked_ref` already reduce to rendered text.
+/// Remote table rows retain whether the underlying listing failed.
+#[derive(Clone, Default)]
+pub enum RemoteRows {
+    #[default]
+    AwaitingProbe,
+    Listed(Vec<RemoteRow>),
+    Unreadable,
+}
+
+impl RemoteRows {
+    pub fn listed(&self) -> &[RemoteRow] {
+        match self {
+            Self::Listed(rows) => rows,
+            Self::AwaitingProbe | Self::Unreadable => &[],
+        }
+    }
+    pub const fn is_unreadable(&self) -> bool { matches!(self, Self::Unreadable) }
+}
+
+/// Per-remote row: identity text plus typed tracking and comparison evidence.
 #[derive(Clone)]
 pub struct RemoteRow {
     pub name:            String,
@@ -231,12 +300,17 @@ pub struct RemoteRow {
     /// Local branch (current `HEAD`) compared against `tracked_ref` —
     /// the source side of the `status` ahead/behind delta.
     pub branch:          String,
-    pub tracked_ref:     String,
-    pub status:          String,
+    pub tracked_ref:     TrackedRef,
+    pub status:          Comparison,
     pub full_url:        Option<String>,
     /// Pre-formatted push-disabled annotation (e.g. `"↛ push disabled"`
     /// or `"↛ push disabled (DISABLED)"`). `None` when push is enabled.
     pub push_annotation: Option<String>,
+}
+
+impl RemoteRow {
+    pub fn tracked_text(&self) -> String { formatting::format_tracked_ref(&self.tracked_ref) }
+    pub fn status_text(&self) -> String { formatting::format_ahead_behind(self.status) }
 }
 
 /// Per-worktree info rendered in the Git pane's Worktrees table.
@@ -251,7 +325,7 @@ pub struct WorktreeInfo {
     /// the target side of the `ahead_behind` delta. `None` for the
     /// primary entry itself, which is the baseline (nothing to compare).
     pub tracked:      Option<String>,
-    pub ahead_behind: Option<(usize, usize)>,
+    pub ahead_behind: Comparison,
 }
 
 /// What the Git pane cursor selects at a given `pos()`. Single source of
@@ -291,7 +365,10 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.status.is_some() {
         fields.push(DetailField::GitStatus);
     }
-    if data.vs_local.is_some() {
+    if matches!(
+        data.vs_local,
+        GitProbe::Probed(Comparison::Counted(_) | Comparison::Unreadable)
+    ) {
         fields.push(DetailField::VsLocal);
     }
     // Show the Stars row when:
@@ -303,14 +380,30 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     }
     // Repo description is rendered separately in the About section by
     // `render_git_about_section`, so it is intentionally not a flat field.
-    if data.inception.is_some() {
+    if matches!(
+        data.inception,
+        FirstCommit::Probed(CommitDate::At(_) | CommitDate::Unreadable)
+    ) {
         fields.push(DetailField::Inception);
     }
-    if data.last_commit.is_some() {
+    if matches!(
+        data.last_commit,
+        GitProbe::Probed(CommitDate::At(_) | CommitDate::Unreadable)
+    ) {
         fields.push(DetailField::LastCommit);
     }
     if data.last_fetched.is_some() {
         fields.push(DetailField::LastFetched);
+    }
+    if data.remotes.is_unreadable() {
+        fields.push(DetailField::RemotesUnreadable);
+    }
+    for field in data.failed_reads.fields() {
+        if !(fields.contains(&field)
+            || field == DetailField::Head && matches!(data.checkout, GitCheckout::Broken))
+        {
+            fields.push(field);
+        }
     }
     // Rate-limit rows are always shown so the section structure stays
     // stable across fetch state; rendering handles the empty-quota
@@ -346,27 +439,29 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
         return data.pull_requests.rows.get(pos).map(GitRow::PullRequest);
     }
     let pos = pos - data.pull_requests.rows.len();
-    if pos < data.remotes.len() {
-        return data.remotes.get(pos).map(GitRow::Remote);
+    if pos < data.remotes.listed().len() {
+        return data.remotes.listed().get(pos).map(GitRow::Remote);
     }
-    let pos = pos - data.remotes.len();
+    let pos = pos - data.remotes.listed().len();
     data.worktrees.get(pos).map(GitRow::Worktree)
 }
 pub(super) struct GitDetailFields {
     pub(super) checkout:           GitCheckout,
+    pub(super) failed_reads:       GitReadFailures,
     pub(super) bisect:             Option<BisectProgress>,
     pub(super) path:               Option<GitStatus>,
-    pub(super) vs_local:           Option<String>,
+    pub(super) vs_local:           GitProbe<Comparison>,
+    pub(super) local_main_branch:  GitProbe<ResolvedBranch>,
     pub(super) stars:              Option<u64>,
     pub(super) description:        Option<String>,
-    pub(super) inception:          Option<String>,
-    pub(super) last_commit:        Option<String>,
+    pub(super) inception:          FirstCommit,
+    pub(super) last_commit:        GitProbe<CommitDate>,
     pub(super) last_fetched:       Option<String>,
     pub(super) rate_limit_core:    Option<RateLimitQuota>,
     pub(super) rate_limit_graphql: Option<RateLimitQuota>,
     pub(super) github_status:      AvailabilityStatus,
     pub(super) pull_requests:      PullRequestSection,
-    pub(super) remotes:            Vec<RemoteRow>,
+    pub(super) remotes:            RemoteRows,
 }
 
 pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
@@ -376,24 +471,22 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
 
     let head = checkout.map_or(HeadProbe::Awaiting, |info| HeadProbe::Probed(&info.head));
     let bisect = checkout.and_then(|info| info.bisect.clone());
-    let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
-    let local_main_label = local_main_branch
-        .as_deref()
-        .unwrap_or_else(|| app.config.current().tui.main_branch.as_str());
-    let vs_local = checkout
-        .and_then(|info| info.ahead_behind_local)
-        .map(|ahead_behind| {
-            formatting::format_ahead_behind_against(ahead_behind, local_main_label)
-        });
+    let local_main_probe = repo_info.map_or(RepoBranchProbe::Awaiting, |repo| {
+        RepoBranchProbe::Probed(&repo.local_main_branch)
+    });
+    let local_main_branch = repo_info.map_or(GitProbe::AwaitingProbe, |repo| {
+        GitProbe::Probed(repo.local_main_branch.clone())
+    });
+    let vs_local = checkout.map_or(GitProbe::AwaitingProbe, |info| {
+        GitProbe::Probed(info.ahead_behind_local)
+    });
     let github = git_repo.and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
-    let inception = repo_info
-        .and_then(|repo| repo.first_commit.as_deref())
-        .map(formatting::format_timestamp);
-    let last_commit = checkout
-        .and_then(|info| info.last_commit.as_deref())
-        .map(formatting::format_timestamp);
+    let inception = repo_info.map_or(FirstCommit::AwaitingProbe, |repo| repo.first_commit.clone());
+    let last_commit = checkout.map_or(GitProbe::AwaitingProbe, |info| {
+        GitProbe::Probed(info.last_commit.clone())
+    });
     let last_fetched = repo_info
         .and_then(|repo| repo.last_fetched.as_deref())
         .map(formatting::format_timestamp);
@@ -401,7 +494,7 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     let current_branch = checkout
         .and_then(|info| info.head.branch_name())
         .unwrap_or("-");
-    let remotes = repo_info.map_or_else(Vec::new, |repo| {
+    let remotes = repo_info.map_or_else(RemoteRows::default, |repo| {
         build_remote_rows(repo, &default_host, current_branch)
     });
     let pr_check_polls = app
@@ -415,17 +508,19 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         .unwrap_or_default();
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
+        failed_reads: GitReadFailures::of(checkout, repo_info),
         checkout: GitCheckout::from_probe(
             app.project_list
                 .at_path(abs_path)
                 .map_or(WorktreeHealth::Normal, |info| info.worktree_health),
             head,
-            local_main_branch.as_deref(),
+            local_main_probe,
             WorktreePlacement::of(app.project_list.worktree_status_for(abs_path)),
         ),
         bisect,
         path: app.project_list.git_status_for(abs_path),
         vs_local,
+        local_main_branch,
         stars,
         description,
         inception,
@@ -517,36 +612,49 @@ fn pull_request_row(
 /// Convert each `RemoteInfo` into a render-ready `RemoteRow`, shortening
 /// the URL when it begins with `default_host` and collapsing missing
 /// tracked refs / ahead-behind values to placeholder runes.
-fn build_remote_rows(repo: &RepoInfo, default_host: &str, current_branch: &str) -> Vec<RemoteRow> {
-    repo.remotes
-        .iter()
-        .map(|remote| {
-            let icon = match remote.kind {
-                RemoteKind::Fork => GIT_FORK,
-                RemoteKind::Clone => GIT_CLONE,
-            };
-            let display_url = remote
-                .url
-                .as_deref()
-                .map_or_else(String::new, |raw| shorten_remote_url(raw, default_host));
-            let tracked_ref = remote
-                .tracked_ref
-                .clone()
-                .unwrap_or_else(|| NO_REMOTE_SYNC.to_string());
-            let status = formatting::format_ahead_behind(remote.ahead_behind);
-            let push_annotation = format_push_annotation(&remote.push);
-            RemoteRow {
-                name: remote.name.clone(),
-                icon,
-                display_url,
-                branch: current_branch.to_string(),
-                tracked_ref,
-                status,
-                full_url: remote.url.clone(),
-                push_annotation,
-            }
-        })
-        .collect()
+fn build_remote_rows(repo: &RepoInfo, default_host: &str, current_branch: &str) -> RemoteRows {
+    let failures = GitReadFailures::of(None, Some(repo));
+    if failures.field_failed(DetailField::RemotesUnreadable) {
+        return RemoteRows::Unreadable;
+    }
+    RemoteRows::Listed(
+        repo.remotes
+            .listed()
+            .iter()
+            .enumerate()
+            .map(|(index, remote)| {
+                let icon = match remote.kind {
+                    RemoteKind::Fork => GIT_FORK,
+                    RemoteKind::Clone => GIT_CLONE,
+                };
+                let display_url = remote
+                    .url
+                    .as_deref()
+                    .map_or_else(String::new, |raw| shorten_remote_url(raw, default_host));
+                let tracked_ref = if failures.remote_tracked_failed(index) {
+                    TrackedRef::Unreadable
+                } else {
+                    remote.tracked_ref.clone()
+                };
+                let status = if failures.remote_sync_failed(index) {
+                    Comparison::Unreadable
+                } else {
+                    remote.ahead_behind
+                };
+                let push_annotation = format_push_annotation(&remote.push);
+                RemoteRow {
+                    name: remote.name.clone(),
+                    icon,
+                    display_url,
+                    branch: current_branch.to_string(),
+                    tracked_ref,
+                    status,
+                    full_url: remote.url.clone(),
+                    push_annotation,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Pre-format the `↛ push disabled` annotation rendered after the
@@ -620,7 +728,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             // delta. Linked worktrees compare their HEAD to the primary's.
             let is_primary = path.as_path() == primary_path.as_path();
             let (tracked, ahead_behind) = if is_primary {
-                (None, None)
+                (None, Comparison::NotCompared)
             } else {
                 (
                     primary_branch.clone(),
@@ -648,7 +756,10 @@ pub(super) fn resolve_worktrees(app: &App, worktree_item: Option<&RootItem>) -> 
 /// Returns `None` when the parent has no pinned commit recorded —
 /// without it there's nothing meaningful to render in the overlay.
 pub(super) fn build_submodule_context(submodule: &Submodule) -> Option<SubmoduleContext> {
-    let pinned_commit = submodule.commit.clone()?;
+    let pinned_commit = match &submodule.commit {
+        PinnedCommit::NotPinned => return None,
+        PinnedCommit::Sha(_) | PinnedCommit::Unreadable => submodule.commit.clone(),
+    };
     Some(SubmoduleContext {
         tracks: submodule.branch.clone(),
         pinned_commit,
@@ -658,6 +769,10 @@ pub(super) fn build_submodule_context(submodule: &Submodule) -> Option<Submodule
 #[cfg(test)]
 mod git_field_tests {
     use super::*;
+    use crate::project::CommitDate;
+    use crate::project::Comparison;
+    use crate::project::FirstCommit;
+    use crate::project::ResolvedBranch;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::DetailField;
     use crate::tui::panes::pane_data::constants::HEAD_UNREADABLE_LABEL;
@@ -666,20 +781,22 @@ mod git_field_tests {
     fn git_data() -> GitData {
         GitData {
             checkout:           GitCheckout::AwaitingProbe,
+            failed_reads:       GitReadFailures::default(),
             bisect:             None,
             submodule_ctx:      None,
             status:             None,
-            vs_local:           None,
+            vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
+            local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              None,
             description:        None,
-            inception:          None,
-            last_commit:        None,
+            inception:          FirstCommit::AwaitingProbe,
+            last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
             rate_limit_core:    None,
             rate_limit_graphql: None,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
-            remotes:            Vec::new(),
+            remotes:            RemoteRows::default(),
             worktrees:          Vec::new(),
         }
     }
@@ -690,7 +807,7 @@ mod git_field_tests {
             checkout: GitCheckout::from_probe(
                 WorktreeHealth::Broken,
                 HeadProbe::Probed(&HeadState::Unreadable),
-                None,
+                RepoBranchProbe::Awaiting,
                 WorktreePlacement::NotLinked,
             ),
             ..git_data()
@@ -716,7 +833,7 @@ mod git_field_tests {
             checkout: GitCheckout::from_probe(
                 WorktreeHealth::Normal,
                 HeadProbe::Probed(&HeadState::Unreadable),
-                None,
+                RepoBranchProbe::Awaiting,
                 WorktreePlacement::NotLinked,
             ),
             ..git_data()
@@ -732,7 +849,7 @@ mod git_field_tests {
             GitCheckout::from_probe(
                 WorktreeHealth::Normal,
                 HeadProbe::Awaiting,
-                None,
+                RepoBranchProbe::Awaiting,
                 WorktreePlacement::NotLinked,
             ),
             GitCheckout::AwaitingProbe,
@@ -742,7 +859,7 @@ mod git_field_tests {
             GitCheckout::from_probe(
                 WorktreeHealth::Normal,
                 HeadProbe::Probed(&head),
-                Some("main"),
+                RepoBranchProbe::Probed(&ResolvedBranch::Named("main".into())),
                 WorktreePlacement::NotLinked,
             ),
             GitCheckout::Branch {
@@ -754,7 +871,7 @@ mod git_field_tests {
             GitCheckout::from_probe(
                 WorktreeHealth::Normal,
                 HeadProbe::Probed(&head),
-                Some("main"),
+                RepoBranchProbe::Probed(&ResolvedBranch::Named("main".into())),
                 WorktreePlacement::Linked,
             ),
             GitCheckout::Branch {
@@ -848,5 +965,51 @@ mod git_field_tests {
             "no Stars placeholder when merely unauthenticated"
         );
         assert!(!pane_data::github_stars_is_unreachable_placeholder(&data));
+    }
+
+    #[test]
+    fn branch_relation_with_unreadable_default_branch_is_unreadable_not_feature() {
+        let unreadable = ResolvedBranch::Unreadable;
+        assert!(matches!(
+            HeadRelation::classify(
+                "main",
+                RepoBranchProbe::Probed(&unreadable),
+                WorktreePlacement::NotLinked
+            ),
+            HeadRelation::Unreadable
+        ));
+        assert!(matches!(
+            HeadRelation::classify(
+                "main",
+                RepoBranchProbe::Probed(&unreadable),
+                WorktreePlacement::Linked
+            ),
+            HeadRelation::Worktree
+        ));
+        assert!(matches!(
+            HeadRelation::classify(
+                "main",
+                RepoBranchProbe::Probed(&ResolvedBranch::NotFound),
+                WorktreePlacement::NotLinked
+            ),
+            HeadRelation::Feature
+        ));
+        let data = GitData {
+            checkout: GitCheckout::Branch {
+                name:     "main".into(),
+                relation: HeadRelation::Unreadable,
+            },
+            ..git_data()
+        };
+        assert_eq!(
+            DetailField::Head.git_value(&data),
+            format!("main · {GIT_UNREADABLE_LABEL}")
+        );
+        assert!(
+            !DetailField::Head
+                .git_value(&data)
+                .contains(HeadRelation::Feature.label())
+        );
+        assert!(data.checkout.head_value_is_unreadable());
     }
 }

@@ -30,8 +30,10 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::PackagePane;
+use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
+use crate::project::PinnedCommit;
 use crate::tui::integration;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
@@ -39,6 +41,7 @@ use crate::tui::panes::DetailField;
 use crate::tui::panes::EmptyDescriptionBehavior;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackageRow;
+use crate::tui::panes::PackageVersion;
 use crate::tui::panes::RenderStyles;
 use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::panes::constants::CRATES_IO_TITLE;
@@ -506,6 +509,16 @@ fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> 
     match field {
         DetailField::Ci => ci_display_style(&ctx.data.ci_display),
         DetailField::Lint => lint_display_style(&ctx.data.lint_display),
+        DetailField::Version => match &ctx.data.version {
+            PackageVersion::Submodule(PinnedCommit::Unreadable) => {
+                Style::default().fg(error_color())
+            },
+            PackageVersion::AwaitingMetadata
+            | PackageVersion::Manifest(_)
+            | PackageVersion::Submodule(PinnedCommit::Sha(_) | PinnedCommit::NotPinned) => {
+                Style::default()
+            },
+        },
         _ => Style::default(),
     }
 }
@@ -1172,6 +1185,7 @@ fn lint_display_to_string(
 /// from the typed [`CiDisplay`].
 fn ci_display_style(display: &CiDisplay) -> Style {
     match display {
+        CiDisplay::Unreadable => Style::default().fg(tui_pane::error_color()),
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
             Style::default().fg(inactive_border_color())
         },
@@ -1188,6 +1202,7 @@ fn ci_display_style(display: &CiDisplay) -> Style {
 /// `lint_display_to_string`.
 fn ci_display_to_string(display: &CiDisplay) -> String {
     match display {
+        CiDisplay::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
         CiDisplay::NoWorkflow => "No CI workflow configured".to_string(),
         CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::NoRuns => "No CI runs".to_string(),
@@ -1393,6 +1408,7 @@ mod moved_facade_tests {
     use super::package_label_width;
     use super::stats_column_width;
     use crate::project::ProjectType;
+    use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::PackageData;
     use crate::tui::panes::pane_data::PackagePresence;
@@ -1410,7 +1426,7 @@ mod moved_facade_tests {
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     "~/demo".to_string(),
-            version:                  Some("0.1.0".to_string()),
+            version:                  PackageVersion::Manifest("0.1.0".to_string()),
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),

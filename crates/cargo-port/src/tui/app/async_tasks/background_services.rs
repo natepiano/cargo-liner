@@ -174,7 +174,7 @@ impl App {
                     elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                     repo_root = %repo_root.display(),
                     rows = paths.len(),
-                    found = first_commit.is_some(),
+                    found = matches!(first_commit, project::CommitDate::At(_)),
                     "git_first_commit_fetch"
                 );
                 for path in paths {

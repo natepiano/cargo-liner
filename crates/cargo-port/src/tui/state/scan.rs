@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::project::AbsolutePath;
+use crate::project::CommitDate;
 use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadataStore;
 use crate::tui::app::DiscoveryShimmer;
@@ -29,7 +30,7 @@ pub(crate) struct Scan {
     pub(in crate::tui) state:            ScanState,
     data_generation:                     u64,
     discovery_shimmers:                  HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit:            HashMap<AbsolutePath, String>,
+    pending_git_first_commit:            HashMap<AbsolutePath, CommitDate>,
     metadata_store:                      Arc<Mutex<WorkspaceMetadataStore>>,
     pub(in crate::tui) target_dir_index: TargetDirIndex,
     priority_fetch_path:                 Option<AbsolutePath>,
@@ -99,13 +100,13 @@ impl Scan {
     // ── pending git first-commit cache ──────────────────────────────
 
     #[cfg(test)]
-    pub const fn pending_git_first_commit(&self) -> &HashMap<AbsolutePath, String> {
+    pub const fn pending_git_first_commit(&self) -> &HashMap<AbsolutePath, CommitDate> {
         &self.pending_git_first_commit
     }
 
     pub(crate) const fn pending_git_first_commit_mut(
         &mut self,
-    ) -> &mut HashMap<AbsolutePath, String> {
+    ) -> &mut HashMap<AbsolutePath, CommitDate> {
         &mut self.pending_git_first_commit
     }
 
@@ -204,6 +205,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::project::CommitDate;
 
     fn fresh() -> Scan {
         Scan::new(
@@ -258,10 +260,10 @@ mod tests {
         let mut scan = fresh();
         let p = abs("/tmp/proj");
         scan.pending_git_first_commit_mut()
-            .insert(p.clone(), "abc123".to_string());
+            .insert(p.clone(), CommitDate::At("abc123".to_string()));
         assert_eq!(
-            scan.pending_git_first_commit().get(&p).map(String::as_str),
-            Some("abc123")
+            scan.pending_git_first_commit().get(&p),
+            Some(&CommitDate::At("abc123".to_string()))
         );
     }
 

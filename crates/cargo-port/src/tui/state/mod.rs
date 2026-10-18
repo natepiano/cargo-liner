@@ -11,9 +11,12 @@ mod owned_run_process_actor;
 mod scan;
 mod sync;
 
+pub(super) use ci::CheckoutProbe;
 pub(super) use ci::Ci;
+pub(super) use ci::CiApplicability;
 pub(super) use ci::CiDisplay;
 pub(super) use ci::CiStatusLookup;
+pub(super) use ci::RepoBranchProbe;
 pub(crate) use config::Config;
 pub(super) use git_status::GitStatusTracker;
 pub(super) use git_status::format_transition as format_git_status_transition;

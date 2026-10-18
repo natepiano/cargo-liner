@@ -4,6 +4,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::project::git::command;
+use crate::project::git::command::GitAnswer;
+use crate::project::git::command::GitReadError;
 use crate::project::git::constants::GIT_CONFIG_COMMAND;
 use crate::project::git::constants::GIT_CONFIG_REMOTE_PREFIX;
 use crate::project::git::constants::GIT_CONFIG_REMOTE_PUSHURL_PATTERN;
@@ -90,20 +92,23 @@ pub(super) fn resolve_push_state(fetch_url: Option<&str>, pushurl: Option<&str>)
 /// Batch-read every `remote.<name>.pushurl` value with a single
 /// `git config --get-regexp` shell-out. Returns a map keyed by remote
 /// name (with `remote.` and `.pushurl` stripped).
-pub(super) fn list_remote_pushurls(repo_root: &Path) -> HashMap<String, String> {
+pub(super) fn list_remote_pushurls(
+    repo_root: &Path,
+) -> Result<HashMap<String, String>, GitReadError> {
     let mut map = HashMap::new();
-    let Ok(output) = command::git_output_logged(
+    let output = command::git_answer_logged(
         repo_root,
         "config_get_regexp_pushurl",
-        [
+        &[
             GIT_CONFIG_COMMAND,
             GIT_GET_REGEXP_ARG,
             GIT_CONFIG_REMOTE_PUSHURL_PATTERN,
         ],
-    ) else {
-        return map;
+    )?;
+    let stdout = match output {
+        GitAnswer::No => return Ok(map),
+        GitAnswer::Yes(output) => output,
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         let Some((key, value)) = line.split_once(' ') else {
             continue;
@@ -116,7 +121,7 @@ pub(super) fn list_remote_pushurls(repo_root: &Path) -> HashMap<String, String> 
         };
         map.insert(name.to_string(), value.to_string());
     }
-    map
+    Ok(map)
 }
 
 #[cfg(test)]

@@ -7,24 +7,20 @@
 //! rendered content can drift. Co-locating the two in `panes/`
 //! shares complete tree-prefix endings and their measured widths.
 //! The Disk column measures the size text plus the row's suffix,
-//! shared with the renderer through the same constants.
+//! shared with the renderer through `DiskCell`.
 //!
 //! Single entry: [`compute_project_list_widths`]. Internal
 //! observers walk the project tree, accumulating per-column
 //! width observations into a [`ProjectListWidths`] which the
 //! Selection subsystem stores.
 
+use std::path::Path;
+
 use super::constants;
-use super::constants::BROKEN_WORKTREE_DISK_SUFFIX;
+use super::constants::DiskCell;
 use super::constants::PREFIX_ROOT_COLLAPSED;
 use super::constants::TreeRowDepth;
-use crate::constants::IN_SYNC;
-use crate::constants::NO_REMOTE_SYNC;
-use crate::constants::SYNC_DOWN;
-use crate::constants::SYNC_UP;
 use crate::project::CheckoutInfo;
-use crate::project::GitOrigin;
-use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::ProjectEntry;
@@ -56,7 +52,7 @@ pub(in crate::tui) fn compute_project_list_widths(
 ) -> ProjectListWidths {
     let mut widths = ProjectListWidths::new(lint_enabled);
     for (index, entry) in entries.iter().enumerate() {
-        observe_item_fit_widths(&mut widths, entry, &root_labels[index]);
+        observe_item_fit_widths(&mut widths, entries, entry, &root_labels[index]);
     }
     widths.generation = generation;
     widths
@@ -73,36 +69,64 @@ fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
     widths.observe(COL_NAME, name_width_with_gutter(content_width));
 }
 
-fn observe_disk_width(widths: &mut ProjectListWidths, disk: &str, health: WorktreeHealth) {
-    let suffix_width = match health {
-        WorktreeHealth::Normal => 0,
-        WorktreeHealth::Broken => columns::display_width(BROKEN_WORKTREE_DISK_SUFFIX),
-    };
-    widths.observe(COL_DISK, columns::display_width(disk) + suffix_width);
+/// The ancestor whose deletion the renderer propagates to these rows.
+#[derive(Clone, Copy)]
+struct DiskFitContext<'a> {
+    projects: &'a ProjectList,
+    ancestor: &'a Path,
 }
 
-fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry, root_label: &str) {
+impl DiskFitContext<'_> {
+    fn cell(&self, entry: &impl ProjectFields) -> DiskCell {
+        let deleted =
+            self.projects.is_deleted(self.ancestor) || self.projects.is_deleted(entry.path());
+        DiskCell::for_row(
+            formatted_disk(entry.info().disk_usage_bytes),
+            columns::RowLifecycle::from(deleted),
+            entry.info().worktree_health,
+        )
+    }
+}
+
+fn observe_disk_width(widths: &mut ProjectListWidths, cell: &DiskCell) {
+    widths.observe(COL_DISK, cell.width());
+}
+
+fn observe_item_fit_widths(
+    widths: &mut ProjectListWidths,
+    projects: &ProjectList,
+    entry: &ProjectEntry,
+    root_label: &str,
+) {
     let dw = columns::display_width;
     let item = &entry.root_item;
+    let disk_context = DiskFitContext {
+        projects,
+        ancestor: item.path(),
+    };
     let repo_info = entry
         .git_repo
         .as_ref()
         .and_then(|repo| repo.repo_info.as_ref());
 
     observe_name_width(widths, dw(PREFIX_ROOT_COLLAPSED) + dw(root_label));
-    observe_disk_width(
-        widths,
-        &formatted_disk(item.disk_usage_bytes()),
+    let cell = DiskCell::for_row(
+        formatted_disk(item.disk_usage_bytes()),
+        columns::RowLifecycle::from(projects.is_deleted(item.path())),
         item.worktree_health(),
     );
+    observe_disk_width(widths, &cell);
     widths.observe(COL_SYNC, dw(&git_sync_label(item.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_sync_label(item.git_info())));
+    widths.observe(
+        COL_MAIN,
+        dw(&git_main_sync_label(item.git_info(), repo_info)),
+    );
 
     match item {
-        RootItem::Rust(project) => observe_rust_children_fit_widths(widths, project),
+        RootItem::Rust(project) => observe_rust_children_fit_widths(widths, disk_context, project),
         RootItem::NonRust(_) => {},
         RootItem::Worktrees(worktree_group) => {
-            observe_worktree_group_fit_widths(widths, worktree_group, repo_info);
+            observe_worktree_group_fit_widths(widths, projects, worktree_group, repo_info);
         },
     }
     for submodule in item.submodules() {
@@ -112,18 +136,29 @@ fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry,
             constants::tree_prefix_width(TreeRowDepth::root_child()),
             &label,
             submodule,
+            disk_context,
         );
     }
 }
 
-fn observe_rust_children_fit_widths(widths: &mut ProjectListWidths, project: &RustProject) {
+fn observe_rust_children_fit_widths(
+    widths: &mut ProjectListWidths,
+    disk_context: DiskFitContext<'_>,
+    project: &RustProject,
+) {
     if let RustProject::Workspace(ws) = project {
-        observe_new_member_group_fit_widths(widths, ws.groups(), TreeRowDepth::root_child());
+        observe_new_member_group_fit_widths(
+            widths,
+            ws.groups(),
+            TreeRowDepth::root_child(),
+            disk_context,
+        );
     }
     observe_typed_vendored_fit_widths(
         widths,
         &project.rust_info().vendored,
         TreeRowDepth::root_child(),
+        disk_context,
     );
 }
 
@@ -132,20 +167,18 @@ fn observe_path_only_entry_fit_widths(
     prefix_width: usize,
     label: &str,
     entry: &impl ProjectFields,
+    disk_context: DiskFitContext<'_>,
 ) {
     let dw = columns::display_width;
     observe_name_width(widths, prefix_width + dw(label));
-    observe_disk_width(
-        widths,
-        &formatted_disk(entry.info().disk_usage_bytes),
-        entry.info().worktree_health,
-    );
+    observe_disk_width(widths, &disk_context.cell(entry));
 }
 
 fn observe_new_member_group_fit_widths(
     widths: &mut ProjectListWidths,
     groups: &[MemberGroup],
     group_depth: TreeRowDepth,
+    disk_context: DiskFitContext<'_>,
 ) {
     let dw = columns::display_width;
     for group in groups {
@@ -155,8 +188,21 @@ fn observe_new_member_group_fit_widths(
                 widths,
                 constants::tree_prefix_width(member_depth) + dw(member.package_name().as_str()),
             );
-            widths.observe(COL_DISK, dw(&formatted_disk(member.disk_usage_bytes())));
-            observe_typed_vendored_fit_widths(widths, member.vendored(), member_depth.child());
+            let cell = DiskCell::for_row(
+                formatted_disk(member.disk_usage_bytes()),
+                columns::RowLifecycle::from(
+                    disk_context.projects.is_deleted(disk_context.ancestor)
+                        || disk_context.projects.is_deleted(member.path()),
+                ),
+                WorktreeHealth::Normal,
+            );
+            observe_disk_width(widths, &cell);
+            observe_typed_vendored_fit_widths(
+                widths,
+                member.vendored(),
+                member_depth.child(),
+                disk_context,
+            );
         }
         if group.is_named() {
             let label = format!("{} ({})", group.group_name(), group.members().len());
@@ -172,12 +218,21 @@ fn observe_typed_vendored_fit_widths(
     widths: &mut ProjectListWidths,
     vendored: &[VendoredPackage],
     depth: TreeRowDepth,
+    disk_context: DiskFitContext<'_>,
 ) {
     let dw = columns::display_width;
     for project in vendored {
         let label = constants::vendored_row_label(project.package_name().as_str());
         observe_name_width(widths, constants::tree_prefix_width(depth) + dw(&label));
-        widths.observe(COL_DISK, dw(&formatted_disk(project.disk_usage_bytes())));
+        let cell = DiskCell::for_row(
+            formatted_disk(project.disk_usage_bytes()),
+            columns::RowLifecycle::from(
+                disk_context.projects.is_deleted(disk_context.ancestor)
+                    || disk_context.projects.is_deleted(project.path()),
+            ),
+            WorktreeHealth::Normal,
+        );
+        observe_disk_width(widths, &cell);
     }
 }
 
@@ -187,23 +242,24 @@ fn observe_workspace_worktree_entry_fit_widths(
     group: &WorktreeGroup,
     worktree_index: usize,
     repo_info: Option<&RepoInfo>,
+    projects: &ProjectList,
 ) {
+    let disk_context = DiskFitContext {
+        projects,
+        ancestor: ws.path(),
+    };
     let dw = columns::display_width;
     let worktree_name = worktree_entry_label(group, worktree_index);
     observe_name_width(
         widths,
         constants::tree_prefix_width(TreeRowDepth::root_child()) + dw(&worktree_name),
     );
-    observe_disk_width(
-        widths,
-        &formatted_disk(ws.disk_usage_bytes()),
-        ws.worktree_health(),
-    );
+    observe_disk_width(widths, &disk_context.cell(ws));
     widths.observe(COL_SYNC, dw(&git_sync_label(ws.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_sync_label(ws.git_info())));
+    widths.observe(COL_MAIN, dw(&git_main_sync_label(ws.git_info(), repo_info)));
     let child_depth = TreeRowDepth::root_child().child();
-    observe_new_member_group_fit_widths(widths, ws.groups(), child_depth);
-    observe_typed_vendored_fit_widths(widths, ws.vendored(), child_depth);
+    observe_new_member_group_fit_widths(widths, ws.groups(), child_depth, disk_context);
+    observe_typed_vendored_fit_widths(widths, ws.vendored(), child_depth, disk_context);
 }
 
 fn observe_package_worktree_entry_fit_widths(
@@ -212,25 +268,35 @@ fn observe_package_worktree_entry_fit_widths(
     group: &WorktreeGroup,
     worktree_index: usize,
     repo_info: Option<&RepoInfo>,
+    projects: &ProjectList,
 ) {
+    let disk_context = DiskFitContext {
+        projects,
+        ancestor: pkg.path(),
+    };
     let dw = columns::display_width;
     let worktree_name = worktree_entry_label(group, worktree_index);
     observe_name_width(
         widths,
         constants::tree_prefix_width(TreeRowDepth::root_child()) + dw(&worktree_name),
     );
-    observe_disk_width(
-        widths,
-        &formatted_disk(pkg.disk_usage_bytes()),
-        pkg.worktree_health(),
-    );
+    observe_disk_width(widths, &disk_context.cell(pkg));
     widths.observe(COL_SYNC, dw(&git_sync_label(pkg.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_sync_label(pkg.git_info())));
-    observe_typed_vendored_fit_widths(widths, pkg.vendored(), TreeRowDepth::root_child().child());
+    widths.observe(
+        COL_MAIN,
+        dw(&git_main_sync_label(pkg.git_info(), repo_info)),
+    );
+    observe_typed_vendored_fit_widths(
+        widths,
+        pkg.vendored(),
+        TreeRowDepth::root_child().child(),
+        disk_context,
+    );
 }
 
 fn observe_worktree_group_fit_widths(
     widths: &mut ProjectListWidths,
+    projects: &ProjectList,
     worktree_group: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
@@ -238,7 +304,14 @@ fn observe_worktree_group_fit_widths(
     // root itself, so its children have no intervening worktree ancestor.
     if !worktree_group.renders_as_group() {
         if let Some(entry) = worktree_group.single_live() {
-            observe_rust_children_fit_widths(widths, entry);
+            observe_rust_children_fit_widths(
+                widths,
+                DiskFitContext {
+                    projects,
+                    ancestor: entry.path(),
+                },
+                entry,
+            );
         }
         return;
     }
@@ -251,6 +324,7 @@ fn observe_worktree_group_fit_widths(
                     worktree_group,
                     worktree_index,
                     repo_info,
+                    projects,
                 );
             },
             RustProject::Package(pkg) => {
@@ -260,6 +334,7 @@ fn observe_worktree_group_fit_widths(
                     worktree_group,
                     worktree_index,
                     repo_info,
+                    projects,
                 );
             },
         }
@@ -290,36 +365,9 @@ fn formatted_disk(bytes: Option<u64>) -> String {
 }
 
 fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
-    let Some(info) = checkout else {
-        return String::new();
-    };
-    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-        return String::new();
-    }
-    let primary_ab = repo.and_then(|r| info.primary_ahead_behind(r));
-    let origin = repo.map_or(GitOrigin::Local, RepoInfo::origin_kind);
-    match primary_ab {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{SYNC_UP}{a}"),
-        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-        None if origin != GitOrigin::Local => "-".to_string(),
-        None => NO_REMOTE_SYNC.to_string(),
-    }
+    super::GitSyncLabels::of(checkout, repo).origin
 }
 
-fn git_main_sync_label(checkout: Option<&CheckoutInfo>) -> String {
-    let Some(info) = checkout else {
-        return String::new();
-    };
-    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-        return String::new();
-    }
-    match info.ahead_behind_local {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{SYNC_UP}{a}"),
-        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-        None => String::new(),
-    }
+fn git_main_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
+    super::GitSyncLabels::of(checkout, repo).main
 }

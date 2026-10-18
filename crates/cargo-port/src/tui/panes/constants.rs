@@ -17,8 +17,12 @@
 
 use std::ops::Range;
 
+use ratatui::style::Style;
+
 use crate::project::MemberGroup;
+use crate::project::WorktreeHealth;
 use crate::tui::columns;
+use crate::tui::columns::RowLifecycle;
 
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
@@ -26,9 +30,62 @@ pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 // Tree row prefix strings and segments — single source of truth for width calc
 // and render.
 
+const DELETED_DISK_TEXT: &str = "0.0";
+
 /// Disk-cell suffix on a `WorktreeHealth::Broken` row; measured by
 /// `panes::widths` and drawn by `panes::project_list`.
 pub(in crate::tui) const BROKEN_WORKTREE_DISK_SUFFIX: &str = " [broken]";
+
+/// Every Disk-cell presentation. Rendering and fitting read the same text,
+/// suffix and suffix style, so adding a presentation also defines its width.
+pub(super) enum DiskCell {
+    Size(String),
+    Broken(String),
+    DeleteMarked,
+}
+
+impl DiskCell {
+    pub(super) fn for_row(size: String, lifecycle: RowLifecycle, health: WorktreeHealth) -> Self {
+        match (lifecycle, health) {
+            (RowLifecycle::Deleted, WorktreeHealth::Normal | WorktreeHealth::Broken) => {
+                Self::DeleteMarked
+            },
+            (RowLifecycle::Present, WorktreeHealth::Normal) => Self::Size(size),
+            (RowLifecycle::Present, WorktreeHealth::Broken) => Self::Broken(size),
+        }
+    }
+
+    pub(super) fn text(&self) -> &str {
+        match self {
+            Self::Size(size) | Self::Broken(size) => size,
+            Self::DeleteMarked => DELETED_DISK_TEXT,
+        }
+    }
+
+    pub(super) const fn suffix(&self) -> Option<&'static str> {
+        match self {
+            Self::Size(_) => None,
+            Self::Broken(_) => Some(BROKEN_WORKTREE_DISK_SUFFIX),
+            Self::DeleteMarked => Some(DISMISS_SUFFIX),
+        }
+    }
+
+    pub(super) fn suffix_style(&self) -> Option<Style> {
+        match self {
+            Self::Size(_) => None,
+            Self::Broken(_) => Some(
+                Style::default()
+                    .fg(tui_pane::on_error_color())
+                    .bg(tui_pane::error_color()),
+            ),
+            Self::DeleteMarked => Some(Style::default().fg(tui_pane::label_color())),
+        }
+    }
+
+    pub(super) fn width(&self) -> usize {
+        columns::display_width(self.text()) + self.suffix().map_or(0, columns::display_width)
+    }
+}
 
 /// Project-list label shared by vendored rows and their fitted widths.
 pub(super) fn vendored_row_label(package_name: &str) -> String { format!("{package_name} (v)") }
@@ -211,5 +268,5 @@ pub(super) const STATS_TITLE: &str = "Structure";
 pub(super) const TESTS_TITLE: &str = "Tests";
 
 // src tui panes project_list
-pub(super) const DISMISS_SUFFIX: &str = " [x]";
+pub(in crate::tui) const DISMISS_SUFFIX: &str = " [x]";
 pub(super) const TITLE_ELLIPSIS: &str = "\u{2026}";
