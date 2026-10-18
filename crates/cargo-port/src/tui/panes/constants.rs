@@ -15,37 +15,92 @@
 
 // Git pane constants
 
+use std::ops::Range;
+
+use crate::project::MemberGroup;
+use crate::tui::columns;
+
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
 // Tree row prefix strings and segments — single source of truth for width calc
 // and render.
 
+/// Disk-cell suffix on a `WorktreeHealth::Broken` row; measured by
+/// `panes::widths` and drawn by `panes::project_list`.
+pub(in crate::tui) const BROKEN_WORKTREE_DISK_SUFFIX: &str = " [broken]";
+
+/// Project-list label shared by vendored rows and their fitted widths.
+pub(super) fn vendored_row_label(package_name: &str) -> String { format!("{package_name} (v)") }
+
 pub(super) const PREFIX_ROOT_EXPANDED: &str = "▼ ";
 pub(in crate::tui) const PREFIX_ROOT_COLLAPSED: &str = "▶ ";
 pub(in crate::tui) const PREFIX_ROOT_LEAF: &str = "  ";
 pub(super) const TREE_PREFIX_BLANK: &str = "  ";
 pub(super) const TREE_PREFIX_CONTINUATION: &str = "│ ";
-pub(super) const TREE_PREFIX_BRANCH: &str = "├─";
-pub(super) const TREE_PREFIX_LAST: &str = "└─";
-pub(super) const TREE_PREFIX_EXPANDED: &str = "▼ ";
-pub(super) const TREE_PREFIX_COLLAPSED: &str = "▶ ";
-pub(super) const TREE_PREFIX_LEAF_EXTENSION: &str = "─ ";
-pub(super) const PREFIX_MEMBER_INLINE: &str = "└─";
-pub(super) const PREFIX_MEMBER_NAMED: &str = "  └─";
-pub(super) const PREFIX_MEMBER_VENDORED_INLINE: &str = "  └─";
-pub(super) const PREFIX_MEMBER_VENDORED_NAMED: &str = "    └─";
-pub(super) const PREFIX_SUBMODULE: &str = "└─";
-pub(super) const PREFIX_VENDORED: &str = "└─";
-pub(super) const PREFIX_GROUP_COLLAPSED: &str = "└─▶ ";
-pub(super) const PREFIX_WORKTREE_COLLAPSED: &str = "└─▶ ";
-pub(in crate::tui) const PREFIX_WORKTREE_FLAT: &str = "└─";
-pub(super) const PREFIX_WORKTREE_GROUP_COLLAPSED: &str = "  └─▶ ";
-pub(super) const PREFIX_WORKTREE_MEMBER_INLINE: &str = "  └─";
-pub(super) const PREFIX_WORKTREE_MEMBER_NAMED: &str = "    └─";
-pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_INLINE: &str = "    └─";
-pub(super) const PREFIX_WORKTREE_MEMBER_VENDORED_NAMED: &str = "      └─";
-pub(super) const PREFIX_WORKTREE_VENDORED: &str = "  └─";
+/// Complete leaf ending, also exposed to the existing width tests.
+pub(in crate::tui) const PREFIX_WORKTREE_FLAT: &str = "└── ";
+
+/// Expansion state of a non-root row's tree prefix.
+#[derive(Clone, Copy)]
+pub(super) enum TreeRowExpansion {
+    Expanded,
+    Collapsed,
+    Leaf,
+}
+
+impl TreeRowExpansion {
+    /// The complete branch and expansion marker; fit measures read this
+    /// same text rather than maintaining a second set of prefix strings.
+    pub(super) const fn prefix(self, has_later_sibling: bool) -> &'static str {
+        match (self, has_later_sibling) {
+            (Self::Expanded, true) => "├─▼ ",
+            (Self::Expanded, false) => "└─▼ ",
+            (Self::Collapsed, true) => "├─▶ ",
+            (Self::Collapsed, false) => "└─▶ ",
+            (Self::Leaf, true) => "├── ",
+            (Self::Leaf, false) => PREFIX_WORKTREE_FLAT,
+        }
+    }
+}
+
+/// Non-root row depth, counting the ancestors between its root and ending.
+/// Both the fit pass and the renderer use this depth for ancestor segments.
+#[derive(Clone, Copy)]
+pub(super) struct TreeRowDepth(usize);
+
+impl TreeRowDepth {
+    pub(super) const fn root_child() -> Self { Self(0) }
+
+    pub(super) const fn child(self) -> Self { Self(self.0 + 1) }
+
+    pub(super) const fn member_of(self, group: &MemberGroup) -> Self {
+        if group.is_named() { self.child() } else { self }
+    }
+
+    /// A non-root lineage includes its root and the row itself.
+    pub(super) const fn from_lineage_length(length: usize) -> Self { Self(length - 2) }
+
+    /// Indices of the lineage segments between the root and the row.
+    pub(super) const fn ancestor_indices(self) -> Range<usize> { 1..self.0 + 1 }
+}
+
+/// Reserve the widest drawn ending and ancestor segments, so fitting is
+/// independent of expansion state and sibling order.
+pub(super) fn tree_prefix_width(depth: TreeRowDepth) -> usize {
+    let dw = columns::display_width;
+    let ending_width = [
+        TreeRowExpansion::Expanded,
+        TreeRowExpansion::Collapsed,
+        TreeRowExpansion::Leaf,
+    ]
+    .into_iter()
+    .flat_map(|state| [state.prefix(false), state.prefix(true)])
+    .map(dw)
+    .max()
+    .unwrap_or_default();
+    depth.0 * dw(TREE_PREFIX_BLANK).max(dw(TREE_PREFIX_CONTINUATION)) + ending_width
+}
 
 // tests detail rows
 
