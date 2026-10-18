@@ -496,3 +496,312 @@ fn build_left_right_trees(root: &Path) {
         add_worktree(root, &root.join(".git/fixture-worktrees"), branch);
     }
 }
+
+/// A released predecessor and an equivalent successor before the first board evaluation.
+pub const EQUIVALENT_SUCCESSOR: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "equivalent-successor-history",
+        build: |root| build_successor_history(root, true),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+/// A released predecessor and unrelated successor before the first board evaluation.
+pub const DIFFERENT_SUCCESSOR: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "different-successor-history",
+        build: |root| build_successor_history(root, false),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+fn build_successor_history(root: &Path, equivalent: bool) {
+    build_edge_main(root);
+    let state = build_rewritten_successor(root, &root.join(".git/fixture-worktrees"), equivalent);
+    fs::write(
+        root.join(".git/successor-history.json"),
+        serde_json::to_vec(&state).expect("history should encode"),
+    )
+    .expect("history should write");
+}
+/// Read the protected history prepared before the test starts.
+///
+/// # Panics
+/// Panics when history metadata cannot be read or decoded.
+#[must_use]
+pub fn successor_history_state(root: &Path) -> RewrittenSuccessorState {
+    serde_json::from_slice(
+        &fs::read(root.join(".git/successor-history.json")).expect("history should read"),
+    )
+    .expect("history should decode")
+}
+/// One cold predecessor, already merged without reconciliation.
+pub const ONE_PREDECESSOR: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "one-predecessor-history",
+        build: |root| build_predecessor_history(root, 1),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+/// Two cold predecessors, already merged without reconciliation.
+pub const TWO_PREDECESSORS: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "two-predecessor-history",
+        build: |root| build_predecessor_history(root, 2),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+
+fn build_predecessor_history(root: &Path, predecessor_count: usize) {
+    build_edge_main(root);
+    commit_predecessor_scopes(root, predecessor_count);
+    let worktrees = root.join(".git/fixture-worktrees");
+    let successor_root = add_worktree(root, &worktrees, "successor");
+    let predecessor_worktrees = (0..predecessor_count)
+        .map(|predecessor_index| {
+            let predecessor_branch = format!("predecessor-{predecessor_index}");
+            let predecessor_root = add_worktree(root, &worktrees, &predecessor_branch);
+            (predecessor_branch, predecessor_root)
+        })
+        .collect::<Vec<_>>();
+    // Every answer below attaches to this one reservation of the successor run.
+    assert!(
+        claim(
+            &successor_root,
+            &deferring_run_scope(SECOND_RUN),
+            SECOND_RUN
+        )
+        .status
+        .success()
+    );
+
+    for (predecessor_index, (_, predecessor_root)) in predecessor_worktrees.iter().enumerate() {
+        let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
+        dirty_source(predecessor_root, &predecessor_path);
+        let predecessor_run = uuid::Uuid::now_v7().to_string();
+        let predecessor = claim(
+            predecessor_root,
+            &format!("file:{predecessor_path}"),
+            &predecessor_run,
+        );
+        let predecessor_id = reservation_id(&predecessor);
+        let successor = defer_answer(
+            &successor_root,
+            &format!("file:{predecessor_path}"),
+            SECOND_RUN,
+            &predecessor_id,
+        );
+        let successor_id = reservation_id(&successor);
+        let sequenced = sequence(
+            root,
+            &predecessor_id,
+            &successor_id,
+            "predecessor lands before this successor",
+        );
+        assert!(sequenced.status.success());
+
+        fs::write(
+            predecessor_root.join(&predecessor_path),
+            format!("pub fn protected_predecessor_{predecessor_index}() {{}}\n"),
+        )
+        .expect("predecessor source should write");
+        git(predecessor_root, &["add", &predecessor_path]);
+        git(
+            predecessor_root,
+            &[
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("protected predecessor {predecessor_index}"),
+            ],
+        );
+        assert!(
+            run_berth(predecessor_root, &["release", &predecessor_id, "--json"])
+                .status
+                .success()
+        );
+    }
+
+    // Observe every cold predecessor together, before ordinary reconciliation can settle one.
+    for (predecessor_branch, _) in &predecessor_worktrees {
+        git(
+            root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--quiet",
+                "--no-ff",
+                predecessor_branch.as_str(),
+            ],
+        );
+    }
+}
+
+fn commit_predecessor_scopes(repository_root: &Path, predecessor_count: usize) {
+    fs::create_dir_all(repository_root.join("predecessors"))
+        .expect("predecessor scope directory should exist");
+    for predecessor_index in 0..predecessor_count {
+        fs::write(
+            repository_root.join(format!("predecessors/predecessor-{predecessor_index}.rs")),
+            format!("// reserved predecessor scope {predecessor_index}\n"),
+        )
+        .expect("predecessor scope source should write");
+    }
+    git(repository_root, &["add", "predecessors"]);
+    // No reservation exists yet, so the hooks would write no berth state.
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "predecessor reservation scopes",
+        ],
+    );
+}
+
+fn sequence(repository_root: &Path, before: &str, after: &str, why: &str) -> Output {
+    run_berth(
+        repository_root,
+        &["sequence", before, after, "--why", why, "--json"],
+    )
+}
+
+fn defer_answer(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
+    run_berth(
+        repository_root,
+        &[
+            "claim",
+            scope,
+            "--run",
+            run,
+            "--defer",
+            blocker,
+            "--overlap-why",
+            "the order is not known yet",
+            "--why",
+            "protect deferred work",
+            "--json",
+        ],
+    )
+}
+
+/// A checkpoint with an unobserved historical cherry-pick and a conflicting current trunk.
+pub const HISTORICAL_PROOF: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "historical-proof",
+        build: build_historical_proof,
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+fn build_historical_proof(root: &Path) {
+    build_edge_main(root);
+    // Historical proof tests deliberately observe commits without any managed hook.
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
+    let holder = add_worktree(
+        root,
+        &root.join(".git/fixture-worktrees"),
+        "historical-holder",
+    );
+    let id = reservation_id(&claim(&holder, "file:src/lib.rs", FIRST_RUN));
+    commit_successor_fixture_file(
+        &holder,
+        "src/lib.rs",
+        "pub fn protected() {}\n",
+        "protected phase",
+    );
+    let protected_tip = git_stdout(&holder, &["rev-parse", "HEAD"]);
+    append_edge_fixture_event(
+        root,
+        serde_json::json!({
+            "op": "checkpoint", "reservation_id": id,
+            "protected_tip": protected_tip, "trunk_snapshot": phase_start_head,
+        }),
+    );
+    commit_successor_fixture_file(
+        root,
+        "src/lib.rs",
+        "pub fn protected() {}\n",
+        "uncaptured cherry-pick",
+    );
+    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(witness, protected_tip);
+    commit_successor_fixture_file(
+        root,
+        "src/lib.rs",
+        "pub fn later_trunk_revision() {}\n",
+        "later protected-hunk rewrite",
+    );
+    let target = git_stdout(root, &["rev-parse", "HEAD"]);
+    let replay = GIT.output(
+        root,
+        [
+            "merge-tree",
+            "--write-tree",
+            &format!("--merge-base={phase_start_head}"),
+            &target,
+            &protected_tip,
+        ],
+    );
+    assert_eq!(
+        replay.status.code(),
+        Some(1),
+        "current-trunk replay must conflict"
+    );
+    fs::write(
+        root.join(".git/historical-proof.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "reservation_id": id, "phase_start_head": phase_start_head,
+            "protected_tip": protected_tip, "witness": witness, "target": target,
+        }))
+        .expect("historical proof should encode"),
+    )
+    .expect("historical proof should write");
+}
+/// A committed lane with its active integration cover, before either landing operation.
+pub const COVER_LANDING: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "cover-landing",
+        build: |root| IntegrationRepository::build_cover_landing(root, BERTH_EXECUTABLE),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};
+
+/// Source and committed berth policy without lifecycle events or automatic reconciliation.
+pub const MERGE_EXTENT_MAIN: LedgerTemplate = LedgerTemplate {
+    repository:   RepositoryTemplate {
+        name: "merge-extent-main",
+        build: |root| IntegrationRepository::build_merge_extent_main(root, BERTH_EXECUTABLE),
+        ..RECORDED_PROJECTION.repository
+    },
+    ledger:       LedgerFixture::Empty,
+    build_timing: TemplateBuildTiming::BeforeRun,
+};
+
+/// An independent holder and requester with no reservations yet.
+pub const MERGE_EXTENT_PAIR: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "merge-extent-pair",
+        build: |root| IntegrationRepository::build_merge_extent_pair(root, BERTH_EXECUTABLE),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..MERGE_EXTENT_MAIN
+};
+
+/// The integration target's first hooked commit, ready for a lane to claim work.
+pub const INITIAL_INTEGRATION_PAIR: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "initial-integration-pair",
+        build: |root| IntegrationRepository::build_initial_integration_pair(root, BERTH_EXECUTABLE),
+        ..RECORDED_PROJECTION.repository
+    },
+    ..RECORDED_PROJECTION
+};

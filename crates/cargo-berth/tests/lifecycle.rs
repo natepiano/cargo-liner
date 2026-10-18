@@ -26,6 +26,8 @@ mod reanchoring;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
@@ -34,6 +36,30 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -289,20 +315,14 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
-        let lane = repo.lane("landing-lane", "integration");
-        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let _ = repo.board();
-        let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane ID")
-            .to_owned();
-        let cover_id = repo.cover_claims()[0]["reservation_id"]
-            .as_str()
-            .expect("cover ID")
-            .to_owned();
-        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let repo = IntegrationRepository::from_recorded_template(crate::COVER_LANDING);
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(repo.root().join(".git/cover-landing.json"))
+                .expect("landing state should read"),
+        )
+        .expect("landing state should decode");
+        let lane_id = state["lane_id"].as_str().expect("lane ID").to_owned();
+        let cover_id = state["cover_id"].as_str().expect("cover ID").to_owned();
         let lane_work = repo.capture();
         for merge_commit in [true, false] {
             repo.restore(&lane_work);
@@ -2670,7 +2690,9 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(
+            super::edges_templates::INITIAL_INTEGRATION_PAIR,
+        );
         let lane = repo.lane("partly-landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -4703,33 +4725,6 @@ mod merge_extent {
 
     fn real_git() -> String { super::git_binary() }
 
-    /// Committed source and berth policy, with hooks disabled so only explicit reads reconcile.
-    const MERGE_EXTENT_MAIN: super::RepositoryTemplate = super::RepositoryTemplate {
-        target_directory: env!("CARGO_TARGET_TMPDIR"),
-        executable:       BERTH,
-        name:             "merge-extent-main",
-        build:            build_merge_extent_main,
-    };
-
-    fn build_merge_extent_main(root: &Path) {
-        GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        super::git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
-        write(root, "tracked.rs", "base\n");
-        write(root, "staged.rs", "base\n");
-        GIT.run(root, ["add", "."]);
-        GIT.run(root, ["commit", "--quiet", "-m", "base"]);
-        succeed(&berth(root, &["init", "--json"], FIRST_RUN));
-        // No hook or lifecycle verb runs when these tests integrate a branch. Only the
-        // following board read may discover its now-empty merge surface.
-        super::git_configuration::append_git_configuration(
-            root,
-            "\n[core]\n hooksPath = /dev/null\n",
-        )
-        .expect("fixture hook policy should write");
-        GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-        GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
-    }
-
     /// The checkout issuing edit requests independently of the holder.
     #[derive(Clone, Copy)]
     enum EditRequester {
@@ -4752,40 +4747,31 @@ mod merge_extent {
         fn with_trunk_requester() -> Self { Self::with_requester(EditRequester::Trunk) }
 
         fn with_requester(requester: EditRequester) -> Self {
-            let repository = MERGE_EXTENT_MAIN.instantiate();
-            let root = repository.path();
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");
-            GIT.run(
-                root,
-                [
-                    "worktree",
-                    "add",
-                    "--quiet",
-                    "-b",
-                    "holder",
-                    holder.to_str().expect("worktree path should be UTF-8"),
-                    "main",
-                ],
-            );
-            let outsider = match requester {
-                EditRequester::Trunk => root.to_path_buf(),
-                EditRequester::SeparateBranch => {
-                    let path = worktrees.path().join("outsider");
+            let (repository, outsider) = match requester {
+                EditRequester::Trunk => {
+                    let repository = super::edges_templates::MERGE_EXTENT_MAIN.instantiate();
                     GIT.run(
-                        root,
+                        repository.path(),
                         [
                             "worktree",
                             "add",
                             "--quiet",
                             "-b",
-                            "outsider",
-                            path.to_str().expect("worktree path should be UTF-8"),
+                            "holder",
+                            holder.to_str().expect("worktree path should be UTF-8"),
                             "main",
                         ],
                     );
-                    path
+                    let outsider = repository.path().to_path_buf();
+                    (repository, outsider)
                 },
+                EditRequester::SeparateBranch => (
+                    super::edges_templates::MERGE_EXTENT_PAIR
+                        .instantiate_with_external_worktrees(worktrees.path()),
+                    worktrees.path().join("outsider"),
+                ),
             };
             Self {
                 trunk_directory: repository,

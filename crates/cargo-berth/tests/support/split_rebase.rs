@@ -1,8 +1,8 @@
 //! Real interactive split rebase steps shared by lifecycle and gate regressions.
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+
+use cargo_berth_test_support::DirectorySnapshot;
 
 use super::BERTH_EXECUTABLE;
 use super::GIT;
@@ -54,9 +54,10 @@ pub(super) fn continue_rebase(holder: &Path) {
 
 /// Edit the first picked commit while preserving update-ref commands in the todo.
 pub(super) fn write_first_rebase_action(editor: &Path, action: &str) {
-    fs::write(editor, format!(
-        "#!/bin/sh\nsed '1s/^pick /{action} /' \"$1\" > \"$1.edited\"\nmv \"$1.edited\" \"$1\"\n"
-    )).expect("sequence editor should write");
-    fs::set_permissions(editor, fs::Permissions::from_mode(0o755))
-        .expect("sequence editor should execute");
+    DirectorySnapshot::write_shared_shell_script(
+        editor,
+        &format!(
+            "#!/bin/sh\nsed '1s/^pick /{action} /' \"$1\" > \"$1.edited\"\nmv \"$1.edited\" \"$1\"\n"
+        ),
+    );
 }

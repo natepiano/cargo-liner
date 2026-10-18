@@ -24,20 +24,30 @@ use cargo_berth_test_support::RepositoryTemplate;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+pub use edges_templates::COVER_LANDING;
 pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
 pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
 pub use edges_templates::LEFT_RIGHT_TREES;
 pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
 pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
 pub use edges_templates::RECORDED_PROJECTION;
 pub use edges_templates::RewrittenSuccessorState;
 pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
 pub use edges_templates::append_edge_fixture_event;
 pub use edges_templates::build_rewritten_successor;
 pub use edges_templates::commit_successor_fixture_file;
 pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 #[path = "support/gate_templates.rs"]
 mod gate_templates;
 use cargo_berth_test_support::assert_success;
@@ -132,6 +142,7 @@ const GATE_DEADLINE: Duration = Duration::from_millis(200);
 const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
 const GIT_BINARY: &str = "git";
 const HOOK_PATH: &str = ".git/hooks/reference-transaction";
+const HOOK_CONTEXT_PATH: &str = ".git/hooks/cargo-berth-hook-context";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const GATE_TARGETS_PATH: &str = ".git/cargo-berth/gate-targets";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
@@ -1906,7 +1917,7 @@ fn init_manages_the_common_hook_without_overwriting_an_unmanaged_owner() {
         installed
     );
     let unmanaged = b"\xff#!/bin/sh\nexit 0\n";
-    fs::write(&hook_path, unmanaged).expect("unmanaged hook should write");
+    write_private_hook(&hook_path, unmanaged);
 
     let preserved = run_berth(repository.path(), &["init"]);
     assert!(preserved.status.success());
@@ -2532,7 +2543,7 @@ fn a_managed_hook_that_does_not_report_its_issuing_directory_requires_reinitiali
     );
     let uncaptured_hook = managed_hook.replace(&issuing_directory_capture, "");
     assert_ne!(uncaptured_hook, managed_hook);
-    fs::write(&hook_path, uncaptured_hook).expect("uncaptured hook fixture should write");
+    write_private_hook(&hook_path, uncaptured_hook);
     let input = format!("{previous} {proposed} refs/heads/main\n");
 
     let rejected = run_managed_hook_with_session(
@@ -3123,8 +3134,8 @@ fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
         "trunk rename failed: {}",
         String::from_utf8_lossy(&renamed.stderr)
     );
-    let hook_path = repository.path().join(HOOK_PATH);
-    let refreshed = fs::read_to_string(&hook_path).expect("refreshed hook should read");
+    let refreshed = fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
+        .expect("refreshed hook context should read");
     assert!(
         refreshed.contains("cargo_berth_trunk_reference='refs/heads/renamed'"),
         "hook did not refresh after branch rename: {}",
@@ -3154,7 +3165,7 @@ fn an_outdated_managed_hook_is_replaced_by_the_first_ref_transaction_it_dispatch
     let hook_path = repository.path().join(HOOK_PATH);
     let current = fs::read_to_string(&hook_path).expect("managed hook should read");
     let outdated = hook_written_before_template_fingerprints(&current);
-    fs::write(&hook_path, &outdated).expect("outdated hook fixture should write");
+    write_private_hook(&hook_path, &outdated);
 
     git(repository.path(), &["branch", "outdated-hook-trigger"]);
 
@@ -3207,7 +3218,7 @@ fn a_user_owned_hook_that_starts_cargo_berth_is_never_rewritten() {
     let user_owned = hook_written_before_template_fingerprints(&managed)
         .replace(&format!("{REFERENCE_TRANSACTION_MARKER}\n"), "");
     assert!(!user_owned.contains(REFERENCE_TRANSACTION_MARKER));
-    fs::write(&hook_path, &user_owned).expect("user-owned hook should write");
+    write_private_hook(&hook_path, &user_owned);
     let head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
 
     let dispatched = run_hook_script(
@@ -3243,14 +3254,13 @@ fn hook_written_before_template_fingerprints(current: &str) -> String {
     outdated
 }
 
-/// What a rewrite of a hook file changes even when it writes the same bytes.
+/// A replacement changes the inode; an in-place write changes the modification time.
+/// Link-count changes from other fixtures do not count as rewrites of this hook.
 #[derive(Debug, Eq, PartialEq)]
 struct HookFileIdentity {
     inode:            u64,
     modified_seconds: i64,
     modified_nanos:   i64,
-    changed_seconds:  i64,
-    changed_nanos:    i64,
 }
 
 impl HookFileIdentity {
@@ -3260,8 +3270,6 @@ impl HookFileIdentity {
             inode:            metadata.ino(),
             modified_seconds: metadata.mtime(),
             modified_nanos:   metadata.mtime_nsec(),
-            changed_seconds:  metadata.ctime(),
-            changed_nanos:    metadata.ctime_nsec(),
         }
     }
 }
@@ -3286,7 +3294,8 @@ fn deleting_trunk_with_one_unrelated_same_tip_branch_leaves_dispatch_unchanged()
     let retained = fs::read(&hook_path).expect("retained hook should read");
     assert_eq!(retained, installed);
     assert!(
-        String::from_utf8_lossy(&retained)
+        fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
+            .expect("retained hook context should read")
             .contains("cargo_berth_trunk_reference='refs/heads/main'")
     );
 }
@@ -3364,7 +3373,8 @@ fn deleting_trunk_with_two_proven_same_tip_renames_leaves_dispatch_unchanged() {
     let retained = fs::read(&hook_path).expect("retained hook should read");
     assert_eq!(retained, installed);
     assert!(
-        String::from_utf8_lossy(&retained)
+        fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
+            .expect("retained hook context should read")
             .contains("cargo_berth_trunk_reference='refs/heads/main'")
     );
 }
@@ -3513,7 +3523,7 @@ fn managed_hook_fails_open_and_marks_a_bypass_for_an_unavailable_binary() {
     let hook_path = repository.path().join(HOOK_PATH);
     let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
     let broken = pin_managed_hook_executable(&installed, Path::new("/missing/cargo-berth"));
-    fs::write(&hook_path, broken).expect("broken hook fixture should write");
+    write_private_hook(&hook_path, broken);
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let input = format!("{base} {base} refs/heads/main\n");
 
@@ -3690,7 +3700,7 @@ fn a_bypass_the_binary_cannot_record_still_leaves_a_marker() {
         "__reference-transaction --not-a-flag \"$@\"",
     );
     assert_ne!(rejecting, installed);
-    fs::write(&hook_path, rejecting).expect("rejecting hook fixture should write");
+    write_private_hook(&hook_path, rejecting);
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let input = format!("{base} {base} refs/heads/main\n");
 
@@ -3717,7 +3727,8 @@ fn a_bypass_the_binary_cannot_record_still_leaves_a_marker() {
 fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
     let repository = initialized_repository();
     let hook_path = repository.path().join(HOOK_PATH);
-    let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let context_path = repository.path().join(HOOK_CONTEXT_PATH);
+    let installed = fs::read_to_string(&context_path).expect("managed hook context should read");
     let policy_worktree_path =
         fs::canonicalize(repository.path()).expect("policy worktree should resolve");
     let policy_worktree = shell_single_quoted(&policy_worktree_path);
@@ -3725,7 +3736,7 @@ fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
         shell_single_quoted(&repository.path().join("unavailable-policy-worktree"));
     let detached = installed.replace(&policy_worktree, &unavailable_policy_worktree);
     assert_ne!(detached, installed);
-    fs::write(&hook_path, detached).expect("detached hook fixture should write");
+    fs::write(&context_path, detached).expect("detached hook context should write");
 
     let directory = tempdir().expect("temporary parent should exist");
     let removed_directory = directory.path().join("removed");
@@ -4166,7 +4177,7 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
         shell_single_quoted(&phase_log),
         shell_single_quoted(&original_hook_path),
     );
-    fs::write(&hook_path, wrapper).expect("phase wrapper should write");
+    write_private_hook(&hook_path, wrapper);
     let mut permissions = fs::metadata(&hook_path)
         .expect("phase wrapper metadata should read")
         .permissions();
@@ -6505,12 +6516,10 @@ fn run_command_with_raw_git_behavior(
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("raw-trace");
     fs::create_dir(&trace_path).expect("raw git trace directory should exist");
-    fs::write(&wrapper_path, RAW_TRACING_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        RAW_TRACING_GIT_WRAPPER,
+    );
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = match raw_git_behavior {
         RawGitBehavior::RemoveAfterTargetHistory => directory.path().as_os_str().to_owned(),
@@ -6640,6 +6649,16 @@ fn run_berth_with_input_and_environment(
     child.wait_with_output().expect("cargo-berth should finish")
 }
 
+fn write_private_hook(path: &Path, contents: impl AsRef<[u8]>) {
+    let permissions = fs::metadata(path)
+        .expect("managed hook metadata should read")
+        .permissions();
+    fs::remove_file(path).expect("shared managed hook should detach");
+    fs::write(path, contents).expect("private managed hook should write");
+    fs::set_permissions(path, permissions)
+        .expect("private managed hook permissions should restore");
+}
+
 /// Pin a managed hook to one binary in place of the resolution it performs when it runs.
 ///
 /// The installed hook names no binary: it resolves `cargo-berth` at run time so a
@@ -6681,7 +6700,7 @@ fn replace_managed_hook_executable_with_spy(repository_root: &Path) -> ManagedHo
     let hook_path = repository_root.join(HOOK_PATH);
     let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
     let instrumented = pin_managed_hook_executable(&installed, &spy_path);
-    fs::write(hook_path, instrumented).expect("instrumented hook should write");
+    write_private_hook(&hook_path, instrumented);
 
     ManagedHookSpy {
         phase_log,
@@ -6844,7 +6863,7 @@ fn committed_forced_trunk_integration_hook_phases() -> Vec<String> {
 
 fn wrap_managed_hook_with_phase_log(repository_root: &Path) -> PathBuf {
     let hook_path = repository_root.join(HOOK_PATH);
-    let original_hook_path = repository_root.join(".git/reference-transaction.original");
+    let original_hook_path = repository_root.join(".git/hooks/reference-transaction.original");
     fs::copy(&hook_path, &original_hook_path).expect("managed hook should copy");
     let phase_log = repository_root.join(".git/reference-transaction-phases.log");
     let wrapper = format!(
@@ -6852,7 +6871,7 @@ fn wrap_managed_hook_with_phase_log(repository_root: &Path) -> PathBuf {
         shell_single_quoted(&phase_log),
         shell_single_quoted(&original_hook_path),
     );
-    fs::write(&hook_path, wrapper).expect("managed hook wrapper should write");
+    write_private_hook(&hook_path, wrapper);
     let mut permissions = fs::metadata(&hook_path)
         .expect("managed hook wrapper metadata should read")
         .permissions();
