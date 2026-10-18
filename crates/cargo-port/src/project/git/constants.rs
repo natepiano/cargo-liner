@@ -4,7 +4,6 @@ pub(super) const GIT_HEAD_REVSPEC_PREFIX: &str = "HEAD...";
 pub(super) const GIT_REMOTE_ORIGIN: &str = "origin";
 pub(super) const GIT_REMOTE_ORIGIN_PREFIX: &str = "origin/";
 pub(super) const GIT_REMOTE_UPSTREAM: &str = "upstream";
-pub(super) const GIT_UPSTREAM_REF: &str = "@{upstream}";
 
 // commands
 pub(super) const GIT_BINARY: &str = "git";
@@ -31,6 +30,7 @@ pub(super) const GIT_ABBREV_REF_ARG: &str = "--abbrev-ref";
 pub(super) const GIT_BISECT_VARS_ARG: &str = "--bisect-vars";
 pub(super) const GIT_COUNT_ARG: &str = "--count";
 pub(super) const GIT_FORMAT_ISO8601_ARG: &str = "--format=%aI";
+pub(super) const GIT_FORMAT_UPSTREAM_SHORT_ARG: &str = "--format=%(upstream:short)";
 pub(super) const GIT_FORMAT_REFNAME_ARG: &str = "--format=%(refname)";
 pub(super) const GIT_LEFT_RIGHT_ARG: &str = "--left-right";
 pub(super) const GIT_LOG_LAST_COMMIT_ARG: &str = "-1";
@@ -44,7 +44,6 @@ pub(super) const GIT_SHORT_HEAD_ARG: &str = "--short=8";
 pub(super) const GIT_STATUS_IGNORED_MATCHING_ARG: &str = "--ignored=matching";
 pub(super) const GIT_STATUS_PORCELAIN_V1_ARG: &str = "--porcelain=v1";
 pub(super) const GIT_STATUS_UNTRACKED_ALL_ARG: &str = "--untracked-files=all";
-pub(super) const GIT_SYMBOLIC_FULL_NAME_ARG: &str = "--symbolic-full-name";
 pub(super) const GIT_VERIFY_ARG: &str = "--verify";
 
 // paths and refs

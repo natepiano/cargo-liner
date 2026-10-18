@@ -27,5 +27,6 @@ pub(crate) enum TileKey {
 pub(crate) type TileGrid = tui_pane::TileGrid<TileKey>;
 /// What one cell of the grid is showing.
 pub(crate) type TileContent = tui_pane::TileContent<TileKey>;
-/// What every cell of the grid is asking for.
+/// `TileDemands` carries the summary row count and width and the group row
+/// counts supplied by `TileCells::demands`.
 pub(crate) type TileDemands = tui_pane::TileDemands<TileKey>;

@@ -176,8 +176,8 @@ fn grouped_text(dispatch: &WorkerDispatch) -> String {
 
 fn assert_form(root: &str, seat: &str, fresh: bool, phase: &str, job: &str) {
     let directory = fixture(root);
-    // Fresh rosters record codex_mesh start; follow rosters record implement.sh.
-    // The live two-accounts roster has no launcher pid at all.
+    // For `launcher`, fresh rosters record `codex_mesh.py` start; follow rosters record
+    // `implement.sh`. The live two-accounts roster has no launcher pid at all.
     let launcher = if seat == "fixture-two-accounts-test" {
         Value::Null
     } else {

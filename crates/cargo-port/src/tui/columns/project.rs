@@ -6,6 +6,7 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::error_color;
 use tui_pane::label_color;
+use tui_pane::on_error_color;
 use tui_pane::secondary_text_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
@@ -479,7 +480,7 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             }
         }
     } else if matches!(row.worktree_health, WorktreeHealth::Broken) {
-        let broken_style = Style::default().fg(text_default()).bg(error_color());
+        let broken_style = Style::default().fg(on_error_color()).bg(error_color());
         for span in &mut spans {
             span.style = broken_style;
         }
@@ -559,10 +560,26 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
 /// Build a `RowCells` for a project row. Single construction site replaces all
 /// scattered project row literals.
 pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
-    let ci_text = row
-        .ci
-        .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
-    let git_path_icon = row.git_status.map_or("", GitStatus::icon);
+    let (git_path_icon, name_style, origin_sync, main_sync) =
+        match (row.worktree_health, row.git_status) {
+            (
+                WorktreeHealth::Broken,
+                Some(
+                    GitStatus::Unreadable
+                    | GitStatus::Clean
+                    | GitStatus::Modified
+                    | GitStatus::Untracked
+                    | GitStatus::Ignored,
+                )
+                | None,
+            ) => ("", Style::default(), "", ""),
+            (WorktreeHealth::Normal, status) => (
+                status.map_or("", GitStatus::icon),
+                project_name_style(status),
+                row.git_origin_sync,
+                row.git_main,
+            ),
+        };
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
@@ -580,12 +597,11 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         }
     };
 
-    let origin_sync_style = compact_status_style(row.git_origin_sync);
-    let main_style = compact_status_style(row.git_main);
-    let origin_sync_align = compact_status_align(row.git_origin_sync);
-    let main_align = compact_status_align(row.git_main);
+    let origin_sync_style = compact_status_style(origin_sync);
+    let main_style = compact_status_style(main_sync);
+    let origin_sync_align = compact_status_align(origin_sync);
+    let main_align = compact_status_align(main_sync);
 
-    let name_style = project_name_style(row.git_status);
     let ci_style = render::conclusion_style(row.ci);
     let git_path_style = Style::default();
 
@@ -604,7 +620,9 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_CI] = CellContent {
-        text: ci_text,
+        text: row
+            .ci
+            .map_or(String::new(), |conclusion| String::from(conclusion.icon())),
         style: ci_style,
         align_override: None,
         ..CellContent::default()
@@ -622,13 +640,13 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_SYNC] = CellContent {
-        text: String::from(row.git_origin_sync),
+        text: String::from(origin_sync),
         style: origin_sync_style,
         align_override: origin_sync_align,
         ..CellContent::default()
     };
     cells[COL_MAIN] = CellContent {
-        text: String::from(row.git_main),
+        text: String::from(main_sync),
         style: main_style,
         align_override: main_align,
         ..CellContent::default()
@@ -652,6 +670,7 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
 pub(in crate::tui) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
+        Some(GitStatus::Unreadable) => Style::default().fg(error_color()),
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
         Some(GitStatus::Ignored) => Style::default().fg(theme_roles::git_ignored_color()),
@@ -661,6 +680,7 @@ pub(in crate::tui) fn project_name_style(git_status: Option<GitStatus>) -> Style
 
 pub(in crate::tui) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
+        Some(GitStatus::Unreadable) => Style::default().fg(error_color()),
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
         Some(GitStatus::Ignored) => Style::default().fg(secondary_text_color()),

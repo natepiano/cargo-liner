@@ -417,7 +417,7 @@ The sections mean:
   recorded on the reservation without widening it: a `--defer`, a repository
   default answer, or a `claim --reservation` whose paths the reservation or its
   siblings already held. A `sequence` entry carries
-  `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
+  `edge_id`, `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
   `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
   reservation whose later `claim --replace` retired this answer's edge to the
   same holder. A `sequence` entry recorded with `--replace` adds `replaced`,
@@ -600,6 +600,27 @@ complete-board row carries: a released reservation reports `merge_extent.status
 The envelope's rendered `presentation` block labels that value
 `Merge extent at release (not blocking)`, where a live extent reads
 `Merge extent`.
+
+The payload also includes two arrays, empty when no matching facts exist:
+
+- `ordering_edges`: every declared constraint naming the reservation as predecessor
+  or successor. A waiting entry has the same fields as the full board's
+  `waiting.entries[].hold = "ordering_edge"` entry, without its attached
+  `reservation` row: `hold`, `edge_id`, `predecessor`, `successor`, `scopes`,
+  `reason`, `action`, `provenance`, and `declaration_event_id`. A settled entry
+  matches `settled_ordering_constraints.entries[]`, with `settlement` instead
+  of `hold` and `action`.
+- `overlap_answers`: every entry of `live_overlap_answers.entries[]` that names
+  the reservation as requester or holder. Entries retain their existing `answer`
+  discriminator and fields; answers recorded by a released reservation are
+  excluded, just as on the full board.
+
+A `sequence` answer links to its ordering entry through `edge_id`. Widening a
+named reservation behind an existing edge can yield several answers with the
+same `edge_id`; all are retained, with their separate approved scopes. The
+rendered presentation appends `Ordering edges` and then `Overlap answers` as
+arrays after the lifecycle and extent details. These additive payload fields
+retain output contract version 6 under the rename/removal versioning rule.
 
 An unknown id returns `status = "invalid_input"`, `exit_code = 5`, and the same
 envelope reservation-id rules. Its typed payload is:
@@ -859,11 +880,23 @@ earlier reservation once. The message says to re-run the claim with
 `--replace`, which records the same answer with the contradicted edges in the
 authorization's `replaced` array. Without `--reservation`, an answer in the same
 direction as the live edge records an edge on its new reservation, as before.
-With `--reservation`, repeating an existing directed endpoint pair returns
-`duplicate_ordering_edge` (exit 2), with message
-`Ordering edge <before> before <after> already exists.`, matching `sequence`.
-It records nothing and leaves the session mapping unchanged,
-even if the request also names paths that would otherwise widen the reservation.
+With `--reservation`, an existing edge in the requested direction authorizes the
+new paths at exit 0. The widen records `authorization.kind =
+"sequence_with_existing_edges"`, with `overlaps`, `holders` and an optional
+`replaced` array. Each `holders` entry has `kind = "existing_edge"` or
+`"new_edge"`, a `holder` containing `{ blocker, direction, edge_id }`, and
+`reason`. An existing binding retains its recorded edge identity, direction and
+original reason. A new binding creates its edge; only new bindings count toward
+the edge limit. The board renders one `sequence` answer per holder with the
+newly approved scopes and that relationship's reason and identity.
+
+When the selected reservation already holds the requested paths and its
+recorded answers cover them under those exact existing edges, the claim
+succeeds without appending any journal record. It still publishes that
+reservation as the session's selection. The `sequence` verb continues to refuse
+repeated endpoints as `duplicate_ordering_edge` (exit 2). Opposite-direction
+claims retain the contradiction and `--replace` rules above. Existing journal
+authorization layouts replay unchanged.
 
 `--replace` with no contradicted edge returns `status = "invalid_input"` and
 exit code `5`, naming the holders, so a re-ruling that no longer applies never
@@ -1061,6 +1094,7 @@ The operation union is:
 | `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict`, optional `evaluator_version` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `answer` | optional `reservation_id`, `scopes`, `authorizations` |
+| `overlap_refused` | `verb`, `scopes`, `holders` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `sequence` | `predecessor`, `successor`, `edge_id`, `scopes`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
@@ -1072,6 +1106,12 @@ The operation union is:
 | `relocate_worktree` | `reservation_id`, `worktree_id`, `previous_root`, `current_root` |
 
 These operation fields use the following tagged values:
+
+- For `overlap_refused`, `verb` is `check` or `claim`; `scopes` contains the
+  refused request's paths. `holders` is non-empty, and each entry is
+  `{ "reservation_id": <uuid-v7>, "scopes": [scope...] }`, with that holder's
+  own non-empty overlapping scopes, in refusal order. The requester is the
+  record's `actor` and `identity_inputs`, never a second operation field.
 
 - `source` is `{ "kind": "explicit" }`, `{ "kind": "first_touch" }`,
   `{ "kind": "enrolled" }`, `{ "kind": "cover", "covered_branch":

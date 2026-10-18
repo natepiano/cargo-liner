@@ -3,17 +3,19 @@ use super::CopyLabel;
 use super::CopyPayload;
 use super::CopySelectionResult;
 use super::DetailField;
+use super::GitCheckout;
 use super::GitData;
 use super::GitRow;
 use super::GitStatus;
-use super::HeadState;
 use super::LintsData;
 use super::PackageData;
 use super::PackageRow;
 use super::TargetsData;
 use super::git_row_at;
 use super::package_rows_from_data;
+use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::lint;
+use crate::project::PinnedCommit;
 use crate::tui::panes;
 
 fn copyable_text(text: impl Into<String>) -> Option<String> {
@@ -104,11 +106,17 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
 }
 
 fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
+    if data.failed_reads.field_failed(field) {
+        return field.git_value(data);
+    }
     match field {
-        DetailField::Head => match data.head.as_ref() {
-            Some(HeadState::Branch(name)) => name.clone(),
-            Some(HeadState::Detached { short_sha }) => short_sha.clone(),
-            Some(HeadState::Unborn) | None => String::new(),
+        DetailField::Head => match &data.checkout {
+            GitCheckout::Branch { name, .. } => name.clone(),
+            GitCheckout::Detached { short_sha } => short_sha.clone(),
+            GitCheckout::Unborn
+            | GitCheckout::UnreadableHead
+            | GitCheckout::Broken
+            | GitCheckout::AwaitingProbe => String::new(),
         },
         DetailField::GitStatus => data
             .status
@@ -121,7 +129,11 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
         DetailField::Pinned => data
             .submodule_ctx
             .as_ref()
-            .map(|context| context.pinned_commit.clone())
+            .map(|context| match &context.pinned_commit {
+                PinnedCommit::Sha(sha) => sha.clone(),
+                PinnedCommit::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+                PinnedCommit::NotPinned => String::new(),
+            })
             .unwrap_or_default(),
         _ => field.git_value(data),
     }
@@ -304,7 +316,14 @@ mod tests {
     use crate::lint::LintRunPhase;
     use crate::lint::LintRunStatus;
     use crate::project::AbsolutePath;
+    use crate::project::AheadBehind;
+    use crate::project::CommitDate;
+    use crate::project::Comparison;
+    use crate::project::FirstCommit;
     use crate::project::ProjectType;
+    use crate::project::ResolvedBranch;
+    use crate::tui::panes::GitProbe;
+    use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
     use crate::tui::panes::pane_data::LintsProjectKind;
@@ -318,6 +337,8 @@ mod tests {
     use crate::tui::panes::pane_data::TargetEntry;
     use crate::tui::panes::pane_data::TargetSource;
     use crate::tui::panes::pane_data::WorktreeInfo;
+    use crate::tui::panes::pane_data::formatting::GitReadFailures;
+    use crate::tui::panes::pane_data::git_data::RemoteRows;
     use crate::tui::state::AvailabilityStatus;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
@@ -333,7 +354,7 @@ mod tests {
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     "~/demo".to_string(),
-            version:                  Some("0.1.0".to_string()),
+            version:                  PackageVersion::Manifest("0.1.0".to_string()),
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
@@ -355,22 +376,23 @@ mod tests {
 
     fn git_data() -> GitData {
         GitData {
-            head:               None,
-            head_relation:      None,
+            checkout:           GitCheckout::AwaitingProbe,
+            failed_reads:       GitReadFailures::default(),
             bisect:             None,
             submodule_ctx:      None,
             status:             None,
-            vs_local:           None,
+            vs_local:           GitProbe::Probed(Comparison::NotCompared),
+            local_main_branch:  GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              None,
             description:        None,
-            inception:          None,
-            last_commit:        None,
+            inception:          FirstCommit::AwaitingProbe,
+            last_commit:        GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
             rate_limit_core:    None,
             rate_limit_graphql: None,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
-            remotes:            Vec::new(),
+            remotes:            super::super::git_data::RemoteRows::default(),
             worktrees:          Vec::new(),
         }
     }
@@ -430,26 +452,32 @@ mod tests {
     #[test]
     fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
         let mut data = git_data();
-        data.remotes.push(RemoteRow {
+        data.remotes = RemoteRows::Listed(vec![RemoteRow {
             name:            "origin".to_string(),
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     "main".to_string(),
-            status:          "ok".to_string(),
+            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
             full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
             push_annotation: None,
-        });
+        }]);
         data.worktrees.push(WorktreeInfo {
             name:         "cargo-port_style_fix".to_string(),
             path:         "/Users/natemccoy/rust/cargo-port_style_fix".to_string(),
             branch:       Some("refactor/style".to_string()),
             tracked:      Some("main".to_string()),
-            ahead_behind: Some((0, 0)),
+            ahead_behind: Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
         });
 
         let remote_pos = pane_data::git_fields_from_data(&data).len();
-        let worktree_pos = remote_pos + data.remotes.len();
+        let worktree_pos = remote_pos + data.remotes.listed().len();
 
         assert_eq!(
             copy_payload_for_git(&data, remote_pos),
@@ -483,16 +511,19 @@ mod tests {
             }],
             ..PullRequestSection::default()
         };
-        data.remotes.push(RemoteRow {
+        data.remotes = RemoteRows::Listed(vec![RemoteRow {
             name:            "origin".to_string(),
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     "main".to_string(),
-            status:          "ok".to_string(),
+            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
             full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
             push_annotation: None,
-        });
+        }]);
 
         let pr_pos = pane_data::git_fields_from_data(&data).len();
         let remote_pos = pr_pos + data.pull_requests.rows.len();

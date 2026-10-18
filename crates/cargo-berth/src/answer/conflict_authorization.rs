@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::request::OverlapAuthorizationReason;
 use super::request::PermissiveOverlapAnswer;
+use super::scope_binding::AuthorizedOverlap;
 use super::scope_binding::AuthorizedOverlapSet;
 use super::scope_binding::OverlapScopeRevision;
 use crate::ids::EdgeId;
@@ -24,6 +25,42 @@ pub(crate) struct SequencedHolder {
     pub(crate) direction: OrderingDirection,
     /// The edge born with this acquisition against `blocker`.
     pub(crate) edge_id:   EdgeId,
+}
+
+/// The ordering relationship authorizing one holder's newly approved scopes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ClaimSequenceBinding {
+    /// This claim creates the relationship.
+    NewEdge {
+        /// The holder, direction and new edge identity.
+        holder: SequencedHolder,
+        /// Why this relationship is being created.
+        reason: OverlapAuthorizationReason,
+    },
+    /// This claim approves more scopes under a relationship already recorded.
+    ExistingEdge {
+        /// The holder, direction and recorded edge identity.
+        holder: SequencedHolder,
+        /// The reason recorded when the relationship was created.
+        reason: OverlapAuthorizationReason,
+    },
+}
+
+impl ClaimSequenceBinding {
+    /// The bound relationship, whether created or reused.
+    pub(crate) const fn holder(&self) -> &SequencedHolder {
+        match self {
+            Self::NewEdge { holder, .. } | Self::ExistingEdge { holder, .. } => holder,
+        }
+    }
+
+    /// The relationship's recorded reason.
+    pub(crate) const fn reason(&self) -> &OverlapAuthorizationReason {
+        match self {
+            Self::NewEdge { reason, .. } | Self::ExistingEdge { reason, .. } => reason,
+        }
+    }
 }
 
 /// One live ordering edge between a holder a sequence answer named and a nonterminal reservation
@@ -89,6 +126,17 @@ pub(crate) enum ConflictAuthorization {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         replaced: Vec<ContradictedOrdering>,
     },
+    /// New scopes are approved under existing ordering edges, with new edges for any
+    /// additional holders. Reused bindings retain the edge's original identity and reason.
+    SequenceWithExistingEdges {
+        /// The exact newly approved holder-specific scopes.
+        overlaps: AuthorizedOverlapSet,
+        /// Each holder's existing or newly created ordering relationship.
+        holders:  Vec<ClaimSequenceBinding>,
+        /// Contradicted relationships retired before applying these bindings.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        replaced: Vec<ContradictedOrdering>,
+    },
     /// Editing can proceed while integration remains held pending an order.
     Defer {
         /// The exact holder bindings observed under the ledger lock.
@@ -139,22 +187,7 @@ impl ConflictAuthorization {
                         edge_id:   EdgeId::new(),
                     })
                     .collect::<Vec<_>>();
-                match holders.as_slice() {
-                    [holder] => Self::Sequence {
-                        overlaps,
-                        blocker: holder.blocker,
-                        direction: holder.direction,
-                        edge_id: holder.edge_id,
-                        reason,
-                        replaced,
-                    },
-                    _ => Self::SequencePerHolder {
-                        overlaps,
-                        holders,
-                        reason,
-                        replaced,
-                    },
-                }
+                Self::sequence(overlaps, holders, reason, replaced)
             },
             PermissiveOverlapAnswer::Override { blocker } => Self::Override {
                 overlaps,
@@ -164,16 +197,101 @@ impl ConflictAuthorization {
         }
     }
 
+    /// Preserve every bound edge identity, using the original wire form when all edges are new.
+    pub(crate) fn sequence_with_bindings(
+        overlaps: AuthorizedOverlapSet,
+        holders: Vec<ClaimSequenceBinding>,
+        reason: OverlapAuthorizationReason,
+        replaced: Vec<ContradictedOrdering>,
+    ) -> Self {
+        if holders
+            .iter()
+            .any(|binding| matches!(binding, ClaimSequenceBinding::ExistingEdge { .. }))
+        {
+            Self::SequenceWithExistingEdges {
+                overlaps,
+                holders,
+                replaced,
+            }
+        } else {
+            Self::sequence(
+                overlaps,
+                holders.iter().map(|binding| *binding.holder()).collect(),
+                reason,
+                replaced,
+            )
+        }
+    }
+
+    fn sequence(
+        overlaps: AuthorizedOverlapSet,
+        holders: Vec<SequencedHolder>,
+        reason: OverlapAuthorizationReason,
+        replaced: Vec<ContradictedOrdering>,
+    ) -> Self {
+        match holders.as_slice() {
+            [holder] => Self::Sequence {
+                overlaps,
+                blocker: holder.blocker,
+                direction: holder.direction,
+                edge_id: holder.edge_id,
+                reason,
+                replaced,
+            },
+            _ => Self::SequencePerHolder {
+                overlaps,
+                holders,
+                reason,
+                replaced,
+            },
+        }
+    }
+
     /// The live edges this answer's `--replace` retired; empty for every other answer.
     pub(crate) fn replaced(&self) -> &[ContradictedOrdering] {
         match self {
-            Self::Sequence { replaced, .. } | Self::SequencePerHolder { replaced, .. } => replaced,
+            Self::Sequence { replaced, .. }
+            | Self::SequencePerHolder { replaced, .. }
+            | Self::SequenceWithExistingEdges { replaced, .. } => replaced,
             Self::NoConflict
             | Self::Enrollment { .. }
             | Self::Defer { .. }
             | Self::Override { .. }
             | Self::ExistingAnswersCoverEveryOverlap { .. } => &[],
         }
+    }
+
+    /// Whether this answer binds a scope to this exact ordering relationship.
+    pub(crate) fn covers_ordering_edge(
+        &self,
+        edge_id: EdgeId,
+        overlap: &AuthorizedOverlap,
+        scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> bool {
+        let binds_edge = match self {
+            Self::Sequence {
+                edge_id: recorded, ..
+            } => *recorded == edge_id,
+            Self::SequencePerHolder { holders, .. } => {
+                holders.iter().any(|holder| holder.edge_id == edge_id)
+            },
+            Self::SequenceWithExistingEdges { holders, .. } => holders
+                .iter()
+                .any(|binding| binding.holder().edge_id == edge_id),
+            Self::NoConflict
+            | Self::Enrollment { .. }
+            | Self::Defer { .. }
+            | Self::Override { .. }
+            | Self::ExistingAnswersCoverEveryOverlap { .. } => false,
+        };
+        binds_edge
+            && self.covers(
+                overlap.reservation_id,
+                &overlap.scope_revision,
+                scope,
+                path_case,
+            )
     }
 
     /// Return whether this answer covers one exact counterpart and scope.
@@ -195,6 +313,7 @@ impl ConflictAuthorization {
             Self::Enrollment { overlaps }
             | Self::Sequence { overlaps, .. }
             | Self::SequencePerHolder { overlaps, .. }
+            | Self::SequenceWithExistingEdges { overlaps, .. }
             | Self::Defer { overlaps, .. }
             | Self::Override { overlaps, .. } => {
                 overlaps.as_slice().iter().any(|authorized_overlap| {

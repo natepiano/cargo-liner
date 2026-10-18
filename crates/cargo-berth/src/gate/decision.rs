@@ -45,8 +45,8 @@ use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::SkippedDeferral;
@@ -279,14 +279,14 @@ pub(super) fn evaluate_locked(
 }
 
 fn finish_gate_decision(
-    outcome: LedgerCommittedActionOutcome<
+    outcome: LedgerReconciliationOutcome<
         GateTransactionRejection,
         (ReconciliationReport, GateDecision),
     >,
     target: &IntegrationTarget,
 ) -> Result<Enrollment<GateResult>, GateError> {
     match outcome {
-        LedgerCommittedActionOutcome::Appended {
+        LedgerReconciliationOutcome::Appended {
             output: (report, decision),
             ..
         } => Ok(Enrollment::Enrolled(GateResult {
@@ -294,7 +294,7 @@ fn finish_gate_decision(
             decision,
             alerts: report.alerts,
         })),
-        LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
+        LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
     }
 }
 

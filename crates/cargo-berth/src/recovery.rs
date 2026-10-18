@@ -31,6 +31,7 @@ use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReconciliationValidation;
@@ -272,14 +273,14 @@ fn execute_every_incursion_resolution(
         |incident_ids, _, _| Ok::<Vec<IncursionIncidentId>, Infallible>(incident_ids),
     );
     match outcome {
-        Ok(LedgerCommittedActionOutcome::Appended {
+        Ok(LedgerReconciliationOutcome::Appended {
             output: incident_ids,
             ..
         }) => Ok(ResolvePayload::EveryIncursionResolved {
             reservation_id,
             incident_ids,
         }),
-        Ok(LedgerCommittedActionOutcome::Rejected(rejection)) => {
+        Ok(LedgerReconciliationOutcome::Rejected(rejection)) => {
             Err(RecoveryError::Rejected(rejection))
         },
         Err(LedgerCommittedActionError::Transaction(error)) => Err(error.into()),
@@ -489,6 +490,10 @@ fn resolution_enrollment_from_outcome(
 ) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
+            output: resolve_payload_seed,
+            session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
             output: resolve_payload_seed,
             session_mapping_publication,
         } => Ok(Enrollment::Enrolled(

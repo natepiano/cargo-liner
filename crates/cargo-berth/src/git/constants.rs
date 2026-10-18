@@ -145,10 +145,10 @@ pub(super) const GIT_RIGHT_COMMIT_MARK: char = '>';
 pub(super) const GIT_LITERAL_TOP_PATHSPEC_PREFIX: &str = ":(top,literal)";
 
 // references
-/// Suffix selecting a local branch's configured upstream.
-pub(super) const GIT_UPSTREAM_SELECTOR_SUFFIX: &str = "@{upstream}";
 /// Infix selecting the commits reachable from the second revision but not the first.
 pub(super) const GIT_ANCESTOR_RANGE_INFIX: &str = "..";
+/// Git's per-worktree marker for a stopped cherry-pick.
+pub(super) const GIT_CHERRY_PICK_STATE_PATH: &str = "CHERRY_PICK_HEAD";
 /// Suffix that requires a revision to resolve as a commit.
 pub(super) const GIT_COMMIT_PEEL_SUFFIX: &str = "^{commit}";
 /// Prefix excluding a revision while retaining its descendants.
@@ -161,12 +161,18 @@ pub(super) const GIT_HEAD_REVISION: &str = "HEAD";
 pub(super) const GIT_HOOKS_PATH: &str = "hooks";
 /// The prefix for local branch refs.
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
+/// Git's per-worktree marker for a merge awaiting completion.
+pub(super) const GIT_MERGE_STATE_PATH: &str = "MERGE_HEAD";
 /// Git's per-worktree state directory for a rebase or `am` running on the apply backend.
 pub(super) const GIT_REBASE_APPLY_STATE_PATH: &str = "rebase-apply";
 /// Git's per-worktree state directory for a rebase running on the merge backend.
 pub(super) const GIT_REBASE_MERGE_STATE_PATH: &str = "rebase-merge";
+/// Git's per-worktree marker for a stopped revert.
+pub(super) const GIT_REVERT_STATE_PATH: &str = "REVERT_HEAD";
 /// Infix selecting the commits reachable from exactly one of two revisions.
 pub(super) const GIT_SYMMETRIC_RANGE_INFIX: &str = "...";
+/// Suffix selecting a local branch's configured upstream.
+pub(super) const GIT_UPSTREAM_SELECTOR_SUFFIX: &str = "@{upstream}";
 /// The private namespace used to retain reservation commits.
 pub(super) const RESERVATION_RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 

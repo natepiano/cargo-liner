@@ -1,3 +1,8 @@
+---
+tier: D
+family: modules
+mechanism: llm
+---
 ## Style guide tooling lines for new diagnostics
 
 Every cargo-mend diagnostic must be connected to a shared style doc in `~/rust/nate_style/rust/`.

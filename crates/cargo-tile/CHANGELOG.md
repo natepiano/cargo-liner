@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Steer the attract band while it is shown: arrows send it, `>`/`<` (or `.`/`,`) change speed, `+`/`-` (or `=`) widen and thin it, further per press while held. The keys live under `[attract_moving_band]` so a later animation binds the same keys to its own meanings, and are live when the screen is fully shown or was asked for with `a`.
 - `a` shows the attract screen on demand, replacing the grid rather than drawing over it, with `attract` in the status line; the panes come back once the strip has faded out.
 - On macOS, an idle attract screen draws the desktop behind the window, excluding the emulator windows and following window movement, once Screen Recording is allowed.
-- When a cell ancestry block is squeezed below three rows, keep the nearest ancestor and mark the omitted prefix; with more room retain its outer head and nearest tail around an elision. A driver remains at its own chain foot.
+- When a cell ancestry block is squeezed below three rows, keep the nearest ancestor and mark the omitted prefix; with more room retain its outer head and nearest tail around an elision.
 - Rows tied on start time read by pid, so a cargo draws above the cargo it launched.
 - A pid with no family is drawn in the ordinary text colour rather than the column headers' own, where it disappeared.
 - Family colours stay clear of the column-header and error colours, measured against the theme in force rather than fixed at startup.
@@ -49,16 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Answer to `cargo tile` as well as `cargo-tile`.
 - Report progress for runs with no terminal, by asking cargo for the bar it would otherwise draw only for a tty.
 - Say when a command is `blocked` on another cargo's build-directory lock, which from outside looks like a build that has not reached its first unit.
-- Withhold a command's own cell while nothing runs under it, for the subcommands in `commands.hidden_when_idle` (`port` to begin with). The summary line stays.
-- List `commands.hidden_when_idle` in the settings overlay, and write the config file at startup where it does not name every setting.
+- `commands.hidden` hides listed cargo commands and their descendants from cells, summary rows and totals, whether idle or busy.
+- List `commands.hidden` in the settings overlay, and write the config file at startup where it does not name every setting.
 - A `cpu` column: the whole command's share on `top`'s scale, settled over a two-second window and held a second at a time.
 - Head a command cell with its retained parent chain, outermost first and indented by level. Leave out pass-through processes except the foot, and use the cell rows left after its table, eliding the chain when allocation is smaller than its full demand.
-- Draw a `commands.hidden_when_idle` command as the last step of its own cell's chain rather than a table row, since `cargo port` is open all day and compiles nothing.
 - Write along each cell's foot what its contents ask for against the size it was given -- `content rows: ##  r/c: ##/##` -- green while it fits, red once it does not.
 - Report test progress as well as build progress: `cargo nextest run` counts tests the way cargo counts units, and the heading says which count is on screen. Runs with no terminal read the count from nextest's per-test lines.
-- The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
+- The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- Hidden cargo commands stay hidden while busy, including nested subtrees and their readings; the setting is renamed to `commands.hidden`, with `hidden_when_idle` accepted as a fallback.
 - A nested cargo borrowing an unverified driver capture leaves the reading in the driver's cell heading and on its summary row, once per invocation.
 - Command tables choose one column set per frame, reserving any state slot in every table so `cpu`, `mem` and `runs` stay aligned. Optional columns leave before a subcommand is cut, including blocked commands, release profiles and Long view; argument tails yield before resource columns, `start` and `dur` leave together, and state leaves before parent. Short command words and their argument marks wrap within the column, including when the mark needs its own line.
 - A command cell keeps its invocation progress in its heading; children sharing an unconfirmed capture never repeat the reading, and summary rows show only their own invocation progress.
@@ -190,7 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Give a cell out of room the space its neighbours are not using, from either side, rather than dividing every column evenly. A cell keeps what it grew to until another cell encroaches; where the room does not go round, the summary is served first in its column and the focused cell receives the remaining spare rows next.
 - Keep the summary's command line to what says something about the work: `--manifest-path`, `--message-format` and `--color` go, everything naming what is built stays, and anything past a bare `--` passes through untouched.
 - Order the working directories in a cell by when their work began rather than by name, and the rows under each the same way.
-- Give the summary one row per command, and for a `commands.hidden_when_idle` driver the commands it drives instead of its own row.
+- Give the summary one row per visible command.
 - Gather the summary by working directory rather than by command, so a directory where one build holds the lock and others wait reads as a single block.
 - Count what a cell actually draws when working out what it asks for, wrapping included and through the same table layout the draw uses.
 - Hold the summary cell's title off the corner glyph, with a space ahead of the word.
@@ -205,7 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Start the working-directory headings and their rows one space in from the cell border rather than two and four.
 - Reject arguments that are not a subcommand; 0.1.0 parsed no command line at all.
 - Head a command's own cell with the directory the command itself runs in, so a test run's per-case temporary directories no longer push the run being watched below the fold.
-- `hidden_when_idle` defaults to `["port", "handler"]`, and the capture shim passes `cargo handler` through uncaptured alongside `tile`, `port` and `berth`.
+- `commands.hidden` defaults to `["port", "handler"]`, and the capture shim passes `cargo handler` through uncaptured alongside `tile`, `port` and `berth`.
 - A command the shim passes through uncaptured is headed by the account its process runs as, and shares one heading with that account's captured runs in the same directory instead of drawing a second, bare one.
 - The settings overlay gives each capture account one summary line, and adds lines under it only for what needs attention, rather than spelling out every association.
 - Giving the grid back from an attract screen asked for with `a` returns it to the idle timer: over an idle grid the attract screen comes back after the usual quiet seconds, rather than staying away until asked for again.

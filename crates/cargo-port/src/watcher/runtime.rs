@@ -1298,8 +1298,12 @@ mod tests {
         let (watch_tx, watch_rx) = channel::unbounded();
         let (notify_tx, notify_rx) = mpsc::channel();
         let (background_tx, _) = channel::unbounded();
-        let client =
-            HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
+        // Guard lifetime depends on the registration signal below, not on
+        // GitHub credentials or the external `gh auth token` subprocess.
+        let client = HttpClient::new_without_github_auth_for_test(
+            test_support::test_runtime().handle().clone(),
+        )
+        .expect("http client");
 
         watch_tx
             .send(WatcherMsg::Register(WatchRequest {

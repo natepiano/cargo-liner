@@ -64,6 +64,7 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::ReservationRunStatus;
 use crate::reservation::RetainedReservationSet;
@@ -583,6 +584,18 @@ pub(crate) enum JournalOperation {
         /// One answer per holder, each bound to the overlap observed under the ledger lock.
         authorizations: Vec<ConflictAuthorization>,
     },
+    /// Record a check or claim refused because foreign reservations hold overlapping paths.
+    ///
+    /// The record's `actor` and `identity_inputs` name the requester. Replay reads it and
+    /// changes no reservation, edge, answer or incident.
+    OverlapRefused {
+        /// The command whose request was refused.
+        verb: RefusedVerb,
+        /// The requested paths the refusal reported.
+        scopes: ReservationScopeSet,
+        /// Each foreign holder with the scopes of its own that overlap the request.
+        holders: RefusingHolderSet,
+    },
     /// Convert a previously recorded defer answer into an ordering edge.
     ResolveDefer {
         /// The reservation that had deferred the overlap decision.
@@ -764,6 +777,7 @@ impl JournalOperation {
             | Self::SuccessorScopedPatchEquivalenceChecked { .. }
             | Self::SuccessorScopedPatchComparisonAttempted { .. }
             | Self::Answer { .. }
+            | Self::OverlapRefused { .. }
             | Self::ResolveDefer { .. }
             | Self::Sequence { .. }
             | Self::ResolveIncursion { .. }
@@ -799,12 +813,14 @@ impl JournalOperation {
                 ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
                 | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
                 | ConflictAuthorization::Defer { .. }
                 | ConflictAuthorization::Override { .. } => true,
                 ConflictAuthorization::NoConflict
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => false,
             },
-            Self::MergeExtentObserved { .. }
+            Self::OverlapRefused { .. }
+            | Self::MergeExtentObserved { .. }
             | Self::HolderMergeExtentObserved { .. }
             | Self::Checkpoint { .. }
             | Self::Resnapshot { .. }
@@ -1302,6 +1318,17 @@ impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
     pub(crate) fn as_slice(&self) -> &[ReservationScope] { &self.0 }
 
+    /// Union two nonempty footprints without weakening their construction guarantee.
+    pub(crate) fn with_added(&self, added: &Self) -> Self {
+        let mut scopes = self.0.clone();
+        for scope in &added.0 {
+            if !scopes.contains(scope) {
+                scopes.push(scope.clone());
+            }
+        }
+        Self(scopes)
+    }
+
     /// Return whether any scope covers a case-sensitive raw repository path.
     pub(crate) fn covers_path(&self, repository_path: &[u8]) -> bool {
         self.0
@@ -1348,15 +1375,26 @@ impl std::error::Error for EmptyReservationScopeSet {}
 
 macro_rules! nonempty_journal_set {
     ($name:ident, $item:ty, $error:ident, $documentation:literal, $error_message:literal) => {
+        nonempty_journal_set!(@declare $name, $item, $error, $documentation, $error_message,
+            [#[derive(JsonSchema)]], [#[schemars(length(min = 1))]],
+            [impl $name {
+                #[doc = concat!("Borrow the values in this `", stringify!($name), "`.")]
+                pub(crate) fn as_slice(&self) -> &[$item] { &self.0 }
+            }]);
+    };
+    (journal_only $name:ident, $item:ty, $error:ident, $documentation:literal, $error_message:literal) => {
+        nonempty_journal_set!(@declare $name, $item, $error, $documentation, $error_message,
+            [], [], []);
+    };
+    (@declare $name:ident, $item:ty, $error:ident, $documentation:literal, $error_message:literal,
+        [$($schema:tt)*], [$($field_attributes:tt)*], [$($accessor:tt)*]) => {
         #[doc = $documentation]
-        #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        $($schema)*
         #[serde(transparent)]
-        pub(crate) struct $name(#[schemars(length(min = 1))] Vec<$item>);
+        pub(crate) struct $name($($field_attributes)* Vec<$item>);
 
-        impl $name {
-            #[doc = concat!("Borrow the values in this `", stringify!($name), "`.")]
-            pub(crate) fn as_slice(&self) -> &[$item] { &self.0 }
-        }
+        $($accessor)*
 
         impl TryFrom<Vec<$item>> for $name {
             type Error = $error;
@@ -1414,6 +1452,50 @@ nonempty_journal_set!(
     "The non-empty foreign-holder set proven by one incursion.",
     "an incursion must name at least one foreign reservation"
 );
+/// The only commands that refuse an overlapping request before it writes work.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RefusedVerb {
+    /// A pre-edit path check.
+    Check,
+    /// An explicit reservation claim.
+    Claim,
+}
+
+/// One foreign holder paired with its own scopes that overlapped the refused request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct RefusingHolder {
+    /// The reservation that held these paths.
+    reservation_id: ReservationId,
+    /// This holder's scopes that overlapped the request.
+    scopes:         ReservationScopeSet,
+}
+
+nonempty_journal_set!(
+    journal_only RefusingHolderSet,
+    RefusingHolder,
+    EmptyRefusingHolderSet,
+    "The non-empty ordered holders that refused one check or claim.",
+    "an overlap refusal must name at least one foreign holder"
+);
+
+impl TryFrom<&[ReservationConflict]> for RefusingHolderSet {
+    type Error = EmptyRefusingHolderSet;
+
+    /// Retain conflict order and each holder's own overlapping scope declarations.
+    fn try_from(conflicts: &[ReservationConflict]) -> Result<Self, Self::Error> {
+        Self::try_from(
+            conflicts
+                .iter()
+                .map(|conflict| RefusingHolder {
+                    reservation_id: conflict.reservation_id,
+                    scopes:         conflict.overlapping_scopes.clone(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
 /// One reservation a [`JournalOperation::HolderMergeExtentObserved`] record applies to.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct ObservedReservation {
@@ -2615,6 +2697,76 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    /// A refusal naming an existing holder without acquiring any reservation of its own.
+    fn overlap_refused_event(
+        verb: super::RefusedVerb,
+    ) -> Result<JournalEvent, Box<dyn std::error::Error>> {
+        let scopes = ReservationScopeSet::try_from(vec![ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        }])?;
+        Ok(JournalEvent::for_operation(
+            test_actor(),
+            ProjectionGeneration::from(1),
+            JournalOperation::OverlapRefused {
+                verb,
+                scopes: scopes.clone(),
+                holders: super::RefusingHolderSet::try_from(vec![super::RefusingHolder {
+                    reservation_id: HOLDER_RESERVATION_ID.parse()?,
+                    scopes,
+                }])?,
+            },
+        ))
+    }
+
+    #[test]
+    fn overlap_refused_round_trips_in_the_current_schema() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (verb, wire_verb) in [
+            (super::RefusedVerb::Check, "check"),
+            (super::RefusedVerb::Claim, "claim"),
+        ] {
+            let event = overlap_refused_event(verb)?;
+            let value = serde_json::to_value(&event)?;
+            assert_eq!(value["schema_version"], CURRENT_SCHEMA_VERSION);
+            assert_eq!(value["op"], "overlap_refused");
+            assert_eq!(value["verb"], wire_verb);
+            assert_eq!(serde_json::from_value::<JournalEvent>(value)?, event);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn overlap_refused_stays_out_of_coordination_readers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let event = overlap_refused_event(super::RefusedVerb::Check)?;
+        assert!(!event.operation.is_coordination_record());
+        assert!(matches!(
+            event.operation.record_ceiling(),
+            super::RecordCeiling::Declared
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn overlap_refused_leaves_retained_reservations_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let claim = JournalEvent::for_operation(
+            test_actor(),
+            ProjectionGeneration::from(1),
+            fold_claim(HOLDER_RESERVATION_ID, "shared.rs")?,
+        );
+        let expected = RetainedReservationSet::replay(std::slice::from_ref(&claim))?;
+        let events = [claim, overlap_refused_event(super::RefusedVerb::Claim)?];
+        assert_eq!(RetainedReservationSet::replay(&events)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn overlap_refused_requires_at_least_one_conflicting_holder() {
+        assert!(super::RefusingHolderSet::try_from([].as_slice()).is_err());
+    }
 
     #[test]
     fn legacy_evidence_revalidated_defaults_to_evaluated_trunk_witness()

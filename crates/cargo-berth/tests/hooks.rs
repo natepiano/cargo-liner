@@ -5,14 +5,21 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
+#[path = "support/lock_contention.rs"]
+mod lock_contention;
 #[path = "support/reader_compat_hooks.rs"]
 mod reader_compat_hooks;
+
 #[path = "support/timing.rs"]
 mod timing;
 
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
@@ -33,6 +40,58 @@ const GIT: GitDriver = GitDriver {
     cleared_environment: &[],
 };
 
+/// A main checkout with one commit, before berth installs its hooks.
+const GIT_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "git-only",
+    build:            |root| {
+        let built = build_git_repository(root);
+        assert!(built.is_ok(), "git repository template failed: {built:?}");
+    },
+};
+
+/// An initialized checkout with untracked policy and no session or reservation.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "initialized",
+    build: |root| {
+        let built = build_initialized_repository(root);
+        assert!(
+            built.is_ok(),
+            "initialized hook repository template failed: {built:?}"
+        );
+    },
+    ..GIT_REPOSITORY
+};
+
+/// Initialized main with its policy committed before a corpus or incursion scenario.
+const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "configured",
+    build: |root| {
+        let built = build_initialized_repository(root).and_then(|()| {
+            run_git(root, &["add", "--force", CONFIGURATION_PATH])?;
+            run_git(
+                root,
+                &[
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "configure cargo-berth",
+                ],
+            )
+        });
+        assert!(
+            built.is_ok(),
+            "configured hook repository template failed: {built:?}"
+        );
+    },
+    ..GIT_REPOSITORY
+};
+
 use std::error::Error;
 use std::fs;
 use std::fs::File;
@@ -42,16 +101,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use serde_json::Value;
 use tempfile::TempDir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
@@ -952,7 +1010,7 @@ const NORMALIZED_EDITS: [(&str, &str, &str, NormalizedEdit); 10] = [
 #[test]
 fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestResult {
     let repository = initialized_repository()?;
-    for path in [
+    let paths = [
         "real/held.rs",
         "linked/held.rs",
         "held.rs",
@@ -960,18 +1018,13 @@ fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestR
         "sub/alias/held.rs",
         "src/held.rs",
         "absent/deep/held.rs",
-    ] {
-        let holder = run_berth(
-            repository.path(),
-            &[
-                "claim",
-                &format!("file:{path}"),
-                "--run",
-                FIRST_RUN,
-                "--json",
-            ],
-        )?;
-        require_success(&holder, "path normalization holder")?;
+    ];
+    let scopes = paths.map(|path| format!("file:{path}"));
+    let mut arguments = vec!["claim", "--run", FIRST_RUN, "--json"];
+    arguments.extend(scopes.iter().map(String::as_str));
+    let holder = run_berth(repository.path(), &arguments)?;
+    require_success(&holder, "path normalization holder")?;
+    for path in paths {
         dirty_source(repository.path(), path)?;
     }
     let (_requester_directory, requester_root) =
@@ -1557,9 +1610,19 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 }
 
 fn git_binary() -> TestResult<String> {
-    let output = Command::new("sh").args(["-c", "command -v git"]).output()?;
-    require_success(&output, "git path lookup")?;
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    let path = std::env::var_os("PATH").ok_or_else(|| failure("test PATH should exist"))?;
+    let git = std::env::split_paths(&path)
+        .map(|directory| directory.join("git"))
+        .find(|candidate| {
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .ok_or_else(|| failure("executable git should exist on PATH"))?;
+    Ok(git
+        .to_str()
+        .ok_or_else(|| failure("git path should be UTF-8"))?
+        .to_owned())
 }
 
 struct AmbiguityHookOutput {
@@ -2130,31 +2193,31 @@ fn dirty_source(root: &Path, path: &str) -> TestResult {
 }
 
 fn initialized_repository() -> TestResult<TempDir> {
-    let repository = git_repository()?;
-    let initialized = run_berth(repository.path(), &["init", "--json"])?;
-    require_success(&initialized, "cargo-berth init")?;
-    Ok(repository)
+    fs::create_dir_all(SCRATCH_ROOT)?;
+    Ok(INITIALIZED_REPOSITORY.instantiate())
 }
 
 fn git_repository() -> TestResult<TempDir> {
     fs::create_dir_all(SCRATCH_ROOT)?;
-    let repository = TempDir::new_in(SCRATCH_ROOT)?;
-    run_git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch", "main"],
+    Ok(GIT_REPOSITORY.instantiate())
+}
+
+fn build_initialized_repository(root: &Path) -> TestResult {
+    build_git_repository(root)?;
+    let initialized = run_berth(root, &["init", "--json"])?;
+    require_success(&initialized, "cargo-berth init")
+}
+
+fn build_git_repository(root: &Path) -> TestResult {
+    run_git(root, &["init", "--quiet", "--initial-branch", "main"])?;
+    git_configuration::append_git_configuration(
+        root,
+        "\n[user]\n name = Hook Acceptance Test\n email = hooks@example.invalid\n",
     )?;
+    fs::write(root.join("README.md"), "hook fixture\n")?;
+    run_git(root, &["add", "README.md"])?;
     run_git(
-        repository.path(),
-        &["config", "user.name", "Hook Acceptance Test"],
-    )?;
-    run_git(
-        repository.path(),
-        &["config", "user.email", "hooks@example.invalid"],
-    )?;
-    fs::write(repository.path().join("README.md"), "hook fixture\n")?;
-    run_git(repository.path(), &["add", "README.md"])?;
-    run_git(
-        repository.path(),
+        root,
         &[
             "-c",
             "commit.gpgsign=false",
@@ -2164,7 +2227,7 @@ fn git_repository() -> TestResult<TempDir> {
             "initial",
         ],
     )?;
-    Ok(repository)
+    Ok(())
 }
 
 fn add_worktree(repository: &TempDir, name: &str) -> TestResult<(TempDir, PathBuf)> {
@@ -2487,20 +2550,8 @@ impl OrphanedReservations {
 /// changed path like any other, and the auto-widen line it produces is text the corpus
 /// never froze.
 fn committed_configuration_repository() -> TestResult<TempDir> {
-    let repository = initialized_repository()?;
-    run_git(repository.path(), &["add", "--force", CONFIGURATION_PATH])?;
-    run_git(
-        repository.path(),
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "configure cargo-berth",
-        ],
-    )?;
-    Ok(repository)
+    fs::create_dir_all(SCRATCH_ROOT)?;
+    Ok(CONFIGURED_REPOSITORY.instantiate())
 }
 
 fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
@@ -4283,6 +4334,266 @@ fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult 
         );
     }
     Ok(())
+}
+
+/// Trial merge contents acquire nothing; an abort restores ordinary first-touch checks.
+#[test]
+fn post_tool_use_leaves_a_trial_merge_unreserved_and_its_abort_clear() -> TestResult {
+    let trial = PendingPeerOperation::new(&PeerOperationSetup::Merge)?;
+    // This case intentionally has no subject claim to enroll the clean checkout.
+    let enrolled = run_berth(trial.repository.path(), &["init", "--json"])?;
+    require_success(&enrolled, "enroll clean operation worktrees")?;
+    let before = journal_events(trial.repository.path())?;
+    trial.start_trial_merge()?;
+
+    trial.assert_silent_without_edit_records(&before)?;
+
+    run_git(
+        &trial.subject_root,
+        &["-c", "core.hooksPath=/dev/null", "merge", "--abort"],
+    )?;
+    trial.assert_silent_without_edit_records(&before)?;
+    assert_eq!(
+        git_revision(&trial.subject_root, "HEAD")?,
+        trial.subject_tip
+    );
+    assert!(!trial.subject_root.join("peer.rs").exists());
+    assert!(!trial.subject_root.join("free.rs").exists());
+
+    // The clean abort must not leave drift deferred for this checkout forever.
+    fs::write(trial.subject_root.join("after-abort.rs"), "// real edit\n")?;
+    let resumed = trial.check()?;
+    require_success(&resumed, "post-abort first touch")?;
+    let events = journal_events(trial.repository.path())?;
+    assert!(
+        events[before.len()..].iter().any(|event| {
+            event["op"] == "claim"
+                && event["scopes"]
+                    == serde_json::json!([{"kind": "file", "path": "after-abort.rs"}])
+        }),
+        "drift must resume first-touch acquisition after abort: {events:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn post_tool_use_does_not_charge_a_trial_merge_to_an_active_reservation() -> TestResult {
+    let trial = PendingPeerOperation::new(&PeerOperationSetup::Merge)?;
+    trial.claim_subject()?;
+    let before = journal_events(trial.repository.path())?;
+    trial.start_trial_merge()?;
+
+    trial.assert_silent_without_edit_records(&before)
+}
+
+#[test]
+fn post_tool_use_defers_a_cherry_pick_stopped_on_a_real_conflict() -> TestResult {
+    let trial = PendingPeerOperation::new(&PeerOperationSetup::ConflictingCherryPick)?;
+    trial.claim_subject()?;
+    let before = journal_events(trial.repository.path())?;
+    let picked = GIT.output(
+        &trial.subject_root,
+        [
+            "-c",
+            "core.hooksPath=/dev/null",
+            "cherry-pick",
+            &trial.peer_tip,
+        ],
+    );
+    assert!(
+        !picked.status.success(),
+        "the peer pick must conflict: {picked:?}"
+    );
+    assert_eq!(
+        git_revision(&trial.subject_root, "CHERRY_PICK_HEAD")?,
+        trial.peer_tip
+    );
+    assert!(trial.subject_root.join("free.rs").exists());
+
+    trial.assert_silent_without_edit_records(&before)
+}
+
+#[test]
+fn post_commit_judges_a_completed_peer_merge_after_a_cached_clean_check() -> TestResult {
+    let trial = PendingPeerOperation::new(&PeerOperationSetup::Merge)?;
+    let subject_id = trial.claim_subject()?;
+    assert_hook_output(&trial.check()?, 0, b"", b"")?;
+    let before = journal_events(trial.repository.path())?;
+    trial.start_trial_merge()?;
+    trial.assert_silent_without_edit_records(&before)?;
+
+    // Git removes MERGE_HEAD before invoking the installed post-commit hook.
+    let observed = git_command(BERTH_EXECUTABLE)
+        .args(["commit", "--quiet", "-m", "complete peer merge"])
+        .current_dir(&trial.subject_root)
+        .output()?;
+
+    require_success(&observed, "completed merge hook")?;
+    let warning = String::from_utf8_lossy(&observed.stderr);
+    assert!(
+        warning.contains("Incursion") && warning.contains(&subject_id),
+        "{observed:?}"
+    );
+    let events = journal_events(trial.repository.path())?;
+    let incident = events
+        .iter()
+        .find(|event| event["op"] == "incursion" && event["reservation_id"] == subject_id)
+        .ok_or_else(|| failure(format!("completed peer commit must be judged: {events:?}")))?;
+    let entered = required_array(incident, "/blocked_paths", "committed merge incursion")?
+        .iter()
+        .find(|entered| entered["path"] == "peer.rs")
+        .ok_or_else(|| failure(format!("peer's held path must be entered: {incident}")))?;
+    assert_eq!(entered["coverage"]["kind"], "known_entering_commits");
+    assert_eq!(
+        entered["coverage"]["commits"],
+        serde_json::json!([trial.peer_tip])
+    );
+    Ok(())
+}
+
+/// The real git operation each fixture prepares, before git writes its own markers.
+enum PeerOperationSetup {
+    Merge,
+    ConflictingCherryPick,
+}
+
+/// An enrolled clean checkout and a peer holding committed work outside the local target.
+struct PendingPeerOperation {
+    repository:   TempDir,
+    _worktrees:   TempDir,
+    subject_root: PathBuf,
+    subject_tip:  String,
+    peer_tip:     String,
+}
+
+impl PendingPeerOperation {
+    fn new(setup: &PeerOperationSetup) -> TestResult<Self> {
+        let repository = initialized_repository()?;
+        let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+        let peer_root = repository.path().to_path_buf();
+        let subject_root = worktrees.path().join("operation-subject");
+        // Keep the peer on its own branch without creating another linked
+        // checkout and enrolling a second worktree identity for the holder.
+        run_git(
+            &peer_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "switch",
+                "--quiet",
+                "-c",
+                "operation-peer",
+            ],
+        )?;
+        add_named_worktree(&repository, "operation-subject", &subject_root)?;
+        if matches!(setup, PeerOperationSetup::ConflictingCherryPick) {
+            fs::write(subject_root.join("peer.rs"), "// subject version\n")?;
+            run_git(&subject_root, &["add", "peer.rs"])?;
+            run_git(
+                &subject_root,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "subject version",
+                ],
+            )?;
+        }
+        let holder = run_berth_with_session(
+            &peer_root,
+            &["claim", "file:peer.rs", "--json"],
+            HOLDER_SESSION,
+        )?;
+        require_success(&holder, "peer holder claim")?;
+        fs::write(peer_root.join("peer.rs"), "// peer version\n")?;
+        fs::write(peer_root.join("free.rs"), "// peer's unheld path\n")?;
+        run_git(&peer_root, &["add", "peer.rs", "free.rs"])?;
+        let committed = GIT.output_with_environment(
+            &peer_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "peer work",
+            ],
+            "GIT_COMMITTER_DATE",
+            "2030-01-01T00:00:00Z",
+        );
+        require_success(&committed, "peer commit")?;
+        // Keep the holder active even though its earlier version is committed.
+        dirty_source(&peer_root, "peer.rs")?;
+        let peer_tip = git_revision(&peer_root, "HEAD")?;
+        let subject_tip = git_revision(&subject_root, "HEAD")?;
+        Ok(Self {
+            repository,
+            _worktrees: worktrees,
+            subject_root,
+            subject_tip,
+            peer_tip,
+        })
+    }
+
+    fn claim_subject(&self) -> TestResult<String> {
+        let claimed = run_berth_with_session(
+            &self.subject_root,
+            &["claim", "file:own.rs", "--json"],
+            INCURSION_SESSION,
+        )?;
+        require_success(&claimed, "operation subject claim")?;
+        claimed_reservation_id(&claimed)
+    }
+
+    fn start_trial_merge(&self) -> TestResult {
+        run_git(
+            &self.subject_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--no-commit",
+                "--no-ff",
+                "operation-peer",
+            ],
+        )?;
+        assert_eq!(
+            git_revision(&self.subject_root, "MERGE_HEAD")?,
+            self.peer_tip
+        );
+        assert_eq!(git_revision(&self.subject_root, "HEAD")?, self.subject_tip);
+        assert!(self.subject_root.join("peer.rs").exists());
+        assert!(self.subject_root.join("free.rs").exists());
+        Ok(())
+    }
+
+    fn check(&self) -> TestResult<Output> {
+        run_post_tool_use(
+            &self.subject_root,
+            &bash_payload(&self.subject_root, INCURSION_SESSION),
+        )
+    }
+
+    fn assert_silent_without_edit_records(&self, before: &[Value]) -> TestResult {
+        assert_hook_output(&self.check()?, 0, b"", b"")?;
+        let events = journal_events(self.repository.path())?;
+        let edit_records = events[before.len()..]
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event["op"].as_str(),
+                    Some("first_touch" | "claim" | "widen" | "incursion")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            edit_records.is_empty(),
+            "a pending operation must neither first-touch, claim, widen nor record incursions: {edit_records:?}"
+        );
+        Ok(())
+    }
 }
 
 /// A recorded incursion stops repeating itself, and the corpus froze that silence.

@@ -24,6 +24,8 @@ use crate::board;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
 use crate::board::LiveIncursionMembership;
+use crate::board::RecordedOverlapAnswer;
+use crate::board::ReservationOrderingEdge;
 use crate::config::DefaultAnswer;
 use crate::config::InitializationState;
 use crate::coordination_identity;
@@ -99,6 +101,7 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::HarnessSessionIdentity;
 use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
+use crate::verb::claim::ClaimAnswerPolicy;
 use crate::verb::claim::PhaseReservationCandidate;
 use crate::verb::claim::ReservationAcquisition;
 use crate::verb::claim::ReservationAcquisitionKind;
@@ -1057,13 +1060,17 @@ pub(crate) enum ReservationLifecycleQueryPayload {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct ReservationReportSnapshot {
     /// The reservation selected by the caller.
-    pub(crate) reservation_id: ReservationId,
+    pub(crate) reservation_id:  ReservationId,
     /// Its point-in-time lifecycle reading.
-    pub(crate) lifecycle:      ReservationLifecycleSnapshot,
+    pub(crate) lifecycle:       ReservationLifecycleSnapshot,
     /// The run's effective editing scope, independent of branch integration.
-    pub(crate) race_extent:    RaceExtent,
+    pub(crate) race_extent:     RaceExtent,
     /// The live branch surface, its evidence retained on failure, or the record kept at release.
-    pub(crate) merge_extent:   EffectiveMergeExtent,
+    pub(crate) merge_extent:    EffectiveMergeExtent,
+    /// Declared ordering edges naming either endpoint, waiting or settled.
+    pub(crate) ordering_edges:  Vec<ReservationOrderingEdge>,
+    /// Every live overlap answer naming this reservation.
+    pub(crate) overlap_answers: Vec<RecordedOverlapAnswer>,
 }
 
 /// Why a named reservation lifecycle query was rejected.
@@ -2291,7 +2298,7 @@ impl OutputEnvelope {
         reservation_id: Option<ReservationId>,
         blockers: WireOrderedReservationIds,
         scopes: ReservationScopeSet,
-        default_answer: Option<DefaultAnswer>,
+        answer_policy: ClaimAnswerPolicy,
     ) -> Self {
         let scope_count = scopes.as_slice().len();
         let blocker_list = blockers
@@ -2300,8 +2307,8 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        let (message, summary) = default_answer.map_or_else(
-            || {
+        let (message, summary) = match answer_policy {
+            ClaimAnswerPolicy::CallerRequest(()) => {
                 let message = reservation_id.map_or_else(
                     || format!(
                         "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
@@ -2312,7 +2319,7 @@ impl OutputEnvelope {
                 );
                 (message, "cargo-berth recorded a deferred overlap answer.")
             },
-            |default_answer| {
+            ClaimAnswerPolicy::RepositoryDefault(default_answer) => {
                 let message = format!(
                     "{} Authorized editing against {blocker_list} on {scope_count} reservation scope(s) with no integration order. No reservation was acquired: this worktree may edit those paths, nothing is held at integration, and whichever checkpoint is ready first merges first; the other lane merges that work in.",
                     default_answer_preface(default_answer)
@@ -2322,7 +2329,7 @@ impl OutputEnvelope {
                     "cargo-berth recorded the repository's default overlap answer.",
                 )
             },
-        );
+        };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
@@ -2576,14 +2583,6 @@ impl OutputEnvelope {
                 reason,
             })),
         }
-    }
-
-    /// Refuse a named claim's repeated ordering with the same policy as `sequence`.
-    pub(crate) fn claim_duplicate_ordering(before: ReservationId, after: ReservationId) -> Self {
-        let mut output = Self::sequence_rejected(before, after, SequenceRejectionKind::Duplicate);
-        output.verb = CommandVerb::Claim;
-        output.payload = OutputPayload::from_facts(OutputFacts::NoFacts);
-        output
     }
 
     /// Build an integration rejection that retains the inactive identity source.

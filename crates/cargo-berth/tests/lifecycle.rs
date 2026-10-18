@@ -5,8 +5,20 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
+#[path = "support/loose_refs.rs"]
+mod loose_refs;
+
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
+
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
 #[path = "support/timing.rs"]
 mod timing;
+
+#[path = "support/reanchoring_templates.rs"]
+mod reanchoring_templates;
 
 #[path = "support/reanchoring.rs"]
 mod reanchoring;
@@ -14,6 +26,8 @@ mod reanchoring;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
@@ -22,6 +36,30 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -44,6 +82,20 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     },
 };
 
+/// The empty-ledger main checkout with the ignored policy deliberately committed.
+const COMMITTED_POLICY_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "committed-policy",
+    build: |root| {
+        build_initialized_repository(root, GitReferenceStorage::Loose);
+        GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
+        GIT.run_without_hooks(
+            root,
+            ["commit", "--quiet", "-m", "track berth configuration"],
+        );
+    },
+    ..INITIALIZED_REPOSITORY
+};
+
 /// `INITIALIZED_REPOSITORY` with its references kept in a reftable.
 const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "initialized-reftable",
@@ -58,35 +110,7 @@ const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
     executable:       BERTH_EXECUTABLE,
     name:             "integration-main",
-    build:            |root| {
-        let git = GitDriver {
-            cleared_environment: &[
-                RUN_ENVIRONMENT,
-                SESSION_ENVIRONMENT,
-                "GIT_DIR",
-                "GIT_COMMON_DIR",
-            ],
-            ..GIT
-        };
-        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        for (key, value) in [
-            ("user.name", "Berth Test"),
-            ("user.email", "berth@example.invalid"),
-            ("maintenance.auto", "false"),
-            ("gc.auto", "0"),
-        ] {
-            git.run(root, ["config", key, value]);
-        }
-        cargo_berth_test_support::write_file(root, "README.md", "initial\n");
-        git.run(root, ["add", "README.md"]);
-        git.run(root, ["commit", "--quiet", "-m", "initial"]);
-        assert_success(&run_berth(root, &["init", "--json"]));
-        git.run(root, ["add", "--force", CONFIGURATION_PATH]);
-        git.run_without_hooks(
-            root,
-            ["commit", "--quiet", "-m", "track berth configuration"],
-        );
-    },
+    build:            |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
 };
 
 use std::fs;
@@ -94,7 +118,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -103,7 +126,6 @@ use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
@@ -186,13 +208,12 @@ mod integration_cover {
     use cargo_berth_test_support::reservation_row;
     use cargo_berth_test_support::worktree_identity_and_marker_run;
 
-    use super::BERTH_EXECUTABLE;
     use super::FIRST_RUN;
     use super::SECOND_RUN;
 
     #[test]
     fn first_lane_creates_a_cover_in_the_integration_worktree_with_its_main_diff() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let lane = repo.lane("cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -239,7 +260,7 @@ mod integration_cover {
 
     #[test]
     fn prepared_main_hook_creates_cover_under_the_integration_checkout_actor() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let integration_path = repo.integration.to_str().expect("UTF-8 worktree path");
         repo.git(
             repo.root(),
@@ -279,7 +300,7 @@ mod integration_cover {
 
     #[test]
     fn empty_integration_footprint_waits_until_the_branch_has_work_to_cover() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         repo.git(&repo.integration, &["reset", "--hard", "main"]);
         let lane = repo.lane("empty-cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
@@ -294,20 +315,14 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
-        let lane = repo.lane("landing-lane", "integration");
-        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let _ = repo.board();
-        let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane ID")
-            .to_owned();
-        let cover_id = repo.cover_claims()[0]["reservation_id"]
-            .as_str()
-            .expect("cover ID")
-            .to_owned();
-        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let repo = IntegrationRepository::from_recorded_template(crate::COVER_LANDING);
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(repo.root().join(".git/cover-landing.json"))
+                .expect("landing state should read"),
+        )
+        .expect("landing state should decode");
+        let lane_id = state["lane_id"].as_str().expect("lane ID").to_owned();
+        let cover_id = state["cover_id"].as_str().expect("cover ID").to_owned();
         let lane_work = repo.capture();
         for merge_commit in [true, false] {
             repo.restore(&lane_work);
@@ -368,7 +383,7 @@ mod integration_cover {
 
     #[test]
     fn a_later_lane_gets_a_new_cover_after_the_previous_cover_ends() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
         let first = repo.lane("first-cover-lane", "integration");
         let claimed = repo.claim(&first, "file:first.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -414,7 +429,7 @@ mod integration_cover {
     #[test]
     fn cover_uses_existing_marker_and_unmapped_session_respects_its_held_paths() {
         for existing_marker in [false, true] {
-            let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+            let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
             let lane = repo.lane("session-cover-lane", "integration");
             let marker_name = repo.git_stdout(
                 &repo.integration,
@@ -578,19 +593,7 @@ fn resolve_reports_failed_session_mapping_retirement() {
 
 #[test]
 fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
-    let repository = initialized_repository();
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "track berth configuration",
-        ],
-    );
+    let repository = COMMITTED_POLICY_REPOSITORY.instantiate();
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
@@ -633,20 +636,15 @@ fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted
 
 #[test]
 fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
-    let repository = initialized_repository();
+    let repository = COMMITTED_POLICY_REPOSITORY.instantiate();
     // This fixture exercises a released holder only; commits must not add live first touches.
     git(
         repository.path(),
         &["config", "core.hooksPath", "/dev/null"],
     );
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "track berth configuration"],
-    );
     git(repository.path(), &["tag", "--force", INITIAL_COMMIT_TAG]);
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -707,7 +705,7 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
 #[test]
 fn stored_integrated_evidence_is_revalidated_before_release() {
     let repository = initialized_repository();
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -839,7 +837,7 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 
 #[test]
 fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
     let lane = repo.lane("target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -876,7 +874,7 @@ fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
 
 #[test]
 fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
     let lane = repo.lane("missing-target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -989,6 +987,11 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
+fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
+    reanchoring::two_rebase_history_copies_keep_owners_and_drain_their_markers();
+}
+
+#[test]
 fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
     reanchoring::checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward();
 }
@@ -1076,6 +1079,16 @@ fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
 #[test]
 fn split_checkpoint_survives_stacked_branches_rewritten_with_update_refs() {
     reanchoring::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding();
 }
 
 #[test]
@@ -1250,7 +1263,7 @@ fn loose_reference_reads_spawn_no_git_process() {
 fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
         "src/lib.rs",
@@ -1589,7 +1602,7 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
     assert_success(&holder);
     fs::write(foreign.join("held.rs"), "foreign dirty work\n").expect("dirty foreign path");
     assert_success(&run_berth(root, &["board", "--json"]));
-    let before = journal_events(root);
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal before refusal");
     let checked = run_berth_with_session(
         root,
         &["check", "file:held.rs", "--json"],
@@ -1602,10 +1615,11 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
         envelope["payload"]["data"]["conflicts"][0]["reservation_id"],
         reservation_id(&holder)
     );
-    assert_eq!(
-        journal_events(root),
-        before,
-        "refusal must not widen or append"
+    overlap_refusal::assert_one_refusal_appended(
+        &before,
+        &fs::read(root.join(JOURNAL_PATH)).expect("journal after refusal"),
+        "check",
+        &envelope,
     );
 }
 
@@ -2132,11 +2146,7 @@ fn build_initialized_repository(
             ],
         ),
     }
-    git(repository_root, &["config", "user.name", "Berth Test"]);
-    git(
-        repository_root,
-        &["config", "user.email", "berth@example.invalid"],
-    );
+    git_configuration::append_git_configuration(repository_root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
     fs::write(repository_root.join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
     git(repository_root, &["add", "README.md"]);
@@ -2201,6 +2211,8 @@ fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str
 }
 
 fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
+    // The parent already holds the lock, so no acquisition race needs scheduling time.
+    const HELD_LOCK_TOLERANCE: Duration = Duration::from_millis(50);
     let ready_directory = tempdir().expect("lock readiness directory should exist");
     let ready_path = ready_directory.path().join("ready");
     // Include startup: observing readiness happens after the child's deadline starts.
@@ -2212,7 +2224,7 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .env_remove(SESSION_ENVIRONMENT)
         .env(
             LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
-            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+            HELD_LOCK_TOLERANCE.as_millis().to_string(),
         )
         .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
         .stdout(Stdio::piped())
@@ -2225,11 +2237,11 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .expect("contending cargo-berth should finish");
     let elapsed = started_at.elapsed();
     assert!(
-        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        elapsed >= HELD_LOCK_TOLERANCE,
         "contention returned too early: {elapsed:?}"
     );
     assert!(
-        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        elapsed < HELD_LOCK_TOLERANCE + SCHEDULING_ALLOWANCE,
         "contention took too long: {elapsed:?}"
     );
     output
@@ -2433,15 +2445,18 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
 }
 
 fn git_binary() -> String {
-    let output = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("git lookup should run");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .expect("git path should be UTF-8")
-        .trim()
-        .to_owned()
+    let path = std::env::var_os("PATH").expect("test PATH should exist");
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("git"))
+        .find(|candidate| {
+            candidate.is_file()
+                && candidate
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        })
+        .expect("git should exist on PATH")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn wait_for_path(path: &Path, child: &mut Child) {
@@ -2474,7 +2489,6 @@ mod merge_extent {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::process::Output;
 
     use cargo_berth_test_support::GitDriver;
@@ -2575,7 +2589,7 @@ mod merge_extent {
 
     #[test]
     fn merge_extents_exclude_changes_already_on_the_integration_target() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         repo.commit_file(
             &repo.integration,
             "Cargo.toml",
@@ -2619,7 +2633,7 @@ mod merge_extent {
 
     #[test]
     fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("missing-target-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2676,7 +2690,9 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_recorded_template(
+            super::edges_templates::INITIAL_INTEGRATION_PAIR,
+        );
         let lane = repo.lane("partly-landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2721,7 +2737,7 @@ mod merge_extent {
 
     #[test]
     fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2987,7 +3003,7 @@ mod merge_extent {
 
     #[test]
     fn a_diverged_holder_never_covers_changes_made_only_on_trunk() {
-        let fixture = Repository::new();
+        let fixture = Repository::with_trunk_requester();
         let id = claim(&fixture.holder, "tree:crates", FIRST_RUN);
         commit(&fixture.holder, "crates/one/lib.rs", "branch work\n");
         commit(fixture.trunk(), "crates/two/lib.rs", "trunk work\n");
@@ -3507,7 +3523,7 @@ mod merge_extent {
 
     #[test]
     fn a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends() {
-        let fixture = Repository::new();
+        let fixture = Repository::with_trunk_requester();
         let session = "live-empty-merge-extent";
         let claimed = berth_command(BERTH)
             .args(["claim", "file:tracked.rs", "--run", FIRST_RUN, "--json"])
@@ -3522,7 +3538,10 @@ mod merge_extent {
             .as_str()
             .expect("session claim should name its reservation")
             .to_owned();
-        board(fixture.trunk());
+        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
+        // The outsider's admitted edit check reconciles the clean holder before
+        // the mapping is read; a holder occupancy refusal alone never reaches it.
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
         let mapping_path = fixture
             .trunk()
             .join(".git/cargo-berth/session-identities.json");
@@ -3530,15 +3549,12 @@ mod merge_extent {
             serde_json::from_slice(&fs::read(&mapping_path).expect("session mappings should read"))
                 .expect("session mappings should be JSON");
         assert_eq!(mappings["identities"][session]["reservation_id"], id);
-        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
-        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
 
         succeed(&berth(
             &fixture.holder,
             &["release", &id, "--json"],
             FIRST_RUN,
         ));
-        board(fixture.trunk());
         let retired: Value =
             serde_json::from_slice(&fs::read(mapping_path).expect("retired mappings should read"))
                 .expect("retired mappings should be JSON");
@@ -4707,19 +4723,16 @@ mod merge_extent {
         GIT.run(fixture.trunk(), ["worktree", "prune"]);
     }
 
-    fn real_git() -> String {
-        let output = Command::new("sh")
-            .args(["-c", "command -v git"])
-            .output()
-            .expect("git location should resolve");
-        assert!(output.status.success());
-        String::from_utf8(output.stdout)
-            .expect("git location should be UTF-8")
-            .trim()
-            .to_owned()
+    fn real_git() -> String { super::git_binary() }
+
+    /// The checkout issuing edit requests independently of the holder.
+    #[derive(Clone, Copy)]
+    enum EditRequester {
+        Trunk,
+        SeparateBranch,
     }
 
-    /// Three checkouts share object storage but have independent working trees.
+    /// A holder and its edit requester share a trunk and object storage.
     struct Repository {
         trunk_directory: TempDir,
         worktrees:       TempDir,
@@ -4728,45 +4741,38 @@ mod merge_extent {
     }
 
     impl Repository {
-        fn new() -> Self {
-            let repository = tempdir().expect("repository parent should exist");
-            let root = repository.path();
-            GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-            for (key, value) in [
-                ("user.name", "Berth Test"),
-                ("user.email", "berth@example.invalid"),
-                ("maintenance.auto", "false"),
-                ("gc.auto", "0"),
-            ] {
-                GIT.run(root, ["config", key, value]);
-            }
-            write(root, "tracked.rs", "base\n");
-            write(root, "staged.rs", "base\n");
-            GIT.run(root, ["add", "."]);
-            GIT.run(root, ["commit", "--quiet", "-m", "base"]);
-            succeed(&berth(root, &["init", "--json"], FIRST_RUN));
-            // No hook or lifecycle verb runs when these tests integrate a branch. Only the
-            // following board read may discover its now-empty merge surface.
-            GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
-            GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-            GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
+        fn new() -> Self { Self::with_requester(EditRequester::SeparateBranch) }
+
+        /// These cases need a foreign requester, but no third branch or checkout.
+        fn with_trunk_requester() -> Self { Self::with_requester(EditRequester::Trunk) }
+
+        fn with_requester(requester: EditRequester) -> Self {
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");
-            let outsider = worktrees.path().join("outsider");
-            for (branch, path) in [("holder", &holder), ("outsider", &outsider)] {
-                GIT.run(
-                    root,
-                    [
-                        "worktree",
-                        "add",
-                        "--quiet",
-                        "-b",
-                        branch,
-                        path.to_str().expect("worktree path should be UTF-8"),
-                        "main",
-                    ],
-                );
-            }
+            let (repository, outsider) = match requester {
+                EditRequester::Trunk => {
+                    let repository = super::edges_templates::MERGE_EXTENT_MAIN.instantiate();
+                    GIT.run(
+                        repository.path(),
+                        [
+                            "worktree",
+                            "add",
+                            "--quiet",
+                            "-b",
+                            "holder",
+                            holder.to_str().expect("worktree path should be UTF-8"),
+                            "main",
+                        ],
+                    );
+                    let outsider = repository.path().to_path_buf();
+                    (repository, outsider)
+                },
+                EditRequester::SeparateBranch => (
+                    super::edges_templates::MERGE_EXTENT_PAIR
+                        .instantiate_with_external_worktrees(worktrees.path()),
+                    worktrees.path().join("outsider"),
+                ),
+            };
             Self {
                 trunk_directory: repository,
                 worktrees,

@@ -1,3 +1,8 @@
+---
+tier: D
+family: modules
+mechanism: llm
+---
 # Adding a keybinding
 
 Every action key goes through the keymap system. Never hardcode a `KeyCode` match for action dispatch.

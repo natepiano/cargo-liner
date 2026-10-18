@@ -1,3 +1,8 @@
+---
+tier: D
+family: modules
+mechanism: llm
+---
 ## Diagnostic lifecycle
 
 Every new diagnostic must touch all of these files, kept in `DiagnosticCode::ALL` order:

@@ -19,8 +19,8 @@ use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::inactive_title_color;
 use tui_pane::label_color;
+use tui_pane::on_error_color;
 use tui_pane::success_color;
-use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
 use unicode_width::UnicodeWidthChar;
@@ -28,10 +28,15 @@ use unicode_width::UnicodeWidthStr;
 
 use super::GitPane;
 use crate::constants::GIT_LOCAL;
-use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
-use crate::project::HeadState;
+use crate::project::AheadBehind;
+use crate::project::CommitDate;
+use crate::project::Comparison;
+use crate::project::FirstCommit;
+use crate::project::GitStatus;
+use crate::project::PinnedCommit;
 use crate::project::PullRequestCompleteness;
+use crate::project::TrackedRef;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::DetailField;
@@ -61,6 +66,8 @@ use crate::tui::panes::constants::SYNC_HEADER;
 use crate::tui::panes::constants::TRACKED_HEADER;
 use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
 use crate::tui::panes::package;
+use crate::tui::panes::pane_data::GitCheckout;
+use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::AvailabilityStatus;
@@ -175,7 +182,7 @@ fn render_git_column_inner(
 ) -> GitRenderLayout {
     let flat_len = ctx.fields.len();
     let pull_requests_len = ctx.data.pull_requests.rows.len();
-    let remotes_len = ctx.data.remotes.len();
+    let remotes_len = ctx.data.remotes.listed().len();
     let worktrees_len = ctx.data.worktrees.len();
     let current_section = if matches!(ctx.focus, PaneFocusState::Active) {
         ctx.pane.pos().checked_sub(ctx.row_offset).and_then(|pos| {
@@ -215,7 +222,7 @@ fn render_git_column_inner(
     // Remotes and Worktrees share one column layout so their Branch /
     // Tracked / Sync columns line up vertically across both sections.
     let sync_layout = sync_col_layout(
-        &ctx.data.remotes,
+        ctx.data.remotes.listed(),
         &ctx.data.worktrees,
         usize::from(inner_area.width),
     );
@@ -259,7 +266,7 @@ fn append_remotes_section(
     current_section: Option<Section>,
     layout: &SyncColLayout,
 ) {
-    if ctx.data.remotes.is_empty() {
+    if ctx.data.remotes.listed().is_empty() {
         return;
     }
     let focused = matches!(current_section, Some(Section::Remote(_)));
@@ -267,7 +274,7 @@ fn append_remotes_section(
         Some(Section::Remote(i)) => Some(i),
         _ => None,
     };
-    let title = section_title_text("Remotes", ctx.data.remotes.len(), cursor);
+    let title = section_title_text("Remotes", ctx.data.remotes.listed().len(), cursor);
     // Blank spacer row + placeholder row for the rule overlay.
     accum.lines.push(Line::from(Span::raw(String::new())));
     accum.section_rules.push(SectionRule {
@@ -278,7 +285,7 @@ fn append_remotes_section(
     accum.lines.push(Line::from(Span::raw(String::new())));
     render_remote_header(accum.lines, layout, focused);
     let active = matches!(ctx.focus, PaneFocusState::Active);
-    for (i, remote) in ctx.data.remotes.iter().enumerate() {
+    for (i, remote) in ctx.data.remotes.listed().iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
         accum.row_spans.push(GitVisualRowSpan {
             start_y: accum.lines.len(),
@@ -670,7 +677,10 @@ struct RenderFlatArgs<'a> {
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
-        return if data.is_local() && !raw.is_empty() {
+        return if data.is_local()
+            && !raw.is_empty()
+            && !matches!(data.checkout, GitCheckout::UnreadableHead)
+        {
             format!("{raw} ({GIT_LOCAL} local)")
         } else {
             raw
@@ -703,6 +713,114 @@ const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str
     }
 }
 
+/// A value's semantic style; rendering never infers an error from text.
+enum GitValueStyle {
+    Plain,
+    Error,
+    Warning,
+    Success,
+    Inactive,
+    Broken,
+}
+
+impl GitValueStyle {
+    fn style(self) -> Style {
+        match self {
+            Self::Plain => Style::default(),
+            Self::Error => Style::default().fg(error_color()),
+            Self::Warning => Style::default().fg(warning_color()),
+            Self::Success => Style::default().fg(success_color()),
+            Self::Inactive => Style::default().fg(inactive_border_color()),
+            Self::Broken => Style::default().fg(on_error_color()).bg(error_color()),
+        }
+    }
+}
+
+fn field_value_style(data: &GitData, field: DetailField) -> Style {
+    let role = match field {
+        field if data.failed_reads.field_failed(field) => GitValueStyle::Error,
+        DetailField::WorktreeError => GitValueStyle::Broken,
+        DetailField::Head if data.checkout.head_value_is_unreadable() => GitValueStyle::Error,
+        DetailField::GitStatus if matches!(data.status, Some(GitStatus::Unreadable)) => {
+            GitValueStyle::Error
+        },
+        DetailField::VsLocal => match data.vs_local {
+            GitProbe::Probed(Comparison::Unreadable) => GitValueStyle::Error,
+            GitProbe::Probed(Comparison::Counted(AheadBehind {
+                ahead: 0,
+                behind: 0,
+            })) => GitValueStyle::Success,
+            GitProbe::AwaitingProbe | GitProbe::Probed(Comparison::NotCompared) => {
+                GitValueStyle::Inactive
+            },
+            GitProbe::Probed(Comparison::Counted(_)) => GitValueStyle::Plain,
+        },
+        DetailField::Inception
+            if matches!(data.inception, FirstCommit::Probed(CommitDate::Unreadable)) =>
+        {
+            GitValueStyle::Error
+        },
+        DetailField::LastCommit
+            if matches!(data.last_commit, GitProbe::Probed(CommitDate::Unreadable)) =>
+        {
+            GitValueStyle::Error
+        },
+        DetailField::Bisect
+            if matches!(
+                data.bisect,
+                Some(crate::project::BisectProgress::Unreadable)
+            ) =>
+        {
+            GitValueStyle::Error
+        },
+        DetailField::Pinned
+            if data.submodule_ctx.as_ref().is_some_and(|context| {
+                matches!(context.pinned_commit, PinnedCommit::Unreadable)
+            }) =>
+        {
+            GitValueStyle::Error
+        },
+        DetailField::RemotesUnreadable => GitValueStyle::Error,
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
+            if data.github_status.is_unauthenticated() {
+                GitValueStyle::Warning
+            } else if !data.github_status.is_available() {
+                GitValueStyle::Error
+            } else {
+                GitValueStyle::Plain
+            }
+        },
+        DetailField::Stars if panes::github_stars_is_unreachable_placeholder(data) => {
+            GitValueStyle::Warning
+        },
+        DetailField::Worktrees
+        | DetailField::DeletedWorktrees
+        | DetailField::Path
+        | DetailField::Targets
+        | DetailField::Disk
+        | DetailField::Tracks
+        | DetailField::Pinned
+        | DetailField::DiskTarget
+        | DetailField::DiskNonTarget
+        | DetailField::DiskOutOfTreeTarget
+        | DetailField::Lint
+        | DetailField::Ci
+        | DetailField::Head
+        | DetailField::Bisect
+        | DetailField::GitStatus
+        | DetailField::Stars
+        | DetailField::Inception
+        | DetailField::LastCommit
+        | DetailField::LastFetched
+        | DetailField::Version
+        | DetailField::Edition
+        | DetailField::License
+        | DetailField::Homepage
+        | DetailField::Repository => GitValueStyle::Plain,
+    };
+    role.style()
+}
+
 fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     let RenderFlatArgs {
         data,
@@ -730,26 +848,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = tui_pane::selection_state(pane, row_index, focus);
-        let base_value_style =
-            if matches!(*field, DetailField::VsLocal) && value.starts_with(IN_SYNC) {
-                Style::default().fg(success_color())
-            } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
-                Style::default().fg(inactive_border_color())
-            } else if *field == DetailField::WorktreeError {
-                Style::default().fg(text_default()).bg(error_color())
-            } else if is_rate_limit_row && data.github_status.is_unauthenticated() {
-                // Unauthenticated is actionable, not an outage — warn (yellow)
-                // rather than error (red) like the unreachable / rate-limited rows.
-                Style::default().fg(warning_color())
-            } else if is_rate_limit_row && !data.github_status.is_available() {
-                Style::default().fg(error_color())
-            } else if *field == DetailField::Stars
-                && panes::github_stars_is_unreachable_placeholder(data)
-            {
-                Style::default().fg(warning_color())
-            } else {
-                Style::default()
-            };
+        let base_value_style = field_value_style(data, *field);
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
         if matches!(
@@ -867,14 +966,14 @@ fn sync_col_layout(
         .max(BRANCH_HEADER.width());
     let tracked = remotes
         .iter()
-        .map(|r| r.tracked_ref.width())
+        .map(|r| r.tracked_text().width())
         .chain(worktrees.iter().map(|w| worktree_tracked_text(w).width()))
         .max()
         .unwrap_or(0)
         .max(TRACKED_HEADER.width());
     let sync = remotes
         .iter()
-        .map(|r| r.status.width())
+        .map(|r| r.status_text().width())
         .chain(
             worktrees
                 .iter()
@@ -972,21 +1071,40 @@ fn remote_row_line(
     // Remote/URL columns, before the Branch column begins.
     let consumed = 1 + REMOTE_ICON_COL + layout.remote_name + 2 + layout.remote_url;
     let pad = " ".repeat(layout.lead.saturating_sub(consumed));
-    let trio = sync_trio(layout, &row.branch, &row.tracked_ref, &row.status);
     let url = fit_text(&row.display_url, layout.remote_url);
-    let text = format!(
-        "{:<name$}  {:<url$}{pad}{trio}{push_suffix}",
+    let leading = format!(
+        "{:<name$}  {:<url$}{pad}{branch_text:<branch$}  ",
         row.name,
         url,
         name = layout.remote_name,
         url = layout.remote_url,
+        branch_text = row.branch,
+        branch = layout.branch
     );
     let data_style = selection.patch(Style::default().fg(inactive_title_color()));
-    let icon_style = selection.patch(Style::default());
+    let tracked_style = selection.patch(if matches!(row.tracked_ref, TrackedRef::Unreadable) {
+        GitValueStyle::Error.style()
+    } else {
+        Style::default().fg(inactive_title_color())
+    });
+    let sync_style = selection.patch(if matches!(row.status, Comparison::Unreadable) {
+        GitValueStyle::Error.style()
+    } else {
+        Style::default().fg(inactive_title_color())
+    });
     Line::from(vec![
-        Span::raw(" ".to_string()),
-        Span::styled(icon_cell, icon_style),
-        Span::styled(text, data_style),
+        Span::raw(" "),
+        Span::styled(icon_cell, selection.patch(Style::default())),
+        Span::styled(leading, data_style),
+        Span::styled(
+            format!("{:<width$}", row.tracked_text(), width = layout.tracked),
+            tracked_style,
+        ),
+        Span::styled(
+            format!("  {:>width$}", row.status_text(), width = layout.sync),
+            sync_style,
+        ),
+        Span::styled(push_suffix, data_style),
     ])
 }
 
@@ -1016,23 +1134,34 @@ fn worktree_row_line(
     let name = fit_text(&row.name, layout.worktree_name);
     let leading = format!(" {:<name$}", name, name = layout.worktree_name);
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
-    let trio = sync_trio(
-        layout,
+    let prefix = format!(
+        "{leading}{pad}{:<branch$}  {:<tracked$}  ",
         worktree_branch_text(row),
         worktree_tracked_text(row),
-        &sync,
+        branch = layout.branch,
+        tracked = layout.tracked
     );
     let style = selection.patch(Style::default().fg(inactive_title_color()));
-    Line::from(Span::styled(format!("{leading}{pad}{trio}"), style))
+    let sync_style = selection.patch(if matches!(row.ahead_behind, Comparison::Unreadable) {
+        GitValueStyle::Error.style()
+    } else {
+        Style::default().fg(inactive_title_color())
+    });
+    Line::from(vec![
+        Span::styled(prefix, style),
+        Span::styled(format!("{sync:>width$}", width = layout.sync), sync_style),
+    ])
 }
 
 fn git_panel_title(data: &GitData) -> String {
-    match data.head.as_ref() {
-        Some(HeadState::Branch(name)) if !name.is_empty() => format!(" Git - {name} "),
-        Some(HeadState::Detached { short_sha }) => format!(" Git - detached @ {short_sha} "),
-        Some(HeadState::Branch(_) | HeadState::Unborn) | None => {
-            tui_pane::pane_title("Git", &PaneTitleCount::None)
-        },
+    match &data.checkout {
+        GitCheckout::Branch { name, .. } if !name.is_empty() => format!(" Git - {name} "),
+        GitCheckout::Detached { short_sha } => format!(" Git - detached @ {short_sha} "),
+        GitCheckout::Branch { .. }
+        | GitCheckout::Unborn
+        | GitCheckout::UnreadableHead
+        | GitCheckout::Broken
+        | GitCheckout::AwaitingProbe => tui_pane::pane_title("Git", &PaneTitleCount::None),
     }
 }
 
@@ -1056,7 +1185,7 @@ pub(super) fn render_git_pane_body(
     let total_rows = description_rows
         + flat_fields.len()
         + git_data.pull_requests.rows.len()
-        + git_data.remotes.len()
+        + git_data.remotes.listed().len()
         + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
@@ -1262,10 +1391,10 @@ pub(in crate::tui::panes) fn git_lower_content_height(
     data: &GitData,
     flat_fields_len: usize,
 ) -> usize {
-    let remotes_block = if data.remotes.is_empty() {
+    let remotes_block = if data.remotes.listed().is_empty() {
         0
     } else {
-        3 + data.remotes.len()
+        3 + data.remotes.listed().len()
     };
     let worktrees_block = if data.worktrees.is_empty() {
         0
@@ -1315,6 +1444,8 @@ fn pull_request_block_height(section: &PullRequestSection) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::AheadBehind;
+    use crate::project::Comparison;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
@@ -1451,8 +1582,11 @@ mod tests {
             icon:            GIT_LOCAL,
             display_url:     "natepiano/bevy_window_manager".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     "origin/main".to_string(),
-            status:          IN_SYNC.to_string(),
+            tracked_ref:     TrackedRef::Ref("origin/main".to_string()),
+            status:          Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
             full_url:        None,
             push_annotation: None,
         }
@@ -1464,7 +1598,10 @@ mod tests {
             path:         String::new(),
             branch:       Some("update/bevy_0.19.0".to_string()),
             tracked:      Some("main".to_string()),
-            ahead_behind: Some((0, 0)),
+            ahead_behind: Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            }),
         }
     }
 
@@ -1554,7 +1691,13 @@ mod tests {
 
 #[cfg(test)]
 mod moved_facade_tests {
+    use tui_pane::error_color;
+
+    use super::field_value_style;
     use super::git_label_width;
+    use crate::tui::panes::GitCheckout;
+    use crate::tui::panes::GitData;
+    use crate::tui::panes::HeadRelation;
     use crate::tui::panes::pane_data::DetailField;
 
     #[test]
@@ -1562,5 +1705,19 @@ mod moved_facade_tests {
         let fields = vec![DetailField::VsLocal];
 
         assert_eq!(git_label_width(&fields), "Ahead/Behind".len());
+    }
+    #[test]
+    fn unreadable_branch_relation_uses_error_color() {
+        let data = GitData {
+            checkout: GitCheckout::Branch {
+                name:     "main".into(),
+                relation: HeadRelation::Unreadable,
+            },
+            ..GitData::default()
+        };
+        assert_eq!(
+            field_value_style(&data, DetailField::Head).fg,
+            Some(error_color())
+        );
     }
 }

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-pub(super) const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
 pub(super) const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str =
     "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
 /// How often a test rechecks a condition it is waiting on.

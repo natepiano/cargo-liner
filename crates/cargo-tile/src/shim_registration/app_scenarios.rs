@@ -237,7 +237,13 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
 
     terminal.backend_mut().resize(240, 9);
     assert!(selected_line(&draw(&mut terminal, &mut app)).contains(account));
-    let mut pending = vec!["excluded", "hidden when idle", "config", "themes", "keymap"];
+    let mut pending = vec![
+        "excluded",
+        "hidden cargo commands",
+        "config",
+        "themes",
+        "keymap",
+    ];
     for _ in 0..settings::rows(&app).rows().len() {
         navigate(&mut app, NavAction::Down);
         let rendered = draw(&mut terminal, &mut app);

@@ -1,7 +1,10 @@
 use crate::ci;
 use crate::ci::CiRun;
+use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::project::GitOrigin;
+use crate::project::RepoInfo;
 use crate::tui::app::App;
+use crate::tui::state::CiApplicability;
 
 #[derive(Clone)]
 pub enum CiEmptyState {
@@ -13,11 +16,13 @@ pub enum CiEmptyState {
     NoWorkflowConfigured,
     NotGitRepo,
     RequiresGithubRemote,
+    Unreadable,
 }
 
 impl CiEmptyState {
     pub fn title(&self) -> String {
         match self {
+            Self::Unreadable => format!(" CI Runs — {GIT_UNREADABLE_LABEL} "),
             Self::BranchScopedOnly => " CI Runs — shown on branch/worktree rows ".to_string(),
             Self::Fetching | Self::Loading => " CI Runs — loading… ".to_string(),
             Self::NoRuns => " No CI Runs ".to_string(),
@@ -74,18 +79,39 @@ pub fn build_ci_data(app: &App) -> CiData {
     // must not depend on whether the current branch has an upstream — a
     // checkout on a branch without upstream tracking still belongs to
     // the repo.
-    let has_github_remote = repo_info.is_some_and(|r| {
-        r.remotes
-            .iter()
-            .filter_map(|r| r.url.as_deref())
-            .any(|url| ci::parse_owner_repo(url).is_some())
+    let remote_access = CiRemoteAccess::of(repo_info);
+    let applicability = selected_path.map_or(CiApplicability::Applies, |path| {
+        app.project_list.ci_applicability(path)
     });
+    let runs = match (remote_access, applicability) {
+        (
+            CiRemoteAccess::Unreadable,
+            CiApplicability::Applies
+            | CiApplicability::Unpublished
+            | CiApplicability::UnreadableEvidence,
+        )
+        | (
+            CiRemoteAccess::Awaiting | CiRemoteAccess::Github | CiRemoteAccess::Other,
+            CiApplicability::UnreadableEvidence,
+        ) => Vec::new(),
+        (
+            CiRemoteAccess::Awaiting | CiRemoteAccess::Github | CiRemoteAccess::Other,
+            CiApplicability::Applies | CiApplicability::Unpublished,
+        ) => runs,
+    };
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
     } else if git_info.is_none() {
         CiEmptyState::NotGitRepo
+    } else if matches!(remote_access, CiRemoteAccess::Unreadable)
+        || applicability == CiApplicability::UnreadableEvidence
+    {
+        CiEmptyState::Unreadable
     } else if has_ci_owner
-        && (repo_info.is_none_or(|r| r.origin_kind() == GitOrigin::Local) || !has_github_remote)
+        && matches!(
+            remote_access,
+            CiRemoteAccess::Awaiting | CiRemoteAccess::Other
+        )
     {
         CiEmptyState::RequiresGithubRemote
     } else if repo_info.is_some_and(|r| !r.workflows.is_present()) {
@@ -113,5 +139,36 @@ pub fn build_ci_data(app: &App) -> CiData {
         }),
         current_branch,
         empty_state,
+    }
+}
+
+/// Whether a successfully read remote listing provides GitHub access.
+#[derive(Clone, Copy)]
+enum CiRemoteAccess {
+    Awaiting,
+    Github,
+    Other,
+    Unreadable,
+}
+
+impl CiRemoteAccess {
+    fn of(repo: Option<&RepoInfo>) -> Self {
+        repo.map_or(Self::Awaiting, |repo| match repo.origin_kind() {
+            GitOrigin::Unreadable => Self::Unreadable,
+            GitOrigin::Local => Self::Other,
+            GitOrigin::Clone | GitOrigin::Fork => {
+                if repo
+                    .remotes
+                    .listed()
+                    .iter()
+                    .filter_map(|remote| remote.url.as_deref())
+                    .any(|url| ci::parse_owner_repo(url).is_some())
+                {
+                    Self::Github
+                } else {
+                    Self::Other
+                }
+            },
+        })
     }
 }

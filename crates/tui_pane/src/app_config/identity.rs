@@ -35,6 +35,10 @@ pub trait AppIdentity: 'static {
     /// keeps the pairing obvious from the iTerm2 side.
     const DEFAULT_ITERM2_PROFILE: &'static str = Self::BINARY_NAME;
 
+    /// Key paths removed when writing this app's config. Each path lists
+    /// literal table keys from the document root through the retired key.
+    const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] = &[];
+
     /// `<os config dir>/<CONFIG_DIRNAME>/config.toml`. `None` on
     /// platforms where the OS config directory cannot be resolved.
     #[must_use]

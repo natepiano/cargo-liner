@@ -6,7 +6,12 @@
 //! to `IntegrationRepository::new`; the free functions here only read what those
 //! runs produced.
 
+use std::env;
 use std::fs;
+use std::fs::File;
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -17,10 +22,12 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 use crate::DirectorySnapshot;
+use crate::LedgerTemplate;
 use crate::RepositoryTemplate;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
+use crate::repository_template::IdentityRenewal;
 
 /// Variables cleared before git runs, so a hook cannot inherit this process's
 /// coordination run, session, or repository location.
@@ -45,10 +52,44 @@ pub struct IntegrationSnapshot {
 pub struct IntegrationRepository {
     executable:      &'static str,
     repository:      TempDir,
-    worktrees:       TempDir,
+    worktrees:       WorktreeDirectory,
     /// The canonical path of the linked worktree that has `integration` checked
     /// out.
     pub integration: PathBuf,
+}
+
+/// Keeps ordinary external worktrees alive, or locates linked checkouts copied with a ledger.
+enum WorktreeDirectory {
+    Temporary(TempDir),
+    InRepository(PathBuf),
+}
+
+impl WorktreeDirectory {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Temporary(directory) => directory.path(),
+            Self::InRepository(path) => path,
+        }
+    }
+}
+
+/// The reservation ids attached to the two lanes of a recorded cross-target pair.
+pub struct CrossTargetPair {
+    /// The initialized checkout and its integration target.
+    pub repository:     IntegrationRepository,
+    /// Lane A's released work targeting integration.
+    pub predecessor_id: String,
+    /// Lane X's work targeting main.
+    pub successor_id:   String,
+}
+
+/// Whether X waits for an explicit sequence decision or already records A before X.
+#[derive(Clone, Copy)]
+pub enum CrossTargetOrdering {
+    /// X has answered the overlap but no ordering edge has been chosen yet.
+    Deferred,
+    /// X's claim already records the edge from A to X.
+    After,
 }
 
 impl IntegrationRepository {
@@ -78,78 +119,362 @@ impl IntegrationRepository {
     /// `cargo-berth init` fails.
     #[must_use]
     pub fn with_repository_prefix(executable: &'static str, prefix: &str) -> Self {
-        let repository = Builder::new()
-            .prefix(prefix)
-            .tempdir()
-            .expect("repository parent");
-        let worktrees = tempdir().expect("worktree parent");
-        let integration = worktrees.path().join("integration");
-        let mut integration_repository = Self {
+        PreparedIntegrationPair::instantiate(executable, prefix, "default", |root| {
+            Self::build_main_template(root, executable);
+        })
+    }
+
+    /// Build the initialized `main` checkout shared by integration-target fixtures.
+    ///
+    /// Its configuration is committed and its ledger is empty, so a
+    /// [`RepositoryTemplate`] can copy it without replaying setup in each test.
+    /// Linked worktrees and their hooked commits are added by [`Self::from_template`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture file cannot be written or git or berth fails.
+    pub fn build_main_template(root: &Path, executable: &'static str) {
+        let git = GitDriver {
             executable,
-            repository,
-            worktrees,
-            integration,
+            optional_locks: OptionalLocks::Taken,
+            cleared_environment: CLEARED_GIT_ENVIRONMENT,
         };
-        let root = integration_repository.root();
-        integration_repository.git(root, &["init", "--quiet", "--initial-branch=main"]);
-        integration_repository.git(root, &["config", "user.name", "Berth Test"]);
-        integration_repository.git(root, &["config", "user.email", "berth@example.invalid"]);
-        integration_repository.git(root, &["config", "maintenance.auto", "false"]);
-        integration_repository.git(root, &["config", "gc.auto", "0"]);
-        integration_repository.commit_file(root, "README.md", "initial\n", "initial");
-        let initialized = integration_repository.run(root, &["init", "--json"]);
+        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
+        // Write fixture-only identity and maintenance policy together, instead of
+        // starting four git processes before the first commit.
+        let configuration = root.join(".git/config");
+        let mut contents = fs::read_to_string(&configuration).expect("git config should read");
+        contents.push_str("\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n");
+        fs::write(configuration, contents).expect("git config should write");
+        write_file(root, "README.md", "initial\n");
+        git.run(root, ["add", "README.md"]);
+        git.run(root, ["commit", "--quiet", "-m", "initial"]);
+        let initialized = berth_command::berth_command(executable)
+            .args(["init", "--json"])
+            .current_dir(root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .output()
+            .expect("cargo-berth init should run");
         assert_success(&initialized);
-        integration_repository.git(root, &["add", "--force", ".claude/config/berth.toml"]);
-        // With no reservation yet the hooks write nothing for this commit, which the gate test
-        // `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged`
-        // proves. The `integration start` commit keeps them: its post-commit check records the
-        // `integration` worktree's identity.
-        integration_repository.git_driver().run_without_hooks(
+        git.run(root, ["add", "--force", ".claude/config/berth.toml"]);
+        // The gate's unreserved-trunk test proves these hooks write no state.
+        git.run_without_hooks(
             root,
             ["commit", "--quiet", "-m", "track berth configuration"],
         );
-        integration_repository.add_integration_worktree();
-        integration_repository
+    }
+
+    /// Build source and policy for merge-extent observations with explicit reconciliation.
+    ///
+    /// # Panics
+    /// Panics when source, configuration, or repository initialization fails.
+    pub fn build_merge_extent_main(root: &Path, executable: &'static str) {
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Refused,
+            cleared_environment: &[
+                "CARGO_BERTH_RUN",
+                "CARGO_BERTH_SESSION_ID",
+                "CARGO_BERTH_BYPASS",
+            ],
+        };
+        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
+        let configuration = root.join(".git/config");
+        let mut contents = fs::read_to_string(&configuration).expect("git config should read");
+        contents.push_str("\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n");
+        fs::write(&configuration, &contents).expect("fixture git config should write");
+        write_file(root, "tracked.rs", "base\n");
+        write_file(root, "staged.rs", "base\n");
+        git.run(root, ["add", "."]);
+        git.run(root, ["commit", "--quiet", "-m", "base"]);
+        let initialized = berth_command::berth_command(executable)
+            .args(["init", "--json"])
+            .current_dir(root)
+            .env("CARGO_BERTH_RUN", "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("fixture init should run");
+        assert_success(&initialized);
+        let mut contents =
+            fs::read_to_string(&configuration).expect("initialized git config should read");
+        contents.push_str("\n[core]\n hooksPath = /dev/null\n");
+        fs::write(configuration, contents).expect("fixture hook policy should write");
+        git.run(root, ["add", "--force", ".claude/config/berth.toml"]);
+        git.run(root, ["commit", "--quiet", "-m", "configure berth"]);
+    }
+
+    /// Prepare the independent holder and requester before merge-extent test clocks start.
+    ///
+    /// # Panics
+    /// Panics when repository initialization or linked checkout creation fails.
+    pub fn build_merge_extent_pair(root: &Path, executable: &'static str) {
+        Self::build_merge_extent_main(root, executable);
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Refused,
+            cleared_environment: &[
+                "CARGO_BERTH_RUN",
+                "CARGO_BERTH_SESSION_ID",
+                "CARGO_BERTH_BYPASS",
+            ],
+        };
+        for branch in ["holder", "outsider"] {
+            let checkout = root.join(".git/fixture-worktrees").join(branch);
+            git.add_worktree_without_hooks(root, &checkout, branch, "main");
+        }
+    }
+
+    /// Prepare the initial hooked integration commit under the nextest setup clock.
+    ///
+    /// # Panics
+    /// Panics when initialization, linked checkout creation, or its commit fails.
+    pub fn build_initial_integration_pair(root: &Path, executable: &'static str) {
+        Self::build_main_template(root, executable);
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Taken,
+            cleared_environment: CLEARED_GIT_ENVIRONMENT,
+        };
+        let integration = root.join(".git/fixture-worktrees/integration");
+        git.add_worktree_without_hooks(root, &integration, "integration", "main");
+        write_file(&integration, "integration.txt", "integration\n");
+        git.run(&integration, ["add", "integration.txt"]);
+        git.run(
+            &integration,
+            ["commit", "--quiet", "-m", "integration start"],
+        );
     }
 
     /// Copy an initialized `main` template with its berth policy already committed.
     ///
-    /// The template must have no reservations or linked worktrees. The integration checkout
-    /// and its first commit still run here, including the hooks that record its identity.
+    /// The template must have no reservations or linked worktrees. Its integration checkout
+    /// and first hooked commit are prepared once; each copy renews both checkout identities.
     ///
     /// # Panics
     ///
     /// Panics as [`RepositoryTemplate::instantiate`] does, or when git fails.
     #[must_use]
     pub fn from_template(template: RepositoryTemplate) -> Self {
-        let repository = template.instantiate();
-        let worktrees = tempdir().expect("worktree parent");
-        let integration = worktrees.path().join("integration");
-        let mut integration_repository = Self {
-            executable: template.executable,
-            repository,
-            worktrees,
-            integration,
-        };
-        integration_repository.add_integration_worktree();
-        integration_repository
+        PreparedIntegrationPair::instantiate(template.executable, ".tmp", template.name, |root| {
+            let main = template.instantiate();
+            let main_root = fs::canonicalize(main.path()).expect("template main should resolve");
+            let mut snapshot = DirectorySnapshot::capture(&main_root);
+            drop(snapshot.replace_text(&main_root.to_string_lossy(), &root.to_string_lossy()));
+            IdentityRenewal::read(&main_root).apply(&mut snapshot);
+            snapshot.restore(root);
+        })
     }
 
-    fn add_integration_worktree(&mut self) {
-        self.git_driver().add_worktree_without_hooks(
-            self.root(),
-            &self.integration,
-            "integration",
-            "main",
+    /// Build a released A / waiting X pair with all linked directories under the root.
+    ///
+    /// # Panics
+    /// Panics when any setup command or assertion fails.
+    pub fn build_cross_target_pair(
+        root: &Path,
+        executable: &'static str,
+        ordering: CrossTargetOrdering,
+    ) {
+        Self::build_main_template(root, executable);
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Taken,
+            cleared_environment: CLEARED_GIT_ENVIRONMENT,
+        };
+        let worktrees = root.join(".git/fixture-worktrees");
+        let integration = worktrees.join("integration");
+        git.add_worktree_without_hooks(root, &integration, "integration", "main");
+        write_file(&integration, "integration.txt", "integration\n");
+        git.run(&integration, ["add", "integration.txt"]);
+        git.run(
+            &integration,
+            ["commit", "--quiet", "-m", "integration start"],
         );
-        self.integration =
-            fs::canonicalize(&self.integration).expect("canonical integration worktree");
-        self.commit_file(
-            &self.integration,
-            "integration.txt",
-            "integration\n",
-            "integration start",
+        let predecessor = worktrees.join("cross-a");
+        let successor = worktrees.join("cross-x");
+        git.add_worktree_without_hooks(root, &predecessor, "cross-a", "integration");
+        git.add_worktree_without_hooks(root, &successor, "cross-x", "main");
+        git.run(
+            root,
+            ["config", "branch.cross-a.cargoBerthTarget", "integration"],
         );
+        git.run(root, ["config", "branch.cross-x.cargoBerthTarget", "main"]);
+        let run = |checkout: &Path, arguments: &[&str]| {
+            let output = berth_command::berth_command(executable)
+                .args(arguments)
+                .current_dir(checkout)
+                .env_remove("CARGO_BERTH_RUN")
+                .env_remove("CARGO_BERTH_SESSION_ID")
+                .output()
+                .expect("pair command should run");
+            assert_success(&output);
+            output
+        };
+        let first_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+        let second_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+        write_file(&predecessor, "shared.txt", "A\n");
+        let predecessor_id = claim_id(&run(
+            &predecessor,
+            &[
+                "claim",
+                "file:shared.txt",
+                "--run",
+                first_run,
+                "--target",
+                "integration",
+                "--json",
+            ],
+        ));
+        let successor_id = match ordering {
+            CrossTargetOrdering::Deferred => {
+                let scope = deferring_run_scope(second_run);
+                run(
+                    &successor,
+                    &["claim", &scope, "--run", second_run, "--json"],
+                );
+                claim_id(&run(
+                    &successor,
+                    &[
+                        "claim",
+                        "file:shared.txt",
+                        "--run",
+                        second_run,
+                        "--defer",
+                        &predecessor_id,
+                        "--overlap-why",
+                        "the order needs a decision",
+                        "--json",
+                    ],
+                ))
+            },
+            CrossTargetOrdering::After => claim_id(&run(
+                &successor,
+                &[
+                    "claim",
+                    "file:shared.txt",
+                    "--run",
+                    second_run,
+                    "--target",
+                    "main",
+                    "--after",
+                    &predecessor_id,
+                    "--overlap-why",
+                    "A reaches main before X",
+                    "--json",
+                ],
+            )),
+        };
+        git.run(&predecessor, ["add", "shared.txt"]);
+        git.run(&predecessor, ["commit", "--quiet", "-m", "A work"]);
+        run(&predecessor, &["release", &predecessor_id, "--json"]);
+        fs::write(
+            root.join(".git/cross-target.json"),
+            serde_json::json!({"predecessor_id": predecessor_id, "successor_id": successor_id})
+                .to_string(),
+        )
+        .expect("pair metadata should write");
+    }
+
+    /// Copy a cross-target pair, including the journal and each linked checkout.
+    ///
+    /// # Panics
+    /// Panics when the recorded template or its reservation ids cannot be read.
+    #[must_use]
+    pub fn cross_target_pair(template: LedgerTemplate) -> CrossTargetPair {
+        let repository = template.instantiate();
+        let worktrees = repository.path().join(".git/fixture-worktrees");
+        let metadata: Value = serde_json::from_slice(
+            &fs::read(repository.path().join(".git/cross-target.json"))
+                .expect("pair metadata should read"),
+        )
+        .expect("pair metadata should decode");
+        CrossTargetPair {
+            predecessor_id: metadata["predecessor_id"]
+                .as_str()
+                .expect("predecessor id should exist")
+                .to_owned(),
+            successor_id:   metadata["successor_id"]
+                .as_str()
+                .expect("successor id should exist")
+                .to_owned(),
+            repository:     Self {
+                executable: template.repository.executable,
+                repository,
+                integration: worktrees.join("integration"),
+                worktrees: WorktreeDirectory::InRepository(worktrees),
+            },
+        }
+    }
+
+    /// Copy a recorded integration history with each linked checkout kept private.
+    ///
+    /// # Panics
+    /// Panics when the recorded template cannot be copied.
+    #[must_use]
+    pub fn from_recorded_template(template: LedgerTemplate) -> Self {
+        let repository = template.instantiate();
+        let worktrees = repository.path().join(".git/fixture-worktrees");
+        Self {
+            executable: template.repository.executable,
+            repository,
+            integration: worktrees.join("integration"),
+            worktrees: WorktreeDirectory::InRepository(worktrees),
+        }
+    }
+
+    /// Prepare the active cover and committed lane before testing either landing mode.
+    ///
+    /// # Panics
+    /// Panics when a claim, commit, or fixture copy fails.
+    pub fn build_cover_landing(root: &Path, executable: &'static str) {
+        let repository = Self::new(executable);
+        let lane = repository.lane("landing-lane", "integration");
+        let claimed = repository.claim(
+            &lane,
+            "file:lane.txt",
+            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
+            None,
+        );
+        assert_success(&claimed);
+        let _ = repository.board();
+        let lane_id = json(&claimed)["payload"]["data"]["reservation_id"].clone();
+        let cover_id = repository.cover_claims()[0]["reservation_id"].clone();
+        repository.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let source = fs::canonicalize(repository.root()).expect("main root should resolve");
+        let linked_source = fs::canonicalize(repository.worktrees.path())
+            .expect("linked checkout source should resolve");
+        let destination = root.join(".git/fixture-worktrees");
+        let mut main = DirectorySnapshot::capture(repository.root());
+        let mut linked = DirectorySnapshot::capture(repository.worktrees.path());
+        for snapshot in [&mut main, &mut linked] {
+            let _ = snapshot.replace_text(
+                &linked_source.to_string_lossy(),
+                &destination.to_string_lossy(),
+            );
+            let _ = snapshot.replace_text(&source.to_string_lossy(), &root.to_string_lossy());
+        }
+        main.restore(root);
+        fs::create_dir_all(&destination).expect("linked checkout destination should exist");
+        linked.restore(&destination);
+        fs::write(
+            root.join(".git/cover-landing.json"),
+            serde_json::to_vec(&serde_json::json!({"lane_id": lane_id, "cover_id": cover_id}))
+                .expect("landing state should encode"),
+        )
+        .expect("landing state should write");
+    }
+
+    /// Locate one of the lanes already present in a recorded pair.
+    #[must_use]
+    pub fn recorded_lane(&self, branch: &str) -> PathBuf { self.worktrees.path().join(branch) }
+
+    /// Run a fixture landing without running managed hooks.
+    ///
+    /// # Panics
+    /// Panics when git fails.
+    pub fn git_without_hooks(&self, checkout: &Path, arguments: &[&str]) {
+        self.git_driver().run_without_hooks(checkout, arguments);
     }
 
     /// Capture the main worktree and every linked worktree, for [`Self::restore`].
@@ -502,13 +827,8 @@ pub fn claim_id(output: &Output) -> String {
         .to_owned()
 }
 
-/// The row for reservation `id` in whichever `board --json` section lists it.
-///
-/// # Panics
-///
-/// Panics when no section lists the reservation.
-#[must_use]
-pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value {
+/// The reservation entries across every `board --json` reservation section.
+pub fn board_reservation_entries(board: &Value) -> impl Iterator<Item = &Value> {
     let data = &board["payload"]["data"];
     [
         "ready_now",
@@ -519,8 +839,37 @@ pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value 
     .into_iter()
     .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
     .map(|entry| entry.get("reservation").unwrap_or(entry))
-    .find(|entry| entry["reservation_id"] == id)
-    .expect("reservation appears on board")
+}
+
+/// The sorted reservation IDs across every `board --json` reservation section.
+///
+/// # Panics
+///
+/// Panics when a reservation entry names no string reservation ID.
+#[must_use]
+pub fn board_reservation_ids(board: &Value) -> Vec<String> {
+    let mut ids = board_reservation_entries(board)
+        .map(|entry| {
+            entry["reservation_id"]
+                .as_str()
+                .expect("reservation id")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+/// The row for reservation `id` in whichever `board --json` section lists it.
+///
+/// # Panics
+///
+/// Panics when no section lists the reservation.
+#[must_use]
+pub fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value {
+    board_reservation_entries(board)
+        .find(|entry| entry["reservation_id"] == id)
+        .expect("reservation appears on board")
 }
 
 /// The worktree identity and coordination run marker berth recorded in
@@ -564,4 +913,114 @@ pub fn write_file(checkout: &Path, path: &str, contents: &str) {
     let file = checkout.join(path);
     fs::create_dir_all(file.parent().expect("file parent")).expect("file parent exists");
     fs::write(file, contents).expect("fixture file writes");
+}
+
+/// A main checkout and integration target whose hooked setup runs once per fixture.
+/// Every test copies both trees with one owner-renewal map and private mutable files.
+struct PreparedIntegrationPair {
+    root:      PathBuf,
+    worktrees: PathBuf,
+}
+
+impl PreparedIntegrationPair {
+    fn instantiate(
+        executable: &'static str,
+        prefix: &str,
+        name: &str,
+        build_main: impl FnOnce(&Path),
+    ) -> IntegrationRepository {
+        let prepared = Self::prepare(executable, name, build_main);
+        let repository = Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("repository parent");
+        let worktrees = tempdir().expect("worktree parent");
+        let repository_root =
+            fs::canonicalize(repository.path()).expect("repository should resolve");
+        let worktree_root = fs::canonicalize(worktrees.path()).expect("worktrees should resolve");
+        let mut main = DirectorySnapshot::capture(&prepared.root);
+        let mut linked = DirectorySnapshot::capture(&prepared.worktrees);
+        for snapshot in [&mut main, &mut linked] {
+            drop(snapshot.replace_text(
+                &prepared.root.to_string_lossy(),
+                &repository_root.to_string_lossy(),
+            ));
+            drop(snapshot.replace_text(
+                &prepared.worktrees.to_string_lossy(),
+                &worktree_root.to_string_lossy(),
+            ));
+        }
+        IdentityRenewal::read(&prepared.root).apply_pair(&mut main, &mut linked);
+        main.restore(&repository_root);
+        linked.restore(&worktree_root);
+        for name in ["reservations.json", "replay-checkpoint.json"] {
+            let derived = repository_root.join(".git/cargo-berth").join(name);
+            if derived.is_file() {
+                fs::remove_file(derived)
+                    .expect("copied projection should rebuild from renewed owners");
+            }
+        }
+        IntegrationRepository {
+            executable,
+            repository,
+            integration: worktree_root.join("integration"),
+            worktrees: WorktreeDirectory::Temporary(worktrees),
+        }
+    }
+
+    fn prepare(executable: &'static str, name: &str, build_main: impl FnOnce(&Path)) -> Self {
+        let mut identity = DefaultHasher::new();
+        name.hash(&mut identity);
+        for binary in [
+            env::current_exe().expect("test binary should resolve"),
+            PathBuf::from(executable),
+        ] {
+            let metadata = fs::metadata(binary).expect("fixture executable should exist");
+            metadata.len().hash(&mut identity);
+            metadata
+                .modified()
+                .expect("executable modification should read")
+                .hash(&mut identity);
+        }
+        let target = Path::new(executable)
+            .parent()
+            .and_then(Path::parent)
+            .expect("berth executable should be in a target profile directory");
+        let builds = target
+            .join("tmp/cargo-berth-templates/integration-pair")
+            .join(format!("{:016x}", identity.finish()));
+        fs::create_dir_all(&builds).expect("integration pair builds should exist");
+        let builds = fs::canonicalize(builds).expect("integration pair should resolve");
+        let lock =
+            File::create(builds.join("build.lock")).expect("integration pair lock should open");
+        lock.lock()
+            .expect("one integration pair builder should run");
+        let root = builds.join("repository");
+        let worktrees = builds.join("worktrees");
+        let ready = builds.join("complete");
+        if !ready.is_file() {
+            for directory in [&root, &worktrees] {
+                if directory.exists() {
+                    fs::remove_dir_all(directory).expect("incomplete pair should remove");
+                }
+                fs::create_dir(directory).expect("integration pair directory should exist");
+            }
+            build_main(&root);
+            let integration = worktrees.join("integration");
+            let git = GitDriver {
+                executable,
+                optional_locks: OptionalLocks::Taken,
+                cleared_environment: CLEARED_GIT_ENVIRONMENT,
+            };
+            git.add_worktree_without_hooks(&root, &integration, "integration", "main");
+            write_file(&integration, "integration.txt", "integration\n");
+            git.run(&integration, ["add", "integration.txt"]);
+            git.run(
+                &integration,
+                ["commit", "--quiet", "-m", "integration start"],
+            );
+            File::create(ready).expect("integration pair completion should record");
+        }
+        Self { root, worktrees }
+    }
 }

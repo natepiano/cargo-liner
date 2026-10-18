@@ -17,6 +17,9 @@ use crate::http::PullRequestFetch;
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::CommitDate;
+use crate::project::Comparison;
+use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::LocalGitState;
 use crate::project::ProjectPrData;
@@ -236,10 +239,18 @@ impl App {
         let preserved_first_commit = self
             .project_list
             .repo_info_for(path)
-            .and_then(|existing| existing.first_commit.clone());
-        if info.first_commit.is_none() {
-            info.first_commit = preserved_first_commit
-                .or_else(|| self.scan.pending_git_first_commit_mut().remove(path));
+            .map_or(FirstCommit::AwaitingProbe, |existing| {
+                existing.first_commit.clone()
+            });
+        if matches!(info.first_commit, FirstCommit::AwaitingProbe) {
+            info.first_commit = match preserved_first_commit {
+                FirstCommit::Probed(date) => FirstCommit::Probed(date),
+                FirstCommit::AwaitingProbe => self
+                    .scan
+                    .pending_git_first_commit_mut()
+                    .remove(path)
+                    .map_or(FirstCommit::AwaitingProbe, FirstCommit::Probed),
+            };
         }
         // Gate GitHub cache invalidation on `FETCH_HEAD` mtime actually
         // advancing. Without this, every watcher tick / commit / branch
@@ -288,6 +299,11 @@ impl App {
         else {
             return;
         };
+        let current = match current {
+            Comparison::Counted(counts) => Some((counts.ahead, counts.behind)),
+            Comparison::NotCompared => None,
+            Comparison::Unreadable => return,
+        };
         let Some(transition) = self.sync_tracker.observe(AbsolutePath::from(path), current) else {
             return;
         };
@@ -332,27 +348,19 @@ impl App {
         };
         self.spawn_repo_fetch_for_git_info(path, &url);
     }
-    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
-        let first_commit = first_commit.map(String::from);
-        // first_commit is per-repo, so it lands on the entry's
-        // `RepoInfo`. If the entry's `repo_info` slot doesn't exist yet
-        // (`RepoInfo::get` hasn't completed), stash the value in
-        // `pending_git_first_commit` and `handle_repo_info` will fold
-        // it in when repo info arrives.
+    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: CommitDate) {
         let applied = self
             .project_list
             .entry_containing_mut(path)
             .and_then(|entry| entry.git_repo.as_mut()?.repo_info.as_mut())
-            .map(|repo| repo.first_commit.clone_from(&first_commit))
+            .map(|repo| repo.first_commit = FirstCommit::Probed(first_commit.clone()))
             .is_some();
         if applied {
             self.scan.pending_git_first_commit_mut().remove(path);
-        } else if let Some(first_commit) = first_commit {
+        } else {
             self.scan
                 .pending_git_first_commit_mut()
                 .insert(AbsolutePath::from(path), first_commit);
-        } else {
-            self.scan.pending_git_first_commit_mut().remove(path);
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
@@ -533,8 +541,14 @@ impl App {
             ));
         });
         for (path, resolution) in targets {
-            if let SyncResolution::Resolved(current) = resolution {
-                self.sync_tracker.seed_baseline(path.clone(), current);
+            match resolution {
+                SyncResolution::Resolved(Comparison::Counted(counts)) => self
+                    .sync_tracker
+                    .seed_baseline(path.clone(), Some((counts.ahead, counts.behind))),
+                SyncResolution::Resolved(Comparison::NotCompared) => {
+                    self.sync_tracker.seed_baseline(path.clone(), None);
+                },
+                SyncResolution::Resolved(Comparison::Unreadable) | SyncResolution::Unresolved => {},
             }
             self.sync_tracker.mark_eligible(path);
         }

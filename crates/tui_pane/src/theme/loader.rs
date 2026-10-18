@@ -252,6 +252,26 @@ mod tests {
     }
 
     #[test]
+    fn existing_theme_files_default_on_error_and_allow_an_override() {
+        let family: theme::ThemeFamily =
+            toml::from_str(SAMPLE_FAMILY).expect("an existing theme without on_error should load");
+        assert_eq!(family.variants[0].semantic.on_error.color, Color::White);
+        let customized = SAMPLE_FAMILY.replace(
+            "[variants.semantic]",
+            "[variants.semantic]\non_error = \"Cyan\"",
+        );
+        let family: theme::ThemeFamily =
+            toml::from_str(&customized).expect("a theme may customize its on-error foreground");
+        assert_eq!(family.variants[0].semantic.on_error.color, Color::Cyan);
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            assert_eq!(
+                theme::fallback_theme(appearance).semantic.on_error.color,
+                Color::White
+            );
+        }
+    }
+
+    #[test]
     fn missing_directory_returns_only_builtins() {
         let registry = ThemeRegistry::from_dir_with_builtins(
             Some(Path::new("/definitely/not/a/dir/xyzzy")),

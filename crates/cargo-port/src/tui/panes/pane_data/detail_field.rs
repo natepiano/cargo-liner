@@ -1,11 +1,19 @@
+use super::GitCheckout;
+use super::constants::HEAD_UNREADABLE_LABEL;
 use super::copy_data;
 use super::formatting;
 use super::git_data::GitData;
+use super::git_data::GitProbe;
+use super::git_data::HeadRelation;
 use super::package_data;
 use super::package_data::PackageData;
 use super::package_data::PackageRow;
+use super::package_data::PackageVersion;
+use crate::constants::GIT_UNREADABLE_LABEL;
+use crate::project::FirstCommit;
 use crate::project::GitStatus;
-use crate::project::HeadState;
+use crate::project::PinnedCommit;
+use crate::project::ResolvedBranch;
 use crate::tui::render;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +49,7 @@ pub enum DetailField {
     Inception,
     LastCommit,
     LastFetched,
+    RemotesUnreadable,
     RateLimitCore,
     RateLimitGraphQl,
     WorktreeError,
@@ -74,6 +83,7 @@ impl DetailField {
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::LastFetched => "Fetched",
+            Self::RemotesUnreadable => "Remotes",
             Self::RateLimitCore => "Rate limit core",
             Self::RateLimitGraphQl => "Rate limit GraphQL",
             Self::WorktreeError => "Error",
@@ -112,7 +122,15 @@ impl DetailField {
                     .collect::<Vec<_>>()
                     .join(", "),
             },
-            Self::Version => data.version.clone().unwrap_or_else(|| "-".to_string()),
+            Self::Version => match &data.version {
+                PackageVersion::Manifest(version) => version.clone(),
+                PackageVersion::Submodule(PinnedCommit::Sha(sha)) => sha.clone(),
+                PackageVersion::Submodule(PinnedCommit::Unreadable) => {
+                    GIT_UNREADABLE_LABEL.to_string()
+                },
+                PackageVersion::AwaitingMetadata
+                | PackageVersion::Submodule(PinnedCommit::NotPinned) => "-".to_string(),
+            },
             Self::DiskTarget => data
                 .in_project_target
                 .map_or_else(String::new, render::format_bytes),
@@ -126,12 +144,12 @@ impl DetailField {
             Self::License => package_data::or_dash(data.license.as_deref()),
             Self::Homepage => package_data::or_dash(data.homepage.as_deref()),
             Self::Repository => package_data::or_dash(data.repository.as_deref()),
-            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             // Git fields, Lint, and Ci — should not be called with
             // package_value. Lint and Ci are rendered directly from
             // their typed-enum fields (`PackageData.lint_display` /
             // `ci_display`) at render time.
-            Self::Head
+            Self::WorktreeError
+            | Self::Head
             | Self::Bisect
             | Self::Tracks
             | Self::Pinned
@@ -141,6 +159,7 @@ impl DetailField {
             | Self::Inception
             | Self::LastCommit
             | Self::LastFetched
+            | Self::RemotesUnreadable
             | Self::RateLimitCore
             | Self::RateLimitGraphQl
             | Self::Lint
@@ -150,14 +169,30 @@ impl DetailField {
 
     /// Get the display value for a git field from `GitData`.
     pub fn git_value(self, data: &GitData) -> String {
+        if self == Self::Head && data.failed_reads.field_failed(self) {
+            return match &data.checkout {
+                GitCheckout::Branch { name, .. } => format!("{name} · {GIT_UNREADABLE_LABEL}"),
+                GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
+                GitCheckout::Broken
+                | GitCheckout::AwaitingProbe
+                | GitCheckout::Unborn
+                | GitCheckout::Detached { .. } => GIT_UNREADABLE_LABEL.to_string(),
+            };
+        }
         match self {
-            Self::Head => match data.head.as_ref() {
-                None | Some(HeadState::Unborn) => "unborn".to_string(),
-                Some(HeadState::Detached { short_sha }) => format!("detached @ {short_sha}"),
-                Some(HeadState::Branch(name)) => data.head_relation.map_or_else(
-                    || name.clone(),
-                    |relation| format!("{name} · {}", relation.label()),
-                ),
+            Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
+            Self::Head => match &data.checkout {
+                GitCheckout::Broken | GitCheckout::AwaitingProbe => String::new(),
+                GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),
+                GitCheckout::Unborn => "unborn".to_string(),
+                GitCheckout::Detached { short_sha } => format!("detached @ {short_sha}"),
+                GitCheckout::Branch { name, relation } => match relation {
+                    HeadRelation::AwaitingRepoProbe => name.clone(),
+                    HeadRelation::Default
+                    | HeadRelation::Feature
+                    | HeadRelation::Worktree
+                    | HeadRelation::Unreadable => format!("{name} · {}", relation.label()),
+                },
             },
             Self::Bisect => data
                 .bisect
@@ -166,12 +201,31 @@ impl DetailField {
             Self::GitStatus => data
                 .status
                 .map_or_else(String::new, GitStatus::label_with_icon),
-            Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
+            Self::VsLocal => {
+                let branch = match &data.local_main_branch {
+                    GitProbe::Probed(ResolvedBranch::Named(name)) => name.as_str(),
+                    GitProbe::AwaitingProbe
+                    | GitProbe::Probed(ResolvedBranch::NotFound | ResolvedBranch::Unreadable) => "",
+                };
+                match data.vs_local {
+                    GitProbe::AwaitingProbe => String::new(),
+                    GitProbe::Probed(comparison) => {
+                        formatting::format_ahead_behind_against(comparison, branch)
+                    },
+                }
+            },
             Self::Stars => data
                 .stars
                 .map_or_else(String::new, |count| format!("⭐ {count}")),
-            Self::Inception => data.inception.as_deref().unwrap_or("").to_string(),
-            Self::LastCommit => data.last_commit.as_deref().unwrap_or("").to_string(),
+            Self::Inception => match &data.inception {
+                FirstCommit::AwaitingProbe => String::new(),
+                FirstCommit::Probed(commit_date) => formatting::format_commit_date(commit_date),
+            },
+            Self::LastCommit => match &data.last_commit {
+                GitProbe::AwaitingProbe => String::new(),
+                GitProbe::Probed(commit_date) => formatting::format_commit_date(commit_date),
+            },
+            Self::RemotesUnreadable => GIT_UNREADABLE_LABEL.to_string(),
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
             Self::RateLimitCore => formatting::format_rate_limit_bucket(data.rate_limit_core),
             Self::RateLimitGraphQl => formatting::format_rate_limit_bucket(data.rate_limit_graphql),
@@ -183,7 +237,11 @@ impl DetailField {
             Self::Pinned => data
                 .submodule_ctx
                 .as_ref()
-                .map(|ctx| format!("{}  (parent HEAD)", ctx.pinned_commit))
+                .map(|ctx| match &ctx.pinned_commit {
+                    PinnedCommit::Sha(sha) => format!("{sha}  (parent HEAD)"),
+                    PinnedCommit::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+                    PinnedCommit::NotPinned => String::new(),
+                })
                 .unwrap_or_default(),
             // Package fields — should not be called with git_value.
             Self::Worktrees
@@ -200,8 +258,7 @@ impl DetailField {
             | Self::Edition
             | Self::License
             | Self::Homepage
-            | Self::Repository
-            | Self::WorktreeError => String::new(),
+            | Self::Repository => String::new(),
         }
     }
 }
@@ -303,30 +360,37 @@ mod tests {
 #[cfg(test)]
 mod git_detail_field_tests {
     use super::DetailField;
+    use super::GitCheckout;
     use crate::project::BisectProgress;
+    use crate::project::CommitDate;
+    use crate::project::Comparison;
+    use crate::project::FirstCommit;
     use crate::project::GitStatus;
+    use crate::project::ResolvedBranch;
     use crate::tui::panes::pane_data::GitData;
     use crate::tui::panes::pane_data::PullRequestSection;
+    use crate::tui::panes::pane_data::formatting::GitReadFailures;
     use crate::tui::state::AvailabilityStatus;
 
     fn git_data() -> GitData {
         GitData {
-            head:               None,
-            head_relation:      None,
+            checkout:           GitCheckout::AwaitingProbe,
+            failed_reads:       GitReadFailures::default(),
             bisect:             None,
             submodule_ctx:      None,
             status:             None,
-            vs_local:           None,
+            vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
+            local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              None,
             description:        None,
-            inception:          None,
-            last_commit:        None,
+            inception:          FirstCommit::AwaitingProbe,
+            last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
             rate_limit_core:    None,
             rate_limit_graphql: None,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
-            remotes:            Vec::new(),
+            remotes:            super::super::git_data::RemoteRows::default(),
             worktrees:          Vec::new(),
         }
     }

@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::constants::DEFAULT_ANSWER_FIRST_READY_REASON;
 use super::constants::ENROLLMENT_AUTHORIZATION_REASON;
 use crate::config::DefaultAnswer;
+use crate::edge::OrderingReason;
 use crate::ids::ReservationId;
 use crate::ledger::OrderingDirection;
 
@@ -95,6 +96,10 @@ pub(crate) struct OverlapAuthorizationReason(#[schemars(length(min = 1))] String
 impl OverlapAuthorizationReason {
     /// The engine's explanation for a deferral recorded by enrollment.
     pub(crate) fn enrollment() -> Self { Self(ENROLLMENT_AUTHORIZATION_REASON.to_owned()) }
+}
+
+impl From<&OrderingReason> for OverlapAuthorizationReason {
+    fn from(reason: &OrderingReason) -> Self { Self(reason.to_string()) }
 }
 
 impl From<DefaultAnswer> for OverlapAuthorizationReason {

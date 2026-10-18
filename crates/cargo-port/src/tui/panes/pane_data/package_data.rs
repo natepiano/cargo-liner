@@ -22,6 +22,7 @@ use super::TESTS_TOTAL_LABEL;
 use super::TESTS_UNIT_LABEL;
 use super::TestCounts;
 use super::Workspace;
+use crate::project::PinnedCommit;
 use crate::project::ProjectFields;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
@@ -172,6 +173,18 @@ impl From<bool> for PackagePresence {
     }
 }
 
+/// A package's manifest version or a submodule's parent-repository pin.
+#[derive(Clone, Default)]
+pub enum PackageVersion {
+    /// Package metadata has not supplied a version.
+    #[default]
+    AwaitingMetadata,
+    /// Version read from the package manifest.
+    Manifest(String),
+    /// Pin read from the parent repository, including an unreadable pin.
+    Submodule(PinnedCommit),
+}
+
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
@@ -184,10 +197,8 @@ pub struct PackageData {
     pub worktree_group_summary:   Option<WorktreeGroupSummary>,
     pub primary_section:          Option<PackageSection>,
     pub path:                     String,
-    /// Version string. `None` before metadata lands; the renderer
-    /// maps absence to a placeholder. For submodules this carries the
-    /// pinned commit rather than a semver.
-    pub version:                  Option<String>,
+    /// Version or pin state, formatted by the renderer.
+    pub version:                  PackageVersion,
     pub description:              Option<String>,
     /// crates.io section of the stats column — `version` (latest stable,
     /// or the newest prerelease when there is no stable), an optional
@@ -323,7 +334,7 @@ pub(super) fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     fields.push(DetailField::Targets);
     fields.push(DetailField::Lint);
     fields.push(DetailField::Ci);
-    if data.has_package() {
+    if data.has_package() || matches!(data.version, PackageVersion::Submodule(_)) {
         fields.push(DetailField::Version);
     }
     // crates.io version / prerelease / downloads now render in their own
@@ -528,7 +539,7 @@ mod package_row_tests {
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     "~/demo".to_string(),
-            version:                  Some("0.1.0".to_string()),
+            version:                  PackageVersion::Manifest("0.1.0".to_string()),
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),

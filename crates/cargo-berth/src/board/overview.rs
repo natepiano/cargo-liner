@@ -14,6 +14,7 @@ use super::rows::UnresolvedOverlap;
 use super::rows::WaitingAction;
 use super::rows::WaitingEntry;
 use super::rows::WaitingHold;
+use super::rows::WaitingOrderingConstraint;
 use crate::alert::AlertRouting;
 use crate::presentation;
 use crate::presentation::RenderedOutputBlock;
@@ -99,9 +100,12 @@ fn waiting_line(entry: &WaitingEntry) -> String {
     let held = entry.reservation.reservation_id;
     match &entry.hold {
         WaitingHold::OrderingEdge {
-            predecessor,
-            action,
-            ..
+            edge:
+                WaitingOrderingConstraint {
+                    predecessor,
+                    action,
+                    ..
+                },
         } => {
             let action = match action {
                 WaitingAction::TrunkEvidenceRewritten {

@@ -1,12 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ratatui::style::Style;
 use ratatui::widgets::ListItem;
 use tui_pane::Viewport;
-use tui_pane::error_color;
-use tui_pane::label_color;
-use tui_pane::text_default;
 
 use super::ProjectListPane;
 use super::disk;
@@ -27,16 +23,15 @@ use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::columns::ProjectRow;
 use crate::tui::columns::RowLifecycle;
+use crate::tui::panes::constants;
+use crate::tui::panes::constants::DiskCell;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
 use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
 use crate::tui::panes::constants::TREE_PREFIX_BLANK;
-use crate::tui::panes::constants::TREE_PREFIX_BRANCH;
-use crate::tui::panes::constants::TREE_PREFIX_COLLAPSED;
 use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
-use crate::tui::panes::constants::TREE_PREFIX_EXPANDED;
-use crate::tui::panes::constants::TREE_PREFIX_LAST;
-use crate::tui::panes::constants::TREE_PREFIX_LEAF_EXTENSION;
+use crate::tui::panes::constants::TreeRowDepth;
+use crate::tui::panes::constants::TreeRowExpansion;
 use crate::tui::panes::lang;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
@@ -319,7 +314,8 @@ fn tree_prefix(
     }
 
     let mut prefix = String::new();
-    for segment_index in 1..lineage.len() - 1 {
+    let depth = TreeRowDepth::from_lineage_length(lineage.len());
+    for segment_index in depth.ancestor_indices() {
         if has_later_sibling(lineages, row_index, lineage, segment_index) {
             prefix.push_str(TREE_PREFIX_CONTINUATION);
         } else {
@@ -328,20 +324,17 @@ fn tree_prefix(
     }
 
     let row_segment_index = lineage.len() - 1;
-    if has_later_sibling(lineages, row_index, lineage, row_segment_index) {
-        prefix.push_str(TREE_PREFIX_BRANCH);
-    } else {
-        prefix.push_str(TREE_PREFIX_LAST);
-    }
-    if let Some(key) = project_list.expand_key_for_row(row) {
-        if project_list.expanded.contains(&key) {
-            prefix.push_str(TREE_PREFIX_EXPANDED);
-        } else {
-            prefix.push_str(TREE_PREFIX_COLLAPSED);
-        }
-    } else {
-        prefix.push_str(TREE_PREFIX_LEAF_EXTENSION);
-    }
+    let expansion = match project_list.expand_key_for_row(row) {
+        Some(key) if project_list.expanded.contains(&key) => TreeRowExpansion::Expanded,
+        Some(_) => TreeRowExpansion::Collapsed,
+        None => TreeRowExpansion::Leaf,
+    };
+    prefix.push_str(expansion.prefix(has_later_sibling(
+        lineages,
+        row_index,
+        lineage,
+        row_segment_index,
+    )));
     prefix
 }
 
@@ -413,8 +406,7 @@ fn render_root_item(
     let git_status = ctx.project_list.git_status_for_item(item);
     let deleted = ctx.project_list.is_deleted(item.path());
     let worktree_health = item.worktree_health();
-    let (disk_text, disk_suffix, disk_suffix_style) =
-        disk_suffix_for_state(&disk, deleted, worktree_health);
+    let disk_cell = DiskCell::for_row(disk, RowLifecycle::from(deleted), worktree_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
@@ -429,10 +421,10 @@ fn render_root_item(
         ),
         git_status,
         lint: lint_cell,
-        disk: disk_text,
+        disk: disk_cell.text(),
         disk_style: ds,
-        disk_suffix,
-        disk_suffix_style,
+        disk_suffix: disk_cell.suffix(),
+        disk_suffix_style: disk_cell.suffix_style(),
         lang_icon: lang,
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
@@ -483,7 +475,7 @@ fn render_child_item<P: project::ProjectFields>(
     let hide_git_status = is_workspace_member || is_vendored;
     let origin_sync = if hide_git_status
         || matches!(
-            ctx.project_list.git_status_for(path),
+            ctx.project_list.git_row_status_for(path),
             Some(GitStatus::Untracked | GitStatus::Ignored)
         ) {
         String::new()
@@ -492,7 +484,7 @@ fn render_child_item<P: project::ProjectFields>(
     };
     let main_sync = if hide_git_status
         || matches!(
-            ctx.project_list.git_status_for(path),
+            ctx.project_list.git_row_status_for(path),
             Some(GitStatus::Untracked | GitStatus::Ignored)
         ) {
         String::new()
@@ -500,16 +492,8 @@ fn render_child_item<P: project::ProjectFields>(
         ctx.project_list.git_main(path)
     };
     let deleted = inherited_deleted || ctx.project_list.is_deleted(project.path());
-    let git_status = ctx.project_list.git_status_for(path);
-    let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(label_color())),
-        )
-    } else {
-        (disk.as_str(), None, None)
-    };
+    let git_status = ctx.project_list.git_row_status_for(path);
+    let disk_cell = DiskCell::for_row(disk, RowLifecycle::from(deleted), WorktreeHealth::Normal);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
@@ -524,10 +508,10 @@ fn render_child_item<P: project::ProjectFields>(
         ),
         git_status,
         lint: lint_cell,
-        disk: disk_text,
+        disk: disk_cell.text(),
         disk_style: ds,
-        disk_suffix,
-        disk_suffix_style,
+        disk_suffix: disk_cell.suffix(),
+        disk_suffix_style: disk_cell.suffix_style(),
         lang_icon: lang,
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
@@ -583,10 +567,9 @@ fn render_worktree_entry<'a>(
     let origin_sync = ctx.project_list.git_sync(worktree_path);
     let main_sync = ctx.project_list.git_main(worktree_path);
     let deleted = ctx.project_list.is_deleted(worktree_path);
-    let git_status = ctx.project_list.git_status_for(worktree_path);
+    let git_status = ctx.project_list.git_row_status_for(worktree_path);
     let worktree_health = worktree_health_for_entry(item, wi);
-    let (disk_text, disk_suffix, disk_suffix_style) =
-        disk_suffix_for_state(&disk, deleted, worktree_health);
+    let disk_cell = DiskCell::for_row(disk, RowLifecycle::from(deleted), worktree_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name: &worktree_name,
@@ -601,10 +584,10 @@ fn render_worktree_entry<'a>(
         ),
         git_status,
         lint: lint_cell,
-        disk: disk_text,
+        disk: disk_cell.text(),
         disk_style: ds,
-        disk_suffix,
-        disk_suffix_style,
+        disk_suffix: disk_cell.suffix(),
+        disk_suffix_style: disk_cell.suffix_style(),
         lang_icon: lang,
         git_origin_sync: &origin_sync,
         git_main: &main_sync,
@@ -648,28 +631,6 @@ fn renders_primary_marker(group: &WorktreeGroup, wi: usize) -> bool {
         && group
             .entry(wi)
             .is_some_and(|entry| entry.visibility() == Visibility::Visible)
-}
-
-fn disk_suffix_for_state(
-    disk: &str,
-    deleted: bool,
-    health: WorktreeHealth,
-) -> (&str, Option<&'static str>, Option<Style>) {
-    if deleted {
-        (
-            "0.0",
-            Some(" [x]"),
-            Some(Style::default().fg(label_color())),
-        )
-    } else if matches!(health, project::WorktreeHealth::Broken) {
-        (
-            disk,
-            Some(" [broken]"),
-            Some(Style::default().fg(text_default()).bg(error_color())),
-        )
-    } else {
-        (disk, None, None)
-    }
 }
 
 fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
@@ -873,7 +834,7 @@ fn render_vendored_item(
         },
         _ => (None, String::new()),
     };
-    let name = format!("{vendored_display_name} (v)");
+    let name = constants::vendored_row_label(&vendored_display_name);
     vendored.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);
@@ -902,7 +863,7 @@ fn render_vendored_child(
     let Some(vendored) = vendored else {
         return render_missing_vendored(prefix, widths);
     };
-    let name = format!("{} (v)", vendored.package_name());
+    let name = constants::vendored_row_label(vendored.package_name().as_str());
     let inherited_deleted = ctx.project_list.is_deleted(inherited_deleted_path);
     render_child_item(
         ctx,
@@ -945,11 +906,14 @@ fn render_path_only_entry(
     let path = entry.path().as_path();
     let disk = disk::formatted_disk(ctx.project_list, path);
     let ds = disk::disk_style(entry.info().disk_usage_bytes, sorted);
-    let git_status = ctx.project_list.git_status_for(path);
+    let git_status = ctx.project_list.git_row_status_for(path);
     let deleted =
         ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
-    let (disk_text, disk_suffix, disk_suffix_style) =
-        disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
+    let disk_cell = DiskCell::for_row(
+        disk,
+        RowLifecycle::from(deleted),
+        entry.info().worktree_health,
+    );
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
@@ -964,10 +928,10 @@ fn render_path_only_entry(
         ),
         git_status,
         lint: LintCell::hidden(),
-        disk: disk_text,
+        disk: disk_cell.text(),
         disk_style: ds,
-        disk_suffix,
-        disk_suffix_style,
+        disk_suffix: disk_cell.suffix(),
+        disk_suffix_style: disk_cell.suffix_style(),
         lang_icon: "  ",
         git_origin_sync: "",
         git_main: "",
@@ -1001,7 +965,7 @@ fn render_wt_vendored_item(
     };
     let vendored_display_name =
         vendored_pkg.map_or_else(String::new, |p| p.package_name().into_string());
-    let name = format!("{vendored_display_name} (v)");
+    let name = constants::vendored_row_label(&vendored_display_name);
     vendored_pkg.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);

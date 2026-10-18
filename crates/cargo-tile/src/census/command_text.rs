@@ -105,31 +105,32 @@ impl CommandText {
     }
 
     /// The cargo subcommand this invocation names: `port` in
-    /// `cargo port`, and in `cargo +nightly port` too, the toolchain
-    /// selector being no part of it.
+    /// `cargo port`, and in `cargo +nightly --offline port` too.
+    /// Leading global options, their values and toolchain selectors
+    /// are no part of the subcommand.
     ///
     /// [`command_text`] puts an external subcommand's own name back at
     /// the front of the arguments, so a command that became
     /// `cargo-port` answers this the same as one still spelled
     /// `cargo port`.
     fn subcommand(&self) -> Result<&str, RetainedSubcommandAbsence> {
-        self.arguments
-            .iter()
-            .map(String::as_str)
-            .find(|argument| !argument.starts_with(CARGO_TOOLCHAIN_SELECTOR))
-            .ok_or(RetainedSubcommandAbsence::NoSubcommand)
+        let mut arguments = self.arguments.iter().map(String::as_str);
+        while let Some(argument) = arguments.next() {
+            if CARGO_GLOBAL_VALUED_OPTIONS.contains(&argument) {
+                let _ = arguments.next();
+            } else if !argument.starts_with(FLAG_MARK)
+                && !argument.starts_with(CARGO_TOOLCHAIN_SELECTOR)
+            {
+                return Ok(argument);
+            }
+        }
+        Err(RetainedSubcommandAbsence::NoSubcommand)
     }
 
-    /// Whether `commands.hidden_when_idle` names this command's
-    /// subcommand.
-    ///
-    /// Half the answer to whether the grid gives the command a cell --
-    /// the other half is whether anything is running under it, which
-    /// [`crate::roster::TrackedGroup::deserves_a_cell`] puts together
-    /// with this.
-    pub(crate) fn is_hidden_when_idle(&self, hidden_when_idle: &[String]) -> bool {
+    /// Whether the hidden command policy names this invocation's subcommand.
+    pub(crate) fn is_hidden(&self, hidden_commands: &[String]) -> bool {
         self.subcommand()
-            .is_ok_and(|subcommand| hidden_when_idle.iter().any(|hidden| hidden == subcommand))
+            .is_ok_and(|subcommand| hidden_commands.iter().any(|hidden| hidden == subcommand))
     }
 
     /// The command's subcommands and toolchain, followed by a cut mark
@@ -805,9 +806,9 @@ mod tests {
         );
     }
 
-    use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
-    fn hidden_when_idle() -> Vec<String> {
-        DEFAULT_HIDDEN_WHEN_IDLE
+    use crate::constants::DEFAULT_HIDDEN_COMMANDS;
+    fn hidden_commands() -> Vec<String> {
+        DEFAULT_HIDDEN_COMMANDS
             .iter()
             .map(|subcommand| (*subcommand).to_string())
             .collect()
@@ -853,13 +854,13 @@ mod tests {
     #[test]
     fn a_subcommand_on_the_list_is_recognised_past_a_toolchain_selector() {
         let selected = CommandText::of(CARGO_DISPLAY_NAME, &["+nightly", PORT_SUBCOMMAND_NAME]);
-        assert!(selected.is_hidden_when_idle(&hidden_when_idle()));
+        assert!(selected.is_hidden(&hidden_commands()));
     }
 
     #[test]
     fn a_subcommand_off_the_list_is_not_hidden() {
         let building = CommandText::of(CARGO_DISPLAY_NAME, &["build"]);
-        assert!(!building.is_hidden_when_idle(&hidden_when_idle()));
+        assert!(!building.is_hidden(&hidden_commands()));
     }
 
     #[test]

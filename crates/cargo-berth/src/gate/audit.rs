@@ -13,8 +13,8 @@ use crate::ids::CoordinationRunId;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
-use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
+use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
@@ -106,8 +106,8 @@ pub(super) fn commit_forced_permit_audits(
                 LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
             })?;
         match outcome {
-            LedgerCommittedActionOutcome::Appended { output: (), .. } => Ok(()),
-            LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
+            LedgerReconciliationOutcome::Appended { output: (), .. } => Ok(()),
+            LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
         }
     })
 }

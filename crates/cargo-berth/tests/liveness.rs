@@ -5,8 +5,32 @@
 
 //! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
 
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+#[path = "support/loose_refs.rs"]
+mod loose_refs;
+
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
+#[path = "support/lock_contention.rs"]
+mod lock_contention;
+
 #[path = "support/timing.rs"]
 mod timing;
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Child;
+use std::process::Command;
+use std::process::Output;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -16,6 +40,12 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
+use lock_contention::LOCK_CONTENTION_TOLERANCE;
+use tempfile::TempDir;
+use tempfile::tempdir;
+use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
+use timing::POLL_INTERVAL;
+use timing::SCHEDULING_ALLOWANCE;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -36,25 +66,13 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     build:            build_initialized_repository,
 };
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::symlink;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Child;
-use std::process::Command;
-use std::process::Output;
-use std::process::Stdio;
-use std::thread;
-use std::time::Duration;
-use std::time::Instant;
-
-use tempfile::TempDir;
-use tempfile::tempdir;
-use timing::LOCK_CONTENTION_TOLERANCE;
-use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
-use timing::POLL_INTERVAL;
-use timing::SCHEDULING_ALLOWANCE;
+/// Unclaimed terminal work and a separate rewritten source, before any recovery answer.
+const RECOVERY_SOURCES: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "recovery-sources",
+    build:            build_recovery_sources,
+};
 
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
@@ -307,25 +325,27 @@ fn release_uses_trunk_after_the_reservation_target_disappears() {
 
 #[test]
 fn released_integration_target_witness_can_be_replaced() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
-    let lane = repo.lane("replacement-lane", "integration");
-    let claimed = repo.claim(&lane, "file:replacement.txt", FIRST_RUN, None);
+    // The existing main checkout can hold work aimed at integration. A third
+    // checkout adds no target-reachability distinction to this scenario.
+    let repo = IntegrationRepository::from_template(INITIALIZED_REPOSITORY);
+    let lane = repo.root();
+    let claimed = repo.claim(lane, "file:replacement.txt", FIRST_RUN, Some("integration"));
     assert_success(&claimed);
     let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    repo.commit_file(&lane, "replacement.txt", "work\n", "protected work");
-    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    repo.commit_file(lane, "replacement.txt", "work\n", "protected work");
+    let checkpoint = repo.run(lane, &["release", &id, "--json"]);
     assert_success(&checkpoint);
-    let target_before = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let target_before = loose_refs::read_loose_ref(repo.root(), "refs/heads/integration");
     repo.commit_file(
         &repo.integration,
         "replacement.txt",
         "work\n",
         "squashed integration",
     );
-    let landed = repo.run(&lane, &["release", &id, "--json"]);
+    let landed = repo.run(lane, &["release", &id, "--json"]);
     assert_success(&landed);
     assert_eq!(json(&landed)["status"], "integrated");
 
@@ -336,8 +356,9 @@ fn released_integration_target_witness_can_be_replaced() {
         assert_eq!(json(&lost)["status"], "trunk_rewritten");
     }
 
-    repo.commit_file(repo.root(), "main-only.txt", "main\n", "main only");
-    let main_only = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    // Main already carries the original protected commit, which the squashed
+    // integration never made reachable. Reuse that real tip for the target check.
+    let main_only = loose_refs::read_loose_ref(repo.root(), "refs/heads/main");
     let rejected = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &main_only, "--json"],
@@ -356,7 +377,7 @@ fn released_integration_target_witness_can_be_replaced() {
         "work\n",
         "replacement evidence",
     );
-    let replacement = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let replacement = loose_refs::read_loose_ref(repo.root(), "refs/heads/integration");
     let resolved = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &replacement, "--json"],
@@ -1039,12 +1060,7 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
     );
     let foreign_dot_git = fs::read_to_string(foreign_worktree.join(".git"))
         .expect("foreign administrative pointer should read");
-    let foreign_admin = Path::new(
-        foreign_dot_git
-            .trim()
-            .strip_prefix("gitdir: ")
-            .expect("linked worktree should name its git directory"),
-    );
+    let foreign_admin = linked_checkout::administrative_directory(&foreign_worktree);
     let foreign_marker = foreign_admin.join("cargo-berth-run-id");
     let marker_before = fs::read(&foreign_marker).expect("foreign marker should read");
     fs::write(worktree.join(".git"), foreign_dot_git)
@@ -1642,10 +1658,9 @@ fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() 
 }
 
 #[test]
-fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
-    let repository = initialized_repository();
+fn abandon_and_retire_dispositions_remain_distinct_after_replay() {
+    let repository = RECOVERY_SOURCES.instantiate();
     let (abandoned_id, retired_id) = record_terminal_recovery_dispositions(repository.path());
-    validate_rewritten_integration_replacement(repository.path());
 
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
@@ -1667,7 +1682,7 @@ fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
             .code(),
         Some(5)
     );
-    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let trunk_commit = loose_refs::read_loose_ref(repository.path(), "refs/heads/main");
     for reservation_id in [&abandoned_id, &retired_id] {
         let rejected = run_berth(
             repository.path(),
@@ -1869,10 +1884,8 @@ fn retire_orphan_replaces_lost_integration_evidence_and_survives_replay() {
 }
 
 fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {
-    // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`. Each commit keeps
-    // them: its post-commit drift check records the commit.
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "abandoned"]);
-    commit_file(repository, "abandoned", "work\n", "abandoned work");
+    // The template contains only unclaimed source commits. Each reservation still
+    // checkpoints and resolves separately before replay tests their distinction.
     let abandoned_claim = run_berth(
         repository,
         &["claim", "file:abandoned", "--run", FIRST_RUN, "--json"],
@@ -1899,9 +1912,6 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
         "abandoned"
     );
 
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "retired"]);
-    commit_file(repository, "retired", "work\n", "retired work");
     let retired_claim = run_berth(
         repository,
         &["claim", "file:retired", "--run", FIRST_RUN, "--json"],
@@ -1930,12 +1940,13 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
     (abandoned_id, retired_id)
 }
 
-fn validate_rewritten_integration_replacement(repository: &Path) {
-    // The branch switches skip the hooks; see `GitDriver::run_without_hooks`.
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
-    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "rewritten"]);
-    commit_file(repository, "rewritten", "work\n", "rewritten source");
-    let unreachable_tip = git_stdout(repository, &["rev-parse", "HEAD"]);
+#[test]
+fn rewritten_integration_replacement_validates_evidence() {
+    let sources = RECOVERY_SOURCES.instantiate();
+    let repository = sources.path();
+    // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`.
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "rewritten"]);
+    let unreachable_tip = loose_refs::read_loose_ref(repository, "refs/heads/rewritten");
     let rewritten_claim = run_berth(
         repository,
         &["claim", "file:rewritten", "--run", FIRST_RUN, "--json"],
@@ -1959,15 +1970,10 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     );
     assert_eq!(rejected.status.code(), Some(5));
 
-    // A trunk commit that does not carry the work is refused: accepting it would record a
-    // `RewrittenIntegration` witness that ancestry alone keeps valid from then on.
-    commit_file(
-        repository,
-        "integrated",
-        "unrelated result\n",
-        "unrelated trunk commit",
-    );
-    let unrelated_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    // The existing trunk tip does not carry the rewritten work. Accepting it would
+    // record a witness that ancestry alone keeps valid; no extra commit is needed
+    // to exercise that content rejection or the later reset to missing evidence.
+    let unrelated_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     assert_integrated_as_lacks_the_work(
         repository,
         &rewritten_id,
@@ -1977,8 +1983,14 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
 
     // A trunk commit carrying identical scoped content proves the work, so reconciliation
     // settles the reservation on that commit before any resolution runs.
-    commit_file(repository, "rewritten", "work\n", "squashed integration");
-    let squashed_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    commit_rewritten_trunk_without_hooks(repository, "squashed integration");
+    let squashed_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
+    let settlement = json_output(&run_berth(
+        repository,
+        &["release", &rewritten_id, "--json"],
+    ));
+    assert_eq!(settlement["status"], "integrated", "{settlement:#}");
+    // Revalidate the disposition the release itself just recorded; no hook settled it first.
     let settled = json_output(&run_berth(
         repository,
         &["release", &rewritten_id, "--json"],
@@ -1998,15 +2010,15 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
         &unrelated_commit,
         &unreachable_tip,
     );
-    commit_file(repository, "rewritten", "work\n", "squashed again");
-    let equivalent_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    commit_rewritten_trunk_without_hooks(repository, "squashed again");
+    let equivalent_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
 
     // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
     lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
-    git(
+    GIT.run_without_hooks(
         repository,
-        &[
+        [
             "merge",
             "--quiet",
             "--no-ff",
@@ -2015,7 +2027,7 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
             "rewritten",
         ],
     );
-    let merge_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    let merge_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     replace_the_integration_evidence(repository, &rewritten_id, &merge_commit);
     assert_eq!(
         fs::read_to_string(repository.join(JOURNAL_PATH))
@@ -2032,9 +2044,16 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     );
 }
 
+/// Change trunk without allowing a hook to reconcile before the asserted release.
+fn commit_rewritten_trunk_without_hooks(repository: &Path, message: &str) {
+    fs::write(repository.join("rewritten"), "work\n").expect("trunk work should write");
+    GIT.run_without_hooks(repository, ["add", "rewritten"]);
+    GIT.run_without_hooks(repository, ["commit", "--quiet", "-m", message]);
+}
+
 /// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
 fn lose_the_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
-    git(repository, &["reset", "--hard", "--quiet", trunk]);
+    GIT.run_without_hooks(repository, ["reset", "--hard", "--quiet", trunk]);
     // The reset is the first thing this pass sees, so it records the loss and says nothing; the
     // next pass, reading back the row it left, is the one that reports. See
     // `ReconciliationAction::confirmed_lost_evidence`.
@@ -2178,16 +2197,29 @@ fn create_active_orphan(
 
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 
+fn build_recovery_sources(repository: &Path) {
+    // No ledger answer or reservation is cached. The source commits run their
+    // real hooks, just as they did before this setup was shared across processes.
+    build_initialized_repository(repository);
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "abandoned"]);
+    fs::write(repository.join("abandoned"), "work\n").expect("abandoned work should write");
+    fs::write(repository.join("retired"), "work\n").expect("retired work should write");
+    git(repository, &["add", "abandoned", "retired"]);
+    git(
+        repository,
+        &["commit", "--quiet", "-m", "terminal recovery work"],
+    );
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "rewritten", "main"]);
+    commit_file(repository, "rewritten", "work\n", "rewritten source");
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "abandoned"]);
+}
+
 fn build_initialized_repository(repository_root: &Path) {
     git(
         repository_root,
         &["init", "--quiet", "--initial-branch=main"],
     );
-    git(repository_root, &["config", "user.name", "Berth Test"]);
-    git(
-        repository_root,
-        &["config", "user.email", "berth@example.invalid"],
-    );
+    git_configuration::append_git_configuration(repository_root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
     fs::write(repository_root.join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
     git(repository_root, &["add", "README.md"]);
@@ -2234,19 +2266,7 @@ fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str
 }
 
 fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
-    let dot_git = fs::read_to_string(worktree_root.join(".git"))
-        .expect("linked-worktree administrative pointer should read");
-    let administrative_path = PathBuf::from(
-        dot_git
-            .trim()
-            .strip_prefix("gitdir: ")
-            .expect("linked worktree should name its administrative directory"),
-    );
-    if administrative_path.is_absolute() {
-        administrative_path
-    } else {
-        worktree_root.join(administrative_path)
-    }
+    linked_checkout::administrative_directory(worktree_root)
 }
 
 fn run_contended_berth(command: &mut Command) -> Output {

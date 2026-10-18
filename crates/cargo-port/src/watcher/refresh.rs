@@ -20,6 +20,7 @@ use crate::lint;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::RepoInfo;
+use crate::project::ResolvedBranch;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -293,7 +294,7 @@ pub(super) fn emit_root_git_info_refresh(
     let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
         return;
     };
-    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), repo.local_main_branch.as_deref());
+    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), &repo.local_main_branch);
     tracing::trace!(
         target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
@@ -406,7 +407,9 @@ pub(super) fn spawn_git_refresh(
                 .await
                 .ok()
                 .flatten();
-        let local_main_branch = repo_info.as_ref().and_then(|r| r.local_main_branch.clone());
+        let local_main_branch = repo_info
+            .as_ref()
+            .map_or(ResolvedBranch::Unreadable, |r| r.local_main_branch.clone());
         if let Some(repo_info) = repo_info {
             let _ = background_tx.send(BackgroundMsg::RepoInfo {
                 path: primary_path.clone(),
@@ -420,12 +423,11 @@ pub(super) fn spawn_git_refresh(
         for checkout_path in affected {
             let probe_path = checkout_path.clone();
             let lmb = local_main_branch.clone();
-            let checkout = tokio::task::spawn_blocking(move || {
-                CheckoutInfo::get(probe_path.as_path(), lmb.as_deref())
-            })
-            .await
-            .ok()
-            .flatten();
+            let checkout =
+                tokio::task::spawn_blocking(move || CheckoutInfo::get(probe_path.as_path(), &lmb))
+                    .await
+                    .ok()
+                    .flatten();
             if let Some(checkout) = checkout {
                 let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
                     path: checkout_path,

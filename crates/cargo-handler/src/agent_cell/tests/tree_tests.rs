@@ -326,7 +326,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
     assert_eq!(cells.len(), 2);
     let frame_account_column = account_column(&cells);
     assert_eq!(frame_account_column, AccountColumn::Shown);
-    // Draw only the first cell, as a grid with no room for the second would.
+    // Call `rendered` only for `cells[0]`, as a grid with no room for `cells[1]` would.
     let buffer = rendered(&cells[0], &cells, 220, frame_account_column);
     assert!(find(&buffer, "isolated").is_none());
     assert!(find(&buffer, "account").is_some());

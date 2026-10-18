@@ -24,10 +24,13 @@ use super::OrderingReason;
 use super::RepositoryReservationEvidence;
 use super::RepositorySnapshot;
 use super::cycle;
+use crate::answer::AuthorizedOverlapSet;
+use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::SequencedBlocker;
+use crate::answer::SequencedHolder;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
 use crate::ids::ProjectionGeneration;
@@ -149,7 +152,8 @@ impl OrderingGraph {
                     declaration_event_id: event.event_id(),
                     declaration:          EdgeDeclaration::Sequence,
                 })?,
-                JournalOperation::Checkpoint { .. }
+                JournalOperation::OverlapRefused { .. }
+                | JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
                 | JournalOperation::Retarget { .. }
                 | JournalOperation::UnrecordedTargetsPinned { .. }
@@ -361,17 +365,35 @@ impl OrderingGraph {
         })
     }
 
-    /// Whether the answer would repeat an existing directed pair of reservation endpoints.
-    pub(crate) fn contains_sequence(
+    /// Bind one holder to its recorded relationship or to a new edge for this claim.
+    pub(crate) fn bind_claim_sequence(
         &self,
         requester: ReservationId,
         blocker: SequencedBlocker,
-    ) -> bool {
-        self.endpoint_pairs.contains(&directed_endpoints(
-            requester,
-            blocker.blocker,
-            blocker.direction,
-        ))
+        reason: &OverlapAuthorizationReason,
+    ) -> ClaimSequenceBinding {
+        let (before, after) = directed_endpoints(requester, blocker.blocker, blocker.direction);
+        self.edges
+            .iter()
+            .find(|edge| edge.before == before && edge.after == after)
+            .map_or_else(
+                || ClaimSequenceBinding::NewEdge {
+                    holder: SequencedHolder {
+                        blocker:   blocker.blocker,
+                        direction: blocker.direction,
+                        edge_id:   EdgeId::new(),
+                    },
+                    reason: reason.clone(),
+                },
+                |edge| ClaimSequenceBinding::ExistingEdge {
+                    holder: SequencedHolder {
+                        blocker:   blocker.blocker,
+                        direction: blocker.direction,
+                        edge_id:   edge.edge_id,
+                    },
+                    reason: OverlapAuthorizationReason::from(&edge.reason),
+                },
+            )
     }
 
     /// Return every live edge between the holder `sequenced_blocker` names and one of
@@ -379,7 +401,7 @@ impl OrderingGraph {
     ///
     /// `requesters` are the claimant's nonterminal reservations in its own coordination run and
     /// worktree. An edge in the answer's own direction is no contradiction. A new reservation
-    /// may add its own edge beside it; a named reservation must check duplicate endpoints first.
+    /// may add its own edge beside it; a named reservation reuses the existing directed edge.
     pub(crate) fn contradicted_orderings(
         &self,
         sequenced_blocker: SequencedBlocker,
@@ -486,24 +508,7 @@ impl OrderingGraph {
                 Ok(())
             },
             ConflictAuthorization::Enrollment { overlaps } => {
-                let reason = OverlapAuthorizationReason::enrollment();
-                let mut counterparts = HashSet::new();
-                for overlap in overlaps.as_slice() {
-                    let blocker = overlap.reservation_id;
-                    if counterparts.insert(blocker) {
-                        let scopes =
-                            OrderingOverlapScopeSet::from_authorized_overlaps(blocker, overlaps)?;
-                        self.add_deferral(
-                            requester,
-                            blocker,
-                            scopes,
-                            reason.clone(),
-                            event_id,
-                            DeferralOrigin::Enrollment,
-                        );
-                    }
-                }
-                Ok(())
+                self.apply_enrollment_deferrals(requester, overlaps, event_id)
             },
             ConflictAuthorization::Defer {
                 overlaps,
@@ -542,6 +547,13 @@ impl OrderingGraph {
                     declaration: EdgeDeclaration::Acquisition,
                 })
             },
+            ConflictAuthorization::SequenceWithExistingEdges {
+                overlaps,
+                holders,
+                replaced,
+            } => {
+                self.apply_claim_sequence_bindings(requester, overlaps, holders, replaced, event_id)
+            },
             ConflictAuthorization::SequencePerHolder {
                 overlaps,
                 holders,
@@ -568,6 +580,77 @@ impl OrderingGraph {
                 })
             },
         }
+    }
+
+    /// Preserve one enrollment deferral per counterpart and its exact shared scopes.
+    fn apply_enrollment_deferrals(
+        &mut self,
+        requester: ReservationId,
+        overlaps: &AuthorizedOverlapSet,
+        event_id: EventId,
+    ) -> Result<(), EdgeReplayError> {
+        let reason = OverlapAuthorizationReason::enrollment();
+        let mut counterparts = HashSet::new();
+        for overlap in overlaps.as_slice() {
+            let blocker = overlap.reservation_id;
+            if counterparts.insert(blocker) {
+                let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(blocker, overlaps)?;
+                self.add_deferral(
+                    requester,
+                    blocker,
+                    scopes,
+                    reason.clone(),
+                    event_id,
+                    DeferralOrigin::Enrollment,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Replay new edges and scope approvals bound to existing edges without duplicating them.
+    fn apply_claim_sequence_bindings(
+        &mut self,
+        requester: ReservationId,
+        overlaps: &AuthorizedOverlapSet,
+        holders: &[ClaimSequenceBinding],
+        replaced: &[ContradictedOrdering],
+        event_id: EventId,
+    ) -> Result<(), EdgeReplayError> {
+        self.remove_replaced_edges(replaced)?;
+        for binding in holders {
+            let holder = binding.holder();
+            let (before, after) = directed_endpoints(requester, holder.blocker, holder.direction);
+            let scopes =
+                OrderingOverlapScopeSet::from_authorized_overlaps(holder.blocker, overlaps)?;
+            match binding {
+                ClaimSequenceBinding::NewEdge { reason, .. } => {
+                    self.add_edge(OrderingEdge {
+                        edge_id: holder.edge_id,
+                        before,
+                        after,
+                        scopes,
+                        reason: OrderingReason::from(reason),
+                        declaration_event_id: event_id,
+                        declaration: EdgeDeclaration::Acquisition,
+                    })?;
+                },
+                ClaimSequenceBinding::ExistingEdge { reason, .. } => {
+                    let edge = self
+                        .edges
+                        .iter_mut()
+                        .find(|edge| {
+                            edge.edge_id == holder.edge_id
+                                && edge.before == before
+                                && edge.after == after
+                                && edge.reason == OrderingReason::from(reason)
+                        })
+                        .ok_or(EdgeReplayError::InvalidExistingEdge(holder.edge_id))?;
+                    edge.scopes = edge.scopes.with_added(&scopes);
+                },
+            }
+        }
+        Ok(())
     }
 
     fn add_deferral(
@@ -855,6 +938,8 @@ impl Display for EdgeDeclarationRejection {
 /// Journal facts cannot be reconstructed as a valid ordering graph.
 #[derive(Debug)]
 pub(crate) enum EdgeReplayError {
+    /// A scope authorization did not match a live edge identity, direction and reason.
+    InvalidExistingEdge(EdgeId),
     /// An edge identifier appeared more than once.
     DuplicateEdgeId(EdgeId),
     /// A directed endpoint pair appeared more than once.
@@ -884,6 +969,10 @@ pub(crate) enum EdgeReplayError {
 impl Display for EdgeReplayError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidExistingEdge(edge_id) => write!(
+                formatter,
+                "scope authorization names an invalid existing edge {edge_id}"
+            ),
             Self::DuplicateEdgeId(edge_id) => {
                 write!(
                     formatter,
@@ -956,10 +1045,12 @@ mod tests {
     use super::OrderingGraph;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::ClaimSequenceBinding;
     use crate::answer::ConflictAuthorization;
     use crate::answer::ContradictedOrdering;
     use crate::answer::OverlapScopeRevision;
     use crate::answer::SequencedBlocker;
+    use crate::answer::SequencedHolder;
     use crate::edge::DeferralOrigin;
     use crate::edge::EdgeDeclaration;
     use crate::ids::CoordinationRunId;
@@ -976,6 +1067,92 @@ mod tests {
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
     use crate::reservation::RetainedReservationSet;
+
+    #[test]
+    fn existing_edge_scope_bindings_preserve_identity_and_reject_changed_relationships()
+    -> Result<(), Box<dyn Error>> {
+        let holder = ReservationId::new();
+        let requester = ReservationId::new();
+        let edge_id = EdgeId::new();
+        let reason = "holder integrates first".parse()?;
+        let events = [
+            enrolled_claim(holder, &ConflictAuthorization::NoConflict)?,
+            enrolled_claim(
+                requester,
+                &ConflictAuthorization::Sequence {
+                    overlaps: overlaps_with(&[holder])?,
+                    blocker: holder,
+                    direction: OrderingDirection::HolderBeforeRequester,
+                    edge_id,
+                    reason,
+                    replaced: Vec::new(),
+                },
+            )?,
+        ];
+        let mut graph = OrderingGraph::replay(&events)?;
+        let binding = graph.bind_claim_sequence(
+            requester,
+            SequencedBlocker {
+                blocker:   holder,
+                direction: OrderingDirection::HolderBeforeRequester,
+            },
+            &"a later claim's reason".parse()?,
+        );
+        assert!(
+            matches!(&binding, ClaimSequenceBinding::ExistingEdge { reason, .. } if reason.to_string() == "holder integrates first")
+        );
+        assert_eq!(binding.holder().edge_id, edge_id);
+        let added = scopes_at("extra.rs")?;
+        let overlap = AuthorizedOverlapSet::from(AuthorizedOverlap {
+            reservation_id: holder,
+            scope_revision: OverlapScopeRevision::from(&added),
+            scopes:         added.into(),
+        });
+        let authorization = ConflictAuthorization::SequenceWithExistingEdges {
+            overlaps: overlap.clone(),
+            holders:  vec![binding.clone()],
+            replaced: Vec::new(),
+        };
+        graph.apply_authorization(requester, &authorization, EventId::new())?;
+        assert_eq!(graph.edge_count(), 1);
+        assert_eq!(graph.edges[0].edge_id, edge_id);
+        assert_eq!(graph.edges[0].scopes.0.as_slice().len(), 2);
+        for (changed_id, changed_direction, changed_reason) in [
+            (
+                EdgeId::new(),
+                OrderingDirection::HolderBeforeRequester,
+                binding.reason().clone(),
+            ),
+            (
+                edge_id,
+                OrderingDirection::RequesterBeforeHolder,
+                binding.reason().clone(),
+            ),
+            (
+                edge_id,
+                OrderingDirection::HolderBeforeRequester,
+                "changed reason".parse()?,
+            ),
+        ] {
+            let invalid = ConflictAuthorization::SequenceWithExistingEdges {
+                overlaps: overlap.clone(),
+                holders:  vec![ClaimSequenceBinding::ExistingEdge {
+                    holder: SequencedHolder {
+                        blocker:   holder,
+                        direction: changed_direction,
+                        edge_id:   changed_id,
+                    },
+                    reason: changed_reason,
+                }],
+                replaced: Vec::new(),
+            };
+            assert!(matches!(
+                graph.apply_authorization(requester, &invalid, EventId::new()),
+                Err(EdgeReplayError::InvalidExistingEdge(_))
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn enrolled_claim_replay_defers_each_counterpart_once() -> Result<(), Box<dyn Error>> {

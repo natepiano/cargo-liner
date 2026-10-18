@@ -263,7 +263,9 @@ impl AccountsMonitor {
         Self::spawn_with(command, Box::new(read_accounts), ACCOUNTS_REFRESH_INTERVAL)
     }
 
-    /// The production scheduler with a replaceable command and cadence for fixtures.
+    /// `AccountsMonitor::spawn_with` runs `AccountsCommand` on a refresh thread
+    /// at `cadence` and publishes readings through `AccountsUpdates::Running`.
+    /// An empty `command` selects `AccountsUpdates::Disabled` without a thread.
     pub(crate) fn spawn_with(command: String, runner: AccountsCommand, cadence: Duration) -> Self {
         if command.trim().is_empty() {
             return Self {

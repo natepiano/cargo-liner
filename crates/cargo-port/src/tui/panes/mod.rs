@@ -30,7 +30,11 @@ pub(super) use ci::CiEmptyState;
 pub(super) use ci::build_ci_data;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
+pub(super) use constants::BROKEN_WORKTREE_DISK_SUFFIX;
+#[cfg(test)]
 pub(super) use constants::CPU_PANE_WIDTH;
+#[cfg(test)]
+pub(super) use constants::DISMISS_SUFFIX;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_COLLAPSED;
 #[cfg(test)]
@@ -70,14 +74,20 @@ pub(super) use pane_data::CargoPackageInvocation;
 pub(super) use pane_data::CiFetchKind;
 pub(super) use pane_data::DetailField;
 pub(super) use pane_data::DetailPaneData;
+pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
+#[cfg(test)]
+pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
+#[cfg(test)]
+pub(super) use pane_data::HeadRelation;
 pub(super) use pane_data::PackageData;
 #[cfg(test)]
 pub(super) use pane_data::PackagePresence;
 pub(super) use pane_data::PackageRow;
 #[cfg(test)]
 pub(super) use pane_data::PackageSection;
+pub(super) use pane_data::PackageVersion;
 pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
 #[cfg(test)]
@@ -86,6 +96,8 @@ pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
 pub(super) use pane_data::RemoteRow;
+#[cfg(test)]
+pub(super) use pane_data::RemoteRows;
 pub(super) use pane_data::WorktreeInfo;
 pub(super) use pane_data::build_pane_data;
 pub(super) use pane_data::build_pane_data_for_member;
@@ -233,3 +245,8 @@ pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
 }
 
 pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }
+
+#[cfg(test)]
+pub(super) use pane_data::GitProbe;
+pub(super) use pane_data::GitReadHealth;
+pub(super) use pane_data::GitSyncLabels;

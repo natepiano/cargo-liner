@@ -264,7 +264,7 @@ fn leading_literal_assignments_fold_the_shell_into_its_worker() {
         arguments.splice(2..2, ["--to".to_string(), SEAT.to_string()]);
         let launcher = process(701, 600, "bash", arguments);
         let dispatches = scan::find_worker_dispatches(&[wrapper.clone(), launcher]);
-        // An explicit seat still resolves while the shell is the only process observed.
+        // Explicit seats resolve via `scan::find_worker_dispatches` with only the shell observed.
         assert_eq!(
             scan::find_worker_dispatches(&[wrapper]).get(&600),
             dispatches.get(&600),

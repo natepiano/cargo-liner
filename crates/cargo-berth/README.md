@@ -245,6 +245,12 @@ revalidate the evidence.
 
 ## Claims and collisions
 
+Every `check` or `claim` refused with `blocked_by_overlap` appends one
+`overlap_refused` journal record naming the requester, the refused paths and
+each holder with its own overlapping scopes. It records the final refusal in a
+separate transaction and creates no reservation or ordering edge. If the audit
+append fails, the refusal and its remedy stay unchanged.
+
 A bare path passed to `claim` reserves that path and its whole subtree. A bare
 path passed to `check` asks about exactly one file. Prefix either command's
 argument with `file:` or `tree:` to override its default. Overlap follows path
@@ -404,6 +410,17 @@ The terminal panes are **Overview**, **Reservations**, **Integration
 constraints**, **Answers and bypasses**, **Incursions**, and **Alerts**. Press
 `q` to quit, `Tab` or `Shift-Tab` to move between panes, arrows to scroll or pan,
 `Home`/`End` to jump, and `PageUp`/`PageDown` to page.
+
+The terminal checks the journal once a second, including while keys or resize
+events arrive. A changed journal triggers reconciliation and refreshes every
+pane, so new reservations appear without reopening the board. Selection and
+scroll positions survive a refresh, clamped to the new content. A failed refresh
+keeps the last good board, shows the error in the status line, and retries on the
+next check.
+
+Overview contains only the Reservations table. Raw diagnostics, including
+journal positions, recovered bypasses, integration order, targets, and Git cost,
+remain available through `board --json`; they are omitted from terminal panes.
 
 If the terminal fails before its first frame, the command exits 0 and its
 envelope still carries the board with a terminal diagnostic; rerun with

@@ -4,6 +4,7 @@ use std::convert::Infallible;
 
 use super::AnswerKind;
 use super::AnsweringWorktree;
+use super::ClaimAnswerPolicy;
 use super::ClaimError;
 use super::ClaimExecution;
 use super::ClaimRejection;
@@ -23,7 +24,9 @@ use super::default_answer_request;
 use super::locked_claim_reservations;
 use super::normalized_claim_scopes;
 use super::publish_coordination_run_marker;
+use super::record_refusal;
 use super::sibling_held_scopes;
+use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::config::BerthConfig;
@@ -57,9 +60,20 @@ pub(super) fn acquire(
     reservation_id: ReservationId,
     recovery: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+    let ClaimRequest {
+        reservation_selection: _,
+        target: _,
+        declared_scopes,
+        source,
+        purpose: _,
+        coordination_run_selection,
+        phase_start: _,
+        overlap_authorization,
+        answer_recovery: _,
+    } = request;
     let worktree = WorktreeContext::discover(&std::env::current_dir()?)?;
     let identity = ledger::resolve_identity(&worktree)?;
-    let run_validation = request.coordination_run_selection.resolve(identity);
+    let run_validation = coordination_run_selection.resolve(identity);
     let actor = identity.journal_mutation_actor_for(run_validation.actor_run_id());
     let path_case = PathCase::read(worktree.common_git_directory())?;
     let config = match BerthConfig::read(&worktree.configuration_lookup())? {
@@ -75,7 +89,7 @@ pub(super) fn acquire(
     let repository_trunk = config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
-    let scopes = normalized_claim_scopes(request.declared_scopes, &request.source, path_case);
+    let scopes = normalized_claim_scopes(declared_scopes, &source, path_case);
     let ledger = Ledger::open_from_discovered_worktree(&worktree)?;
     let context = ClaimValidationContext {
         run_validation,
@@ -83,8 +97,7 @@ pub(super) fn acquire(
         recovery_command_line: recovery.clone(),
         worktree_id: actor.worktree_id,
         path_case,
-        overlap_authorization: request.overlap_authorization,
-        default_answer: config.default_answer,
+        answer_policy: ClaimAnswerPolicy::resolve(overlap_authorization, config.default_answer),
         maximum_reservations: config.maximum_reservations,
         maximum_ordering_edges: config.maximum_ordering_edges,
         repository_trunk,
@@ -93,17 +106,18 @@ pub(super) fn acquire(
         actor.worktree_id,
         actor.coordination_run_id,
         |state| match validate(&state, reservation_id, scopes.clone(), &context) {
-            Ok((operation, acquisition)) => CommittedActionValidation::Append {
-                operation: Box::new(operation),
-                action:    acquisition,
-            },
+            Ok(validation) => validation,
             Err(rejection) => CommittedActionValidation::Reject(rejection),
         },
         Ok::<_, Infallible>,
         |outcome| consume(outcome, &context, reservation_id, &config),
     );
     match result {
-        Ok(execution) => execution.map(Enrollment::Enrolled),
+        Ok(execution) => {
+            let execution = execution?;
+            record_refusal(&execution, &context.worktree_context, actor, &scopes);
+            Ok(Enrollment::Enrolled(execution))
+        },
         Err(LedgerCommittedActionError::Transaction(error)) => Err(ClaimError::Transaction(error)),
         Err(LedgerCommittedActionError::Action(error)) => match error {},
     }
@@ -118,6 +132,10 @@ fn consume(
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
+            output: committed,
+            session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
             output: committed,
             session_mapping_publication,
         } => {
@@ -174,7 +192,10 @@ fn validate(
     id: ReservationId,
     scopes: ReservationScopeSet,
     context: &ClaimValidationContext,
-) -> Result<(JournalOperation, CommittedReservationAcquisition), ClaimRejection> {
+) -> Result<
+    CommittedActionValidation<ClaimRejection, CommittedReservationAcquisition>,
+    ClaimRejection,
+> {
     let reservations = locked_reservations(state, id, context)?;
     let FirstTouchReservationSelection::ExplicitReservation(selected) =
         FirstTouchReservationSelection::from_explicit_selection(
@@ -193,7 +214,24 @@ fn validate(
         additions,
         already_held,
     } = coverage(&reservations, selected, &scopes, context);
-    let (operation, kind, acquired_scopes) = mutation(selected, scopes, additions, authorization);
+    let mutation = if additions.is_empty()
+        && ordering_is_already_satisfied(&authorization, state, id, context.path_case)
+    {
+        NamedClaimMutation::AlreadySatisfied(scopes)
+    } else {
+        let (operation, kind, scopes) = mutation(selected, scopes, additions, authorization);
+        NamedClaimMutation::Append {
+            operation: Box::new(operation),
+            kind,
+            scopes,
+        }
+    };
+    let (kind, acquired_scopes) = match &mutation {
+        NamedClaimMutation::Append { kind, scopes, .. } => (*kind, scopes.clone()),
+        NamedClaimMutation::AlreadySatisfied(scopes) => {
+            (ReservationAcquisitionKind::AlreadyHeld, scopes.clone())
+        },
+    };
     let acquisition = CommittedReservationAcquisition {
         kind,
         reservation_id: id,
@@ -207,7 +245,97 @@ fn validate(
         conflicts: FirstTouchConflictOutcome::None,
         already_held,
     };
-    Ok((operation, acquisition))
+    Ok(match mutation {
+        NamedClaimMutation::Append { operation, .. } => CommittedActionValidation::Append {
+            operation,
+            action: acquisition,
+        },
+        NamedClaimMutation::AlreadySatisfied(_) => {
+            CommittedActionValidation::AlreadySatisfied(acquisition)
+        },
+    })
+}
+
+/// A named claim either changes durable facts or selects work already authorized.
+enum NamedClaimMutation {
+    /// A new scope or overlap answer requires one journal record.
+    Append {
+        operation: Box<JournalOperation>,
+        kind:      ReservationAcquisitionKind,
+        scopes:    ReservationScopeSet,
+    },
+    /// Existing scope declarations and edge-bound answers satisfy the request.
+    AlreadySatisfied(ReservationScopeSet),
+}
+
+/// Match each scope against answers recorded for this exact reservation and edge.
+fn ordering_is_already_satisfied(
+    authorization: &NamedAuthorization,
+    state: &ReplayedLedgerState<'_>,
+    id: ReservationId,
+    path_case: PathCase,
+) -> bool {
+    let NamedAuthorization::Acquire(ConflictAuthorization::SequenceWithExistingEdges {
+        overlaps,
+        holders,
+        ..
+    }) = authorization
+    else {
+        return false;
+    };
+    holders.iter().all(|binding| {
+        let ClaimSequenceBinding::ExistingEdge { holder, .. } = binding else {
+            return false;
+        };
+        overlaps
+            .as_slice()
+            .iter()
+            .filter(|overlap| overlap.reservation_id == holder.blocker)
+            .all(|overlap| {
+                overlap.scopes.as_slice().iter().all(|scope| {
+                    state
+                        .coordination_events()
+                        .iter()
+                        .any(|event| match &event.operation {
+                            JournalOperation::Claim {
+                                reservation_id,
+                                authorization,
+                                ..
+                            } if *reservation_id == id => authorization.covers_ordering_edge(
+                                holder.edge_id,
+                                overlap,
+                                scope,
+                                path_case,
+                            ),
+                            JournalOperation::Widen {
+                                reservation_id,
+                                authorization,
+                                ..
+                            } if *reservation_id == id => authorization.covers_ordering_edge(
+                                holder.edge_id,
+                                overlap,
+                                scope,
+                                path_case,
+                            ),
+                            JournalOperation::Answer {
+                                reservation_id: Some(reservation_id),
+                                authorizations,
+                                ..
+                            } if *reservation_id == id => {
+                                authorizations.iter().any(|authorization| {
+                                    authorization.covers_ordering_edge(
+                                        holder.edge_id,
+                                        overlap,
+                                        scope,
+                                        path_case,
+                                    )
+                                })
+                            },
+                            _ => false,
+                        })
+                })
+            })
+    })
 }
 
 struct NamedClaimCoverage {
@@ -355,8 +483,8 @@ fn authorization(
         coordination_run_id: context.run_validation.actor_run_id(),
         worktree_id:         context.worktree_id,
     };
-    match &context.overlap_authorization {
-        OverlapAuthorizationRequest::Permissive(request) => {
+    match &context.answer_policy {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Permissive(request)) => {
             let graph = OrderingGraph::replay(state.coordination_events())
                 .map_err(ClaimRejection::EdgeReplay)?;
             bind_claim_authorization(
@@ -372,25 +500,26 @@ fn authorization(
             )
             .map(NamedAuthorization::Acquire)
         },
-        OverlapAuthorizationRequest::Defer(request) => {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Defer(request)) => {
             bind_answer_authorizations(AnswerKind::Defer, (**request).clone(), conflicts)
                 .map(NamedAuthorization::Answer)
         },
-        OverlapAuthorizationRequest::Absent => {
-            if conflicts.is_empty() {
-                return Ok(NamedAuthorization::Acquire(
-                    ConflictAuthorization::NoConflict,
-                ));
-            }
-            match context.default_answer {
-                Some(default_answer) => bind_answer_authorizations(
-                    AnswerKind::Override,
-                    default_answer_request(default_answer, &conflicts),
-                    conflicts,
-                )
-                .map(NamedAuthorization::Answer),
-                None => Err(ClaimRejection::Conflict(conflicts)),
-            }
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent)
+        | ClaimAnswerPolicy::RepositoryDefault(_)
+            if conflicts.is_empty() =>
+        {
+            Ok(NamedAuthorization::Acquire(
+                ConflictAuthorization::NoConflict,
+            ))
+        },
+        ClaimAnswerPolicy::RepositoryDefault(default_answer) => bind_answer_authorizations(
+            AnswerKind::Override,
+            default_answer_request(*default_answer, &conflicts),
+            conflicts,
+        )
+        .map(NamedAuthorization::Answer),
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent) => {
+            Err(ClaimRejection::Conflict(conflicts))
         },
     }
 }

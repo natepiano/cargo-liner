@@ -18,6 +18,7 @@ use crate::lint::LintRunOrigin;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::CommitDate;
 use crate::project::LanguageStats;
 use crate::project::ManifestFingerprint;
 use crate::project::ProjectPrData;
@@ -79,7 +80,7 @@ pub(crate) enum BackgroundMsg {
     /// batched by repo root to avoid redundant `git log` calls).
     GitFirstCommit {
         path:         AbsolutePath,
-        first_commit: Option<String>,
+        first_commit: CommitDate,
     },
     /// A project-detail worker has declared all startup follow-up work it can
     /// enqueue for this path. Used by startup readiness to wait for dynamic
@@ -385,7 +386,7 @@ pub(crate) fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath)
     let Some(repo) = RepoInfo::get(path.as_path()) else {
         return;
     };
-    let checkout = CheckoutInfo::get(path.as_path(), repo.local_main_branch.as_deref());
+    let checkout = CheckoutInfo::get(path.as_path(), &repo.local_main_branch);
     let _ = sender.send(BackgroundMsg::RepoInfo {
         path: path.clone(),
         info: repo,

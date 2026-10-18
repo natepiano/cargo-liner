@@ -5,11 +5,19 @@
 
 //! Built-binary tests for overlap answers, which record in the claim that carries them.
 
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::observes_merge_extent_of;
+use overlap_refusal::assert_one_refusal_appended;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -19,6 +27,14 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// An initialized main checkout with untracked policy and no reservations.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
 };
 
 use std::collections::HashSet;
@@ -554,37 +570,54 @@ fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
 fn an_answer_to_a_holder_with_many_scopes_records() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    for batch in 0..3 {
-        let paths = (0..100)
-            .map(|index| {
-                format!("src/generated/module_with_a_descriptive_name_{batch}_{index:03}.rs")
+    let root = repository.path();
+    let scopes = (0..3)
+        .flat_map(|batch| {
+            (0..100).map(move |index| {
+                let path =
+                    format!("src/generated/module_with_a_descriptive_name_{batch}_{index:03}.rs");
+                dirty_source(root, &path);
+                format!("file:{path}")
             })
-            .collect::<Vec<_>>();
-        for path in &paths {
-            dirty_source(repository.path(), path);
-        }
-        let scopes = paths
-            .iter()
-            .map(|path| format!("file:{path}"))
-            .collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
+    let claim_arguments = [
+        "claim",
+        "--run",
+        FIRST_RUN,
+        "--plan",
+        "docs/holder.md",
+        "--phase",
+        "phase-a",
+        "--why",
+        "protect generated modules",
+        "--json",
+    ];
+    let mut first_arguments = claim_arguments.to_vec();
+    first_arguments.extend(scopes[..100].iter().map(String::as_str));
+    let first = run_berth(repository.path(), first_arguments);
+    assert!(
+        first.status.success(),
+        "holder claim failed: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let holder_id = reservation_id(&first);
+    for added_scopes in scopes[100..].chunks(100) {
         let mut arguments = vec![
             "claim",
             "--run",
             FIRST_RUN,
-            "--plan",
-            "docs/holder.md",
-            "--phase",
-            "phase-a",
-            "--why",
-            "protect generated modules",
+            "--reservation",
+            holder_id.as_str(),
             "--json",
         ];
-        arguments.extend(scopes.iter().map(String::as_str));
+        arguments.extend(added_scopes.iter().map(String::as_str));
         let output = run_berth(repository.path(), arguments);
         assert!(
             output.status.success(),
-            "holder claim failed: {}",
-            String::from_utf8_lossy(&output.stdout)
+            "holder claim failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
@@ -594,10 +627,22 @@ fn an_answer_to_a_holder_with_many_scopes_records() {
         ["claim", shared_scope, "--run", SECOND_RUN, "--json"],
     );
     assert_eq!(refused.status.code(), Some(1));
-    let holder_id = json_output(&refused)["blocked_by"][0]
-        .as_str()
-        .expect("the refusal should name the holder")
-        .to_owned();
+    let refusal = json_output(&refused);
+    assert_eq!(refusal["blocked_by"], serde_json::json!([holder_id]));
+
+    let protection = journal_events(repository.path())
+        .into_iter()
+        .rev()
+        .find(|event| observes_merge_extent_of(event, &holder_id))
+        .expect("foreign refusal should observe the holder's actual protection");
+    assert_eq!(
+        protection["extent"]["scopes"]
+            .as_array()
+            .expect("protected scopes")
+            .len(),
+        300,
+        "the answer must bind a genuinely large protection set: {protection}"
+    );
 
     let applied = answer_claim(
         &second_root,
@@ -617,6 +662,10 @@ fn an_answer_to_a_holder_with_many_scopes_records() {
     );
     let scope_revision =
         &last_journal_event(repository.path())["authorization"]["overlaps"][0]["scope_revision"];
+    assert_eq!(
+        scope_revision, &refusal["payload"]["data"]["conflicts"][0]["overlap_scope_revision"],
+        "the recorded answer must bind the observed large protection revision"
+    );
     assert_eq!(
         scope_revision.as_str().map(str::len),
         Some(64),
@@ -740,7 +789,12 @@ fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
         blocked_envelope["blocked_by"],
         serde_json::json!([first_holder_id, second_holder_id])
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// A partial answer prints a complete command that records an edge to each holder.
@@ -797,7 +851,12 @@ fn incomplete_before_answer_prints_a_complete_executable_claim() {
         );
     }
     assert_eq!(detail.matches(chooser).count(), 1, "{detail}");
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     let completed_envelope = json_output(&completed);
@@ -858,7 +917,12 @@ fn incomplete_answer_keeps_the_configured_chooser_after_holder_facts() {
         );
     }
     assert_eq!(detail.matches(&chooser).count(), 1, "{detail}");
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 }
 
 /// A partial defer answer names every holder in its executable recovery command.
@@ -900,7 +964,12 @@ fn incomplete_defer_answer_prints_a_complete_executable_claim() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     assert!(completed.status.success(), "{:#}", json_output(&completed));
@@ -981,7 +1050,12 @@ fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     let completed_envelope = json_output(&completed);
@@ -1070,7 +1144,12 @@ fn incomplete_mixed_answer_prints_a_choice_for_the_missing_holder() {
         refusal_detail(&envelope).starts_with(&message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 }
 
 /// Execute the shell command users copy, substituting only the tested binary's location.
@@ -1348,7 +1427,12 @@ fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
     assert_eq!(naming_released.status.code(), Some(1), "{refusal:#}");
     assert_eq!(refusal["status"], "blocked_by_overlap");
     assert_eq!(refusal["blocked_by"], serde_json::json!([live_holder]));
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &refusal,
+    );
 
     let answered = answer_claim(
         &second_root,
@@ -1371,7 +1455,7 @@ fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
 }
 
 /// An answer naming both holders and also a reservation that shares nothing with the claim is
-/// refused with the obsolete answer identified, and nothing records.
+/// refused with the obsolete answer identified, and the refusal is journalled.
 #[test]
 fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
     let repository = initialized_repository();
@@ -1419,7 +1503,12 @@ fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
         refusal_detail(&blocked_envelope).starts_with(message),
         "{blocked_envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// `--override` names one holder, so it is refused while a second holder of the path conflicts.
@@ -1460,7 +1549,12 @@ fn an_override_naming_one_of_two_holders_is_refused() {
         refusal_detail(&blocked_envelope).starts_with(&message),
         "{blocked_envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &blocked_envelope,
+    );
 }
 
 /// A stale override prints the sole current holder's id instead of asking to narrow scopes.
@@ -1524,7 +1618,12 @@ fn stale_override_prints_an_executable_claim_for_the_current_holder() {
         refusal_detail(&envelope).starts_with(message),
         "{envelope:#}"
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    assert_one_refusal_appended(
+        &journal_before,
+        &journal_bytes(repository.path()),
+        "claim",
+        &envelope,
+    );
 
     let completed = run_printed_claim(&requester, &envelope);
     assert!(completed.status.success(), "{:#}", json_output(&completed));
@@ -2568,28 +2667,15 @@ fn reconcile_fixture(root: &Path) {
     assert!(run_berth(root, ["board", "--json"]).status.success());
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
-    git(
-        repository.path(),
-        ["init", "--quiet", "--initial-branch=main"],
-    );
-    git(repository.path(), ["config", "user.name", "Berth Test"]);
-    git(
-        repository.path(),
-        ["config", "user.email", "berth@example.invalid"],
-    );
-    git(repository.path(), ["config", "core.ignoreCase", "false"]);
-    fs::write(repository.path().join("README.md"), "scratch repository\n")
-        .expect("scratch file should write");
-    git(repository.path(), ["add", "README.md"]);
-    git(repository.path(), ["commit", "--quiet", "-m", "initial"]);
-    assert!(
-        run_berth(repository.path(), ["init", "--json"])
-            .status
-            .success()
-    );
-    repository
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(root: &Path) {
+    git(root, ["init", "--quiet", "--initial-branch=main"]);
+    git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[core]\n ignoreCase = false\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
+    fs::write(root.join("README.md"), "scratch repository\n").expect("scratch file should write");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "--quiet", "-m", "initial"]);
+    assert!(run_berth(root, ["init", "--json"]).status.success());
 }
 
 fn claim(

@@ -10,15 +10,17 @@ use super::columns::ProjectListWidths;
 use super::project_list::ExpandKey;
 use super::project_list::VisibleRow;
 use crate::project::AbsolutePath;
+use crate::project::Comparison;
 use crate::project::ProjectEntry;
 use crate::scan::ProjectStorage;
 
 /// Whether a project's primary ahead/behind sync value is known yet.
 /// `Unresolved` means git info (checkout or repo) is still loading;
-/// `Resolved(None)` means it loaded and there is no remote-tracking branch.
+/// `Resolved(Comparison::NotCompared)` means it loaded without a comparison;
+/// `Resolved(Comparison::Unreadable)` means its evidence could not be read.
 pub(super) enum SyncResolution {
     Unresolved,
-    Resolved(Option<(usize, usize)>),
+    Resolved(Comparison),
 }
 
 pub(super) struct LintRuntimeRootEntry {

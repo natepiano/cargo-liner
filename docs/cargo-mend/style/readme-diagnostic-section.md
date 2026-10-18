@@ -1,3 +1,8 @@
+---
+tier: D
+family: modules
+mechanism: llm
+---
 ## README diagnostic section format
 
 Each diagnostic reference section follows this structure:

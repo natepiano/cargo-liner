@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
+use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
 use crate::answer::DeferAnswerRequest;
@@ -63,13 +64,14 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
-use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::RefusedVerb;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::TargetRefusal;
 use crate::ledger::TargetSelectionRequest;
 use crate::ledger::TransactionValidation;
@@ -109,6 +111,9 @@ use incomplete_answer::IncompleteClaimAnswerRejection;
 pub(crate) use phase_candidate::PhaseReservationCandidate;
 pub(crate) use recovery_command::ClaimRecoveryCommand;
 pub(crate) use recovery_command::ClaimRecoverySelector;
+
+use super::refusal;
+use crate::ledger::JournalEvent;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
@@ -235,8 +240,7 @@ struct ClaimValidationContext {
     recovery_command_line:  RecoveryCommandLine,
     worktree_id:            WorktreeId,
     path_case:              PathCase,
-    overlap_authorization:  OverlapAuthorizationRequest,
-    default_answer:         Option<DefaultAnswer>,
+    answer_policy:          ClaimAnswerPolicy<OverlapAuthorizationRequest>,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
     repository_trunk:       IntegrationTarget,
@@ -271,8 +275,19 @@ pub(crate) fn execute(
             },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
-    let answer_recovery = claim_request.answer_recovery.clone();
-    let reservation_selection = claim_request.reservation_selection;
+    let ClaimRequest {
+        reservation_selection,
+        target: _,
+        declared_scopes: _,
+        source: _,
+        purpose: _,
+        coordination_run_selection: _,
+        phase_start: _,
+        overlap_authorization: _,
+        answer_recovery,
+    } = &claim_request;
+    let answer_recovery = answer_recovery.clone();
+    let reservation_selection = *reservation_selection;
     claim_acquisition_output(
         acquire(claim_request, recovery_command_line),
         reservation_selection,
@@ -311,8 +326,8 @@ fn claim_acquisition_output(
             reservation_id,
             blockers,
             scopes,
-            default_answer,
-        })) => OutputEnvelope::answered(reservation_id, blockers, scopes, default_answer),
+            answer_policy,
+        })) => OutputEnvelope::answered(reservation_id, blockers, scopes, answer_policy),
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
             conflicts,
             approver,
@@ -402,8 +417,8 @@ enum ClaimExecution {
         reservation_id: Option<ReservationId>,
         blockers:       WireOrderedReservationIds,
         scopes:         ReservationScopeSet,
-        /// The repository default that recorded the answers; absent for an explicit `--defer`.
-        default_answer: Option<DefaultAnswer>,
+        /// Whether the repository default or the caller's explicit `--defer` recorded answers.
+        answer_policy:  ClaimAnswerPolicy,
     },
     Blocked {
         conflicts: Vec<ReservationConflict>,
@@ -804,7 +819,18 @@ fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
-    match claim_request.reservation_selection {
+    let ClaimRequest {
+        reservation_selection,
+        target: _,
+        declared_scopes: _,
+        source: _,
+        purpose: _,
+        coordination_run_selection: _,
+        phase_start: _,
+        overlap_authorization: _,
+        answer_recovery: _,
+    } = &claim_request;
+    match *reservation_selection {
         ClaimReservationSelection::Existing(reservation_id) => {
             named::acquire(claim_request, reservation_id, recovery_command_line)
         },
@@ -820,7 +846,7 @@ fn acquire_new(
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         reservation_selection: _,
-        target: target_argument,
+        target,
         declared_scopes,
         source,
         purpose,
@@ -854,7 +880,7 @@ fn acquire_new(
     let (target, trunk_at_claim) = selected_target_and_tip(
         &worktree_context,
         &claim_repository_facts.head_snapshot,
-        target_argument.as_deref().map_or(
+        target.as_deref().map_or(
             TargetSelectionRequest::ExplicitClaimFromBranch,
             TargetSelectionRequest::ExplicitClaimWithArgument,
         ),
@@ -876,48 +902,153 @@ fn acquire_new(
         coordination_identity_provenance: claim_run_validation.coordination_identity_provenance(),
     };
     let approver = berth_config.overlap_approver(worktree_context.repository_root());
-    // Only a claim that names no answer can record the repository's default one.
-    let default_answer = match overlap_authorization {
-        OverlapAuthorizationRequest::Absent => berth_config.default_answer,
-        OverlapAuthorizationRequest::Permissive(_) | OverlapAuthorizationRequest::Defer(_) => None,
-    };
+    let answer_policy =
+        ClaimAnswerPolicy::resolve(overlap_authorization, berth_config.default_answer);
+    let answer_source = answer_policy.source();
     let target_view =
         TargetView::from_claim(&prepared_claim.target, &prepared_claim.trunk_at_claim);
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
-    let outcome = ledger.transact(
-        journal_mutation_actor.worktree_id,
-        journal_mutation_actor.coordination_run_id,
-        |state| {
-            validate_claim_transaction(
-                &state,
-                prepared_claim,
-                ClaimValidationContext {
-                    run_validation: claim_run_validation,
-                    worktree_context: worktree_context.clone(),
-                    recovery_command_line: recovery_command_line.clone(),
-                    worktree_id: journal_mutation_actor.worktree_id,
-                    path_case,
-                    overlap_authorization,
-                    default_answer,
-                    maximum_reservations: berth_config.maximum_reservations,
-                    maximum_ordering_edges: berth_config.maximum_ordering_edges,
-                    repository_trunk,
-                },
-            )
+    let outcome = prepared_claim.transact(
+        &ledger,
+        journal_mutation_actor,
+        ClaimValidationContext {
+            run_validation: claim_run_validation,
+            worktree_context: worktree_context.clone(),
+            recovery_command_line: recovery_command_line.clone(),
+            worktree_id: journal_mutation_actor.worktree_id,
+            path_case,
+            answer_policy,
+            maximum_reservations: berth_config.maximum_reservations,
+            maximum_ordering_edges: berth_config.maximum_ordering_edges,
+            repository_trunk,
         },
     )?;
-    claim_execution_from_outcome(
+    finish_new_claim(
         outcome,
-        reservation_id,
-        target_view,
-        scopes,
         &worktree_context,
+        journal_mutation_actor,
         approver,
-        default_answer,
+        NewClaimPublication {
+            reservation_id,
+            target: target_view,
+            scopes,
+            answer_policy: answer_source,
+        },
     )
-    .map(Enrollment::Enrolled)
+}
+
+/// The overlap policy selected for a claim, retaining its request until validation.
+///
+/// Once an answer is recorded, the caller request is consumed and only its source remains.
+#[derive(Clone, Copy)]
+pub(crate) enum ClaimAnswerPolicy<CallerRequest = ()> {
+    /// Honor the caller's request. An answer-only result comes from explicit `--defer`.
+    CallerRequest(CallerRequest),
+    /// An unanswered claim uses the repository default to record its overlap answers.
+    RepositoryDefault(DefaultAnswer),
+}
+
+impl ClaimAnswerPolicy<OverlapAuthorizationRequest> {
+    /// Resolve the configuration boundary without pairing an explicit answer with a default.
+    fn resolve(
+        request: OverlapAuthorizationRequest,
+        configured_default: Option<DefaultAnswer>,
+    ) -> Self {
+        match request {
+            OverlapAuthorizationRequest::Absent => configured_default.map_or(
+                Self::CallerRequest(OverlapAuthorizationRequest::Absent),
+                Self::RepositoryDefault,
+            ),
+            request => Self::CallerRequest(request),
+        }
+    }
+
+    /// Retain the selected policy without copying the request consumed by validation.
+    const fn source(&self) -> ClaimAnswerPolicy {
+        match self {
+            Self::CallerRequest(_) => ClaimAnswerPolicy::CallerRequest(()),
+            Self::RepositoryDefault(answer) => ClaimAnswerPolicy::RepositoryDefault(*answer),
+        }
+    }
+}
+
+/// Facts to publish after the acquisition transaction appends successfully.
+struct NewClaimPublication {
+    reservation_id: ReservationId,
+    target:         TargetView,
+    scopes:         ReservationScopeSet,
+    answer_policy:  ClaimAnswerPolicy,
+}
+
+fn finish_new_claim(
+    outcome: LedgerTransactionOutcome<ClaimRejection>,
+    worktree_context: &WorktreeContext,
+    requester: ResolvedJournalMutationActor,
+    approver: Option<OverlapApprover>,
+    publication: NewClaimPublication,
+) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+    let execution = match outcome {
+        LedgerTransactionOutcome::Rejected(rejection) => audited_claim_rejection_execution(
+            rejection,
+            approver,
+            worktree_context,
+            requester,
+            &publication.scopes,
+        )?,
+        LedgerTransactionOutcome::Appended {
+            event,
+            session_mapping_publication,
+        } => claim_execution_from_outcome(
+            &event,
+            session_mapping_publication,
+            publication,
+            worktree_context,
+        ),
+    };
+    Ok(Enrollment::Enrolled(execution))
+}
+
+/// Convert a rejected claim and audit any overlap refusal after releasing its lock.
+fn audited_claim_rejection_execution(
+    rejection: ClaimRejection,
+    approver: Option<OverlapApprover>,
+    worktree_context: &WorktreeContext,
+    requester: ResolvedJournalMutationActor,
+    scopes: &ReservationScopeSet,
+) -> Result<ClaimExecution, ClaimError> {
+    let execution = claim_rejection_execution(rejection, approver)?;
+    record_refusal(&execution, worktree_context, requester, scopes);
+    Ok(execution)
+}
+
+/// Record only the overlap refusals the caller will receive, after releasing the claim lock.
+fn record_refusal(
+    execution: &ClaimExecution,
+    worktree_context: &WorktreeContext,
+    requester: ResolvedJournalMutationActor,
+    scopes: &ReservationScopeSet,
+) {
+    let conflicts = match execution {
+        ClaimExecution::Blocked { conflicts, .. } => conflicts,
+        ClaimExecution::IncompleteAnswer { rejection, .. } => &rejection.conflicts,
+        ClaimExecution::Selected { .. }
+        | ClaimExecution::Claimed { .. }
+        | ClaimExecution::Answered { .. }
+        | ClaimExecution::AnsweredWithoutOverlap(_)
+        | ClaimExecution::ContradictsLiveOrdering(_)
+        | ClaimExecution::NothingToReplace(_)
+        | ClaimExecution::ReservationLimitReached(_)
+        | ClaimExecution::OrderingEdgeLimitReached(_) => return,
+    };
+    refusal::record(
+        worktree_context,
+        requester,
+        RefusedVerb::Claim,
+        scopes,
+        conflicts,
+    );
 }
 
 fn normalized_claim_scopes(
@@ -1151,6 +1282,10 @@ fn first_touch_execution_from_outcome(
         LedgerCommittedActionOutcome::Appended {
             output,
             session_mapping_publication,
+        }
+        | LedgerCommittedActionOutcome::AlreadySatisfied {
+            output,
+            session_mapping_publication,
         } => Ok(first_touch_acquired_execution(
             output,
             coordination_run_id,
@@ -1308,48 +1443,40 @@ fn publish_coordination_run_marker(
 }
 
 fn claim_execution_from_outcome(
-    outcome: LedgerTransactionOutcome<ClaimRejection>,
-    reservation_id: ReservationId,
-    target: TargetView,
-    scopes: ReservationScopeSet,
+    event: &JournalEvent,
+    session_mapping_publication: SessionIdentityMappingPublication,
+    publication: NewClaimPublication,
     worktree_context: &WorktreeContext,
-    approver: Option<OverlapApprover>,
-    default_answer: Option<DefaultAnswer>,
-) -> Result<ClaimExecution, ClaimError> {
-    match outcome {
-        LedgerTransactionOutcome::Appended {
-            event,
-            session_mapping_publication,
-        } => {
-            // An answer acquired no reservation, so there is no run marker to publish for it.
-            if let JournalOperation::Answer {
-                reservation_id,
-                scopes,
-                authorizations,
-            } = &event.operation
-            {
-                return Ok(ClaimExecution::Answered {
-                    reservation_id: *reservation_id,
-                    blockers: answered_blockers(authorizations),
-                    scopes: scopes.clone(),
-                    default_answer,
-                });
-            }
-            let coordination_run_id = event.actor.run;
-            let marker_publication =
-                publish_coordination_run_marker(worktree_context, coordination_run_id);
-            Ok(ClaimExecution::Claimed {
-                reservation_id,
-                target,
-                coordination_run_id,
-                scopes,
-                marker_publication,
-                session_mapping_publication,
-            })
-        },
-        LedgerTransactionOutcome::Rejected(rejection) => {
-            claim_rejection_execution(rejection, approver)
-        },
+) -> ClaimExecution {
+    let NewClaimPublication {
+        reservation_id,
+        target,
+        scopes,
+        answer_policy,
+    } = publication;
+    // An answer acquired no reservation, so there is no run marker to publish for it.
+    if let JournalOperation::Answer {
+        reservation_id,
+        scopes,
+        authorizations,
+    } = &event.operation
+    {
+        return ClaimExecution::Answered {
+            reservation_id: *reservation_id,
+            blockers: answered_blockers(authorizations),
+            scopes: scopes.clone(),
+            answer_policy,
+        };
+    }
+    let coordination_run_id = event.actor.run;
+    let marker_publication = publish_coordination_run_marker(worktree_context, coordination_run_id);
+    ClaimExecution::Claimed {
+        reservation_id,
+        target,
+        coordination_run_id,
+        scopes,
+        marker_publication,
+        session_mapping_publication,
     }
 }
 
@@ -1380,9 +1507,6 @@ fn claim_rejection_execution(
         },
         ClaimRejection::Replay(error) => Err(ClaimError::ReservationReplay(error)),
         ClaimRejection::EdgeReplay(error) => Err(ClaimError::EdgeReplay(error)),
-        ClaimRejection::DuplicateOrdering { before, after } => {
-            Err(ClaimError::DuplicateOrdering { before, after })
-        },
         ClaimRejection::CoordinationIdentity(rejection) => {
             Err(ClaimError::CoordinationIdentity(rejection))
         },
@@ -1409,8 +1533,7 @@ fn validate_claim_transaction(
         recovery_command_line,
         worktree_id,
         path_case,
-        overlap_authorization,
-        default_answer,
+        answer_policy,
         maximum_reservations,
         maximum_ordering_edges,
         repository_trunk,
@@ -1434,8 +1557,8 @@ fn validate_claim_transaction(
         worktree_id,
     };
     // An answer reserves nothing, so the reservation limit does not apply to it.
-    let permissive_request = match (overlap_authorization, default_answer) {
-        (OverlapAuthorizationRequest::Defer(request), _) => {
+    let permissive_request = match answer_policy {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Defer(request)) => {
             return validate_answer(
                 AnswerKind::Defer,
                 *request,
@@ -1445,7 +1568,7 @@ fn validate_claim_transaction(
                 prepared_claim.scopes,
             );
         },
-        (OverlapAuthorizationRequest::Absent, Some(default_answer)) if !conflicts.is_empty() => {
+        ClaimAnswerPolicy::RepositoryDefault(default_answer) if !conflicts.is_empty() => {
             return validate_answer(
                 AnswerKind::Override,
                 default_answer_request(default_answer, &conflicts),
@@ -1455,8 +1578,11 @@ fn validate_claim_transaction(
                 prepared_claim.scopes,
             );
         },
-        (OverlapAuthorizationRequest::Absent, _) => None,
-        (OverlapAuthorizationRequest::Permissive(request), _) => Some(*request),
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent)
+        | ClaimAnswerPolicy::RepositoryDefault(_) => None,
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Permissive(request)) => {
+            Some(*request)
+        },
     };
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
         return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
@@ -1648,6 +1774,7 @@ fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedRes
                 | ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
                 | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
             })
             .collect(),
@@ -2333,30 +2460,46 @@ fn bind_claim_authorization(
             ),
         )));
     }
-    if let (
-        ClaimReservationSelection::Existing(requester),
-        PermissiveOverlapAnswer::Sequence { blockers, .. },
-    ) = (ordering_context.reservation_selection, &answer)
-        && let Some(blocker) = blockers.iter().find(|blocker| {
-            ordering_context
-                .ordering_graph
-                .contains_sequence(requester, **blocker)
-        })
-    {
-        let (before, after) = match blocker.direction {
-            OrderingDirection::RequesterBeforeHolder => (requester, blocker.blocker),
-            OrderingDirection::HolderBeforeRequester => (blocker.blocker, requester),
-        };
-        return Err(ClaimRejection::DuplicateOrdering { before, after });
-    }
     let replaced = replaced_orderings(&answer, ordering_context)?;
-    if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
+    let authorization = match (ordering_context.reservation_selection, &answer) {
+        (
+            ClaimReservationSelection::Existing(requester),
+            PermissiveOverlapAnswer::Sequence { blockers, .. },
+        ) => ConflictAuthorization::sequence_with_bindings(
+            overlaps,
+            blockers
+                .iter()
+                .map(|blocker| {
+                    ordering_context
+                        .ordering_graph
+                        .bind_claim_sequence(requester, *blocker, &reason)
+                })
+                .collect(),
+            reason,
+            replaced,
+        ),
+        _ => ConflictAuthorization::answered(&answer, overlaps, reason, replaced),
+    };
+    let new_edge_count = match &authorization {
+        ConflictAuthorization::Sequence { .. } => 1,
+        ConflictAuthorization::SequencePerHolder { holders, .. } => holders.len(),
+        ConflictAuthorization::SequenceWithExistingEdges { holders, .. } => holders
+            .iter()
+            .filter(|binding| matches!(binding, ClaimSequenceBinding::NewEdge { .. }))
+            .count(),
+        ConflictAuthorization::NoConflict
+        | ConflictAuthorization::Enrollment { .. }
+        | ConflictAuthorization::Defer { .. }
+        | ConflictAuthorization::Override { .. }
+        | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => 0,
+    };
+    if new_edge_count != 0
         && additions_exceed_limit(
             ordering_context
                 .ordering_graph
                 .edge_count()
-                .saturating_sub(replaced.len()),
-            conflicts.len(),
+                .saturating_sub(authorization.replaced().len()),
+            new_edge_count,
             maximum_ordering_edges,
         )
     {
@@ -2364,9 +2507,7 @@ fn bind_claim_authorization(
             maximum_ordering_edges,
         ));
     }
-    Ok(ConflictAuthorization::answered(
-        &answer, overlaps, reason, replaced,
-    ))
+    Ok(authorization)
 }
 
 /// The locked facts a sequence answer is checked against for contradicted live edges.
@@ -2445,6 +2586,20 @@ fn count_reaches_limit(count: usize, maximum: u32) -> bool {
 }
 
 impl PreparedClaim {
+    /// Validate and publish the prepared claim while holding the mutation lock.
+    fn transact(
+        self,
+        ledger: &Ledger,
+        requester: ResolvedJournalMutationActor,
+        context: ClaimValidationContext,
+    ) -> Result<LedgerTransactionOutcome<ClaimRejection>, ClaimError> {
+        Ok(ledger.transact(
+            requester.worktree_id,
+            requester.coordination_run_id,
+            |state| validate_claim_transaction(&state, self, context),
+        )?)
+    }
+
     fn into_operation(self, authorization: ConflictAuthorization) -> JournalOperation {
         JournalOperation::Claim {
             reservation_id:                   self.reservation_id,
@@ -2866,10 +3021,6 @@ enum ClaimRejection {
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
     EdgeReplay(EdgeReplayError),
-    DuplicateOrdering {
-        before: ReservationId,
-        after:  ReservationId,
-    },
 }
 
 #[derive(Debug)]
@@ -2884,10 +3035,6 @@ pub(crate) enum ClaimError {
     Transaction(LedgerTransactionError),
     ReservationReplay(ReservationReplayError),
     EdgeReplay(EdgeReplayError),
-    DuplicateOrdering {
-        before: ReservationId,
-        after:  ReservationId,
-    },
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidGitObjectId(InvalidGitObjectId),
     InvalidHeadReference,
@@ -2921,12 +3068,6 @@ impl Display for ClaimError {
                 write!(formatter, "reservation replay failed: {error}")
             },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
-            Self::DuplicateOrdering { before, after } => {
-                write!(
-                    formatter,
-                    "Ordering edge {before} before {after} already exists."
-                )
-            },
             Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
             Self::InvalidHeadReference => {
@@ -2981,9 +3122,6 @@ impl ClaimError {
             },
             Self::InvalidRepositoryTrunk(error) => {
                 OutputEnvelope::invalid_input(command_verb, &error)
-            },
-            Self::DuplicateOrdering { before, after } => {
-                OutputEnvelope::claim_duplicate_ordering(before, after)
             },
             Self::Transaction(error) => match error {
                 LedgerTransactionError::CorrectableInput(error) => {

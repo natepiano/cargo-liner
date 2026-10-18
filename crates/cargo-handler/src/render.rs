@@ -260,13 +260,13 @@ impl<'a> Cells<'a> {
 impl TileCells<TileKey> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
-    /// Every row of the summary is one line at any width: a name too long
-    /// for its column is cut, not wrapped. The summary asks across for its
-    /// widest row, which the grid widens it toward when
-    /// `tiles.widen_summary` is on. An agent's cell is measured at the
-    /// width its cell has, since its header, directory and names take
-    /// more rows the narrower it is; a cell the grid has not opened yet
-    /// is measured at the narrowest width, the one it will open at.
+    /// `TileCells::demands` measures summary rows as single lines: long names
+    /// are truncated, not wrapped. `TileDemands.summary_width` is the widest
+    /// summary row; the grid uses it to widen the summary when
+    /// `tiles.widen_summary` is enabled. `agent_cell::height` measures each
+    /// agent cell at its current width, since headers, directories and names
+    /// can require more rows at narrower widths. Cells absent from `widths`
+    /// use the narrowest supplied width, or zero when `widths` is empty.
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         let narrowest = widths
             .iter()

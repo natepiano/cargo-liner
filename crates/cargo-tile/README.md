@@ -199,10 +199,7 @@ Whatever stands at the foot of the chain is the exception, and stays. A command 
 developer typed has a shell sitting there and nothing else above it but the
 terminal, which says which window rather than who typed it -- so stepping that
 one over would leave the cell unable to tell a command run by hand from one an
-editor or an agent ran. Which step is the foot is settled after the chain is
-assembled, not while it is walked: a driver closes its own cell's chain, and that
-puts the driver at the foot and the shell that started it back among the steps
-passed through.
+editor or an agent ran.
 
 ```
  6218 zed
@@ -222,23 +219,6 @@ one row:
  pid    start  dur    cpu   mem    command
  ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
  92130  10:04  00:12  310%  12.4G  cargo build
-```
-
-A command named by `commands.hidden_when_idle` closes its own cell's chain
-instead of taking a row in the table under it. Those are the drivers -- `cargo
-port` to begin with -- open all day and compiling nothing on their own, whose
-cell exists only because something is running under them. A row for one says the
-same thing on every scan while costing the cell one of the invocations it was
-opened for; as the last step of the chain it says what the rest of the chain
-says, which is where the work came from.
-
-```
- 6218 zed
-  4100 cargo port
-
- pid    start  dur    cpu   mem    command
- ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
- 4212   10:04  00:12  310%  12.4G  cargo build
 ```
 
 The block never takes more than half the cell, the blank row under it included:
@@ -307,25 +287,21 @@ A command cell is never shorter than six rows.
 it goes -- and before the cell it was holding closes and the cells after it move
 up. Zero drops it on the scan that notices.
 
-Some commands never finish. A terminal UI reached as a cargo subcommand is open
-all day, and while it is only sitting there it has no reading, no compiler and
-no duration worth reading — so its own cell holds one row saying no more than
-the summary's line for it already does, and that is a cell no build is getting.
-Name those subcommands and the grid withholds the cell until they have work
-under them:
+Hide cargo subcommands and everything running under them with `commands.hidden`:
 
 ```toml
 [commands]
-hidden_when_idle = ["port", "handler"]
+hidden = ["port", "handler"]
 ```
 
-The summary is not affected — a line there saying the command is running is the
-whole of what it has to say, and it keeps it. The settings overlay edits the
-list under **Commands**. A grid whose only commands are withheld this way
-counts as idle, so the attract screen comes on while they sit there. The cell opens the moment the command drives a cargo
-invocation, carrying that invocation under it, and closes through the usual fade
-once the invocation ends. The list is only for commands that outlast their work:
-anything that finishes on its own already leaves the grid by finishing.
+A listed command stays hidden while idle or busy. It and its descendants draw
+no cell or summary row, contribute nothing to the summary totals, and never
+widen the retained table columns. When a listed command runs inside an unlisted
+command, only the listed subtree leaves; the lead and unrelated siblings stay.
+The settings overlay edits **hidden cargo commands** under **Commands**.
+A grid with no visible commands counts as idle for the attract screen.
+Existing `hidden_when_idle` keys still load as a fallback; `hidden` takes
+precedence when both keys are present.
 
 Other commands are cargo by spelling and not by purpose. A subcommand fired from
 an editor hook several times a second finishes inside one poll and compiles
@@ -339,12 +315,10 @@ drops them before anything is built out of them:
 excluded = ["berth"]
 ```
 
-This is the stronger of the two lists. `hidden_when_idle` withholds the cell and
-keeps the summary line; `excluded` means not tracked at all — no cell, no summary
-line, no CPU or compiler attribution. Excluded commands go transparent rather
-than opaque: a cargo invocation running underneath one is attributed to whatever
-stands above it and keeps its own cell, so excluding a command never hides real
-work done under it. The list is keyed on the subcommand word, so one entry covers
+Excluded commands are not tracked, and go transparent rather than opaque: a cargo
+invocation running underneath one is attributed to whatever stands above it and
+keeps its own cell. Hidden commands instead hide their entire subtree.
+The list is keyed on the subcommand word, so one entry covers
 both `cargo berth` and a direct `cargo-berth`, and a `+toolchain` selector in
 front of it changes nothing.
 

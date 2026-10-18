@@ -1363,16 +1363,27 @@ mod tests {
 
     #[test]
     fn rewrite_mapping_stops_at_onto_independently_of_other_refs() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let old_tip = fixture.commit("old protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
+        let other_base = fixture.commit("other reservation")?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let target = fixture.commit("rewritten protected edit")?;
+        let baseline = cargo_berth_test_support::DirectorySnapshot::capture(fixture.root());
         for reference_kind in ["branch", "tag", "remote", "detached_worktree", "no_ref"] {
-            let fixture = mapped_fixture()?;
-            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
-            let old_tip = fixture.commit("old protected edit")?;
-            fixture.reset_to_phase_start()?;
-            fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
-            let other_base = fixture.commit("other reservation")?;
+            baseline.restore(fixture.root());
             match reference_kind {
                 "branch" => fixture.git(&["branch", "other", &other_base.to_string()])?,
-                "tag" => fixture.git(&["tag", "-a", "other", "-m", "other base"])?,
+                "tag" => fixture.git(&[
+                    "tag",
+                    "-a",
+                    "other",
+                    "-m",
+                    "other base",
+                    &other_base.to_string(),
+                ])?,
                 "remote" => fixture.git(&[
                     "update-ref",
                     "refs/remotes/origin/other",
@@ -1387,11 +1398,6 @@ mod tests {
                 ])?,
                 _ => {},
             }
-            // Stage only the protected path when an untracked linked checkout exists.
-            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
-            fixture.git(&["add", PRIMARY_PATH])?;
-            fixture.git(&["commit", "--quiet", "-m", "rewritten protected edit"])?;
-            let target = refs::head_object_id(fixture.root())?;
             let pairs = [RewriteMapPair {
                 old: old_tip.clone(),
                 new: target.clone(),
@@ -1406,11 +1412,16 @@ mod tests {
                 &other_base,
             )?;
             assert_eq!(
-                gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+                gate::map_phase_interval(
+                    &pairs,
+                    std::slice::from_ref(&old_tip),
+                    &history,
+                    &created
+                ),
                 PhaseRewriteMapping::Mapped(MappedPhaseInterval {
-                    phase_start_head: other_base,
+                    phase_start_head: other_base.clone(),
                     protected_tip:    target.clone(),
-                    destinations:     vec![target],
+                    destinations:     vec![target.clone()],
                 }),
                 "onto must establish the phase base with {reference_kind}",
             );

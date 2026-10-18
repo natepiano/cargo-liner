@@ -5,6 +5,8 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -17,6 +19,30 @@ use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::observes_merge_extent_of;
 use cargo_berth_test_support::reservation_row;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -50,7 +76,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -75,7 +100,7 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 
 #[test]
 fn engine_cover_has_a_cover_source_and_targets_main() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("board-cover-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -95,7 +120,7 @@ fn engine_cover_has_a_cover_source_and_targets_main() {
 
 #[test]
 fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("uncovered-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -162,7 +187,7 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
 
 #[test]
 fn deleted_target_uses_main_without_an_uncovered_alert() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let lane = repo.lane("deleted-target-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -276,13 +301,8 @@ const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
-    command_name="$2"
-    (
-        shift 2
-        command_line="$command_name"
-        for argument in "$@"; do command_line="$command_line $argument"; done
-        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-    )
+    command_line="$*"
+    printf '%s\n' "${command_line#--no-optional-locks }" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -416,7 +436,7 @@ fn f003_board_json_schema_requires_a_non_nullable_row_target() {
 
 #[test]
 fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let a = repo.lane("invoker-a", "integration");
     let _ = repo.lane("invoker-b", "integration");
     let claimed = repo.claim(&a, "file:invoker.txt", FIRST_RUN, None);
@@ -669,6 +689,200 @@ fn waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hol
     );
     assert_eq!(text_selector.status.code(), Some(5));
     assert!(String::from_utf8_lossy(&text_selector.stderr).contains("--json"));
+}
+
+#[test]
+fn reservation_reports_list_waiting_and_settled_edges_from_both_endpoints() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "edge-subject");
+    dirty_source(root, "shared.rs");
+    let predecessor = claim(root, "file:shared.rs", FIRST_RUN);
+    assert_success(&predecessor);
+    let predecessor_id = reservation_id(&predecessor);
+    let successor = answered_claim(
+        &subject_root,
+        "file:shared.rs",
+        SECOND_RUN,
+        "--after",
+        &predecessor_id,
+        "the predecessor lands first",
+    );
+    assert_success(&successor);
+    let successor_id = reservation_id(&successor);
+    let waiting = board_data(root);
+    let waiting_edge = waiting_ordering_edge(&waiting["waiting"]["entries"][0]);
+    assert_eq!(waiting_edge["predecessor"], predecessor_id);
+    assert_eq!(waiting_edge["successor"], successor_id);
+    for id in [&predecessor_id, &successor_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["ordering_edges"], serde_json::json!([waiting_edge]));
+        assert_eq!(
+            report["overlap_answers"],
+            waiting["live_overlap_answers"]["entries"]
+        );
+    }
+
+    assert_success(&run_berth_with_run(
+        root,
+        &[
+            "resolve",
+            &predecessor_id,
+            "--abandon",
+            "--why",
+            "discard the predecessor",
+            "--json",
+        ],
+        FIRST_RUN,
+    ));
+    let settled = board_data(root);
+    let settled_edges = &settled["settled_ordering_constraints"]["entries"];
+    assert_eq!(settled_edges.as_array().expect("settled edges").len(), 1);
+    assert_eq!(settled_edges[0]["edge_id"], waiting_edge["edge_id"]);
+    assert_eq!(settled_edges[0]["settlement"], "cancelled_constraint_ended");
+    for id in [&predecessor_id, &successor_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(&report["ordering_edges"], settled_edges);
+        assert_eq!(
+            report["overlap_answers"],
+            settled["live_overlap_answers"]["entries"]
+        );
+    }
+}
+
+#[test]
+fn reservation_reports_exclude_other_reservations_edges_and_answers() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "paired-subjects");
+    let (_other_holder_directory, other_holder_root) =
+        foreign_worktree(&repository, "other-holder");
+    let (_other_subject_directory, other_subject_root) =
+        foreign_worktree(&repository, "other-subject");
+    let mut pairs = Vec::new();
+    for (holder_root, subject_root, path) in [
+        (root, subject_root.as_path(), "first.rs"),
+        (
+            other_holder_root.as_path(),
+            other_subject_root.as_path(),
+            "second.rs",
+        ),
+    ] {
+        dirty_source(holder_root, path);
+        let scope = format!("file:{path}");
+        let holder = claim(holder_root, &scope, FIRST_RUN);
+        assert_success(&holder);
+        let holder_id = reservation_id(&holder);
+        let subject = answered_claim(
+            subject_root,
+            &scope,
+            SECOND_RUN,
+            "--after",
+            &holder_id,
+            "independent overlap order",
+        );
+        assert_success(&subject);
+        pairs.push((holder_id, reservation_id(&subject)));
+    }
+    let board = board_data(root);
+    let waiting = board["waiting"]["entries"]
+        .as_array()
+        .expect("waiting edges");
+    let answers = board["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live answers");
+    assert_eq!(waiting.len(), 2);
+    assert_eq!(answers.len(), 2);
+    for (holder, subject) in pairs {
+        let edge = waiting_ordering_edge(
+            waiting
+                .iter()
+                .find(|entry| entry["successor"] == subject)
+                .expect("pair's edge"),
+        );
+        let answer = answers
+            .iter()
+            .find(|answer| answer["reservation_id"] == subject)
+            .expect("pair's answer");
+        for id in [&holder, &subject] {
+            let report = reservation_report(root, id);
+            assert_eq!(report["ordering_edges"], serde_json::json!([edge]));
+            assert_eq!(report["overlap_answers"], serde_json::json!([answer]));
+        }
+    }
+}
+
+#[test]
+fn reservation_reports_keep_live_answers_for_both_parties_and_omit_released_history() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "override-subject");
+    dirty_source(root, "shared.rs");
+    let holder = claim(root, "file:shared.rs", FIRST_RUN);
+    assert_success(&holder);
+    let holder_id = reservation_id(&holder);
+    let subject = answered_claim(
+        &subject_root,
+        "file:shared.rs",
+        SECOND_RUN,
+        "--override",
+        &holder_id,
+        "parallel edits were agreed",
+    );
+    assert_success(&subject);
+    let subject_id = reservation_id(&subject);
+    let board = board_data(root);
+    let answers = &board["live_overlap_answers"]["entries"];
+    assert_eq!(answers.as_array().expect("live answers").len(), 1);
+    assert_eq!(answers[0]["answer"], "override");
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(&report["overlap_answers"], answers);
+        assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    }
+    assert_success(&run_berth_with_run(
+        &subject_root,
+        &[
+            "resolve",
+            &subject_id,
+            "--abandon",
+            "--why",
+            "discard the agreed edit",
+            "--json",
+        ],
+        SECOND_RUN,
+    ));
+    let released = board_data(root);
+    assert_eq!(
+        released["live_overlap_answers"]["entries"],
+        serde_json::json!([])
+    );
+    assert_eq!(released["released_overlap_answer_count"], 1);
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["overlap_answers"], serde_json::json!([]));
+        assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn reservation_without_coordination_reports_present_empty_arrays() {
+    let repository = initialized_repository();
+    dirty_source(repository.path(), "independent.rs");
+    let held = claim(repository.path(), "file:independent.rs", FIRST_RUN);
+    assert_success(&held);
+    let report = reservation_report(repository.path(), &reservation_id(&held));
+    assert_eq!(report["ordering_edges"], serde_json::json!([]));
+    assert_eq!(report["overlap_answers"], serde_json::json!([]));
+}
+
+/// Compare the full waiting hold, whose surrounding reservation row is not part of an edge.
+fn waiting_ordering_edge(entry: &serde_json::Value) -> serde_json::Value {
+    assert_eq!(entry["hold"], "ordering_edge");
+    let mut edge = entry.as_object().expect("waiting entry").clone();
+    edge.remove("reservation")
+        .expect("waiting entry's reservation row");
+    serde_json::Value::Object(edge)
 }
 
 #[test]
@@ -1200,7 +1414,7 @@ fn reservation_lifecycle_query_distinguishes_all_four_states() {
 fn human_board_uses_and_restores_an_attached_terminal() {
     let repository = initialized_repository();
     let transcript = repository.path().join("terminal-transcript");
-    let mut child = Command::new("/usr/bin/script")
+    let mut child = std::process::Command::new("/usr/bin/script")
         .args([
             "-q",
             transcript
@@ -1343,6 +1557,67 @@ fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
         "alerts",
     ] {
         assert_eq!(&data[section]["journal_position"], position);
+    }
+}
+
+#[test]
+fn replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(root, "src/lib.rs");
+    let holder_id = reservation_id(&claim(root, "file:src/lib.rs", FIRST_RUN));
+    let deferred_id = reservation_id(&defer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        &holder_id,
+    ));
+    assert_success(&run_berth(
+        root,
+        &[
+            "sequence",
+            &holder_id,
+            &deferred_id,
+            "--why",
+            "holder first",
+            "--json",
+        ],
+    ));
+    assert_success(&run_berth_with_run(
+        &second_root,
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--reservation",
+            &deferred_id,
+            "--before",
+            &holder_id,
+            "--replace",
+            "--overlap-why",
+            "reverse the order",
+            "--json",
+        ],
+        SECOND_RUN,
+    ));
+
+    let data = board_data(root);
+    let answer = data["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live answers")
+        .iter()
+        .find(|answer| answer["answer"] == "ordering_created_from_deferral")
+        .expect("resolved deferral remains an answer");
+    assert_eq!(answer["consequence"]["state"], "replaced");
+    assert_eq!(answer["consequence"]["reservation_id"], deferred_id);
+    for endpoint in [&holder_id, &deferred_id] {
+        let report = reservation_report(root, endpoint);
+        assert!(
+            report["overlap_answers"]
+                .as_array()
+                .expect("reservation answers")
+                .contains(answer)
+        );
     }
 }
 
@@ -1550,6 +1825,110 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
             ),
         }
         expected_consequence.assert_rendered(&answer["consequence"]);
+    }
+}
+
+#[test]
+fn widening_under_an_existing_before_edge_lists_its_new_scope_answer() {
+    assert_existing_ordering_widen_answer("--before", "requester_before_holder");
+}
+
+#[test]
+fn widening_under_an_existing_after_edge_lists_its_new_scope_answer() {
+    assert_existing_ordering_widen_answer("--after", "holder_before_requester");
+}
+
+fn assert_existing_ordering_widen_answer(flag: &str, direction: &str) {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_subject_directory, subject_root) = foreign_worktree(&repository, "subject");
+    dirty_source(root, "shared/first.rs");
+    dirty_source(root, "shared/extra.rs");
+    let holder = claim(root, "tree:shared", FIRST_RUN);
+    assert_success(&holder);
+    let holder_id = reservation_id(&holder);
+    let initial = answered_claim(
+        &subject_root,
+        "file:shared/first.rs",
+        SECOND_RUN,
+        flag,
+        &holder_id,
+        "the original integration order",
+    );
+    assert_success(&initial);
+    let subject_id = reservation_id(&initial);
+    let initial_board = board_data(root);
+    let edge_id = initial_board["waiting"]["entries"][0]["edge_id"].clone();
+    let holder_scope_revision = initial_board["live_overlap_answers"]["entries"][0]
+        ["exact_approved_scopes"][0]["scope_revision"]
+        .as_str()
+        .expect("the initial answer records the unchanged holder's scope revision")
+        .to_owned();
+    let widened = run_berth_with_run(
+        &subject_root,
+        &[
+            "claim",
+            "file:shared/extra.rs",
+            "--reservation",
+            &subject_id,
+            flag,
+            &holder_id,
+            "--overlap-why",
+            "reuse the earlier order",
+            "--json",
+        ],
+        SECOND_RUN,
+    );
+    assert_success(&widened);
+
+    let data = board_data(root);
+    let answers = data["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("live overlap answers");
+    let new_scopes = serde_json::json!([{
+        "reservation_id": holder_id,
+        "scope_revision": holder_scope_revision,
+        "scopes": [{"kind": "file", "path": "shared/extra.rs"}]
+    }]);
+    let added_answers = answers
+        .iter()
+        .filter(|answer| {
+            answer["reservation_id"] == subject_id && answer["exact_approved_scopes"] == new_scopes
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        added_answers.len(),
+        1,
+        "one answer names exactly the new scopes: {answers:?}"
+    );
+    let answer = added_answers[0];
+    assert_eq!(answer["blocker"], holder_id);
+    assert_eq!(answer["edge_id"], edge_id);
+    assert_eq!(answer["direction"], direction);
+    assert_eq!(
+        answer["authorization_reason"],
+        "the original integration order"
+    );
+    assert_eq!(answer["acquisition"]["origin"], "widen");
+    let edges = data["waiting"]["entries"]
+        .as_array()
+        .expect("one live edge");
+    assert_eq!(edges.len(), 1, "the new answer reuses the old edge: {data}");
+    assert_eq!(edges[0]["edge_id"], edge_id);
+    assert_eq!(answers.len(), 2, "both scope approvals remain live: {data}");
+    assert!(
+        answers
+            .iter()
+            .all(|answer| answer["answer"] == "sequence" && answer["edge_id"] == edge_id)
+    );
+    let edge = waiting_ordering_edge(&edges[0]);
+    for id in [&holder_id, &subject_id] {
+        let report = reservation_report(root, id);
+        assert_eq!(report["ordering_edges"], serde_json::json!([edge]));
+        assert_eq!(
+            &report["overlap_answers"],
+            &data["live_overlap_answers"]["entries"]
+        );
     }
 }
 
@@ -2082,6 +2461,23 @@ fn reservation_report_and_presentation(
         reservation_id
     );
     let data = &envelope["payload"]["data"];
+    let edges = data["ordering_edges"]
+        .as_array()
+        .expect("ordering_edges is a present array");
+    let answers = data["overlap_answers"]
+        .as_array()
+        .expect("overlap_answers is a present array");
+    for answer in answers {
+        if answer["answer"] == "sequence" && answer["consequence"]["state"] != "replaced" {
+            let edge_id = answer["edge_id"]
+                .as_str()
+                .expect("a sequence answer names its edge");
+            assert!(
+                edges.iter().any(|edge| edge["edge_id"] == edge_id),
+                "answer has no matching ordering edge: {data}"
+            );
+        }
+    }
     let report = rendered_board_report(&envelope, "reservation lifecycle");
     let (merge_extent_label, merge_extent) = if data["merge_extent"]["status"] == "released" {
         (
@@ -2098,8 +2494,32 @@ fn reservation_report_and_presentation(
             "Lifecycle": data["lifecycle"],
             "Race extent": data["race_extent"],
             merge_extent_label: merge_extent,
+            "Ordering edges": data["ordering_edges"],
+            "Overlap answers": data["overlap_answers"],
         })
     );
+    let detail = envelope["presentation"]["blocks"][0]["detail"]
+        .as_str()
+        .expect("reservation presentation detail");
+    let keys = [
+        "Reservation",
+        "Lifecycle",
+        "Race extent",
+        merge_extent_label,
+        "Ordering edges",
+        "Overlap answers",
+    ];
+    let mut previous_position = 0;
+    for key in keys {
+        let position = detail
+            .find(&format!("\"{key}\":"))
+            .expect("presentation key");
+        assert!(
+            position > previous_position,
+            "presentation keys follow lifecycle, extents, edges, answers: {detail}"
+        );
+        previous_position = position;
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
     (data.clone(), report)
 }
@@ -3339,67 +3759,30 @@ struct HistoricalIntegrationFixture {
 
 /// Keep the holder at its checkpoint so later trunk work is not mistaken for holder work.
 fn historical_integration_fixture() -> HistoricalIntegrationFixture {
-    let repository = initialized_repository();
-    let root = repository.path();
-    git(root, &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "configuration",
-        ],
-    );
-    git(root, &["config", "core.hooksPath", "/dev/null"]);
-    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
     let worktrees = tempdir().expect("holder parent should exist");
-    let holder_root = add_worktree(root, worktrees.path(), "historical-holder");
-    let reservation_id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
-    commit_historical_source(&holder_root, "pub fn protected() {}\n", "protected phase");
-    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        root,
-        &serde_json::json!({
-            "op": "checkpoint", "reservation_id": reservation_id,
-            "protected_tip": protected_tip, "trunk_snapshot": phase_start_head,
-        }),
-    );
-    commit_historical_source(root, "pub fn protected() {}\n", "uncaptured cherry-pick");
-    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(witness, protected_tip);
-    commit_historical_source(
-        root,
-        "pub fn later_trunk_revision() {}\n",
-        "later protected-hunk rewrite",
-    );
-    let target = git_stdout(root, &["rev-parse", "HEAD"]);
-    let replay = GIT.output(
-        root,
-        [
-            "merge-tree",
-            "--write-tree",
-            &format!("--merge-base={phase_start_head}"),
-            &target,
-            &protected_tip,
-        ],
-    );
-    assert_eq!(
-        replay.status.code(),
-        Some(1),
-        "current-trunk replay must conflict"
-    );
-    assert!(
-        fs::read_dir(root.join(".git"))
-            .expect("Git directory should read")
-            .all(|entry| !entry
-                .expect("entry should read")
-                .file_name()
-                .to_string_lossy()
-                .starts_with("cargo-berth-pending-bypass-"))
-    );
+    let repository =
+        edges_templates::HISTORICAL_PROOF.instantiate_with_external_worktrees(worktrees.path());
+    let holder_root = fs::canonicalize(worktrees.path().join("historical-holder"))
+        .expect("holder should resolve");
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository.path().join(".git/historical-proof.json"))
+            .expect("historical proof should read"),
+    )
+    .expect("historical proof should decode");
+    let reservation_id = state["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    let phase_start_head = state["phase_start_head"]
+        .as_str()
+        .expect("phase start")
+        .to_owned();
+    let protected_tip = state["protected_tip"]
+        .as_str()
+        .expect("protected tip")
+        .to_owned();
+    let witness = state["witness"].as_str().expect("witness").to_owned();
+    let target = state["target"].as_str().expect("target").to_owned();
     HistoricalIntegrationFixture {
         reservation: RewrittenReservationFixture {
             repository,
@@ -5214,8 +5597,35 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
     repository.restore(historical.reservation.repository.path());
     worktrees.restore(historical.worktrees.path());
     assert_mapped_acceptance_defers_historical_subjects(&historical);
+    repository.restore(historical.reservation.repository.path());
+    worktrees.restore(historical.worktrees.path());
+    let mut one = released_historical_subject(historical);
+    let equivalent = DirectorySnapshot::capture(one.repository.path());
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
-        let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
+        equivalent.restore(one.repository.path());
+        if matches!(target_rewrite, TargetRewrite::Different) {
+            // Both cases start from the same protected history and released reservation.
+            // Only the target's protected content differs.
+            fs::write(
+                one.repository.path().join("src/lib.rs"),
+                "pub fn replacement() {}\n",
+            )
+            .expect("replacement source should write");
+            git(one.repository.path(), &["add", "src/lib.rs"]);
+            git(
+                one.repository.path(),
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "--amend",
+                    "-m",
+                    "rewritten target",
+                ],
+            );
+        }
+        one.target = git_stdout(one.repository.path(), &["rev-parse", "HEAD"]);
         let baseline = DirectorySnapshot::capture(one.repository.path());
         let one_trace = run_board_with_git_trace(one.repository.path());
         assert!(one_trace.output.status.success());
@@ -5282,6 +5692,39 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);
         }
     }
+}
+
+/// Reuse the protected phase and equivalent trunk already built for historical proof queries.
+fn released_historical_subject(
+    historical: HistoricalIntegrationFixture,
+) -> RewrittenReservationFixture {
+    // The historical case already built a protected phase and its equivalent
+    // target commit. Reuse that history for the released-subject cases instead
+    // of initializing and claiming a second repository.
+    git(
+        historical.reservation.repository.path(),
+        &["reset", "--hard", &historical.witness],
+    );
+    for operation in [
+        serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": historical.reservation.reservation_id,
+            "status": {
+                "status": "integrated",
+                "trunk_oid": historical.reservation.protected_tip,
+                "proof": "protected_tip_ancestor",
+            },
+            "edit_blocking_status": "clear",
+        }),
+        serde_json::json!({
+            "op": "release",
+            "reservation_id": historical.reservation.reservation_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    ] {
+        append_journal_operation(historical.reservation.repository.path(), &operation);
+    }
+    historical.reservation
 }
 
 /// A mapped acceptance spends actual trunk's admission before historical discovery can run.
@@ -7318,12 +7761,7 @@ fn run_berth_with_git_wrapper(
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, wrapper).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    DirectorySnapshot::write_shared_shell_script(&wrapper_path, wrapper);
     let original_path = std::env::var_os("PATH").expect("PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf())
@@ -7366,34 +7804,7 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 
 fn build_integration_main(root: &Path) {
-    let git = GitDriver {
-        optional_locks: OptionalLocks::Taken,
-        cleared_environment: &[
-            "CARGO_BERTH_RUN",
-            "CARGO_BERTH_SESSION_ID",
-            "GIT_DIR",
-            "GIT_COMMON_DIR",
-        ],
-        ..GIT
-    };
-    git.run(root, ["init", "--quiet", "--initial-branch=main"]);
-    for (key, value) in [
-        ("user.name", "Berth Test"),
-        ("user.email", "berth@example.invalid"),
-        ("maintenance.auto", "false"),
-        ("gc.auto", "0"),
-    ] {
-        git.run(root, ["config", key, value]);
-    }
-    fs::write(root.join("README.md"), "initial\n").expect("initial source should write");
-    git.run(root, ["add", "README.md"]);
-    git.run(root, ["commit", "--quiet", "-m", "initial"]);
-    assert_success(&run_berth(root, &["init", "--json"]));
-    git.run(root, ["add", "--force", CONFIGURATION_PATH]);
-    git.run_without_hooks(
-        root,
-        ["commit", "--quiet", "-m", "track berth configuration"],
-    );
+    IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE);
 }
 
 fn build_initialized_repository(repository_root: &Path) {
@@ -7722,13 +8133,13 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
     GIT.stdout(repository_root, arguments)
 }
 
-fn git_binary() -> String {
-    let output = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("git lookup should run");
-    String::from_utf8(output.stdout)
-        .expect("git path should be UTF-8")
-        .trim()
-        .to_owned()
+fn git_binary() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH should exist"))
+        .map(|directory| directory.join(GIT_BINARY))
+        .find(|candidate| {
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .expect("git should exist on PATH")
 }

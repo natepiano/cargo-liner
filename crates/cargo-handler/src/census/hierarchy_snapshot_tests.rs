@@ -265,7 +265,8 @@ fn hierarchy_classified_sessions_draw_roles_before_slow_details_complete() {
     );
     let classified = updates.recv_timeout(Duration::from_millis(200));
     let managed = updates.recv_timeout(Duration::from_millis(200));
-    // Release the source before assertions, including when the old ordering times out.
+    // `release_details.send(())` unblocks `details_released.recv()` before
+    // assertions, even when the update receive operations timed out.
     release_details.send(()).expect("release detail reads");
     completion
         .recv_timeout(Duration::from_millis(200))
@@ -305,7 +306,8 @@ fn unmatched_hierarchy_note_stays_drawn_while_expired_links_await_refresh() {
             .checked_sub(HIERARCHY_REFRESH_INTERVAL)
             .expect("the fixture clock supports an expired hierarchy"),
     );
-    // A slow refresh first publishes the retained, expired snapshot.
+    // Simulate the classified publication before a slow refresh by reading
+    // `HierarchyCache::retained` with its expired links and notice.
     let retained = cache.retained(source);
     let mut app = App::new_for_test().expect("test app");
     app.census = Census::new("natedev".into());

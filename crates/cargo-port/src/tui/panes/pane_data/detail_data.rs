@@ -32,6 +32,7 @@ use super::package_data;
 use super::package_data::PackageData;
 use super::package_data::PackagePresence;
 use super::package_data::PackageSection;
+use super::package_data::PackageVersion;
 use super::package_data::PublishStatus;
 use super::package_data::StructureCounts;
 use super::package_data::WorktreeGroupSummary;
@@ -301,7 +302,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             worktree_group_summary:   None,
             primary_section:          None,
             path:                     display_path,
-            version:                  submodule.commit.clone(),
+            version:                  PackageVersion::Submodule(submodule.commit.clone()),
             description:              submodule.url.clone(),
             crates_io_rows:           Vec::new(),
             types:                    None,
@@ -323,11 +324,12 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             ci_display:               CiDisplay::default(),
         },
         git:     GitData {
-            head: git_detail.head,
-            head_relation: git_detail.head_relation,
+            checkout: git_detail.checkout,
+            failed_reads: git_detail.failed_reads,
             bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
+            local_main_branch: git_detail.local_main_branch,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,
@@ -584,7 +586,7 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         worktree_group_summary: args.worktree_group_summary,
         primary_section: args.primary_section,
         path: args.display_path,
-        version,
+        version: version.map_or(PackageVersion::AwaitingMetadata, PackageVersion::Manifest),
         description,
         crates_io_rows: args.crates_io_rows,
         types: args.types,
@@ -910,11 +912,12 @@ pub(super) fn assemble_detail_pane_data(
     DetailPaneData {
         package,
         git: GitData {
-            head: git_detail.head,
-            head_relation: git_detail.head_relation,
+            checkout: git_detail.checkout,
+            failed_reads: git_detail.failed_reads,
             bisect: git_detail.bisect,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
+            local_main_branch: git_detail.local_main_branch,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,

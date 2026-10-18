@@ -21,7 +21,7 @@ use crate::constants::DEFAULT_CAPTURE_AUTO_INSTALL;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
-use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
+use crate::constants::DEFAULT_HIDDEN_COMMANDS;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::DEFAULT_WIDEN_SUMMARY;
 use crate::constants::MAX_FADE_SECONDS;
@@ -34,40 +34,47 @@ impl AppIdentity for CargoTile {
     const CONFIG_DIRNAME: &'static str = CONFIG_DIRNAME;
     const DEFAULT_LIGHT_THEME: &'static str = DEFAULT_LIGHT_THEME;
     const DEFAULT_DARK_THEME: &'static str = DEFAULT_DARK_THEME;
+    const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] = Config::RETIRED_KEYS;
 }
 
-/// Which commands the grid holds back until they have work under them,
-/// and which it never watches at all.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(default)]
+/// Cargo subcommands omitted by the scanner or hidden with their whole subtree.
+#[derive(Debug, Serialize)]
 pub(crate) struct CommandsConfig {
-    /// Cargo subcommands the scan drops on sight, so they reach neither
-    /// the summary nor the grid. For commands that are cargo by
-    /// spelling and not by purpose: a hook firing `cargo berth` four
-    /// times a second opens and closes a cell for each one, and the
-    /// cell has nothing to draw because the command compiles nothing.
-    /// Stronger than [`hidden_when_idle`](Self::hidden_when_idle),
-    /// which keeps the summary line -- an excluded command is not
-    /// tracked at all.
-    pub(crate) excluded:         Vec<String>,
-    /// Cargo subcommands that earn a cell of their own only while they
-    /// are driving other cargo invocations. A terminal UI reached as a
-    /// subcommand -- `cargo port` -- is open all day and compiles
-    /// nothing on its own, so a cell for it while it sits there holds
-    /// one row that says no more than the summary's line for it already
-    /// does. It gets its cell the moment it starts an invocation, with
-    /// that invocation under it. The summary line is never held back.
-    pub(crate) hidden_when_idle: Vec<String>,
+    /// Commands omitted by the scanner while descendants remain eligible.
+    pub(crate) excluded: Vec<String>,
+    /// Commands whose whole subtree stays out of every table and total.
+    pub(crate) hidden:   Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for CommandsConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Optional keys exist only at the saved-file boundary.
+        #[derive(Deserialize)]
+        struct SavedCommands {
+            excluded:         Option<Vec<String>>,
+            hidden:           Option<Vec<String>>,
+            hidden_when_idle: Option<Vec<String>>,
+        }
+        let saved = SavedCommands::deserialize(deserializer)?;
+        let defaults = Self::default();
+        Ok(Self {
+            excluded: saved.excluded.unwrap_or(defaults.excluded),
+            hidden:   saved
+                .hidden
+                .or(saved.hidden_when_idle)
+                .unwrap_or(defaults.hidden),
+        })
+    }
 }
 
 impl Default for CommandsConfig {
     fn default() -> Self {
         Self {
-            excluded:         DEFAULT_EXCLUDED
+            excluded: DEFAULT_EXCLUDED
                 .iter()
                 .map(|subcommand| (*subcommand).to_string())
                 .collect(),
-            hidden_when_idle: DEFAULT_HIDDEN_WHEN_IDLE
+            hidden:   DEFAULT_HIDDEN_COMMANDS
                 .iter()
                 .map(|subcommand| (*subcommand).to_string())
                 .collect(),
@@ -159,10 +166,15 @@ pub(crate) struct Config {
     pub(crate) appearance: AppearanceConfig<CargoTile>,
     /// `[capture]` — automatic shim installation.
     pub(crate) capture:    CaptureConfig,
-    /// `[commands]` — which commands the grid holds back while idle.
+    /// `[commands]` — which commands the grid excludes or hides.
     pub(crate) commands:   CommandsConfig,
     /// `[tiles]` — how the tile grid is arranged and viewed.
     pub(crate) tiles:      TilesConfig,
+}
+
+impl Config {
+    /// Saved keys whose values have migrated to the current schema.
+    const RETIRED_KEYS: &'static [&'static [&'static str]] = &[&["commands", "hidden_when_idle"]];
 }
 
 impl AppConfig for Config {
@@ -191,6 +203,10 @@ pub(crate) type LoadedConfig = tui_pane::LoadedConfig<Config>;
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::path::PathBuf;
+
+    use toml::Value;
+
     use super::*;
 
     /// What [`LoadedConfig::load`] compares against, for a config that
@@ -208,6 +224,67 @@ mod tests {
         let complete =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
         assert_eq!(round_trip(&complete), complete);
+    }
+
+    #[test]
+    fn legacy_hidden_commands_load_and_the_new_key_takes_precedence() {
+        for (text, expected) in [
+            (
+                "[commands]\nhidden_when_idle = [\"check\"]\n",
+                vec!["check"],
+            ),
+            (
+                "[commands]\nhidden_when_idle = [\"check\"]\nhidden = [\"test\"]\n",
+                vec!["test"],
+            ),
+            (
+                "[commands]\nhidden_when_idle = [\"check\"]\nhidden = []\n",
+                vec![],
+            ),
+        ] {
+            let config: Config = toml::from_str(text).expect("saved command policy");
+            assert_eq!(config.commands.hidden, expected);
+        }
+    }
+
+    #[test]
+    fn loading_legacy_hidden_commands_retires_the_saved_key() {
+        enum SavedCargoTile {}
+        impl AppIdentity for SavedCargoTile {
+            const BINARY_NAME: &'static str = CargoTile::BINARY_NAME;
+            const CONFIG_DIRNAME: &'static str = CargoTile::CONFIG_DIRNAME;
+            const DEFAULT_LIGHT_THEME: &'static str = CargoTile::DEFAULT_LIGHT_THEME;
+            const DEFAULT_DARK_THEME: &'static str = CargoTile::DEFAULT_DARK_THEME;
+            const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] =
+                CargoTile::RETIRED_CONFIG_KEYS;
+
+            fn config_path() -> Option<PathBuf> {
+                Some(std::env::temp_dir().join(format!(
+                    "cargo-tile-retired-key-{}.toml",
+                    std::process::id()
+                )))
+            }
+        }
+        let path = SavedCargoTile::config_path().expect("scratch config path");
+        std::fs::write(&path, "[commands]\nhidden_when_idle = [\"check\"]\n")
+            .expect("legacy config writes");
+        let loaded = LoadedConfig::load::<SavedCargoTile>();
+        assert_eq!(loaded.error, None);
+        assert_eq!(loaded.config.commands.hidden, ["check"]);
+        let written = std::fs::read_to_string(&path).expect("saved config reads");
+        let value: Value = toml::from_str(&written).expect("saved config parses");
+        assert_eq!(
+            value["commands"]["hidden"].as_array().expect("hidden list"),
+            &[Value::String("check".into())]
+        );
+        assert_eq!(value["commands"].get("hidden_when_idle"), None);
+        let loaded_again = LoadedConfig::load::<SavedCargoTile>();
+        assert_eq!(loaded_again.error, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("saved config reads"),
+            written
+        );
+        std::fs::remove_file(path).expect("scratch config removes");
     }
 
     #[test]
@@ -251,7 +328,7 @@ auto_install = true
 
 [commands]
 excluded = [\"berth\"]
-hidden_when_idle = [\n    \"port\",\n    \"handler\",\n]
+hidden = [\n    \"port\",\n    \"handler\",\n]
 
 [tiles]
 initial_rows = 4

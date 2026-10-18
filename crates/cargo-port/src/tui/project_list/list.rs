@@ -21,10 +21,6 @@ use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;
-use crate::constants::IN_SYNC;
-use crate::constants::NO_REMOTE_SYNC;
-use crate::constants::SYNC_DOWN;
-use crate::constants::SYNC_UP;
 use crate::lint::LintRuns;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -62,11 +58,16 @@ use crate::tui::app::SelectionPaths;
 use crate::tui::app::SelectionSync;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::dismiss_target::DismissTarget;
+use crate::tui::panes;
+use crate::tui::panes::GitReadHealth;
 use crate::tui::project_list_state::LintRuntimeRootEntry;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::project_list_state::SyncResolution;
+use crate::tui::state::CheckoutProbe;
 use crate::tui::state::Ci;
+use crate::tui::state::CiApplicability;
 use crate::tui::state::CiStatusLookup;
+use crate::tui::state::RepoBranchProbe;
 
 fn project_lint_is_running(project: &RustProject) -> bool {
     project.visibility() == Visibility::Visible
@@ -575,20 +576,8 @@ impl ProjectList {
         checkout.primary_url(repo)
     }
 
-    /// Convenience: the primary remote's ahead/behind for the checkout
-    /// at `path`.
-    fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
-        let checkout = self.git_info_for(path)?;
-        let repo = self.repo_info_for(path)?;
-        checkout.primary_ahead_behind(repo)
-    }
-
-    /// Sync state for the checkout at `path`, distinguishing "git info not
-    /// loaded yet" from "loaded, but no remote-tracking branch". The plain
-    /// [`Self::primary_ahead_behind_for`] collapses both to `None`; the
-    /// sync-change tracker needs them apart so a startup race (the cached
-    /// GitHub fetch landing before local `CheckoutInfo`) is not mistaken
-    /// for a real "no remote" baseline.
+    /// Sync state for the checkout at `path`. Pending checkout or repository
+    /// evidence has no baseline, so startup fetches cannot create a sync toast.
     pub(in crate::tui) fn primary_sync_resolution(&self, path: &Path) -> SyncResolution {
         let (Some(checkout), Some(repo)) = (self.git_info_for(path), self.repo_info_for(path))
         else {
@@ -607,6 +596,7 @@ impl ProjectList {
         let repo = self.repo_info_for(path)?;
         let parseable = |name: &str| {
             repo.remotes
+                .listed()
                 .iter()
                 .find(|r| r.name == name)
                 .and_then(|r| r.url.as_deref())
@@ -615,7 +605,7 @@ impl ProjectList {
         parseable("upstream")
             .or_else(|| parseable("origin"))
             .or_else(|| {
-                repo.remotes.iter().find_map(|r| {
+                repo.remotes.listed().iter().find_map(|r| {
                     let url = r.url.as_deref()?;
                     ci::parse_owner_repo(url).map(|_| url)
                 })
@@ -627,38 +617,42 @@ impl ProjectList {
         self.git_info_for(path).map(|info| info.status)
     }
 
+    /// Display marker includes every completed git probe, not only path status.
+    pub(in crate::tui) fn git_row_status_for(&self, path: &Path) -> Option<GitStatus> {
+        let health = panes::GitReadHealth::of(self.git_info_for(path), self.repo_info_for(path));
+        let unreadable_pin = self.entry_containing(path).is_some_and(|entry| {
+            entry.submodules().iter().any(|submodule| {
+                submodule.path.as_path() == path
+                    && matches!(submodule.commit, crate::project::PinnedCommit::Unreadable)
+            })
+        });
+        match health {
+            GitReadHealth::Unreadable => Some(GitStatus::Unreadable),
+            GitReadHealth::Readable if unreadable_pin => Some(GitStatus::Unreadable),
+            GitReadHealth::Readable => self.git_status_for(path),
+        }
+    }
+
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`. For worktree groups, checks primary + non-dismissed linked
     /// entries. For everything else, returns the state for the single path.
     pub(in crate::tui) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
             RootItem::Worktrees(g) => visible_rows::worst_git_status(
-                std::iter::once(self.git_status_for(g.primary.path())).chain(
+                std::iter::once(self.git_row_status_for(g.primary.path())).chain(
                     g.linked
                         .iter()
                         .filter(|l| l.visibility() == Visibility::Visible)
-                        .map(|l| self.git_status_for(l.path())),
+                        .map(|l| self.git_row_status_for(l.path())),
                 ),
             ),
-            _ => self.git_status_for(item.path()),
+            _ => self.git_row_status_for(item.path()),
         }
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
     pub(in crate::tui) fn git_sync(&self, path: &Path) -> String {
-        let Some(info) = self.git_info_for(path) else {
-            return String::new();
-        };
-        if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-            return String::new();
-        }
-        match self.primary_ahead_behind_for(path) {
-            Some((0, 0)) => IN_SYNC.to_string(),
-            Some((a, 0)) => format!("{SYNC_UP}{a}"),
-            Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-            Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-            None => NO_REMOTE_SYNC.to_string(),
-        }
+        panes::GitSyncLabels::of(self.git_info_for(path), self.repo_info_for(path)).origin
     }
 
     pub(in crate::tui) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
@@ -671,19 +665,19 @@ impl ProjectList {
         self.ci_data_for(path).and_then(ProjectCiData::info)
     }
 
-    /// Branch name for a checkout whose CI cannot be inferred from the
-    /// parent repo's default-branch runs: an unpushed (no-upstream) branch
-    /// that also isn't the default. Used to suppress stale parent-repo CI
-    /// status for unpublished worktree branches.
-    fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
+    /// Whether the parent repository's CI describes this checkout, including
+    /// unpublished branches and unreadable HEAD, upstream or default-branch evidence.
+    pub(in crate::tui) fn ci_applicability(&self, path: &Path) -> CiApplicability {
         let owner = self.ci_branch_owner_path(path);
-        let git = self.git_info_for(owner.as_path())?;
+        let checkout = self
+            .git_info_for(owner.as_path())
+            .map_or(CheckoutProbe::Awaiting, CheckoutProbe::Probed);
         let default_branch = self
             .repo_info_for(owner.as_path())
-            .and_then(|repo| repo.default_branch.as_deref());
-        (git.primary_tracked_ref().is_none() && git.head.branch_name() != default_branch)
-            .then(|| git.head.branch_name().map(str::to_string))
-            .flatten()
+            .map_or(RepoBranchProbe::Awaiting, |repo| {
+                RepoBranchProbe::Probed(&repo.default_branch)
+            });
+        CiApplicability::of(checkout, default_branch)
     }
 
     /// Latest CI status at `path`, with display-mode resolved through
@@ -695,7 +689,7 @@ impl ProjectList {
         path: &Path,
         lookup: &CiStatusLookup,
     ) -> Option<CiStatus> {
-        if self.unpublished_ci_branch_name(path).is_some() {
+        if self.ci_applicability(path) != CiApplicability::Applies {
             return None;
         }
         let display_mode = lookup.display_mode_for(self.ci_branch_owner_path(path).as_path());
@@ -764,19 +758,7 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn git_main(&self, path: &Path) -> String {
-        let Some(info) = self.git_info_for(path) else {
-            return String::new();
-        };
-        if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-            return String::new();
-        }
-        match info.ahead_behind_local {
-            Some((0, 0)) => IN_SYNC.to_string(),
-            Some((a, 0)) => format!("{SYNC_UP}{a}"),
-            Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-            Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-            None => String::new(),
-        }
+        panes::GitSyncLabels::of(self.git_info_for(path), self.repo_info_for(path)).main
     }
 
     // -- Hierarchy mutations ----------------------------------------------
@@ -1682,7 +1664,8 @@ impl ProjectList {
     /// branch (no upstream, not the default) has no branch-scoped run
     /// set to filter to, so the pane shows all runs and offers no toggle.
     pub(in crate::tui) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
-        self.current_branch_for(path).is_some() && self.unpublished_ci_branch_name(path).is_none()
+        self.current_branch_for(path).is_some()
+            && self.ci_applicability(path) == CiApplicability::Applies
     }
 
     pub(in crate::tui) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
@@ -2423,6 +2406,10 @@ impl ProjectList {
     /// unpublished branch — or a row with no branch — every run is
     /// shown unfiltered, matching the `All` view.
     pub(in crate::tui) fn ci_runs_for_ci_pane(&self, path: &Path, ci: &Ci) -> Vec<CiRun> {
+        match self.ci_applicability(path) {
+            CiApplicability::UnreadableEvidence => return Vec::new(),
+            CiApplicability::Applies | CiApplicability::Unpublished => {},
+        }
         let Some(info) = self.ci_info_for(path) else {
             return Vec::new();
         };
