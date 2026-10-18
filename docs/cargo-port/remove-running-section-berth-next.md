@@ -305,139 +305,34 @@
 
 ### Phase 10 — Every refused check or claim leaves one typed journal record naming its requester, paths and holders  · status: done
 
-**Depends on:** Phase 8 (shares `crates/cargo-berth/tests/`)
+#### As-built
 
-#### Work Order
-
-**Goal:** A `check` or `claim` refused with `blocked_by_overlap` appends exactly one `overlap_refused` journal record: requester in the record's `actor` and `identity_inputs`, the refused paths in `scopes`, and each holder with its overlapping scopes in `holders`. Replay, compaction and the board read the record and never count it as a reservation.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-17, asking from natedev for the style pilot. Today a refusal appends nothing. `check` refuses at `verb/check.rs:226-233`, `reconcile_and_retry`'s else branch, from the unlocked `decide` snapshot (`Ledger::read_for_edit_check`, check.rs:291). `check` also refuses at `render_acquisition` (check.rs:266-273), when the locked first-touch retry returns `FirstTouchClaimExecution::Blocked`. `claim` refuses at `validate_claim_transaction` (`verb/claim/mod.rs:1477`, `ClaimRejection::Conflict`) and through `ClaimRejection::IncompleteAnswer`. Both reach `claim_rejection_execution` (~1361), from `acquire_new` (~889-920) and from `named::acquire` (`verb/claim/named.rs:166`). `Ledger::transact_tolerating` (`ledger/handle.rs:731`) handles `TransactionValidation::Reject` at 757-763: it publishes only a required rebuild and appends nothing.
-2. **Where the record is written (decided):** at the verb, after the verb has settled on its refusal and before it returns the blocked envelope. The record goes in its own record-only transaction. The verb opens the ledger and calls `Ledger::transact` with a validator that always returns `TransactionValidation::<Infallible>::Append(Box::new(JournalOperation::OverlapRefused { .. }))`. `gate/permit.rs:263-273` writes the bypass audit the same way. `TransactionValidation::Reject` stays append-free. Writing inside the rejecting transaction loses on three counts:
-   - The common `check` refusal (226-233) is decided from an unlocked snapshot, so no lock is held there.
-   - A first `check` attempt that comes back `Blocked` (check.rs:157) is retried after reconciliation. An in-lock write would record a refusal the caller never received, and the retry could record a second.
-   - `FirstTouchClaimRejection::Blocked` (claim/mod.rs:1717, 2090) also serves post-write first touch. Post-write first touch is an incursion, not a refusal.
-   Exactly one record is written per `blocked_by_overlap` envelope that `check` or `claim` returns, and none for any other status.
-3. **The operation.** `ledger/journal.rs`, inside `declare_journal_operations!` (389-685), after `Answer`:
-   ```rust
-   /// Record a check or claim refused because foreign reservations hold overlapping paths.
-   ///
-   /// The record's `actor` and `identity_inputs` name the requester. Replay reads it and
-   /// changes no reservation, edge, answer or incident.
-   OverlapRefused {
-       /// The command whose request was refused.
-       verb:    RefusedVerb,
-       /// The requested paths the refusal reported.
-       scopes:  ReservationScopeSet,
-       /// Each foreign holder with the scopes of its own that overlap the request.
-       holders: RefusingHolderSet,
-   },
-   ```
-   - `RefusedVerb::{Check, Claim}` has `#[serde(rename_all = "snake_case")]`, so `"verb": "check" | "claim"`. It is a separate two-variant enum, not `output::CommandVerb`, so no other verb can be recorded.
-   - `RefusingHolder { reservation_id: ReservationId, scopes: ReservationScopeSet }`: the holder and its `ReservationConflict::overlapping_scopes`. It pairs each holder with its own paths, as `BlockedIncursionPath` (journal.rs:1509) does, so a union of several holders' scopes cannot be represented.
-   - `RefusingHolderSet` and `EmptyRefusingHolderSet` come from `nonempty_journal_set!` (1361), next to `ForeignReservationIdSet` (1422).
-   - The checked constructor `RefusingHolderSet::from_conflicts(&[ReservationConflict]) -> Result<Self, EmptyRefusingHolderSet>` keeps conflict order. Every refusal path builds its envelope from a non-empty conflict list, so `Err` cannot arise there. The caller appends nothing on `Err`.
-   - None of the three new types derives `JsonSchema`, because no envelope carries them.
-4. **Requester (decided):** the record's existing `actor` (`repository`, `worktree`, `run`) plus `identity_inputs`, which every new record writes (`JournalMutationIdentityInputs::record`, journal.rs:185: `CARGO_BERTH_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CARGO_BERTH_RUN`, invocation directory). Copying the requester into the operation would let a record name a requester that differs from its own actor. The actor is the `ResolvedJournalMutationActor` (`ledger/authorization.rs:69`) of the refused request:
-   - `claim`: `journal_mutation_actor` in `acquire_new` (claim/mod.rs:837), and the matching actor in `named::acquire`.
-   - `check`: `resolved_edit_authorization.journal_mutation_actor_for(resolved_edit_authorization.coordination_run_id)`, from `decide` (check.rs:310). An unidentified caller gets a fresh run id per process, because that caller presented no run.
-5. **Recording function.** New `crates/cargo-berth/src/verb/refusal.rs` (declared in `verb/mod.rs`): `pub(super) fn record(worktree_context: &WorktreeContext, requester: ResolvedJournalMutationActor, verb: RefusedVerb, scopes: &ReservationScopeSet, conflicts: &[ReservationConflict])`.
-   - It opens the ledger with `Ledger::open_from_discovered_worktree` and appends through `Ledger::transact`, which waits up to `MUTATING_VERB_CONTENTION_TOLERANCE` like every mutating verb.
-   - It returns nothing. A failed append (lock contention, unreadable ledger, `Err` from `from_conflicts`) leaves the refusal envelope byte-for-byte as today. The requester's remedy does not depend on the record, and hook output stays one accurate refusal.
-   - Call sites:
-     - `check.rs`: `CheckDecision` (48) gains `requester: ResolvedJournalMutationActor` and `worktree_context: WorktreeContext`, filled in `decide`. The else branch at 226 records `retried_decision.scopes` and `.conflicts`. `render_acquisition` takes the decision's requester and context; its `Blocked` arm (266-273) records `scopes` and `conflicts` before `blocked_check`. The `PostWriteIncursion` arm shares that match arm but cannot occur under `FirstTouchConflictHandling::RefuseRequest`. Split it out so only `Blocked` records.
-     - `claim/mod.rs` `acquire_new` and `named.rs` `acquire`: when the execution is `ClaimExecution::Blocked { conflicts, .. }` or `ClaimExecution::IncompleteAnswer { rejection, .. }` (`rejection.conflicts`), record with `RefusedVerb::Claim`. Use the normalized claim `scopes` (claim/mod.rs:840; named.rs:79) and the claim's actor. Record after the refusing transaction returns.
-6. **Readers (replay, board, compaction):**
-   - `RetainedReservationSet::apply` (`reservation/retention.rs:1032`): add `OverlapRefused` to the no-op arm at 1083-1087.
-   - `OrderingGraph::replay` (`edge/graph.rs:155-180`): add it to the no-op list.
-   - `JournalOperation::record_ceiling` (journal.rs:750-775): `Declared`, since the request bounds `scopes` and `holders`.
-   - `is_coordination_record` (793-826): `false`. Coordination readers never see it, so no board answer, alert, edge or enrollment history reads it.
-   - `session::apply_journal_event` (`session/mod.rs:441` wildcard) maps no session.
-   - Compaction keeps it (it drops only superseded merge extents).
-   - `CURRENT_SCHEMA_VERSION` (`ledger/constants.rs:87`) stays `2`. Precedent: `HolderMergeExtentObserved` was added without a bump (fd71b778).
-   - Existing journals decode and replay unchanged, and `tests/fixtures/reader_compat` bytes do not change.
-   - The append moves `JournalPosition`, so an open terminal board rebuilds once on its next refresh. Phase 5's rule (no reconcile on an unchanged journal) still holds.
-7. **Unit tests** (impl writer, `ledger/journal.rs` `mod tests`):
-   - An `overlap_refused` event round-trips through serde in the current schema.
-   - `is_coordination_record` is false.
-   - Folding a journal of one claim then one `OverlapRefused` naming it yields the same `RetainedReservationSet` as the claim alone.
-   - `RefusingHolderSet::from_conflicts(&[])` is `Err`.
-8. **Integration tests** (test writer):
-   - New `crates/cargo-berth/tests/support/overlap_refusal.rs`, included by `#[path]` from `overlap.rs` and `answers.rs` as `git_configuration.rs` is: `assert_one_refusal_appended(journal_before: &[u8], journal_after: &[u8], verb: &str, envelope: &Value) -> Value`. It asserts:
-     - `journal_after` starts with `journal_before` and adds exactly one line.
-     - That line's `op` is `"overlap_refused"` and its `verb` is `verb`.
-     - Its `holders` reservation ids equal `envelope["blocked_by"]` in order.
-     - Each holder's `scopes` equals the matching `envelope["payload"]["data"]["conflicts"][i]["overlapping_scopes"]`.
-     It returns the record.
-   - New test in `tests/overlap.rs`, `a_refused_claim_journals_its_requester_paths_and_holders`, modeled on `blocked_claim_names_holder_provenance_and_appends_nothing` (334) and using the same `initialized_repository()` template and `foreign_worktree`.
-     - Setup: FIRST_RUN claims `tree:crates/hana_kana`. From the second worktree, `claim file:crates/hana_kana/src/lib.rs --run SECOND_RUN --json` exits 1 with `blocked_by_overlap`.
-     - Requester: `actor.run == SECOND_RUN`. `actor.worktree` differs from the holder claim record's `actor.worktree`. `identity_inputs.status == "recorded"`.
-     - Paths: `scopes == [{"path":"crates/hana_kana/src/lib.rs","kind":"file"}]`.
-     - Holder: `holders[0].reservation_id` is the first claim's id, and `holders[0].scopes` equals the envelope conflict's `overlapping_scopes`.
-     - Board: the reservation ids across `board --json`'s `ready_now`, `waiting`, `unconstrained_reservations` and `resolved` sections (as `cargo_berth_test_support::reservation_row` walks them) are the same before and after the refusal.
-   - Rename `blocked_claim_names_holder_provenance_and_appends_nothing` to `..._and_journals_one_refusal`, and `blocked_check_returns_holder_decision_facts_without_appending` (1200) to `..._and_journals_one_refusal`. Replace each unchanged-journal assertion with `assert_one_refusal_appended`, verb `"claim"` and `"check"` respectively. The check test also asserts `scopes == [{"path":"shared.rs","kind":"file"}]`.
-   - In `tests/answers.rs`, these tests assert `journal_bytes(...) == journal_before` after a `blocked_by_overlap` claim:
-     - `an_answer_naming_one_holder_is_refused_while_another_holder_conflicts` (~766)
-     - `incomplete_before_answer_prints_a_complete_executable_claim` (~799)
-     - `incomplete_answer_keeps_the_configured_chooser_after_holder_facts` (~867)
-     - `incomplete_defer_answer_prints_a_complete_executable_claim` (~917)
-     - `incomplete_named_phase_answer_prints_a_complete_executable_claim` (~991)
-     - `incomplete_mixed_answer_prints_a_choice_for_the_missing_holder` (~1085)
-     - `released_holders_are_no_longer_answered_and_naming_them_is_refused` (~1369)
-     - `a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused` (~1433)
-     Each becomes `assert_one_refusal_appended(.., "claim", &envelope)`. The no-append assertions on other statuses stay as they are: invalid input (exit 5), `ambiguous_active_run_reservations`, `contention`, `ledger_unreadable`.
-   - Any further test the package run shows failing only because a refused check or claim now appends this record gets its expectation updated to include the record. No shared `journal_events` helper filters `overlap_refused` out.
-   - Each new or edited test runs under a second.
-9. **Wire contract:**
-   - No envelope, `--json` payload or `output_contract_version` changes. `docs/cargo-berth/generated/output-contract.json` stays byte-identical, and `generated_artifacts_are_reproducible_from_the_checked_in_contract` stays green without regeneration.
-   - The journal gains one operation. An older cargo-berth decodes an `overlap_refused` line as a corrupt interior record, which makes the ledger unreadable. Every machine sharing a repository must run this version before any refusal is recorded. Install on natedev and the Mac together after the checkpoint, under the berth standing approval.
-10. **Docs:**
-    - `docs/cargo-berth/as-built/json-contract.md` "The journal record" (998): add an `overlap_refused` row (`verb`, `scopes`, `holders`) to the op table (after `answer`, ~1096). Add a tagged-value bullet: `verb` is `check` or `claim`; each `holders` entry is `{ "reservation_id": <uuid-v7>, "scopes": [scope...] }`, non-empty; the requester is the record's `actor` and `identity_inputs`.
-    - `docs/cargo-berth/as-built/worktree-coordination.md`:
-      - "The journal operation union" (62): add `OverlapRefused` and correct the variant count.
-      - "Journal replay" (70): add it to the records read only by the reservation fold, as a no-op.
-      - "Claiming and the first-touch path" (251): one sentence saying each refused check or claim appends one record, in its own transaction after the refusal.
-    - `crates/cargo-berth/README.md` "Claims and collisions" (246): one paragraph saying every refused `check` or `claim` appends an `overlap_refused` journal record naming the requester, the paths and each holder.
-    - `crates/cargo-berth/CHANGELOG.md` `[Unreleased]` `### Added` (10): one entry with the older-binary sentence from item 9, worded like the `replace_release_disposition` entry (~134).
-
-Retention (unit director's call, 2026-10-17): refusal records are kept forever. - Refusal records are kept forever: compaction drops only superseded merge extents, so every refused hook check adds about 0.5 KB to the journal for good. Recommendation: keep them, because the style pilot needs the full count. If journal growth later shows up in replay timings, add a retention rule then (for example, compaction drops refusals older than the pilot window).
+- `JournalOperation::OverlapRefused { verb: RefusedVerb, scopes: ReservationScopeSet, holders: RefusingHolderSet }` follows `Answer` in `declare_journal_operations!`. `RefusedVerb::{Check, Claim}` is snake_case on the wire and separate from `output::CommandVerb`, so no other verb can be recorded. `RefusingHolder { reservation_id, scopes }` pairs each holder with its own `overlapping_scopes`, so a union of several holders' scopes is unrepresentable. `RefusingHolderSet` / `EmptyRefusingHolderSet` come from `nonempty_journal_set!`'s journal-only branch (no `JsonSchema`, no accessor), built by `TryFrom<&[ReservationConflict]>` in conflict order.
+- The requester is the record's own `actor` plus `identity_inputs`, never a copy inside the operation: for `claim` the claim's `journal_mutation_actor`, for `check` `journal_mutation_actor_for(coordination_run_id)` from `decide` (an unidentified caller gets a fresh run id per process).
+- `verb::refusal::record(worktree_context, requester, verb, scopes, conflicts)` opens the ledger and appends in its own record-only `Ledger::transact` with an `Infallible` validator, after the verb settles on its refusal. It returns nothing: on lock contention, an unreadable ledger or an empty holder set it writes nothing and the refusal envelope is unchanged. `TransactionValidation::Reject` stays append-free.
+- Exactly one record per `blocked_by_overlap` envelope from `check` or `claim`, none for any other status. `check`: `CheckDecision` carries `requester` and `worktree_context`; it records at `reconcile_and_retry`'s final snapshot refusal and at `render_acquisition`'s `Blocked` arm (`PostWriteIncursion` is a separate arm that records nothing). `claim`: `acquire_new` and `named::acquire` record through `audited_claim_rejection_execution` / `record_refusal` after the refusing transaction returns; only `Blocked` and `IncompleteAnswer` record, and every other `ClaimExecution` variant is named.
+- Readers: no-op arms in `RetainedReservationSet::apply` and `OrderingGraph::replay`; `record_ceiling` is `Declared`; `is_coordination_record` is false, so no board, alert, edge or enrollment reader sees it; compaction keeps it forever. `CURRENT_SCHEMA_VERSION` stays 2; `reader_compat` fixtures and `output-contract.json` are byte-identical; no envelope changes.
+- `tests/support/overlap_refusal.rs` `assert_one_refusal_appended(journal_before, journal_after, verb, envelope)` checks one appended line whose holders and scopes match `blocked_by` and the envelope conflicts. `cargo-berth-test-support` holds `board_reservation_entries` / `board_reservation_ids`, the one list of board sections.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/journal.rs` — `OverlapRefused`, `RefusedVerb`, `RefusingHolder`, `RefusingHolderSet`, `record_ceiling`, `is_coordination_record`, unit tests
-- `crates/cargo-berth/src/ledger/mod.rs` — re-exports of the new types
-- `crates/cargo-berth/src/reservation/retention.rs` — no-op arm in `apply`
-- `crates/cargo-berth/src/edge/graph.rs` — no-op arm in `OrderingGraph::replay`
-- `crates/cargo-berth/src/verb/refusal.rs` — new; `record`
-- `crates/cargo-berth/src/verb/mod.rs`
-- `crates/cargo-berth/src/verb/check.rs` — `CheckDecision` fields, both refusal sites
-- `crates/cargo-berth/src/verb/claim/mod.rs` — claim refusal recording
-- `crates/cargo-berth/src/verb/claim/named.rs`
-- `crates/cargo-berth/tests/support/overlap_refusal.rs` — new
-- `crates/cargo-berth/tests/overlap.rs`
-- `crates/cargo-berth/tests/answers.rs`
-- `docs/cargo-berth/as-built/json-contract.md`
-- `docs/cargo-berth/as-built/worktree-coordination.md`
-- `crates/cargo-berth/README.md`
-- `crates/cargo-berth/CHANGELOG.md`
-- `crates/cargo-berth/tests/` — any further expectation a refusal record changes (owner: `test`)
+- `crates/cargo-berth/src/ledger/journal.rs` — the operation, value types, macro branch, ceiling and classification, unit tests
+- `crates/cargo-berth/src/verb/refusal.rs` — the best-effort recorder
+- `crates/cargo-berth/src/verb/check.rs` — two recording sites
+- `crates/cargo-berth/src/verb/claim/mod.rs` — `PreparedClaim::transact`, `audited_claim_rejection_execution`, `record_refusal`
+- `crates/cargo-berth/src/verb/claim/named.rs` — named-phase claim recording
+- `crates/cargo-berth-test-support/src/integration_repository.rs` — board section walk
+- `crates/cargo-berth/tests/support/overlap_refusal.rs`, `tests/overlap.rs`, `tests/answers.rs`, `tests/lifecycle.rs` — refusal-record assertions
+- `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/worktree-coordination.md` (27 variants), `crates/cargo-berth/README.md`, `crates/cargo-berth/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester. Product code and docs split from the integration tests. Spec items 3, 8 and 9 fix the wire shape, so the tests can be written before the code exists.
-- `impl`: every `src/` file above, the item 7 unit tests, `json-contract.md`, `worktree-coordination.md`, README and CHANGELOG. Hub: `crates/cargo-berth/src/ledger/mod.rs` (re-exports).
-- `test`: `tests/support/overlap_refusal.rs`, the new and renamed tests in `tests/overlap.rs`, and the eight `tests/answers.rs` edits from item 8. After `impl` lands, it runs the package tests and updates any further expectation that a refusal record changes, in any `tests/*.rs` file.
+**Binds later work:** `acquire_new` reads `ClaimRequest` field by field rather than by exhaustive destructuring, and `claim_execution_from_outcome`'s `LedgerTransactionOutcome::Rejected` arm is unreachable. Any board-section walk uses `board_reservation_entries` / `board_reservation_ids`. `tests/lifecycle.rs` includes the `overlap_refusal` module and asserts one refusal record in `fast_path_declines_a_retained_foreign_conflict_on_its_held_path`.
 
-**Constraints from prior phases:** see Delegation Context. In particular, phase 5's terminal board rebuilds only on `JournalPosition` movement. A refusal record moves it, and that rebuild is expected.
+**Gotchas:** An older cargo-berth decodes an `overlap_refused` line as a corrupt interior record and finds the ledger unreadable; every machine sharing a repository runs this version. Each refusal moves `JournalPosition`, so an open terminal board rebuilds once. Each refused hook check adds about 0.5 KB to the journal for good. Two phases verifying in one worktree change the tree mid-run and leave the package pass unrecorded.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The passing tests include:
-- `a_refused_claim_journals_its_requester_paths_and_holders`
-- both renamed `..._and_journals_one_refusal` tests
-- the eight `answers.rs` tests
-- the item 7 unit tests
-- `generated_artifacts_are_reproducible_from_the_checked_in_contract`, with `output-contract.json` unchanged
-
+**Ruled out:** writing the record inside the rejecting transaction — the common `check` refusal holds no lock, a retried first `Blocked` attempt would record a refusal never returned, and `FirstTouchClaimRejection::Blocked` also serves post-write incursions; copying the requester into the operation — it could disagree with the record's `actor`; a retention rule for refusal records — the style pilot needs the full count.
 
 ### Phase 11 — The 16 cargo-berth tests still at 1 s in CI finish in 0.7 s  · status: todo
 
-**Depends on:** phase 10 (phase 10 owns `crates/cargo-berth/src/` and `crates/cargo-berth/tests/` while it runs; this phase edits `tests/` and `src/ledger/handle.rs`)
+**Depends on:** phase 10 (done: it added the `overlap_refused` journal record and left Spec 15's two `src/verb/claim/mod.rs` findings). This phase edits `tests/`, `crates/cargo-berth/Cargo.toml`, `src/ledger/handle.rs`, `src/verb/claim/mod.rs` and the workspace `.config/nextest.toml`.
 
 #### Work Order
 
@@ -448,12 +343,12 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
 2. Rule (showrunner, verbatim): "measure in a full parallel run like CI's (the whole workspace suite at once), not each test alone. Times taken alone didn't hold under CI's parallel load. A faster test must still prove everything it proved before: keep assertions after reconciliation, and keep the many-scope cases many-scope."
 3. The 16 tests (CI seconds):
    - `lifecycle.rs`:
-     - `checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward` 1.684 (`:966`)
-     - `checkpoint_ranges_survive_two_rebases_reconciled_during_integration` 1.598 (`:971`)
-     - `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` 1.328 (`:1051`)
-     - `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` 1.196 (`:1046`)
-     - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` 1.182 (`:1062`)
-     - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` 1.127 (`:1056`)
+     - `checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward` 1.684 (`:969`)
+     - `checkpoint_ranges_survive_two_rebases_reconciled_during_integration` 1.598 (`:974`)
+     - `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` 1.328 (`:1054`)
+     - `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` 1.196 (`:1049`)
+     - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` 1.182 (`:1065`)
+     - `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` 1.127 (`:1059`)
      The bodies of all six are in `tests/support/reanchoring.rs`.
    - `liveness.rs`: `recovery_dispositions_validate_evidence_and_remain_distinct_after_replay` 1.492 (`:1661`).
    - `edges.rs`:
@@ -481,31 +376,41 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
    - The unit test builds 131,072 scope paths (`MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES` = 4 MiB, `src/ledger/constants.rs:47`, divided by 32) and serializes about 10 MB of JSON in a debug build before `append_events` (`src/ledger/journal.rs:2295-2306`) checks the size.
 5. **R0 — templates that hold a ledger** (`repository_template.rs`):
    - An opt-in `LedgerFixture::Recorded` lets a template keep journal records and relocate paths inside `.git/cargo-berth`.
-   - After the copy, delete `reservations.json` and the replay checkpoint so the next command replays the journal (path lengths change byte offsets and the fingerprint). Renew each linked worktree's `.git/worktrees/*/cargo-berth-worktree-id`.
+   - After the copy, delete `reservations.json` and the replay checkpoint so the next command replays the journal (path lengths change byte offsets and the fingerprint).
+   - Identities (phase 10 review): one `IdentityRenewal` (`repository_template.rs`) maps every identity the template holds to a fresh `Uuid::now_v7()`: `repo-instance-id`, the main worktree's `cargo-berth-worktree-id`, and each linked worktree's `.git/worktrees/*/cargo-berth-worktree-id`. It applies that one map to the whole snapshot, so the identity files, the journal's actors and the persisted markers name the same new identity; `validate_same_owner` compares recorded owners against those files, so renewing only the files would fail every copied reservation's ownership check. Each old identity must be replaced at least once, as today. Test (`tests/lifecycle.rs`): `two_rebase_history_copies_keep_owners_and_drain_their_markers` instantiates `TWO_REBASE_HISTORY` twice; the copies hold different identities, and in each copy a holder `check` passes ownership validation and `drain_markers` reconciles the pending markers.
    - Linked worktrees live under `<root>/.git/fixture-*`, as `REWRITE_MAIN` does, so one root relocates.
    - The builder writes reservation ids and commit tips to a fixture JSON file inside the template, and keeps today's setup assertions, which run on every fresh build.
    - A recorded template older than 12 hours is rebuilt, because reservations turn stale at 24 hours (`src/reservation/record.rs:436`).
    - First confirm with a test that any command (not only `init`) rebuilds a missing projection. If not, R0 runs `init --repair-projection` once per copy.
+   - **Built before the clock** (phase 10 review). A template's build counts against the 0.7 s of whichever test builds it, and every test waiting on the build lock pays the wait. A recorded prefix cannot fit in that: `TwoRebaseHistory::new` alone is about 25 hooked starts (about 1.2 s in CI). So every template this phase adds is built once per nextest run, before any test starts, by a nextest setup script. The run prints that cost as its own `SETUP PASS [ t ] cargo-berth-templates` line, and item 14 records it beside the 16; it is never subtracted from a test or left out. Measured on nextest 0.9.143 in a scratch crate, 2026-10-17: setup scripts need `experimental = ["setup-scripts"]`; `command = { command-line = "<path>", relative-to = "target" }` runs a path under the target directory; a `NAME=value` line appended to `$NEXTEST_ENV` reaches every test; nextest runs each `harness = false` test target with `--list` before any setup script.
+     - `.config/nextest.toml`: `experimental = ["setup-scripts"]`; `[scripts.setup.cargo-berth-templates]` with `command = { command-line = "tmp/cargo-berth-templates/builder", relative-to = "target" }`; `[[profile.default.scripts]]` with `filter = 'package(cargo-berth)'` and `setup = 'cargo-berth-templates'`. The showrunner, 2026-10-17, approving this design: "The setup script's filter covers only cargo-berth binaries, so runs of other packages never pay for the build." nextest runs a setup script only when a test in the run matches its filter, so `filter = 'package(cargo-berth)'` meets it; widen it to nothing else. Edit only this phase's own block in the file (the `experimental` entry, the script and its profile entry), leaving every other line as it is, and claim the file through this phase's reservation.
+     - `crates/cargo-berth/Cargo.toml`: `[[test]]` `name = "recorded_templates"`, `harness = false`.
+     - `crates/cargo-berth/tests/recorded_templates.rs` (`main`). With `--list`, it replaces the symlink `CARGO_TARGET_TMPDIR/cargo-berth-templates/builder` with its own `current_exe()` and prints no tests, so the setup script runs the builder this run built. With no `--list`, it builds every template this phase adds, one thread each, under `CARGO_TARGET_TMPDIR/cargo-berth-templates/before-run/<key>/<name>` (`key` over the builder and `cargo-berth` executables, as `RepositoryTemplate::key`; a recorded build older than 12 hours is rebuilt). It runs each builder's setup assertions, and appends `CARGO_BERTH_PREBUILT_TEMPLATES=<that before-run/<key> directory>` to `$NEXTEST_ENV` when that variable is set.
+     - `RepositoryTemplate` gains `build_timing: TemplateBuildTiming`, `enum TemplateBuildTiming { InTest, BeforeRun }`. Every existing template is `InTest` and unchanged. A `BeforeRun` template copies from `$CARGO_BERTH_PREBUILT_TEMPLATES/<name>` when the variable is set and that build is there. The showrunner, 2026-10-17: "A test that finds its template missing (for example, when run with a filter the setup misses) still builds it itself, so it stays correct, only slower." So a missing build is built in the test, exactly as `InTest`, never a panic; a unit test of `RepositoryTemplate` covers that path. With the variable unset (a run with no setup script, such as `cargo test`) it builds in the test, as today.
+     - The builder target includes the files that hold the builders by `#[path]`, as `lifecycle.rs` includes `support/reanchoring.rs`: `tests/support/reanchoring_templates.rs` (R1), `tests/support/edges_templates.rs` (R3, R4) and `tests/support/gate_templates.rs` (R5); R2's builders are `IntegrationRepository` functions in the support crate. A builder's helpers move with it.
 6. **R1 — rewrite tests** (`tests/support/reanchoring.rs`):
    - New recorded templates:
      - `TWO_REBASE_HISTORY`: the end state of `TwoRebaseHistory::new`, with 2 reservations and pending markers.
      - `STACKED_UPPER_CHECKPOINT`, for both `upper_checkpoint_…` tests.
      - `SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION` and `SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING`, for the two `split_checkpoint_…` tests.
+     - All four are `BeforeRun` and live in `tests/support/reanchoring_templates.rs`, which `lifecycle.rs` and `recorded_templates.rs` both include.
    - Every rebase stays live and hooked (the hooks capture the markers), and so does `drain_markers` (`:2186`). The two-rebase pair's ff to `main` stays hooked: it is the "during integration" case.
    - In the shared drop tail (`assert_dropping_split_preserves_checkpoint`, `:1631`) the ff to `main` runs hookless. If a test still measures over 0.7 s, its drop tail becomes its own test, starting from a template of the drained state.
 7. **R2 — cross-target tests**:
-   - `IntegrationRepository` (`crates/cargo-berth-test-support/src/integration_repository.rs`) gains a `CROSS_TARGET_PAIR` recorded template: the integration worktree; lane A targeting `integration` and lane X targeting `main`; A claimed, X deferred behind A, A's work committed and released.
+   - `IntegrationRepository` (`crates/cargo-berth-test-support/src/integration_repository.rs`) gains a `BeforeRun` `CROSS_TARGET_PAIR` recorded template: the integration worktree; lane A targeting `integration` and lane X targeting `main`; A claimed, X deferred behind A, A's work committed and released.
    - Edges tests `:232` and `:284` and gate `:1568` start from it. Gate `:1488` uses a `CROSS_TARGET_AFTER_PAIR` variant (`--target integration`, X claimed `--after` A).
    - In `edges.rs`, landing commits and merges run hookless: only board and `sequence` output is asserted.
    - In `gate.rs`, the final `propose_trunk` stays hooked. In `trunk_gate_remembers_…` the landings also stay hooked, because the test is about what the gate remembers.
 8. **R3 — `legacy_negative_…`**:
    - It splits into one test per `SuccessorGap` case. Together they keep both cases: many-scope stays many-scope.
-   - Each starts from a recorded `REWRITTEN_SUCCESSOR_EQUIVALENT` template (the state of `rewritten_successor_fixture(true)`, `edges.rs:2444`), so its live part is the traced `sequence` and two traced boards.
+   - `rewritten_successor_fixture(true)` (`edges.rs:2444`) is too early a boundary (phase 10 review): `successor_with_separated_matches` (`edges.rs:1412`) then adds four commits and rewrites the checkpoint's scope and protected tip, and the test installs the retained release (`retain_protected_tip_release`) and the legacy `different` verdict.
+   - So each case gets its own recorded template holding that complete state, immediately before the traced `sequence`. `const fn legacy_negative_template(gap: SuccessorGap) -> RepositoryTemplate` (`tests/support/edges_templates.rs`) is an exhaustive `match` naming `LEGACY_NEGATIVE_UNRELATED_GAP` and `LEGACY_NEGATIVE_PROTECTED_GAP`, so a new `SuccessorGap` variant must name its template. Each builder runs `successor_with_separated_matches(gap)` with its worktrees under `<root>/.git/fixture-*` (R0), then `retain_protected_tip_release` and the verdict append, and writes `predecessor_id`, `successor_id` and `successor_head` to the fixture JSON. Both are `BeforeRun`.
+   - Each test's live part is then the traced `sequence` and the two traced boards.
 9. **R4 — `orphaned_middle_…`**:
-   - A `LEFT_RIGHT_TREES` template (left and right files committed hookless, plus the six worktrees; no ledger records, so no R0 needed) replaces `commit_left_and_right_trees` (`edges.rs:2862`).
+   - A `BeforeRun` `LEFT_RIGHT_TREES` template in `tests/support/edges_templates.rs` (left and right files committed hookless, plus the six worktrees; no ledger records, so no `LedgerFixture::Recorded`) replaces `commit_left_and_right_trees` (`edges.rs:2862`).
    - The orphaning, recovery, duplicate `sequence` and journal check stay live.
 10. **R5 — enrollment**:
-    - An `ENROLLED_PAIR` recorded template holds the state up to the board.
+    - A `BeforeRun` `ENROLLED_PAIR` recorded template in `tests/support/gate_templates.rs` holds the state up to the board.
     - One live test keeps the `init`, `check`, `drift` and board assertions.
     - The observe and enforce variants (and the two `second_*` variants sharing the body) then run only `set_gate_mode` and `integrate` against it, with `assert_enrollment_gate_decision` (`gate.rs:7590`) unchanged.
     - First check that gate mode does not change `check` or `drift` on lane branches. If it does, build one template per mode.
@@ -524,32 +429,39 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
 14. Timing measurement, binding:
     - The CI Test Suite nextest log on main after this phase merges. Each of the 16 (and each test split from one of them) reads 0.7 s or less.
     - Local check before the checkpoint: delete `target/tmp/cargo-berth-templates/` (a cold start, as CI's), then one `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` run of the whole package at once, while no other `verify.sh` runs. Read the per-test times of the 16 from that run's nextest output.
+    - Record the run's `SETUP PASS [ t ] cargo-berth-templates` line beside the 16, locally and in the CI log: it is the whole cost of the before-run builds (R0), paid once per run. The showrunner, 2026-10-17: "The phase records the SETUP PASS line from both a natedev run and a Mac run." Give both, each from a full `verify.sh test cargo-berth` run, and say which machine each came from.
     - Never time a test alone or with a `--filter` subset: phase 8 measured that times taken that way did not hold in CI.
     - Record natedev load (`uptime`) beside the run. A run at load above the core count is repeated, not trusted.
 15. **Carried from phase 10's review** (round 2 findings, moved here when that phase's gate converged):
-    - `acquire_new` (`crates/cargo-berth/src/verb/claim/mod.rs:821`) reads `ClaimRequest` field by field again. Restore the exhaustive destructure, so a new request field cannot be dropped silently, and meet clippy's length limit by extracting a helper, never by an allow.
-    - The `LedgerTransactionOutcome::Rejected` arm at `crates/cargo-berth/src/verb/claim/mod.rs:1399` cannot be reached. Make it unrepresentable by type where that transaction cannot reject; otherwise remove the arm's dead handling with the reason in one comment.
+    - F008 (showrunner, 2026-10-17): `acquire_new` (`crates/cargo-berth/src/verb/claim/mod.rs:821`) reads `ClaimRequest` field by field again. Destructure `ClaimRequest` exhaustively wherever its fields are read, not only in `acquire_new`, so adding a field fails to compile instead of being skipped silently. Meet clippy's length limit by extracting a helper, never by an allow.
+    - F009 (showrunner, 2026-10-17): the `LedgerTransactionOutcome::Rejected` arm of `claim_execution_from_outcome` (`crates/cargo-berth/src/verb/claim/mod.rs:1399`) cannot be reached: its only caller, `acquire_new` (907-922), sends `Rejected` to `audited_claim_rejection_execution` and passes only `Appended` outcomes. Remove the arm by making the impossible case unrepresentable in the type (for example, pass the appended outcome's parts instead of the whole `LedgerTransactionOutcome`), never by guarding it.
 
 **Files:**
-- `crates/cargo-berth/src/verb/claim/mod.rs` — Spec 15: `acquire_new` destructure, unreachable `Rejected` arm
-- `crates/cargo-berth-test-support/src/repository_template.rs` — R0 `LedgerFixture::Recorded`, projection reset, worktree id renewal, 12-hour rebuild
+- `crates/cargo-berth/src/verb/claim/mod.rs` — Spec 15: every `ClaimRequest` read destructures it (F008); the `Rejected` arm removed by type (F009)
+- `crates/cargo-berth-test-support/src/repository_template.rs` — R0 `LedgerFixture::Recorded`, projection reset, `IdentityRenewal`, 12-hour rebuild, `TemplateBuildTiming`
 - `crates/cargo-berth-test-support/src/integration_repository.rs` — `CROSS_TARGET_PAIR`, `CROSS_TARGET_AFTER_PAIR` builders
 - `crates/cargo-berth-test-support/src/lib.rs` — re-exports
-- `crates/cargo-berth/tests/edges.rs` — cross-target tests, `legacy_negative_…` split, `LEFT_RIGHT_TREES`, `REWRITTEN_SUCCESSOR_EQUIVALENT`
-- `crates/cargo-berth/tests/gate.rs` — cross-target gate tests, `ENROLLED_PAIR`, enrollment variants
+- `.config/nextest.toml` — `experimental = ["setup-scripts"]`, the `cargo-berth-templates` setup script (workspace-wide; claim through berth)
+- `crates/cargo-berth/Cargo.toml` — `[[test]]` `recorded_templates`, `harness = false`
+- `crates/cargo-berth/tests/recorded_templates.rs` — the builder target: `--list` symlink, every `BeforeRun` build, the `$NEXTEST_ENV` line
+- `crates/cargo-berth/tests/support/edges_templates.rs` — R3 `legacy_negative_template` and R4 `LEFT_RIGHT_TREES`
+- `crates/cargo-berth/tests/support/gate_templates.rs` — R5 `ENROLLED_PAIR`
+- `crates/cargo-berth/tests/edges.rs` — cross-target tests, `legacy_negative_…` split, R4 test
+- `crates/cargo-berth/tests/gate.rs` — cross-target gate tests, enrollment variants
 - `crates/cargo-berth/src/ledger/handle.rs` — R7 unit test
-- `crates/cargo-berth/tests/support/reanchoring.rs` — R1 recorded templates, hookless drop-tail ff
-- `crates/cargo-berth/tests/lifecycle.rs` — the six rewrite tests, any drop-tail split
+- `crates/cargo-berth/tests/support/reanchoring_templates.rs` — R1 recorded templates and their builders
+- `crates/cargo-berth/tests/support/reanchoring.rs` — R1 tests on the templates, hookless drop-tail ff
+- `crates/cargo-berth/tests/lifecycle.rs` — the six rewrite tests, any drop-tail split, the R0 two-copy identity test
 - `crates/cargo-berth/tests/liveness.rs` — R6 split, hookless trunk moves
 - `crates/cargo-berth/tests/support/split_rebase.rs` — split-rebase helpers the R1 templates reuse
 
-**Workers:** 1 writer + 1 tester, split by file. Both write tests; the redesign is in test code, and the R0 template change sits under both. Of the 16 tests, `impl` takes 9 (4 edges, 4 gate, 1 unit) and `test` takes 7 (6 lifecycle, 1 liveness).
-- `impl` — R0, R2, R3, R4, R5, R7: `repository_template.rs`, `integration_repository.rs`, `tests/edges.rs`, `tests/gate.rs`, `src/ledger/handle.rs`. Hub: `crates/cargo-berth-test-support/src/lib.rs` (re-exports). It lands R0 first and tells `test` when `LedgerFixture::Recorded` is in.
-- `test` (opens as `test`; lane `crates/cargo-berth/tests/`) — R1 and R6: `tests/support/reanchoring.rs`, `tests/lifecycle.rs`, `tests/liveness.rs`, `tests/support/split_rebase.rs`. Before R0 lands it does the liveness split, the hookless trunk moves and the fixture restructuring that needs no recorded template. It messages `impl` for any `repository_template.rs` line it needs.
+**Workers:** 2 writers, split by file. Both slots write fixtures and tests in disjoint files: the redesign is in test code, and the R0 template change sits under both. Of the 16 tests, `impl` takes 9 (4 edges, 4 gate, 1 unit) and `test` takes 7 (6 lifecycle, 1 liveness).
+- `impl` — R0, R2, R3, R4, R5, R7 and Spec 15: `repository_template.rs`, `integration_repository.rs`, `tests/support/edges_templates.rs`, `tests/support/gate_templates.rs`, `tests/edges.rs`, `tests/gate.rs`, `src/ledger/handle.rs`, `src/verb/claim/mod.rs`. Hub: `crates/cargo-berth-test-support/src/lib.rs` (re-exports), `crates/cargo-berth/tests/recorded_templates.rs` (calls every `BeforeRun` builder), `.config/nextest.toml` and `crates/cargo-berth/Cargo.toml` (the setup script and the builder target). It lands R0 first and tells `test` when `LedgerFixture::Recorded` and `TemplateBuildTiming::BeforeRun` are in.
+- `test` (opens as `impl`) — R1, R6 and R0's two-copy identity test: `tests/support/reanchoring_templates.rs`, `tests/support/reanchoring.rs`, `tests/lifecycle.rs`, `tests/liveness.rs`, `tests/support/split_rebase.rs`. Before R0 lands it does the liveness split, the hookless trunk moves and the fixture restructuring that needs no recorded template. It messages `impl` for any `repository_template.rs` line it needs and to add its templates to `recorded_templates.rs`.
 
-**Constraints from prior phases:** see Delegation Context. Phase 7: templates live under `CARGO_TARGET_TMPDIR/cargo-berth-templates/`, one per test binary and executable; deleting that directory forces a cold build. Phase 8: fixture git configuration is written without spawning git (`tests/support/git_configuration.rs`), loose refs are read directly (`tests/support/loose_refs.rs`), and `replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards` keeps its real `claim --defer`, `sequence` and `claim --replace` sequence. Phase 10 makes refused checks and claims append an `overlap_refused` record; a recorded template built after phase 10 may hold them, and nothing here filters them out.
+**Constraints from prior phases:** see Delegation Context. Phase 7: templates live under `CARGO_TARGET_TMPDIR/cargo-berth-templates/`, one per test binary and executable; deleting that directory forces a cold build. Phase 8: fixture git configuration is written without spawning git (`tests/support/git_configuration.rs`), loose refs are read directly (`tests/support/loose_refs.rs`), and `replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards` keeps its real `claim --defer`, `sequence` and `claim --replace` sequence. Phase 10 makes refused checks and claims append an `overlap_refused` record; a recorded template built after phase 10 may hold them, and nothing here filters them out. Phase 10 also added `board_reservation_entries` and `board_reservation_ids` (`crates/cargo-berth-test-support/src/integration_repository.rs:530,549`, re-exported from `lib.rs`), the one list of board sections that `reservation_row` walks; a new builder that walks board sections uses them. `tests/lifecycle.rs` includes `support/overlap_refusal.rs`, and its `fast_path_declines_a_retained_foreign_conflict_on_its_held_path` asserts one refusal record.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with every test from item 3 (or its split parts) passing. In the item 14 local run each of them reads 0.7 s or less. The binding check is item 14's CI log after merge; a test still above 0.7 s there goes back to the unit director as a repair.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with every test from item 3 (or its split parts) passing. In the item 14 local run each of them reads 0.7 s or less, and the phase report gives the `SETUP PASS` time from a natedev run and from a Mac run. A filtered run that skips the setup script still passes, building its templates in the test. `two_rebase_history_copies_keep_owners_and_drain_their_markers` passes. The binding check is item 14's CI log after merge; a test still above 0.7 s there goes back to the unit director as a repair. Spec 15: every read of `ClaimRequest` destructures it exhaustively, `claim_execution_from_outcome` has no `Rejected` arm because its type cannot carry one, and lint passes with no added `allow`.
 
 ### Phase 12 — cargo-port's broken-worktree rows in the project list draw white text on the error red  · status: done
 
@@ -585,7 +497,7 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
 
 ### Phase 13 — cargo-port reports a checkout whose HEAD git cannot read as unreadable, never as unborn  · status: todo
 
-**Depends on:** phase 9 (`GitCheckout`, done). Runs beside phases 10 and 12. Shared with phase 12: `crates/cargo-port/src/tui/app/mod.rs` and `crates/cargo-port/CHANGELOG.md`; claim those two paths `--after` phase 12's reservation. Every other file below is phase 13's alone, so the probe and pane work starts at once. Nothing is shared with phase 10 (`crates/cargo-berth/`).
+**Depends on:** phase 9 (`GitCheckout`, done) and phase 15. The cargo-port order is 12 (done) → 15 → 13 → 14. Shared with phase 15: `crates/cargo-port/src/tui/app/mod.rs` and `crates/cargo-port/CHANGELOG.md`; claim those two paths `--after` phase 15's reservation. Every other file below is phase 13's alone, so the probe and pane work starts at once. Phase 14 follows this phase. Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
 
 #### Work Order
 
@@ -631,10 +543,13 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
 
    No variant holds an `Option`. Branch-without-relation and relation-on-detached/unborn/unreadable cannot be built. `GitCheckout` no longer holds a `HeadState`.
 6. `HeadRelation` (`git_data.rs:34-78`). `classify` takes the branch name and returns `Self`:
-   `fn classify(branch: &str, default_branch: Option<&str>, worktree_status: Option<&WorktreeStatus>) -> Self`. Delete the `let HeadState::Branch(name) = head else { return None }` guard. Rewrite the type's doc so it describes only a branch (remove "`None` for detached and unborn checkouts").
+   `fn classify(branch: &str, default_branch: Option<&str>, placement: WorktreePlacement) -> Self`. Delete the `let HeadState::Branch(name) = head else { return None }` guard. Rewrite the type's doc so it describes only a branch (remove "`None` for detached and unborn checkouts").
+   - New in `git_data.rs`: `enum WorktreePlacement { Linked, NotLinked }`, the one fact `classify` reads from the worktree status. `WorktreePlacement::of(status: Option<&WorktreeStatus>) -> Self` is the only place the bare `Option` is read, at the `build_git_detail_fields` boundary: `Some(WorktreeStatus::Linked { .. })` → `Linked`; `Some(Primary { .. } | NotGit)` and `None` (no project entry holds the path, so there is no linked-worktree evidence) → `NotLinked`. Exhaustive, no `_` arm. This keeps today's `worktree_status.is_some_and(WorktreeStatus::is_linked_worktree)` result.
 7. `GitCheckout::from_probe` (`git_data.rs:119-131`) does the mapping:
-   `fn from_probe(health: WorktreeHealth, head: Option<HeadState>, default_branch: Option<&str>, worktree_status: Option<&WorktreeStatus>) -> Self`.
-   `(Broken, _)` → `Broken`. `(Normal, None)` → `AwaitingProbe` (`None` is the boundary value of `ProjectList::git_info_for` before the first probe). `Unreadable` → `UnreadableHead`, `Unborn` → `Unborn`, `Detached { short_sha }` → `Detached { short_sha }`, `Branch(name)` → `Branch { relation: HeadRelation::classify(&name, …), name }`. In `build_git_detail_fields` (`git_data.rs:342-417`) delete `head_relation` (350-356) and pass `local_main_branch.as_deref()` and `app.project_list.worktree_status_for(abs_path)` to `from_probe` (396-402). `current_branch` (378-381) still reads `HeadState::branch_name` from the probed head.
+   `fn from_probe(health: WorktreeHealth, head: HeadProbe<'_>, default_branch: Option<&str>, placement: WorktreePlacement) -> Self`.
+   - New in `git_data.rs`: `enum HeadProbe<'a> { Awaiting, Probed(&'a HeadState) }`. `build_git_detail_fields` builds it from `ProjectList::git_info_for(abs_path)`, whose `None` is the value before the first probe: `None` → `Awaiting`, `Some(info)` → `Probed(&info.head)`. No new API takes `Option<HeadState>`.
+   - `(Broken, _)` → `Broken`. `(Normal, Awaiting)` → `AwaitingProbe`. `Probed`: `Unreadable` → `UnreadableHead`, `Unborn` → `Unborn`, `Detached { short_sha }` → `Detached { short_sha }`, `Branch(name)` → `Branch { relation: HeadRelation::classify(name, …), name }`.
+   - In `build_git_detail_fields` (`git_data.rs:342-417`) delete `head_relation` (350-356) and pass the `HeadProbe`, `local_main_branch.as_deref()` and `WorktreePlacement::of(app.project_list.worktree_status_for(abs_path))` to `from_probe` (396-402). `current_branch` (378-381) still reads `HeadState::branch_name` from the probed head.
 8. Callers that match the old shape. Every match is exhaustive; no `_` arm:
    - `git_fields_from_data` (`git_data.rs:244-252`): `WorktreeError` for `Broken`; `Head` for `UnreadableHead | Unborn | Detached { .. } | Branch { .. }`; neither for `AwaitingProbe`.
    - `DetailField::git_value` `Head` arm (`crates/cargo-port/src/tui/panes/pane_data/detail_field.rs:155-171`): `UnreadableHead` → `"HEAD unreadable"`, `Unborn` → `"unborn"`, `Detached` → `"detached @ {short_sha}"`, `Branch` → `"{name} · {relation.label()}"`; `Broken | AwaitingProbe` → `""`. Drop the `HeadState` import (line 9).
@@ -646,24 +561,27 @@ Retention (unit director's call, 2026-10-17): refusal records are kept forever. 
    - No change needed (they only call `branch_name()` / `display_label()`): `crates/cargo-port/src/tui/project_list/list.rs:684,1676`, `crates/cargo-port/src/tui/state/ci.rs:280,293`, `crates/cargo-port/src/tui/finder/index.rs:221`, `git_data.rs:587,595`, `checkout.rs:156`.
 9. Tests, each under a second. Repository fixtures use `crate::test_support::init_git_repo` (`crates/cargo-port/src/test_support.rs:43`, signing off) and `test_support::git_binary()`; a corrupt fixture is a file write after init, not more git commands.
    - `checkout.rs` `mod tests`: `resolve_head_state_reports_unreadable_head_not_unborn`. Cover four repositories: `.git/HEAD` overwritten with `garbage\n` → `Unreadable`; the branch ref named in `.git/HEAD` (`refs/heads/<name>`) overwritten with `zzzz\n` → `Unreadable`; `git init` with no commit → `Unborn`; an intact `init_git_repo` repository → `Branch(_)`. Also assert `CheckoutInfo::get(&path, None)` gives `head == HeadState::Unreadable` for the corrupt `.git/HEAD` case.
-   - `git_data.rs` `git_field_tests`: update `broken_worktree_error_precedes_head_and_normal_worktree_omits_it` (664) to the new `from_probe` signature, passing `Some(HeadState::Unreadable)` for the broken case (`Broken` still wins), and to `GitCheckout::Branch { name, relation }` in place of `Readable { …, relation: None }`. Add `unreadable_head_shows_branch_row_as_head_unreadable`. `from_probe(Normal, Some(HeadState::Unreadable), …)` is `UnreadableHead`. `git_fields_from_data` lists `Head` first and no `WorktreeError`. `DetailField::Head.git_value` is `"HEAD unreadable"` and never `"unborn"`. `from_probe(Normal, Some(HeadState::Branch("main")), Some("main"), None)` is `Branch { relation: HeadRelation::Default, .. }`.
-   - `app/mod.rs`, beside `selecting_worktree_with_missing_gitdir_renders_git_error` (6276), using `render_selected_git` (6216): `selecting_checkout_with_unreadable_head_renders_head_unreadable`. Steps: a tempdir package (`Cargo.toml` as in the 6276 test), then `init_git_repo`, then overwrite `.git/HEAD` with `garbage\n`. Build `make_app` with the package, select it, and apply `BackgroundMsg::CheckoutInfo` from `CheckoutInfo::get(&path, None)`. Assert: `data.checkout` matches `GitCheckout::UnreadableHead`; the rendered pane has a line holding `Branch` and `HEAD unreadable`; no line holds `unborn`; in `Appearance::Dark` and `Appearance::Light` the value cell's foreground is `tui_pane::error_color()`. Restore the theme afterwards, as `assert_git_error_colors` does.
+   - `git_data.rs` `git_field_tests`: update `broken_worktree_error_precedes_head_and_normal_worktree_omits_it` (664) to the new `from_probe` signature, passing `HeadProbe::Probed(&HeadState::Unreadable)` for the broken case (`Broken` still wins), and to `GitCheckout::Branch { name, relation }` in place of `Readable { …, relation: None }`. Add `unreadable_head_shows_branch_row_as_head_unreadable`. `from_probe(Normal, HeadProbe::Probed(&HeadState::Unreadable), …)` is `UnreadableHead`. `from_probe(Normal, HeadProbe::Awaiting, …)` is `AwaitingProbe`. `git_fields_from_data` lists `Head` first and no `WorktreeError`. `DetailField::Head.git_value` is `"HEAD unreadable"` and never `"unborn"`. `from_probe(Normal, HeadProbe::Probed(&HeadState::Branch("main".into())), Some("main"), WorktreePlacement::NotLinked)` is `Branch { relation: HeadRelation::Default, .. }`, and with `WorktreePlacement::Linked` it is `Branch { relation: HeadRelation::Worktree, .. }`. `WorktreePlacement::of(None)` is `NotLinked`.
+   - `app/mod.rs`, beside `selecting_worktree_with_missing_gitdir_renders_git_error` (6293), using `render_selected_git` (6219): `selecting_checkout_with_unreadable_head_renders_head_unreadable`. Steps: a tempdir package (`Cargo.toml` as in the 6276 test), then `init_git_repo`, then overwrite `.git/HEAD` with `garbage\n`. Build `make_app` with the package, select it, and apply `BackgroundMsg::CheckoutInfo` from `CheckoutInfo::get(&path, None)`. Assert: `data.checkout` matches `GitCheckout::UnreadableHead`; the rendered pane has a line holding `Branch` and `HEAD unreadable`; no line holds `unborn`; in `Appearance::Dark` and `Appearance::Light`, each set with the test module's `ActiveThemeOverride::set(appearance)` guard (`app/mod.rs:6249`; it restores the theme on drop, as in `assert_git_error_colors`), the value cell's foreground is `tui_pane::error_color()`.
 10. Docs: one `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `### Fixed` line (section at 10): "A checkout whose HEAD git cannot read shows `HEAD unreadable` in the Git pane's Branch row instead of reporting the checkout as unborn."
+11. Add-ons from phase 12's style review (showrunner, 2026-10-17: both current, this phase), in `app/mod.rs`:
+    - One `find_text_cell(&Buffer, &str)` test helper finds drawn text. `assert_git_error_colors`, phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red`, phase 15's `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns` and this phase's item 9 pane test all use it; no other buffer text search remains.
+    - Rename the fixture helper `create_refresh_worktree` to `write_linked_worktree_layout`, the layout it builds.
 
 **Files:**
 - `crates/cargo-port/src/project/git/checkout.rs` — `HeadState::Unreadable`, `resolve_head_state`, the probe test
 - `crates/cargo-port/src/project/git/branches.rs` — `get_current_branch` requires exit 0
-- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — flat `GitCheckout`, `HeadRelation::classify`, `from_probe`, `build_git_detail_fields`, `git_fields_from_data`, tests
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — flat `GitCheckout`, `HeadProbe`, `WorktreePlacement`, `HeadRelation::classify`, `from_probe`, `build_git_detail_fields`, `git_fields_from_data`, tests
 - `crates/cargo-port/src/tui/panes/pane_data/detail_field.rs` — `Head` value arm
 - `crates/cargo-port/src/tui/panes/pane_data/copy_data.rs` — `Head` copy arm
 - `crates/cargo-port/src/tui/panes/git/render.rs` — `git_panel_title`, `build_field_value`, Branch-row style
-- `crates/cargo-port/src/tui/app/mod.rs` — two fixtures and the item 9 pane test (shared with phase 12; claim after phase 12)
-- `crates/cargo-port/CHANGELOG.md` — the Fixed line (shared with phase 12; claim after phase 12)
+- `crates/cargo-port/src/tui/app/mod.rs` — two fixtures, the item 9 pane test, and item 11's helper and rename (shared with phases 15 and 14; claim after phase 15)
+- `crates/cargo-port/CHANGELOG.md` — the Fixed line (shared with phases 15 and 14; claim after phase 15)
 
 **Workers:** 1 writer. The new `HeadState` variant and the new `GitCheckout` shape are each read by every other file in the list, and cargo-port has no `tests/` lane, so a second worker would have no file of its own.
-- `probe` (opens as `impl`): every file above, lint, and the package test. Start with the probe and pane files. Take `app/mod.rs` and `CHANGELOG.md` after phase 12 releases them.
+- `probe` (opens as `impl`): every file above, lint, and the package test. Start with the probe and pane files. Take `app/mod.rs` and `CHANGELOG.md` after phase 15 releases them.
 
-**Constraints from prior phases:** Phase 9 added `GitCheckout` with `Broken` taking precedence over any probe result, the `DetailField::WorktreeError` row (first, `on_error_color()` on `error_color()`), and `selecting_worktree_with_missing_gitdir_renders_git_error`. That test must still pass: a broken worktree's probe now returns `Unreadable`, and the pane still shows `Broken`. Phase 12 edits other tests in `app/mod.rs` and adds its own CHANGELOG line; keep both.
+**Constraints from prior phases:** Phase 9 added `GitCheckout` with `Broken` taking precedence over any probe result, the `DetailField::WorktreeError` row (first, `on_error_color()` on `error_color()`), and `selecting_worktree_with_missing_gitdir_renders_git_error`. That test must still pass: a broken worktree's probe now returns `Unreadable`, and the pane still shows `Broken`. Phase 12 edited other tests in `app/mod.rs` and added its own CHANGELOG line; keep both. Phase 15 adds `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns` and tightens phase 12's broken-row test in `app/mod.rs`, and adds a CHANGELOG `Fixed` line; keep them.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the three item 9 tests passing. Shots: the unit director's dark and light shots of the Git pane for a checkout whose `.git/HEAD` is corrupt show `Branch  HEAD unreadable` in the error color.
 
@@ -672,7 +590,7 @@ Open:
 
 ### Phase 14 — cargo-port shows every git read that fails as unreadable, never as clean, present or absent  · status: todo
 
-**Depends on:** phase 13 (it adds `HeadState::Unreadable` and `unborn_or_unreadable`, and edits `checkout.rs`, `branches.rs`, `git_data.rs`, `detail_field.rs`, `copy_data.rs`, `git/render.rs`, `tui/app/mod.rs` and `CHANGELOG.md`, all of which this phase edits too). Also shares `crates/cargo-port/src/tui/columns/project.rs`, `tui/app/mod.rs` and `CHANGELOG.md` with phase 12, which phase 13 already follows. Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
+**Depends on:** phase 15, then phase 13. The cargo-port order is 12 (done) → 15 → 13 → 14. Phase 15 adds `observe_disk_width` to `crates/cargo-port/src/tui/panes/widths.rs` and edits `tui/app/mod.rs` and `CHANGELOG.md`; claim `widths.rs` `--after` phase 15's reservation. Phase 13 adds `HeadState::Unreadable`, `unborn_or_unreadable`, `HeadProbe` and `WorktreePlacement`, and edits `checkout.rs`, `branches.rs`, `git_data.rs`, `detail_field.rs`, `copy_data.rs`, `git/render.rs`, `tui/app/mod.rs` and `CHANGELOG.md`, all of which this phase edits too; claim them `--after` phase 13's reservation, which already follows phase 15 for `app/mod.rs` and `CHANGELOG.md`. `crates/cargo-port/src/tui/columns/project.rs` is shared only with phase 12 (done). Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
 
 #### Work Order
 
@@ -731,6 +649,7 @@ Open:
    - `FirstCommit { AwaitingProbe, Probed(CommitDate) }` (default `AwaitingProbe`) in `repo/info.rs`: `RepoInfo.first_commit`, whose `None` meant "not fetched yet".
    - `TrackedRef { Ref(String), Untracked, Unreadable }` in `checkout.rs`: `CheckoutInfo.primary_tracked_ref` and `RemoteInfo.tracked_ref` (`repo/remote.rs:47`). `CheckoutInfo::primary_tracked_ref()` keeps returning `Option<&str>`, `Some` only for `Ref`.
    - `ResolvedBranch { Named(String), NotFound, Unreadable }` in `branches.rs`: `RepoInfo.default_branch` and `RepoInfo.local_main_branch`. `CheckoutInfo::get(probe_path, local_main_branch: &ResolvedBranch)`.
+   - `HeadRelation` (`git_data.rs`, phase 13) gains `Unreadable`, label `"unreadable"`. Phase 13's `HeadRelation::classify(branch, default_branch: Option<&str>, placement)` takes `default_branch: &ResolvedBranch` instead, and `from_probe` passes `&local_main_branch`. Exhaustive, no `_` arm: `WorktreePlacement::Linked` → `Worktree` (it needs no default branch); `NotLinked` with `Named(n)` → `Default` when `n == branch`, otherwise `Feature`; `NotLinked` with `NotFound` → `Feature`; `NotLinked` with `Unreadable` → `Unreadable`. A failed branch resolution never reads as `feature`.
    - `AheadBehind { ahead: usize, behind: usize }` and `Comparison { Counted(AheadBehind), NotCompared, Unreadable }` in `checkout.rs`: `CheckoutInfo.ahead_behind_local`, `RemoteInfo.ahead_behind`, `WorktreeInfo.ahead_behind` (`git_data.rs:226`). `NotCompared` covers every case today's `None` meant: HEAD is the local main, no local main, no tracked ref, the primary worktree row.
    - `RemoteList { Listed(Vec<RemoteInfo>), Unreadable }` in `repo/info.rs`: `RepoInfo.remotes`. `RemoteList::listed(&self) -> &[RemoteInfo]` (empty for `Unreadable`) serves the loops that only iterate. `GitOrigin` (`remote.rs:21`) gains `Unreadable`; `origin_kind` returns it for `RemoteList::Unreadable`.
    - `BisectProgress` (`checkout.rs:112`) gains `Unreadable`.
@@ -754,6 +673,7 @@ Open:
    - Submodule pins: `ls-tree HEAD` `Ok` → `Sha` for listed paths and `NotPinned` for the rest. `Err` → `rev-parse -q --verify HEAD`: `No` (unborn parent) → every entry `NotPinned`; otherwise every entry `Unreadable`. `build_submodule_context` (`git_data.rs:627`) builds the overlay for `Sha` and `Unreadable`, not for `NotPinned`.
 7. **Display.** One rule for the Git pane: a row whose state is `Unreadable` is shown even where an absent value hides the row, and its value is `unreadable` in `tui_pane::error_color()`. That is the phase 13 Branch-row style (`base_value_style`, `git/render.rs`).
    - Status: `⛔ unreadable` (`GitStatus::label_with_icon`).
+   - Branch: `GitCheckout::Branch { relation: HeadRelation::Unreadable, name }` reads `{name} · unreadable` (phase 13's `DetailField::git_value` `Head` arm, through `relation.label()`), and `base_value_style` draws the whole value in `error_color()`, as it does `HEAD unreadable`. Its copy value stays the name.
    - vs local, Last commit, Inception: `unreadable`. In `git_fields_from_data` (`git_data.rs`), `CommitDate::NoCommits` and `Comparison::NotCompared` hide their rows, as `None` does today.
    - Bisect: `bisecting — progress unreadable` (`formatting::format_bisect_progress`).
    - Pinned: `unreadable` (submodule pane).
@@ -762,16 +682,33 @@ Open:
    - `DetailField` copy values (`copy_data.rs`) copy the text shown.
 
    Project list:
-   - `GitStatus::Unreadable` draws the `⛔` icon in the git path column (`columns/project.rs:565`) and the project name in `error_color()` (`project_name_style` and `project_name_shimmer_style`, `columns/project.rs:653-670`).
+   - `GitStatus::Unreadable` draws the `⛔` icon in the git path column (`columns/project.rs:566`) and the project name in `error_color()` (`project_name_style` and `project_name_shimmer_style`, `columns/project.rs:654-671`).
+   - The broken-row exception is applied in `build_row_cells` (`columns/project.rs:562`), the one place a row's git icon and name style are chosen. Today it derives the icon from `GitStatus` alone, and phase 12's override in `row_to_line` (`columns/project.rs:482-486`) changes only styles, never glyphs. Both now come from one exhaustive match on `(row.worktree_health, row.git_status)`, no `_` arm: `(WorktreeHealth::Broken, _)` → no git icon and the default name style, because a broken checkout's probe result is never shown (`Broken` wins, as in phase 9's Git pane), and `row_to_line` then draws the whole row in `on_error_color()` on `error_color()` (phase 12); `(WorktreeHealth::Normal, status)` → the icon and name style of `status`, `⛔` and `error_color()` for `Unreadable`.
    - `worst_git_status` (`tui/project_list/visible_rows.rs:349`) ranks `Unreadable` above `Modified`.
    - The four sync labels (`ProjectList::git_sync` and `git_main`, `tui/project_list/list.rs:648-660` and `766-780`; `git_sync_label` and `git_main_sync_label`, `tui/panes/widths.rs:283-318`) show `⛔` for `Comparison::Unreadable`. Collapse the four ahead/behind `match` copies into one formatter in `tui/panes/pane_data/formatting.rs` beside `format_ahead_behind`, which itself takes `Comparison`.
 8. **Decisions that read these states.** Each treats `Unreadable` as unknown, never as the answer it used to default to:
    - `CheckoutInfo::primary_remote` (`checkout.rs:125`) finds a remote only for `TrackedRef::Ref`.
-   - `ProjectList::unpublished_ci_branch_name` (`list.rs:678-688`) and the matching test in `tui/state/ci.rs:276-281`: a branch is unpublished only for upstream `TrackedRef::Untracked` with default branch `Named(other)` or `NotFound`. With either value `Unreadable`, CI status is suppressed (`None`), because a parent-repo CI status is not known to apply to a checkout git cannot read.
+   - CI applicability. `ProjectList::unpublished_ci_branch_name` (`list.rs:678-688`) returns `Option<String>`, and `ci_status_using_lookup` (`list.rs:698`) suppresses CI only when it is `Some`; a `None` for unreadable evidence would show the parent's CI and offer the branch toggle (`ci_toggle_available_for_inner`, `list.rs:1685`). Replace it, and `CiState::is_unpublished_branch` (`tui/state/ci.rs:272-281`, which mirrors it), with one rule over a named result:
+
+     ```rust
+     /// Whether the parent repository's CI runs describe this checkout.
+     pub(in crate::tui) enum CiApplicability {
+         /// A published branch (it has an upstream, or it is the default
+         /// branch), a checkout not on a branch, or one not probed yet.
+         Applies,
+         /// A branch with no upstream that is not the default branch.
+         Unpublished,
+         /// Its upstream or the default branch could not be read, so whether
+         /// the parent's CI applies is unknown.
+         UnreadableEvidence,
+     }
+     ```
+
+     `CiApplicability::of(git: Option<&CheckoutInfo>, repo: Option<&RepoInfo>)` sits beside the type, and `ProjectList::ci_applicability(path)` and `tui/state/ci.rs` both call it. For a checkout on a branch: upstream `TrackedRef::Unreadable` or default branch `ResolvedBranch::Unreadable` → `UnreadableEvidence`; upstream `Ref(_)` → `Applies`; `Untracked` with default `Named(n)` where `n` is the branch → `Applies`; `Untracked` with `Named(other)` or `NotFound` → `Unpublished`. Exhaustive, no `_` arm. `ci_status_using_lookup` shows CI only for `Applies`; `Unpublished` and `UnreadableEvidence` give `None`. The toggle is available only for `Applies` with a current branch. In `CiState::package_display` (`tui/state/ci.rs:248`), `Unpublished` gives `CiDisplay::UnpublishedBranch` as today, and `UnreadableEvidence` gives a new `CiDisplay::Unreadable`, which the Package pane's Ci row (`ci_display_to_string` and `ci_display_style`, `tui/panes/package/render.rs:1172-1192`) draws as `unreadable` in `error_color()`, item 7's rule.
    - `SyncResolution::Resolved` (`tui/project_list_state.rs:19`, read in `repo_handlers.rs`) carries `Comparison`. The sync-change tracker treats `Unreadable` as it treats `Unresolved`: no baseline, no toast.
    - `GitData::is_local` (`git_data.rs`) is true only for `RemoteList::Listed` with no remotes.
    - `tui/panes/ci/data.rs:88` and `widths.rs:291-297` compare against `GitOrigin::Local` and need no new arm.
-   - Each other consumer the compiler flags matches exhaustively, with no `_` arm. Known today: `scan/background.rs:388`, `watcher/refresh.rs:296,409-422` (pass `&ResolvedBranch`), `tui/panes/pane_data/detail_data.rs:304,333,919`, `tui/app/async_tasks/dispatch.rs:154,278`, `tui/app/async_tasks/background_services.rs:171-183`, `tui/app/ci.rs`, and the `CheckoutInfo` / `RepoInfo` / `RemoteInfo` literals in `tui/app/mod.rs` tests (e.g. 4764-4785, 7928-7949, 10557-10708, 11422-11789, 12449).
+   - Each other consumer the compiler flags matches exhaustively, with no `_` arm. Known today: `scan/background.rs:388`, `watcher/refresh.rs:296,409-422` (pass `&ResolvedBranch`), `tui/panes/pane_data/detail_data.rs:304,333,919`, `tui/app/async_tasks/dispatch.rs:154,278`, `tui/app/async_tasks/background_services.rs:171-183`, `tui/app/ci.rs`, and the `CheckoutInfo` / `RepoInfo` / `RemoteInfo` literals in `tui/app/mod.rs` tests (e.g. 4767-4788, 7995-8016, 10624-10775, 11489-11856, 12516).
 9. **Tests, one or more per class, each under a second.** Fixtures:
    - `crate::test_support::init_git_repo` (`crates/cargo-port/src/test_support.rs:43`) and `test_support::git_binary()`.
    - A corrupt checkout is `.git/HEAD` overwritten with `garbage\n` after init, a file write, not more git commands. Item 2 shows every class failing on it.
@@ -796,8 +733,11 @@ Open:
    - Pane (`tui/app/mod.rs`, beside phase 13's `selecting_checkout_with_unreadable_head_renders_head_unreadable`, using `render_selected_git`): `selecting_an_unreadable_checkout_renders_unreadable_rows`.
      - Corrupt package checkout; apply `BackgroundMsg::CheckoutInfo` from `CheckoutInfo::get`, and a `RepoInfo` from `RepoInfo::get`.
      - The rendered Git pane has a `Status` line holding `unreadable` and no line holding `clean`; a `Last commit` line holding `unreadable`; a `Remotes` line holding `unreadable`.
-     - In `Appearance::Dark` and `Appearance::Light` those value cells' foreground is `tui_pane::error_color()`. Restore the theme afterwards, as `assert_git_error_colors` does.
+     - In `Appearance::Dark` and `Appearance::Light`, each set with `ActiveThemeOverride::set(appearance)` (`app/mod.rs:6249`; it restores the theme on drop), those value cells' foreground is `tui_pane::error_color()`.
      - The project list row draws `⛔` in the git path column.
+   - Broken and unreadable together (`tui/app/mod.rs`, beside phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red`, with its fixture and `render_tree_buffer`): `broken_worktree_row_with_unreadable_status_draws_no_unreadable_icon`. The linked worktree has `WorktreeHealth::Broken` and git status `GitStatus::Unreadable`. In `Appearance::Dark` and `Appearance::Light` (`ActiveThemeOverride::set`): the row holds no `⛔`, and its name cells and ` [broken]` suffix cells have `fg == on_error_color()` and `bg == error_color()`.
+   - Branch relation (`git_data.rs` `git_field_tests`): `branch_relation_with_unreadable_default_branch_is_unreadable_not_feature`. `HeadRelation::classify("main", &ResolvedBranch::Unreadable, WorktreePlacement::NotLinked)` is `Unreadable`; with `WorktreePlacement::Linked` it is `Worktree`; with `NotFound` it is `Feature`. `DetailField::Head.git_value` of `GitCheckout::Branch { name: "main", relation: HeadRelation::Unreadable }` is `"main · unreadable"` and holds no `feature`, and the value cell's style is `error_color()`.
+   - CI applicability (`tui/app/mod.rs`, beside the `CiDisplay::UnpublishedBranch` test at ~11842): `unreadable_upstream_or_default_branch_hides_parent_ci`. A checkout on branch `feature-x` whose parent holds cached CI runs, including one for `feature-x`; two cases, upstream `TrackedRef::Unreadable` with default `Named("main")`, and upstream `Untracked` with default `ResolvedBranch::Unreadable`. In each, `ci_applicability` is `UnreadableEvidence`, `ci_status_using_lookup` is `None`, `ci_toggle_available_for_inner` is false, and `package_display` is `CiDisplay::Unreadable`.
    - Existing tests whose fixtures build `CheckoutInfo`, `RepoInfo`, `RemoteInfo` or `Submodule` literals take the new types: `Option<String>` → `CommitDate::At` / `TrackedRef::Ref` / `ResolvedBranch::Named`, `None` → the absent variant. Their assertions do not change.
 10. Docs: `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `### Fixed`, two lines:
     - "A git command that fails is shown as `unreadable` in the Git pane and as `⛔` in the project list, instead of reading as a clean status, an existing branch or remote ref, or a missing value."
@@ -818,39 +758,41 @@ Open:
 - `crates/cargo-port/src/scan/background.rs` — `CheckoutInfo::get` call
 - `crates/cargo-port/src/watcher/refresh.rs` — `CheckoutInfo::get` calls with `&ResolvedBranch`
 - `crates/cargo-port/src/tui/state/scan.rs` — `pending_git_first_commit` holds `CommitDate`
-- `crates/cargo-port/src/tui/state/ci.rs` — unpublished-branch check
+- `crates/cargo-port/src/tui/state/ci.rs` — `CiApplicability` in `package_display`, `CiDisplay::Unreadable`
+- `crates/cargo-port/src/tui/panes/package/render.rs` — Ci row text and style for `CiDisplay::Unreadable`
 - `crates/cargo-port/src/tui/app/async_tasks/background_services.rs` — first-commit fetch
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — `GitFirstCommit` and submodule commit handling
 - `crates/cargo-port/src/tui/app/async_tasks/repo_handlers.rs` — first-commit preserve step, sync tracker
 - `crates/cargo-port/src/tui/project_list_state.rs` — `SyncResolution::Resolved(Comparison)`
 - `crates/cargo-port/src/tui/app/ci.rs` — primary remote / URL reads
-- `crates/cargo-port/src/tui/project_list/list.rs` — `git_sync`, `git_main`, `primary_ahead_behind_for`, `primary_sync_resolution`, `fetch_url_for`, `unpublished_ci_branch_name`
+- `crates/cargo-port/src/tui/project_list/list.rs` — `git_sync`, `git_main`, `primary_ahead_behind_for`, `primary_sync_resolution`, `fetch_url_for`, `CiApplicability` and `ci_applicability` in place of `unpublished_ci_branch_name`, `ci_status_using_lookup`, `ci_toggle_available_for_inner`
 - `crates/cargo-port/src/tui/project_list/visible_rows.rs` — `worst_git_status`
-- `crates/cargo-port/src/tui/columns/project.rs` — `⛔` git path icon, name styles (shared with phase 12)
-- `crates/cargo-port/src/tui/panes/widths.rs` — sync labels
+- `crates/cargo-port/src/tui/columns/project.rs` — `⛔` git path icon, name styles, the broken-row exception in `build_row_cells` (shared with phase 12, done)
+- `crates/cargo-port/src/tui/panes/widths.rs` — sync labels (shared with phase 15; claim after phase 15)
 - `crates/cargo-port/src/tui/panes/ci/data.rs` — `RemoteList` iteration
-- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — `GitData` fields, `git_fields_from_data`, `build_git_detail_fields`, `build_remote_rows`, worktree rows, `build_submodule_context`, `is_local`
+- `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — `GitData` fields, `HeadRelation::Unreadable` and `classify` over `&ResolvedBranch`, `git_fields_from_data`, `build_git_detail_fields`, `build_remote_rows`, worktree rows, `build_submodule_context`, `is_local`
 - `crates/cargo-port/src/tui/panes/pane_data/detail_field.rs` — `RemotesUnreadable`, unreadable values
 - `crates/cargo-port/src/tui/panes/pane_data/detail_data.rs` — last commit and submodule version
 - `crates/cargo-port/src/tui/panes/pane_data/copy_data.rs` — copy values
 - `crates/cargo-port/src/tui/panes/pane_data/formatting.rs` — one ahead/behind formatter over `Comparison`, bisect text
 - `crates/cargo-port/src/tui/panes/git/render.rs` — error color for unreadable values, remotes and worktree tables
-- `crates/cargo-port/src/tui/app/mod.rs` — fixture literals and the item 9 pane test (shared with phases 12 and 13)
-- `crates/cargo-port/CHANGELOG.md` — two Fixed lines (shared with phases 12 and 13)
+- `crates/cargo-port/src/tui/app/mod.rs` — fixture literals and the item 9 pane, broken-row and CI tests (shared with phases 15 and 13; claim after phase 13)
+- `crates/cargo-port/CHANGELOG.md` — two Fixed lines (shared with phases 15 and 13; claim after phase 13)
 
 **Workers:** 1 writer. The caller classes do not split into disjoint file sets: status, last commit, counts, bisect and the HEAD reads all live in `checkout.rs`, and existence checks and value reads both live in `branches.rs`. Every `tui/` file consumes the item 4 types and does not compile until they exist. cargo-port has no `tests/` lane, so a second worker would hold no file of its own.
-- `probe` (opens as `impl`): every file above, lint, and the package test. Start with `command.rs`, then the `project/git/` files class by class, then the `tui/` consumers the compiler names.
+- `probe` (opens as `impl`): every file above, lint, and the package test. Start with `command.rs`, then the `project/git/` files class by class, then the `tui/` consumers the compiler names. Take `widths.rs` after phase 15 releases it, and the files shared with phase 13 after phase 13 releases them.
 
 **Constraints from prior phases:**
 - Phase 9: `GitCheckout::Broken` wins over any probe result, and `selecting_worktree_with_missing_gitdir_renders_git_error` must still pass.
 - Phase 13: `HeadState::Unreadable`, the flat `GitCheckout` (no `Option<HeadRelation>`), `unborn_or_unreadable`, and the Branch row `HEAD unreadable` in `error_color()`. This phase changes only the return types under them; their mapping and tests stay.
-- Phase 12: `on_error_color()` text on `error_color()` for broken-worktree rows in `columns/project.rs` and `tree_rows.rs`. Keep it; the `⛔` icon and error-colored name apply only to rows that are not `WorktreeHealth::Broken`.
+- Phase 12: `on_error_color()` text on `error_color()` for broken-worktree rows in `columns/project.rs` and `tree_rows.rs`. Keep it; the `⛔` icon and error-colored name apply only to rows that are not `WorktreeHealth::Broken` (item 7's `build_row_cells` match).
+- Phase 15: `observe_disk_width` in `widths.rs`, `BROKEN_WORKTREE_DISK_SUFFIX`, and `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns` in `app/mod.rs`. Keep them; the sync-label edits in `widths.rs` sit beside them.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the item 9 tests passing: `git_output_logged_fails_on_a_non_zero_exit`, `existence_checks_tell_absent_from_unreadable`, `git_status_of_an_unreadable_checkout_is_unreadable_not_clean`, phase 13's HEAD test, `value_reads_of_an_unreadable_checkout_are_unreadable`, the counts and listings tests, and `selecting_an_unreadable_checkout_renders_unreadable_rows`. `grep -n "git_command(" crates/cargo-port/src/project/git/` finds calls only inside `command.rs`. Shots: the unit director's dark and light shots of the Git pane for a checkout whose `.git/HEAD` is corrupt show Status, Last commit and Remotes as `unreadable` in the error color, and the project list row shows `⛔`.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the item 9 tests passing: `git_output_logged_fails_on_a_non_zero_exit`, `existence_checks_tell_absent_from_unreadable`, `git_status_of_an_unreadable_checkout_is_unreadable_not_clean`, phase 13's HEAD test, `value_reads_of_an_unreadable_checkout_are_unreadable`, the counts and listings tests, `selecting_an_unreadable_checkout_renders_unreadable_rows`, `broken_worktree_row_with_unreadable_status_draws_no_unreadable_icon`, `branch_relation_with_unreadable_default_branch_is_unreadable_not_feature` and `unreadable_upstream_or_default_branch_hides_parent_ci`. `grep -n "git_command(" crates/cargo-port/src/project/git/` finds calls only inside `command.rs`. Shots: the unit director's dark and light shots of the Git pane for a checkout whose `.git/HEAD` is corrupt show Status, Last commit and Remotes as `unreadable` in the error color, and the project list row shows `⛔`.
 
 ### Phase 15 — cargo-port's project list never cuts off a broken worktree's ` [broken]` suffix  · status: todo
 
-**Depends on:** phase 12 (shares `tree_rows.rs`; its suffix style stays). Shared with phase 13: `crates/cargo-port/src/tui/app/mod.rs` and `crates/cargo-port/CHANGELOG.md`; claim those two paths `--after` the reservation that holds them (phase 12's, then phase 13's). Phase 14 also lists `crates/cargo-port/src/tui/panes/widths.rs` (sync labels); claim it `--after` phase 14's reservation if phase 14 holds it. The constants, widths and `tree_rows.rs` edits start at once. Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
+**Depends on:** phase 12 (done; it shares `tree_rows.rs`, `crates/cargo-port/src/tui/app/mod.rs` and `crates/cargo-port/CHANGELOG.md`, and its suffix style stays). It waits for no other phase. The cargo-port order is 12 (done) → 15 → 13 → 14: phases 13 and 14 claim `app/mod.rs` and `CHANGELOG.md` after this phase, and phase 14 claims `crates/cargo-port/src/tui/panes/widths.rs` after it. Every file below starts at once. Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
 
 #### Work Order
 
@@ -858,7 +800,7 @@ Open:
 
 **Spec:**
 1. Source: the showrunner, 2026-10-17: "Count the suffix in the disk column's width so ` [broken]` is never cut, and checkpoint with a shot at 160 columns showing the full suffix."
-2. The defect. The project list pane is exactly as wide as its fitted columns: `render.rs:224-226` sets the left width to `cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH`, and Disk (`COL_DISK = 7`, `columns/constants.rs:3`) is the last column. The fit pass (`crates/cargo-port/src/tui/panes/widths.rs`, `compute_project_list_widths` at 60, called from `App::ensure_fit_widths_cached` in `crates/cargo-port/src/tui/app/navigation/cache.rs:21`) observes Disk with the size text alone: `widths.observe(COL_DISK, dw(&formatted_disk(..)))` at widths.rs 94, 125, 165, 189, 208 and 225. `row_to_line` (`crates/cargo-port/src/tui/columns/project.rs:421-431`) draws a suffixed cell as the size padded to `col_width - suffix_width` (saturating, never truncated) followed by the suffix, so a ` [broken]` row is 9 columns wider than its column and the list clips it at the pane edge. Measured by the showrunner at 160 columns: ` 304 B [b` (Disk column 8 wide, from a `36.3 GiB` row).
+2. The defect. The project list pane is exactly as wide as its fitted columns: `render.rs:224-226` sets the left width to `cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH`, and Disk (`COL_DISK = 7`, `columns/constants.rs:3`) is the last column. The fit pass (`crates/cargo-port/src/tui/panes/widths.rs`, `compute_project_list_widths` at 60, called from `App::ensure_fit_widths_cached` in `crates/cargo-port/src/tui/app/navigation/cache.rs:21`) observes Disk with the size text alone: `widths.observe(COL_DISK, dw(&formatted_disk(..)))` at widths.rs 94, 125, 165, 189, 208 and 225. `row_to_line` (`crates/cargo-port/src/tui/columns/project.rs:422-432`) draws a suffixed cell as the size padded to `col_width - suffix_width` (saturating, never truncated) followed by the suffix, so a ` [broken]` row is 9 columns wider than its column and the list clips it at the pane edge. Measured by the showrunner at 160 columns: ` 304 B [b` (Disk column 8 wide, from a `36.3 GiB` row).
 3. One suffix constant. Add to `crates/cargo-port/src/tui/panes/constants.rs`, beside the tree prefix constants (which carry the same "single source of truth for width calc and render" rule):
    ```rust
    /// Disk-cell suffix on a `WorktreeHealth::Broken` row; measured by
@@ -868,40 +810,42 @@ Open:
    `disk_suffix_for_state` (`crates/cargo-port/src/tui/panes/project_list/tree_rows.rs:653-673`) returns `Some(BROKEN_WORKTREE_DISK_SUFFIX)` in its `Broken` arm in place of the literal at 667; import it as the other `crate::tui::panes::constants::` items at 30-39 are. Its style (phase 12's `on_error_color()` on `error_color()`) and the deleted ` [x]` arm stay as they are.
 4. Width rule (`widths.rs`). Add one helper and route the three measures whose rows draw `disk_suffix_for_state` through it:
    ```rust
-   fn observe_disk_width(widths: &mut ProjectListWidths, bytes: Option<u64>, health: WorktreeHealth) {
+   fn observe_disk_width(widths: &mut ProjectListWidths, disk: &str, health: WorktreeHealth) {
        let suffix_width = match health {
            WorktreeHealth::Normal => 0,
            WorktreeHealth::Broken => columns::display_width(BROKEN_WORKTREE_DISK_SUFFIX),
        };
-       widths.observe(COL_DISK, columns::display_width(&formatted_disk(bytes)) + suffix_width);
+       widths.observe(COL_DISK, columns::display_width(disk) + suffix_width);
    }
    ```
-   The `match` is exhaustive, no `_` arm, so a new `WorktreeHealth` variant (`crates/cargo-port/src/project/info.rs:23`) must state its suffix width. Each measure pairs with the row that draws it:
-   - widths.rs 94, root row: `observe_disk_width(widths, item.disk_usage_bytes(), item.worktree_health())` — drawn at tree_rows.rs 415-417 with `item.worktree_health()`.
+   The `match` is exhaustive, no `_` arm, so a new `WorktreeHealth` variant (`crates/cargo-port/src/project/info.rs:23`) must state its suffix width. The helper takes the drawn size text, `formatted_disk(bytes)`, never `Option<u64>` (phase 12 review): it measures exactly the text the row draws, and an unmeasured size stays inside `formatted_disk`, which draws it as `format_bytes(0)` as today. Each measure pairs with the row that draws it:
+   - widths.rs 94, root row: `observe_disk_width(widths, &formatted_disk(item.disk_usage_bytes()), item.worktree_health())` — drawn at tree_rows.rs 415-417 with `item.worktree_health()`.
    - widths.rs 125, `observe_path_only_entry_fit_widths` (submodules): `entry.info().disk_usage_bytes`, `entry.info().worktree_health` — drawn by `render_path_only_entry` at tree_rows.rs 951-952 with the same field.
    - widths.rs 208 (`observe_workspace_worktree_entry_fit_widths`) and 225 (`observe_package_worktree_entry_fit_widths`), worktree entries: `ws.worktree_health()` / `pkg.worktree_health()` (`ProjectFields`) — drawn at tree_rows.rs 587-589 through `worktree_health_for_entry`.
    - widths.rs 165 (members) and 189 (vendored) stay as they are: those rows (tree_rows.rs ~504) never draw the broken suffix, and counting it there would widen the column for no drawn text.
    Import `WorktreeHealth` from `crate::project` and the constant from `super::constants`. Update the module doc (widths.rs 1-8) so it says the Disk column's width is the size text plus the row's suffix.
 5. Nothing else changes: `row_to_line`, the suffix text, its style, and which rows count as broken stay as they are. A row that is not broken keeps its current Disk width.
-6. Test, under a second, in `crates/cargo-port/src/tui/app/mod.rs` `mod interaction`, beside phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red` (~6360): `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns`. It drives the real frame, not `render_tree_buffer`:
+6. Test, under a second, in `crates/cargo-port/src/tui/app/mod.rs` `mod interaction`, beside phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red` (~6376): `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns`. It drives the real frame, not `render_tree_buffer`:
    - Fixture as phase 12's test: a primary and a linked `make_package_worktree` in one `WorktreeGroup`, the linked one with `rust.project_info.worktree_health = WorktreeHealth::Broken` and `rust.project_info.disk_usage_bytes = Some(304)`, the primary with `rust.project_info.disk_usage_bytes = Some(39_000_000_000)` (formats as `36.3 GiB`, the showrunner's case); `app.project_list.expanded.insert(ExpandKey::Node(0))`.
-   - For `Appearance::Dark` and `Appearance::Light` (set as phase 12's test does): run the event loop's cache order (`crates/cargo-port/src/tui/terminal/event_loop.rs:104-107`) — `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` — then draw `render::ui` on `TestBackend::new(160, 40)`.
+   - For `Appearance::Dark` and `Appearance::Light` (each under `ActiveThemeOverride::set(appearance)`, `app/mod.rs:6249`, as phase 12's test does): run the event loop's cache order (`crates/cargo-port/src/tui/terminal/event_loop.rs:104-107`) — `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` — then draw `render::ui` on `TestBackend::new(160, 40)`.
    - Assert: the buffer row holding `broken-linked` also holds `304 B [broken]`; each of the 9 cells of ` [broken]` has `fg == tui_pane::on_error_color()` and `bg == tui_pane::error_color()`.
-   - Restore the theme afterwards, as phase 12's test does.
+   - The `ActiveThemeOverride` guard restores the theme when it drops; add no manual restore.
    - Run it against the code before items 3-4 first: it fails there on the cut suffix.
 7. Docs: one `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `### Fixed` line: "A broken worktree's `[broken]` suffix in the project list is no longer cut off; the Disk column's width now counts it."
+8. Add-on, the showrunner, 2026-10-17: "cargo-port's spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown took 1.308 s in tile-fixes' phase 22 full run. Bring it under a second by fixing its cause, not by raising a limit, and record the time before and after." The test is `crates/cargo-port/src/watcher/runtime.rs:1235`. Before any edit, time it in a full `verify.sh test cargo-port` run and alone (`--filter spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown`), find where its time goes (a fixed wait, a timeout, a poll interval, or real work in the spawned loop), and remove that cost at its source: a wait becomes a signal the test receives when the state it waits for is reached. Keep every assertion: the guard is alive while the thread runs and dropped only after shutdown. No timeout or slow-test limit is raised. Record both times, before and after, from the full package run, in the summary.
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/constants.rs` — `BROKEN_WORKTREE_DISK_SUFFIX`
-- `crates/cargo-port/src/tui/panes/widths.rs` — `observe_disk_width`, the three suffixed Disk measures, module doc (also in phase 14's Files)
-- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `disk_suffix_for_state` draws the constant (shared with phase 12)
-- `crates/cargo-port/src/tui/app/mod.rs` — the item 6 test (shared with phases 12 and 13)
-- `crates/cargo-port/CHANGELOG.md` — the Fixed line (shared with phases 12 and 13)
+- `crates/cargo-port/src/tui/panes/widths.rs` — `observe_disk_width`, the three suffixed Disk measures, module doc (phase 14 follows)
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `disk_suffix_for_state` draws the constant (shared with phase 12, done)
+- `crates/cargo-port/src/tui/app/mod.rs` — the item 6 test; phase 12's test tightened to the whole suffix (phases 13 and 14 follow)
+- `crates/cargo-port/CHANGELOG.md` — the Fixed line (phases 13 and 14 follow)
+- `crates/cargo-port/src/watcher/runtime.rs` — item 8, the watcher test's wait, and the watcher loop code only where that wait's cause lives
 
 **Workers:** 1 writer. The change is one constant read by two files and one test; cargo-port has no `tests/` lane, so a second worker would have no file of its own.
-- `impl` — every file above, lint, and the package test. Start with `constants.rs`, `widths.rs` and `tree_rows.rs`; take `app/mod.rs` and `CHANGELOG.md` when phases 12 and 13 release them.
+- `impl` — every file above, lint, and the package test, all from the start: phase 12 has checkpointed, and phases 13 and 14 wait for this phase's reservation.
 
-**Constraints from prior phases:** Phase 12 styles the ` [broken]` suffix and the broken row's spans `on_error_color()` on `error_color()` (`tree_rows.rs` `disk_suffix_for_state`, `columns/project.rs` `row_to_line`); keep that style. Phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red` reads ` [broken]` from `render_tree_buffer`, a buffer exactly `widths.total_width()` wide, so it reads the whole suffix only once item 4's width rule is in; keep it. Phases 12 and 13 each add a CHANGELOG `Fixed` line; keep both.
+**Constraints from prior phases:** Phase 12 styles the ` [broken]` suffix and the broken row's spans `on_error_color()` on `error_color()` (`tree_rows.rs` `disk_suffix_for_state`, `columns/project.rs` `row_to_line`); keep that style. Phase 12's `broken_worktree_project_row_draws_on_error_text_on_error_red` (`app/mod.rs:6376`) renders through `render_tree_buffer` (`:15926`, a buffer exactly `widths.total_width()` wide) and today checks only the suffix cells that fit, requiring at least ` [`; its fixture comment says the 1 GiB primary leaves the suffix's tail clipped. Once item 4 is in, the whole suffix fits: tighten that test to require every cell of ` [broken]` and rewrite the comment, so it also guards the width rule. Phase 12 added a CHANGELOG `Fixed` line; keep it.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with `broken_worktree_disk_suffix_is_drawn_whole_at_160_columns` passing. Shots: the unit director's dark and light shots of the project list at 160 columns with a broken worktree row show the full ` [broken]` suffix, white on the error red.
 
