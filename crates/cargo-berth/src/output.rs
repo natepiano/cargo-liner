@@ -101,6 +101,7 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::HarnessSessionIdentity;
 use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
+use crate::verb::claim::ClaimAnswerPolicy;
 use crate::verb::claim::PhaseReservationCandidate;
 use crate::verb::claim::ReservationAcquisition;
 use crate::verb::claim::ReservationAcquisitionKind;
@@ -2297,7 +2298,7 @@ impl OutputEnvelope {
         reservation_id: Option<ReservationId>,
         blockers: WireOrderedReservationIds,
         scopes: ReservationScopeSet,
-        default_answer: Option<DefaultAnswer>,
+        answer_policy: ClaimAnswerPolicy,
     ) -> Self {
         let scope_count = scopes.as_slice().len();
         let blocker_list = blockers
@@ -2306,8 +2307,8 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        let (message, summary) = default_answer.map_or_else(
-            || {
+        let (message, summary) = match answer_policy {
+            ClaimAnswerPolicy::CallerRequest(()) => {
                 let message = reservation_id.map_or_else(
                     || format!(
                         "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
@@ -2318,7 +2319,7 @@ impl OutputEnvelope {
                 );
                 (message, "cargo-berth recorded a deferred overlap answer.")
             },
-            |default_answer| {
+            ClaimAnswerPolicy::RepositoryDefault(default_answer) => {
                 let message = format!(
                     "{} Authorized editing against {blocker_list} on {scope_count} reservation scope(s) with no integration order. No reservation was acquired: this worktree may edit those paths, nothing is held at integration, and whichever checkpoint is ready first merges first; the other lane merges that work in.",
                     default_answer_preface(default_answer)
@@ -2328,7 +2329,7 @@ impl OutputEnvelope {
                     "cargo-berth recorded the repository's default overlap answer.",
                 )
             },
-        );
+        };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,

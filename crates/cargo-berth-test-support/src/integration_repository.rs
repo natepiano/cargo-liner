@@ -17,6 +17,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 use crate::DirectorySnapshot;
+use crate::LedgerTemplate;
 use crate::RepositoryTemplate;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
@@ -45,10 +46,44 @@ pub struct IntegrationSnapshot {
 pub struct IntegrationRepository {
     executable:      &'static str,
     repository:      TempDir,
-    worktrees:       TempDir,
+    worktrees:       WorktreeDirectory,
     /// The canonical path of the linked worktree that has `integration` checked
     /// out.
     pub integration: PathBuf,
+}
+
+/// Keeps ordinary external worktrees alive, or locates linked checkouts copied with a ledger.
+enum WorktreeDirectory {
+    Temporary(TempDir),
+    InRepository(PathBuf),
+}
+
+impl WorktreeDirectory {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Temporary(directory) => directory.path(),
+            Self::InRepository(path) => path,
+        }
+    }
+}
+
+/// The reservation ids attached to the two lanes of a recorded cross-target pair.
+pub struct CrossTargetPair {
+    /// The initialized checkout and its integration target.
+    pub repository:     IntegrationRepository,
+    /// Lane A's released work targeting integration.
+    pub predecessor_id: String,
+    /// Lane X's work targeting main.
+    pub successor_id:   String,
+}
+
+/// Whether X waits for an explicit sequence decision or already records A before X.
+#[derive(Clone, Copy)]
+pub enum CrossTargetOrdering {
+    /// X has answered the overlap but no ordering edge has been chosen yet.
+    Deferred,
+    /// X's claim already records the edge from A to X.
+    After,
 }
 
 impl IntegrationRepository {
@@ -87,7 +122,7 @@ impl IntegrationRepository {
         let mut integration_repository = Self {
             executable,
             repository,
-            worktrees,
+            worktrees: WorktreeDirectory::Temporary(worktrees),
             integration,
         };
         Self::build_main_template(integration_repository.root(), executable);
@@ -152,7 +187,7 @@ impl IntegrationRepository {
         let mut integration_repository = Self {
             executable: template.executable,
             repository,
-            worktrees,
+            worktrees: WorktreeDirectory::Temporary(worktrees),
             integration,
         };
         integration_repository.add_integration_worktree();
@@ -174,6 +209,158 @@ impl IntegrationRepository {
             "integration\n",
             "integration start",
         );
+    }
+
+    /// Build a released A / waiting X pair with all linked directories under the root.
+    ///
+    /// # Panics
+    /// Panics when any setup command or assertion fails.
+    pub fn build_cross_target_pair(
+        root: &Path,
+        executable: &'static str,
+        ordering: CrossTargetOrdering,
+    ) {
+        Self::build_main_template(root, executable);
+        let git = GitDriver {
+            executable,
+            optional_locks: OptionalLocks::Taken,
+            cleared_environment: CLEARED_GIT_ENVIRONMENT,
+        };
+        let worktrees = root.join(".git/fixture-worktrees");
+        let integration = worktrees.join("integration");
+        git.add_worktree_without_hooks(root, &integration, "integration", "main");
+        write_file(&integration, "integration.txt", "integration\n");
+        git.run(&integration, ["add", "integration.txt"]);
+        git.run(
+            &integration,
+            ["commit", "--quiet", "-m", "integration start"],
+        );
+        let predecessor = worktrees.join("cross-a");
+        let successor = worktrees.join("cross-x");
+        git.add_worktree_without_hooks(root, &predecessor, "cross-a", "integration");
+        git.add_worktree_without_hooks(root, &successor, "cross-x", "main");
+        git.run(
+            root,
+            ["config", "branch.cross-a.cargoBerthTarget", "integration"],
+        );
+        git.run(root, ["config", "branch.cross-x.cargoBerthTarget", "main"]);
+        let run = |checkout: &Path, arguments: &[&str]| {
+            let output = berth_command::berth_command(executable)
+                .args(arguments)
+                .current_dir(checkout)
+                .env_remove("CARGO_BERTH_RUN")
+                .env_remove("CARGO_BERTH_SESSION_ID")
+                .output()
+                .expect("pair command should run");
+            assert_success(&output);
+            output
+        };
+        let first_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+        let second_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+        write_file(&predecessor, "shared.txt", "A\n");
+        let predecessor_id = claim_id(&run(
+            &predecessor,
+            &[
+                "claim",
+                "file:shared.txt",
+                "--run",
+                first_run,
+                "--target",
+                "integration",
+                "--json",
+            ],
+        ));
+        let successor_id = match ordering {
+            CrossTargetOrdering::Deferred => {
+                let scope = deferring_run_scope(second_run);
+                run(
+                    &successor,
+                    &["claim", &scope, "--run", second_run, "--json"],
+                );
+                claim_id(&run(
+                    &successor,
+                    &[
+                        "claim",
+                        "file:shared.txt",
+                        "--run",
+                        second_run,
+                        "--defer",
+                        &predecessor_id,
+                        "--overlap-why",
+                        "the order needs a decision",
+                        "--json",
+                    ],
+                ))
+            },
+            CrossTargetOrdering::After => claim_id(&run(
+                &successor,
+                &[
+                    "claim",
+                    "file:shared.txt",
+                    "--run",
+                    second_run,
+                    "--target",
+                    "main",
+                    "--after",
+                    &predecessor_id,
+                    "--overlap-why",
+                    "A reaches main before X",
+                    "--json",
+                ],
+            )),
+        };
+        git.run(&predecessor, ["add", "shared.txt"]);
+        git.run(&predecessor, ["commit", "--quiet", "-m", "A work"]);
+        run(&predecessor, &["release", &predecessor_id, "--json"]);
+        fs::write(
+            root.join(".git/cross-target.json"),
+            serde_json::json!({"predecessor_id": predecessor_id, "successor_id": successor_id})
+                .to_string(),
+        )
+        .expect("pair metadata should write");
+    }
+
+    /// Copy a cross-target pair, including the journal and each linked checkout.
+    ///
+    /// # Panics
+    /// Panics when the recorded template or its reservation ids cannot be read.
+    #[must_use]
+    pub fn cross_target_pair(template: LedgerTemplate) -> CrossTargetPair {
+        let repository = template.instantiate();
+        let worktrees = repository.path().join(".git/fixture-worktrees");
+        let metadata: Value = serde_json::from_slice(
+            &fs::read(repository.path().join(".git/cross-target.json"))
+                .expect("pair metadata should read"),
+        )
+        .expect("pair metadata should decode");
+        CrossTargetPair {
+            predecessor_id: metadata["predecessor_id"]
+                .as_str()
+                .expect("predecessor id should exist")
+                .to_owned(),
+            successor_id:   metadata["successor_id"]
+                .as_str()
+                .expect("successor id should exist")
+                .to_owned(),
+            repository:     Self {
+                executable: template.repository.executable,
+                repository,
+                integration: worktrees.join("integration"),
+                worktrees: WorktreeDirectory::InRepository(worktrees),
+            },
+        }
+    }
+
+    /// Locate one of the lanes already present in a recorded pair.
+    #[must_use]
+    pub fn recorded_lane(&self, branch: &str) -> PathBuf { self.worktrees.path().join(branch) }
+
+    /// Run a fixture landing without running managed hooks.
+    ///
+    /// # Panics
+    /// Panics when git fails.
+    pub fn git_without_hooks(&self, checkout: &Path, arguments: &[&str]) {
+        self.git_driver().run_without_hooks(checkout, arguments);
     }
 
     /// Capture the main worktree and every linked worktree, for [`Self::restore`].
