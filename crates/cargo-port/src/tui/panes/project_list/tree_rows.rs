@@ -27,16 +27,15 @@ use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::columns::ProjectRow;
 use crate::tui::columns::RowLifecycle;
+use crate::tui::panes::constants;
+use crate::tui::panes::constants::BROKEN_WORKTREE_DISK_SUFFIX;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
 use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
 use crate::tui::panes::constants::TREE_PREFIX_BLANK;
-use crate::tui::panes::constants::TREE_PREFIX_BRANCH;
-use crate::tui::panes::constants::TREE_PREFIX_COLLAPSED;
 use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
-use crate::tui::panes::constants::TREE_PREFIX_EXPANDED;
-use crate::tui::panes::constants::TREE_PREFIX_LAST;
-use crate::tui::panes::constants::TREE_PREFIX_LEAF_EXTENSION;
+use crate::tui::panes::constants::TreeRowDepth;
+use crate::tui::panes::constants::TreeRowExpansion;
 use crate::tui::panes::lang;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
@@ -319,7 +318,8 @@ fn tree_prefix(
     }
 
     let mut prefix = String::new();
-    for segment_index in 1..lineage.len() - 1 {
+    let depth = TreeRowDepth::from_lineage_length(lineage.len());
+    for segment_index in depth.ancestor_indices() {
         if has_later_sibling(lineages, row_index, lineage, segment_index) {
             prefix.push_str(TREE_PREFIX_CONTINUATION);
         } else {
@@ -328,20 +328,17 @@ fn tree_prefix(
     }
 
     let row_segment_index = lineage.len() - 1;
-    if has_later_sibling(lineages, row_index, lineage, row_segment_index) {
-        prefix.push_str(TREE_PREFIX_BRANCH);
-    } else {
-        prefix.push_str(TREE_PREFIX_LAST);
-    }
-    if let Some(key) = project_list.expand_key_for_row(row) {
-        if project_list.expanded.contains(&key) {
-            prefix.push_str(TREE_PREFIX_EXPANDED);
-        } else {
-            prefix.push_str(TREE_PREFIX_COLLAPSED);
-        }
-    } else {
-        prefix.push_str(TREE_PREFIX_LEAF_EXTENSION);
-    }
+    let expansion = match project_list.expand_key_for_row(row) {
+        Some(key) if project_list.expanded.contains(&key) => TreeRowExpansion::Expanded,
+        Some(_) => TreeRowExpansion::Collapsed,
+        None => TreeRowExpansion::Leaf,
+    };
+    prefix.push_str(expansion.prefix(has_later_sibling(
+        lineages,
+        row_index,
+        lineage,
+        row_segment_index,
+    )));
     prefix
 }
 
@@ -664,7 +661,7 @@ fn disk_suffix_for_state(
     } else if matches!(health, project::WorktreeHealth::Broken) {
         (
             disk,
-            Some(" [broken]"),
+            Some(BROKEN_WORKTREE_DISK_SUFFIX),
             Some(Style::default().fg(on_error_color()).bg(error_color())),
         )
     } else {
@@ -873,7 +870,7 @@ fn render_vendored_item(
         },
         _ => (None, String::new()),
     };
-    let name = format!("{vendored_display_name} (v)");
+    let name = constants::vendored_row_label(&vendored_display_name);
     vendored.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);
@@ -902,7 +899,7 @@ fn render_vendored_child(
     let Some(vendored) = vendored else {
         return render_missing_vendored(prefix, widths);
     };
-    let name = format!("{} (v)", vendored.package_name());
+    let name = constants::vendored_row_label(vendored.package_name().as_str());
     let inherited_deleted = ctx.project_list.is_deleted(inherited_deleted_path);
     render_child_item(
         ctx,
@@ -1001,7 +998,7 @@ fn render_wt_vendored_item(
     };
     let vendored_display_name =
         vendored_pkg.map_or_else(String::new, |p| p.package_name().into_string());
-    let name = format!("{vendored_display_name} (v)");
+    let name = constants::vendored_row_label(&vendored_display_name);
     vendored_pkg.map_or_else(
         || {
             let row = columns::build_group_header_cells(prefix, &name);

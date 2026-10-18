@@ -30,6 +30,8 @@ pub(super) use ci::CiEmptyState;
 pub(super) use ci::build_ci_data;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
+pub(super) use constants::BROKEN_WORKTREE_DISK_SUFFIX;
+#[cfg(test)]
 pub(super) use constants::CPU_PANE_WIDTH;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_COLLAPSED;

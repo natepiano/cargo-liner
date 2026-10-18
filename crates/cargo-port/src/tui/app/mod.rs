@@ -4677,6 +4677,7 @@ mod tests {
         use crate::tui::integration::NavAction;
         use crate::tui::interaction;
         use crate::tui::panes;
+        use crate::tui::panes::BROKEN_WORKTREE_DISK_SUFFIX;
         use crate::tui::panes::DetailField;
         use crate::tui::panes::GitData;
         use crate::tui::panes::LintsData;
@@ -6373,6 +6374,154 @@ mod tests {
         }
 
         #[test]
+        fn vendored_name_fit_matches_rendered_label() {
+            let name = "vendored-package-with-long-name";
+            let package = super::make_package_with_vendored(
+                Some("app"),
+                "~/app",
+                vec![super::make_vendored(Some(name), "~/app/vendor/helper")],
+            );
+            let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            assert_name_fit_matches_frame(&mut app, &format!("{name} (v)"));
+        }
+
+        #[test]
+        fn flattened_worktree_member_name_fit_matches_rendered_prefix() {
+            let name = "member-with-long-name";
+            let workspace = Workspace {
+                path: AbsolutePath::from(Path::new("/ws")),
+                groups: vec![inline_group(vec![make_member(
+                    name,
+                    Path::new("/ws/member"),
+                )])],
+                ..Workspace::default()
+            };
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Workspace(workspace),
+                Vec::new(),
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            assert_name_fit_matches_frame(&mut app, name);
+        }
+
+        fn assert_name_fit_matches_frame(app: &mut App, label: &str) {
+            app.ensure_visible_rows_cached();
+            app.ensure_disk_cache();
+            app.ensure_fit_widths_cached();
+            app.ensure_detail_cached();
+            let mut terminal =
+                Terminal::new(TestBackend::new(160, 40)).expect("create project list terminal");
+            terminal
+                .draw(|frame| render::ui(frame, app))
+                .expect("render project list frame");
+            let buffer = terminal.backend().buffer();
+            let row = (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .find(|row| row.contains(label))
+                .expect("project list row should render");
+            let content = row.strip_prefix('│').expect("project list left border");
+            let label_end = content.find(label).expect("row label") + label.len();
+            let drawn_width = crate::tui::columns::display_width(&content[..label_end]);
+            assert_eq!(
+                app.project_list
+                    .cached_fit_widths
+                    .get(crate::tui::columns::COL_NAME),
+                panes::name_width_with_gutter(drawn_width),
+                "fitted Name width must equal the drawn prefix and label plus its gutter: {row}"
+            );
+        }
+
+        #[test]
+        fn linked_package_worktree_name_fit_matches_rendered_prefix() {
+            let linked_name = "linked-package-with-long-name";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let primary = make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            let linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            let (buffer, widths) = super::render_tree_buffer(&mut app);
+            let row = (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .find(|row| row.contains(linked_name))
+                .expect("linked package worktree should render");
+            let label_end = row.find(linked_name).expect("linked label") + linked_name.len();
+            let drawn_width = crate::tui::columns::display_width(&row[..label_end]);
+            assert_eq!(
+                widths.get(crate::tui::columns::COL_NAME),
+                panes::name_width_with_gutter(drawn_width),
+                "fitted Name width must reserve the drawn prefix and label plus its gutter: {row}"
+            );
+        }
+
+        #[test]
+        fn broken_worktree_disk_suffix_is_drawn_whole_at_160_columns() {
+            let linked_name = "broken-linked";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let mut primary =
+                make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            primary.rust.project_info.disk_usage_bytes = Some(39_000_000_000);
+            let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
+            linked.rust.project_info.disk_usage_bytes = Some(304);
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                app.ensure_visible_rows_cached();
+                app.ensure_disk_cache();
+                app.ensure_fit_widths_cached();
+                app.ensure_detail_cached();
+                let mut terminal =
+                    Terminal::new(TestBackend::new(160, 40)).expect("create project list terminal");
+                terminal
+                    .draw(|frame| render::ui(frame, &mut app))
+                    .expect("render project list frame");
+                let buffer = terminal.backend().buffer();
+                let (y, row) = (0..buffer.area.height)
+                    .find_map(|y| {
+                        let row = (0..buffer.area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>();
+                        row.contains(linked_name).then_some((y, row))
+                    })
+                    .expect("broken worktree name should render");
+                assert!(
+                    row.contains(&format!("304 B{BROKEN_WORKTREE_DISK_SUFFIX}")),
+                    "{appearance:?}: broken worktree disk suffix should render whole: {row}"
+                );
+                let suffix_start = row
+                    .find(BROKEN_WORKTREE_DISK_SUFFIX)
+                    .expect("whole suffix should render");
+                let column = row[..suffix_start].chars().count();
+                for x in column..column + BROKEN_WORKTREE_DISK_SUFFIX.len() {
+                    let cell = &buffer[(u16::try_from(x).expect("suffix fits buffer"), y)];
+                    assert_eq!(cell.fg, tui_pane::on_error_color(), "{appearance:?}");
+                    assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}");
+                }
+            }
+        }
+
+        #[test]
         fn broken_worktree_project_row_draws_on_error_text_on_error_red() {
             let linked_name = "broken-linked";
             let tmp = tempfile::tempdir().expect("create worktree row directory");
@@ -6380,8 +6529,8 @@ mod tests {
             let linked_path = tmp.path().join(linked_name);
             let mut primary =
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
-            // A larger primary disk value leaves part of the linked suffix visible
-            // within the real column widths, while still clipping its tail.
+            // The fitted Disk width includes the linked row's whole suffix,
+            // even alongside a primary with a larger size value.
             primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
@@ -6403,13 +6552,15 @@ mod tests {
                     })
                     .expect("broken worktree name should render");
                 let suffix_start = row
-                    .find(" [")
-                    .expect("at least one suffix cell should render");
-                for (start, text) in [(name_start, linked_name), (suffix_start, " [broken]")] {
+                    .find(BROKEN_WORKTREE_DISK_SUFFIX)
+                    .expect("the whole broken suffix should render");
+                for (start, text) in [
+                    (name_start, linked_name),
+                    (suffix_start, BROKEN_WORKTREE_DISK_SUFFIX),
+                ] {
                     let column = row[..start].chars().count();
-                    let visible_len = text.len().min(row.len() - start);
-                    assert_eq!(&row[start..start + visible_len], &text[..visible_len]);
-                    for x in column..column + visible_len {
+                    assert!(row[start..].starts_with(text));
+                    for x in column..column + text.len() {
                         let cell = &buffer[(u16::try_from(x).expect("ASCII text fits buffer"), y)];
                         assert_eq!(
                             cell.fg,

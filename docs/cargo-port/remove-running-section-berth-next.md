@@ -438,6 +438,7 @@
 
 **Files:**
 - `crates/cargo-berth/src/verb/claim/mod.rs` — Spec 15: every `ClaimRequest` read destructures it (F008); the `Rejected` arm removed by type (F009)
+- `crates/cargo-berth/src/verb/claim/named.rs` — Spec 15 F008: its `ClaimRequest` reads destructure it too
 - `crates/cargo-berth-test-support/src/repository_template.rs` — R0 `LedgerFixture::Recorded`, projection reset, `IdentityRenewal`, 12-hour rebuild, `TemplateBuildTiming`
 - `crates/cargo-berth-test-support/src/integration_repository.rs` — `CROSS_TARGET_PAIR`, `CROSS_TARGET_AFTER_PAIR` builders
 - `crates/cargo-berth-test-support/src/lib.rs` — re-exports
@@ -781,7 +782,7 @@ Open:
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the item 9 tests passing: `git_output_logged_fails_on_a_non_zero_exit`, `existence_checks_tell_absent_from_unreadable`, `git_status_of_an_unreadable_checkout_is_unreadable_not_clean`, phase 13's HEAD test, `value_reads_of_an_unreadable_checkout_are_unreadable`, the counts and listings tests, `selecting_an_unreadable_checkout_renders_unreadable_rows`, `broken_worktree_row_with_unreadable_status_draws_no_unreadable_icon`, `branch_relation_with_unreadable_default_branch_is_unreadable_not_feature` and `unreadable_upstream_or_default_branch_hides_parent_ci`. `grep -n "git_command(" crates/cargo-port/src/project/git/` finds calls only inside `command.rs`. Shots: the unit director's dark and light shots of the Git pane for a checkout whose `.git/HEAD` is corrupt show Status, Last commit and Remotes as `unreadable` in the error color, and the project list row shows `⛔`.
 
-### Phase 15 — cargo-port's project list never cuts off a broken worktree's ` [broken]` suffix  · status: todo
+### Phase 15 — cargo-port's project list never cuts off a broken worktree's ` [broken]` suffix  · status: done
 
 **Depends on:** phase 12 (done; it shares `tree_rows.rs`, `crates/cargo-port/src/tui/app/mod.rs` and `crates/cargo-port/CHANGELOG.md`, and its suffix style stays). It waits for no other phase. The cargo-port order is 12 (done) → 15 → 13 → 14: phases 13 and 14 claim `app/mod.rs` and `CHANGELOG.md` after this phase, and phase 14 claims `crates/cargo-port/src/tui/panes/widths.rs` after it. Every file below starts at once. Nothing is shared with phases 10 or 11 (`crates/cargo-berth/`).
 
@@ -824,6 +825,7 @@ Open:
    - Run it against the code before items 3-4 first: it fails there on the cut suffix.
 7. Docs: one `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `### Fixed` line: "A broken worktree's `[broken]` suffix in the project list is no longer cut off; the Disk column's width now counts it."
 8. Add-on, the showrunner, 2026-10-17: "cargo-port's spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown took 1.308 s in tile-fixes' phase 22 full run. Bring it under a second by fixing its cause, not by raising a limit, and record the time before and after." The test is `crates/cargo-port/src/watcher/runtime.rs:1235`. Before any edit, time it in a full `verify.sh test cargo-port` run and alone (`--filter spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown`), find where its time goes (a fixed wait, a timeout, a poll interval, or real work in the spawned loop), and remove that cost at its source: a wait becomes a signal the test receives when the state it waits for is reached. Keep every assertion: the guard is alive while the thread runs and dropped only after shutdown. No timeout or slow-test limit is raised. Record both times, before and after, from the full package run, in the summary.
+9. The Name column undercounts a worktree entry's tree prefix (found while building items 3-4, 2026-10-17). `tree_prefix` (`tree_rows.rs:325-346`) draws a worktree entry's prefix as `TREE_PREFIX_BRANCH` or `TREE_PREFIX_LAST` (2 cells) plus `TREE_PREFIX_EXPANDED`, `TREE_PREFIX_COLLAPSED` or `TREE_PREFIX_LEAF_EXTENSION` (2 cells), 4 in all, but the worktree fit measures (`widths.rs:228` workspace, `:248` package) count `PREFIX_WORKTREE_FLAT` (2). The row is 1 cell wider than `total_width()`, so after items 3-4 the frame still clips the last `]` (` 304 B [broken`). The fit pass measures the prefix the row draws: one width source that `tree_prefix` and both worktree measures read, so the two cannot drift again. Check every other `observe_name_width` caller against the prefix its row draws, and fix each one that undercounts the same way. Items 3-4 stay as they are. The item 6 test and phase 12's tightened test then pass unchanged.
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/constants.rs` — `BROKEN_WORKTREE_DISK_SUFFIX`
@@ -831,6 +833,7 @@ Open:
 - `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — `disk_suffix_for_state` draws the constant (shared with phase 12, done)
 - `crates/cargo-port/src/tui/app/mod.rs` — the item 6 test; phase 12's test tightened to the whole suffix (phases 13 and 14 follow)
 - `crates/cargo-port/CHANGELOG.md` — the Fixed line (phases 13 and 14 follow)
+- `crates/cargo-port/src/tui/panes/mod.rs` — test-only re-export of `BROKEN_WORKTREE_DISK_SUFFIX` for the app tests
 - `crates/cargo-port/src/watcher/runtime.rs` — item 8, the watcher test's wait, and the watcher loop code only where that wait's cause lives
 
 **Workers:** 1 writer. The change is one constant read by two files and one test; cargo-port has no `tests/` lane, so a second worker would have no file of its own.
