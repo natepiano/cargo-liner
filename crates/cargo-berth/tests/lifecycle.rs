@@ -5,6 +5,17 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+#[path = "support/loose_refs.rs"]
+mod loose_refs;
+
+#[path = "support/overlap_refusal.rs"]
+mod overlap_refusal;
+
+#[path = "support/git_configuration.rs"]
+mod git_configuration;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -88,7 +99,6 @@ use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
-use timing::LOCK_CONTENTION_TOLERANCE;
 use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
@@ -1556,7 +1566,7 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
     assert_success(&holder);
     fs::write(foreign.join("held.rs"), "foreign dirty work\n").expect("dirty foreign path");
     assert_success(&run_berth(root, &["board", "--json"]));
-    let before = journal_events(root);
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal before refusal");
     let checked = run_berth_with_session(
         root,
         &["check", "file:held.rs", "--json"],
@@ -1569,10 +1579,11 @@ fn fast_path_declines_a_retained_foreign_conflict_on_its_held_path() {
         envelope["payload"]["data"]["conflicts"][0]["reservation_id"],
         reservation_id(&holder)
     );
-    assert_eq!(
-        journal_events(root),
-        before,
-        "refusal must not widen or append"
+    overlap_refusal::assert_one_refusal_appended(
+        &before,
+        &fs::read(root.join(JOURNAL_PATH)).expect("journal after refusal"),
+        "check",
+        &envelope,
     );
 }
 
@@ -2099,11 +2110,7 @@ fn build_initialized_repository(
             ],
         ),
     }
-    git(repository_root, &["config", "user.name", "Berth Test"]);
-    git(
-        repository_root,
-        &["config", "user.email", "berth@example.invalid"],
-    );
+    git_configuration::append_git_configuration(repository_root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
     fs::write(repository_root.join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
     git(repository_root, &["add", "README.md"]);
@@ -2168,6 +2175,8 @@ fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str
 }
 
 fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
+    // The parent already holds the lock, so no acquisition race needs scheduling time.
+    const HELD_LOCK_TOLERANCE: Duration = Duration::from_millis(50);
     let ready_directory = tempdir().expect("lock readiness directory should exist");
     let ready_path = ready_directory.path().join("ready");
     // Include startup: observing readiness happens after the child's deadline starts.
@@ -2179,7 +2188,7 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .env_remove(SESSION_ENVIRONMENT)
         .env(
             LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
-            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+            HELD_LOCK_TOLERANCE.as_millis().to_string(),
         )
         .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
         .stdout(Stdio::piped())
@@ -2192,11 +2201,11 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .expect("contending cargo-berth should finish");
     let elapsed = started_at.elapsed();
     assert!(
-        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        elapsed >= HELD_LOCK_TOLERANCE,
         "contention returned too early: {elapsed:?}"
     );
     assert!(
-        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        elapsed < HELD_LOCK_TOLERANCE + SCHEDULING_ALLOWANCE,
         "contention took too long: {elapsed:?}"
     );
     output
@@ -2956,7 +2965,7 @@ mod merge_extent {
 
     #[test]
     fn a_diverged_holder_never_covers_changes_made_only_on_trunk() {
-        let fixture = Repository::new();
+        let fixture = Repository::with_trunk_requester();
         let id = claim(&fixture.holder, "tree:crates", FIRST_RUN);
         commit(&fixture.holder, "crates/one/lib.rs", "branch work\n");
         commit(fixture.trunk(), "crates/two/lib.rs", "trunk work\n");
@@ -3476,7 +3485,7 @@ mod merge_extent {
 
     #[test]
     fn a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends() {
-        let fixture = Repository::new();
+        let fixture = Repository::with_trunk_requester();
         let session = "live-empty-merge-extent";
         let claimed = berth_command(BERTH)
             .args(["claim", "file:tracked.rs", "--run", FIRST_RUN, "--json"])
@@ -3491,7 +3500,10 @@ mod merge_extent {
             .as_str()
             .expect("session claim should name its reservation")
             .to_owned();
-        board(fixture.trunk());
+        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
+        // The outsider's admitted edit check reconciles the clean holder before
+        // the mapping is read; a holder occupancy refusal alone never reaches it.
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
         let mapping_path = fixture
             .trunk()
             .join(".git/cargo-berth/session-identities.json");
@@ -3499,15 +3511,12 @@ mod merge_extent {
             serde_json::from_slice(&fs::read(&mapping_path).expect("session mappings should read"))
                 .expect("session mappings should be JSON");
         assert_eq!(mappings["identities"][session]["reservation_id"], id);
-        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
-        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
 
         succeed(&berth(
             &fixture.holder,
             &["release", &id, "--json"],
             FIRST_RUN,
         ));
-        board(fixture.trunk());
         let retired: Value =
             serde_json::from_slice(&fs::read(mapping_path).expect("retired mappings should read"))
                 .expect("retired mappings should be JSON");
@@ -4688,14 +4697,7 @@ mod merge_extent {
 
     fn build_merge_extent_main(root: &Path) {
         GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        for (key, value) in [
-            ("user.name", "Berth Test"),
-            ("user.email", "berth@example.invalid"),
-            ("maintenance.auto", "false"),
-            ("gc.auto", "0"),
-        ] {
-            GIT.run(root, ["config", key, value]);
-        }
+        super::git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
         write(root, "tracked.rs", "base\n");
         write(root, "staged.rs", "base\n");
         GIT.run(root, ["add", "."]);
@@ -4703,12 +4705,23 @@ mod merge_extent {
         succeed(&berth(root, &["init", "--json"], FIRST_RUN));
         // No hook or lifecycle verb runs when these tests integrate a branch. Only the
         // following board read may discover its now-empty merge surface.
-        GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
+        super::git_configuration::append_git_configuration(
+            root,
+            "\n[core]\n hooksPath = /dev/null\n",
+        )
+        .expect("fixture hook policy should write");
         GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
         GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
     }
 
-    /// Three checkouts share object storage but have independent working trees.
+    /// The checkout issuing edit requests independently of the holder.
+    #[derive(Clone, Copy)]
+    enum EditRequester {
+        Trunk,
+        SeparateBranch,
+    }
+
+    /// A holder and its edit requester share a trunk and object storage.
     struct Repository {
         trunk_directory: TempDir,
         worktrees:       TempDir,
@@ -4717,26 +4730,47 @@ mod merge_extent {
     }
 
     impl Repository {
-        fn new() -> Self {
+        fn new() -> Self { Self::with_requester(EditRequester::SeparateBranch) }
+
+        /// These cases need a foreign requester, but no third branch or checkout.
+        fn with_trunk_requester() -> Self { Self::with_requester(EditRequester::Trunk) }
+
+        fn with_requester(requester: EditRequester) -> Self {
             let repository = MERGE_EXTENT_MAIN.instantiate();
             let root = repository.path();
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");
-            let outsider = worktrees.path().join("outsider");
-            for (branch, path) in [("holder", &holder), ("outsider", &outsider)] {
-                GIT.run(
-                    root,
-                    [
-                        "worktree",
-                        "add",
-                        "--quiet",
-                        "-b",
-                        branch,
-                        path.to_str().expect("worktree path should be UTF-8"),
-                        "main",
-                    ],
-                );
-            }
+            GIT.run(
+                root,
+                [
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "holder",
+                    holder.to_str().expect("worktree path should be UTF-8"),
+                    "main",
+                ],
+            );
+            let outsider = match requester {
+                EditRequester::Trunk => root.to_path_buf(),
+                EditRequester::SeparateBranch => {
+                    let path = worktrees.path().join("outsider");
+                    GIT.run(
+                        root,
+                        [
+                            "worktree",
+                            "add",
+                            "--quiet",
+                            "-b",
+                            "outsider",
+                            path.to_str().expect("worktree path should be UTF-8"),
+                            "main",
+                        ],
+                    );
+                    path
+                },
+            };
             Self {
                 trunk_directory: repository,
                 worktrees,

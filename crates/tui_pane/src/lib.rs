@@ -475,6 +475,7 @@ pub use theme::inactive_title_color;
 pub use theme::inline_error_color;
 pub use theme::install_theme_state;
 pub use theme::label_color;
+pub use theme::on_error_color;
 pub use theme::registry;
 pub use theme::remembered_focus_color;
 pub use theme::replace_registry;

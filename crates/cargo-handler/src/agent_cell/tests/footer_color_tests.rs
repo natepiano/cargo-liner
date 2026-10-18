@@ -38,7 +38,8 @@ fn rendered_with_colors(
     buffer
 }
 
-/// Assert every character in a rendered label, including its last character.
+/// Assert each `Buffer` cell covering `text` has its foreground set to the
+/// expected `Color`, through the final character.
 fn assert_color(buffer: &Buffer, text: &str, expected: Color) {
     let (x, y) = find(buffer, text).expect("the label is drawn");
     for offset in 0..summary::cell_width(text) {

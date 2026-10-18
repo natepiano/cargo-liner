@@ -19,8 +19,8 @@ use tui_pane::error_color;
 use tui_pane::inactive_border_color;
 use tui_pane::inactive_title_color;
 use tui_pane::label_color;
+use tui_pane::on_error_color;
 use tui_pane::success_color;
-use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
 use unicode_width::UnicodeWidthChar;
@@ -61,6 +61,7 @@ use crate::tui::panes::constants::SYNC_HEADER;
 use crate::tui::panes::constants::TRACKED_HEADER;
 use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
 use crate::tui::panes::package;
+use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::support;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::AvailabilityStatus;
@@ -736,7 +737,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
                 Style::default().fg(inactive_border_color())
             } else if *field == DetailField::WorktreeError {
-                Style::default().fg(text_default()).bg(error_color())
+                Style::default().fg(on_error_color()).bg(error_color())
             } else if is_rate_limit_row && data.github_status.is_unauthenticated() {
                 // Unauthenticated is actionable, not an outage — warn (yellow)
                 // rather than error (red) like the unreachable / rate-limited rows.
@@ -1027,12 +1028,21 @@ fn worktree_row_line(
 }
 
 fn git_panel_title(data: &GitData) -> String {
-    match data.head.as_ref() {
-        Some(HeadState::Branch(name)) if !name.is_empty() => format!(" Git - {name} "),
-        Some(HeadState::Detached { short_sha }) => format!(" Git - detached @ {short_sha} "),
-        Some(HeadState::Branch(_) | HeadState::Unborn) | None => {
-            tui_pane::pane_title("Git", &PaneTitleCount::None)
-        },
+    match &data.checkout {
+        GitCheckout::Readable {
+            head: HeadState::Branch(name),
+            ..
+        } if !name.is_empty() => format!(" Git - {name} "),
+        GitCheckout::Readable {
+            head: HeadState::Detached { short_sha },
+            ..
+        } => format!(" Git - detached @ {short_sha} "),
+        GitCheckout::Readable {
+            head: HeadState::Branch(_) | HeadState::Unborn,
+            ..
+        }
+        | GitCheckout::Broken
+        | GitCheckout::AwaitingProbe => tui_pane::pane_title("Git", &PaneTitleCount::None),
     }
 }
 

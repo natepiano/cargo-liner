@@ -1274,7 +1274,9 @@ impl App {
                             .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
-                    g.head.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
+                    !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
+                        || !g.remotes.is_empty()
+                        || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
@@ -2733,6 +2735,7 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
+        use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
@@ -2910,7 +2913,10 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
             app.panes.git.set_content(GitData {
-                head: Some(HeadState::Branch("main".to_string())),
+                checkout: GitCheckout::Readable {
+                    head:     HeadState::Branch("main".to_string()),
+                    relation: None,
+                },
                 ..GitData::default()
             });
             app
@@ -4335,7 +4341,10 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
             app.panes.git.set_content(GitData {
-                head: Some(HeadState::Branch("main".to_string())),
+                checkout: GitCheckout::Readable {
+                    head:     HeadState::Branch("main".to_string()),
+                    relation: None,
+                },
                 ..GitData::default()
             });
             app.set_focus(FocusedPane::App(AppPaneId::Package));
@@ -4572,6 +4581,7 @@ mod tests {
     mod interaction {
         use std::path::Path;
         use std::rc::Rc;
+        use std::sync::Arc;
         use std::time::Duration;
         use std::time::Instant;
 
@@ -4588,9 +4598,11 @@ mod tests {
         use crossterm::event::MouseEventKind;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
+        use ratatui::buffer::Buffer;
         use ratatui::layout::Position;
         use tempfile::TempDir;
         use tui_pane::AppContext;
+        use tui_pane::Appearance;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
         use tui_pane::FocusedPane;
@@ -4601,11 +4613,13 @@ mod tests {
         use tui_pane::RenderFocus;
         use tui_pane::SettingsLineTarget;
         use tui_pane::SettingsRowPayload;
+        use tui_pane::Theme;
         use tui_pane::ToastActivation;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
 
+        use super::apply_bg_msg;
         use crate::ci::CiJob;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -4621,6 +4635,7 @@ mod tests {
         use crate::project;
         use crate::project::AbsolutePath;
         use crate::project::Cargo;
+        use crate::project::CargoParseResult;
         use crate::project::CheckoutInfo;
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
@@ -4646,6 +4661,7 @@ mod tests {
         use crate::project::Workspace;
         use crate::project::WorkspaceMetadata;
         use crate::project::WorktreeGroup;
+        use crate::project::WorktreeHealth;
         use crate::project::WorktreeStatus;
         use crate::scan::BackgroundMsg;
         use crate::scan::DirSizes;
@@ -4661,6 +4677,8 @@ mod tests {
         use crate::tui::integration::NavAction;
         use crate::tui::interaction;
         use crate::tui::panes;
+        use crate::tui::panes::DetailField;
+        use crate::tui::panes::GitData;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
@@ -6196,6 +6214,212 @@ mod tests {
 
             assert_eq!(app.focused_pane_id(), PaneId::Targets);
             assert_eq!(app.panes.targets.viewport.pos(), 1);
+        }
+
+        fn render_selected_git(app: &mut App) -> Buffer {
+            app.ensure_detail_cached();
+            let mut terminal =
+                Terminal::new(TestBackend::new(80, 8)).expect("create Git pane terminal");
+            let animation_elapsed = app.animation_started.elapsed();
+            let selected_path = app
+                .selected_project_path_for_render()
+                .map(Path::to_path_buf);
+            let ci_status_lookup = app.ci.status_lookup();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    let split = app.split_for_render(
+                        selected_path.as_deref(),
+                        animation_elapsed,
+                        &ci_status_lookup,
+                        OverlayRenderInputs::none(),
+                        SyncedDescriptionHeight::default(),
+                    );
+                    tui_pane::Renderable::render(
+                        split.registry.git,
+                        frame,
+                        area,
+                        &split.pane_render_ctx,
+                    );
+                })
+                .expect("render selected Git pane");
+            terminal.backend().buffer().clone()
+        }
+
+        struct ActiveThemeOverride {
+            saved: Arc<Theme>,
+        }
+
+        impl ActiveThemeOverride {
+            fn set(appearance: Appearance) -> Self {
+                let saved = tui_pane::theme();
+                tui_pane::set_active_theme(std::sync::Arc::new(tui_pane::fallback_theme(
+                    appearance,
+                )));
+                Self { saved }
+            }
+        }
+
+        impl Drop for ActiveThemeOverride {
+            fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
+        }
+
+        fn assert_git_error_colors(app: &mut App, error_value: &str) {
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let buffer = render_selected_git(app);
+                let area = buffer.area;
+                let value_position = (0..area.height)
+                    .find_map(|y| {
+                        let row = (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>();
+                        row.find(error_value).map(|byte| {
+                            (
+                                u16::try_from(row[..byte].chars().count())
+                                    .expect("Error value position fits in the buffer"),
+                                y,
+                            )
+                        })
+                    })
+                    .expect("Error value should be rendered");
+                let cell = &buffer[value_position];
+                assert_eq!(cell.fg, tui_pane::on_error_color());
+                assert_eq!(cell.bg, tui_pane::error_color());
+            }
+        }
+
+        #[test]
+        fn selecting_worktree_with_missing_gitdir_renders_git_error() {
+            let error_label = DetailField::WorktreeError.label();
+            let error_value = DetailField::WorktreeError.git_value(&GitData::default());
+            let buffer_text = |buffer: &Buffer| {
+                let area = buffer.area;
+                (0..area.height)
+                    .map(|y| {
+                        (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let tmp = tempfile::tempdir().expect("create test directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join("linked");
+            std::fs::create_dir_all(primary_path.join(".git"))
+                .expect("create primary git directory");
+            std::fs::create_dir(&linked_path).expect("create linked worktree directory");
+            std::fs::write(
+                linked_path.join(".git"),
+                "gitdir: ../primary/.git/worktrees/missing\n",
+            )
+            .expect("write broken worktree gitfile");
+
+            std::fs::write(
+                linked_path.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write linked project manifest");
+            let primary = make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            let Ok(CargoParseResult::Package(linked)) =
+                project::from_cargo_toml(&linked_path.join("Cargo.toml"))
+            else {
+                panic!("linked project manifest should load as a package");
+            };
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list
+                .select_project_in_tree(&primary_path, false);
+            app.sync_selected_project();
+            assert!(!buffer_text(&render_selected_git(&mut app)).contains(&error_value));
+
+            app.project_list.select_project_in_tree(&linked_path, false);
+            app.sync_selected_project();
+            assert_eq!(
+                app.project_list.selected_project_path(),
+                Some(linked_path.as_path())
+            );
+            let info = CheckoutInfo::get(&linked_path, None)
+                .expect("the live checkout probe accepts the broken gitfile");
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::CheckoutInfo {
+                    path: linked_path.clone().into(),
+                    info,
+                },
+            );
+            let rendered = buffer_text(&render_selected_git(&mut app));
+            assert!(app.is_pane_tabbable(PaneId::Git));
+            let data = app.panes.git.content().expect("selected Git pane content");
+            assert!(
+                matches!(data.checkout, crate::tui::panes::GitCheckout::Broken),
+                "an unreadable gitdir supplies no HEAD row"
+            );
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| line.contains(error_label) && line.contains(&error_value)),
+                "Git pane should render the broken worktree error: {rendered}"
+            );
+            assert!(
+                !rendered.contains(DetailField::Head.label()),
+                "a failed HEAD probe must not produce a Branch row: {rendered}"
+            );
+
+            assert_git_error_colors(&mut app, &error_value);
+        }
+
+        #[test]
+        fn broken_worktree_project_row_draws_on_error_text_on_error_red() {
+            let linked_name = "broken-linked";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let mut primary =
+                make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            // A larger primary disk value leaves part of the linked suffix visible
+            // within the real column widths, while still clipping its tail.
+            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let (buffer, _) = super::render_tree_buffer(&mut app);
+                let area = buffer.area;
+                let (y, row, name_start) = (0..area.height)
+                    .find_map(|y| {
+                        let row = (0..area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>();
+                        row.find(linked_name).map(|start| (y, row, start))
+                    })
+                    .expect("broken worktree name should render");
+                let suffix_start = row
+                    .find(" [")
+                    .expect("at least one suffix cell should render");
+                for (start, text) in [(name_start, linked_name), (suffix_start, " [broken]")] {
+                    let column = row[..start].chars().count();
+                    let visible_len = text.len().min(row.len() - start);
+                    assert_eq!(&row[start..start + visible_len], &text[..visible_len]);
+                    for x in column..column + visible_len {
+                        let cell = &buffer[(u16::try_from(x).expect("ASCII text fits buffer"), y)];
+                        assert_eq!(
+                            cell.fg,
+                            tui_pane::on_error_color(),
+                            "{appearance:?}: {text}"
+                        );
+                        assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}: {text}");
+                    }
+                }
+            }
         }
 
         #[test]
@@ -16077,6 +16301,15 @@ mod tests {
             init_git_project(dir, self.primary_name(), matches!(self, Self::Workspace));
         }
 
+        fn write_manifest(self, dir: &Path) {
+            std::fs::create_dir_all(dir).expect("create refresh project directory");
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                manifest_contents(self.primary_name(), matches!(self, Self::Workspace)),
+            )
+            .expect("write refresh project manifest");
+        }
+
         fn root_item(dir: &Path) -> RootItem { item_from_project_dir(dir) }
 
         fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
@@ -16389,27 +16622,36 @@ mod tests {
         assert_eq!(group.linked[0].path(), linked_dir.as_path());
     }
 
+    fn create_refresh_worktree(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
+        kind.write_manifest(linked);
+        let gitdir = primary.join(".git/worktrees").join(
+            linked
+                .file_name()
+                .expect("linked checkout has a directory name"),
+        );
+        std::fs::create_dir_all(&gitdir).expect("create linked administrative directory");
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("write linked gitdir pointer");
+        std::fs::write(gitdir.join("commondir"), "../..\n").expect("write common gitdir pointer");
+    }
+
     fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProjectKind) {
         let tmp = tempfile::tempdir().expect("create test tempdir");
         let primary_dir = tmp.path().join(kind.primary_name());
         let linked_one_dir = tmp.path().join(kind.feature_name());
         let linked_two_dir = tmp.path().join(kind.linked_name());
-        kind.init_primary_repo(&primary_dir);
-        add_git_worktree(
-            &primary_dir,
-            &linked_one_dir,
-            &format!("feat/{}", kind.branch_prefix()),
-        );
+        kind.write_manifest(&primary_dir);
+        std::fs::create_dir(primary_dir.join(".git")).expect("create primary git directory");
+        create_refresh_worktree(&primary_dir, &linked_one_dir, kind);
 
         let primary_item = WorktreeProjectKind::root_item(&primary_dir);
         let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
         let mut app = make_app(&[primary_item, linked_one_item]);
 
-        add_git_worktree(
-            &primary_dir,
-            &linked_two_dir,
-            &format!("test/{}", kind.branch_prefix()),
-        );
+        create_refresh_worktree(&primary_dir, &linked_two_dir, kind);
         let stale_discovery = match kind {
             WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
                 Some(kind.primary_name()),

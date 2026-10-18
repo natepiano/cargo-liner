@@ -152,7 +152,8 @@ impl OrderingGraph {
                     declaration_event_id: event.event_id(),
                     declaration:          EdgeDeclaration::Sequence,
                 })?,
-                JournalOperation::Checkpoint { .. }
+                JournalOperation::OverlapRefused { .. }
+                | JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
                 | JournalOperation::Retarget { .. }
                 | JournalOperation::UnrecordedTargetsPinned { .. }

@@ -29,6 +29,7 @@ use super::ci;
 use super::formatting;
 use super::package_data;
 use super::project;
+use crate::project::WorktreeHealth;
 
 /// How the current `HEAD` relates to the repo, rendered as a qualifier
 /// after the branch name in the Git pane's Branch row (`main · default`,
@@ -79,8 +80,7 @@ impl HeadRelation {
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
-    pub head:               Option<HeadState>,
-    pub head_relation:      Option<HeadRelation>,
+    pub checkout:           GitCheckout,
     pub bisect:             Option<BisectProgress>,
     pub status:             Option<GitStatus>,
     pub vs_local:           Option<String>,
@@ -101,6 +101,33 @@ pub struct GitData {
     /// is conveyed by the project-list `(s)` marker and the pane's
     /// "Submodule — \<name\>" title, not by an About-section line.
     pub submodule_ctx:      Option<SubmoduleContext>,
+}
+
+/// A broken worktree cannot supply a readable HEAD, even when a probe
+/// reports an unborn branch after its git command fails.
+#[derive(Clone, Default)]
+pub enum GitCheckout {
+    Broken,
+    #[default]
+    AwaitingProbe,
+    Readable {
+        head:     HeadState,
+        relation: Option<HeadRelation>,
+    },
+}
+
+impl GitCheckout {
+    fn from_probe(
+        health: WorktreeHealth,
+        head: Option<HeadState>,
+        relation: Option<HeadRelation>,
+    ) -> Self {
+        match (health, head) {
+            (WorktreeHealth::Broken, _) => Self::Broken,
+            (WorktreeHealth::Normal, None) => Self::AwaitingProbe,
+            (WorktreeHealth::Normal, Some(head)) => Self::Readable { head, relation },
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -216,7 +243,10 @@ pub enum GitRow<'a> {
 
 pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     let mut fields = Vec::new();
-    if data.head.is_some() {
+    if matches!(data.checkout, GitCheckout::Broken) {
+        fields.push(DetailField::WorktreeError);
+    }
+    if matches!(data.checkout, GitCheckout::Readable { .. }) {
         fields.push(DetailField::Head);
     }
     if data.bisect.is_some() {
@@ -293,8 +323,7 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
     data.worktrees.get(pos).map(GitRow::Worktree)
 }
 pub(super) struct GitDetailFields {
-    pub(super) head:               Option<HeadState>,
-    pub(super) head_relation:      Option<HeadRelation>,
+    pub(super) checkout:           GitCheckout,
     pub(super) bisect:             Option<BisectProgress>,
     pub(super) path:               Option<GitStatus>,
     pub(super) vs_local:           Option<String>,
@@ -364,8 +393,13 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         .unwrap_or_default();
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
-        head,
-        head_relation,
+        checkout: GitCheckout::from_probe(
+            app.project_list
+                .at_path(abs_path)
+                .map_or(WorktreeHealth::Normal, |info| info.worktree_health),
+            head,
+            head_relation,
+        ),
         bisect,
         path: app.project_list.git_status_for(abs_path),
         vs_local,
@@ -607,8 +641,7 @@ mod git_field_tests {
 
     fn git_data() -> GitData {
         GitData {
-            head:               None,
-            head_relation:      None,
+            checkout:           GitCheckout::AwaitingProbe,
             bisect:             None,
             submodule_ctx:      None,
             status:             None,
@@ -625,6 +658,31 @@ mod git_field_tests {
             remotes:            Vec::new(),
             worktrees:          Vec::new(),
         }
+    }
+
+    #[test]
+    fn broken_worktree_error_precedes_head_and_normal_worktree_omits_it() {
+        let mut data = GitData {
+            checkout: GitCheckout::from_probe(
+                WorktreeHealth::Broken,
+                Some(HeadState::Unborn),
+                None,
+            ),
+            ..git_data()
+        };
+        let fields = git_fields_from_data(&data);
+        assert_eq!(fields[0], DetailField::WorktreeError);
+        assert!(!fields.contains(&DetailField::Head));
+
+        data.checkout = GitCheckout::AwaitingProbe;
+        assert!(!git_fields_from_data(&data).contains(&DetailField::WorktreeError));
+        data.checkout = GitCheckout::Readable {
+            head:     HeadState::Branch("main".to_string()),
+            relation: None,
+        };
+        let fields = git_fields_from_data(&data);
+        assert_eq!(fields[0], DetailField::Head);
+        assert!(!fields.contains(&DetailField::WorktreeError));
     }
 
     #[test]

@@ -34,6 +34,7 @@ accent       = { color = "LightCyan", bold = true }
 error        = { color = { r = 255, g = 115, b = 115 }, bold = true }
 inline_error = { color = "LightYellow", bold = true }
 label        = { r = 175, g = 215, b = 200 }
+on_error     = "White"
 success      = { color = "LightGreen", bold = true }
 warning      = { color = "LightYellow", bold = true }
 
@@ -89,6 +90,7 @@ accent       = { color = { r = 0, g = 0, b = 140 }, bold = true }
 error        = { color = { r = 180, g = 0, b = 0 }, bold = true }
 inline_error = { color = { r = 140, g = 60, b = 0 }, bold = true }
 label        = { r = 40, g = 85, b = 75 }
+on_error     = "White"
 success      = { color = { r = 0, g = 100, b = 0 }, bold = true }
 warning      = { color = { r = 140, g = 60, b = 0 }, bold = true }
 

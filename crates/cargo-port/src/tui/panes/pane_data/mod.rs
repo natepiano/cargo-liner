@@ -41,6 +41,7 @@ pub use formatting::format_date;
 pub use formatting::format_duration;
 pub use formatting::format_time;
 pub use formatting::format_timestamp;
+pub use git_data::GitCheckout;
 pub use git_data::GitData;
 pub use git_data::GitRow;
 #[cfg(test)]

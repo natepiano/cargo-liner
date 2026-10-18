@@ -30,11 +30,11 @@ use crate::constants::TEST_CONFIG_ROOT;
 /// cargo-handler's identity for the framework's config and runner paths.
 pub(crate) enum CargoHandler {}
 
-/// In a test build, `config.toml`, `themes/` and `keymap.toml` resolve
-/// under `/<config>` instead of the OS config directory. The
-/// settings overlay is as wide as its widest row, which is one of these
-/// paths, so only a fixed root draws the same overlay on every machine.
-/// It also keeps a test from writing the user's own config or keymap.
+/// In a test build, `AppIdentity` resolves `config.toml`, `themes/` and
+/// `keymap.toml` under `TEST_CONFIG_ROOT` instead of the OS config directory.
+/// `settings::rows` includes these paths, and their widths determine the
+/// settings overlay's width. A fixed root keeps that width the same on every
+/// machine and prevents tests from writing the user's config or keymap.
 impl AppIdentity for CargoHandler {
     const BINARY_NAME: &'static str = BINARY_NAME;
     const CONFIG_DIRNAME: &'static str = CONFIG_DIRNAME;

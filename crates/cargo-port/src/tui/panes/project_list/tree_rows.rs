@@ -6,7 +6,7 @@ use ratatui::widgets::ListItem;
 use tui_pane::Viewport;
 use tui_pane::error_color;
 use tui_pane::label_color;
-use tui_pane::text_default;
+use tui_pane::on_error_color;
 
 use super::ProjectListPane;
 use super::disk;
@@ -665,7 +665,7 @@ fn disk_suffix_for_state(
         (
             disk,
             Some(" [broken]"),
-            Some(Style::default().fg(text_default()).bg(error_color())),
+            Some(Style::default().fg(on_error_color()).bg(error_color())),
         )
     } else {
         (disk, None, None)

@@ -1081,7 +1081,8 @@ impl RetainedReservationSet {
                 });
                 Ok(())
             },
-            JournalOperation::ResolveDefer { .. }
+            JournalOperation::OverlapRefused { .. }
+            | JournalOperation::ResolveDefer { .. }
             | JournalOperation::Sequence { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }

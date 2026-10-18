@@ -275,13 +275,8 @@ const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
-    command_name="$2"
-    (
-        shift 2
-        command_line="$command_name"
-        for argument in "$@"; do command_line="$command_line $argument"; done
-        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-    )
+    command_line="$*"
+    printf '%s\n' "${command_line#--no-optional-locks }" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -5613,8 +5608,35 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
     repository.restore(historical.reservation.repository.path());
     worktrees.restore(historical.worktrees.path());
     assert_mapped_acceptance_defers_historical_subjects(&historical);
+    repository.restore(historical.reservation.repository.path());
+    worktrees.restore(historical.worktrees.path());
+    let mut one = released_historical_subject(historical);
+    let equivalent = DirectorySnapshot::capture(one.repository.path());
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
-        let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
+        equivalent.restore(one.repository.path());
+        if matches!(target_rewrite, TargetRewrite::Different) {
+            // Both cases start from the same protected history and released reservation.
+            // Only the target's protected content differs.
+            fs::write(
+                one.repository.path().join("src/lib.rs"),
+                "pub fn replacement() {}\n",
+            )
+            .expect("replacement source should write");
+            git(one.repository.path(), &["add", "src/lib.rs"]);
+            git(
+                one.repository.path(),
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "--amend",
+                    "-m",
+                    "rewritten target",
+                ],
+            );
+        }
+        one.target = git_stdout(one.repository.path(), &["rev-parse", "HEAD"]);
         let baseline = DirectorySnapshot::capture(one.repository.path());
         let one_trace = run_board_with_git_trace(one.repository.path());
         assert!(one_trace.output.status.success());
@@ -5681,6 +5703,39 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);
         }
     }
+}
+
+/// Reuse the protected phase and equivalent trunk already built for historical proof queries.
+fn released_historical_subject(
+    historical: HistoricalIntegrationFixture,
+) -> RewrittenReservationFixture {
+    // The historical case already built a protected phase and its equivalent
+    // target commit. Reuse that history for the released-subject cases instead
+    // of initializing and claiming a second repository.
+    git(
+        historical.reservation.repository.path(),
+        &["reset", "--hard", &historical.witness],
+    );
+    for operation in [
+        serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": historical.reservation.reservation_id,
+            "status": {
+                "status": "integrated",
+                "trunk_oid": historical.reservation.protected_tip,
+                "proof": "protected_tip_ancestor",
+            },
+            "edit_blocking_status": "clear",
+        }),
+        serde_json::json!({
+            "op": "release",
+            "reservation_id": historical.reservation.reservation_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    ] {
+        append_journal_operation(historical.reservation.repository.path(), &operation);
+    }
+    historical.reservation
 }
 
 /// A mapped acceptance spends actual trunk's admission before historical discovery can run.

@@ -45,6 +45,10 @@ pub fn hover_focus_color() -> Color { theme().focus.hover.color }
 #[must_use]
 pub fn error_color() -> Color { theme().semantic.error.color }
 
+/// Foreground for text on the error background.
+#[must_use]
+pub fn on_error_color() -> Color { theme().semantic.on_error.color }
+
 /// Inline errors shown on selected settings rows.
 #[must_use]
 pub fn inline_error_color() -> Color { theme().semantic.inline_error.color }
