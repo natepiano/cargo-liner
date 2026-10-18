@@ -368,9 +368,10 @@ impl<'a> AgentPlacement<'a> {
                 row.placement = Placement::Managed { manager, role };
             }
         }
-        // Sort `candidates` by `SessionIdentity::Claude` `id`; restore
-        // `launchers[identity]` when a `Managed` link closes a cycle, repeating
-        // because the restored `Placement` can expose another cycle.
+        // Sort `candidates` by `SessionIdentity::Claude` `id`, so the result is
+        // independent of machine and row order; restore `launchers[identity]`
+        // when a `Managed` link closes a cycle, repeating because the restored
+        // `Placement` can expose another cycle.
         let mut candidates: Vec<_> = rows
             .iter()
             .enumerate()
@@ -419,8 +420,9 @@ impl<'a> AgentPlacement<'a> {
 
     /// Keep launcher-only cycles visible in the same rescue order as the old cell traversal.
     fn rescue_launcher_cycles(rows: &mut [PlacedAgent<'a>]) -> HashSet<RowIdentity<'a>> {
-        // Visit `Placement::Root` rows with `Self::visit`, then promote each row
-        // whose `RowIdentity` is absent from `visited`.
+        // Match the grid's visible-root rescue for launcher-only cycles: visit
+        // `Placement::Root` rows with `Self::visit`, then promote each row whose
+        // `RowIdentity` is absent from `visited`.
         let mut visited = HashSet::new();
         let roots: Vec<_> = rows
             .iter()
