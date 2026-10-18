@@ -294,8 +294,9 @@ impl<'a> AgentPlacement<'a> {
                     .iter()
                     .map(move |row| (machine.name, row))
             })
-            // Prefer the existing listed owner over an app-server carrier when
-            // the process tree has already attached the same thread to an agent.
+            // Sort `owners` with listed `AgentRow` entries before
+            // `Agent::CodexThreadHost`, retaining the listed owner when the same
+            // thread is already attached there.
             .collect();
         owners.sort_by_key(|(_, row)| row.agent == Agent::CodexThreadHost);
         owners
@@ -367,9 +368,10 @@ impl<'a> AgentPlacement<'a> {
                 row.placement = Placement::Managed { manager, role };
             }
         }
-        // Check candidates in session-id order, independent of machine/row order.
-        // Dropping a cycle-closing link restores its original launch fallback;
-        // repeat because that fallback can expose another management cycle.
+        // Sort `candidates` by `SessionIdentity::Claude` `id`, so the result is
+        // independent of machine and row order; restore `launchers[identity]`
+        // when a `Managed` link closes a cycle, repeating because the restored
+        // `Placement` can expose another cycle.
         let mut candidates: Vec<_> = rows
             .iter()
             .enumerate()
@@ -418,8 +420,9 @@ impl<'a> AgentPlacement<'a> {
 
     /// Keep launcher-only cycles visible in the same rescue order as the old cell traversal.
     fn rescue_launcher_cycles(rows: &mut [PlacedAgent<'a>]) -> HashSet<RowIdentity<'a>> {
-        // Match the grid's visible-root rescue for launcher-only cycles:
-        // visit ordinary roots first, then promote each unseen row in order.
+        // Match the grid's visible-root rescue for launcher-only cycles: visit
+        // `Placement::Root` rows with `Self::visit`, then promote each row whose
+        // `RowIdentity` is absent from `visited`.
         let mut visited = HashSet::new();
         let roots: Vec<_> = rows
             .iter()
