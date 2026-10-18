@@ -465,35 +465,26 @@
 
 ### Phase 12 — cargo-port's broken-worktree rows in the project list draw white text on the error red  · status: done
 
-**Depends on:** phase 9 (the `on_error` theme token); runs beside phase 10
+#### As-built
 
-#### Work Order
-
-**Goal:** A broken linked worktree's row in the project list reads in both themes: its text is drawn in the theme's on-error foreground on the error red, the same style as the Git pane's Error row.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-17. Phase 9 added `SemanticTheme::on_error` and `tui_pane::on_error_color()` (white in every built-in theme) and switched the Git pane's Error row to it. The showrunner grepped the workspace: the two sites below are the only other text-on-error-red fills, and both still draw `fg(text_default()).bg(error_color())`, black on `Rgb(170, 0, 0)` in the light theme (about 2.7:1).
-2. `crates/cargo-port/src/tui/columns/project.rs:482` — the name-column `broken_style` applied to every span of a `WorktreeHealth::Broken` row — takes `fg(on_error_color())`.
-3. `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs:668` — the ` [broken]` disk-column suffix style — takes `fg(on_error_color())`.
-4. Nothing else changes: the row's text, the suffix, and which rows count as broken stay as they are.
-5. Test: render the project list for a broken worktree entry and read back the styles of the name cell and the ` [broken]` suffix cell from the buffer: foreground `on_error_color()`, background `error_color()`. Under a second.
-6. Theme templates (showrunner add-on, 2026-10-17): every shipped theme template — `themes/*.toml` in cargo-port, cargo-tile and cargo-handler, `starter.toml` included — sets `on_error` in its `[semantic]` table, so a user copying a template sees the key. Today they load only through the serde default.
-7. Test speed (showrunner add-on, 2026-10-17): `tui::app::tests::worktrees::refreshed_worktree_metadata_appends_into_existing_group` (`crates/cargo-port/src/tui/app/mod.rs:15523`) took 1.107 s; bring it under a second, keeping every assertion. Find where its time goes before cutting.
-8. Docs: a `crates/cargo-port/CHANGELOG.md` `[Unreleased]` `Fixed` line.
+- A `WorktreeHealth::Broken` row's name-column style in `row_to_line` and the ` [broken]` Disk suffix style in `disk_suffix_for_state` are `fg(on_error_color()).bg(error_color())` — white on the error red in every built-in theme, matching the Git pane's Error row.
+- Every `[semantic]` table of every shipped theme template sets `on_error = "White"`: cargo-port's `default_dark`, `default_light` and `high_contrast` (two tables), and the same plus `starter.toml` in cargo-tile and cargo-handler.
+- `broken_worktree_project_row_draws_on_error_text_on_error_red` renders through `render_tree_buffer` at exactly `widths.total_width()`, in Dark and Light, with a 1 GiB primary; it checks every drawn name cell and every visible suffix cell and requires at least ` [` to be drawn.
+- Test guard `ActiveThemeOverride::set(appearance)` restores the saved theme in `Drop`; `assert_git_error_colors` uses it.
+- `refreshed_worktree_metadata_appends_into_existing_group` runs in 0.037 s: `create_refresh_worktree` writes the linked-worktree layout (`.git` pointer + `commondir`) by hand instead of spawning git; `WorktreeProjectKind::write_manifest` replaces the free helper.
 
 **Files:**
-- `crates/cargo-port/src/tui/columns/project.rs`
-- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs`
-- `crates/cargo-port/src/tui/app/mod.rs` — the new test and the item 7 test
-- `crates/cargo-port/CHANGELOG.md`
-- `crates/cargo-port/themes/`
-- `crates/cargo-tile/themes/` — shipped theme templates; owner tile-fixes-unit, edited through berth
-- `crates/cargo-handler/themes/` — shipped theme templates; owner handler-enh-unit, edited through berth
+- `crates/cargo-port/src/tui/columns/project.rs` — broken-row style
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — ` [broken]` suffix style
+- `crates/cargo-port/src/tui/app/mod.rs` — the broken-row test, `ActiveThemeOverride`, refresh-test fixture
+- `crates/{cargo-port,cargo-tile,cargo-handler}/themes/*.toml` — `on_error` key
+- `crates/cargo-port/CHANGELOG.md` — `[Unreleased]` `Fixed` line
 
-**Workers:** 1 writer.
-- `impl` or whichever worker phase 10 leaves free — every file above, lint, and the package test.
+**Binds later work:** Tests that set a theme restore it through `ActiveThemeOverride::set(appearance)`, never a manual save and restore. The broken-row test's comment says the suffix tail is clipped; the Disk column width fix tightens it to require the whole ` [broken]` and rewrites that comment.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, with the item 5 test. Shots: the unit director's dark and light shots of the project list with a broken worktree row show white text on the error red.
+**Gotchas:** The Disk column clips ` [broken]` at product bounds; with an unknown disk size (`0 B`) none of the suffix is drawn.
+
+**Ruled out:** Widening the test buffer past `widths.total_width()` — it hides the clipping; changing product column widths here.
 
 ### Phase 13 — cargo-port reports a checkout whose HEAD git cannot read as unreadable, never as unborn  · status: todo
 
