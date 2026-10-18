@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-10-16T13:40:00Z","cwd":"/work/fixture","message":{"role":"user","content":"Repair the portal without losing pending state"}}
+{"type":"assistant","timestamp":"2026-10-16T13:40:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"old-edit","name":"Edit","input":{"file_path":"/work/fixture/old.rs"}}],"stop_reason":"tool_use"}}

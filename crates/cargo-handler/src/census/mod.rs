@@ -22,6 +22,8 @@ pub(crate) mod classify;
 pub(crate) mod codex;
 pub(crate) mod desktop;
 pub(crate) mod hierarchy;
+#[cfg(test)]
+mod incremental_read_tests;
 mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;

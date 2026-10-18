@@ -15,8 +15,6 @@ use std::fs;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -26,23 +24,31 @@ use serde::Deserialize;
 use super::AgentActivity;
 use super::ServiceTier;
 use super::activity::ActivityRead;
+use super::transcript;
+use super::transcript::JsonlCursor;
+use super::transcript::RecordKind;
 use super::tree;
 use crate::constants::CODEX_CONFIG_FLAGS;
 use crate::constants::CODEX_CONFIG_PREFIX;
 use crate::constants::CODEX_EVENT_LINE;
+use crate::constants::CODEX_RESPONSE_LINE;
 use crate::constants::CODEX_SERVICE_TIER_KEY;
 use crate::constants::CODEX_SESSION_META_LINE;
 use crate::constants::CODEX_THREAD_SETTINGS_EVENT;
+use crate::constants::CODEX_USER_MARKER;
 use crate::constants::ROLLOUT_CONTEXT_PREFIXES;
+use crate::constants::TRANSCRIPT_TAIL_START;
+use crate::startup_log;
 
-/// What one rollout holds, read up to [`RolloutRead::read_to`].
+/// Cached metadata and the current conversation state of one rollout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RolloutRead {
     activity_read:           ActivityRead,
     pub(super) first_prompt: FirstTaskPrompt,
     pub(super) worktree:     ThreadWorktree,
-    /// The offset just past the last whole line read.
-    read_to:                 u64,
+    cursor:                  JsonlCursor,
+    bytes_read:              u64,
+    head:                    HeadValues,
     /// When the thread began, in unix seconds, from its `session_meta`
     /// line; none before that line is written whole.
     pub(super) began:        Option<u64>,
@@ -53,10 +59,12 @@ pub(super) struct RolloutRead {
 impl Default for RolloutRead {
     fn default() -> Self {
         Self {
-            activity_read: super::activity::ActivityRead::default(),
+            activity_read: ActivityRead::default(),
             first_prompt:  FirstTaskPrompt::Unread,
             worktree:      ThreadWorktree::Unrecorded,
-            read_to:       0,
+            cursor:        JsonlCursor::NeverRead,
+            bytes_read:    0,
+            head:          HeadValues::AwaitingSessionAndTask,
             began:         None,
             service_tier:  ServiceTier::Unrecorded,
         }
@@ -96,52 +104,138 @@ impl ThreadWorktree {
     }
 }
 
+/// The immutable head records that still need a complete line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeadValues {
+    AwaitingSessionAndTask,
+    AwaitingSession,
+    AwaitingTask,
+    Complete,
+}
+
+impl HeadValues {
+    const fn with_session(self) -> Self {
+        match self {
+            Self::AwaitingSessionAndTask => Self::AwaitingTask,
+            Self::AwaitingSession => Self::Complete,
+            state => state,
+        }
+    }
+
+    const fn with_task(self) -> Self {
+        match self {
+            Self::AwaitingSessionAndTask => Self::AwaitingSession,
+            Self::AwaitingTask => Self::Complete,
+            state => state,
+        }
+    }
+}
+
 impl RolloutRead {
     /// The turn reader is the sole source of conversation activity.
     pub(super) const fn activity(&self) -> AgentActivity { self.activity_read.activity() }
 
-    /// Read the rollout at `path` on from [`Self::read_to`], from the
-    /// start again when it has shrunk. A last line still being written
-    /// is left for the next read.
+    /// Bytes fetched by the last read, including the one-time metadata bootstrap.
+    pub(super) const fn bytes_read(&self) -> u64 { self.bytes_read }
+
+    /// Bootstrap head metadata once, then consume only a tail and appended records.
     fn advance(&mut self, path: &Path) {
-        let Ok(mut file) = File::open(path) else {
-            return;
-        };
-        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-            return;
-        };
-        if length < self.read_to {
+        if matches!(&self.cursor, JsonlCursor::Following { offset, .. }
+            if fs::metadata(path).is_ok_and(|metadata| metadata.len() < *offset))
+        {
             *self = Self::default();
         }
-        if length == self.read_to || file.seek(SeekFrom::Start(self.read_to)).is_err() {
-            return;
-        }
-        let mut reader = BufReader::new(file);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(bytes) if bytes > 0 && line.ends_with(b"\n") => {
+        self.bytes_read = 0;
+        if matches!(self.cursor, JsonlCursor::NeverRead) {
+            let Ok(file) = File::open(path) else { return };
+            let mut reader = BufReader::new(file);
+            let mut line = Vec::new();
+            let mut offset = 0;
+            while self.head != HeadValues::Complete {
+                let Ok(bytes) = reader.read_until(b'\n', &mut line) else {
+                    return;
+                };
+                if bytes == 0 || !line.ends_with(b"\n") {
+                    break;
+                }
+                offset += bytes as u64;
+                if [
+                    CODEX_SESSION_META_LINE.as_bytes(),
+                    CODEX_EVENT_LINE.as_bytes(),
+                    CODEX_USER_MARKER,
+                    CODEX_RESPONSE_LINE.as_bytes(),
+                ]
+                .iter()
+                .any(|marker| line.windows(marker.len()).any(|part| part == *marker))
+                {
                     self.take(&line);
-                    self.read_to += bytes as u64;
-                },
-                _ => return,
+                }
+                line.clear();
             }
+            line.extend_from_slice(reader.buffer());
+            self.bytes_read = offset + line.len() as u64;
+            self.cursor = JsonlCursor::AfterHead {
+                offset,
+                buffered: line,
+            };
+        }
+        let batch = self.cursor.read_until(path, TRANSCRIPT_TAIL_START, |span| {
+            let activity_known =
+                std::str::from_utf8(span)
+                    .unwrap_or_default()
+                    .lines()
+                    .any(|line| {
+                        let line = line.as_bytes();
+                        if !matches!(transcript::record_kind(line), RecordKind::Codex) {
+                            return false;
+                        }
+                        let mut activity = ActivityRead::from_activity(AgentActivity::Unreported);
+                        if let Ok(value) = serde_json::from_slice(line) {
+                            activity.take_codex(&value);
+                        }
+                        activity.activity() != AgentActivity::Unreported
+                    });
+            activity_known
+                && std::str::from_utf8(span)
+                    .unwrap_or_default()
+                    .lines()
+                    .any(|line| {
+                        let line = line.as_bytes();
+                        if !line
+                            .windows(CODEX_THREAD_SETTINGS_EVENT.len())
+                            .any(|part| part == CODEX_THREAD_SETTINGS_EVENT.as_bytes())
+                        {
+                            return false;
+                        }
+                        serde_json::from_slice::<RolloutLine>(line).is_ok_and(|record| {
+                            record.kind == CODEX_EVENT_LINE
+                                && record.payload.kind.as_deref()
+                                    == Some(CODEX_THREAD_SETTINGS_EVENT)
+                        })
+                    })
+        });
+        self.bytes_read += batch.bytes_read;
+        for line in batch.lines {
+            self.take(&line);
         }
     }
 
-    /// Take what `line`, a whole line starting at [`Self::read_to`],
-    /// says: when the thread began on the first line, its tier on a
-    /// `thread_settings_applied` event.
+    /// Observe a complete event, retaining the first task and session metadata.
     fn take(&mut self, line: &[u8]) {
-        let first = self.read_to == 0;
+        if !matches!(
+            transcript::record_kind(line),
+            RecordKind::Codex | RecordKind::Session
+        ) {
+            return;
+        }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             return;
         };
         {
             self.activity_read.take_codex(&value);
             let payload = &value["payload"];
-            if value["type"] == "session_meta" {
+            if value["type"] == CODEX_SESSION_META_LINE {
+                self.head = self.head.with_session();
                 self.worktree = payload["cwd"]
                     .as_str()
                     .filter(|path| !path.is_empty())
@@ -165,13 +259,14 @@ impl RolloutRead {
                         .any(|prefix| text.starts_with(prefix))
                 {
                     self.first_prompt = FirstTaskPrompt::Recorded(text);
+                    self.head = self.head.with_task();
                 }
             }
         }
         let Ok(parsed) = serde_json::from_value::<RolloutLine>(value) else {
             return;
         };
-        if first && parsed.kind == CODEX_SESSION_META_LINE {
+        if self.began.is_none() && parsed.kind == CODEX_SESSION_META_LINE {
             self.began = parsed
                 .payload
                 .timestamp
@@ -251,6 +346,7 @@ impl Rollouts {
         }
         let read = self.reads.entry(path.to_path_buf()).or_default();
         read.advance(path);
+        startup_log::startup_event(&format!("rollout_bytes_read {}", read.bytes_read()));
         read.clone()
     }
 
@@ -450,7 +546,13 @@ mod tests {
         append(&path, &[META]);
         let mut rollouts = Rollouts::default();
         let first = rollouts.read(&path);
-        assert_eq!(first.read_to, META.len() as u64 + 1);
+        assert_eq!(
+            first.cursor,
+            JsonlCursor::Following {
+                offset:  META.len() as u64 + 1,
+                pending: Vec::new(),
+            }
+        );
 
         let event = settings(r#""priority""#);
         let mut file = fs::OpenOptions::new()
@@ -458,14 +560,19 @@ mod tests {
             .open(&path)
             .expect("the fixture rollout should open");
         write!(file, "{event}").expect("the partial line should write");
+        let partial = rollouts.read(&path);
         assert_eq!(
-            rollouts.read(&path),
-            first,
-            "a partial line is not consumed"
+            partial.service_tier, first.service_tier,
+            "an unfinished event does not change the tier"
         );
+        assert_eq!(partial.bytes_read(), event.len() as u64);
         writeln!(file).expect("the line should end");
         let whole = rollouts.read(&path);
-        assert_eq!(whole.read_to, first.read_to + event.len() as u64 + 1);
+        assert_eq!(
+            whole.bytes_read(),
+            1,
+            "the unfinished event was retained in memory"
+        );
         assert_eq!(whole.service_tier, ServiceTier::Fast);
 
         fs::write(&path, format!("{META}\n")).expect("the rollout should rewrite");

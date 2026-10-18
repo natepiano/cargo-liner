@@ -208,7 +208,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** dropping the `hierarchy_failed` wire flag — older receivers depend on it.
 
-### Phase 7 — First scan under two seconds  · status: todo
+### Phase 7 — First scan under two seconds  · status: done
 
 **Depends on:** Phase 6
 

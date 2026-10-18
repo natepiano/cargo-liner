@@ -546,10 +546,18 @@ mod tests {
         ] {
             assert_eq!(parse(output), Err(reason));
         }
+    }
+
+    #[test]
+    fn command_exit_keeps_its_reason_without_a_shell_startup_deadline() {
         assert_eq!(
-            CommandRunner.run("exit 7", Duration::from_millis(150)),
+            CommandRunner.run("exit 7", Duration::from_secs(60)),
             Err(HierarchyError::ExitedUnsuccessfully)
         );
+    }
+
+    #[test]
+    fn command_timeout_keeps_its_reason() {
         assert_eq!(
             CommandRunner.run("exec sleep 10", Duration::from_millis(100)),
             Err(HierarchyError::TimedOut)

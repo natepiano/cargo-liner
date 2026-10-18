@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"01a14488-1234-5678-9abc-0123456789ab","timestamp":"2026-10-16T13:40:00Z","cwd":"/work/fixture"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\nInjected repository context"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>fixture</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Repair the portal without losing pending state\nBoard: /tmp/claude/unit/fixture-session/board.log"}]}}
+{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}
+{"type":"event_msg","payload":{"type":"task_started"}}
