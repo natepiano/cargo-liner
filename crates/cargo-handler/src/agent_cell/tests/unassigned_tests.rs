@@ -81,7 +81,7 @@ fn row_text(buffer: &Buffer, name: &str) -> String {
 #[test]
 fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
     let local = unassigned_forest();
-    // A repeated pid on another machine is a different session and tile.
+    // `remote` repeats a `local` pid on another machine, so it is a different session and tile.
     let remote = MachineState::Answered(
         vec![agent(20, "remote-session", 3 * HOUR, None)],
         HierarchyEdges::default().into(),
