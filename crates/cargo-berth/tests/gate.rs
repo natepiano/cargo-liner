@@ -3422,6 +3422,47 @@ fn packing_a_loose_trunk_ref_leaves_dispatch_unchanged_without_a_notice() {
 }
 
 #[test]
+fn packing_two_gated_refs_at_the_same_tip_succeeds_without_a_refusal() {
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    GIT.run_without_hooks(repository.root(), ["branch", "style/main", "main"]);
+    let lane = repository.lane("packing-lane", "style/main");
+    let claimed = repository.claim(&lane, "file:shared.txt", FIRST_RUN, Some("style/main"));
+    assert_success(&claimed);
+    set_gate_mode(repository.root(), "enforce");
+    let tip = git_stdout(repository.root(), &["rev-parse", "main"]);
+    assert_eq!(
+        git_stdout(repository.root(), &["rev-parse", "style/main"]),
+        tip
+    );
+    let before = fs::read(repository.root().join(JOURNAL_PATH)).expect("journal before packing");
+
+    let packed = git_output(repository.root(), &["pack-refs", "--all"]);
+
+    assert!(
+        packed.status.success(),
+        "packing unchanged gated refs must succeed: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    assert!(
+        packed.stderr.is_empty(),
+        "packing unchanged gated refs must not report a refusal: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let packed_refs = fs::read_to_string(repository.root().join(".git/packed-refs"))
+        .expect("packed refs should read");
+    for reference in ["refs/heads/main", "refs/heads/style/main"] {
+        assert!(
+            packed_refs.contains(&format!("{tip} {reference}\n")),
+            "{packed_refs}"
+        );
+    }
+    assert_eq!(
+        fs::read(repository.root().join(JOURNAL_PATH)).expect("journal after packing"),
+        before
+    );
+}
+
+#[test]
 fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
@@ -5057,7 +5098,7 @@ fn hook_lock_contention_uses_one_shortened_lock_deadline() {
         "{diagnostic}"
     );
     assert!(!diagnostic.contains("total deadline"), "{diagnostic}");
-    assert!(diagnostic.contains("10-second"));
+    assert!(diagnostic.contains("60-second"));
     assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
 }
 

@@ -149,7 +149,7 @@ const POST_TOOL_USE_STALE_SESSION_ENTRY: &str =
 const POST_TOOL_USE_WIDENED_ENTRY: &str = "test_incursion_board_read_cost_is_constant#4";
 const QUIET_DRIFT_SESSION: &str = "quiet-drift-session";
 const REPLAY_DRIFT_SESSION: &str = "replay-drift-session";
-const SESSION_START_CONTENTION_DETAIL: &str = "The engine already spent its single 10-second retry budget; the hook did not invoke board \
+const SESSION_START_CONTENTION_DETAIL: &str = "The engine already spent its single 60-second retry budget; the hook did not invoke board \
      again. Run `cargo-berth board --json` when the ledger is free.";
 const SESSION_START_CONTENTION_SUMMARY: &str =
     "cargo-berth exhausted its ledger-lock deadline at SessionStart.";

@@ -32,6 +32,7 @@ use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
+use super::history::FinishedHistory;
 use super::replay_checkpoint::ReplayCheckpoint;
 use super::target::ClaimTarget;
 use super::target::IntegrationTarget;
@@ -2171,6 +2172,8 @@ pub(super) struct JournalReplay {
     pub(super) generation:          ProjectionGeneration,
     /// The merge extent observations that later observations supersede.
     pub(super) superseded:          SupersededExtents,
+    /// Terminal-state entry times, independent of subsequent evidence refreshes.
+    pub(super) finished_history:    FinishedHistory,
 }
 
 /// A deterministic fingerprint over a journal's bytes.
@@ -2341,6 +2344,7 @@ impl JournalReplay {
             fingerprint:         JournalFingerprint::EMPTY,
             generation:          ProjectionGeneration::from(0),
             superseded:          SupersededExtents::default(),
+            finished_history:    FinishedHistory::default(),
         }
     }
 
@@ -2349,9 +2353,18 @@ impl JournalReplay {
     /// Updates every field except the byte range, which [`Self::cover`] extends.
     fn apply_record(&mut self, event: JournalEvent, record_bytes: u64) {
         fold_reservations(&mut self.reservations, &event);
+        let history_changes = match &self.reservations {
+            Ok(reservations) => self.finished_history.observe(&event, reservations),
+            Err(_) => Vec::new(),
+        };
         self.repositories.insert(event.actor.repository);
         self.superseded
             .observe(self.record_count, record_bytes, &event.operation);
+        self.superseded.observe_history(
+            history_changes,
+            self.record_count,
+            event.operation.is_merge_extent_observation(),
+        );
         self.record_count += 1;
         self.generation = event.projection_generation;
         if event.operation.is_coordination_record() {
