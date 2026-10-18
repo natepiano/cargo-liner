@@ -416,7 +416,7 @@ impl JobText {
                 JobSource::DispatchJob => prompt,
             });
         }
-        // The first prescribed board role call carries the director's actual job.
+        // The first prescribed `BOARD_SCRIPT` `BOARD_ROLE` call carries the director's actual job.
         for (offset, _) in prompt.match_indices(BOARD_SCRIPT) {
             let command = &prompt[offset + BOARD_SCRIPT.len()..];
             if let Ok(words) = shell_words(command, CommandBoundary::PromptLine)
@@ -426,7 +426,7 @@ impl JobText {
                 return Self::from_line(job);
             }
         }
-        // Some dispatches put a title after the role instructions instead.
+        // Some dispatches put a title in `prompt` after the role instructions instead.
         if let Some(heading) = prompt
             .lines()
             .skip(1)
@@ -510,7 +510,7 @@ impl ParsedDispatch {
                 _ => {},
             }
         }
-        // Values are already resolved in the observed launcher argv. Here variable
+        // Values are already resolved in the observed launcher argv. In `final_command`, variable
         // spellings only establish that the wrapper ends with one dispatch command.
         let final_command = command[start..].replace('$', "_");
         Self::parse(&final_command).is_ok_and(|parsed| parsed == *self)
@@ -573,7 +573,7 @@ impl ParsedDispatch {
             .next()
             .filter(|job| !job.is_empty())
             .ok_or(NotWorkerDispatch)?;
-        // The remaining launcher positions are pass kind, activity, fix pass,
+        // The launcher positions in `remaining` are pass kind, activity, fix pass,
         // team role, and an optional mesh prefix. Nothing may follow them.
         let remaining: Vec<_> = args.collect();
         match remaining.as_slice() {
@@ -882,7 +882,7 @@ fn read_ansi_c_segment(chars: &mut Peekable<Chars<'_>>) -> Result<String, NotWor
             None => return Err(NotWorkerDispatch),
         }
     }
-    // Bash words cannot contain NUL: it ends this quoted segment's decoded text.
+    // Bash words cannot contain NUL: it ends `quoted`'s decoded text.
     if let Some(end) = quoted.iter().position(|byte| *byte == 0) {
         quoted.truncate(end);
     }
