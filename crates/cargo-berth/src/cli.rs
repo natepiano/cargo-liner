@@ -2988,7 +2988,7 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
@@ -3021,7 +3021,7 @@ mod tests {
         ];
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
@@ -3072,7 +3072,7 @@ mod tests {
         )?];
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Replace, overlap_reason)?
         );
         Ok(())
@@ -3470,6 +3470,21 @@ mod tests {
                 reason,
             },
         )))
+    }
+
+    fn claim_overlap_authorization(claim_request: ClaimRequest) -> OverlapAuthorizationRequest {
+        let ClaimRequest {
+            reservation_selection: _,
+            target: _,
+            declared_scopes: _,
+            source: _,
+            purpose: _,
+            coordination_run_selection: _,
+            phase_start: _,
+            overlap_authorization,
+            answer_recovery: _,
+        } = claim_request;
+        overlap_authorization
     }
 
     fn claim_request(arguments: &[&str]) -> Result<ClaimRequest, String> {

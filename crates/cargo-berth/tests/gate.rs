@@ -21,12 +21,39 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+#[path = "support/gate_templates.rs"]
+mod gate_templates;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::write_file;
+pub use gate_templates::CrossTargetLandingWitnesses;
+pub use gate_templates::ENROLLED_PAIR;
+pub use gate_templates::EnrolledPair;
+pub use gate_templates::REVALIDATED_CROSS_TARGET_LANDING;
+pub use gate_templates::UNENROLLED_PAIR;
+pub use gate_templates::enroll_pair;
+pub use gate_templates::read_cross_target_landing;
+pub use gate_templates::read_enrolled_pair;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -1486,52 +1513,21 @@ fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
 
 #[test]
 fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
-    let predecessor = repository.lane("proof-a", "integration");
-    let successor = repository.main_lane("proof-x");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let claimed = repository.claim(
-        &predecessor,
-        "file:shared.txt",
-        FIRST_RUN,
-        Some("integration"),
-    );
-    assert_success(&claimed);
-    let predecessor_id = claim_id(&claimed);
-    // The gate needs the edge, rather than the intermediate unanswered deferral.
-    assert_success(&repository.run(
-        &successor,
-        &[
-            "claim",
-            "file:shared.txt",
-            "--run",
-            SECOND_RUN,
-            "--target",
-            "main",
-            "--after",
-            &predecessor_id,
-            "--overlap-why",
-            "A reaches main before X",
-            "--json",
-        ],
-    ));
-    repository.commit_file(&predecessor, "shared.txt", "A\n", "first A landing");
-    assert_success(&repository.run(&predecessor, &["release", &predecessor_id, "--json"]));
-    repository.merge_fast_forward("proof-a");
-    let first_landing = repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
-    repository.git(repository.root(), &["merge", "--ff-only", "integration"]);
+    let cargo_berth_test_support::CrossTargetPair {
+        repository,
+        predecessor_id,
+        successor_id: _,
+    } = IntegrationRepository::cross_target_pair(gate_templates::REVALIDATED_CROSS_TARGET_LANDING);
+    let gate_templates::CrossTargetLandingWitnesses {
+        first_landing,
+        second_landing,
+        successor_tip,
+    } = gate_templates::read_cross_target_landing(repository.root());
     assert_eq!(
         repository.git_stdout(repository.root(), &["rev-parse", "main"]),
         first_landing
     );
 
-    repository.commit_file(
-        &repository.integration,
-        "integration-later.txt",
-        "later\n",
-        "I revalidates A",
-    );
-    let second_landing = repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
     assert_ne!(first_landing, second_landing);
     assert_success(&repository.run(repository.root(), &["board", "--json"]));
     assert!(
@@ -1543,9 +1539,6 @@ fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
         "A must revalidate at I2 after I1 reaches main"
     );
 
-    repository.commit_file(&successor, "shared.txt", "X\n", "X work");
-    repository.git(&successor, &["merge", "-s", "ours", "--no-edit", "main"]);
-    let successor_tip = repository.git_stdout(&successor, &["rev-parse", "HEAD"]);
     assert!(!GIT.succeeds(
         repository.root(),
         &[
@@ -1566,19 +1559,13 @@ fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
 
 #[test]
 fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
-    let predecessor = repo.lane("gate-a", "integration");
-    let successor = repo.main_lane("gate-x");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let claimed = repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let predecessor_id = claim_id(&claimed);
-    let deferred = repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
-    assert_success(&deferred);
-    let successor_id = claim_id(&deferred);
-    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    assert_success(&repo.run(&predecessor, &["release", &predecessor_id, "--json"]));
-    repo.merge_by_commit("gate-a");
+    let cargo_berth_test_support::CrossTargetPair {
+        repository: repo,
+        predecessor_id,
+        successor_id,
+    } = IntegrationRepository::cross_target_pair(edges_templates::CROSS_TARGET_PAIR);
+    let successor = repo.recorded_lane("cross-x");
+    repo.merge_by_commit("cross-a");
     let sequenced = repo.run(
         repo.root(),
         &[
@@ -1649,85 +1636,23 @@ fn enrollment_authorizes_both_edits_but_holds_second_integration_under_enforce()
     enrollment_authorizes_both_edits_but_holds_integration("enforce", 1);
 }
 
-/// Two checkouts enrolled with overlapping work both edit, and integrating either one holds
-/// under the gate `mode`; `acting_index` picks the checkout that integrates.
+#[test]
+fn enrollment_checks_and_drift_preserve_shared_authority() {
+    let repository = gate_templates::UNENROLLED_PAIR.instantiate();
+    let _ = gate_templates::enroll_pair(repository.path());
+}
+
 fn enrollment_authorizes_both_edits_but_holds_integration(mode: &str, acting_index: usize) {
-    let repository = scratch_repository();
+    let repository = gate_templates::ENROLLED_PAIR.instantiate();
     let root = repository.path();
-    let base = git_stdout(root, &["rev-parse", "main"]);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let first = add_worktree(root, worktrees.path(), "enrolled-first");
-    let second = add_worktree(root, worktrees.path(), "enrolled-second");
-    for (checkout, contents) in [
-        (&first, "pub fn first_committed() {}\n"),
-        (&second, "pub fn second_committed() {}\n"),
-    ] {
-        commit_work_without_hooks(checkout, "src/lib.rs", contents, "work before enrollment");
-        fs::write(
-            checkout.join("src/lib.rs"),
-            format!("{contents}// dirty before init\n"),
-        )
-        .expect("dirty shared work should write");
-    }
-    let initialized = run_berth(root, &["init", "--json"]);
-    let initialized_envelope = json_output(&initialized);
-    assert!(initialized.status.success(), "{initialized_envelope}");
-    let enrollment = &initialized_envelope["payload"]["data"]["enrollment"];
-    assert_eq!(
-        enrollment["enrolled"]
-            .as_array()
-            .expect("enrolled rows")
-            .len(),
-        2
-    );
-    assert_eq!(
-        enrollment["overlaps"]
-            .as_array()
-            .expect("overlap rows")
-            .len(),
-        1
-    );
+    let gate_templates::EnrolledPair {
+        base,
+        reservation_ids,
+    } = gate_templates::read_enrolled_pair(root);
+    let worktrees = root.join(".git/fixture-worktrees");
+    let first = worktrees.join("enrolled-first");
+    let second = worktrees.join("enrolled-second");
     set_gate_mode(root, mode);
-    let mut reservation_ids = Vec::new();
-    for (checkout, session) in [
-        (&first, "enrolled-first-session"),
-        (&second, "enrolled-second-session"),
-    ] {
-        let checked =
-            run_berth_with_session(checkout, &["check", "file:src/lib.rs", "--json"], session);
-        let envelope = json_output(&checked);
-        assert!(checked.status.success(), "{envelope}");
-        assert_eq!(envelope["status"], "clear");
-        assert_eq!(
-            envelope["payload"]["data"]["acquisition"]["kind"],
-            "already_held"
-        );
-        reservation_ids.push(
-            envelope["payload"]["data"]["acquisition"]["reservation_id"]
-                .as_str()
-                .expect("reused enrolled reservation")
-                .to_owned(),
-        );
-        commit_work(
-            checkout,
-            "src/lib.rs",
-            &format!("// edited by {session}\n"),
-            "authorized shared edit",
-        );
-        let drift = run_berth_with_session(checkout, &["drift", "--full", "--json"], session);
-        assert!(drift.status.success(), "{}", json_output(&drift));
-    }
-    let board = run_berth(root, &["board", "--json"]);
-    let board_envelope = json_output(&board);
-    assert!(board.status.success(), "{board_envelope}");
-    assert_eq!(
-        board_envelope["payload"]["data"]["outstanding_incursions"]["entries"],
-        serde_json::json!([])
-    );
-    assert_eq!(
-        board_envelope["payload"]["data"]["unresolved_overlaps"]["entries"][0]["origin"],
-        "enrollment"
-    );
 
     let acting_root = [&first, &second][acting_index];
     let integrated = run_berth(
@@ -5697,29 +5622,7 @@ fn scratch_repository() -> TempDir { SCRATCH_REPOSITORY.instantiate() }
 
 /// A source and a test file committed on `main`, with git maintenance off.
 fn build_scratch_repository(repository_root: &Path) {
-    git(
-        repository_root,
-        &["init", "--quiet", "--initial-branch", "main"],
-    );
-    // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
-    // default on. Several detached runs then repack one repository at once, and the geometric
-    // repack deletes a pack a commit still in flight is reading, which surfaces as
-    // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
-    // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
-    git(repository_root, &["config", "maintenance.auto", "false"]);
-    git(repository_root, &["config", "gc.auto", "0"]);
-    git(
-        repository_root,
-        &["config", "user.email", FIXTURE_USER_EMAIL],
-    );
-    git(repository_root, &["config", "user.name", FIXTURE_USER_NAME]);
-    fs::create_dir_all(repository_root.join("src")).expect("source directory should exist");
-    fs::create_dir_all(repository_root.join("tests")).expect("test directory should exist");
-    fs::write(repository_root.join("src/lib.rs"), "pub fn base() {}\n")
-        .expect("base source should write");
-    fs::write(repository_root.join("tests/base.rs"), "// base\n").expect("base test should write");
-    git(repository_root, &["add", "."]);
-    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
+    gate_templates::build_scratch_repository(repository_root);
 }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {
@@ -5826,20 +5729,7 @@ fn defer_claim(
 }
 
 fn set_gate_mode(repository_root: &Path, mode: &str) {
-    let configuration_path = repository_root.join(CONFIGURATION_PATH);
-    let configuration = fs::read_to_string(&configuration_path).expect("configuration should read");
-    let updated = configuration
-        .lines()
-        .map(|line| {
-            if line.starts_with("gate_mode") {
-                format!("gate_mode = \"{mode}\"")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(configuration_path, format!("{updated}\n")).expect("configuration should write");
+    gate_templates::set_gate_mode(repository_root, mode);
 }
 
 /// Propose `proposed` as the new trunk tip with the release valve unset.

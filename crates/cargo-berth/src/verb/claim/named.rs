@@ -4,6 +4,7 @@ use std::convert::Infallible;
 
 use super::AnswerKind;
 use super::AnsweringWorktree;
+use super::ClaimAnswerPolicy;
 use super::ClaimError;
 use super::ClaimExecution;
 use super::ClaimRejection;
@@ -59,9 +60,20 @@ pub(super) fn acquire(
     reservation_id: ReservationId,
     recovery: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+    let ClaimRequest {
+        reservation_selection: _,
+        target: _,
+        declared_scopes,
+        source,
+        purpose: _,
+        coordination_run_selection,
+        phase_start: _,
+        overlap_authorization,
+        answer_recovery: _,
+    } = request;
     let worktree = WorktreeContext::discover(&std::env::current_dir()?)?;
     let identity = ledger::resolve_identity(&worktree)?;
-    let run_validation = request.coordination_run_selection.resolve(identity);
+    let run_validation = coordination_run_selection.resolve(identity);
     let actor = identity.journal_mutation_actor_for(run_validation.actor_run_id());
     let path_case = PathCase::read(worktree.common_git_directory())?;
     let config = match BerthConfig::read(&worktree.configuration_lookup())? {
@@ -77,7 +89,7 @@ pub(super) fn acquire(
     let repository_trunk = config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
-    let scopes = normalized_claim_scopes(request.declared_scopes, &request.source, path_case);
+    let scopes = normalized_claim_scopes(declared_scopes, &source, path_case);
     let ledger = Ledger::open_from_discovered_worktree(&worktree)?;
     let context = ClaimValidationContext {
         run_validation,
@@ -85,8 +97,7 @@ pub(super) fn acquire(
         recovery_command_line: recovery.clone(),
         worktree_id: actor.worktree_id,
         path_case,
-        overlap_authorization: request.overlap_authorization,
-        default_answer: config.default_answer,
+        answer_policy: ClaimAnswerPolicy::resolve(overlap_authorization, config.default_answer),
         maximum_reservations: config.maximum_reservations,
         maximum_ordering_edges: config.maximum_ordering_edges,
         repository_trunk,
@@ -472,8 +483,8 @@ fn authorization(
         coordination_run_id: context.run_validation.actor_run_id(),
         worktree_id:         context.worktree_id,
     };
-    match &context.overlap_authorization {
-        OverlapAuthorizationRequest::Permissive(request) => {
+    match &context.answer_policy {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Permissive(request)) => {
             let graph = OrderingGraph::replay(state.coordination_events())
                 .map_err(ClaimRejection::EdgeReplay)?;
             bind_claim_authorization(
@@ -489,25 +500,26 @@ fn authorization(
             )
             .map(NamedAuthorization::Acquire)
         },
-        OverlapAuthorizationRequest::Defer(request) => {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Defer(request)) => {
             bind_answer_authorizations(AnswerKind::Defer, (**request).clone(), conflicts)
                 .map(NamedAuthorization::Answer)
         },
-        OverlapAuthorizationRequest::Absent => {
-            if conflicts.is_empty() {
-                return Ok(NamedAuthorization::Acquire(
-                    ConflictAuthorization::NoConflict,
-                ));
-            }
-            match context.default_answer {
-                Some(default_answer) => bind_answer_authorizations(
-                    AnswerKind::Override,
-                    default_answer_request(default_answer, &conflicts),
-                    conflicts,
-                )
-                .map(NamedAuthorization::Answer),
-                None => Err(ClaimRejection::Conflict(conflicts)),
-            }
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent)
+        | ClaimAnswerPolicy::RepositoryDefault(_)
+            if conflicts.is_empty() =>
+        {
+            Ok(NamedAuthorization::Acquire(
+                ConflictAuthorization::NoConflict,
+            ))
+        },
+        ClaimAnswerPolicy::RepositoryDefault(default_answer) => bind_answer_authorizations(
+            AnswerKind::Override,
+            default_answer_request(*default_answer, &conflicts),
+            conflicts,
+        )
+        .map(NamedAuthorization::Answer),
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent) => {
+            Err(ClaimRejection::Conflict(conflicts))
         },
     }
 }

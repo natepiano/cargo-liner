@@ -1658,10 +1658,9 @@ fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() 
 }
 
 #[test]
-fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
+fn abandon_and_retire_dispositions_remain_distinct_after_replay() {
     let repository = RECOVERY_SOURCES.instantiate();
     let (abandoned_id, retired_id) = record_terminal_recovery_dispositions(repository.path());
-    validate_rewritten_integration_replacement(repository.path());
 
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
@@ -1941,7 +1940,10 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
     (abandoned_id, retired_id)
 }
 
-fn validate_rewritten_integration_replacement(repository: &Path) {
+#[test]
+fn rewritten_integration_replacement_validates_evidence() {
+    let sources = RECOVERY_SOURCES.instantiate();
+    let repository = sources.path();
     // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`.
     GIT.run_without_hooks(repository, ["switch", "--quiet", "rewritten"]);
     let unreachable_tip = loose_refs::read_loose_ref(repository, "refs/heads/rewritten");
@@ -1981,8 +1983,14 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
 
     // A trunk commit carrying identical scoped content proves the work, so reconciliation
     // settles the reservation on that commit before any resolution runs.
-    commit_file(repository, "rewritten", "work\n", "squashed integration");
+    commit_rewritten_trunk_without_hooks(repository, "squashed integration");
     let squashed_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
+    let settlement = json_output(&run_berth(
+        repository,
+        &["release", &rewritten_id, "--json"],
+    ));
+    assert_eq!(settlement["status"], "integrated", "{settlement:#}");
+    // Revalidate the disposition the release itself just recorded; no hook settled it first.
     let settled = json_output(&run_berth(
         repository,
         &["release", &rewritten_id, "--json"],
@@ -2002,15 +2010,15 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
         &unrelated_commit,
         &unreachable_tip,
     );
-    commit_file(repository, "rewritten", "work\n", "squashed again");
+    commit_rewritten_trunk_without_hooks(repository, "squashed again");
     let equivalent_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
 
     // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
     lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
-    git(
+    GIT.run_without_hooks(
         repository,
-        &[
+        [
             "merge",
             "--quiet",
             "--no-ff",
@@ -2036,9 +2044,16 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     );
 }
 
+/// Change trunk without allowing a hook to reconcile before the asserted release.
+fn commit_rewritten_trunk_without_hooks(repository: &Path, message: &str) {
+    fs::write(repository.join("rewritten"), "work\n").expect("trunk work should write");
+    GIT.run_without_hooks(repository, ["add", "rewritten"]);
+    GIT.run_without_hooks(repository, ["commit", "--quiet", "-m", message]);
+}
+
 /// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
 fn lose_the_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
-    git(repository, &["reset", "--hard", "--quiet", trunk]);
+    GIT.run_without_hooks(repository, ["reset", "--hard", "--quiet", trunk]);
     // The reset is the first thing this pass sees, so it records the loss and says nothing; the
     // next pass, reading back the row it left, is the one that reports. See
     // `ReconciliationAction::confirmed_lost_evidence`.

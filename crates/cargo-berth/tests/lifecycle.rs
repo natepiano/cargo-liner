@@ -5,8 +5,6 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
-#[path = "support/linked_checkout.rs"]
-mod linked_checkout;
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
@@ -18,6 +16,9 @@ mod git_configuration;
 
 #[path = "support/timing.rs"]
 mod timing;
+
+#[path = "support/reanchoring_templates.rs"]
+mod reanchoring_templates;
 
 #[path = "support/reanchoring.rs"]
 mod reanchoring;
@@ -966,6 +967,11 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
+fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
+    reanchoring::two_rebase_history_copies_keep_owners_and_drain_their_markers();
+}
+
+#[test]
 fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
     reanchoring::checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward();
 }
@@ -1053,6 +1059,16 @@ fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
 #[test]
 fn split_checkpoint_survives_stacked_branches_rewritten_with_update_refs() {
     reanchoring::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding();
 }
 
 #[test]

@@ -1587,7 +1587,16 @@ mod tests {
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
 
-        let scopes = oversized_observed_scopes(MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES / 32);
+        let component_bytes = 4 * MAXIMUM_JOURNAL_RECORD_BYTES;
+        let long_component = "x".repeat(component_bytes);
+        let scope_count = MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES / component_bytes + 1;
+        let scopes = (0..scope_count)
+            .map(|index| ReservationScope {
+                path: ReservationScopePath::from_str(&format!("observed/{index}/{long_component}"))
+                    .expect("long observed path should parse"),
+                kind: ScopeKind::File,
+            })
+            .collect();
         let extent = MergeExtent::derived(empty_merge_extent_key(), scopes);
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
