@@ -1892,7 +1892,8 @@ fn timer_label(timer: Timer, now: u64) -> String {
 fn timer_pie(timer: Timer, now: u64) -> char {
     let gone = Duration::from_secs(now.saturating_sub(timer.started));
     let span = Duration::from_secs(timer.deadline.saturating_sub(timer.started));
-    // A timer of no length divides to NaN or infinity, under no bound.
+    // `gone.div_duration_f64(span)` yields NaN or infinity for zero `span`, so no `TIMER_PIE` bound
+    // matches.
     let share = gone.div_duration_f64(span);
     TIMER_PIE
         .iter()
