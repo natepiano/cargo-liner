@@ -66,8 +66,7 @@ fn session_name(options: &[Token]) -> Option<String> {
             if flag == TMUX_SESSION_NAME_FLAG {
                 return (!built).then(|| argument.to_string());
             }
-            // The rest of the cluster, or the next word, was this flag's
-            // argument.
+            // The rest of `flags`, or the next `words` item, was `flag`'s argument.
             break;
         }
     }

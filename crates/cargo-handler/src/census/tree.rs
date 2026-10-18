@@ -230,9 +230,9 @@ pub(super) fn attach_children(
                     other.agent != Agent::CodexThreadHost && other.launched_by == Some(row.pid)
                 })
                 .collect();
-            // A session the Claude desktop app holds is also a process
-            // under the app's row; the walk skips it, so it shows once,
-            // as a session.
+            // A `sessions` entry held by the Claude desktop app is also under the app's
+            // `AgentRow`; including its pid in `visited` makes `Walker::agent_nodes` skip the
+            // process so it appears once as a session.
             let mut visited: HashSet<u32> = iter::once(row.pid)
                 .chain(sessions.iter().map(|session| session.pid))
                 .collect();
@@ -412,7 +412,8 @@ impl Walker<'_> {
                     nodes.push(subagent_node(agent, subagents, &mut shells_by_subagent, 0));
                 }
             }
-            // A shell whose subagent has since finished stays under the agent.
+            // A shell in `shells_by_subagent` whose subagent has finished stays in the agent's
+            // `nodes`.
             nodes.extend(shells_by_subagent.into_values().flatten());
         }
         nodes
