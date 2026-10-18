@@ -52,6 +52,7 @@ use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
+use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -768,7 +769,7 @@ impl Ledger {
     }
 
     /// Run `body` in `transaction`, then release its mutation lock and compact the journal when
-    /// the transaction's replay holds enough superseded records.
+    /// the replay holds enough superseded records or expired finished history.
     fn conclude<Concluded>(
         &self,
         mut transaction: LedgerTransaction,
@@ -776,8 +777,16 @@ impl Ledger {
     ) -> Concluded {
         let concluded = body(&mut transaction);
         let droppable_bytes = transaction.replay.superseded.droppable_bytes;
+        let history_due = transaction
+            .replay
+            .finished_history
+            .is_due(&RecordedAt::now());
         std::mem::drop(transaction);
-        self.compact_if_due(droppable_bytes);
+        if history_due {
+            self.compact_expired_history();
+        } else {
+            self.compact_if_due(droppable_bytes);
+        }
         concluded
     }
 

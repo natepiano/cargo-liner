@@ -115,6 +115,33 @@ pub(super) enum ReferenceObject {
     Absent,
 }
 
+/// Whether an update changes the logical value named by its reference.
+enum ReferenceMovement<'transaction> {
+    Move(ReferenceMove<'transaction>),
+    NoMove,
+}
+
+/// A reference update that changes its logical value rather than its storage.
+struct ReferenceMove<'transaction>(&'transaction ReferenceUpdate);
+
+impl<'transaction> ReferenceMovement<'transaction> {
+    fn classify(update: &'transaction ReferenceUpdate, repository_root: &Path) -> Self {
+        if update.previous == update.proposed {
+            return Self::NoMove;
+        }
+        // Packing can report a new storage entry for a ref that already names this tip.
+        if let (ReferenceObject::Absent, ReferenceObject::Object(proposed)) =
+            (&update.previous, &update.proposed)
+            && let Ok(target) = IntegrationTarget::from_branch_argument(update.reference.as_str())
+            && git::branch_object_id(repository_root, target.short_name())
+                .is_ok_and(|current| current == *proposed)
+        {
+            return Self::NoMove;
+        }
+        Self::Move(ReferenceMove(update))
+    }
+}
+
 enum ReferenceUpdateGateSubject {
     ProposedTargetMove(ProposedTargetMove),
     NotTargetEntry,
@@ -330,7 +357,7 @@ pub(crate) fn evaluate_reference_transaction(
     )?;
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
     let mut results = Vec::new();
-    for update in gated_updates {
+    for ReferenceMove(update) in gated_updates {
         let target = IntegrationTarget::from_branch_argument(update.reference.as_str()).map_err(
             |reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string())),
         )?;
@@ -405,7 +432,7 @@ fn gated_updates<'transaction>(
     phase: ReferenceTransactionPhase,
     worktree_context: &WorktreeContext,
     trunk_reference: &FullRefName,
-) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
+) -> Result<Vec<ReferenceMove<'transaction>>, GateError> {
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let reservations = ledger
         .read_validated_journal()?
@@ -431,15 +458,19 @@ fn gated_updates<'transaction>(
     let gated_updates = updates
         .iter()
         .copied()
-        .filter(|update| {
-            gated_references.contains(&update.reference) && update.previous != update.proposed
+        .filter(|update| gated_references.contains(&update.reference))
+        .filter_map(|update| {
+            match ReferenceMovement::classify(update, worktree_context.repository_root()) {
+                ReferenceMovement::Move(movement) => Some(movement),
+                ReferenceMovement::NoMove => None,
+            }
         })
         .collect::<Vec<_>>();
     if phase == ReferenceTransactionPhase::Prepared && gated_updates.len() > 1 {
         return Err(GateError::MultipleGatedReferences(
             gated_updates
                 .iter()
-                .map(|update| update.reference.clone())
+                .map(|ReferenceMove(update)| update.reference.clone())
                 .collect(),
         ));
     }
