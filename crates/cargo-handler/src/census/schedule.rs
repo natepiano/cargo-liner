@@ -347,8 +347,8 @@ fn dispatch(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&host);
-        // No receiver means the app has quit, and the answer has nowhere
-        // to go.
+        // If `sender.send` finds no receiver, the app has quit and the answer
+        // has nowhere to go.
         startup_log::startup_event(&format!("remote_answer {host}"));
         let _ = sender.send(CensusUpdate::Remote { host, state });
     });
