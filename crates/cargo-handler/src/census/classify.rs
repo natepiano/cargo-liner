@@ -207,8 +207,8 @@ pub(super) fn agent_rows(
             )
         }))
         .collect();
-    // Only a session the desktop app started has a launcher yet: the
-    // process holding it, which takes the row standing for the app.
+    // Only desktop-started `AgentRow` values have `launched_by` set here; add
+    // `desktop_app_row` for each distinct launcher `pid`.
     let apps: HashSet<u32> = rows.iter().filter_map(|row| row.launched_by).collect();
     rows.extend(
         apps.iter()
