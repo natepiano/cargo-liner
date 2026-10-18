@@ -20,20 +20,32 @@ use cargo_berth_test_support::write_file;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+pub use edges_templates::COVER_LANDING;
 pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
 pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
 pub use edges_templates::LEFT_RIGHT_TREES;
 pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
 pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
 pub use edges_templates::RECORDED_PROJECTION;
 pub use edges_templates::RewrittenSuccessorState;
 pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
 pub use edges_templates::append_edge_fixture_event;
 pub use edges_templates::build_rewritten_successor;
 pub use edges_templates::commit_successor_fixture_file;
 pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 #[test]
 fn board_replays_a_recorded_template_without_its_projection() {
@@ -101,7 +113,6 @@ use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const ALERT_BRANCH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_ALERT_BRANCH";
-const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FIFTH_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FOURTH_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
@@ -150,6 +161,50 @@ if { { [ "$2" = "merge-tree" ] && [ "$4" != "--name-only" ]; } \
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+
+#[test]
+fn integration_fixture_copies_keep_checkout_owners_and_ledger_state_private() {
+    let first = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let second = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    for relative in [
+        ".git/cargo-berth/repo-instance-id",
+        ".git/cargo-berth-worktree-id",
+    ] {
+        assert_ne!(
+            fs::read_to_string(first.root().join(relative)).expect("first owner should read"),
+            fs::read_to_string(second.root().join(relative)).expect("second owner should read"),
+        );
+    }
+    let linked_owner = |checkout: &Path| {
+        fs::read_to_string(
+            linked_checkout::administrative_directory(checkout).join("cargo-berth-worktree-id"),
+        )
+        .expect("linked owner should read")
+    };
+    assert_ne!(
+        linked_owner(&first.integration),
+        linked_owner(&second.integration)
+    );
+    write_file(&first.integration, "integration.txt", "private change\n");
+    assert_eq!(
+        fs::read_to_string(second.integration.join("integration.txt"))
+            .expect("other copy should read"),
+        "integration\n",
+    );
+    write_file(&first.integration, "integration.txt", "integration\n");
+    let lane = first.main_lane("private-lane");
+    let claimed = first.claim(&lane, "file:private.txt", FIRST_RUN, Some("main"));
+    assert_success(&claimed);
+    let id = claim_id(&claimed);
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&first.board()),
+        vec![id],
+    );
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&second.board()),
+        Vec::<String>::new(),
+    );
+}
 
 #[test]
 fn same_target_edge_waits_for_predecessor_to_reach_integration() {
@@ -1976,12 +2031,12 @@ fn successor_round_robin_covers_every_head() {
 
 #[test]
 fn predecessor_graph_has_fixed_cold_cost() {
-    let one = predecessor_scale_fixture(1);
+    let one = predecessor_scale_fixture(edges_templates::ONE_PREDECESSOR);
     let one_cold = run_berth_with_git_trace(one.repository.path(), &["board", "--json"], "*");
     assert!(one_cold.output.status.success());
     let one_argv = git_trace(&one_cold);
 
-    let two = predecessor_scale_fixture(2);
+    let two = predecessor_scale_fixture(edges_templates::TWO_PREDECESSORS);
     let two_cold = run_berth_with_git_trace(two.repository.path(), &["board", "--json"], "*");
     assert!(two_cold.output.status.success());
     let two_argv = git_trace(&two_cold);
@@ -2368,19 +2423,20 @@ fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) 
 }
 
 fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSuccessorFixture {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
     let worktrees = tempdir().expect("worktree parent should exist");
+    let template = if successor_is_equivalent {
+        edges_templates::EQUIVALENT_SUCCESSOR
+    } else {
+        edges_templates::DIFFERENT_SUCCESSOR
+    };
+    let repository = template.instantiate_with_external_worktrees(worktrees.path());
     let edges_templates::RewrittenSuccessorState {
         predecessor_id,
         successor_id,
         phase_start_head,
         protected_tip,
         successor_head,
-    } = edges_templates::build_rewritten_successor(
-        repository.path(),
-        worktrees.path(),
-        successor_is_equivalent,
-    );
+    } = edges_templates::successor_history_state(repository.path());
     RewrittenSuccessorFixture {
         repository,
         worktrees,
@@ -2559,9 +2615,7 @@ fn record_scale_successor(
     event["phase_start_head"] = serde_json::json!(head);
     event["worktree_root"] = serde_json::json!(successor_root);
     event["worktree_administrative_locator"] = serde_json::json!(
-        administrative_directory
-            .strip_prefix(root.join(".git"))
-            .expect("linked administration should be in common git")
+        linked_checkout::ResolvedLinkedAdministration::read(successor_root).locator()
     );
     event["authorization"] = serde_json::json!({
         "kind": "sequence",
@@ -2578,122 +2632,15 @@ fn record_scale_successor(
     fs::write(root.join(JOURNAL_PATH), journal).expect("successor scale claim should append");
 }
 
-fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixture {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
-    commit_predecessor_scopes(repository.path(), predecessor_count);
+fn predecessor_scale_fixture(
+    template: cargo_berth_test_support::LedgerTemplate,
+) -> PredecessorScaleFixture {
     let worktrees = tempdir().expect("worktree parent should exist");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    let predecessor_worktrees = (0..predecessor_count)
-        .map(|predecessor_index| {
-            let predecessor_branch = format!("predecessor-{predecessor_index}");
-            let predecessor_root =
-                add_worktree(repository.path(), worktrees.path(), &predecessor_branch);
-            (predecessor_branch, predecessor_root)
-        })
-        .collect::<Vec<_>>();
-    // Every answer below attaches to this one reservation of the successor run.
-    assert!(
-        claim(
-            &successor_root,
-            &deferring_run_scope(SECOND_RUN),
-            SECOND_RUN
-        )
-        .status
-        .success()
-    );
-
-    for (predecessor_index, (_, predecessor_root)) in predecessor_worktrees.iter().enumerate() {
-        let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
-        dirty_source(predecessor_root, &predecessor_path);
-        let predecessor_run = uuid::Uuid::now_v7().to_string();
-        let predecessor = claim(
-            predecessor_root,
-            &format!("file:{predecessor_path}"),
-            &predecessor_run,
-        );
-        let predecessor_id = reservation_id(&predecessor);
-        let successor = defer_answer(
-            &successor_root,
-            &format!("file:{predecessor_path}"),
-            SECOND_RUN,
-            &predecessor_id,
-        );
-        let successor_id = reservation_id(&successor);
-        let sequenced = sequence(
-            repository.path(),
-            &predecessor_id,
-            &successor_id,
-            "predecessor lands before this successor",
-        );
-        assert!(sequenced.status.success());
-
-        fs::write(
-            predecessor_root.join(&predecessor_path),
-            format!("pub fn protected_predecessor_{predecessor_index}() {{}}\n"),
-        )
-        .expect("predecessor source should write");
-        git(predecessor_root, &["add", &predecessor_path]);
-        git(
-            predecessor_root,
-            &[
-                "commit",
-                "--quiet",
-                "-m",
-                &format!("protected predecessor {predecessor_index}"),
-            ],
-        );
-        assert!(
-            run_berth(predecessor_root, &["release", &predecessor_id, "--json"])
-                .status
-                .success()
-        );
-    }
-
-    // Observe every cold predecessor together, before ordinary reconciliation can settle one.
-    for (predecessor_branch, _) in &predecessor_worktrees {
-        git(
-            repository.path(),
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "merge",
-                "--quiet",
-                "--no-ff",
-                predecessor_branch.as_str(),
-            ],
-        );
-    }
-
+    let repository = template.instantiate_with_external_worktrees(worktrees.path());
     PredecessorScaleFixture {
         repository,
         _worktrees: worktrees,
     }
-}
-
-/// Commit one source file per predecessor, each the scope that predecessor reserves.
-fn commit_predecessor_scopes(repository_root: &Path, predecessor_count: usize) {
-    fs::create_dir_all(repository_root.join("predecessors"))
-        .expect("predecessor scope directory should exist");
-    for predecessor_index in 0..predecessor_count {
-        fs::write(
-            repository_root.join(format!("predecessors/predecessor-{predecessor_index}.rs")),
-            format!("// reserved predecessor scope {predecessor_index}\n"),
-        )
-        .expect("predecessor scope source should write");
-    }
-    git(repository_root, &["add", "predecessors"]);
-    // No reservation exists yet, so the hooks would write no berth state.
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "predecessor reservation scopes",
-        ],
-    );
 }
 
 fn sequence(repository_root: &Path, before: &str, after: &str, why: &str) -> Output {
@@ -2762,19 +2709,7 @@ fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::pat
 }
 
 fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
-    let dot_git = fs::read_to_string(worktree_root.join(".git"))
-        .expect("linked-worktree administrative pointer should read");
-    let administrative_path = PathBuf::from(
-        dot_git
-            .trim()
-            .strip_prefix("gitdir: ")
-            .expect("linked worktree should name its administrative directory"),
-    );
-    if administrative_path.is_absolute() {
-        administrative_path
-    } else {
-        worktree_root.join(administrative_path)
-    }
+    linked_checkout::administrative_directory(worktree_root)
 }
 
 fn readiness_for_predecessor_liveness(
@@ -2997,12 +2932,10 @@ fn run_berth_with_git_trace(
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, TRACING_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(EXECUTABLE_PERMISSIONS);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        TRACING_GIT_WRAPPER,
+    );
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf())
@@ -3111,12 +3044,10 @@ fn run_berth_with_stale_marker(
 ) -> Output {
     let wrapper_directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
-    fs::write(&wrapper_path, STALE_MARKER_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(EXECUTABLE_PERMISSIONS);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        STALE_MARKER_GIT_WRAPPER,
+    );
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(wrapper_directory.path().to_path_buf())

@@ -1157,11 +1157,17 @@ fn write_stacked_rebase_editor(editor: &Path, order: StackedBranchWriteOrder, ol
         write_first_rebase_action(editor, "edit");
         return;
     }
-    fs::write(editor, format!(
-        "#!/bin/sh\nsed -e '1s/^pick /edit /' -e '/^update-ref refs\\/heads\\/lower$/d' \"$1\" > \"$1.edited\"\nprintf '%s\\n' 'exec git update-ref refs/heads/lower HEAD^ {old_lower}' >> \"$1.edited\"\nmv \"$1.edited\" \"$1\"\n"
-    )).expect("lower-first sequence editor should write");
-    fs::set_permissions(editor, fs::Permissions::from_mode(0o755))
-        .expect("lower-first sequence editor should execute");
+    fs::write(editor.with_extension("lower"), old_lower)
+        .expect("lower-first editor's private reference should write");
+    DirectorySnapshot::write_shared_shell_script(
+        editor,
+        r#"#!/bin/sh
+IFS= read -r old_lower < "$0.lower" || [ -n "$old_lower" ] || exit 1
+sed -e '1s/^pick /edit /' -e '/^update-ref refs\/heads\/lower$/d' "$1" > "$1.edited"
+printf '%s\n' "exec git update-ref refs/heads/lower HEAD^ $old_lower" >> "$1.edited"
+mv "$1.edited" "$1"
+"#,
+    );
 }
 
 pub(super) fn split_checkpoint_survives_switching_the_issuing_checkout_before_board() {

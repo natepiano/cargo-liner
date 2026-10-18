@@ -258,8 +258,21 @@ mod tests {
             );
         }
 
+        let repository = tempfile::tempdir()?;
+        let initialized = git_command_with_hook_execution_policy(
+            repository.path(),
+            GitHookExecutionPolicy::SuppressedForRetentionRef,
+        )?
+        .args(["init", "--quiet"])
+        .output()?;
+        assert!(
+            initialized.status.success(),
+            "test repository did not initialize: {}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
+
         let mut command = git_command_with_hook_execution_policy(
-            Path::new("."),
+            repository.path(),
             GitHookExecutionPolicy::SuppressedForRetentionRef,
         )?;
         assert_eq!(

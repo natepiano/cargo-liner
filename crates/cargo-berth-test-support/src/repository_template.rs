@@ -79,10 +79,10 @@ pub struct LedgerTemplate {
 }
 
 /// One renewal map shared by identity files, journal actors and pending markers.
-struct IdentityRenewal(Vec<(String, String)>);
+pub(crate) struct IdentityRenewal(Vec<(String, String)>);
 
 impl IdentityRenewal {
-    fn read(root: &Path) -> Self {
+    pub(crate) fn read(root: &Path) -> Self {
         let mut paths = vec![
             root.join(REPOSITORY_IDENTITY_PATH),
             root.join(WORKTREE_IDENTITY_PATH),
@@ -107,7 +107,23 @@ impl IdentityRenewal {
         )
     }
 
-    fn apply(self, snapshot: &mut DirectorySnapshot) {
+    /// Renew one owner consistently across a repository and its external worktrees.
+    pub(crate) fn apply_pair(
+        self,
+        repository: &mut DirectorySnapshot,
+        worktrees: &mut DirectorySnapshot,
+    ) {
+        for (old, new) in self.0 {
+            let main = repository.replace_text(&old, &new);
+            let linked = worktrees.replace_text(&old, &new);
+            assert!(
+                !main.is_empty() || !linked.is_empty(),
+                "template identity should be replaced"
+            );
+        }
+    }
+
+    pub(crate) fn apply(self, snapshot: &mut DirectorySnapshot) {
         for (old, new) in self.0 {
             assert!(
                 !snapshot.replace_text(&old, &new).is_empty(),
@@ -261,6 +277,28 @@ impl LedgerTemplate {
             self.build_at(&root);
         }
         root
+    }
+
+    /// Copy a recorded history, placing its private linked checkouts beside the repository.
+    ///
+    /// # Panics
+    /// Panics when a checkout cannot be relocated or restored.
+    #[must_use]
+    pub fn instantiate_with_external_worktrees(self, worktrees: &Path) -> TempDir {
+        let repository = self.instantiate();
+        let embedded = fs::canonicalize(repository.path().join(".git/fixture-worktrees"))
+            .expect("embedded worktree parent should resolve");
+        let destination = fs::canonicalize(worktrees).expect("worktree parent should resolve");
+        let mut main = DirectorySnapshot::capture(repository.path());
+        let mut linked = DirectorySnapshot::capture(&embedded);
+        for snapshot in [&mut main, &mut linked] {
+            let _ =
+                snapshot.replace_text(&embedded.to_string_lossy(), &destination.to_string_lossy());
+        }
+        main.restore(repository.path());
+        linked.restore(&destination);
+        fs::remove_dir_all(embedded).expect("embedded checkout copies should remove");
+        repository
     }
 
     /// Build under nextest's setup clock, once per executable pair and name.

@@ -5,6 +5,8 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -17,6 +19,30 @@ use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::observes_merge_extent_of;
 use cargo_berth_test_support::reservation_row;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -3733,67 +3759,30 @@ struct HistoricalIntegrationFixture {
 
 /// Keep the holder at its checkpoint so later trunk work is not mistaken for holder work.
 fn historical_integration_fixture() -> HistoricalIntegrationFixture {
-    let repository = initialized_repository();
-    let root = repository.path();
-    git(root, &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "configuration",
-        ],
-    );
-    git(root, &["config", "core.hooksPath", "/dev/null"]);
-    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
     let worktrees = tempdir().expect("holder parent should exist");
-    let holder_root = add_worktree(root, worktrees.path(), "historical-holder");
-    let reservation_id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
-    commit_historical_source(&holder_root, "pub fn protected() {}\n", "protected phase");
-    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        root,
-        &serde_json::json!({
-            "op": "checkpoint", "reservation_id": reservation_id,
-            "protected_tip": protected_tip, "trunk_snapshot": phase_start_head,
-        }),
-    );
-    commit_historical_source(root, "pub fn protected() {}\n", "uncaptured cherry-pick");
-    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(witness, protected_tip);
-    commit_historical_source(
-        root,
-        "pub fn later_trunk_revision() {}\n",
-        "later protected-hunk rewrite",
-    );
-    let target = git_stdout(root, &["rev-parse", "HEAD"]);
-    let replay = GIT.output(
-        root,
-        [
-            "merge-tree",
-            "--write-tree",
-            &format!("--merge-base={phase_start_head}"),
-            &target,
-            &protected_tip,
-        ],
-    );
-    assert_eq!(
-        replay.status.code(),
-        Some(1),
-        "current-trunk replay must conflict"
-    );
-    assert!(
-        fs::read_dir(root.join(".git"))
-            .expect("Git directory should read")
-            .all(|entry| !entry
-                .expect("entry should read")
-                .file_name()
-                .to_string_lossy()
-                .starts_with("cargo-berth-pending-bypass-"))
-    );
+    let repository =
+        edges_templates::HISTORICAL_PROOF.instantiate_with_external_worktrees(worktrees.path());
+    let holder_root = fs::canonicalize(worktrees.path().join("historical-holder"))
+        .expect("holder should resolve");
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository.path().join(".git/historical-proof.json"))
+            .expect("historical proof should read"),
+    )
+    .expect("historical proof should decode");
+    let reservation_id = state["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    let phase_start_head = state["phase_start_head"]
+        .as_str()
+        .expect("phase start")
+        .to_owned();
+    let protected_tip = state["protected_tip"]
+        .as_str()
+        .expect("protected tip")
+        .to_owned();
+    let witness = state["witness"].as_str().expect("witness").to_owned();
+    let target = state["target"].as_str().expect("target").to_owned();
     HistoricalIntegrationFixture {
         reservation: RewrittenReservationFixture {
             repository,
@@ -7772,12 +7761,7 @@ fn run_berth_with_git_wrapper(
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, wrapper).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    DirectorySnapshot::write_shared_shell_script(&wrapper_path, wrapper);
     let original_path = std::env::var_os("PATH").expect("PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf())
