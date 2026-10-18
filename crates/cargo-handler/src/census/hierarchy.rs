@@ -163,7 +163,8 @@ pub(super) fn run_output(command: &str, timeout: Duration) -> Result<Vec<u8>, Hi
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .stdout(Stdio::piped());
-    // A shell can start children; end the whole group when its deadline expires.
+    // Set `process.process_group(0)` so `end` can terminate the shell's
+    // descendants when `deadline` expires.
     #[cfg(unix)]
     {
         process.process_group(0);
@@ -214,7 +215,8 @@ pub(super) fn run_output(command: &str, timeout: Duration) -> Result<Vec<u8>, Hi
 fn end(child: &mut Child) {
     #[cfg(unix)]
     {
-        // The process group was created above. `kill` accepts a negative group id.
+        // `run_output` created `child`'s process group; `KILL_PROGRAM` with
+        // `KILL_GROUP_OPTIONS` and negative `child.id()` terminates that group.
         let _ = Command::new(KILL_PROGRAM)
             .args(KILL_GROUP_OPTIONS)
             .arg(format!("-{}", child.id()))
