@@ -38,22 +38,30 @@ pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
 pub(crate) use entry::entry_contains;
 pub(crate) use fields::ProjectFields;
+pub(crate) use git::AheadBehind;
 // ── Git types and functions ──────────────────────────────────────────
 pub(crate) use git::BisectProgress;
 pub(crate) use git::CheckoutInfo;
+pub(crate) use git::CommitDate;
+pub(crate) use git::Comparison;
+pub(crate) use git::FirstCommit;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
 pub(crate) use git::HeadState;
 pub(crate) use git::LocalGitState;
+pub(crate) use git::PinnedCommit;
 pub(crate) use git::PushDisabledReason;
 pub(crate) use git::PushState;
 #[cfg(test)]
 pub(crate) use git::RemoteInfo;
 pub(crate) use git::RemoteKind;
+pub(crate) use git::RemoteList;
 pub(crate) use git::RepoInfo;
+pub(crate) use git::ResolvedBranch;
 // ── Submodule types ─────────────────────────────────────────────────
 pub(crate) use git::Submodule;
+pub(crate) use git::TrackedRef;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
 pub(crate) use git::WorktreeGroup;

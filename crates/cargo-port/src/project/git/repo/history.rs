@@ -4,20 +4,27 @@ use std::time::SystemTime;
 use crate::constants::SECONDS_PER_DAY;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
+use crate::project::git::checkout::CommitDate;
 use crate::project::git::command;
+use crate::project::git::command::GitAnswer;
 use crate::project::git::constants::GIT_FORMAT_ISO8601_ARG;
 use crate::project::git::constants::GIT_HEAD;
 use crate::project::git::constants::GIT_LOG_COMMAND;
 use crate::project::git::constants::GIT_MAX_PARENTS_ZERO_ARG;
+use crate::project::git::constants::GIT_QUIET_SHORT_ARG;
+use crate::project::git::constants::GIT_REV_PARSE_COMMAND;
 use crate::project::git::constants::GIT_REVERSE_ARG;
+use crate::project::git::constants::GIT_VERIFY_ARG;
 use crate::project::git::discovery;
 
-pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
-    let repo_root = discovery::git_repo_root(project_dir)?;
+pub(crate) fn get_first_commit(project_dir: &Path) -> CommitDate {
+    let Some(repo_root) = discovery::git_repo_root(project_dir) else {
+        return CommitDate::Unreadable;
+    };
     command::git_output_logged(
         &repo_root,
         "log_first_commit",
-        [
+        &[
             GIT_LOG_COMMAND,
             GIT_MAX_PARENTS_ZERO_ARG,
             GIT_REVERSE_ARG,
@@ -25,14 +32,30 @@ pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
             GIT_HEAD,
         ],
     )
-    .ok()
-    .and_then(|o| {
-        String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(std::string::ToString::to_string)
-    })
+    .map_or_else(
+        |_| match command::git_answer_logged(
+            &repo_root,
+            "first_commit_head",
+            &[
+                GIT_REV_PARSE_COMMAND,
+                GIT_QUIET_SHORT_ARG,
+                GIT_VERIFY_ARG,
+                GIT_HEAD,
+            ],
+        ) {
+            Ok(GitAnswer::No) => CommitDate::NoCommits,
+            Ok(GitAnswer::Yes(_)) | Err(_) => CommitDate::Unreadable,
+        },
+        |output| {
+            output
+                .lines()
+                .next()
+                .filter(|line| !line.is_empty())
+                .map_or(CommitDate::Unreadable, |line| {
+                    CommitDate::At(line.to_string())
+                })
+        },
+    )
 }
 
 /// Read `FETCH_HEAD` mtime from the common git dir and render it as UTC ISO

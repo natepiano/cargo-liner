@@ -351,6 +351,7 @@ pub(super) fn worst_git_status(
 ) -> Option<GitStatus> {
     const fn severity(state: GitStatus) -> u8 {
         match state {
+            GitStatus::Unreadable => 5,
             GitStatus::Modified => 4,
             GitStatus::Untracked => 3,
             GitStatus::Clean => 2,
