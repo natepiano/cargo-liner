@@ -7,14 +7,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cargo_berth_test_support::DirectorySnapshot;
-use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
 use super::BERTH_EXECUTABLE;
-use super::FIRST_RUN;
 use super::GIT;
 use super::JOURNAL_PATH;
 use super::RETENTION_REF_PREFIX;
@@ -23,183 +21,65 @@ use super::commit_file;
 use super::git_command;
 use super::journal_events;
 use super::json_output;
+use super::reanchoring_templates::CheckpointPlacement;
+use super::reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
+use super::reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT;
+use super::reanchoring_templates::DrainedSplitCheckpointState;
+use super::reanchoring_templates::PENDING_PREFIX;
+use super::reanchoring_templates::REWRITE_MAIN;
+use super::reanchoring_templates::RewriteRepository;
+use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
+use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
+use super::reanchoring_templates::STACKED_UPPER_CHECKPOINT;
+use super::reanchoring_templates::STATE_PATH;
+use super::reanchoring_templates::SplitLowerCheckpointState;
+use super::reanchoring_templates::SplitRefChange;
+use super::reanchoring_templates::SplitReservationStage;
+use super::reanchoring_templates::StackedUpperCheckpointState;
+use super::reanchoring_templates::TWO_REBASE_HISTORY;
+use super::reanchoring_templates::TwoRebaseHistoryState;
+use super::reanchoring_templates::assert_latest_anchors;
+use super::reanchoring_templates::assert_split_anchors;
+use super::reanchoring_templates::assert_split_capture;
+use super::reanchoring_templates::board;
+use super::reanchoring_templates::contents;
+use super::reanchoring_templates::drain_markers;
+use super::reanchoring_templates::make_read_only;
+use super::reanchoring_templates::pending_markers;
+use super::reanchoring_templates::prepare_split_checkpoint;
+use super::reanchoring_templates::snapshot;
+use super::reanchoring_templates::stop_stacked_split_rebase;
 use super::reservation_id;
 use super::run_berth;
 use super::split_rebase;
 use super::split_rebase::write_first_rebase_action;
 
-/// The marker namespace is shared by legacy bypasses and branch rewrites.
-const PENDING_PREFIX: &str = "cargo-berth-pending-bypass-";
-/// Space between independently editable hunks makes the later conflict unambiguous.
-const HUNK_SEPARATOR: &str = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n";
-
-/// The empty-ledger main checkout before a holder starts rewriting its phase.
-const REWRITE_MAIN: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "rewrite-main",
-    build:            build_rewrite_main,
-};
-
-fn build_rewrite_main(root: &Path) {
-    // Build directly under this template's lock. Instantiating another template
-    // here adds its build-lock wait, a second repository copy and index refresh
-    // to every cold rewrite-template build.
-    super::build_initialized_repository(root, super::GitReferenceStorage::Loose);
-    super::git_configuration::append_git_configuration(
-        root,
-        "\n[maintenance]\n auto = false\n[gc]\n auto = 0\n",
-    )
-    .expect("git configuration should write");
-    fs::write(root.join("phase.txt"), contents("base", "base")).expect("phase base should write");
-    GIT.run(
-        root,
-        ["add", "--force", "phase.txt", ".claude/config/berth.toml"],
-    );
-    GIT.run(
-        root,
-        [
-            "commit",
-            "--quiet",
-            "-m",
-            "phase base and policy configuration",
-        ],
-    );
-    // Keep the linked checkout inside the ignored Git directory so the template
-    // can relocate both Git pointers together without adding untracked work to
-    // main. No reservation or holder identity exists until each test claims it.
-    GIT.add_worktree_without_hooks(root, &root.join(".git/fixture-holder"), "holder", "HEAD");
-}
-
 /// A linked holder whose managed hooks consult a different policy checkout.
 struct RewriteFixture {
     repository: TempDir,
     worktrees:  TempDir,
-    holder:     PathBuf,
+    checkout:   RewriteRepository,
+}
+
+impl std::ops::Deref for RewriteFixture {
+    type Target = RewriteRepository;
+
+    fn deref(&self) -> &Self::Target { &self.checkout }
 }
 
 impl RewriteFixture {
-    fn new() -> Self {
-        let repository = REWRITE_MAIN.instantiate();
-        let worktrees = tempdir().expect("linked checkout parent should exist");
-        let holder = repository.path().join(".git/fixture-holder");
-        assert!(
-            repository
-                .path()
-                .join(".git/hooks/reference-transaction")
-                .is_file()
-        );
-        let administrative_directory = super::linked_checkout::administrative_directory(&holder);
-        assert_ne!(administrative_directory, repository.path().join(".git"));
+    fn new() -> Self { Self::from_repository(REWRITE_MAIN.instantiate()) }
+
+    fn from_repository(repository: TempDir) -> Self {
+        let checkout = RewriteRepository::at_root(repository.path());
         Self {
             repository,
-            worktrees,
-            holder,
+            worktrees: tempdir().expect("linked checkout parent should exist"),
+            checkout,
         }
     }
 
     fn root(&self) -> &Path { self.repository.path() }
-
-    fn head(&self) -> String {
-        // This fixture creates loose refs. Reading its own HEAD avoids spawning
-        // Git merely to remember the tip before the next real rewrite command.
-        let administrative_directory =
-            super::linked_checkout::administrative_directory(&self.holder);
-        let head = fs::read_to_string(administrative_directory.join("HEAD"))
-            .expect("holder HEAD should read");
-        head.trim().strip_prefix("ref: ").map_or_else(
-            || head.trim().to_owned(),
-            |reference| super::loose_refs::read_loose_ref(self.root(), reference),
-        )
-    }
-
-    fn start_phase(&self) -> String {
-        let claimed = claim(&self.holder, "file:phase.txt", FIRST_RUN);
-        assert!(
-            claimed.status.success(),
-            "{}",
-            String::from_utf8_lossy(&claimed.stdout)
-        );
-        reservation_id(&claimed)
-    }
-
-    fn commit(&self, first: &str, later: &str) {
-        fs::write(self.holder.join("phase.txt"), contents(first, later))
-            .expect("tracked phase should write");
-        GIT.run(
-            &self.holder,
-            [
-                "commit",
-                "--quiet",
-                "--only",
-                "-m",
-                "holder phase",
-                "--",
-                "phase.txt",
-            ],
-        );
-    }
-
-    fn checkpoint(&self, id: &str) {
-        let checkpoint = run_berth(&self.holder, &["release", id, "--json"]);
-        assert!(
-            checkpoint.status.success(),
-            "{}",
-            String::from_utf8_lossy(&checkpoint.stdout)
-        );
-        assert_eq!(json_output(&checkpoint)["status"], "outstanding");
-    }
-
-    fn upstream_conflict(&self) {
-        fs::write(self.root().join("phase.txt"), contents("base", "upstream"))
-            .expect("tracked upstream phase should write");
-        GIT.run(
-            self.root(),
-            [
-                "commit",
-                "--quiet",
-                "--only",
-                "-m",
-                "upstream changes later hunk",
-                "--",
-                "phase.txt",
-            ],
-        );
-    }
-
-    fn stop_rebase(&self) {
-        let rebased = GIT.output(&self.holder, ["rebase", "main"]);
-        assert!(
-            !rebased.status.success(),
-            "fixture should conflict in its later hunk"
-        );
-        assert!(
-            GIT.stdout(&self.holder, ["diff", "--name-only", "--diff-filter=U"])
-                .contains("phase.txt")
-        );
-    }
-
-    fn resolve_rebase(&self) {
-        // Keep the protected hunk exact. An adjacent addition conflicts during scoped
-        // replay; this separated resolution edit still exercises additional content.
-        fs::write(
-            self.holder.join("phase.txt"),
-            contents("one", "two").replace("\ne\n", "\ne\nupstream resolution retained\n"),
-        )
-        .expect("conflict resolution should keep the protected hunk");
-        GIT.run(&self.holder, ["add", "phase.txt"]);
-        let continued = git_command(BERTH_EXECUTABLE)
-            .args(["rebase", "--continue"])
-            .env("GIT_EDITOR", "true")
-            .current_dir(&self.holder)
-            .output()
-            .expect("rebase continuation should run");
-        assert!(
-            continued.status.success(),
-            "{}",
-            String::from_utf8_lossy(&continued.stderr)
-        );
-    }
 
     /// Keep the real committed hook's marker by making journal writes fail during amend.
     fn deferred_amend(&self, first: &str, later: &str) -> PathBuf {
@@ -256,82 +136,6 @@ enum ReconciliationTiming {
     DuringIntegration,
 }
 
-/// Two phases whose checkpoints went through a conflicted rebase and an amend, then one more
-/// rebase onto `main`: the history both `ReconciliationTiming` cases continue from.
-struct TwoRebaseHistory {
-    fixture:     RewriteFixture,
-    first:       String,
-    second:      String,
-    earlier_tip: String,
-    final_tip:   String,
-}
-
-impl TwoRebaseHistory {
-    fn new() -> Self {
-        let fixture = RewriteFixture::new();
-        let first = fixture.start_phase();
-        fixture.commit("one", "base");
-        let first_old_tip = fixture.head();
-        fixture.checkpoint(&first);
-        let second = fixture.start_phase();
-        fixture.commit("one", "two");
-        fixture.upstream_conflict();
-        fixture.stop_rebase();
-        fixture.resolve_rebase();
-        drain_markers(&fixture, &[&first], CheckpointPlacement::BesideTrunk);
-        let first_rebased_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
-        assert_ne!(first_old_tip, first_rebased_tip);
-        assert_latest_anchors(&fixture, &first, &first_rebased_tip);
-        let events = journal_events(fixture.root());
-        let second_anchor = events.iter().rev().find(|event| {
-            event["op"] == "resnapshot"
-                && event["reservation_id"] == second
-                && event["snapshot"]["stage"] == "active"
-        });
-        assert_eq!(
-            second_anchor.map(|event| &event["snapshot"]["claim_snapshot"]),
-            Some(&serde_json::json!(first_rebased_tip)),
-            "the conflict-resolved active phase must start after the earlier checkpoint: {events:?}"
-        );
-        fixture.checkpoint(&second);
-        GIT.run(
-            &fixture.holder,
-            [
-                "commit",
-                "--amend",
-                "--quiet",
-                "-m",
-                "amended second checkpoint",
-            ],
-        );
-        drain_markers(
-            &fixture,
-            &[&first, &second],
-            CheckpointPlacement::BesideTrunk,
-        );
-        assert_latest_anchors(&fixture, &second, &fixture.head());
-
-        commit_file(
-            fixture.root(),
-            "upstream.txt",
-            "second upstream change\n",
-            "second upstream base",
-        );
-        GIT.run(&fixture.holder, ["rebase", "main"]);
-        let final_tip = fixture.head();
-        let earlier_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
-        assert_ne!(earlier_tip, final_tip);
-        assert_ne!(first_rebased_tip, earlier_tip);
-        Self {
-            fixture,
-            first,
-            second,
-            earlier_tip,
-            final_tip,
-        }
-    }
-}
-
 pub(super) fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
     checkpoint_ranges_with_reconciliation(ReconciliationTiming::BeforeFastForward);
 }
@@ -341,8 +145,9 @@ pub(super) fn checkpoint_ranges_survive_two_rebases_reconciled_during_integratio
 }
 
 fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
-    let history = TwoRebaseHistory::new();
-    let fixture = &history.fixture;
+    let fixture = RewriteFixture::from_repository(TWO_REBASE_HISTORY.instantiate());
+    let history: TwoRebaseHistoryState = read_state(fixture.root());
+    let fixture = &fixture;
     let (first, second) = (history.first.as_str(), history.second.as_str());
     let (earlier_tip, final_tip) = (history.earlier_tip.as_str(), history.final_tip.as_str());
     if matches!(timing, ReconciliationTiming::BeforeFastForward) {
@@ -1114,10 +919,6 @@ pub(super) fn drift_cleans_up_rewrite_markers_without_reporting_bypasses() {
     );
 }
 
-fn contents(first: &str, later: &str) -> String {
-    format!("first={first}\n{HUNK_SEPARATOR}later={later}\n")
-}
-
 /// Both Git workflows nominate only the last commit of the two-commit split.
 #[derive(Clone, Copy)]
 enum SplitWorkflow {
@@ -1180,13 +981,6 @@ pub(super) fn interactive_split_keeps_both_protected_hunks_in_the_active_phase()
 
 pub(super) fn soft_reset_split_keeps_both_protected_hunks_in_the_active_phase() {
     assert_split_keeps_both_hunks(SplitWorkflow::SoftReset, SplitReservationStage::Active);
-}
-
-/// The reservation state whose anchors the real rewrite must preserve.
-#[derive(Clone, Copy)]
-enum SplitReservationStage {
-    Active,
-    Outstanding,
 }
 
 fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservationStage) {
@@ -1275,14 +1069,6 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
     );
 }
 
-/// Ref changes that must not change the commits attributed to a finished rewrite.
-#[derive(Clone, Copy)]
-enum SplitRefChange {
-    ActiveRetention,
-    UpdatedSibling,
-    SwitchedCheckout,
-}
-
 pub(super) fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
     assert_split_survives_ref_change(SplitRefChange::ActiveRetention);
 }
@@ -1307,15 +1093,13 @@ pub(super) fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_wr
 }
 
 fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder) {
-    let fixture = RewriteFixture::new();
-    let trunk = fixture.head();
-    let upper = fixture.start_phase();
-    fixture.commit("one", "two");
-    let old_lower = fixture.head();
-    GIT.run(&fixture.holder, ["branch", "lower"]);
-    fixture.commit("one", "three");
-    let old_upper = fixture.head();
-    fixture.checkpoint(&upper);
+    let fixture = RewriteFixture::from_repository(STACKED_UPPER_CHECKPOINT.instantiate());
+    let StackedUpperCheckpointState {
+        trunk,
+        upper,
+        old_lower,
+        old_upper,
+    } = read_state(fixture.root());
     let editor = fixture.worktrees.path().join("stacked-order-editor");
     write_stacked_rebase_editor(&editor, order, &old_lower);
     stop_stacked_split_rebase(&fixture, SplitRefChange::UpdatedSibling, &editor, &trunk);
@@ -1385,245 +1169,78 @@ pub(super) fn split_checkpoint_survives_switching_the_issuing_checkout_before_bo
 }
 
 fn assert_split_survives_ref_change(change: SplitRefChange) {
-    let fixture = RewriteFixture::new();
-    let trunk = fixture.head();
-    let lower = fixture.start_phase();
-    fixture.commit("one", "two");
-    let old_lower = fixture.head();
-    fixture.checkpoint(&lower);
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        GIT.run(&fixture.holder, ["branch", "lower"]);
-    }
-    let mut active_phases = Vec::new();
-    if !matches!(change, SplitRefChange::SwitchedCheckout) {
-        active_phases.push(fixture.start_phase());
-        fixture.commit("one", "three");
-    }
-    let old_upper = fixture.head();
+    let (fixture, state) = split_checkpoint_before_ref_change(change);
     let editor = fixture.worktrees.path().join("split-editor");
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        split_rebase::stop_for_split(&fixture.holder, &editor, &trunk);
-    } else {
-        write_first_rebase_action(&editor, "edit");
-        stop_stacked_split_rebase(&fixture, change, &editor, &trunk);
-    }
-    fixture.commit("one", "base");
-    let first_split = fixture.head();
-    fixture.commit("one", "two");
-    let split_tip = fixture.head();
-    SplitWorkflow::InteractiveRebase.complete_split(&fixture, &old_lower, &split_tip);
-    let new_upper = fixture.head();
-    assert_ne!(old_upper, new_upper);
-    let markers = pending_markers(fixture.root());
-    assert!(
-        !markers.is_empty(),
-        "the real committed hook must retain its rewrite map"
-    );
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        assert_eq!(
-            GIT.stdout(&fixture.holder, ["rev-parse", "lower"]),
-            split_tip
-        );
-        assert_ne!(new_upper, split_tip);
-    }
-    assert_split_capture(
-        &markers,
-        change,
-        &trunk,
-        &first_split,
-        &split_tip,
-        &new_upper,
-    );
+    let drained = prepare_split_checkpoint(&fixture, state, &editor, change);
     if matches!(change, SplitRefChange::SwitchedCheckout) {
-        switch_before_split_import(&fixture, &markers, &trunk);
-    }
-    for upper in &active_phases {
-        assert_split_anchors(
+        assert_dropping_split_preserves_checkpoint(
             &fixture,
-            upper,
-            &split_tip,
-            &new_upper,
-            &first_split,
-            SplitReservationStage::Active,
+            &drained.checkpoint,
+            &drained.trunk,
+            &drained.protected_tip,
+            &drained.first_split,
+            &editor,
         );
     }
-    if matches!(change, SplitRefChange::ActiveRetention) {
-        checkpoint_upper_before_lower_import(
-            &fixture,
-            &markers,
-            std::mem::take(&mut active_phases),
-            &new_upper,
-        );
-        assert_eq!(retained_tip(&fixture, &lower), old_lower);
-    }
-    drain_markers(&fixture, &[&lower], CheckpointPlacement::BesideTrunk);
-    assert_split_anchors(
-        &fixture,
-        &lower,
-        &trunk,
-        &split_tip,
-        &first_split,
-        SplitReservationStage::Outstanding,
-    );
-    if matches!(change, SplitRefChange::SwitchedCheckout) {
-        GIT.run(&fixture.holder, ["switch", "--quiet", "holder"]);
-    }
-    for upper in active_phases {
-        fixture.checkpoint(&upper);
-    }
+}
+
+pub(super) fn dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding() {
+    assert_drained_checkpoint_survives_drop(DRAINED_SPLIT_RETENTION_CHECKPOINT);
+}
+
+pub(super) fn dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding() {
+    assert_drained_checkpoint_survives_drop(DRAINED_SPLIT_SIBLING_CHECKPOINT);
+}
+
+fn assert_drained_checkpoint_survives_drop(template: cargo_berth_test_support::LedgerTemplate) {
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let state: DrainedSplitCheckpointState = read_state(fixture.root());
+    let editor = fixture.worktrees.path().join("drop-editor");
     assert_dropping_split_preserves_checkpoint(
         &fixture,
-        &lower,
-        &trunk,
-        &split_tip,
-        &first_split,
+        &state.checkpoint,
+        &state.trunk,
+        &state.protected_tip,
+        &state.first_split,
         &editor,
     );
 }
 
-/// Stop the real rebase at its lower commit, preserving Git's update-ref todo entries.
-fn stop_stacked_split_rebase(
-    fixture: &RewriteFixture,
+/// Prepare the checkpoint state whose ref change the live split will exercise.
+fn split_checkpoint_before_ref_change(
     change: SplitRefChange,
-    editor: &Path,
-    trunk: &str,
-) {
-    let mut revisions = vec![trunk];
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        revisions.push("--update-refs");
-    }
-    split_rebase::stop_with_editor(&fixture.holder, editor, &revisions);
-}
-
-/// Move HEAD before the pending event is consumed, including through checkout hooks.
-fn switch_before_split_import(fixture: &RewriteFixture, markers: &[PathBuf], trunk: &str) {
-    // Keep reconciliation pending through post-checkout, too: the marker must
-    // be consumed only after the issuing checkout names an unrelated branch.
-    let journal = fixture.root().join(JOURNAL_PATH);
-    let permissions = make_read_only(&journal);
-    let switched = GIT.output(
-        &fixture.holder,
-        ["switch", "--quiet", "-c", "unrelated", trunk],
-    );
-    fs::set_permissions(&journal, permissions).expect("journal permissions should restore");
-    assert!(
-        switched.status.success(),
-        "{}",
-        String::from_utf8_lossy(&switched.stderr)
-    );
-    assert_eq!(fixture.head(), trunk);
-    assert!(markers.iter().all(|marker| marker.exists()));
-}
-
-/// Verify branch-local pairs and both protected split commits in the issuing event.
-fn assert_split_capture(
-    markers: &[PathBuf],
-    change: SplitRefChange,
-    trunk: &str,
-    first_split: &str,
-    split_tip: &str,
-    new_upper: &str,
-) {
-    let captured: Vec<Value> = markers
-        .iter()
-        .map(|marker| {
-            serde_json::from_slice(&fs::read(marker).expect("captured rewrite should read"))
-                .expect("captured rewrite should decode")
-        })
-        .collect();
-    for marker in &captured {
-        let created = marker["created_commits"]
-            .as_array()
-            .expect("every rewrite marker must require its event's created commits");
-        assert!(
-            !created.contains(&serde_json::json!(trunk)),
-            "the old base is not newly created"
-        );
-        assert!(
-            marker.get("rewritten_branches").is_none(),
-            "markers must not rely on later ref inference"
-        );
-        for pair in marker["pairs"]
-            .as_array()
-            .expect("rewrite pairs should be a list")
-        {
-            assert!(
-                created.contains(&pair["new"]),
-                "branch pairs must belong to its created set"
+) -> (RewriteFixture, SplitLowerCheckpointState) {
+    match change {
+        SplitRefChange::ActiveRetention => {
+            let fixture = RewriteFixture::from_repository(
+                SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION.instantiate(),
             );
-        }
-    }
-    let upper_marker = captured
-        .iter()
-        .find(|marker| marker["new_tips"] == serde_json::json!([new_upper]))
-        .expect("the issuing branch must have its own marker");
-    let created = upper_marker["created_commits"]
-        .as_array()
-        .expect("created commits should be a list");
-    assert!(
-        created.contains(&serde_json::json!(first_split)),
-        "S1 must be captured: {upper_marker}"
-    );
-    assert!(
-        created.contains(&serde_json::json!(split_tip)),
-        "S2 must be captured: {upper_marker}"
-    );
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        let lower_marker = captured
-            .iter()
-            .find(|marker| marker["new_tips"] == serde_json::json!([split_tip]))
-            .expect("the lower branch must have its own marker");
-        let lower_created = lower_marker["created_commits"]
-            .as_array()
-            .expect("lower created commits should be a list");
-        assert_eq!(lower_created.len(), 2, "{lower_marker}");
-        assert!(lower_created.contains(&serde_json::json!(first_split)));
-        assert!(lower_created.contains(&serde_json::json!(split_tip)));
-        assert!(
-            lower_marker["pairs"]
-                .as_array()
-                .expect("lower pairs should be a list")
-                .iter()
-                .any(|pair| pair["new"] == split_tip),
-            "an earlier upper update must not hide the lower pair: {lower_marker}"
-        );
-        assert_eq!(
-            upper_marker["pairs"]
-                .as_array()
-                .expect("upper pairs should be a list")
-                .len(),
-            2
-        );
-    }
-}
-
-/// Create a real rewritten retention ref before the lower marker becomes readable.
-fn checkpoint_upper_before_lower_import(
-    fixture: &RewriteFixture,
-    markers: &[PathBuf],
-    active_phases: Vec<String>,
-    new_upper: &str,
-) {
-    // An unavailable marker lets the already re-anchored upper phase checkpoint
-    // first. Its real retention ref now reaches both split commits before the
-    // lower checkpoint consumes the original event in a later process.
-    let permissions: Vec<_> = markers
-        .iter()
-        .map(|marker| {
-            let permissions = fs::metadata(marker)
-                .expect("marker metadata should read")
-                .permissions();
-            fs::set_permissions(marker, fs::Permissions::from_mode(0o000))
-                .expect("marker should become unreadable");
-            permissions
-        })
-        .collect();
-    for upper in active_phases {
-        fixture.checkpoint(&upper);
-        assert_eq!(retained_tip(fixture, &upper), new_upper);
-    }
-    for (marker, permissions) in markers.iter().zip(permissions) {
-        fs::set_permissions(marker, permissions).expect("marker permissions should restore");
+            let state = read_state(fixture.root());
+            (fixture, state)
+        },
+        SplitRefChange::UpdatedSibling => {
+            let fixture = RewriteFixture::from_repository(
+                SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING.instantiate(),
+            );
+            let state = read_state(fixture.root());
+            (fixture, state)
+        },
+        SplitRefChange::SwitchedCheckout => {
+            let fixture = RewriteFixture::new();
+            let trunk = fixture.head();
+            let lower = fixture.start_phase();
+            fixture.commit("one", "two");
+            let old_lower = fixture.head();
+            fixture.checkpoint(&lower);
+            let state = SplitLowerCheckpointState {
+                trunk,
+                lower,
+                old_upper: old_lower.clone(),
+                old_lower,
+                active_phases: Vec::new(),
+            };
+            (fixture, state)
+        },
     }
 }
 
@@ -1663,7 +1280,7 @@ fn assert_dropping_split_preserves_checkpoint(
         SplitReservationStage::Outstanding,
     );
     assert_eq!(retained_tip(fixture, id), protected_tip);
-    GIT.run(fixture.root(), ["merge", "--quiet", "--ff-only", "holder"]);
+    GIT.run_without_hooks(fixture.root(), ["merge", "--quiet", "--ff-only", "holder"]);
     let observed = board(fixture.root());
     assert_eq!(snapshot(&observed, id)["lifecycle"]["stage"], "outstanding");
     assert!(
@@ -1672,47 +1289,6 @@ fn assert_dropping_split_preserves_checkpoint(
             .any(|event| { event["op"] == "release" && event["reservation_id"] == id }),
         "dropping the first protected hunk must never release the checkpoint"
     );
-}
-
-fn assert_split_anchors(
-    fixture: &RewriteFixture,
-    id: &str,
-    expected_start: &str,
-    split_tip: &str,
-    first_split_tip: &str,
-    stage: SplitReservationStage,
-) {
-    let events = journal_events(fixture.root());
-    let accepted = events
-        .iter()
-        .rev()
-        .find(|event| {
-            event["reservation_id"] == id
-                && (event["op"] == "resnapshot"
-                    || (matches!(stage, SplitReservationStage::Active) && event["op"] == "claim"))
-        })
-        .expect("split phase should retain its accepted anchors");
-    let anchor = match stage {
-        SplitReservationStage::Active if accepted["op"] == "claim" => {
-            // Splitting on the same base can correctly preserve the original
-            // active anchor without appending a redundant resnapshot.
-            &accepted["phase_start_head"]
-        },
-        SplitReservationStage::Active => {
-            assert_eq!(accepted["snapshot"]["stage"], "active");
-            &accepted["snapshot"]["claim_snapshot"]
-        },
-        SplitReservationStage::Outstanding => {
-            assert_eq!(accepted["snapshot"]["stage"], "outstanding");
-            assert_eq!(accepted["snapshot"]["protected_tip"], split_tip);
-            &accepted["snapshot"]["phase_start_head"]
-        },
-    };
-    assert_eq!(
-        anchor, expected_start,
-        "the first split commit's hunk must remain inside the protected interval: {accepted}"
-    );
-    assert_ne!(anchor, first_split_tip);
 }
 
 pub(super) fn unreadable_bypass_marker_does_not_block_rewrite_reconciliation() {
@@ -2025,130 +1601,6 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
     assert_latest_anchors(&fixture, &id, &fixture.head());
 }
 
-fn board(root: &Path) -> Value {
-    let output = run_berth(root, &["board", "--json"]);
-    assert!(
-        output.status.success(),
-        "board failed: {} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    json_output(&output)
-}
-
-/// Count mapped comparison destinations independently of ordinary trunk evidence.
-fn board_with_rewrite_trace(root: &Path) -> Value {
-    let traces = tempdir().expect("git trace directory should exist");
-    let trace_path = traces.path().join("git.trace");
-    let output = berth_command(BERTH_EXECUTABLE)
-        .args(["board", "--json"])
-        .current_dir(root)
-        .env("GIT_TRACE", &trace_path)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove("CARGO_BERTH_SESSION_ID")
-        .env_remove("CARGO_BERTH_BYPASS")
-        .output()
-        .expect("traced board should run");
-    assert!(
-        output.status.success(),
-        "{} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let trunk = super::loose_refs::read_loose_ref(root, "refs/heads/main");
-    let trace = fs::read_to_string(trace_path).expect("git trace should read");
-    let mapped_comparisons = trace
-        .lines()
-        .filter_map(|line| {
-            line.split_once("built-in: git merge-base ")
-                .map(|(_, arguments)| arguments)
-        })
-        .filter(|arguments| {
-            let arguments: Vec<_> = arguments.split_whitespace().collect();
-            arguments.len() == 2 && arguments[0] != "--is-ancestor" && arguments[1] != trunk
-        })
-        .count();
-    assert!(
-        mapped_comparisons <= 1,
-        "mapped tips must not admit additional cold subjects: {trace}"
-    );
-    json_output(&output)
-}
-
-fn snapshot<'board>(board: &'board Value, id: &str) -> &'board Value {
-    let data = &board["payload"]["data"];
-    ["ready_now", "unconstrained_reservations", "resolved"]
-        .into_iter()
-        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
-        .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .find(|entry| entry["reservation_id"] == id)
-        .expect("checkpoint should remain visible on the board")
-}
-
-fn pending_markers(root: &Path) -> Vec<PathBuf> {
-    fs::read_dir(root.join(".git"))
-        .expect("common git directory should read")
-        .map(|entry| {
-            entry
-                .expect("common git directory entry should read")
-                .path()
-        })
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(PENDING_PREFIX))
-        })
-        .collect()
-}
-
-fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
-    super::loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
-}
-
-fn make_read_only(path: &Path) -> fs::Permissions {
-    let permissions = fs::metadata(path)
-        .expect("journal metadata should read")
-        .permissions();
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(permissions.mode() & !0o222),
-    )
-    .expect("journal should become read-only");
-    permissions
-}
-
-fn assert_latest_anchors(fixture: &RewriteFixture, id: &str, tip: &str) {
-    let events = journal_events(fixture.root());
-    let accepted = events.iter().rev().find(|event| {
-        event["op"] == "resnapshot"
-            && event["reservation_id"] == id
-            && event["snapshot"]["stage"] == "outstanding"
-    });
-    let lifecycle_events: Vec<_> = events
-        .iter()
-        .filter(|event| {
-            event["reservation_id"] == id
-                && matches!(
-                    event["op"].as_str(),
-                    Some("claim" | "checkpoint" | "resnapshot" | "release")
-                )
-        })
-        .collect();
-    assert!(
-        accepted.is_some(),
-        "checkpoint {id} must have an accepted interval ending at {tip}; lifecycle records: {lifecycle_events:?}"
-    );
-    let accepted = accepted.expect("accepted interval should exist");
-    assert_eq!(
-        accepted["snapshot"]["protected_tip"], tip,
-        "{lifecycle_events:?}"
-    );
-    let expected_start = GIT.stdout(fixture.root(), ["rev-parse", &format!("{tip}^")]);
-    assert_eq!(
-        accepted["snapshot"]["phase_start_head"], expected_start,
-        "each checkpoint must retain its own interval: {accepted}"
-    );
-}
-
 /// Released subjects may stop consuming maps once a full actual-trunk proof exists.
 fn assert_final_checkpoint(fixture: &RewriteFixture, id: &str, tip: &str, trunk: &str) {
     let events = journal_events(fixture.root());
@@ -2175,78 +1627,57 @@ fn assert_final_checkpoint(fixture: &RewriteFixture, id: &str, tip: &str, trunk:
     }
 }
 
-/// Whether the drained checkpoints already sit on trunk and must settle as they are accepted.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CheckpointPlacement {
-    BesideTrunk,
-    OnTrunk,
+fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
+    super::loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
 }
 
-/// A cold pass may accept one distinct subject; deferred markers must make progress.
-fn drain_markers(fixture: &RewriteFixture, ids: &[&str], placement: CheckpointPlacement) {
-    for _ in 0..=ids.len() {
-        let previous_events = journal_events(fixture.root()).len();
-        let observed = board_with_rewrite_trace(fixture.root());
-        let events = journal_events(fixture.root());
-        let accepted_count = events[previous_events..]
-            .iter()
-            .filter(|event| {
-                event["op"] == "resnapshot" && event["snapshot"]["stage"] == "outstanding"
-            })
-            .count();
-        assert!(
-            accepted_count <= 1,
-            "distinct checkpoints must share the actual trunk acceptance budget: {events:?}"
-        );
-        if placement == CheckpointPlacement::OnTrunk {
-            for id in ids {
-                let events = journal_events(fixture.root());
-                let accepted = events.iter().rev().find(|event| {
-                    event["op"] == "resnapshot"
-                        && event["reservation_id"] == *id
-                        && event["snapshot"]["stage"] == "outstanding"
-                });
-                if let Some(accepted) = accepted {
-                    let tip = accepted["snapshot"]["protected_tip"]
-                        .as_str()
-                        .expect("mapped tip should be text");
-                    if GIT
-                        .output(fixture.root(), ["merge-base", "--is-ancestor", tip, "main"])
-                        .status
-                        .success()
-                    {
-                        assert_eq!(
-                            snapshot(&observed, id)["lifecycle"]["stage"],
-                            "released",
-                            "an accepted checkpoint already on trunk must settle in its accepting pass: {observed}"
-                        );
-                    }
-                }
-            }
-        }
-        if pending_markers(fixture.root()).is_empty() {
-            if placement == CheckpointPlacement::OnTrunk {
-                for id in ids {
-                    assert_eq!(
-                        snapshot(&observed, id)["lifecycle"]["stage"],
-                        "released",
-                        "{observed}"
-                    );
-                }
-                let settled_journal = fs::read(fixture.root().join(JOURNAL_PATH))
-                    .expect("settling journal should read");
-                board(fixture.root());
-                assert_eq!(
-                    fs::read(fixture.root().join(JOURNAL_PATH)).expect("next journal should read"),
-                    settled_journal,
-                    "the pass immediately after settlement must append nothing"
-                );
-            }
-            return;
-        }
+fn read_state<T: serde::de::DeserializeOwned>(root: &Path) -> T {
+    serde_json::from_slice(&fs::read(root.join(STATE_PATH)).expect("rewrite state should read"))
+        .expect("rewrite state should decode")
+}
+
+/// Both relocated copies must preserve reservation ownership and replay pending rewrites.
+pub(super) fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
+    let first_copy = RewriteFixture::from_repository(TWO_REBASE_HISTORY.instantiate());
+    let second_copy = RewriteFixture::from_repository(TWO_REBASE_HISTORY.instantiate());
+    for path in [
+        ".git/cargo-berth/repo-instance-id",
+        ".git/cargo-berth-worktree-id",
+        ".git/worktrees/fixture-holder/cargo-berth-worktree-id",
+    ] {
+        let first_identity = fs::read_to_string(first_copy.root().join(path))
+            .expect("first copy identity should read");
+        let second_identity = fs::read_to_string(second_copy.root().join(path))
+            .expect("second copy identity should read");
+        assert_ne!(first_identity, second_identity, "copies must renew {path}");
     }
-    assert!(
-        pending_markers(fixture.root()).is_empty(),
-        "rewrite marker did not drain within one pass per subject"
-    );
+    for fixture in [first_copy, second_copy] {
+        let history: TwoRebaseHistoryState = read_state(fixture.root());
+        assert!(
+            !pending_markers(fixture.root()).is_empty(),
+            "the copied rewrite must still need reconciliation"
+        );
+        let checked = super::run_berth_with_run(
+            &fixture.holder,
+            &["check", "file:phase.txt", "--json"],
+            super::FIRST_RUN,
+        );
+        assert!(
+            checked.status.success(),
+            "copied holder ownership should validate: {} {}",
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr)
+        );
+        drain_markers(
+            &fixture,
+            &[&history.first, &history.second],
+            CheckpointPlacement::BesideTrunk,
+        );
+        assert_eq!(
+            pending_markers(fixture.root()),
+            [] as [std::path::PathBuf; 0]
+        );
+        assert_latest_anchors(&fixture, &history.first, &history.earlier_tip);
+        assert_latest_anchors(&fixture, &history.second, &history.final_tip);
+    }
 }

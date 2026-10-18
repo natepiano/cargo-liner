@@ -330,7 +330,7 @@
 
 **Ruled out:** writing the record inside the rejecting transaction — the common `check` refusal holds no lock, a retried first `Blocked` attempt would record a refusal never returned, and `FirstTouchClaimRejection::Blocked` also serves post-write incursions; copying the requester into the operation — it could disagree with the record's `actor`; a retention rule for refusal records — the style pilot needs the full count.
 
-### Phase 11 — The 16 cargo-berth tests still at 1 s in CI finish in 0.7 s  · status: todo
+### Phase 11 — The 16 cargo-berth tests still at 1 s in CI finish in 0.7 s  · status: done
 
 **Depends on:** phase 10 (done: it added the `overlap_refused` journal record and left Spec 15's two `src/verb/claim/mod.rs` findings). This phase edits `tests/`, `crates/cargo-berth/Cargo.toml`, `src/ledger/handle.rs`, `src/verb/claim/mod.rs` and the workspace `.config/nextest.toml`.
 
@@ -439,12 +439,15 @@
 **Files:**
 - `crates/cargo-berth/src/verb/claim/mod.rs` — Spec 15: every `ClaimRequest` read destructures it (F008); the `Rejected` arm removed by type (F009)
 - `crates/cargo-berth/src/verb/claim/named.rs` — Spec 15 F008: its `ClaimRequest` reads destructure it too
+- `crates/cargo-berth/src/cli.rs` — Spec 15: its `ClaimRequest` reads (`overlap_authorization`) destructure it too
+- `crates/cargo-berth/src/output.rs` — `OutputEnvelope::answered` reads `ClaimExecution::Answered`'s default answer as the carried type (review repair)
 - `crates/cargo-berth-test-support/src/repository_template.rs` — R0 `LedgerFixture::Recorded`, projection reset, `IdentityRenewal`, 12-hour rebuild, `TemplateBuildTiming`
 - `crates/cargo-berth-test-support/src/integration_repository.rs` — `CROSS_TARGET_PAIR`, `CROSS_TARGET_AFTER_PAIR` builders
 - `crates/cargo-berth-test-support/src/lib.rs` — re-exports
 - `.config/nextest.toml` — `experimental = ["setup-scripts"]`, the `cargo-berth-templates` setup script (workspace-wide; claim through berth)
 - `crates/cargo-berth/Cargo.toml` — `[[test]]` `recorded_templates`, `harness = false`
 - `crates/cargo-berth/tests/recorded_templates.rs` — the builder target: `--list` symlink, every `BeforeRun` build, the `$NEXTEST_ENV` line
+- `crates/cargo-berth/tests/setup-recorded-templates.sh` — setup-script wrapper so a cold target-selected run reaches the builder (review repair)
 - `crates/cargo-berth/tests/support/edges_templates.rs` — R3 `legacy_negative_template` and R4 `LEFT_RIGHT_TREES`
 - `crates/cargo-berth/tests/support/gate_templates.rs` — R5 `ENROLLED_PAIR`
 - `crates/cargo-berth/tests/edges.rs` — cross-target tests, `legacy_negative_…` split, R4 test
@@ -566,6 +569,9 @@
 - `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — flat `GitCheckout`, `HeadProbe`, `WorktreePlacement`, `HeadRelation::classify`, `from_probe`, `build_git_detail_fields`, `git_fields_from_data`, tests
 - `crates/cargo-port/src/tui/panes/pane_data/detail_field.rs` — `Head` value arm
 - `crates/cargo-port/src/tui/panes/pane_data/copy_data.rs` — `Head` copy arm
+- `crates/cargo-port/src/tui/panes/pane_data/mod.rs` — re-exports `HeadRelation` beside `GitCheckout`
+- `crates/cargo-port/src/tui/panes/pane_data/constants.rs` — the named `HEAD unreadable` Branch-row value (review repair)
+- `crates/cargo-port/src/tui/panes/mod.rs` — re-exports `HeadRelation` for the app test fixtures
 - `crates/cargo-port/src/tui/panes/git/render.rs` — `git_panel_title`, `build_field_value`, Branch-row style
 - `crates/cargo-port/src/tui/app/mod.rs` — two fixtures, the item 9 pane test, and item 11's helper and rename (shared with phases 15 and 14; claim after phase 15)
 - `crates/cargo-port/CHANGELOG.md` — the Fixed line (shared with phases 15 and 14; claim after phase 15)
@@ -813,3 +819,53 @@ Open:
 - `verify.sh check|lint cargo-port` compile, mend and format the whole workspace, so uncommitted work in another crate (cargo-berth) fails them.
 
 **Ruled out:** a duplicate constants module, `include!`, or source parsing to reach the private suffix from tests (the `cfg(test)` re-export instead); per-expansion-state prefix widths in the fit (the fit would change with expansion); raising any slow-test limit for the watcher test.
+
+### Phase 16 — The full cargo-berth suite passes on the Mac, every test under a second  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 11 (todo: it holds `crates/cargo-berth-test-support/src/*`, `crates/cargo-berth/tests/support/*`, `tests/edges.rs`, `tests/gate.rs`, `tests/lifecycle.rs`, `tests/liveness.rs`, `crates/cargo-berth/Cargo.toml` and `.config/nextest.toml`). Measurement (Spec 4) starts at once; an edit to a file phase 11 holds waits for phase 11's checkpoint. Product files under `crates/cargo-berth/src/` that phase 11 does not hold (`gate/install.rs`, `git/command.rs`) may change before it.
+
+**Goal:** A cold `cargo nextest run -p cargo-berth` on the Mac passes every test, and each test there runs in under 1 s. Natedev passes as before with no test slower than its baseline.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-18 (verbatim): "The Mac slowness gets its own item, current. Two cargo-berth tests fail there, so it is a wrong result, not just slow. Goal: the full cargo-berth suite passes on the Mac and every test there runs under 1 s. Cause first, measured before any cut. Candidates to rule in or out: TMPDIR is unset over ssh, so tempdirs land in /private/tmp. State which route each run used. macOS scans each freshly written executable or hook script on first exec. Per-spawn cost of git and of the hooks. Fix at the cause, never by raising a limit. Record before and after times on both machines."
+2. Baseline, measured 2026-10-18:
+   - **Mac**, 00:4x. Route: `ssh mac zsh -lc`, `TMPDIR` set to `getconf DARWIN_USER_TEMP_DIR` (`/var/folders/rf/twhh0jfd243fpltn5k0w1t980000gn/T/`, which sits under the `/var` → `/private/var` symlink). Staged tree `~/rust/scratch/berth-phase7-timing`, cold template cache, load 2.7 on 12 cores, nextest's default 12 threads. Result: 1139 run, 1137 pass, 2 FAIL; `SETUP PASS` 4.735 s; total 95 s. Log `mac:~/rust/scratch/p11_timing.log`, run script `mac:~/rust/scratch/run_timing_p11.sh`.
+   - The two failures are `edges successor_board_has_fixed_cold_cost` (1.119 s) and `edges successor_round_robin_covers_every_head` (1.153 s). Both panic at `crates/cargo-berth/tests/edges.rs:2564` with `linked administration should be in common git: StripPrefixError(())`, not on a time bound. That line strips `root.join(".git")` from the path `linked_worktree_administrative_directory` (`edges.rs:2764`) reads out of the linked worktree's `.git` pointer. Git writes that pointer as a resolved path, so a `/var` vs `/private/var` (or `/tmp` vs `/private/tmp`) spelling difference is the first suspect. Spec 4 confirms or rules it out.
+   - Slowest on the Mac: liveness `direct_release_waits_for_a_cover_at_a_present_integration_target` 9.459 s, liveness `orphan_alert_and_manual_recovery_use_the_reservation_target` 8.234 s, liveness `release_uses_trunk_after_the_reservation_target_disappears` 7.874 s, lifecycle `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` 6.798 s. Most tests take 5–10x their natedev time, e.g. `rewritten_integration_replacement_validates_evidence` natedev 0.225 s / Mac 5.097 s; `orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge` 0.210 s / 2.385 s.
+   - **natedev**, same tree: `verify.sh`, 6 threads, load 22–30, **warm** templates: 1138/1138 pass in 27 s. This is warm and the Mac run was cold, so Spec 4 first takes a cold natedev baseline (delete `target/tmp/cargo-berth-templates/`) to compare against.
+3. Every run names its route in its record: machine; how it was launched (`ssh mac zsh -lc …`, or `verify.sh` and which host it picked); `TMPDIR` value and its resolved path (`realpath`); staged tree path; template cache cold or warm; thread count; load and core count at start. A run at load above the core count is repeated, not trusted. Run one suite at a time on each machine.
+4. **(a) Cause before any code change.** Run each candidate as an experiment on the Mac with exactly one variable changed against the Spec 2 Mac baseline. Write every result to `phase16-mac-timing.md` in the delegate session directory, one row per run with the Spec 3 route fields. The experiments:
+   - **TMPDIR route.** Three cold full runs of the same staged tree: `TMPDIR` unset (tempdirs land in `/tmp` → `/private/tmp`); `TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)` (the baseline); `TMPDIR` set to a directory with no symlink in its path under `~/rust/scratch/` (`realpath` equals the path). Record for each: whether the two Spec 2 failures occur, the panic text, and the times of the Spec 2 slowest tests. This decides whether the failures follow the temp root's spelling.
+   - **First-exec scan.** On the Mac and natedev, time the first exec of a freshly written `#!/bin/sh` script (written, `chmod 755`) against its second and tenth exec, over at least 20 fresh scripts, and record `xattr -l` on one of them. Then time a hooked `git commit` in a fresh template copy whose hook scripts were written by that copy, against one whose hooks directory was executed once before (pre-warmed), and against one whose hook scripts are ad-hoc signed (`codesign -s -`). Record whether per-copy hook writes cost the first exec.
+   - **Per-spawn cost.** On both machines, time 200 bare `git --version`, 200 `git rev-parse HEAD` in a fixture repository, 200 `sh -c :`, 50 `cargo-berth --version` (the dev build the tests run), and 50 hooked `git commit`s against 50 with `-c core.hooksPath=/dev/null`. Give per-spawn ms and the Mac/natedev ratio. With phase 11 Spec 4's counts of starts per git step, estimate the start count of the four slowest tests and check it against their Mac time.
+   - **fsync.** Added by the plan author, not in the ruling: Rust's `File::sync_all` on macOS issues `F_FULLFSYNC`, which flushes the drive cache, and product code calls `sync_all`/`sync_data` in `ledger/journal.rs`, `ledger/handle.rs`, `ledger/compaction.rs`, `gate/permit.rs`, `gate/install.rs` and others. Time one `sync_all` of a small file on each machine and count the syncs one hooked commit makes (for example with `fs_usage -f filesys` on the Mac). If this is the cause, changing the durability primitive is a product decision: report the measurement to the unit director before changing it.
+   - Close Spec 4 with a short verdict in the measurement file: each candidate ruled in or out with the row that decides it, and the share of the Mac slowdown each ruled-in cause accounts for.
+5. **(b) The fix where the cause lives.** Test support (`crates/cargo-berth-test-support`, `crates/cargo-berth/tests/support`), the hook install path (`crates/cargo-berth/src/gate/install.rs`), or product code when a product spawn or sync costs it (`crates/cargo-berth/src/git/command.rs` and the sync call sites). Never a raised limit, a longer timeout, a skipped or `#[ignore]`d test, or a macOS-only skip (`cfg(target_os = "macos")` or a nextest filter). For the two failures: if the path spelling is the cause, compare both paths in one resolved spelling at the point where the fixture or helper builds them, and check whether product code derives `worktree_administrative_locator` (`WorktreeAdministrativeLocator`) the same way; if it does, the fix goes there too. A fix may not set `TMPDIR` for the suite as a way around a spelling defect. The Files list holds candidates; the Spec 4 verdict decides which of them change.
+6. **(c) The two cold-cost tests.** `successor_board_has_fixed_cold_cost` and `successor_round_robin_covers_every_head` pass on the Mac with every bound unchanged: `assert_merge_observation_budget(&one_argv, 2)` and `(&two_argv, 3)` (`edges.rs:1895-1896`), `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING`, the phase 8 cold-cost bounds, and `tests/support/timing.rs` (`POLL_INTERVAL`, `SCHEDULING_ALLOWANCE`).
+7. **(d) Timing proof.**
+   - Mac: one full cold `cargo nextest run --no-fail-fast -p cargo-berth` over `ssh mac zsh -lc` against a staged copy outside `/tmp` (rsync of the worktree, excluding `target/` and `.git/`), after `rm -rf target/tmp/cargo-berth-templates`, waiting for load below a quarter of the cores as `run_timing_p11.sh` does. Every test passes and every test reads under 1.000 s. Record the `SETUP PASS` line beside it.
+   - natedev: one full cold run (`target/tmp/cargo-berth-templates/` deleted) with `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth --local "phase 16: natedev timing record the showrunner's ruling asks for"`. Every test passes, and no test is slower than its Spec 4 cold natedev baseline beyond run-to-run noise (state the noise from the two baseline runs).
+   - Before/after tables for both machines in the phase report: the four Spec 2 slowest tests, the two examples, the two failing tests, the run total and `SETUP PASS`, each row naming its route (Spec 3).
+   - Never time a test alone or with a `--filter` subset (phase 8: those times did not hold under a full run).
+
+**Files:**
+- `crates/cargo-berth/tests/edges.rs` — `:2564` strip-prefix and `linked_worktree_administrative_directory` (`:2764`): the two Mac failures (phase 11 holds it)
+- `crates/cargo-berth/tests/support/linked_checkout.rs` — `administrative_directory`, the shared form of the same pointer read (`liveness.rs:2268` uses it)
+- `crates/cargo-berth-test-support/src/repository_template.rs` — `instantiate` (`:149`, `:192`; canonicalizes the copy root at `:196`): each test's copy writes every hook script fresh, and sets the root's spelling
+- `crates/cargo-berth-test-support/src/directory_snapshot.rs` — the per-test file copy, which writes the executables and hook scripts each test runs
+- `crates/cargo-berth-test-support/src/integration_repository.rs` — fixture worktree creation and its canonical paths (`:205`, `:651`)
+- `crates/cargo-berth-test-support/src/git_driver.rs` — `fixture_git_command` (`:42`), `git_command` (`:69`), `run_without_hooks` (`:196`), `add_worktree_without_hooks` (`:230`): every fixture git spawn
+- `crates/cargo-berth-test-support/src/berth_command.rs` — `berth_command` (`:23`): every `cargo-berth` start a test makes
+- `crates/cargo-berth/tests/support/git_configuration.rs`, `crates/cargo-berth/tests/support/loose_refs.rs` — phase 8's spawn-free config and ref reads, extended if spawn cost is ruled in
+- `crates/cargo-berth/src/gate/install.rs` — `install_managed_hook` (`:197`) and `PendingManagedHookReplacement::activate` (`:315`): write each hook script at `0o755` and sync the hooks directory (`:224`, `:270`)
+- `crates/cargo-berth/src/git/command.rs` — `git_command` (`:42`), `git_command_with_hook_execution_policy` (`:47`): every product git spawn
+- `crates/cargo-berth/src/ledger/journal.rs`, `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/gate/permit.rs` — `sync_all` call sites, only if the fsync experiment rules it in and the unit director approves
+
+**Workers:** 1 writer. Nothing splits: the measurement decides which files change, and one seat must hold both machines' runs.
+- `mac` (opens as `impl`) — Spec 4's measurement first, then the fix in every file the verdict names, lint, and both machines' Spec 7 runs. Mac runs go over `ssh mac zsh -lc` against a staged copy outside `/tmp` (rsync of the worktree excluding `target/` and `.git/`), and every run names its route (Spec 3).
+
+**Constraints from prior phases:** see Delegation Context. Phase 7: templates live under `CARGO_TARGET_TMPDIR/cargo-berth-templates/`; deleting that directory forces a cold build. Phase 8: fixture git configuration is written without spawning git (`tests/support/git_configuration.rs`) and loose refs are read directly (`tests/support/loose_refs.rs`). Phase 11 builds `BeforeRun` recorded templates in a nextest setup script (`SETUP PASS [ t ] cargo-berth-templates`) and keeps `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` and the cold-cost bounds unchanged; this phase builds on whatever phase 11's checkpoint leaves in those files.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. `phase16-mac-timing.md` holds a measured verdict for every Spec 4 candidate, recorded before the first code change, each row naming its route. The Spec 7 cold Mac run passes every test with each under 1.000 s, `successor_board_has_fixed_cold_cost` and `successor_round_robin_covers_every_head` included; the Spec 7 cold natedev run passes with no regression past the stated noise. The diff raises no limit, adds no `#[ignore]`, skip, `cfg(target_os = "macos")` branch or nextest filter, and leaves the Spec 6 bounds unchanged. The phase report carries before/after tables for both machines.
