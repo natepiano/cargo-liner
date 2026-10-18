@@ -262,7 +262,7 @@ impl ReadableInk {
         } else {
             readable_lightness(color, ground)
         };
-        // A muted label approaches the contrast boundary along the same hue.
+        // `subdued` approaches the contrast boundary along the same hue.
         let subdued = readable_lightness(foreground, ground);
         Self {
             foreground,
@@ -296,7 +296,7 @@ fn readable_lightness(color: Color, ground: Color) -> Color {
         });
         Color::Rgb(values[0], values[1], values[2])
     };
-    // Each side of the ground has a monotone readable interval. Find its boundary.
+    // Each side of `ground` has a monotone readable interval. Find its boundary.
     let mut best = (f64::INFINITY, at(lightness));
     for endpoint in [0.0, 1.0] {
         if contrast(at(endpoint), ground) < MINIMUM_CONTRAST {
@@ -304,7 +304,7 @@ fn readable_lightness(color: Color, ground: Color) -> Color {
         }
         let mut readable = endpoint;
         let mut unreadable = if contrast(color, ground) >= MINIMUM_CONTRAST {
-            // Subdued ink chooses the boundary nearest the ground's lightness.
+            // Subdued ink chooses the boundary nearest `ground`'s lightness.
             let (red, green, blue) = rgb(ground);
             (f64::from(red.max(green).max(blue)) + f64::from(red.min(green).min(blue))) / 510.0
         } else {
