@@ -131,9 +131,9 @@ impl Lint {
         }
     }
 
-    // ── viewport ────────────────────────────────────────────────
+    // `Lint::viewport` stores the Lints pane viewport.
 
-    // ── content ─────────────────────────────────────────────────
+    // `content`, `set_content` and `clear_content` manage cached `LintsData`.
 
     pub(in crate::tui) const fn content(&self) -> Option<&LintsData> { self.content.as_ref() }
 
@@ -141,7 +141,7 @@ impl Lint {
 
     pub(in crate::tui) fn clear_content(&mut self) { self.content = None; }
 
-    // ── runtime ─────────────────────────────────────────────────
+    // `runtime`, `runtime_clone` and `set_runtime` expose or replace the lint `RuntimeHandle`.
 
     /// The lint runtime handle, if lint is enabled.
     pub(in crate::tui) const fn runtime(&self) -> Option<&RuntimeHandle> { self.runtime.as_ref() }
@@ -156,7 +156,7 @@ impl Lint {
         self.runtime = handle;
     }
 
-    // ── pause ───────────────────────────────────────────────────
+    // `pause_toast` records paused state for `is_paused`, `set_pause_toast` and `take_pause_toast`.
 
     /// Whether lint is paused. Paused exactly when the sticky warning toast
     /// is held.
@@ -172,7 +172,8 @@ impl Lint {
         self.pause_toast.take()
     }
 
-    // ── running toast projection ────────────────────────────────
+    // `apply_lint_status` and the origin-aware tracker helpers project live status into running
+    // toasts.
 
     pub(in crate::tui) fn apply_lint_status(
         &mut self,
@@ -286,13 +287,14 @@ impl Lint {
         }
     }
 
-    // ── cache usage ─────────────────────────────────────────────
+    // `set_cache_usage` replaces `Lint::cache_usage`.
 
     pub(in crate::tui) const fn set_cache_usage(&mut self, usage: CacheUsage) {
         self.cache_usage = usage;
     }
 
-    // ── read-side lookups ───────────────────────────────────────
+    // `status_for_path`, `status_for_root`, `status_for_worktree` and `run_count_at` read project
+    // lint state.
 
     /// Lint status of the project at `path`. Returns
     /// [`LintStatus::NoLog`] when the path has no lint history.
@@ -369,11 +371,9 @@ impl Lint {
                 Self::run_count_at(projects, path),
             )
         };
-        // A first, in-progress or deferred run has no completed history
-        // yet (count == 0). Still surface it as `Runs` so the detail
-        // pane shows the spinner or the waiting icon — matching the
-        // project-list column and toast, which key off `status`
-        // directly. The renderer omits the `0` count while it's zero.
+        // When `count == 0` for a first in-progress or deferred run, keep `LintDisplay::Runs` so
+        // the detail pane shows its spinner or waiting icon, matching the project-list column and
+        // toast that use `status` directly. The renderer omits the zero count.
         if count == 0 && !matches!(status, LintStatus::Running(..) | LintStatus::Waiting) {
             LintDisplay::NoRuns
         } else {
@@ -522,7 +522,8 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].activity, TrackedItemActivity::Stalled);
 
-        // Acquiring the lock flips the same item back without restarting it.
+        // `LintRunPhase::Executing` moves the same item back to `TrackedItemActivity::Progressing`
+        // after lock acquisition without restarting the item.
         lint.apply_lint_status(
             path,
             LintStatusKind::Running(LintRunPhase::Executing),
