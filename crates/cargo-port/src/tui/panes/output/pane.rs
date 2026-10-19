@@ -81,7 +81,7 @@ impl OutputPane {
     pub fn captured_output_row_at(&self, pos: Position) -> CapturedOutputRow {
         self.viewport
             .pos_to_local_row(pos)
-            .map_or(CapturedOutputRow::Outside, CapturedOutputRow::Row)
+            .map_or(CapturedOutputRow::Outside, CapturedOutputRow::Inside)
     }
 
     /// Enter visual mode from the cursor: anchor the fixed end at the
@@ -308,7 +308,7 @@ pub enum CapturedOutputRow {
     /// The position is not over a captured-output row.
     Outside,
     /// The buffer index of the captured-output row under the position.
-    Row(usize),
+    Inside(usize),
 }
 
 impl Renderable<PaneRenderCtx<'_>> for OutputPane {
