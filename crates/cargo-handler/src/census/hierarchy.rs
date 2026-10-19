@@ -739,13 +739,32 @@ impl ReviewerPoolRoot {
     }
 }
 
+/// Unnamed sessions that already caused their extra hierarchy check.
+#[derive(Default)]
+struct CheckedUnlinkedSessions(BTreeSet<String>);
+
+/// The first outcome establishes the set of sessions eligible for an extra check.
+#[derive(Default)]
+enum HierarchyDiscovery {
+    #[default]
+    Pending,
+    Answered(CheckedUnlinkedSessions),
+}
+
+/// Rows stay behind the scanning frame until the source has its first outcome.
+pub(super) enum HierarchyPublication {
+    Pending,
+    RefreshNeeded,
+    Ready(HierarchySnapshot),
+}
+
 /// Edges reused until their source, local sessions, or freshness changes.
 #[derive(Default)]
 pub(super) struct HierarchyCache {
     /// Source to which the retained success belongs.
     source:    HierarchySource,
-    /// Local Claude session ids, independent of row order and process ids.
-    sessions:  BTreeSet<String>,
+    /// First-outcome readiness and unnamed sessions already checked.
+    discovery: HierarchyDiscovery,
     /// Last successful answer from this source, never a failed empty answer.
     success:   LastSuccessfulHierarchy,
     /// Failure invalidates the ordinary refresh interval.
@@ -771,6 +790,7 @@ impl HierarchyCache {
             self.source = source;
             self.success = LastSuccessfulHierarchy::Unanswered;
             self.retry = HierarchyRetry::OnExpiration;
+            self.discovery = HierarchyDiscovery::Pending;
             self.notice = HierarchyNotice::Clear;
         }
         &self.success
@@ -793,24 +813,53 @@ impl HierarchyCache {
         if matches!(self.source, HierarchySource::Off) {
             return HierarchyEdges::default();
         }
-        let sessions: BTreeSet<_> = rows
-            .iter()
-            .filter_map(|row| match &row.session_id {
-                SessionIdentity::Claude(id) => Some(id.clone()),
-                SessionIdentity::Unrecorded => None,
-            })
-            .collect();
+        let unchecked = self.unchecked_sessions(rows);
         if let LastSuccessfulHierarchy::Answered { refreshed, edges } = &self.success
+            && unchecked.is_empty()
             && matches!(self.retry, HierarchyRetry::OnExpiration)
-            && self.sessions == sessions
             && now.saturating_duration_since(*refreshed) < HIERARCHY_REFRESH_INTERVAL
         {
             let mut edges = edges.clone();
             self.pools.refresh(&mut edges);
             return edges;
         }
-        self.sessions = sessions;
-        match read(&self.source, runner) {
+        match &mut self.discovery {
+            HierarchyDiscovery::Pending => {
+                self.discovery = HierarchyDiscovery::Answered(CheckedUnlinkedSessions::default());
+            },
+            HierarchyDiscovery::Answered(checked) => checked.0.extend(unchecked),
+        }
+        let outcome = read(&self.source, runner);
+        self.accept(outcome, now);
+        let mut edges = self.success.edges();
+        self.pools.refresh(&mut edges);
+        edges
+    }
+
+    /// New ids may cause one extra attempt; process changes do not create new ids.
+    fn unchecked_sessions(&self, rows: &[AgentRow]) -> BTreeSet<String> {
+        let HierarchyDiscovery::Answered(checked) = &self.discovery else {
+            return BTreeSet::new();
+        };
+        let edges = self.success.edges();
+        rows.iter()
+            .filter_map(|row| match &row.session_id {
+                SessionIdentity::Claude(id)
+                    if !checked.0.contains(id)
+                        && !edges
+                            .0
+                            .iter()
+                            .any(|edge| &edge.manager == id || &edge.member == id) =>
+                {
+                    Some(id.clone())
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn accept(&mut self, outcome: Result<HierarchyEdges, HierarchyError>, now: Instant) {
+        match outcome {
             Ok(edges) => {
                 self.notice = HierarchyNotice::Clear;
                 self.success = LastSuccessfulHierarchy::Answered {
@@ -824,9 +873,23 @@ impl HierarchyCache {
                 self.notice = HierarchyNotice::Failed(reason);
             },
         }
-        let mut edges = self.success.edges();
-        self.pools.refresh(&mut edges);
-        edges
+    }
+
+    /// Accept the bounded first attempt after its worker returns.
+    pub(super) fn first_outcome(
+        &mut self,
+        source: HierarchySource,
+        rows: &[AgentRow],
+        outcome: Result<HierarchyEdges, HierarchyError>,
+        now: Instant,
+    ) -> HierarchySnapshot {
+        self.cached(source.clone());
+        self.pool_key = self.pool_root.path().update(&mut self.pools);
+        self.discovery = HierarchyDiscovery::Answered(CheckedUnlinkedSessions::default());
+        self.accept(outcome, now);
+        let snapshot = self.retained(source).matched(rows);
+        self.notice = snapshot.notice;
+        snapshot
     }
 
     /// Refresh links and keep the diagnostic bound to this command result.
@@ -862,6 +925,26 @@ impl HierarchyCache {
             _ => attempted,
         };
         refreshed + HIERARCHY_REFRESH_INTERVAL
+    }
+
+    /// Get an outcome before publishing a new source or a new unchecked session.
+    pub(super) fn publication(
+        &mut self,
+        source: HierarchySource,
+        rows: &[AgentRow],
+    ) -> HierarchyPublication {
+        let snapshot = self.retained(source);
+        match (&self.source, &self.discovery) {
+            (HierarchySource::Command(_), HierarchyDiscovery::Pending) => {
+                HierarchyPublication::Pending
+            },
+            (HierarchySource::Command(_), HierarchyDiscovery::Answered(_))
+                if !self.unchecked_sessions(rows).is_empty() =>
+            {
+                HierarchyPublication::RefreshNeeded
+            },
+            _ => HierarchyPublication::Ready(snapshot),
+        }
     }
 
     pub(super) fn retained(&mut self, source: HierarchySource) -> HierarchySnapshot {

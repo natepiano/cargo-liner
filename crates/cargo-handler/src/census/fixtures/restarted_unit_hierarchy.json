@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "edges": [
+    {
+      "manager": "96b016bf-87cf-4a19-af7a-77425852c2e2",
+      "member": "80636f6b-b7f3-4a3f-9853-ead35573c524",
+      "role": "unit"
+    }
+  ]
+}

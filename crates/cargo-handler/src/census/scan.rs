@@ -1602,7 +1602,7 @@ mod hierarchy_publication_tests {
     }
 
     #[test]
-    fn classified_and_completed_rows_publish_before_hierarchy_edges() {
+    fn classified_rows_include_hierarchy_before_detail_reads() {
         let runner = Arc::new(CountingRunner(AtomicUsize::new(0)));
         let observed = Arc::clone(&runner);
         let updates = schedule::spawn_with_test_source(
@@ -1628,16 +1628,6 @@ mod hierarchy_publication_tests {
                     },
                 );
             },
-        );
-        assert_eq!(
-            updates
-                .recv_timeout(Duration::from_millis(500))
-                .expect("classification should arrive"),
-            CensusUpdate::Local {
-                rows:      Vec::new(),
-                hierarchy: HierarchyEdges::default().into(),
-                stage:     ScanStage::Classified,
-            }
         );
         let edges = HierarchyEdges(vec![HierarchyEdge {
             reviewer: crate::census::hierarchy::ReviewerState::NotPool,
