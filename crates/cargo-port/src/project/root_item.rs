@@ -15,6 +15,7 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::non_rust::NonRustProject;
+use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
@@ -83,15 +84,14 @@ impl RootItem {
     /// path alone grouped roots by include directory, which put every
     /// `~/.claude` root ahead of every `~/rust` root.
     pub(crate) fn list_order(&self, other: &Self) -> Ordering {
-        let leaf = |item: &Self| {
-            item.root_directory_name()
-                .into_string()
-                .chars()
-                .flat_map(char::to_lowercase)
-                .collect::<Vec<char>>()
-        };
-        leaf(self)
-            .cmp(&leaf(other))
+        paths::directory_leaf_str(self.path())
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(
+                paths::directory_leaf_str(other.path())
+                    .chars()
+                    .flat_map(char::to_lowercase),
+            )
             .then_with(|| self.path().cmp(other.path()))
     }
 

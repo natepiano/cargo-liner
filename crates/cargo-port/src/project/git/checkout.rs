@@ -40,6 +40,7 @@ use super::constants::GIT_SYMBOLIC_REF_COMMAND;
 use super::constants::GIT_UNTRACKED_STATUS_CODE;
 use super::constants::GIT_VERIFY_ARG;
 use super::discovery;
+use super::probes;
 use super::repo::RemoteInfo;
 use super::repo::RepoInfo;
 use crate::constants::GIT_STATUS_CLEAN;
@@ -206,7 +207,18 @@ impl CheckoutInfo {
         let repo_root = discovery::git_repo_root(probe_path)?;
 
         let head = resolve_head_state(&repo_root);
-        let current_upstream = branches::get_upstream_branch(&repo_root, &head);
+        let (current_upstream, last_commit, status, bisect) = std::thread::scope(|scope| {
+            let upstream = scope.spawn(|| branches::get_upstream_branch(&repo_root, &head));
+            let commit = scope.spawn(|| last_commit_date(&repo_root, &head));
+            let status = scope.spawn(|| get_git_status(probe_path, &repo_root));
+            let bisect = scope.spawn(|| bisect_progress(&repo_root));
+            (
+                probes::finish_probe(upstream),
+                probes::finish_probe(commit),
+                probes::finish_probe(status),
+                probes::finish_probe(bisect),
+            )
+        });
         let ahead_behind_local = match (&head, local_main_branch) {
             (
                 HeadState::Unreadable,
@@ -232,15 +244,13 @@ impl CheckoutInfo {
                 .map_or(Comparison::Unreadable, Comparison::Counted)
             },
         };
-        let last_commit = last_commit_date(&repo_root, &head);
-
         Some(Self {
-            status: get_git_status(probe_path, &repo_root),
+            status,
             head,
             last_commit,
             ahead_behind_local,
             primary_tracked_ref: current_upstream,
-            bisect: bisect_progress(&repo_root),
+            bisect,
         })
     }
 }

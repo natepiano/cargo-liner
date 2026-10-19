@@ -27,6 +27,7 @@ use crate::tui::theme_roles;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
 pub fn language_icon(language: &str) -> &'static str {
+    // Each trailing comment shows the glyph its escape renders.
     match language.to_ascii_lowercase().as_str() {
         "rust" => "\u{1f980}",                                                 // 🦀
         "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", // 🌊
@@ -52,7 +53,7 @@ pub fn language_icon(language: &str) -> &'static str {
         "autoconf" => "\u{1f527}",         // 🔧
         "asciidoc" => "A\u{2193}",         // A↓
         "batch" => "C:",
-        // tokei reports RON as "Rusty Object Notation"; abbreviate to RON.
+        // `language_icon` maps tokei's "Rusty Object Notation" name to the abbreviated RON label.
         "rusty object notation" => "RON",
         _ => "  ",
     }
@@ -61,7 +62,8 @@ pub fn language_icon(language: &str) -> &'static str {
 /// Column constraints for the language stats table.
 const fn lang_table_widths() -> [Constraint; 7] {
     [
-        // Icon column: 1-space inset + up to a 3-char text icon (e.g. "RON").
+        // `Constraint::Length(4)` leaves one inset space plus up to three text-icon characters,
+        // such as RON from `language_icon`.
         Constraint::Length(4),
         Constraint::Fill(1),
         Constraint::Length(LANG_NUM_COL),

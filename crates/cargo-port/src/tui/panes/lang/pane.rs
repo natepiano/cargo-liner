@@ -12,7 +12,7 @@ use crate::tui::panes::PaneId;
 use crate::tui::panes::lang;
 use crate::tui::render_context::PaneRenderCtx;
 
-// ── Lang ────────────────────────────────────────────────────────
+// `LangPane` owns Languages-pane viewport and focus state.
 pub struct LangPane {
     pub viewport: Viewport,
     pub focus:    RenderFocus,

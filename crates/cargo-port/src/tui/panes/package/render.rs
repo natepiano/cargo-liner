@@ -192,10 +192,9 @@ fn package_region(
 
     let structure_count = data.stats_rows.len();
     let tests_count = data.test_rows.len();
-    // The crates.io section can render rows that have no selectable
-    // counterpart in the flat row list (worktree-summary data), so its box
-    // keeps the flat count for the cursor mapping and reserves the rendered
-    // rows through `lines`.
+    // `crates_io_selectable` counts flat `PackageRow::CratesIo` entries for cursor mapping, while
+    // `crates_io_lines` reserves rendered rows via `Region::lines`: worktree-summary data may
+    // render crates.io rows with no selectable counterpart.
     let crates_io_selectable = rows
         .iter()
         .filter(|row| matches!(row, PackageRow::CratesIo(_)))
@@ -277,9 +276,9 @@ pub(super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
         10_000..100_000 => 5,
         _ => 6,
     };
-    // The crates.io section stores string values (versions, formatted
-    // download counts) that can be wider than any count; widen the value
-    // field so all three sections share one right edge.
+    // `data.crates_io_rows` contains versions and formatted download counts that can exceed numeric
+    // counts; widen `value_width` using `widest_crates_io` so all three sections share one right
+    // edge.
     let widest_crates_io = data
         .crates_io_rows
         .iter()
@@ -437,18 +436,17 @@ fn render_column_inner(
                 );
             },
             PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
-                // Structure, Tests, and crates.io rows render in the separate
-                // stats column, which doesn't scroll. Anchor the metadata
-                // column to its own last line rather than a position past its
-                // content, so focusing a stat keeps the metadata steady
-                // instead of scrolling it up.
+                // `PackageRow::Structure`, `Tests` and `CratesIo` render in the separate stats
+                // column, which does not scroll with metadata. Anchor `focused_output_line` at the
+                // metadata column's last line rather than beyond its content so stat focus keeps
+                // metadata steady instead of scrolling it upward.
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = lines.len().saturating_sub(1);
                 }
             },
             PackageRow::Section(section) => {
-                // Separate the Primary Package / Workspace block from the
-                // Worktree Group Summary above it with a blank row.
+                // For `PackageSection::PrimaryPackage` and `PrimaryWorkspace`, push a blank `Line`
+                // to separate that block from the Worktree Group Summary above.
                 if matches!(
                     section,
                     PackageSection::PrimaryPackage | PackageSection::PrimaryWorkspace
@@ -671,8 +669,8 @@ pub(super) fn render_package_pane_body(
         synced_description_height: *synced_description_height,
     };
 
-    // The description renders first; its returned height fixes the
-    // description box's rendered lines for this frame's tree.
+    // `render_project_description` runs first because its returned `description_height` fixes the
+    // description region's rendered lines for this frame's `package_region` tree.
     let description_height = render_project_description(frame, &context, area, project_inner);
     let separator = u16::from(
         description_height > 0
@@ -768,10 +766,9 @@ fn sync_package_viewport(
     synced_description_height: SyncedDescriptionHeight,
 ) {
     pane.viewport.set_len(rows.len());
-    // The lower metadata and stats render in two parallel columns, so the
-    // content's rendered height is the taller column plus the About section —
-    // not the flat row count. Tell the viewport the rendered height so the
-    // scroll pager does not page on rows that never stack vertically.
+    // `pane.viewport.set_content_height(package_content_height(...))` uses the taller
+    // metadata/stats column plus About because the two columns render in parallel; the pager must
+    // not count their rows as vertically stacked.
     pane.viewport.set_content_height(package_content_height(
         usize::from(synced_description_height.rows()),
         package_lower_metadata_height(pkg_data, rows),
@@ -800,10 +797,9 @@ fn render_project_description(
     let baseline_max = project_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
-    // Build the same DescriptionBlock that `sync_floor` consumed at
-    // the top of the frame and let it render — the block owns the
-    // wrapped rows so the rendered content can't drift from the
-    // height that fed the inter-pane sync.
+    // `DescriptionBlock::for_pane` rebuilds the wrapped rows used for the frame's synchronized
+    // description height; `block.render_with_selection` draws those owned rows so content cannot
+    // drift from the height used for inter-pane synchronization.
     let block = DescriptionBlock::for_pane(
         context.pkg_data.description.as_deref(),
         area,
@@ -840,8 +836,8 @@ fn push_separator(
         height: 1,
     };
     chrome.rules.push(rule_area);
-    // The `┬` where the stats column tees in is a junction the grid pass
-    // works out on its own; only the title has to be placed here.
+    // The grid resolves the stats-column junction with `chrome.rules`; only the title needs
+    // placement here through `chrome.labels`.
     let Some(connector_x) = boxes.first().map(|index| placed[index].content.x) else {
         return;
     };
@@ -889,9 +885,9 @@ fn render_stats_column(
         return Vec::new();
     };
     let column = placed[first].chrome;
-    // Vertical rule along the column's left edge, from below the separator
-    // row down onto the pane's bottom border -- reaching the border is what
-    // turns that cell into the `┴` the grid pass draws.
+    // Extend the vertical `chrome.rules` rectangle from `rule_top` below the separator through
+    // `project_inner.bottom()`: reaching the pane's bottom border lets the grid draw the bottom
+    // junction.
     let rule_top = column.y.saturating_add(separator);
     chrome.rules.push(Rect {
         x:      column.x,
@@ -1170,8 +1166,8 @@ fn lint_display_to_string(
             } else {
                 LINT_NO_LOG
             };
-            // A first, in-progress run has no completed count yet; show the
-            // spinner alone rather than a bare "0".
+            // When `count` on `LintDisplay::Runs` is zero during the first in-progress run, show
+            // `icon` alone because there is no completed count yet, rather than a bare "0".
             if *count == 0 {
                 icon.to_string()
             } else {
@@ -1295,8 +1291,8 @@ mod tests {
 
     #[test]
     fn hard_wrap_splits_multibyte_value_without_panicking() {
-        // The Branch field value carries a middle dot (`·`, two bytes); byte
-        // slicing panicked when a narrow column cut inside the character.
+        // `support::hard_wrap` must preserve the Branch value's middle dot (`·`, two bytes): byte
+        // slicing previously panicked when a narrow column cut inside that character.
         let lines = super::support::hard_wrap("main · default", 4);
         assert!(lines.iter().all(|line| line.width() <= 4));
         assert_eq!(lines.concat(), "main · default");
@@ -1312,15 +1308,14 @@ mod tests {
         let rows = panes::package_rows_from_data(&data);
         let (stats_width, _) = stats_column_width(&data);
         let (region, boxes) = package_region(&data, &rows, 1, 1, stats_width);
-        // The cursor walks the flat row list, so the tree must address
-        // exactly those rows.
+        // The cursor traverses flat `rows`, so `region.total_selectable()` must equal `rows.len()`.
         assert_eq!(region.total_selectable(), rows.len());
         let first_tests = first_tests_row(&rows);
         assert_eq!(
             region.locate(first_tests),
             boxes.tests.map(|tests| (tests, 0))
         );
-        // A crates.io row resolves to the crates.io box, not the Tests box,
+        // `region.locate(first_crates)` must resolve to `boxes.crates_io` rather than the Tests box
         // even though both sit past the Tests rows' flat-list start.
         let first_crates = rows
             .iter()
@@ -1334,8 +1329,8 @@ mod tests {
 
     #[test]
     fn tests_box_offset_tracks_cursor_on_a_test_row() {
-        // Cursor on the last Tests row (box-local 4) scrolls the 3-tall box
-        // to its last page.
+        // `placed_tests_offset(22, last_tests, 0)` scrolls the three-row Tests box to its last page
+        // for its last row (box-local index four).
         let rows = panes::package_rows_from_data(&band_data());
         let last_tests = first_tests_row(&rows) + 4;
         assert_eq!(placed_tests_offset(22, last_tests, 0), 2);
@@ -1343,8 +1338,8 @@ mod tests {
 
     #[test]
     fn tests_box_offset_holds_prior_on_a_pinned_row() {
-        // Cursor on a Structure row holds the prior offset, clamped to the
-        // box's last page (5 rows - 3 visible).
+        // `placed_tests_offset(22, structure_row, 5)` retains the prior offset on a pinned
+        // Structure row, clamped to the last page (five rows minus three visible).
         let rows = panes::package_rows_from_data(&band_data());
         let structure_row = first_tests_row(&rows) - 1;
         assert_eq!(placed_tests_offset(22, structure_row, 5), 2);
@@ -1387,7 +1382,8 @@ mod tests {
         let timestamp =
             DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
         let elapsed = Duration::from_millis(100);
-        // First run, no completed history yet: spinner only, no bare "0".
+        // `LintDisplay::Runs { count: 0, .. }` represents a first run without completed history, so
+        // `lint_display_to_string` shows only the spinner rather than a bare "0".
         let display = LintDisplay::Runs {
             count:  0,
             status: LintStatus::Running(timestamp, LintRunPhase::Executing),
@@ -1501,8 +1497,8 @@ mod moved_facade_tests {
     fn detail_column_scroll_clamps_to_last_page() {
         let focus = PaneFocusState::Active;
 
-        // The cursor sits on the last line; the offset stops at the last full
-        // page rather than scrolling content off the bottom.
+        // `detail_column_scroll_offset(focus, 9, 4, 10)` clamps the final-line cursor to the last
+        // full page so content does not scroll off the bottom.
         assert_eq!(detail_column_scroll_offset(focus, 9, 4, 10), 6);
     }
 

@@ -226,11 +226,13 @@ pub(crate) fn home_relative_path(path: &Path) -> String {
 
 /// Extract the last path component as a `String`, returning an empty string
 /// if the path has no file name or is not valid UTF-8.
-pub(super) fn directory_leaf(path: &Path) -> String {
+pub(super) fn directory_leaf(path: &Path) -> String { directory_leaf_str(path).to_string() }
+
+/// Borrow the directory leaf for comparisons, with the same fallback as labels.
+pub(super) fn directory_leaf_str(path: &Path) -> &str {
     path.file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("")
-        .to_string()
 }
 
 /// Windows-only: these assert on `std::path::Prefix` behavior that has no Unix
