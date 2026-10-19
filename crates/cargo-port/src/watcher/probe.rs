@@ -76,8 +76,8 @@ pub(super) fn probe_new_projects(
     for dir in ready {
         pending_new.remove(&dir);
 
-        // Excluded names never became projects, so there is no tracked row to
-        // retire — skip before the deletion branch below.
+        // `exclude_dirs.excludes` rejects names before the missing-directory branch: excluded
+        // directories never became projects, so there is no tracked row to retire.
         if dir
             .file_name()
             .is_some_and(|name| exclude_dirs.excludes(name))
@@ -86,8 +86,8 @@ pub(super) fn probe_new_projects(
         }
 
         if !dir.is_dir() {
-            // Directory was removed — send a zero-byte update so the app
-            // can mark it as deleted if it was a tracked project.
+            // Remove missing `dir` from `discovered` and send zero-byte `BackgroundMsg::DiskUsage`
+            // so the app can mark it deleted if it was tracked.
             discovered.remove(&dir);
             let _ = background_tx.send(BackgroundMsg::DiskUsage {
                 path:  dir,
@@ -115,10 +115,9 @@ pub(super) fn probe_new_projects(
                 entries:   disk_entries,
             });
             if abs_path.join(CARGO_TOML).exists() {
-                // Newly created Rust worktrees can be discovered before all
-                // nested workspace members are visible. A delayed normalized
-                // refresh repairs that initial partial state once the checkout
-                // settles.
+                // `spawn_project_refresh_after` normalizes `abs_path` after `NEW_PROJECT_DEBOUNCE`:
+                // new Rust worktrees may be discovered before nested workspace members are visible,
+                // so the delayed refresh repairs partial state once the checkout settles.
                 spawn_project_refresh_after(
                     background_tx.clone(),
                     abs_path.clone(),
@@ -165,10 +164,9 @@ pub(super) fn project_level_dir(
             marker_candidate = Some(AbsolutePath::from(path.clone()));
         }
         if watch_roots.iter().any(|r| parent == r.as_path()) || project_parents.contains(parent) {
-            // Prefer the outermost directory under the known project-parent
-            // boundary that carries project markers. This avoids discovering
-            // workspace members as standalone projects when a new workspace
-            // worktree is still emitting nested file events.
+            // Return the outermost `marker_candidate` beneath the known project-parent boundary,
+            // falling back to `path`; choosing an outer marker avoids discovering workspace members
+            // as standalone projects while a new workspace worktree emits nested file events.
             return Some(marker_candidate.unwrap_or_else(|| AbsolutePath::from(path)));
         }
         if !watch_roots.iter().any(|r| path.starts_with(r.as_path())) {

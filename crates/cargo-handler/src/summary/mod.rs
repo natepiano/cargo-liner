@@ -61,6 +61,8 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::sort;
+use crate::sort::AccountsColumn;
+use crate::sort::AccountsSort;
 use crate::sort::HeaderSpan;
 use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
@@ -94,6 +96,7 @@ pub(crate) fn width(
     account_column: AccountColumn,
     sort: SummarySort,
     accounts: &AccountsTable,
+    accounts_sort: AccountsSort,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -108,7 +111,7 @@ pub(crate) fn width(
         .iter()
         .all(|machine| root_rows(*machine, placement).next().is_none())
     {
-        return headings.max(accounts::width(accounts, now));
+        return headings.max(accounts::sorted_width(accounts, now, accounts_sort));
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
@@ -116,7 +119,9 @@ pub(crate) fn width(
         .map(|column| widths.get(column))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
-    headings.max(table).max(accounts::width(accounts, now))
+    headings
+        .max(table)
+        .max(accounts::sorted_width(accounts, now, accounts_sort))
 }
 
 /// Both stacked sections, with the same gap used between machine groups.
@@ -169,6 +174,7 @@ struct SummaryColumns<'a> {
 /// The census, palette and ordering shared throughout one summary draw.
 pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) accounts:       &'a AccountsTable,
+    pub(crate) accounts_sort:  AccountsSort,
     pub(crate) machines:       &'a [Machine<'data>],
     pub(crate) placement:      &'a AgentPlacement<'data>,
     pub(crate) cells:          &'a [AgentEntry<'data>],
@@ -178,7 +184,7 @@ pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) sort:           SummarySort,
 }
 
-/// Draw machine groups with the palette and ordering shared by this frame.
+/// Draw machine groups and accounts with the independent ordering in this frame.
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
     let SummaryHeader {
         constraints,
@@ -194,6 +200,18 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     for machine in machines {
         draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
+    accounts::draw_sorted(
+        buffer,
+        accounts_area(area, frame),
+        frame.accounts,
+        frame.now,
+        frame.footer_colors,
+        frame.accounts_sort,
+    );
+}
+
+/// Accounts begin after the machine groups and their section gap, clipped to the cell.
+fn accounts_area(area: Rect, frame: &SummaryFrame<'_, '_>) -> Rect {
     let agent_height = machine_height(frame.machines, frame.placement);
     let offset = agent_height
         + if agent_height > 0 {
@@ -202,17 +220,24 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
             0
         };
     let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
-    accounts::draw(
-        buffer,
-        Rect {
-            y: area.y.saturating_add(offset),
-            height: area.height.saturating_sub(offset),
-            ..area
-        },
+    Rect {
+        y: area.y.saturating_add(offset),
+        height: area.height.saturating_sub(offset),
+        ..area
+    }
+}
+
+/// Account headers use the same section offset and measured lines as drawing.
+pub(crate) fn accounts_header_spans(
+    area: Rect,
+    frame: &SummaryFrame<'_, '_>,
+) -> Vec<HeaderSpan<AccountsColumn>> {
+    accounts::header_spans(
+        accounts_area(area, frame),
         frame.accounts,
         frame.now,
-        frame.footer_colors,
-    );
+        frame.accounts_sort,
+    )
 }
 
 /// A visible machine group with its heading, table and rows resolved together.
@@ -625,6 +650,7 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsTable;
     use crate::census::hierarchy::ReviewerState;
+    use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -784,6 +810,7 @@ mod tests {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &AccountsTable::NotConfigured,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(height(machines, &placement, &AccountsTable::NotConfigured))
                 .expect("the summary height should fit"),
@@ -793,6 +820,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort: AccountsSort::SourceOrder,
                 accounts: &AccountsTable::NotConfigured,
                 machines,
                 placement: &placement,
@@ -945,6 +973,7 @@ mod tests {
             AccountColumn::Hidden,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let mut census = Census::new("natedev".to_string());
 
@@ -980,6 +1009,7 @@ mod tests {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &AccountsTable::NotConfigured,
+                AccountsSort::SourceOrder,
             );
             if expected.len() == 1 {
                 assert_eq!(
@@ -1069,6 +1099,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1186,6 +1217,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1236,6 +1268,7 @@ mod tests {
             AccountColumn::Hidden,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
             .expect("the height should fit a u16");
@@ -1245,6 +1278,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1288,7 +1322,8 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured
+                &AccountsTable::NotConfigured,
+                crate::sort::AccountsSort::SourceOrder
             )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
@@ -1314,7 +1349,8 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured
+                &AccountsTable::NotConfigured,
+                crate::sort::AccountsSort::SourceOrder
             )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
@@ -1346,3 +1382,9 @@ mod accounts_refresh_tests;
 
 #[cfg(test)]
 mod hierarchy_note_tests;
+
+#[cfg(test)]
+mod accounts_gradient_tests;
+
+#[cfg(test)]
+mod accounts_header_sort_tests;

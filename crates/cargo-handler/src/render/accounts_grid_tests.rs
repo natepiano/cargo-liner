@@ -1,4 +1,4 @@
-//! Account demand reaches the actual grid and its headers do not select a sort.
+//! Account demand and independent header sorts reach the actual grid.
 
 #![expect(
     clippy::expect_used,
@@ -47,7 +47,8 @@ fn draw_grid(app: &mut App) -> Buffer {
         &app.tree_sorts,
         app.summary_sort,
     )
-    .with_accounts(&app.accounts.table);
+    .with_accounts(&app.accounts.table)
+    .with_accounts_sort(app.accounts_sort);
     let demand = cells.demands(&[]);
     let area = Rect::new(
         0,
@@ -68,7 +69,7 @@ fn draw_grid(app: &mut App) -> Buffer {
 }
 
 #[test]
-fn accounts_grid_measured_tables_are_visible_and_account_header_click_preserves_both_orders() {
+fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_order() {
     let mut app = App::new_for_test().expect("test app");
     let rows: Vec<AgentRow> = [(10, "alpha-session", 100), (20, "zeta-session", 200)]
         .map(|(pid, name, started)| {
@@ -124,14 +125,31 @@ fn accounts_grid_measured_tables_are_visible_and_account_header_click_preserves_
             "{name}"
         );
     }
-    // An actual agents header still changes ordering through the same handler.
-    let header = locate(&after, "name ▼");
+    let account_header = locate(&after, "weekly left ▲");
     cell_clicked(
         &mut app,
         CellClick {
             index:   0,
             content: TileContent::Summary,
             area:    Rect::new(1, 1, after.area.width - 2, after.area.height - 2),
+            point:   CellPoint {
+                column: account_header.column - 1,
+                row:    account_header.row - 1,
+            },
+        },
+    );
+    let reversed = draw_grid(&mut app);
+    assert!(locate(&reversed, "claude1").row < locate(&reversed, "codex2").row);
+    assert!(locate(&reversed, "zeta-session").row < locate(&reversed, "alpha-session").row);
+    assert_eq!(app.summary_sort, original_sort);
+    // An actual agents header still changes ordering through the same handler.
+    let header = locate(&reversed, "name ▼");
+    cell_clicked(
+        &mut app,
+        CellClick {
+            index:   0,
+            content: TileContent::Summary,
+            area:    Rect::new(1, 1, reversed.area.width - 2, reversed.area.height - 2),
             point:   CellPoint {
                 column: header.column - 1,
                 row:    header.row - 1,
@@ -141,7 +159,7 @@ fn accounts_grid_measured_tables_are_visible_and_account_header_click_preserves_
     assert_eq!(app.summary_sort.direction, SortDirection::Ascending);
     let sorted = draw_grid(&mut app);
     assert!(locate(&sorted, "alpha-session").row < locate(&sorted, "zeta-session").row);
-    assert!(locate(&sorted, "codex2").row < locate(&sorted, "claude1").row);
+    assert!(locate(&sorted, "claude1").row < locate(&sorted, "codex2").row);
 }
 
 #[test]

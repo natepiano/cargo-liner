@@ -52,6 +52,40 @@ use crate::constants::RAINBOW_YELLOW_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 
+/// A chronological rank constructed only within its set of distinct reset times.
+pub(crate) struct ResetRank {
+    position: usize,
+    last:     usize,
+}
+
+impl ResetRank {
+    /// Enumerate exactly the valid positions, including a single nearest reset.
+    pub(crate) fn positions(distinct: usize) -> impl Iterator<Item = Self> {
+        (0..distinct).map(move |position| Self {
+            position,
+            last: distinct.saturating_sub(1),
+        })
+    }
+
+    /// Blend in the active theme's color space, retaining exact endpoints.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "positions constructs ranks at most last, so the rounded alpha is at most 255"
+    )]
+    pub(crate) fn color(self) -> Color {
+        if self.position == 0 {
+            return tui_pane::success_color();
+        }
+        if self.position == self.last {
+            return tui_pane::error_color();
+        }
+        let intervals = self.last as u128;
+        let alpha =
+            ((self.position as u128 * u128::from(u8::MAX) + intervals / 2) / intervals) as u8;
+        tui_pane::blend_color(tui_pane::success_color(), tui_pane::error_color(), alpha)
+    }
+}
+
 /// The summary's colors, each read from the active variant's
 /// `[variants.roles]` under [`Role::key`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

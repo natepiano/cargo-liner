@@ -22,6 +22,7 @@ use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
+use crate::sort::AccountsSort;
 use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
@@ -88,6 +89,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
     let placement = AgentPlacement::from_machines(&machines);
     let cells = agent_cell::cell_order_placed(&placement);
     let frame = SummaryFrame {
+        accounts_sort:  AccountsSort::SourceOrder,
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
@@ -107,6 +109,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
             frame.account_column,
             frame.sort,
             frame.accounts,
+            AccountsSort::SourceOrder,
         ),
         u16::try_from(height(&machines, &placement, table)).expect("small summary"),
     );
@@ -469,6 +472,7 @@ fn accounts_only_summary_demand_includes_rows_and_all_notes() {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &table,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(height(&machines, &placement, &table)).expect("summary height"),
         );
@@ -477,6 +481,7 @@ fn accounts_only_summary_demand_includes_rows_and_all_notes() {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &table,
                 machines:       &machines,
                 placement:      &placement,

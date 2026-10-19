@@ -217,7 +217,7 @@ pub(super) fn handle_notify_event(
         return;
     }
 
-    // Try to match the event to a known project.
+    // Match `event_path` against the known root keys in `ctx.projects`.
     if let Some((_, entry)) = ctx
         .projects
         .iter()
@@ -280,22 +280,23 @@ pub(super) fn handle_notify_event(
         return;
     }
 
-    // Not a known project — walk up from the event path to find the
-    // directory at the same level as existing projects. A "project parent"
-    // is any directory that already contains a known project (e.g. `~/rust/`).
+    // With no match in `ctx.projects`, `probe::project_level_dir` walks up from `event_path` to
+    // the level of existing projects. `ctx.project_parents` contains directories already owning a
+    // known project, such as ~/rust/.
     let Some(candidate) =
         probe::project_level_dir(event_path, ctx.watch_roots, ctx.project_parents)
     else {
         return;
     };
-    // Canonicalize so symlinked notify paths match existing project keys.
+    // Canonicalize `candidate` so symlinked notify paths match keys in `ctx.discovered`.
     let candidate = AbsolutePath::from(
         candidate
             .to_path_buf()
             .canonicalize()
             .unwrap_or_else(|_| candidate.to_path_buf()),
     );
-    // Always enqueue removals (dir gone); for creations, skip already-discovered.
+    // Always enqueue missing `candidate` directories in `pending_new`; skip creations in
+    // `ctx.discovered`.
     if !candidate.is_dir() || !ctx.discovered.contains(&candidate) {
         pending_new
             .entry(candidate)
@@ -312,8 +313,8 @@ pub(super) fn handle_event(
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
-    // Tests skip the metadata-refresh branch; no tokio runtime is
-    // provided so the `None` arm is the safe default.
+    // `handle_event` passes None to `handle_notify_event` to skip metadata refresh in tests:
+    // no Tokio runtime is provided, so this avoids spawning without one.
     handle_notify_event(
         event_path,
         None,

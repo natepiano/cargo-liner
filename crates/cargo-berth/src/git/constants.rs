@@ -179,3 +179,41 @@ pub(super) const GIT_MERGE_TREE_CLEAN_EXIT_CODE: i32 = 0;
 pub(super) const GIT_MERGE_TREE_CONFLICT_EXIT_CODE: i32 = 1;
 /// Git's documented result when `merge-base --is-ancestor` finds no ancestry.
 pub(super) const GIT_NOT_ANCESTOR_EXIT_CODE: i32 = 1;
+
+// refusal diagnostics and process inspection
+/// Prefix surrounding the refused path in Git's stable English diagnostic.
+pub(super) const GIT_LOCK_REFUSAL_PREFIX: &str = "Unable to create '";
+/// Suffix identifying an existing lock rather than another write error.
+pub(super) const GIT_LOCK_REFUSAL_SUFFIX: &str = "': File exists";
+/// Extension of a Git lock file.
+pub(super) const GIT_LOCK_EXTENSION: &str = "lock";
+/// Linux process inspection root.
+#[cfg(target_os = "linux")]
+pub(super) const PROCESS_DIRECTORY: &str = "/proc";
+/// Per-process open file descriptors.
+#[cfg(target_os = "linux")]
+pub(super) const PROCESS_DESCRIPTORS_DIRECTORY: &str = "fd";
+/// Process holder inspection on other supported systems.
+#[cfg(not(target_os = "linux"))]
+pub(super) const LSOF_BINARY: &str = "/usr/sbin/lsof";
+/// Request process ids alone from lsof.
+#[cfg(not(target_os = "linux"))]
+pub(super) const LSOF_PROCESS_IDS_ARG: &str = "-t";
+/// Locale selector used for machine-readable diagnostics.
+pub(super) const GIT_LOCALE_ENVIRONMENT: &str = "LC_ALL";
+/// Stable English diagnostics.
+pub(super) const GIT_DIAGNOSTIC_LOCALE: &str = "C";
+/// Number of inherited configuration overlay entries.
+pub(super) const GIT_CONFIG_COUNT_ENVIRONMENT: &str = "GIT_CONFIG_COUNT";
+/// Prefix of an overlay configuration key variable.
+pub(super) const GIT_CONFIG_KEY_PREFIX: &str = "GIT_CONFIG_KEY_";
+/// Prefix of an overlay configuration value variable.
+pub(super) const GIT_CONFIG_VALUE_PREFIX: &str = "GIT_CONFIG_VALUE_";
+/// Configuration overlay for explicit private-ref writes.
+pub(super) const RETENTION_REF_CONFIG: &[(&str, &str)] = &[("core.hooksPath", "/dev/null")];
+/// Only deferrable maintenance yields immediately when another ref writer holds a lock.
+pub(super) const RETENTION_MAINTENANCE_CONFIG: &[(&str, &str)] = &[
+    ("core.hooksPath", "/dev/null"),
+    ("core.packedRefsTimeout", "0"),
+    ("core.filesRefLockTimeout", "0"),
+];
