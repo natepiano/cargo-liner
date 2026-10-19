@@ -109,8 +109,9 @@ mod tests {
 
     #[test]
     fn sanitize_run_id_replaces_path_illegal_chars() {
-        // RFC3339 colons (illegal on Windows) become dashes; digits, dots,
-        // and existing dashes survive, so the id stays unique per timestamp.
+        // `sanitize_run_id` replaces RFC3339 colons (illegal on Windows) with
+        // dashes while retaining digits, dots and existing dashes, so the
+        // timestamp still distinguishes the run.
         assert_eq!(
             sanitize_run_id("2026-05-25T17:20:44.592-04:00"),
             "2026-05-25T17-20-44.592-04-00"

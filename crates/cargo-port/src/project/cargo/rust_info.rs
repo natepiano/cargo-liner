@@ -181,8 +181,8 @@ impl From<&PackageRecord> for Cargo {
                 ExampleGroup { category, names }
             })
             .collect();
-        // Root-level category first, then alphabetical — matches the
-        // ordering `collect_examples` produced before the retirement.
+        // `examples.sort_by` puts the empty `ExampleGroup::category` first, then
+        // sorts categories alphabetically, preserving the pre-retirement ordering.
         examples.sort_by(|a, b| {
             let a_root = a.category.is_empty();
             let b_root = b.category.is_empty();

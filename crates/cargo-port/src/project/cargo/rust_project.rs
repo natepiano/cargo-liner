@@ -221,7 +221,8 @@ impl ProjectFields for RustProject {
     }
 }
 
-// ── Traversal helpers ────────────────────────────────────────────────
+// `info_in_workspace`, `info_in_package` and related helpers resolve metadata
+// and lint ownership within concrete Rust project types.
 
 pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a ProjectInfo> {
     if ws.path() == path {
@@ -348,7 +349,8 @@ pub(super) fn info_in_package_mut<'a>(
     None
 }
 
-// ── RustInfo traversal helpers ──────────────────────────────────────
+// `rust_info_in_workspace` and `rust_info_in_package`, plus their mutable forms,
+// locate the owning `RustInfo`.
 
 pub(super) fn rust_info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a RustInfo> {
     if ws.path() == path {
@@ -405,7 +407,8 @@ pub(super) fn rust_info_in_package_mut<'a>(
     None
 }
 
-// ── VendoredPackage traversal helpers ────────────────────────────────
+// `vendored_in_workspace` and `vendored_in_package`, plus their mutable forms,
+// locate a `VendoredPackage`.
 
 pub(super) fn vendored_in_workspace<'a>(
     ws: &'a Workspace,
@@ -487,11 +490,12 @@ pub(super) fn vendored_in_package_mut<'a>(
     pkg.vendored_mut().iter_mut().find(|v| v.path() == path)
 }
 
-// ── Lint traversal helpers ───────────────────────────────────────────
+// `lint_in_workspace` and `lint_in_package` locate the owning `LintRuns`.
 //
-// Lint runs at the workspace/package level. Workspace members resolve to the
-// owning root's `LintRuns`. Vendored crates never resolve to lint — they are
-// not lint-owning nodes, and the type system guarantees they cannot be.
+// `lint_in_workspace` maps workspace members to the root's `Workspace::rust.lint_runs`;
+// `lint_in_package` returns `Package::rust.lint_runs` only for its root.
+// `VendoredPackage` has `ProjectInfo` but no `RustInfo` or `LintRuns`, so its type
+// cannot own lint history and neither helper returns lint runs for vendored crates.
 
 pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a LintRuns> {
     if ws.path() == path {
