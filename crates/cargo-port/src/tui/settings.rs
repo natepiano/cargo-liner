@@ -399,7 +399,7 @@ fn format_other_primary_branches(cargo_port_config: &CargoPortConfig) -> String 
 }
 
 fn format_secs(secs: f64) -> String {
-    // Display whole-number seconds without a decimal point.
+    // When `secs.fract()` is zero, `format_secs` omits the decimal point for whole-number seconds.
     if secs.fract() == 0.0 {
         format!("{secs:.0}")
     } else {
@@ -1471,7 +1471,8 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 
 fn toggle_vim_mode(app: &mut App) {
     if !app.config.navigation_keys().uses_vim() {
-        // Enabling vim mode — check for hjkl conflicts.
+        // `keymap_ui::vim_mode_conflicts` checks h/j/k/l bindings before
+        // `toggle_vim_mode` enables Vim navigation.
         let conflicts = keymap_ui::vim_mode_conflicts(app);
         if !conflicts.is_empty() {
             let msg = format!(
@@ -1650,11 +1651,10 @@ pub(super) fn dispatch_settings_action(action: OverlayAction, app: &mut App) {
 }
 
 pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
-    // The viewport learns its row count from the rows themselves, not
-    // from the last frame: the event loop drains every queued key before
-    // it draws, so a key that arrives in the same batch as the one that
-    // opened the overlay would otherwise face a zero-length viewport and
-    // be dropped.
+    // Set `app.framework.settings_pane.viewport_mut().set_len(selectable)` from
+    // `settings_rows` before handling `key`: the event loop drains queued keys
+    // before drawing, so a navigation key batched with opening the overlay
+    // would otherwise see zero rows and be dropped.
     let rows = settings_rows(app, app.config.current());
     let selectable = rows
         .iter()
