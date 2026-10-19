@@ -118,7 +118,8 @@ pub(crate) fn get_submodules(project_root: &Path) -> Vec<Submodule> {
         return Vec::new();
     }
 
-    // Resolve absolute paths and pinned commits.
+    // Set `entry.path` from `project_root` plus `entry.relative_path`, then set
+    // `entry.commit` from `SubmodulePins::for_path`.
     let commits = ls_tree_submodule_commits(project_root);
     for entry in &mut entries {
         entry.path = AbsolutePath::from(project_root.join(&entry.relative_path));
@@ -203,14 +204,16 @@ fn ls_tree_submodule_commits(project_root: &Path) -> SubmodulePins {
         };
     };
     for line in stdout.lines() {
-        // Format: "160000 commit <sha>\t<path>"
+        // `GIT_TREE_SUBMODULE_MODE` identifies `stdout` entries formatted as
+        // `160000 commit <sha>\t<path>`.
         if !line.starts_with(GIT_TREE_SUBMODULE_MODE) {
             continue;
         }
         let Some((meta, path)) = line.split_once('\t') else {
             continue;
         };
-        // meta = "160000 commit <sha>"
+        // `meta` contains the mode, object kind and SHA; `rsplit_once` extracts
+        // the SHA, and the following slice keeps at most eight characters.
         let sha = meta
             .rsplit_once(' ')
             .map(|(_, sha)| &sha[..sha.len().min(8)]);

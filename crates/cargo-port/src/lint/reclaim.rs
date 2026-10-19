@@ -82,9 +82,9 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("tempdir");
 
-        // No history written — the per-project directory was never
-        // created. Reclamation must not panic and must not disturb
-        // the cache root.
+        // No `history::append_history_under` call created the directory returned by
+        // `paths::project_dir_under`; `reclaim_project_cache_under` must not panic
+        // or disturb `cache_dir`.
         reclaim_project_cache_under(cache_dir.path(), project_dir.path());
 
         assert!(cache_dir.path().is_dir());
