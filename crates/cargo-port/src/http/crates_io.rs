@@ -35,10 +35,10 @@ impl HttpClient {
                 );
             },
         };
-        // Surface a 429 as a rate-limit signal instead of a silent miss:
-        // the service state machine pauses, probes, and refetches the
-        // missing versions on recovery. Without this the body parse below
-        // yields no version while reporting the service reachable.
+        // Return `ServiceSignal::RateLimited(ServiceKind::CratesIo)` for 429
+        // so service recovery can pause, probe and refetch missing versions.
+        // Otherwise `crates_io_info_from_crate` could return no version while
+        // this request reports `ServiceSignal::Reachable`.
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return (
                 None,
