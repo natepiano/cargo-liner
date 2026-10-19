@@ -50,7 +50,7 @@ pub(crate) fn execute(reservation_id: ReservationId, target_argument: &str) -> O
         Err(error) => return error.into_output(CommandVerb::Retarget),
     };
     let response = execute_after_reconciliation(reservation_id, target_argument);
-    response.with_alerts(report.alerts)
+    report.into_output(response)
 }
 
 fn execute_after_reconciliation(

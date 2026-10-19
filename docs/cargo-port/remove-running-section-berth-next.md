@@ -574,7 +574,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Gotchas:** A ref `commit` after a durable append can fail: the call returns an error and the event stays in the journal. Each nonempty retry starts another update-ref process. Slow busy holds come from journal sync (340 ms) and ordered retention-ref writes (214/134 ms), not from sync alone.
 
-### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: todo
+### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: done
 
 #### Work Order
 
