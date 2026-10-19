@@ -42,8 +42,9 @@ impl App {
         ) else {
             return;
         };
-        // Read the displayed version before the fetch so the worker can
-        // tell a genuine release from a first fill.
+        // Read `previous_version` through `displayed_crates_io_version` for `target.paths` before
+        // `spawn_crates_io_refresh`, so `crates_io_refresh_messages` can distinguish a new release
+        // from an initial fill.
         let previous_version = target
             .paths
             .first()

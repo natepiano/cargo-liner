@@ -116,9 +116,10 @@ impl App {
             let kind = match avail.status() {
                 AvailabilityStatus::Unreachable => AvailabilityKind::Unreachable,
                 AvailabilityStatus::RateLimited => AvailabilityKind::RateLimited,
-                // No GitHub token (logged out or `gh` missing) never spawns
-                // a retry — the token is fixed for the process — so this
-                // confirm path can't reach those states.
+                // The GitHub token is fixed for the process. Missing-token
+                // `AvailabilityStatus::NotInstalled` and `Unauthenticated` states never start
+                // `spawn_service_retry`, so `confirm_service_unreachable` cannot reach those states
+                // through retry.
                 AvailabilityStatus::Reachable
                 | AvailabilityStatus::Unauthenticated
                 | AvailabilityStatus::NotInstalled => return,
@@ -131,10 +132,10 @@ impl App {
         }
         let toast_id = self.push_service_unavailable_toast(service, kind);
         self.net.availability_for(service).set_toast(toast_id);
-        // A confirmed-down GitHub means startup repo fetches will never
-        // complete; fail the startup panel's repo row so it finishes
-        // instead of waiting out the timeout. The toast above names the
-        // reason, so the row failure adds none of its own.
+        // For `ServiceKind::GitHub`, `fail_startup_repo_phase` with `FailureReason::RateLimited` or
+        // `FetchError` finishes `startup.repo` instead of waiting for timeout when confirmed
+        // unavailability prevents its fetches completing. `push_service_unavailable_toast` already
+        // names the reason, so the row adds no duplicate reason.
         if service == ServiceKind::GitHub {
             let reason = match kind {
                 AvailabilityKind::RateLimited => FailureReason::RateLimited,

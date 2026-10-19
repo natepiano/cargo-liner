@@ -22,8 +22,8 @@ impl App {
         if self.startup.is_collecting() {
             self.startup.crates_io.expected.insert(name.clone());
             self.startup.crates_io.seen.remove(&name);
-            // The name is now expected-but-unseen, so any earlier row
-            // completion no longer holds.
+            // Clearing `startup.crates_io.complete_at` invalidates any earlier completion because
+            // `name` is now expected but unseen.
             self.startup.crates_io.complete_at = None;
         } else if let Some(scan_complete_at) = self.startup.scan_complete_at {
             // Steady state owns the standalone "Fetching crates.io info"
@@ -50,11 +50,9 @@ impl App {
     pub(super) fn handle_crates_io_fetch_complete(&mut self, name: &str) {
         self.net.crates_io_running_mut().remove(name);
         self.startup.crates_io.seen.insert(name.to_string());
-        // Every toast-bearing fetch path — startup, watcher discovery,
-        // priority fetch — lands here, so this is where the periodic
-        // refresh learns a name is already fresh. Without the stamp the
-        // first refresh would fire a minute after startup instead of an
-        // hour after the name was last queried.
+        // `handle_crates_io_fetch_complete` stamps `crates_io_checked_at` for startup, watcher
+        // discovery and priority fetches. Otherwise `refresh_crates_io_if_due` would query a minute
+        // after startup rather than an hour after the name's last query.
         self.crates_io_checked_at
             .insert(name.to_string(), Instant::now());
         self.maybe_log_startup_phase_completions();
