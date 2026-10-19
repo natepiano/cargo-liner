@@ -153,13 +153,11 @@ impl App {
                 target_directory.clone(),
             );
         }
-        // Refresh the target-dir index so build_clean_plan / siblings
-        // lookups see the fresh membership. Every package under this
-        // workspace shares `target_directory`; upsert each so a
-        // subsequent clean on any member resolves to the correct dir.
-        // (Members that were in *previous* metadata but not this one
-        // will linger until a full scan restart — minor staleness,
-        // acceptable for Step 6c.)
+        // `scan.target_dir_index.upsert` maps each `member_roots` entry through `TargetDirMember`
+        // to the shared `target_directory` for `append_sibling_lines` and
+        // `TargetDirIndex::siblings`. `Scan::resolve_target_dir` resolves that directory for a
+        // clean on any member from the metadata store. Members missing from new metadata linger in
+        // the index until a full scan restart (existing accepted staleness).
         for project_root in member_roots {
             self.scan
                 .target_dir_index
