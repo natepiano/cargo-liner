@@ -1,4 +1,4 @@
-// src scan language_stats rust_breakdown
+// `RustBucket::label` uses these constants to name child `LangEntry` values.
 pub(super) const BENCHES_LABEL: &str = "benches";
 pub(super) const CODE_LABEL: &str = "code";
 pub(super) const EXAMPLES_LABEL: &str = "examples";
