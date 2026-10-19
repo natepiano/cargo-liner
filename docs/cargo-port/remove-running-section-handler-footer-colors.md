@@ -378,31 +378,24 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** two cargo-port tests prove that a hot path allocates nothing for each comparison, with no wall-clock limit, and each runs in under a second.
-
-**Source:** the showrunner, 2026-10-19: `tui::app::tests::worktrees::handle_project_discovered_does_not_allocate_per_comparison` failed a natedev merge gate under load ("discovery of 200 projects took 523.202375ms; expected less than 500ms") and takes 2 s.
-
-**Constraints from prior phases:**
-- No counting allocator exists in the workspace (no `GlobalAlloc`, `dhat` or `stats_alloc`).
-- No test may take a second, and a test must not fail because of machine load.
-
-**Spec:**
-1. `handle_project_discovered_does_not_allocate_per_comparison` (`crates/cargo-port/src/tui/app/mod.rs` ≈16508) loses `MAX_DISCOVERY_ELAPSED` and its `Instant`. It proves the property directly: a test-only counting global allocator with a per-thread counter, enabled only for cargo-port's test build, shows that the allocations of one `handle_project_discovered` call do not grow with the number of projects already in the list (compare the count at a small list and at a large list). A comparison-count proof is acceptable only when the allocator cannot work.
-2. `is_deleted_does_not_allocate_display_paths` (≈16527) has the same wall-clock assert (1000 calls under 100 ms). Give it the same direct proof: `is_deleted` allocates zero times.
-3. Each test fails when the comparison path allocates (state in the summary how this was checked), and runs in under a second.
+- `ThreadCountingAllocator` is the `#[global_allocator]` of the cargo-port test build only (`#[cfg(test)]` in `main.rs`). It forwards every call to `System` and counts `alloc`, `alloc_zeroed` and `realloc` calls on the measured thread only.
+- `test_support::count_allocations(operation) -> (R, usize)` counts the allocations of one synchronous operation; a nested measurement panics. The `AllocationMeasurement` guard sets `AllocationCounting::Measuring`, and its `Drop` sets `Disabled` again, also after a panic.
+- `handle_project_discovered_does_not_allocate_per_comparison` adds one project to a list of 8 roots and to a list of 200 roots and requires equal counts. `is_deleted_does_not_allocate_display_paths` requires zero allocations. Neither test uses a clock.
+- `RootItem::list_order` compares the lowercased chars of the borrowed leaf names (`paths::directory_leaf_str`), then the path. It allocates nothing for each comparison; the order does not change.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/mod.rs`
-- `crates/cargo-port/src/test_support.rs`, `crates/cargo-port/src/main.rs` — the test-only counting allocator and its registration
-- `crates/cargo-port/src/project/root_item.rs`, `crates/cargo-port/src/project/paths.rs` — `RootItem::list_order` compares without allocating (review round 1: it allocated a `String` and a `Vec<char>` for both sides of every comparison)
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/test_support.rs` — the counting allocator, `count_allocations`, and its unwind test
+- `crates/cargo-port/src/main.rs` — `#[cfg(test)]` allocator registration
+- `crates/cargo-port/src/project/root_item.rs`, `crates/cargo-port/src/project/paths.rs` — allocation-free `list_order`, `directory_leaf_str`
+- `crates/cargo-port/src/tui/app/mod.rs` — the two allocation tests
 
-**Workers:** 1 writer.
-- `impl` — both tests and the counting allocator.
+**Binds later work:** "Every cargo-port test runs under a second" proves "no work for each item" with `count_allocations`, not clocks. The two discovery tests take about 0.39 s and are not in its list of slow tests.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` clean; both tests under a second.
+**Gotchas:**
+- When all roots are visible, `compute_visible_rows` pushes into its row `Vec`, so the count increases with the visible list. The discovery test keeps 8 visible roots in both lists (all others `Dismissed`), and the new leaf sorts last, so the insertion compares it with every root.
+- The `GlobalAlloc` impl has a test-only `#[allow(unsafe_code)]`. A `stats_alloc` replacement waits on the user's answer.
 
 ### Phase 14 — Every cargo-port test runs under a second  · status: todo
 
@@ -417,6 +410,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Constraints from prior phases:**
 - No test may take a second, and no test may fail because of machine load. A cut that only holds on a quiet machine is not a fix.
 - Fix the shared cause, not each test: find what the slow tests have in common (fixture setup, real `git` processes, waits or sleeps, a shared runtime) before any edit.
+- Phase 13 added a test-only counting allocator (`count_allocations` in `crates/cargo-port/src/test_support.rs`, registered in `main.rs` under `cfg(test)`). Use it, not a clock, when a test must prove that a path does no work per item. The two discovery tests that build a 200-project list take about 0.39 s each; they are not among the 24.
 
 **Spec:**
 1. Measure: list every cargo-port test at 1 s or more in a full Mac run, and for each, where its time goes. Write the shared causes in the summary, with the measured cost of each.
