@@ -524,6 +524,8 @@ pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
 pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// Allow the measured 0.62-second hierarchy command to finish inside the two-second scan budget.
+pub(crate) const HIERARCHY_FIRST_PUBLISH_BUDGET: Duration = Duration::from_secs(1);
 
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,

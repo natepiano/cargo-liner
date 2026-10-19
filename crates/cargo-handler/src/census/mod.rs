@@ -30,6 +30,8 @@ mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
 #[cfg(test)]
+mod restart_hierarchy_tests;
+#[cfg(test)]
 mod reviewer_tests;
 pub(crate) mod scan;
 pub(crate) mod schedule;
