@@ -4,6 +4,7 @@ use crate::scan::ProjectStorage;
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::columns;
+use crate::tui::columns::COL_DISK;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
 use crate::tui::project_list::VisibleRow;
@@ -31,12 +32,12 @@ impl App {
         let mut widths = widths;
         let total = self.project_list.visible_project_disk_usage();
         widths.observe(
-            columns::COL_DISK,
+            COL_DISK,
             columns::display_width(&render::format_bytes(total)),
         );
         if let ProjectStorage::Available(bytes) = self.project_list.project_storage() {
             widths.observe(
-                columns::COL_DISK,
+                COL_DISK,
                 columns::display_width(&render::format_bytes(bytes)),
             );
         }
