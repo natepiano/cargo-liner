@@ -11,6 +11,7 @@ use super::*;
 use crate::census::Account;
 use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
+use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::accounts::AccountsTable;
@@ -33,6 +34,7 @@ fn row(
     directory: &str,
 ) -> AgentRow {
     AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
         agent,
         service_tier: ServiceTier::Unrecorded,
@@ -53,6 +55,7 @@ fn row(
 /// A Claude session with a stable identity for hierarchy placement.
 fn session(pid: u32, id: &str) -> AgentRow {
     AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude(id.to_string()),
         ..row(pid, Agent::Claude, id, None, HOUR, "~")
     }
@@ -150,6 +153,7 @@ fn machine_headings_count_top_level_agents_instead_of_all_sessions() {
             .collect();
         if roots > 0 {
             rows.push(AgentRow {
+                role_fallback: RoleFallback::None,
                 launched_by: Some(10),
                 ..session(20, "nested-session")
             });
@@ -165,10 +169,12 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
     let state = MachineState::Answered(
         vec![
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 account: account("claude1"),
                 ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
             },
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 account: account("codex1"),
                 service_tier: ServiceTier::Fast,
                 ..row(20, Agent::Codex, "worker", None, MINUTE, "~")
@@ -216,6 +222,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
 fn summary_accounts_without_a_footer_entry_keep_the_program_style() {
     let state = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             account: account("claude1"),
             ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
         }],

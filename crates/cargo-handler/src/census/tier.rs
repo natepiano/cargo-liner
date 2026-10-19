@@ -20,6 +20,7 @@ use std::path::PathBuf;
 
 use chrono::DateTime;
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::AgentActivity;
 use super::ServiceTier;
@@ -28,6 +29,8 @@ use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
 use super::tree;
+use super::worker_dispatch::JobText;
+use super::worker_dispatch::WorkerTask;
 use crate::constants::CODEX_CONFIG_FLAGS;
 use crate::constants::CODEX_CONFIG_PREFIX;
 use crate::constants::CODEX_EVENT_LINE;
@@ -43,32 +46,83 @@ use crate::startup_log;
 /// Cached metadata and the current conversation state of one rollout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RolloutRead {
-    activity_read:           ActivityRead,
-    pub(super) first_prompt: FirstTaskPrompt,
-    pub(super) worktree:     ThreadWorktree,
-    cursor:                  JsonlCursor,
-    bytes_read:              u64,
-    head:                    HeadValues,
-    /// When the thread began, in unix seconds, from its `session_meta`
-    /// line; none before that line is written whole.
-    pub(super) began:        Option<u64>,
+    pub(super) current_prompt: CurrentReviewPrompt,
+    activity_read:             ActivityRead,
+    pub(super) first_prompt:   FirstTaskPrompt,
+    pub(super) worktree:       ThreadWorktree,
+    cursor:                    JsonlCursor,
+    bytes_read:                u64,
+    head:                      HeadValues,
+    /// The rollout's session start in Unix seconds, or an unavailable start.
+    pub(super) began:          RolloutStart,
     /// The tier the last `thread_settings_applied` event names.
-    service_tier:            ServiceTier,
+    service_tier:              ServiceTier,
 }
 
 impl Default for RolloutRead {
     fn default() -> Self {
         Self {
-            activity_read: ActivityRead::default(),
-            first_prompt:  FirstTaskPrompt::Unread,
-            worktree:      ThreadWorktree::Unrecorded,
-            cursor:        JsonlCursor::NeverRead,
-            bytes_read:    0,
-            head:          HeadValues::AwaitingSessionAndTask,
-            began:         None,
-            service_tier:  ServiceTier::Unrecorded,
+            activity_read:  ActivityRead::default(),
+            first_prompt:   FirstTaskPrompt::Unread,
+            worktree:       ThreadWorktree::Unrecorded,
+            cursor:         JsonlCursor::NeverRead,
+            bytes_read:     0,
+            head:           HeadValues::AwaitingSessionAndTask,
+            began:          RolloutStart::Unavailable,
+            current_prompt: CurrentReviewPrompt::Unread,
+            service_tier:   ServiceTier::Unrecorded,
         }
     }
+}
+
+/// A session start recorded by the rollout, separate from the process start.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RolloutStart {
+    #[default]
+    Unavailable,
+    Recorded(u64),
+}
+
+/// The latest real task and its Unix time in milliseconds.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum CurrentReviewPrompt {
+    #[default]
+    Unread,
+    Recorded {
+        text:        String,
+        recorded_at: u64,
+    },
+}
+
+impl CurrentReviewPrompt {
+    /// A new lease cannot reuse the previous review's task.
+    pub(super) fn for_lease(&self, started: u64) -> WorkerTask {
+        match self {
+            Self::Recorded { text, recorded_at } if *recorded_at >= started => {
+                super::worker_dispatch::WorkerTask::from_prompt(text)
+            },
+            Self::Unread | Self::Recorded { .. } => WorkerTask::RoleOnly,
+        }
+    }
+}
+
+/// Read user tasks at the JSON boundary and discard injected context.
+fn task_text(value: &Value) -> Option<String> {
+    let payload = &value["payload"];
+    if value["type"] != "response_item" || payload["role"] != "user" {
+        return None;
+    }
+    let text = payload["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()
+        && !ROLLOUT_CONTEXT_PREFIXES
+            .iter()
+            .any(|prefix| text.starts_with(prefix)))
+    .then_some(text)
 }
 
 /// A task remains unread until a real user prompt has been observed.
@@ -135,6 +189,18 @@ impl RolloutRead {
     /// The turn reader is the sole source of conversation activity.
     pub(super) const fn activity(&self) -> AgentActivity { self.activity_read.activity() }
 
+    /// The pool name and task belong to the same busy lease.
+    pub(super) fn reviewer_task(&self, name: &str, lease_started: u64) -> WorkerTask {
+        let job = match self.current_prompt.for_lease(lease_started) {
+            WorkerTask::Task(text) => JobText::Recorded(text),
+            _ => JobText::Unrecorded,
+        };
+        WorkerTask::Reviewer {
+            name: name.to_owned(),
+            job,
+        }
+    }
+
     /// Bytes fetched by the last read, including the one-time metadata bootstrap.
     pub(super) const fn bytes_read(&self) -> u64 { self.bytes_read }
 
@@ -195,7 +261,17 @@ impl RolloutRead {
                         }
                         activity.activity() != AgentActivity::Unreported
                     });
+            let task_known = std::str::from_utf8(span)
+                .unwrap_or_default()
+                .lines()
+                .any(|line| {
+                    serde_json::from_str(line)
+                        .ok()
+                        .and_then(|value| task_text(&value))
+                        .is_some()
+                });
             activity_known
+                && task_known
                 && std::str::from_utf8(span)
                     .unwrap_or_default()
                     .lines()
@@ -243,36 +319,31 @@ impl RolloutRead {
                         ThreadWorktree::Recorded(PathBuf::from(path))
                     });
             }
-            if matches!(self.first_prompt, FirstTaskPrompt::Unread)
-                && value["type"] == "response_item"
-                && payload["role"] == "user"
-                && let Some(parts) = payload["content"].as_array()
-            {
-                let text = parts
-                    .iter()
-                    .filter_map(|part| part["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !text.is_empty()
-                    && !ROLLOUT_CONTEXT_PREFIXES
-                        .iter()
-                        .any(|prefix| text.starts_with(prefix))
-                {
-                    self.first_prompt = FirstTaskPrompt::Recorded(text);
+            if let Some(text) = task_text(&value) {
+                if matches!(self.first_prompt, FirstTaskPrompt::Unread) {
+                    self.first_prompt = FirstTaskPrompt::Recorded(text.clone());
                     self.head = self.head.with_task();
                 }
+                self.current_prompt = value["timestamp"]
+                    .as_str()
+                    .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+                    .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
+                    .map_or(CurrentReviewPrompt::Unread, |recorded_at| {
+                        CurrentReviewPrompt::Recorded { text, recorded_at }
+                    });
             }
         }
         let Ok(parsed) = serde_json::from_value::<RolloutLine>(value) else {
             return;
         };
-        if self.began.is_none() && parsed.kind == CODEX_SESSION_META_LINE {
+        if self.began == RolloutStart::Unavailable && parsed.kind == CODEX_SESSION_META_LINE {
             self.began = parsed
                 .payload
                 .timestamp
                 .as_deref()
                 .or(parsed.timestamp.as_deref())
-                .and_then(unix_seconds);
+                .and_then(unix_seconds)
+                .map_or(RolloutStart::Unavailable, RolloutStart::Recorded);
         }
         if parsed.kind != CODEX_EVENT_LINE {
             return;
@@ -424,7 +495,10 @@ pub(super) fn requested(
 ) -> ServiceTier {
     let began = rollout
         .as_ref()
-        .and_then(|read| read.began)
+        .and_then(|read| match read.began {
+            RolloutStart::Recorded(started) => Some(started),
+            RolloutStart::Unavailable => None,
+        })
         .unwrap_or(started);
     rollout
         .map_or(ServiceTier::Unrecorded, |read| read.service_tier)
@@ -522,7 +596,7 @@ mod tests {
         let read = rollouts.read(&path);
         assert_eq!(
             (read.began, read.service_tier),
-            (Some(BEGAN), ServiceTier::Unrecorded)
+            (RolloutStart::Recorded(BEGAN), ServiceTier::Unrecorded)
         );
 
         for (tier, expected) in [
@@ -643,7 +717,7 @@ mod tests {
         assert_eq!(tier(BEGAN + 9_000), ServiceTier::Fast);
 
         let began_late = RolloutRead {
-            began: Some(BEGAN - 21),
+            began: RolloutStart::Recorded(BEGAN - 21),
             ..RolloutRead::default()
         };
         assert_eq!(

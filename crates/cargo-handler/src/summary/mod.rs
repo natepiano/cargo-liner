@@ -620,9 +620,11 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsTable;
+    use crate::census::hierarchy::ReviewerState;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -647,6 +649,7 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent,
             service_tier: ServiceTier::Unrecorded,
@@ -667,6 +670,7 @@ mod tests {
     /// `row` with its window on the desktop named `desktop`.
     fn on(desktop: &str, row: AgentRow) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             desktop: Some(desktop.to_string()),
             ..row
         }
@@ -688,6 +692,7 @@ mod tests {
     /// session boss launched, and a Codex agent with no window.
     fn natedev() -> MachineState {
         let launched = AgentRow {
+            role_fallback: RoleFallback::None,
             launched_by: Some(1_579_022),
             ..row(3_266_367, Agent::Claude, "trunk", None, HOUR, "~")
         };
@@ -743,6 +748,7 @@ mod tests {
     /// A named Claude session with a stable hierarchy identity.
     fn session(pid: u32, id: &str) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
             ..row(pid, Agent::Claude, id, None, HOUR, "~")
         }
@@ -754,9 +760,10 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    manager: (*manager).to_string(),
-                    member:  (*member).to_string(),
-                    role:    HierarchyRole::Unit,
+                    reviewer: ReviewerState::NotPool,
+                    manager:  (*manager).to_string(),
+                    member:   (*member).to_string(),
+                    role:     HierarchyRole::Unit,
                 })
                 .collect(),
         )
@@ -835,6 +842,7 @@ mod tests {
                 session(20, "nested-showrunner"),
                 session(30, "unit"),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(999),
                     ..session(40, "orphan")
                 },
@@ -893,10 +901,12 @@ mod tests {
             vec![
                 session(1, "launcher"),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(1),
                     ..session(2, "launched")
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(999),
                     ..session(3, "orphan")
                 },
@@ -918,6 +928,7 @@ mod tests {
     fn completed_and_cleared_links_update_summary_membership_counts_and_width() {
         let manager = session(1, "showrunner");
         let member = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: format!("~/{}", "long/".repeat(30)),
             ..session(2, "unit")
         };
@@ -1146,6 +1157,7 @@ mod tests {
                     "~/rust/handler",
                 ),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     service_tier: ServiceTier::Fast,
                     account: Account::Unrecorded,
                     ..row(

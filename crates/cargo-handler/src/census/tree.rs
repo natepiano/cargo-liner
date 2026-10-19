@@ -304,7 +304,7 @@ pub(super) fn join_dispatches<'a>(
         if shell.kind != ChildKind::Shell { return None; }
         let (_, thread) = children.iter().find(|(thread_tile, child)| {
             thread_tile == tile && child.kind == ChildKind::Thread
-                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if id == &dispatch.thread_id)
+                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if dispatch.identity == super::worker_dispatch::WorkerIdentity::CodexThread(id.clone()))
         })?;
         Some(DispatchFold { shell, thread, dispatch })
     }).collect()
@@ -647,6 +647,7 @@ mod tests {
     use crate::census::Account;
     use crate::census::Machine;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
@@ -899,6 +900,7 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
@@ -1258,6 +1260,7 @@ mod tests {
         let mut rows = [
             agent_row(500, 100),
             AgentRow {
+                role_fallback: RoleFallback::None,
                 launched_by: Some(500),
                 ..agent_row(510, 110)
             },

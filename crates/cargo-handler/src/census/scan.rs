@@ -32,6 +32,7 @@ use sysinfo::UpdateKind;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::ChildKind;
 use super::CodexThreadId;
 use super::ServiceTier;
 use super::account;
@@ -49,6 +50,9 @@ use super::codex::CodexThread;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
+use super::hierarchy::ReviewerOutcome;
+use super::hierarchy::ReviewerPools;
+use super::hierarchy::ReviewerState;
 use super::tier;
 use super::tier::PacerHistory;
 use super::tier::Rollouts;
@@ -63,6 +67,7 @@ use super::tree::TreeSources;
 use super::unix_now;
 use super::worker_dispatch::ParsedDispatch;
 use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
@@ -97,6 +102,7 @@ type ProcessKey = (u32, u64);
 /// Scans this machine for its agents and what each is running.
 #[derive(Debug)]
 pub(super) struct LocalScanner {
+    reviewer_pools:      ReviewerPools,
     /// Whether a completed answer has replaced the startup classification.
     publication:         LocalPublication,
     /// This machine's home directory: where the session records live,
@@ -238,6 +244,7 @@ impl LocalScanner {
             transcript_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
+            reviewer_pools: ReviewerPools::default(),
             desktops: None,
         }
     }
@@ -385,9 +392,12 @@ impl LocalScanner {
         rows: &mut [AgentRow],
     ) {
         let mut runs = HashMap::new();
+        ReviewerPools::root().update(&mut self.reviewer_pools);
+        let reviewer_outcomes = self.reviewer_pools.outcomes();
+        ReviewerPools::apply_outcomes(rows, &reviewer_outcomes);
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
-        for row in rows {
+        for row in rows.iter_mut() {
             if let Some(path) = transcripts.get(&row.pid) {
                 seen_transcripts.insert(path.clone());
                 let read = self
@@ -430,6 +440,17 @@ impl LocalScanner {
                         .label(WorkerRoleSource::Unroled, &child.name),
                 };
                 child.dispatch = dispatch;
+                if let Some(ReviewerOutcome {
+                    state: ReviewerState::Busy { name, started, .. },
+                    ..
+                }) = reviewer_outcomes
+                    .iter()
+                    .find(|outcome| outcome.thread_id == *id)
+                {
+                    child.worker_task = read.reviewer_task(name, *started);
+                    child.dispatch = WorkerDispatch::Plain;
+                }
+
                 let records: Vec<_> = WorkerNames::session_dirs(prompt)
                     .into_iter()
                     .flat_map(|directory| {
@@ -446,6 +467,7 @@ impl LocalScanner {
                 };
             }
         }
+        fold_claude_dispatches(rows);
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
     }
@@ -694,7 +716,6 @@ fn worker_dispatches(
         let Ok(dispatch) = ParsedDispatch::from_arguments(&process.arguments) else {
             continue;
         };
-        let roster = names.roster(&dispatch.session_dir);
         let selected = processes
             .iter()
             .filter(|candidate| {
@@ -716,7 +737,12 @@ fn worker_dispatches(
         if let Some(seat) = selected {
             dispatch.select_seat(seat);
         }
-        let worker = dispatch.resolve(roster, process.pid);
+        let worker = match names.resolve_claude(&dispatch, processes, process.pid) {
+            WorkerDispatch::Plain => {
+                dispatch.resolve(names.roster(&dispatch.session_dir), process.pid)
+            },
+            worker @ WorkerDispatch::Worker(_) => worker,
+        };
         found.insert(process.pid, worker.clone());
         let mut parent = process;
         let mut seen = HashSet::new();
@@ -739,10 +765,50 @@ fn worker_dispatches(
         if found.contains_key(&pid) {
             continue;
         }
-        let roster = names.roster(&dispatch.session_dir);
-        found.insert(pid, dispatch.resolve(roster, pid));
+        found.insert(
+            pid,
+            match names.resolve_claude(&dispatch, processes, pid) {
+                WorkerDispatch::Plain => dispatch.resolve(names.roster(&dispatch.session_dir), pid),
+                worker @ WorkerDispatch::Worker(_) => worker,
+            },
+        );
     }
     found
+}
+
+/// Move a live Claude seat's launcher work into that session's own row.
+fn fold_claude_dispatches(rows: &mut [AgentRow]) {
+    let matches: Vec<_> = rows.iter().flat_map(|row| row.children.iter()).filter_map(|child| {
+        if child.kind != ChildKind::Shell { return None; }
+        let WorkerDispatch::Worker(dispatch) = &child.dispatch else { return None; };
+        let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else { return None; };
+        rows.iter().position(|row| matches!(&row.session_id, super::SessionIdentity::Claude(session) if session == id))
+            .map(|target| (target, child.pid, dispatch.clone()))
+    }).collect();
+    for (target, pid, dispatch) in matches {
+        rows[target].name = dispatch.label();
+        rows[target].role_fallback = dispatch.fallback();
+        let mut work = Vec::new();
+        for row in rows.iter_mut() {
+            if let Some(index) = row
+                .children
+                .iter()
+                .position(|child| child.kind == ChildKind::Shell && child.pid == pid)
+            {
+                let depth = row.children[index].depth;
+                let end = row.children[index + 1..]
+                    .iter()
+                    .position(|child| child.depth <= depth)
+                    .map_or(row.children.len(), |offset| index + 1 + offset);
+                work.extend(row.children.drain(index + 1..end).map(|mut child| {
+                    child.depth = child.depth.saturating_sub(depth + 1);
+                    child
+                }));
+                row.children.remove(index);
+            }
+        }
+        rows[target].children.extend(work);
+    }
 }
 
 /// The launcher of `held`, a row tmux holds, by its pid and start: the
@@ -1125,7 +1191,9 @@ mod tests {
 
     use super::*;
     use crate::census::Account;
+    use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::hierarchy::ReviewerPools;
 
     /// Only `.json` files that parse are records: the key files beside
     /// them and a record caught half written are skipped.
@@ -1227,6 +1295,7 @@ mod tests {
             transcript_activity: HashMap::new(),
             subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
+            reviewer_pools:      ReviewerPools::default(),
             desktops:            None,
         }
     }
@@ -1261,6 +1330,7 @@ mod tests {
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
@@ -1523,9 +1593,10 @@ mod hierarchy_publication_tests {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "boss".to_string(),
-                member:  "worker".to_string(),
-                role:    HierarchyRole::Impl,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "boss".to_string(),
+                member:   "worker".to_string(),
+                role:     HierarchyRole::Impl,
             }]))
         }
     }
@@ -1569,9 +1640,10 @@ mod hierarchy_publication_tests {
             }
         );
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            manager: "boss".to_string(),
-            member:  "worker".to_string(),
-            role:    HierarchyRole::Impl,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "boss".to_string(),
+            member:   "worker".to_string(),
+            role:     HierarchyRole::Impl,
         }]);
         assert_eq!(
             updates

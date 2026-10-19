@@ -238,6 +238,7 @@ mod tests {
             machine_state(finished(Some(0), report)),
             MachineState::Answered(
                 vec![AgentRow {
+                    role_fallback:   crate::census::RoleFallback::None,
                     session_id:      crate::census::SessionIdentity::Unrecorded,
                     agent:           Agent::Claude,
                     service_tier:    ServiceTier::Unrecorded,

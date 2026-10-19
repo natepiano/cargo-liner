@@ -247,9 +247,10 @@ fn summary_states() -> [MachineState; 2] {
             session(30, "postmaster", 3600),
         ],
         HierarchyEdges(vec![HierarchyEdge {
-            manager: "session-10".into(),
-            member:  "session-11".into(),
-            role:    HierarchyRole::Impl,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "session-10".into(),
+            member:   "session-11".into(),
+            role:     HierarchyRole::Impl,
         }])
         .into(),
     );

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "edges": [
+    {
+      "manager": "fixture-showrunner",
+      "member": "fixture-unit",
+      "role": "unit"
+    },
+    {
+      "manager": "fixture-unit",
+      "member": "review-thread",
+      "role": "review",
+      "unit": "handler-enh-unit",
+      "state": "busy",
+      "type": "code"
+    },
+    {
+      "manager": "fixture-unit",
+      "member": "idle-thread",
+      "role": "review",
+      "unit": "handler-enh-unit",
+      "state": "idle",
+      "type": "design"
+    }
+  ]
+}

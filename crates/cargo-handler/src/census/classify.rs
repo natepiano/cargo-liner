@@ -39,6 +39,7 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::RoleFallback;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::account;
@@ -53,6 +54,10 @@ use crate::constants::CLAUDE_AGENT;
 use crate::constants::CLAUDE_DESKTOP_APP;
 use crate::constants::CLAUDE_DESKTOP_CLI_DIRNAME;
 use crate::constants::CLAUDE_DESKTOP_ENTRYPOINT;
+use crate::constants::CLAUDE_PERMISSION_ARGUMENT;
+use crate::constants::CLAUDE_PLAN_MODE;
+use crate::constants::CLAUDE_PLAN_PERMISSION_ARGUMENT;
+use crate::constants::CLAUDE_PRINT_ARGUMENTS;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_DESKTOP_APP;
@@ -134,6 +139,25 @@ impl ProcessEntry {
     }
 }
 
+impl ProcessEntry {
+    /// Plan-mode print processes are visible reviewers even without a session record.
+    pub(super) fn is_plan_reviewer(&self) -> bool {
+        self.is_claude()
+            && self
+                .arguments
+                .iter()
+                .any(|arg| CLAUDE_PRINT_ARGUMENTS.contains(&arg.as_str()))
+            && (self
+                .arguments
+                .windows(2)
+                .any(|pair| pair[0] == CLAUDE_PERMISSION_ARGUMENT && pair[1] == CLAUDE_PLAN_MODE)
+                || self
+                    .arguments
+                    .iter()
+                    .any(|arg| arg == CLAUDE_PLAN_PERMISSION_ARGUMENT))
+    }
+}
+
 /// The part of a Claude Code session record the summary reads. The
 /// records hold more, which is ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -207,9 +231,57 @@ pub(super) fn agent_rows(
             )
         }))
         .collect();
-    // Only desktop-started `AgentRow` values have `launched_by` set here; add
-    // `desktop_app_row` for each distinct launcher `pid`.
-    let apps: HashSet<u32> = rows.iter().filter_map(|row| row.launched_by).collect();
+    for process in processes
+        .iter()
+        .filter(|process| process.is_plan_reviewer())
+    {
+        if !rows.iter().any(|row| row.pid == process.pid) {
+            let session = SessionRecord {
+                pid:        process.pid,
+                session_id: String::new(),
+                cwd:        process.directory.clone(),
+                name:       Some(format!("pid {}", process.pid)),
+                status:     None,
+                entrypoint: None,
+            };
+            if let Some(mut row) = claude_row(&table, &session, home, account_labels) {
+                row.launched_by = processes
+                    .iter()
+                    .filter(|parent| parent.is_agent() && parent.pid != process.pid)
+                    .find(|parent| process.parent == Some(parent.pid))
+                    .map(|parent| parent.pid);
+                rows.push(row);
+            }
+        }
+    }
+    for row in &mut rows {
+        if table
+            .get(&row.pid)
+            .is_some_and(|process| process.is_plan_reviewer())
+        {
+            row.role_fallback = RoleFallback::Review;
+        }
+    }
+    let listed: HashSet<_> = rows.iter().map(|row| row.pid).collect();
+    for row in &mut rows {
+        if row.launched_by.is_none()
+            && let Some(process) = table.get(&row.pid)
+        {
+            row.launched_by = ancestors(&table, process)
+                .find(|ancestor| listed.contains(&ancestor.pid))
+                .map(|ancestor| ancestor.pid);
+        }
+    }
+    // Desktop sessions add a visible row for their app launcher.
+    let apps: HashSet<u32> = sessions
+        .iter()
+        .filter(|session| session.is_from_desktop_app())
+        .filter_map(|session| {
+            rows.iter()
+                .find(|row| row.pid == session.pid)
+                .and_then(|row| row.launched_by)
+        })
+        .collect();
     rows.extend(
         apps.iter()
             .filter_map(|pid| table.get(pid))
@@ -316,12 +388,19 @@ fn claude_row(
     account_labels: &AccountLabels,
 ) -> Option<AgentRow> {
     let process = table.get(&session.pid)?;
-    if !process.is_claude() || under_an_agent(table, process) {
+    if !process.is_claude()
+        || (under_an_agent(table, process)
+            && !process.is_plan_reviewer()
+            && !ancestors(table, process).any(|ancestor| {
+                super::worker_dispatch::ParsedDispatch::from_arguments(&ancestor.arguments).is_ok()
+            }))
+    {
         return None;
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
         agent:           Agent::Claude,
+        role_fallback:   crate::census::RoleFallback::None,
         session_id:      session.session_id.clone().into(),
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
@@ -349,6 +428,7 @@ fn desktop_app_row(
 ) -> AgentRow {
     AgentRow {
         agent:           Agent::Claude,
+        role_fallback:   crate::census::RoleFallback::None,
         session_id:      SessionIdentity::Unrecorded,
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
@@ -411,6 +491,7 @@ fn codex_row(
     };
     Some(AgentRow {
         agent,
+        role_fallback: crate::census::RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Unrecorded,
         account: account::account_of(process, home, account_labels),
