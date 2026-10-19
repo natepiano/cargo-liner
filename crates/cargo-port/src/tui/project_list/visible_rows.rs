@@ -11,11 +11,9 @@ use crate::project::Visibility;
 use crate::project::WorktreeGroup;
 use crate::tui::project_list_state::ProjectList;
 
-// ── Visible-rows flattening ──────────────────────────────────────────
-//
-// The project tree is nested; the renderer wants a flat list. The
-// types and walker below produce that flat list, expanding /
-// collapsing groups based on user state.
+// `ExpandKey`, `VisibleRow` and `compute_visible_rows` flatten nested `ProjectList::roots` into
+// a `Vec<VisibleRow>` for rendering, entering or skipping containers according to the user
+// expansion state in `expanded: HashSet<ExpandKey>`.
 
 /// User-driven expansion state key. Identifies which of the
 /// nested containers (root nodes, named groups, worktree
