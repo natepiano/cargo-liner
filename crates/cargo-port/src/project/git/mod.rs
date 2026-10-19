@@ -3,6 +3,7 @@ mod checkout;
 mod command;
 mod constants;
 mod discovery;
+mod probes;
 mod repo;
 mod submodule;
 mod worktree_group;

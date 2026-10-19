@@ -322,33 +322,26 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 10
 
-#### Work Order
+#### As-built
 
-**Goal:** a hierarchy command that runs after the first answer never holds the scheduler thread or the publication lock, so remote probes and local publication continue while it runs.
-
-**Source:** phase 10 closure review, 2026-10-19 (finding F008, minor, and the open doc finding F007). The ledger closed phase 10 with both open; this phase repairs them next, before any other phase.
-
-**Constraints from prior phases:**
-- Phase 10 runs the local scan on its own worker thread, shares `LocalPublications` through `Arc<Mutex<_>>` (`census/schedule.rs`), and delivers the first hierarchy answer through `ScheduleEvent::HierarchyReady` with `finish_first(Duration::ZERO)`. The first-answer wait has a one-second budget (`HIERARCHY_FIRST_PUBLISH_BUDGET`, `constants.rs`).
-- Showrunner rules from phase 10 still hold: one refresh per new unnamed session id, then the id is recorded as checked, with no timer; no session is hidden by its name.
-
-**Spec:**
-1. No hierarchy command runs on the scheduler thread or under the publication lock, on any path: the catch-up in `finish_first` when `HierarchyReady` finds a session that arrived while the first answer was pending (`schedule.rs` ≈413), and every `cache.snapshot` call in `LocalPublications::discover_at` (new ids, cache expiry, retries). Each refresh is a typed pending state with its own receiver, delivered by `HierarchyReady`. Rows that wait on a refresh stay held only until its answer arrives. Showrunner ruling, 2026-10-19 (architect finding 1).
-2. `LocalAnswers.publications` (`schedule.rs` ≈207) gets a doc comment that states why publication ownership is shared.
-3. A refresh answer is accepted with refresh semantics, distinct from the initial answer: `HierarchyCache::first_outcome` resets `CheckedUnlinkedSessions`, but a refresh keeps the ids already checked. Name the request types for those two roles.
-4. A failed follow-up command releases the held rows with the retained links and the failure notice. A change of the hierarchy source, or a disabled source, while a follow-up is pending prevents its late answer from restoring old links.
-5. Tests, with the drawn rows read back as the phase 10 restart tests do: the follow-up command blocks; remote probes and local publication of other rows continue while it is blocked; the newcomer draws nested under its showrunner once the answer is released. Chained catch-up answers give an already-checked unnamed id no extra refresh (exact command counts). A failed follow-up releases rows with the notice; a source change during a pending follow-up keeps old links out.
+- Every hierarchy request runs on a worker thread through `start_request`. No command runs on the scheduler thread or under the `LocalPublications` lock. The initial request (`start_initial`) keeps the 1 s first-publish budget. `finish_pending(timeout)` collects the answer.
+- `prepare_snapshot` returns `HierarchyPreparation::{Request(HierarchyRequestKind), Ready(snapshot)}`. It reserves the checked ids before a refresh starts. A refresh keeps the ids that are already checked. The initial answer resets them.
+- `HierarchyRequestKind::Refresh(HierarchyRefreshScope)` fixes three sets when the refresh starts: the ids that wait (unchecked and not named by a retained edge), the ids already observed, and the retained links. `PendingHierarchyRequest::Refresh { answer, placement }` holds that scope until the answer arrives.
+- `PendingPlacementRows::refreshing` holds each waiting row together with its full linked component (row ids and retained edges). Sessions that are already checked continue to publish.
+- `deliver_held` publishes independent rows while either request kind is pending. A refresh publishes them as `ScanStage::Classified`.
+- Live on natedev: first local publish 440 ms.
 
 **Files:**
-- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/src/census/catch_up_hierarchy_tests.rs`, `crates/cargo-handler/src/census/fixtures/`
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/schedule.rs` — scheduler, pending requests, held rows, `deliver_held`
+- `crates/cargo-handler/src/census/hierarchy.rs` — cache, `prepare_snapshot`, `HierarchyRefreshScope`
+- `crates/cargo-handler/src/census/catch_up_hierarchy_tests.rs` — rendered catch-up tests
+- `crates/cargo-handler/src/census/fixtures/catch_up_{rows,links,unnamed_thread}.json` — catch-up process trees and answers
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — scheduler and cache production changes, test hooks, `mod` lines, the doc comment, CHANGELOG.
-- `test` — a new catch-up scheduler test module (`census/catch_up_hierarchy_tests.rs`) and its fixtures, including remote progress and rendered placement.
+**Gotchas:**
+- Build a refresh's scope before the request's ids are marked checked.
+- A refresh must not publish as `ScanStage::Completed`, because `Completed` reloads footer colors in `drain_census` (`terminal.rs`).
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. No visible change, so no `Change-Review:` line.
+**Ruled out:** A per-row hold — it splits a manager from its linked unit. Holding every unnamed id — it hides sessions that are already checked.
 
 ### Phase 12 — Accounts table: reset gradient and header sort  · status: todo
 
@@ -366,9 +359,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Colors come from `SemanticTheme` (`theme.rs`): `success` and `error`. Interpolate in the theme's own color space; never write a color literal.
 
 **Spec:**
-1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. One ranked account draws `success`.
+1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. When only one distinct reset time exists (one account, or several accounts with the same time), every ranked account draws `success`; the interpolation never divides by zero.
 2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the shared `ColumnSort` direction toggle and tie rule), kept per summary in app state; no second sort path. `SummaryColumn` names agent columns and `ColumnSort::default()` always selects a column, so add an accounts column enum and a semantic state `SourceOrder | Sorted(<accounts column sort>)`, independent of the agent sort. Ordering: percentages and credits numeric, resets chronological, unavailable and unlimited values in a fixed place after real values, ties by source index. The default order stays the source order until a header is clicked. Architect finding 5, 2026-10-19.
-3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
+3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; three accounts with one shared reset time all draw success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`
@@ -380,3 +373,51 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — accounts gradient and header-sort rendering tests in `summary/`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary shows the gradient and sorts on a header click. The checkpoint carries `Change-Review: account resets shade from green (soonest) to red (latest), and accounts headers sort on click | open the summary and click each accounts header`.
+
+### Phase 13 — Discovery tests prove no allocation without a clock  · status: done
+
+**Depends on:** none
+
+#### As-built
+
+- `ThreadCountingAllocator` is the `#[global_allocator]` of the cargo-port test build only (`#[cfg(test)]` in `main.rs`). It forwards every call to `System` and counts `alloc`, `alloc_zeroed` and `realloc` calls on the measured thread only.
+- `test_support::count_allocations(operation) -> (R, usize)` counts the allocations of one synchronous operation; a nested measurement panics. The `AllocationMeasurement` guard sets `AllocationCounting::Measuring`, and its `Drop` sets `Disabled` again, also after a panic.
+- `handle_project_discovered_does_not_allocate_per_comparison` adds one project to a list of 8 roots and to a list of 200 roots and requires equal counts. `is_deleted_does_not_allocate_display_paths` requires zero allocations. Neither test uses a clock.
+- `RootItem::list_order` compares the lowercased chars of the borrowed leaf names (`paths::directory_leaf_str`), then the path. It allocates nothing for each comparison; the order does not change.
+
+**Files:**
+- `crates/cargo-port/src/test_support.rs` — the counting allocator, `count_allocations`, and its unwind test
+- `crates/cargo-port/src/main.rs` — `#[cfg(test)]` allocator registration
+- `crates/cargo-port/src/project/root_item.rs`, `crates/cargo-port/src/project/paths.rs` — allocation-free `list_order`, `directory_leaf_str`
+- `crates/cargo-port/src/tui/app/mod.rs` — the two allocation tests
+
+**Binds later work:** "Every cargo-port test runs under a second" proves "no work for each item" with `count_allocations`, not clocks. The two discovery tests take about 0.39 s and are not in its list of slow tests.
+
+**Gotchas:**
+- When all roots are visible, `compute_visible_rows` pushes into its row `Vec`, so the count increases with the visible list. The discovery test keeps 8 visible roots in both lists (all others `Dismissed`), and the new leaf sorts last, so the insertion compares it with every root.
+- The `GlobalAlloc` impl has a test-only `#[allow(unsafe_code)]`. A `stats_alloc` replacement waits on the user's answer.
+
+### Phase 14 — Every cargo-port test runs under a second  · status: done
+
+**Depends on:** none
+
+#### As-built
+
+- `http/client.rs` has `enum ProxyPolicy { System, #[cfg(test)] Disabled }` and `fn build_client(proxy_policy: ProxyPolicy) -> Result<Client, Error>`. Production uses `System`. The test client uses `Disabled` (`.no_proxy()`), so tests do no system proxy discovery. The child-process test `disabled_proxy_policy_ignores_proxy_environment` proves this.
+- `project/git/probes.rs` has `pub(super) fn run_independent_probes<A: Send, B: Send>(left, right) -> (A, B)`. It runs two git probes on `std::thread::scope`. `finish_probe` joins each thread and re-raises a probe panic with `resume_unwind`. Results and error order do not change.
+- `repo/info.rs` reads remote names and push URLs through `run_independent_probes`, and runs `branches::resolve_local_main_branch(&repo_root, &config)` on a scoped thread. The test `independent_git_probes_run_outside_the_callers_rayon_pool` pins the thread context.
+- The shared git fixture initializer in `test_support.rs` copies two seeded loose objects (`EMPTY_TREE_ID`, `INITIAL_COMMIT_ID`) from `test_support/git_seed/*.zlib` and starts no git subprocess for the empty repository. Fixtures with files still run `git add` and `git commit --amend`.
+- The full cargo-port suite takes 4.0 s. The slowest test takes 0.453 s.
+
+**Files:**
+- `crates/cargo-port/src/http/client.rs` — `ProxyPolicy` and `build_client`
+- `crates/cargo-port/src/project/git/probes.rs` — the scoped-thread probe pair
+- `crates/cargo-port/src/project/git/{mod.rs, branches.rs, checkout.rs, repo/info.rs}` — probe call sites, `resolve_local_main_branch(repo_root, &config)`
+- `crates/cargo-port/src/test_support.rs`, `crates/cargo-port/src/test_support/git_seed/{.gitattributes, README.md, two .zlib}` — the seeded empty repository
+- `crates/cargo-port/src/tui/app/mod.rs` — tests on the shared fixture
+
+**Gotchas:**
+- The parallel git probes use scoped threads, not `rayon::join`. Callers run inside `rayon::spawn` (crates.io refresh, enrichment) and `spawn_blocking` (watcher refresh). There, `rayon::join` waits on the same pool as blocking network requests.
+- `.gitattributes` marks `*.zlib binary`. Text diff tools and the banned-word scanner must skip these files. `README.md` holds the Python script that makes them again.
+
+**Ruled out:** `rayon::join` for the probe pair — it shares the pool with blocking crates.io requests.

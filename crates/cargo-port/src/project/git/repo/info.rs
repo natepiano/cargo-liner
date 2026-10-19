@@ -19,6 +19,7 @@ use crate::project::git::checkout::{self};
 use crate::project::git::command::GitReadError;
 use crate::project::git::constants::GIT_REMOTE_UPSTREAM;
 use crate::project::git::discovery;
+use crate::project::git::probes;
 
 /// Remote configuration is one read: a failure invalidates the listing.
 #[derive(Debug, Clone, Serialize)]
@@ -96,15 +97,31 @@ impl RepoInfo {
         // because `build_remote_info` uses it to resolve each remote's
         // `tracked_ref` and compute `ahead_behind`. Siblings reuse this
         // work; the canonical source is the primary checkout's view.
-        let head = checkout::resolve_head_state(&repo_root);
-        let current_upstream = branches::get_upstream_branch(&repo_root, &head);
-        let default_branch = branches::get_default_branch(&repo_root);
-        let local_main_branch = branches::resolve_local_main_branch(&repo_root);
+        let ((head, current_upstream), default_branch, local_main_branch) =
+            std::thread::scope(|scope| {
+                let current = scope.spawn(|| {
+                    let head = checkout::resolve_head_state(&repo_root);
+                    let upstream = branches::get_upstream_branch(&repo_root, &head);
+                    (head, upstream)
+                });
+                let default = scope.spawn(|| branches::get_default_branch(&repo_root));
+                let main =
+                    scope.spawn(|| branches::resolve_local_main_branch(&repo_root, &active_config));
+                (
+                    probes::finish_probe(current),
+                    probes::finish_probe(default),
+                    probes::finish_probe(main),
+                )
+            });
 
         let remotes = (|| {
-            let remote_names = remote::list_remote_names(&repo_root)?;
+            let (remote_names, pushurls) = probes::run_independent_probes(
+                || remote::list_remote_names(&repo_root),
+                || push::list_remote_pushurls(&repo_root),
+            );
+            let remote_names = remote_names?;
             let upstream_remote = UpstreamRemote::from(remote_names.as_slice());
-            let pushurls = push::list_remote_pushurls(&repo_root)?;
+            let pushurls = pushurls?;
             let context = RemoteResolveContext {
                 repo_root: &repo_root,
                 upstream_remote,
