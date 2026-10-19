@@ -1353,8 +1353,9 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, &template).expect("write template");
 
-        // Template has all fields commented out, so loading it should
-        // succeed with defaults filling every field.
+        // `template` comments out every setting, so
+        // `CargoPortConfig::builder().file(&path).load()` must succeed using defaults for all
+        // fields.
         let cargo_port_config = CargoPortConfig::builder()
             .file(&path)
             .load()
