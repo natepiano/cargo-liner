@@ -566,9 +566,9 @@ impl OwnedRun {
 
     #[cfg(test)]
     fn output_mut_for_test(&mut self) -> &mut Vec<String> {
-        // Seeding lines onto a slot that never ran would leave output naming no
-        // producer, which presentation reads as absent. Promote the slot to a
-        // retained run first so the seeded output is attributable.
+        // `output_mut_for_test` promotes `OwnedRunLifecycle::Absent` through `set_output_for_test`
+        // before seeding lines: output without a producer is presented as absent, so the seeded
+        // output needs an attributable retaining run.
         if let OwnedRunLifecycle::Absent(retained_output) = &mut self.lifecycle {
             let lines = std::mem::take(&mut retained_output.lines);
             self.set_output_for_test(lines);
@@ -1209,7 +1209,7 @@ impl Inflight {
         }
     }
 
-    // ── running clean tracker ───────────────────────────────────────
+    // `clean` and `clean_mut` expose the cargo-clean `RunningTracker`.
 
     pub(crate) const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
 
@@ -1223,7 +1223,7 @@ impl Inflight {
         !self.clean().is_empty() || self.owned_run.is_running()
     }
 
-    // ── pending queues ──────────────────────────────────────────────
+    // `pending_cleans_mut` and the pending-CI-fetch accessors manage queued work.
 
     pub(crate) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
         &mut self.pending_cleans
@@ -1246,7 +1246,7 @@ impl Inflight {
 
     pub(crate) fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
 
-    // ── owned run ───────────────────────────────────────────────────
+    // `owned_run` exposes the sole run; the following methods delegate its lifecycle operations.
 
     pub(crate) const fn owned_run(&self) -> &OwnedRun { &self.owned_run }
 
