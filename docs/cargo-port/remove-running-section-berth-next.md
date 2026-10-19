@@ -602,7 +602,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
 
-### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: todo
+### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: done
 
 #### Work Order
 

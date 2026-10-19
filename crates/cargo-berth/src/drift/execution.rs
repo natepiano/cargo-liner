@@ -742,6 +742,7 @@ fn transact_classification(
                             classification::attribute_refused_run_entry(
                                 &reservations,
                                 &context.observation.changes,
+                                context.pre_lock_foreign_path_classification,
                                 IssuingWorktreeRun {
                                     coordination_run_id: actor_run,
                                     worktree_id:         journal_mutation_actor.worktree_id,

@@ -1546,6 +1546,14 @@ pub(crate) enum EnteringWriteProgress {
 }
 
 impl EnteringCommitSet {
+    /// Combine non-empty entering evidence in the journal's object-id wire order.
+    pub(crate) fn union(mut self, other: Self) -> Self {
+        self.0.extend(other.0);
+        self.0.sort_by_cached_key(ToString::to_string);
+        self.0.dedup();
+        self
+    }
+
     /// A working-tree answer also accounts for the commit recording that initial write.
     pub(crate) fn write_progress(&self) -> EnteringWriteProgress {
         let first = &self.0[0];
@@ -2750,6 +2758,22 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    #[test]
+    fn entering_commit_union_preserves_all_evidence_in_unique_wire_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let earlier: GitObjectId = "1111111111111111111111111111111111111111".parse()?;
+        let shared: GitObjectId = "2222222222222222222222222222222222222222".parse()?;
+        let later: GitObjectId = "3333333333333333333333333333333333333333".parse()?;
+        let left = super::EnteringCommitSet::try_from(vec![later.clone(), shared.clone()])?;
+        let right = super::EnteringCommitSet::try_from(vec![shared.clone(), earlier.clone()])?;
+        let combined = left.union(right);
+        assert_eq!(combined.as_slice(), &[earlier, shared, later]);
+        let serialized = serde_json::to_string(&combined)?;
+        let replayed: super::EnteringCommitSet = serde_json::from_str(&serialized)?;
+        assert_eq!(replayed, combined);
+        Ok(())
+    }
 
     /// A refusal naming an existing holder without acquiring any reservation of its own.
     fn overlap_refused_event(
