@@ -250,8 +250,9 @@ mod tests {
             );
         }
 
-        // `config.toml` without a `.cargo` parent is a miss — otherwise
-        // any ambient TOML file would trigger a refresh.
+        // `classify_cargo_metadata_basename` rejects `CARGO_CONFIG_TOML` and
+        // `CARGO_CONFIG` outside `DOT_CARGO_DIR`, preventing unrelated TOML files
+        // from refreshing metadata.
         let misses = [
             Path::new("/home/user/some/config.toml"),
             Path::new("/etc/config"),
@@ -308,7 +309,8 @@ mod tests {
             root.join("Cargo.toml.bak"),
             root.join("target/debug/build.lock"),
             root.join(".git/config"),
-            // `config.toml` *not* under a `.cargo/` parent must miss.
+            // `classify_cargo_metadata_event_path` must reject this config.toml
+            // because its parent is not `DOT_CARGO_DIR`.
             root.join("docs/config.toml"),
         ];
         for path in &misses {
