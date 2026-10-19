@@ -299,10 +299,6 @@ pub fn copy_payload_for_lints(data: &LintsData, pos: usize) -> CopySelectionResu
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
     use crate::ci::CiJob;

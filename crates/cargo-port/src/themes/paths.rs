@@ -90,10 +90,6 @@ pub(crate) fn set_themes_dir_override_for_test(path: PathBuf) -> ThemesDirOverri
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

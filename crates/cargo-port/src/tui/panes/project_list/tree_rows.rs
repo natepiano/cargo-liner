@@ -1459,10 +1459,6 @@ fn render_group_header(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
     use crate::project::AbsolutePath;
