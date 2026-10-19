@@ -258,9 +258,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 9 — Accurate clicks during motion  · status: todo
 
-**Depends on:** Phase 5
+**Depends on:** Phase 5, Phase 12
 
-**Blocked by:** tile-fixes phase 20 merged on main — the showrunner says when.
+**Blocked by:** tile-fixes phase 22 merged on main (tui_pane grid overlap) — the showrunner says when.
 
 #### Work Order
 
@@ -281,7 +281,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 2. `TileGrid::cell_at(&self, Position) -> Option<usize>` keeps its public signature, as the compatibility boundary, and answers from that record. Before the first draw it answers from the layout as today.
 3. Phase 2's content lookup in `tiles/host.rs` uses the same record, and resolves the content by the identity recorded at draw time, not by the slot's current occupant.
 4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. `tiles/host.rs` ≈138 calls `focus_cell(index)` on a current slot: resolve the drawn identity to its current slot at the public `Option<usize>` boundary, with a retired-content outcome inside, so a click on a vanished drawn tile never focuses its replacement. If `Cells::tile` (`render.rs` ≈243) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
-5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort and focuses no replacement; an accounts reading that changes the summary's demand between draw and click still selects the drawn agents column, and an accounts-header click stays inert. cargo-tile's suites pass.
+5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort and focuses no replacement; an accounts reading that changes the summary's demand between draw and click still selects the drawn agents column; an accounts-header click during motion, or after an accounts reading changed the table between draw and click, sorts by the accounts column that was drawn under the pointer. cargo-tile's suites pass.
 
 **Files:**
 - `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/host_tests.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -343,9 +343,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** A per-row hold — it splits a manager from its linked unit. Holding every unnamed id — it hides sessions that are already checked.
 
-### Phase 12 — Accounts table: reset gradient and header sort  · status: todo
+### Phase 12 — Accounts table: reset gradient and header sort  · status: done
 
-**Depends on:** Phase 9
+**Depends on:** Phase 5
 
 #### Work Order
 
@@ -355,13 +355,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Constraints from prior phases:**
 - Phase 5 built the accounts table (`summary/accounts.rs`; `resets_at` ≈173, rounded by `summary/constants.rs`). An account with no reset time keeps its present text and takes no gradient color.
-- Phase 2's sort lives in `crates/cargo-handler/src/sort.rs` (`TreeSort`) and `summary` (`SummarySort`, `summary/sort_tests.rs`); a header click reaches it through `render::cell_clicked`. Phase 9 makes a click resolve against the header spans that were drawn, and its regression says "an accounts-header click stays inert": this phase replaces that inert rule with a sort, through the same drawn-span mapping.
+- Phase 2's sort lives in `crates/cargo-handler/src/sort.rs` (`TreeSort`) and `summary` (`SummarySort`, `summary/sort_tests.rs`); a header click reaches it through `render::cell_clicked`, which maps the click through header spans it builds from the current state. Today an accounts-header click is inert; this phase replaces that rule with a sort, through the same mapping. This phase runs before "Accurate clicks during motion" (showrunner, 2026-10-19), which later moves every header click, the accounts header included, to the drawn spans and owns the accounts-header click during motion.
 - Colors come from `SemanticTheme` (`theme.rs`): `success` and `error`. Interpolate in the theme's own color space; never write a color literal.
 
 **Spec:**
 1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. When only one distinct reset time exists (one account, or several accounts with the same time), every ranked account draws `success`; the interpolation never divides by zero.
 2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the shared `ColumnSort` direction toggle and tie rule), kept per summary in app state; no second sort path. `SummaryColumn` names agent columns and `ColumnSort::default()` always selects a column, so add an accounts column enum and a semantic state `SourceOrder | Sorted(<accounts column sort>)`, independent of the agent sort. Ordering: percentages and credits numeric, resets chronological, unavailable and unlimited values in a fixed place after real values, ties by source index. The default order stays the source order until a header is clicked. Architect finding 5, 2026-10-19.
-3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; three accounts with one shared reset time all draw success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
+3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; three accounts with one shared reset time all draw success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through `render::cell_clicked` on the drawn summary.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`

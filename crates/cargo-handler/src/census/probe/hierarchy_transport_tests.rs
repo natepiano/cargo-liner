@@ -15,6 +15,7 @@ use crate::census::Machine;
 use crate::census::RemoteHierarchyAnswers;
 use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -78,6 +79,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
         let accounts = AccountsTable::NotConfigured;
         let colors = FooterColors::default();
         let frame = SummaryFrame {
+            accounts_sort:  AccountsSort::SourceOrder,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -97,6 +99,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &accounts,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(summary::height(&machines, &placement, &accounts))
                 .expect("small remote summary"),

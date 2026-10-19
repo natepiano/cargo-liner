@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use tui_pane::CellPoint;
 
 use crate::agent_cell::TreeColumn;
+use crate::constants::ACCOUNTS_HEADERS;
 use crate::constants::SUMMARY_HEADERS;
 
 /// How values in the selected column are ordered.
@@ -158,6 +159,80 @@ impl SortColumn for SummaryColumn {
 
 /// One ordering shared by all machine groups in the summary.
 pub(crate) type SummarySort = ColumnSort<SummaryColumn>;
+
+/// Account usage columns in their visible order, independent of agent columns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountsColumn {
+    Account,
+    Roles,
+    WeeklyLeft,
+    Resets,
+    Credits,
+}
+
+impl AccountsColumn {
+    /// Every account header, in drawing order.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Account,
+        Self::Roles,
+        Self::WeeklyLeft,
+        Self::Resets,
+        Self::Credits,
+    ];
+
+    /// Position in the measured account row.
+    const fn index(self) -> usize {
+        match self {
+            Self::Account => 0,
+            Self::Roles => 1,
+            Self::WeeklyLeft => 2,
+            Self::Resets => 3,
+            Self::Credits => 4,
+        }
+    }
+
+    /// The label before a sort is selected.
+    pub(crate) const fn header(self) -> &'static str { ACCOUNTS_HEADERS[self.index()] }
+}
+
+impl SortColumn for AccountsColumn {
+    const DEFAULT: Self = Self::Account;
+
+    fn natural_direction(self) -> SortDirection { SortDirection::Ascending }
+
+    fn label(self) -> &'static str { self.header() }
+}
+
+/// Preserve the source order until the user selects an accounts header.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum AccountsSort {
+    #[default]
+    SourceOrder,
+    Sorted(ColumnSort<AccountsColumn>),
+}
+
+impl AccountsSort {
+    /// Start with the column's natural direction, then use the shared toggle.
+    pub(crate) fn select(&mut self, column: AccountsColumn) {
+        match self {
+            Self::SourceOrder => {
+                *self = Self::Sorted(ColumnSort {
+                    column,
+                    direction: column.natural_direction(),
+                });
+            },
+            Self::Sorted(sort) => sort.select(column),
+        }
+    }
+
+    /// A source-ordered table has no selected header or direction marker.
+    pub(crate) fn header(self, column: AccountsColumn) -> String {
+        match self {
+            Self::SourceOrder => column.header().to_owned(),
+            Self::Sorted(sort) => sort.header(column),
+        }
+    }
+}
 
 /// A drawn header cell, excluding the gap after it.
 #[derive(Clone, Debug, Eq, PartialEq)]

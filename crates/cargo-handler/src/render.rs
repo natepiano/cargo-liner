@@ -54,6 +54,7 @@ use crate::footer_colors::FooterColors;
 use crate::globals::AppGlobalAction;
 use crate::settings;
 use crate::sort;
+use crate::sort::AccountsSort;
 use crate::sort::HeaderHit;
 use crate::sort::HeaderSpan;
 use crate::sort::SummarySort;
@@ -117,7 +118,8 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         &app.tree_sorts,
         app.summary_sort,
     )
-    .with_accounts(&app.accounts.table);
+    .with_accounts(&app.accounts.table)
+    .with_accounts_sort(app.accounts_sort);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -150,13 +152,19 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         &app.tree_sorts,
         app.summary_sort,
     )
-    .with_accounts(&app.accounts.table);
+    .with_accounts(&app.accounts.table)
+    .with_accounts_sort(app.accounts_sort);
     match content {
         TileContent::Summary => {
             if let HeaderHit::Column(column) =
                 sort::header_hit(&summary::header_spans(area, &cells.summary_frame()), point)
             {
                 app.summary_sort.select(column);
+            } else if let HeaderHit::Column(column) = sort::header_hit(
+                &summary::accounts_header_spans(area, &cells.summary_frame()),
+                point,
+            ) {
+                app.accounts_sort.select(column);
             }
         },
         TileContent::Group(id) => {
@@ -191,6 +199,8 @@ struct Cells<'a> {
     summary_sort:   SummarySort,
     /// Account readings share the summary cell, independent of agent placement.
     accounts:       &'a AccountsTable,
+    /// Source order until an accounts header is selected.
+    accounts_sort:  AccountsSort,
 }
 
 impl<'a> Cells<'a> {
@@ -216,6 +226,7 @@ impl<'a> Cells<'a> {
             footer_colors,
             summary_sort,
             accounts: &AccountsTable::NotConfigured,
+            accounts_sort: AccountsSort::SourceOrder,
         }
     }
 
@@ -225,10 +236,17 @@ impl<'a> Cells<'a> {
         self
     }
 
+    /// Attach the accounts selection without changing the machine-group selection.
+    const fn with_accounts_sort(mut self, sort: AccountsSort) -> Self {
+        self.accounts_sort = sort;
+        self
+    }
+
     /// The inputs shared by summary drawing and header hit testing.
     fn summary_frame(&self) -> SummaryFrame<'_, 'a> {
         SummaryFrame {
             accounts:       self.accounts,
+            accounts_sort:  self.accounts_sort,
             machines:       &self.machines,
             placement:      &self.placement,
             cells:          &self.agents,
@@ -288,6 +306,7 @@ impl TileCells<TileKey> for Cells<'_> {
                 self.account_column,
                 self.summary_sort,
                 self.accounts,
+                self.accounts_sort,
             ),
             groups:        self
                 .tiles
