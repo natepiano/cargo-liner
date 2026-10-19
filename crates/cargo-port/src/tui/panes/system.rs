@@ -217,7 +217,8 @@ mod detail_set_tests {
         assert!(panes.git.content().is_some());
         assert!(panes.targets.content().is_some());
 
-        // Different stamps don't match.
+        // `pane_data.detail_is_current` rejects `None` and `DetailCacheKey` values with a different
+        // `generation` or `visible_row`.
         assert!(!panes.pane_data.detail_is_current(None));
         assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
             visible_row: any_row(),

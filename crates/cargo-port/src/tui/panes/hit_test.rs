@@ -1,7 +1,7 @@
 use ratatui::layout::Position;
 use tui_pane::Viewport;
 
-// ── Helpers ─────────────────────────────────────────────────────
+// `hit_test_table_row` converts table coordinates into `Viewport` row indices.
 
 /// Hit-test a table pane (Lints, CI, Finder) where the
 /// first line of the inner area is a column header and rows start

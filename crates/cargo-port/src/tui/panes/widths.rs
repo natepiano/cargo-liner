@@ -300,8 +300,8 @@ fn observe_worktree_group_fit_widths(
     worktree_group: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
-    // Use the renderer's grouping decision: a single live checkout is the
-    // root itself, so its children have no intervening worktree ancestor.
+    // Use `worktree_group.renders_as_group()` just as rendering does: with one live checkout,
+    // `single_live()` is the root itself, so its children have no intervening worktree ancestor.
     if !worktree_group.renders_as_group() {
         if let Some(entry) = worktree_group.single_live() {
             observe_rust_children_fit_widths(
