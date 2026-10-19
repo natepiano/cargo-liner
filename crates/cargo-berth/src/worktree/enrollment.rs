@@ -272,6 +272,7 @@ pub(crate) fn enroll_worktrees(
         }
         match enroll_candidate(
             &ledger,
+            snapshot,
             candidate,
             &footprints,
             path_case,
@@ -656,6 +657,7 @@ fn remaining_work(
 
 fn enroll_candidate(
     ledger: &Ledger,
+    repository: &RepositorySnapshot,
     candidate: &EnrollmentFootprint,
     footprints: &[EnrollmentFootprint],
     path_case: PathCase,
@@ -676,6 +678,7 @@ fn enroll_candidate(
         .map_err(|error| git_failure(error.to_string()))?;
     let containment = ActingHeadContainment::observe_at_head(
         &reservations,
+        repository,
         &candidate.context,
         candidate.worktree_id,
         &candidate.target.target,
@@ -706,7 +709,7 @@ fn enroll_candidate(
             let reservations = match state.reservations() {
                 Ok(reservations) => reservations
                     .clone()
-                    .with_acting_head_containment(containment),
+                    .with_acting_head_containment(containment.clone()),
                 Err(error) => {
                     return TransactionValidation::Reject(EnrollmentRejection::InvalidReplay(
                         error.to_string(),
@@ -719,12 +722,12 @@ fn enroll_candidate(
                 reservation_id,
                 scopes: candidate.scopes.clone(),
                 source: ClaimSource::Enrolled,
-                purpose,
+                purpose: purpose.clone(),
                 trunk_at_claim: candidate.trunk.clone().into(),
                 target: Some(Box::new(candidate.target.clone())),
                 head_snapshot: candidate.head_snapshot.clone(),
                 phase_start_head: candidate.merge_base.clone().into(),
-                worktree_root,
+                worktree_root: worktree_root.clone(),
                 worktree_administrative_locator: candidate.context.administrative_locator().clone(),
                 authorization: Box::new(authorization),
                 coordination_identity_provenance: CoordinationIdentityProvenance::NotPresented,

@@ -670,7 +670,7 @@ fn paths_from_scopes(
     })
 }
 
-/// Classify the observation under the ledger lock, refusing acquisition but not observation.
+/// Prepare classification before acquisition, then commit only against its journal generation.
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {

@@ -277,7 +277,7 @@ impl RewriteRepository {
 }
 
 fn build_two_rebase_history(root: &Path) {
-    build_rewrite_main(root);
+    REWRITE_MAIN.restore_into(root);
     let fixture = RewriteRepository::at_root(root);
     let first = fixture.start_phase();
     fixture.commit("one", "base");
@@ -563,7 +563,7 @@ fn commit_file(root: &Path, path: &str, content: &str, message: &str) {
 }
 
 fn build_stacked_upper_checkpoint(root: &Path) {
-    build_rewrite_main(root);
+    REWRITE_MAIN.restore_into(root);
     let fixture = RewriteRepository::at_root(root);
     let trunk = fixture.head();
     let upper = fixture.start_phase();
@@ -602,7 +602,7 @@ fn build_updated_sibling(root: &Path) {
 }
 
 fn build_lower_checkpoint(root: &Path) -> (RewriteRepository, SplitLowerCheckpointState) {
-    build_rewrite_main(root);
+    REWRITE_MAIN.restore_into(root);
     let fixture = RewriteRepository::at_root(root);
     let trunk = fixture.head();
     let lower = fixture.start_phase();

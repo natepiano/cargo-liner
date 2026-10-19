@@ -18,7 +18,6 @@ use super::record::Reservation;
 use super::retention::RetainedReservationSet;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
-use crate::git;
 use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
@@ -139,7 +138,6 @@ impl ActingHeadContainment {
         acting_target: &IntegrationTarget,
         repository_trunk: &IntegrationTarget,
     ) -> Self {
-        let context = repository.context();
         let mut keys = reservations
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
@@ -177,7 +175,8 @@ impl ActingHeadContainment {
         };
         Self::observe_at_head(
             reservations,
-            context,
+            repository,
+            repository.context(),
             acting_worktree,
             acting_target,
             repository_trunk,
@@ -188,6 +187,7 @@ impl ActingHeadContainment {
     /// Reuse a caller's resolved HEAD when observing foreign committed protection.
     pub(crate) fn observe_at_head(
         reservations: &RetainedReservationSet,
+        repository: &RepositorySnapshot,
         context: &WorktreeContext,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
@@ -233,21 +233,26 @@ impl ActingHeadContainment {
             if holder_heads.iter().any(|observed| observed.head == *head) {
                 continue;
             }
-            let committed_paths =
-                match git::unmerged_branch_paths(context.repository_root(), acting_head, head) {
-                    Ok(paths) => paths.into_iter().collect(),
-                    Err(_) => continue,
-                };
+            let committed_paths = match repository.unmerged_branch_paths(
+                context.repository_root(),
+                acting_head,
+                head,
+            ) {
+                Ok((paths, _)) => paths.into_iter().collect(),
+                Err(_) => continue,
+            };
             let outside_target = match effective_target.as_ref() {
                 Some((target, tip))
                     if keys.iter().any(|(candidate_head, holder_target)| {
                         *candidate_head == head && *holder_target != target
                     }) =>
                 {
-                    git::unmerged_branch_paths(context.repository_root(), tip, head).map_or_else(
-                        |_| CrossTargetRemainder::Unavailable,
-                        |paths| CrossTargetRemainder::Paths(paths.into_iter().collect()),
-                    )
+                    repository
+                        .unmerged_branch_paths(context.repository_root(), tip, head)
+                        .map_or_else(
+                            |_| CrossTargetRemainder::Unavailable,
+                            |(paths, _)| CrossTargetRemainder::Paths(paths.into_iter().collect()),
+                        )
                 },
                 Some(_) | None => CrossTargetRemainder::NotApplicable,
             };

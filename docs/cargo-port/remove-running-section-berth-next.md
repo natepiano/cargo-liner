@@ -532,36 +532,134 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 18 — The cargo-berth suite starts few enough processes that every test runs under a second on the Mac  · status: done
 
-#### Work Order
+#### As-built
 
-**Depends on:** phase 16 (its checkpoint carries the Mac-only fix, the canonical `/private/var` template relocation, and the per-family fixture cuts this phase measures from). Runs next, right after phase 16.
-
-**Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, and every test there runs in under 1 s. It gets there by cutting the total number of processes the suite starts — git and cargo-berth — with product code cut first, where cargo-berth itself starts git. Natedev stays under 1 s for every test.
-
-**First item (showrunner, 2026-10-18): the CI SETUP regression phase 16 caused.** In CI run 39138120831 (checkpoint 17608984) the nextest `cargo-berth-templates` SETUP took 37.724 s, against 2.132 s in the run before phase 16, and the workspace suite rose from 87.6 s to 109.4 s. Cause: when the builder link from the listing pass is missing or names another run, `crates/cargo-berth/tests/setup-recorded-templates.sh` now runs `cargo build -p cargo-berth --test recorded_templates`, and in CI that build recompiles. Find why the link is absent in CI, and fix it so SETUP does no compile work in a full run (target-selected local runs keep working). Prove it with a CI run of the fix: SETUP back near 2 s. This lands before the Mac work, in this phase's checkpoint.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-18 (verbatim): "The Mac \"every test under 1 s\" goal moves whole into a new phase, numbered right after 16 and run next, not left for later. It is about process starts across the whole suite: measure starts per test; set a budget for the suite; cut where most starts come from, in product code first (where cargo-berth itself starts git). A test-side workaround is not the fix. Its exit criterion is the Mac goal: every test under 1 s on a cold full Mac run." And: "when the Mac is saturated and the total does not drop, per-test cuts only move time between tests. Reducing total work is the only lever."
-2. Baseline from phase 16, 2026-10-18. **Mac**, cold full run of phase 16's round 4 tree: `ssh mac zsh -lc`, `TMPDIR` = `DARWIN_USER_TEMP_DIR`, 12 threads, load 2.79 → 12.45 on 12 cores. 1146/1146 pass; 356 tests at 1 s or more and 487 at 0.7 s or more; slowest `board cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` 5.733 s; SETUP 11.989 s; total 93.550 s, against 93.081 s before phase 16's cuts. Phase 16's Mac trace (`phase16-mac-timing.md` in that phase's session directory, R13) attributes the cost to process starts at suite concurrency: board cold proof 163 git starts, lifecycle integration cover 170, edges witness and predecessor 189 git and 16 cargo-berth starts each, and 3029 cargo-berth starts across the suite. fsync time was a 0–6 % share and is not this phase's lever. These numbers come from round 4, before phase 16's last template cuts, so before any cut take one fresh cold full Mac run of checkpoint `17608984`, and compare every later number against it. A cold run also clears the executable warmup cache `crates/cargo-berth-test-support/src/directory_snapshot.rs` (around line 186) keeps in a persistent temporary directory, which deleting `target/tmp/cargo-berth-templates` leaves in place; record that cache's state with every timing run.
-3. **(a) Measure starts per test, before any cut.** For every test in a full run, count the processes it starts, split by origin: fixture git (`cargo-berth-test-support` `git_driver.rs`), `cargo-berth` starts (`berth_command.rs`), product git started by cargo-berth (`src/git/command.rs` `git_command`, `git_command_with_hook_execution_policy`), and git or cargo-berth started by installed hooks (`src/gate/install.rs`). Count each real process start once, and keep its attribution through hook children and worker descendants, including the refresh worker `src/cli.rs` starts outside `berth_command.rs` (around line 1963). Report SETUP separately within the suite total, including the nested cold setup that `tests/recorded_templates.rs` (around line 168) runs to build every recorded template again. Counts do not depend on the machine, so natedev is enough for them. Write `phase18-process-starts.md` in the session directory: the suite total by origin, the top 20 tests by total starts, and the top 20 product call sites by starts across the suite (call site = the cargo-berth function that built the git command, with its argv form).
-4. **(b) The suite budget.** From the Mac's measured per-start cost (phase 16 Spec 4 per-spawn rows) and its 12 threads, derive the total start count at which a cold full Mac run keeps every test under 1 s, with headroom. Record it in the measurement file; the per-start cost gives an estimate, and the Spec 7 Mac timing run stays the authority. Pin it with tests that fail when the measured suite start total grows past the budget, and when any of the most expensive tests' start counts grow — the same form as `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` and phase 8's cold-cost bounds. A per-operation ceiling alone is not enough, because it misses an operation called more often.
-5. **(c) Cut product starts first.** At the call sites Spec 3 ranks highest, make cargo-berth start fewer git processes per operation: read refs, config and objects without a process where phase 8's test-side readers show it can be done (`tests/support/git_configuration.rs`, `tests/support/loose_refs.rs`), batch repeated reads into one process (`git cat-file --batch`, `for-each-ref`), and stop repeating a read whose answer the operation already holds. Those two test readers only read known fixture checkouts, so they show the reads are possible, not how product code must do them: a fast path keeps linked-worktree discovery, every ref and config form git supports (packed refs, includes), and the typed difference between missing and failed (`ReferenceLookup`), falling back to git where it cannot; name the regression test for each call site changed. Product behavior is unchanged; every existing test passes with its assertions intact. Adding a dependency (for example an in-process git library) is a design choice: send it to the showrunner before adding it.
-6. **(d) Test-side starts only after (c).** Fixture starts may be cut only where Spec 3 shows them dominant after the product cuts, and only by doing less work (recording a template once, as phase 11 does), never by hiding work from the clock or the count.
-7. **(e) Timing proof.** One cold full Mac run (templates deleted, staged copy outside `/tmp`, route recorded per phase 16 Spec 3) passes every test with each under 1.000 s, and its total drops below phase 16's 93 s in proportion to the starts cut. One cold quiet natedev `verify.sh test cargo-berth --local "<why>" --no-cache` passes with every test under 1.000 s. A CI run of the tip is measured against 0.700 s per test; its numbers and the cause of any test over that bar go to the showrunner. Before/after table per machine: the Spec 2 slowest tests, run total, SETUP, and the suite's start count by origin.
+- `git::RepositorySnapshot` (`src/git/snapshot.rs`) holds one discovered worktree context and one persistent `git cat-file --batch` object reader per berth operation. Board evaluation, reconciliation, rewrite preflight and gate preparation borrow it; a second snapshot or reader inside one operation has no constructor path.
+- `for-each-ref` reads every branch's upstream into one map, so an optional upstream (`@{…}`) never enters the batch object reader. Process spawns are serialized, so the persistent reader child inherits no open pipe end of another spawn (the cause of the Mac template SETUP stall).
+- `tests/process_start_budget.rs` audits process starts per test by origin and pins the suite total in `tests/process_start_budget.json` at 46,393 (product Git 26,112; fixture Git 6,390; berth 3,174; hook berth 1,335). It replaces the Python auditor.
+- The recorded-template SETUP fails a real stall after 120 s and names each unfinished template (`require_template_progress`).
+- `cargo-berth check --help` says the check acquires the paths for this session when they are clear, and that `cargo-berth board` reads holders without acquiring.
+- The full suite passes on the Mac (1175 tests, 105.8 s cold); 389 tests still take 1 s or more there.
 
 **Files:**
-- `crates/cargo-berth/src/git/command.rs` — `git_command`, `git_command_with_hook_execution_policy`: every product git start, and where per-origin counting can hook in
-- `crates/cargo-berth/src/gate/install.rs` — installed hooks and what they start per commit
-- `crates/cargo-berth/src/` — the modules Spec 3's top product call sites name (board evaluation, drift, release, integration cover, edges) — added to the phase's files list as Spec 3 names them
-- `crates/cargo-berth-test-support/src/git_driver.rs`, `crates/cargo-berth-test-support/src/berth_command.rs` — fixture and cargo-berth start counting
-- `crates/cargo-berth/tests/` — the Spec 4 budget tests, beside the existing cold-cost bounds
-- `crates/cargo-berth/tests/setup-recorded-templates.sh`, `.config/nextest.toml`, `.github/workflows/` — the first item's SETUP fix
-- `crates/cargo-berth/src/cli.rs`, `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth-test-support/src/directory_snapshot.rs` — Spec 2 and Spec 3 measurement boundaries
+- `crates/cargo-berth/src/git/snapshot.rs` — the per-operation snapshot and object reader
+- `crates/cargo-berth/tests/process_start_budget.rs`, `crates/cargo-berth/tests/process_start_budget.json` — the start auditor and its pin
+- `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/setup-recorded-templates.sh` — template SETUP and its stall bound
 
-**Workers:** 1 writer, `mac`. One seat holds the measurement, the cuts and both machines' runs.
+**Binds later work:** Every Git read in an operation goes through its one `RepositorySnapshot`. The start pin may only go down.
 
-**Constraints:** No thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. `POST_COMMIT_ENGINE_GIT_PROCESS_CEILING` and the cold-cost bounds may only go down. A timing run uses `--no-cache` and starts with `target/tmp/cargo-berth-templates` deleted. A natedev run at a load above 16 of 32 is untrusted. Mac runs: one `mac_test.py claim` per run, taken only when the run is ready to start and released when it ends (hana's standing OK holds until the Mac's screen unlocks; after that, ask hana first). Run one `verify.sh` at a time in this worktree.
+**Gotchas:** Mac wall time follows machine load more than start count: between two cold runs the starts fell while the total rose 96.7 → 105.8 s, with every binary slower at load 23 on 12 cores. Record the load with every Mac timing.
 
-**Constraints from prior phases:** Phase 16 made the managed reference-transaction hook one shared script that is never edited in place, with each repository's paths in a private `cargo-berth-hook-context` file beside it (`src/gate/install.rs`). A hook change keeps that layout and replaces the script atomically, and the context-dispatch, refresh and copy-isolation regressions stay.
+**Ruled out:** Holding this phase open for the Mac per-test goal; that goal is its own phase, built after the route estimates.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth-test-support` passes when test support changed (the cargo-berth package run does not run its isolation test). A CI run shows the template SETUP back near 2 s. `phase18-process-starts.md` holds the Spec 3 counts, taken before the first cut, and the Spec 4 budget. The Spec 4 budget test passes. The cold full Mac run passes every test with each under 1.000 s; the cold quiet natedev run passes with each under 1.000 s; the CI numbers have gone to the showrunner.
+### Phase 19 — A cargo-berth write holds the ledger lock only for its own check and append  · status: done
+
+#### Work Order
+
+**Depends on:** phase 18 (one repository snapshot and object reader per operation, the 60 s blocking lock wait, and the expired-history prune). Runs next.
+
+**Goal:** Every cargo-berth verb and hook holds the ledger mutation lock only while it reads the journal tail, checks its prepared result against it, appends and publishes. Git work, reconciliation evidence, gate preparation, a full journal replay and board rendering run before the lock is taken. Many sessions that write at the same time in a large repository (hana) do not queue behind one slow holder.
+
+**Spec:**
+1. Source: the showrunner (via hana), 2026-10-18: part 3, "move the reconciliation and the gate preparation out of the lock", is current work, not a proposal. The contention fix's item 2 (2026-10-18), verbatim: "Each hook and each verb must hold the mutation lock only for its own read-check-append. Do no replay of the full journal, board rendering or Git work while it holds the lock." Parts 1 (history prune) and 2 (blocking 60 s wait) shipped in `374c85a1` and `b791431b`.
+2. **Measure first.** For each path that takes the lock in `crates/cargo-berth/src/ledger/handle.rs` (`transact`, `try_transact`, `transact_with_committed_action*`, `transact_reconciliation`, `begin_initialization`, `remove_current_session_mapping`) and in `ledger/compaction.rs`, list the work done between `MutationLock::acquire` and its release: replay, Git processes, object reads, rendering, file writes. Time each hold for a post-tool-use hook write, a claim, a release, a reconcile and a reference-transaction gate decision on a scratch copy of the hana ledger, never the live one. Write `phase19-lock-holds.md` in the session directory with the list and the times.
+3. **Prepare outside, commit inside.** Move every step that does not need the lock before the acquire: Git reads (status, refs, objects, worktree list), reconciliation evidence, gate preparation (`gate/audit.rs`, `gate/decision.rs`), and rendering. Each prepared result carries the replay generation it was computed from, as a type, so a result with no generation cannot reach an append. Under the lock: advance the replay to the journal tail, check the prepared result against the events after its generation, append and publish. When those events invalidate the result, release the lock and prepare again (bounded attempts, with a clear error at the bound); never append a stale result.
+4. **Committed actions.** An action that must stay ordered with its journal append (a ref update after its append, for example) may keep running under the lock. Name each one in the measurement file with the reason, and keep its work as small as that reason allows.
+5. **Replay under the lock.** `begin_locked_transaction` replays from the replay checkpoint on every acquire. Measure its cost on the hana copy. When the tail since the checkpoint dominates a hold, replay before the acquire and advance only the new tail under the lock.
+6. **Proof.** On the hana copy at quiet load, every measured hold is under 100 ms at the 95th percentile of 20 runs. A test runs 8 hook writers and one reconcile at the same time against one ledger, and no writer waits more than 2 s. Before and after table in the measurement file.
+7. **Regression tests**, each named for the behavior it pins: preparation proceeds while another process holds the lock (use the test-only acquire signal in `ledger/constants.rs`); a result prepared at an older generation and invalidated by a later event is prepared again, not appended; the existing hook contention tests pass unchanged.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/handle.rs` — the lock-taking transaction entry points and `begin_locked_transaction`
+- `crates/cargo-berth/src/ledger/compaction.rs`, `crates/cargo-berth/src/ledger/journal.rs` — replay and compaction holds
+- `crates/cargo-berth/src/reconcile.rs` — reconciliation evidence and its transaction
+- `crates/cargo-berth/src/gate/` — gate preparation and the reference-transaction decision
+- `crates/cargo-berth/src/verb/`, `crates/cargo-berth/src/hook/`, `crates/cargo-berth/src/drift/execution.rs` — the callers whose validate closures do work that moves out
+- `crates/cargo-berth/src/git/snapshot.rs` — the per-operation snapshot used before the acquire
+- `crates/cargo-berth/tests/` — the regression and concurrency tests
+
+**Workers:** 1 writer, `mac`. The seat that built phase 18's snapshot holds the move, the measurement and the tests.
+
+**Constraints:** No raised lock tolerance, no longer timeout, no skipped or `#[ignore]`d test. Never run a mutating command against a live ledger. The process-start budget (`tests/process_start_budget.json`) may only go down. One repository snapshot and one object reader per operation stays true by type. Run one `verify.sh` at a time in this worktree.
+
+**Constraints from prior phases:** Phase 18 binds every Git read in an operation to one `git::RepositorySnapshot` and its persistent object reader; a second construction in one operation has no path by type. A preparation moved before the acquire uses that same snapshot. Automatic compaction tries the lock once with `Duration::ZERO`; the explicit `--compact-journal` waits the 60 s bound.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. `phase19-lock-holds.md` holds the Spec 2 list and times and the Spec 6 before and after table, with every hold under 100 ms at the 95th percentile. The Spec 6 concurrency test and the Spec 7 regression tests pass.
+
+### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 19 (it changes `git/refs.rs` and the read and write paths this phase touches).
+
+**Goal:** A `packed-refs.lock` that no process holds never makes a cargo-berth read fail. A read still answers the board, and a refused Git write says which lock refused it, how old it is and whether a process holds it.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-19, after a 0-byte `/home/natepiano/rust/cargo-liner/.git/packed-refs.lock` stayed from 01:03:15 to 01:11. Cause: a user interrupt cancelled a PostToolUse `cargo-berth hook post-tool-use`, and its `git update-ref --stdin` retention-ref transaction died after it made the lock. While the lock stayed, every ledger read failed with "git update-ref failed … packed-refs.lock: File exists", and four style units stopped at refill with "board unavailable". The harness can stop a hook at any time, so the fix is on the read side. Approved verbatim: "(1) a read defers the retention-ref repair and still answers; (2) a refused git write reports the lock path, its age and whether a process holds it, and cargo-berth does not delete the lock."
+2. **A read defers the repair.** A ledger read (board, check, drift, hook) whose retention-ref repair or deletion (`git::refs::update_reservation_retention_refs`) fails because of a Git lock still returns its answer. The repair stays pending, as a type, and the next write that can take the lock runs it. The read's output names the deferred repair once.
+3. **A refused write names the lock.** When a Git ref write fails because a `*.lock` exists, the error is a typed variant that carries the lock path, its age from the file's modification time, and whether a process holds it open. Its text states all three. cargo-berth never deletes the lock.
+4. **Tests**, each named for the behavior it pins, each with a 0-byte `packed-refs.lock` that no process holds: a board read with a pending retention-ref deletion answers and names the deferred repair; a write that needs `packed-refs.lock` fails with the lock path, its age and "no process holds it", and the lock file is still there afterwards.
+
+**Files:**
+- `crates/cargo-berth/src/git/refs.rs`, `crates/cargo-berth/src/git/error.rs` — the typed lock refusal
+- `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/reconcile.rs` — where a read runs the retention-ref repair
+- `crates/cargo-berth/tests/` — the two tests
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** No deletion of any Git lock by cargo-berth. No raised lock tolerance or longer timeout. The process-start budget may only go down.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
+
+### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 19 (it changes `drift/execution.rs` and the ledger paths the post-write check reads).
+
+**Goal:** When a merge brings a covered branch's own commits into the cover's target, the post-write check treats it as the integration the cover exists for. It reports no incursion and tells nobody to stop.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-19. It merged style hand-off 12cc3b9 (`style/main`) into `main` in `/home/natepiano/rust/cargo-liner` with `merge_checkpoint.py`. The PostToolUse hook printed "POST-WRITE INCURSION: nothing was reserved … crates/cargo-port/src/lint/reclaim.rs inside foreign reservations 01a15345-3e06-75b3-a3e3-457fb29c00a7 … stop and resolve the incursion". That reservation is the cover for `style/main` on `main` (source `cover`, purpose "Cover integration branch style/main"). The merge brought in only the covered branch's commits. The next board read showed the cover as resolved and no outstanding incursion, so only the post-write report was wrong.
+2. **A covered integration is not an incursion.** In drift's foreign-path classification (`drift/classification.rs`), a path that a cover reservation holds is not entered when every commit that brings the path into the checkout is reachable from that cover's covered branch tip. The decision is a type the classification returns, not a guard in the report.
+3. **Other writes into a cover stay incursions.** A commit that changes a covered path and that the covered branch does not contain is still an incursion, with today's text.
+4. **Tests**, each named for the behavior it pins: merging a covered branch into its target reports no incursion and leaves no outstanding incursion; a commit outside the covered branch that changes a covered path is still reported as an incursion.
+
+**Files:**
+- `crates/cargo-berth/src/drift/classification.rs`, `crates/cargo-berth/src/drift/provenance.rs` — the covered-integration decision
+- `crates/cargo-berth/tests/` — the two tests
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** No new Git process per hook call: use the reachability reads drift already makes. The process-start budget may only go down.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
+
+### Phase 22 — Every cargo-berth test runs under a second on the Mac  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures), phase 20 and phase 21.
+
+**Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. The showrunner picks the route from measured estimates before it is built.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-18, verbatim: "Then plan the Mac per-test goal as its own phase. Before you build it, send me a measured estimate for each route on the five slowest binaries (lifecycle, gate, board, parallel_phases, drift): (1) berth commands in-process in the tests, with shared fixture repositories; (2) gix for the status, worktree list and ref reads, which are the largest product Git origins. Give the starts and the Mac time for each route. Route 1 must still test the real CLI in at least one test for each command. I decide with those numbers."
+2. Baseline: phase 18's cold Mac run (1175 tests, 105.775 s, 389 tests at 1 s or more, SETUP 11.8 s, load 6 → 23) and its start count 46,393 (product Git 26,112; fixture Git 6,390; berth 3,174; hook berth 1,335). Take one fresh cold Mac run of phase 19's checkpoint first and compare against it, with load recorded.
+3. **Estimates.** For each route, on the five binaries, measure on a prototype of one representative test per binary and extrapolate: process starts by origin, and Mac time per test and per binary. Send the table to the showrunner, then wait for its pick. This step builds nothing beyond the prototypes.
+4. **Build the picked route.** Route 1 keeps a real-CLI test for each command. Route 2 keeps every ref and config form Git supports and the typed difference between missing and failed, falling back to Git where it cannot. Adding `gix` is the showrunner's pick under route 2.
+5. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
+6. **Phase 19 lock holds at quiet load.** Source: the showrunner, 2026-10-19: phase 19 was accepted on busy evidence (reconcile p95 227 ms, load above 100), and "the quiet-machine re-measure (20 paired runs at load 16 or less) goes to phase 22." Run phase 19's paired lock-hold timing again at load 16 or less, 20 pairs for each of the six paths, with phase 19's method (its notes are in `/tmp/claude/unit/a433b49e-d462-472a-9f5b-3e767f5be8b6/phase19-lock-holds.md`), and record the table in this phase's summary. Every path's p95 must be under 100 ms. A miss is fixed in this phase.
+
+**Files:**
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/drift.rs` — the five slowest binaries
+- `crates/cargo-berth-test-support/src/` — shared fixtures and the in-process runner (route 1)
+- `crates/cargo-berth/src/git/` — status, worktree list and ref reads (route 2)
+- `crates/cargo-berth/tests/process_start_budget.json` — the start pin, lowered to the new count
+- `crates/cargo-berth/src/ledger/` — only if the quiet lock-hold run (Spec 6) misses
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** As phase 18: no thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. Mac runs: one `mac_test.py claim` per run, released when it ends. A natedev run at a load above 16 of 32 is untrusted.
+
+**Acceptance gate:** The estimate table went to the showrunner and its pick is recorded in this Work Order before the build. `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. The quiet paired lock-hold run shows every path under 100 ms at p95.

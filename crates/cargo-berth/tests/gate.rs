@@ -5714,7 +5714,7 @@ fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 /// The configuration commit skips the hooks: with no reservation yet they write nothing, which
 /// `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged` proves.
 fn build_initialized_repository(repository_root: &Path) {
-    build_staged_configuration_repository(repository_root);
+    STAGED_CONFIGURATION_REPOSITORY.restore_into(repository_root);
     git(
         repository_root,
         &[

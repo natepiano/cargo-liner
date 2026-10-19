@@ -961,6 +961,14 @@ pub(crate) fn reachability_to_target(
     if matches!(target_availability, CommitAvailability::ObjectUnknown) {
         return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
     }
+    // A resolved commit contains itself. Retried claims commonly ask only about
+    // this same head, so they need no ancestry walk after object availability.
+    if candidate_ancestors
+        .iter()
+        .all(|candidate| candidate == target)
+    {
+        return Ok(vec![Reachability::Ancestor; candidate_ancestors.len()]);
+    }
     let target_history =
         target_commit_history(repository.repository_root(), &target.to_string())?.graph;
     Ok(candidate_ancestors
@@ -1219,6 +1227,27 @@ mod tests {
 
     /// The lane branch whose history criss-crosses with `main`.
     const CRISS_CROSS_LANE: &str = "lane";
+
+    #[test]
+    fn identical_reachability_candidates_still_require_an_available_target() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let repository = crate::git::RepositorySnapshot::discover(fixture.root())?;
+        let head = fixture.phase_start_head;
+        let missing = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+        assert_eq!(
+            super::reachability_to_target(&repository, &[head.clone(), head.clone()], &head)?,
+            vec![Reachability::Ancestor, Reachability::Ancestor],
+        );
+        assert_eq!(
+            super::reachability_to_target(&repository, std::slice::from_ref(&missing), &missing)?,
+            vec![Reachability::ObjectUnknown],
+        );
+        assert_eq!(
+            super::reachability_to_target(&repository, &[head.clone(), missing], &head)?,
+            vec![Reachability::Ancestor, Reachability::ObjectUnknown],
+        );
+        Ok(())
+    }
 
     #[test]
     fn batched_first_parent_intervals_match_individual_walks() -> FixtureResult {

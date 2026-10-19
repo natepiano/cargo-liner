@@ -76,6 +76,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -308,9 +309,9 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const BLOCKING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "worktree" ] && [ "$3" = "list" ]; then
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "worktree" ] && [ "$3" = "list" ] && [ ! -e "$CARGO_BERTH_TEST_BOARD_SIGNAL" ]; then
     : > "$CARGO_BERTH_TEST_BOARD_SIGNAL"
-    while [ ! -e "$CARGO_BERTH_TEST_BOARD_RELEASE" ]; do sleep 0.01; done
+    IFS= read -r release < "$CARGO_BERTH_TEST_BOARD_RELEASE"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -1622,12 +1623,17 @@ fn replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards() 
 }
 
 #[test]
-fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
+fn board_sections_share_one_committed_generation_when_a_claim_arrives_during_preparation() {
     let repository = initialized_repository();
     let wrapper_directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
-    let signal_path = wrapper_directory.path().join("board-has-lock");
+    let signal_path = wrapper_directory.path().join("board-preparation-paused");
     let release_path = wrapper_directory.path().join("release-board");
+    let fifo = Command::new("mkfifo")
+        .arg(&release_path)
+        .output()
+        .expect("board release FIFO should create");
+    assert_success(&fifo);
     fs::write(&wrapper_path, BLOCKING_GIT_WRAPPER).expect("blocking wrapper should write");
     let mut permissions = fs::metadata(&wrapper_path)
         .expect("blocking wrapper metadata should read")
@@ -1658,7 +1664,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     }
     assert!(
         signal_path.exists(),
-        "board should reach its locked repository read"
+        "board should pause its repository preparation"
     );
 
     let claim = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
@@ -1676,15 +1682,15 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("concurrent claim should spawn");
+    let claim_output = claim
+        .wait_with_output()
+        .expect("claim should complete while board preparation is paused");
+    assert_success(&claim_output);
     fs::write(&release_path, b"release\n").expect("board release signal should write");
     let board_output = board
         .wait_with_output()
         .expect("board should complete after release");
-    let claim_output = claim
-        .wait_with_output()
-        .expect("claim should complete after board releases the lock");
-    assert!(board_output.status.success());
-    assert!(claim_output.status.success());
+    assert_success(&board_output);
 
     let board = json_output(&board_output);
     let data = &board["payload"]["data"];
@@ -1699,19 +1705,20 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     ] {
         assert_eq!(&data[section]["journal_position"], position);
     }
-    assert_eq!(
-        data["unconstrained_reservations"]["entries"],
-        serde_json::json!([])
-    );
     let concurrent_id = reservation_id(&claim_output);
-    assert!(!data.to_string().contains(&concurrent_id));
-    assert!(
+    let entries = data["unconstrained_reservations"]["entries"]
+        .as_array()
+        .expect("unconstrained reservations should be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["reservation_id"], concurrent_id);
+    assert!(data.to_string().contains(&concurrent_id));
+    assert_eq!(
         fs::metadata(repository.path().join(JOURNAL_PATH))
             .expect("journal metadata should read")
-            .len()
-            > position["journal_byte_offset"]
-                .as_u64()
-                .expect("board offset should be numeric")
+            .len(),
+        position["journal_byte_offset"]
+            .as_u64()
+            .expect("board offset should be numeric")
     );
 }
 

@@ -86,7 +86,7 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
 const COMMITTED_POLICY_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "committed-policy",
     build: |root| {
-        build_initialized_repository(root, GitReferenceStorage::Loose);
+        INITIALIZED_REPOSITORY.restore_into(root);
         GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
         GIT.run_without_hooks(
             root,
@@ -2478,6 +2478,7 @@ fn json_output(output: &Output) -> serde_json::Value {
 mod merge_extent {
     #![allow(
         clippy::expect_used,
+        clippy::panic,
         reason = "integration fixtures should stop on invalid git histories or command output"
     )]
 
@@ -2960,6 +2961,93 @@ mod merge_extent {
         assert_eq!(
             scope_paths(&running["merge_extent"]["scopes"]),
             BTreeSet::from(["tracked.rs".to_owned()])
+        );
+    }
+
+    #[test]
+    fn reconciliation_reobserves_uncommitted_work_after_a_concurrent_widen() {
+        use std::io::Write as _;
+        let fixture = Repository::with_trunk_requester();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        board(fixture.trunk());
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        let directory = fixture.trunk().join(".git/cargo-berth");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.join("mutation.lock"))
+            .expect("mutation lock should open");
+        lock.lock().expect("writer should hold the ledger lock");
+        let ready = fixture.worktrees.path().join("reconcile-ready");
+        let mut child = berth_command(BERTH)
+            .args(["board", "--json"])
+            .current_dir(fixture.trunk())
+            .env("CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH", &ready)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("reconciliation should start");
+        while !ready.exists() {
+            if child
+                .try_wait()
+                .expect("child status should be readable")
+                .is_some()
+            {
+                let output = child
+                    .wait_with_output()
+                    .expect("child output should be readable");
+                panic!("reconciliation exited before signaling preparation: {output:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // This writer owns the descriptor. Its new file and widening fact land after the
+        // reconciler observed a clean, integrated holder but before it can acquire.
+        write(&fixture.holder, "new-uncommitted.rs", "new work\n");
+        let events = super::journal_events(fixture.trunk());
+        let claim = events
+            .iter()
+            .find(|event| event["op"] == "claim" && event["reservation_id"] == id)
+            .expect("holder claim should exist");
+        let generation = events
+            .iter()
+            .filter_map(|event| event["projection_generation"].as_u64())
+            .max()
+            .expect("journal generation")
+            + 1;
+        let event = serde_json::json!({
+            "schema_version": claim["schema_version"], "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
+            "actor": claim["actor"], "at": claim["at"], "projection_generation": generation,
+            "op": "widen", "reservation_id": id,
+            "added_scopes": [{"path": "new-uncommitted.rs", "kind": "file"}],
+            "cause": {"kind": "explicit", "reason": "work arrives during reconciliation"},
+            "authorization": {"kind": "no_conflict"}, "edit_blocking_status": "blocking",
+        });
+        let mut journal = fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join("journal.ndjson"))
+            .expect("held writer journal should open");
+        serde_json::to_writer(&mut journal, &event).expect("widen should encode");
+        journal.write_all(b"\n").expect("widen should append");
+        journal.sync_all().expect("widen should be durable");
+        lock.unlock().expect("writer should release the lock");
+        let output = child
+            .wait_with_output()
+            .expect("reconciliation should finish");
+        assert_success(&output);
+        let observed = json(&output);
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "active", "{observed}");
+        assert_eq!(
+            scope_paths(&reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["new-uncommitted.rs".to_owned()])
+        );
+        assert!(
+            !super::journal_events(fixture.trunk())
+                .iter()
+                .any(|event| event["reservation_id"] == id
+                    && matches!(event["op"].as_str(), Some("checkpoint" | "release"))),
+            "new uncommitted work must not be checkpointed or released"
         );
     }
 
