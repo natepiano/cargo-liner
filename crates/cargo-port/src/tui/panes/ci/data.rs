@@ -49,9 +49,8 @@ impl CiData {
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.project_list.selected_project_path();
     let has_ci_owner = app.project_list.selected_ci_path().is_some();
-    // CI branch, toggle, and display mode resolve to the checkout root
-    // that owns them, so a workspace member reads the same values as its
-    // parent row.
+    // `ci_branch_owner_path` resolves `ci_owner` for branch, toggle and display-mode lookups, so
+    // workspace members read their owning checkout's values.
     let ci_owner = selected_path.map(|path| app.project_list.ci_branch_owner_path(path));
     let git_info = ci_owner
         .as_ref()
@@ -75,10 +74,8 @@ pub fn build_ci_data(app: &App) -> CiData {
                 .is_some_and(|owner| app.ci.display_mode_label_for(owner.as_path()) == "branch")
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
-    // "Do we have a GitHub-parseable remote?" is a per-repo question and
-    // must not depend on whether the current branch has an upstream — a
-    // checkout on a branch without upstream tracking still belongs to
-    // the repo.
+    // `CiRemoteAccess::of(repo_info)` checks GitHub remote access independently of branch upstream
+    // tracking, since a branch without upstream still belongs to that repository.
     let remote_access = CiRemoteAccess::of(repo_info);
     let applicability = selected_path.map_or(CiApplicability::Applies, |path| {
         app.project_list.ci_applicability(path)
