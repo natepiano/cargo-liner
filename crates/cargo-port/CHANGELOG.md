@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Project-list ordering no longer allocates for each comparison. Discovery comparison and deletion lookup tests count allocations directly, so machine load no longer causes timing failures.
 - A git command that fails is shown as `unreadable` in the Git pane and as `⛔` in the project list, instead of reading as a clean status, an existing branch or remote ref, or a missing value.
 - The vs-local comparison no longer assumes the configured main branch exists; it is hidden when no configured main branch exists locally.
 - A checkout whose HEAD git cannot read shows `HEAD unreadable` in the Git pane's Branch row instead of reporting the checkout as unborn.

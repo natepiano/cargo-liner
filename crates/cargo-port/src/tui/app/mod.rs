@@ -15234,7 +15234,6 @@ mod tests {
     mod worktrees {
         use std::collections::BTreeMap;
         use std::collections::HashMap;
-        use std::time::Duration;
 
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
@@ -16506,48 +16505,67 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_does_not_allocate_per_comparison() {
-            const DISCOVERY_PROJECTS: usize = 200;
-            const MAX_DISCOVERY_ELAPSED: Duration = std::time::Duration::from_millis(500);
+            const VISIBLE_PROJECTS: usize = 8;
+
+            fn allocations_for_discovery(app: &mut App, project_count: usize) -> usize {
+                app.project_list = ProjectList::default();
+                for index in 0..project_count {
+                    let path = format!("/abs/project_{index:04}");
+                    let mut package = make_package_raw(None, &path, None);
+                    // Keep the visible-row buffer the same size in both fixtures.
+                    // Dismissed roots still participate in insertion comparisons.
+                    if index >= VISIBLE_PROJECTS {
+                        package.visibility = Dismissed;
+                    }
+                    app.project_list
+                        .push(RootItem::Rust(RustProject::Package(package)));
+                }
+                let path = format!("/abs/project_{project_count:04}");
+                let newcomer =
+                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
+                // The new leaf sorts last, so insertion compares it with every root.
+                let (inserted, allocations) =
+                    test_support::count_allocations(|| app.handle_project_discovered(newcomer));
+                assert!(inserted);
+                assert_eq!(app.project_list.len(), project_count + 1);
+                assert_eq!(app.project_list[project_count].path(), &test_path(&path));
+                allocations
+            }
 
             let mut app = make_app(&[]);
-            let start = std::time::Instant::now();
-            for i in 0..DISCOVERY_PROJECTS {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.handle_project_discovered(item);
-            }
-            let elapsed = start.elapsed();
-            assert_eq!(app.project_list.len(), DISCOVERY_PROJECTS);
-            assert!(
-                elapsed < MAX_DISCOVERY_ELAPSED,
-                "discovery of {DISCOVERY_PROJECTS} projects took {elapsed:?}; expected less than {MAX_DISCOVERY_ELAPSED:?}"
+            let small = allocations_for_discovery(&mut app, VISIBLE_PROJECTS);
+            let large = allocations_for_discovery(&mut app, 200);
+            assert_eq!(
+                large, small,
+                "discovery allocations must not grow with comparisons"
             );
         }
 
         #[test]
         fn is_deleted_does_not_allocate_display_paths() {
-            let mut app = make_app(&[]);
-            for i in 0..200 {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.project_list.push(item);
+            let mut project_list = ProjectList::default();
+            for index in 0..200 {
+                let path = format!("/abs/project_{index}");
+                project_list.push(RootItem::Rust(RustProject::Package(make_package_raw(
+                    None, &path, None,
+                ))));
             }
-            let target = app.project_list[100].path().to_path_buf();
-            app.project_list
+            let target = project_list[199].path().to_path_buf();
+            let visible = project_list[0].path().to_path_buf();
+            let missing = Path::new("/abs/missing_project");
+            project_list
                 .at_path_mut(&target)
                 .expect("target project should exist")
                 .visibility = Deleted;
-            let start = std::time::Instant::now();
-            for _ in 0..1000 {
-                let _ = app.project_list.is_deleted(&target);
-            }
-            let elapsed = start.elapsed();
-            assert!(
-                elapsed.as_millis() < 100,
-                "1000 is_deleted calls took {elapsed:?} -- possible display_path allocation regression"
-            );
+            let (deleted, allocations) = test_support::count_allocations(|| {
+                (
+                    project_list.is_deleted(&target),
+                    project_list.is_deleted(&visible),
+                    project_list.is_deleted(missing),
+                )
+            });
+            assert_eq!(deleted, (true, false, false));
+            assert_eq!(allocations, 0, "deletion lookups must borrow paths");
         }
     }
 

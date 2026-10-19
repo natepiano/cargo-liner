@@ -373,3 +373,61 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — accounts gradient and header-sort rendering tests in `summary/`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary shows the gradient and sorts on a header click. The checkpoint carries `Change-Review: account resets shade from green (soonest) to red (latest), and accounts headers sort on click | open the summary and click each accounts header`.
+
+### Phase 13 — Discovery tests prove no allocation without a clock  · status: done
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** two cargo-port tests prove that a hot path allocates nothing for each comparison, with no wall-clock limit, and each runs in under a second.
+
+**Source:** the showrunner, 2026-10-19: `tui::app::tests::worktrees::handle_project_discovered_does_not_allocate_per_comparison` failed a natedev merge gate under load ("discovery of 200 projects took 523.202375ms; expected less than 500ms") and takes 2 s.
+
+**Constraints from prior phases:**
+- No counting allocator exists in the workspace (no `GlobalAlloc`, `dhat` or `stats_alloc`).
+- No test may take a second, and a test must not fail because of machine load.
+
+**Spec:**
+1. `handle_project_discovered_does_not_allocate_per_comparison` (`crates/cargo-port/src/tui/app/mod.rs` ≈16508) loses `MAX_DISCOVERY_ELAPSED` and its `Instant`. It proves the property directly: a test-only counting global allocator with a per-thread counter, enabled only for cargo-port's test build, shows that the allocations of one `handle_project_discovered` call do not grow with the number of projects already in the list (compare the count at a small list and at a large list). A comparison-count proof is acceptable only when the allocator cannot work.
+2. `is_deleted_does_not_allocate_display_paths` (≈16527) has the same wall-clock assert (1000 calls under 100 ms). Give it the same direct proof: `is_deleted` allocates zero times.
+3. Each test fails when the comparison path allocates (state in the summary how this was checked), and runs in under a second.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/mod.rs`
+- `crates/cargo-port/src/test_support.rs`, `crates/cargo-port/src/main.rs` — the test-only counting allocator and its registration
+- `crates/cargo-port/src/project/root_item.rs`, `crates/cargo-port/src/project/paths.rs` — `RootItem::list_order` compares without allocating (review round 1: it allocated a `String` and a `Vec<char>` for both sides of every comparison)
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer.
+- `impl` — both tests and the counting allocator.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` clean; both tests under a second.
+
+### Phase 14 — Every cargo-port test runs under a second  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** no cargo-port test takes 1 s or more on the Mac in a full package run.
+
+**Source:** the showrunner, 2026-10-19, from the phase 13 full run: 24 cargo-port tests took 1 s or more on the Mac (for example `unreadable_branch_evidence_hides_cached_runs_in_ci_pane` 1.639 s, `corrupt_remote_head_renders_unreadable_branch_and_marks_project` 1.529 s, `unreadable_remote_listing_renders_unreadable_ci_instead_of_missing_remote` 1.283 s).
+
+**Constraints from prior phases:**
+- No test may take a second, and no test may fail because of machine load. A cut that only holds on a quiet machine is not a fix.
+- Fix the shared cause, not each test: find what the slow tests have in common (fixture setup, real `git` processes, waits or sleeps, a shared runtime) before any edit.
+
+**Spec:**
+1. Measure: list every cargo-port test at 1 s or more in a full Mac run, and for each, where its time goes. Write the shared causes in the summary, with the measured cost of each.
+2. Fix each shared cause where it lives (fixture helpers, `test_support.rs`, the production code a test waits on), so that every test that uses it gets faster. A test keeps every assertion it has; only its cost changes.
+3. Exit: a full `verify.sh test cargo-port` on the Mac with no test at 1 s or more. State the slowest test and its time.
+
+**Files:**
+- `crates/cargo-port/src/`
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer.
+- `impl` — measurement, the shared-cause fixes and CHANGELOG.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` clean on the Mac, with no test at 1 s or more.
