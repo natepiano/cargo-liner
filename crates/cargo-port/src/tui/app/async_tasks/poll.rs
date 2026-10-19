@@ -91,11 +91,9 @@ impl App {
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
                     if chain_older {
-                        // Sync turned up nothing; schedule the follow-up
-                        // Schedule `CiFetchKind::Older` using the
-                        // (unchanged) cached tail as the cursor. Preserve
-                        // the existing toast so the user sees one
-                        // continuous "Fetching CI" task.
+                        // handle_ci_fetch_complete returned chain_older with no new runs; schedule
+                        // PendingCiFetch with CiFetchKind::Older using the unchanged cached tail
+                        // cursor and retain ci.fetch_toast for one continuous Fetching CI task.
                         let oldest_created_at = self
                             .project_list
                             .ci_info_for(Path::new(&path))

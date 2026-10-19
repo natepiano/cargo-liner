@@ -12,13 +12,10 @@ impl App {
     /// the GitHub repo-fetch lifecycle.
     pub(super) fn handle_crates_io_fetch_queued(&mut self, name: String) {
         let now = Instant::now();
-        // Grow the crates.io denominator for as long as the startup panel
-        // is open — mirrors `handle_repo_fetch_queued`. A fetch queued
-        // outside the upfront plan (a submodule, the priority fetch, a
-        // recovery refetch) joins the row, and a re-fetch of an
-        // already-seen name un-marks it, so the row cannot read done
-        // while this fetch is in flight. Once the panel has closed, the
-        // fetch only drives the steady-state toast.
+        // While startup.is_collecting, startup.crates_io.expected gains name and seen loses it,
+        // including submodule/priority/recovery requests outside the initial plan. This prevents
+        // done while a refetch is active; after panel closure sync_running_crates_io_toast owns the
+        // standalone toast. This matches handle_repo_fetch_queued.
         if self.startup.is_collecting() {
             self.startup.crates_io.expected.insert(name.clone());
             self.startup.crates_io.seen.remove(&name);
@@ -26,12 +23,9 @@ impl App {
             // `name` is now expected but unseen.
             self.startup.crates_io.complete_at = None;
         } else if let Some(scan_complete_at) = self.startup.scan_complete_at {
-            // Steady state owns the standalone "Fetching crates.io info"
-            // toast, so this queue creates it. A cluster of these at a small
-            // `since_scan_complete_ms` is the post-startup refetch leak — a
-            // recovery refetch that landed after the panel handed off. A
-            // genuine steady-state fetch (user refresh, file change) logs a
-            // large elapsed and is easy to tell apart.
+            // sync_running_crates_io_toast owns the standalone toast after startup;
+            // since_scan_complete_ms distinguishes a recovery refetch leak just after handoff from
+            // later user/file-change fetches.
             tracing::trace!(
                 target: PERF_LOG_TARGET,
                 crate_name = %name,

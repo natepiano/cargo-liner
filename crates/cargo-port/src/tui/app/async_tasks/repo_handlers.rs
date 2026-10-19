@@ -154,15 +154,12 @@ impl App {
             "checkout_info_applied"
         );
         let status = info.status;
-        // Vendored crates and workspace members share their owning checkout's
-        // `.git`, so a probe of their path resolves up to the worktree and
-        // reports the worktree's branch / main delta and tracked ref — none of
-        // which describe the child. They have no independent git identity (CI,
-        // branch, and lint already resolve them to the owner), so never store
-        // worktree state under a child path. The startup-tracking and
-        // repo-fetch bookkeeping below still runs: those resolve `path` to the
-        // owner's git directory / repo, so a child-path probe correctly counts
-        // toward the owner.
+        // Workspace members and vendored paths share an owning checkout: stores_own_git_state
+        // prevents storing CheckoutInfo::status/branch/main_delta/tracked_ref into child
+        // ProjectInfo::local_git_state; startup_git_directory_for_path and maybe_trigger_repo_fetch
+        // still resolve path to its owner so bookkeeping counts toward the owner. Their path probes
+        // resolve to the worktree's .git and report its state, which does not describe the child;
+        // CI, branch and lint already resolve ownership to that checkout.
         let stores_own_git_state = !self.project_list.is_vendored_path(path)
             && !self.project_list.is_workspace_member_path(path);
         if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
@@ -364,13 +361,10 @@ impl App {
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        // Grow the repo denominator for as long as the startup panel is open,
-        // so a fetch queued after local-git completes (and the denominator
-        // stabilized) still feeds the GitHub row and holds the panel until it
-        // finishes. A re-fetch of an already-seen repo un-marks it, so the
-        // row cannot read done while this fetch is in flight. Once the panel
-        // has closed, the fetch only drives the steady-state "Retrieving
-        // GitHub repo details" toast.
+        // While startup.is_collecting, startup.repo.expected gains repo and seen/complete_at are
+        // reset even after local-git denominator stabilization, holding the GitHub row until
+        // completion; after closure net.github_running_mut and sync_running_repo_fetch_toast drive
+        // only the steady-state toast.
         if self.startup.is_collecting() {
             self.startup.repo.expected.insert(repo.clone());
             self.startup.repo.seen.remove(&repo);
@@ -595,12 +589,10 @@ impl App {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
         let service_item = item.clone();
-        // Replace the leaf in project_list_items, transferring runtime data
-        // from the old item to the incoming one. `worktree_health` is
-        // filesystem-detected at refresh time and must survive the info copy.
-        // `worktree_status` is no longer on `ProjectInfo` — it lives directly
-        // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
-        // assign to `worktree_status`.
+        // tree.replace_leaf_by_path replaces the project_list leaf and collect_project_info
+        // transfers runtime state; preserve freshly probed ProjectInfo::worktree_health, while
+        // worktree_status stays on Workspace/Package/NonRustProject and cannot be overwritten
+        // through ProjectInfo.
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
         let dispatch = self.metadata_dispatch();
         {

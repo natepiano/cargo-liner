@@ -55,13 +55,10 @@ impl App {
         let result = keymap::load_keymap(vim_mode);
         self.keymap.replace_current(result.keymap);
         self.keymap.sync_stamp();
-        // The framework keymap (built in `ignore_unknown_entries` mode)
-        // is the authoritative record of unknown actions/scopes across
-        // every scope, so surface those. Reaching here means the
-        // framework build succeeded, so the only legacy errors possible
-        // are `UnknownAction`s already covered by the framework
-        // warnings; keep any other legacy diagnostics in case the two
-        // loaders disagree.
+        // framework_keymap.unknown_warnings is authoritative across scopes after
+        // ignore_unknown_entries build succeeds; suppress duplicate
+        // KeymapErrorReason::UnknownAction from result.errors but retain other legacy-loader
+        // diagnostics if loaders disagree.
         let diagnostics: Vec<String> = result
             .errors
             .iter()
@@ -278,11 +275,10 @@ impl App {
             &appearance_cfg.dark_theme,
             self.themes.os_appearance(),
         );
-        // When the resolved theme's appearance disagrees with the
-        // terminal's actual background (e.g. a forced dark theme on a
-        // light terminal), paint the theme's base background so the text
-        // stays readable; otherwise leave the terminal showing through.
-        // A solid screen paints that background whatever the terminal is.
+        // background_when_mismatched selects frame_background from resolved.appearance and
+        // themes.terminal_appearance for transparent mode: paint the theme base background on a
+        // mismatch (such as forced dark on light) to keep text readable, otherwise leave the
+        // terminal showing through. Solid mode always paints resolved.theme.text.bg_focus.color.
         let ground = resolved.theme.text.bg_focus.color;
         let transparent = appearance_cfg.transparent.is_transparent();
         let frame_background = if transparent {
@@ -397,11 +393,10 @@ impl App {
 
         if prev_force != next_force {
             self.net.set_force_github_rate_limit(next_force.is_forced());
-            // Synthesize a signal so the UI reflects the flag flip
-            // immediately instead of waiting for the next natural
-            // GitHub request — otherwise toggling the flag would look
-            // broken until the next refresh. The force flag simulates a
-            // rate-limit (not a network outage), so emit `RateLimited`.
+            // apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub)) reflects
+            // next_force immediately rather than waiting for a natural request; the debug flag
+            // simulates quota exhaustion, not network outage. mark_service_recovered handles
+            // disabling it.
             if next_force.is_forced() {
                 self.apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub));
             } else {
