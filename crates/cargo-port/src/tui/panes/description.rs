@@ -310,9 +310,9 @@ mod tests {
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
 
-        // Pre-truncation rows - the render path's ellipsis is applied
-        // when `max_height` clamps below `rows.len()`. natural_sync_height
-        // reflects what feeds the inter-pane sync.
+        // `DescriptionBlock::rows()` exposes pre-truncation rows; `render_with_selection` applies
+        // the ellipsis when `max_height` clamps below the row count, while `natural_sync_height`
+        // supplies the inter-pane sync height.
         assert!(block.rows().len() > 2);
         assert_eq!(block.rows()[0], "one two three");
     }
