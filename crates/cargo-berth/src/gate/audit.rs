@@ -19,6 +19,7 @@ use crate::ledger::ReconciliationValidation;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
 use crate::reconcile::GateReconciliationPurpose;
+use crate::reconcile::PreparedCommittedHookReconciliation;
 
 pub(super) fn commit_forced_permit_audits(
     worktree_context: &WorktreeContext,
@@ -38,30 +39,26 @@ pub(super) fn commit_forced_permit_audits(
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
+    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
     decision::retry_rewrite_reconciliation(|| {
-        let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
-        let rewrite_preflight =
-            reconcile::prepare_rewrite_reconciliation(&repository, &ledger, berth_config)
-                .map_err(GateError::Reconciliation)?;
         let outcome = ledger
             .transact_reconciliation(
                 journal_mutation_actor.worktree_id,
                 journal_mutation_actor.coordination_run_id,
                 |state| {
-                    let prepared = match reconcile::prepare_gate_reconciliation(
-                        &state,
+                    let observation =
+                        reconcile::GenerationBoundReconciliation::new(state, &repository);
+                    let state = observation.state();
+                    let prepared = match decision::prepare_gate_reconciliation(
+                        &observation,
+                        &ledger,
                         ledger_repository,
                         berth_config,
                         update,
                         GateReconciliationPurpose::CommittedAudit,
-                        rewrite_preflight,
                     ) {
                         Ok(prepared) => prepared,
-                        Err(error) => {
-                            return ReconciliationValidation::Reject(
-                                GateTransactionRejection::Reconciliation(error),
-                            );
-                        },
+                        Err(error) => return ReconciliationValidation::Reject(error),
                     };
                     let newly_reachable = match decision::newly_reachable_commits(
                         worktree_context.repository_root(),
@@ -90,8 +87,18 @@ pub(super) fn commit_forced_permit_audits(
                         Ok(decision) => decision,
                         Err(error) => return ReconciliationValidation::Reject(error),
                     };
-                    let (operations, cover_actors, action) =
-                        prepared.into_committed_hook_action(operations);
+                    let PreparedCommittedHookReconciliation {
+                        operations,
+                        cover_actors,
+                        action,
+                    } = match prepared.into_committed_hook_action(operations) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            return ReconciliationValidation::Reject(
+                                GateTransactionRejection::Git(error),
+                            );
+                        },
+                    };
                     ReconciliationValidation::Apply {
                         operations,
                         cover_actors,

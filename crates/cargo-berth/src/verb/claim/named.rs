@@ -55,6 +55,7 @@ use crate::reservation::ReservationConflict;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::PathCase;
 use crate::session;
+use crate::session::PreparedSessionMappingPublication;
 
 /// Resolve identity once, then bind the answer and scope change under the ledger lock.
 pub(super) fn acquire(
@@ -105,15 +106,44 @@ pub(super) fn acquire(
         maximum_ordering_edges: config.maximum_ordering_edges,
         repository_trunk,
     };
+    let selection = std::cell::RefCell::new(PreparedSessionMappingPublication::Unchanged);
     let result = ledger.transact_with_committed_action_and_consume_locked_outcome(
         actor.worktree_id,
         actor.coordination_run_id,
-        |state| match validate(&state, reservation_id, scopes.clone(), &context) {
-            Ok(validation) => validation,
-            Err(rejection) => CommittedActionValidation::Reject(rejection),
+        |state| {
+            *selection.borrow_mut() = session::PreparedSessionMappingPublication::prepare_selection(
+                &context.worktree_context.ledger_directory(),
+                context.run_validation.actor_run_id(),
+                reservation_id,
+            );
+            match validate(&state, reservation_id, scopes.clone(), &context) {
+                Ok(validation) => validation,
+                Err(rejection) => CommittedActionValidation::Reject(rejection),
+            }
         },
         Ok::<_, Infallible>,
-        |outcome| consume(outcome, &context, reservation_id, &config),
+        |mut outcome| {
+            match &mut outcome {
+                LedgerCommittedActionOutcome::Appended {
+                    output,
+                    session_mapping_publication,
+                }
+                | LedgerCommittedActionOutcome::AlreadySatisfied {
+                    output,
+                    session_mapping_publication,
+                } if matches!(
+                    output.kind,
+                    ReservationAcquisitionKind::AlreadyHeld | ReservationAcquisitionKind::Answered
+                ) =>
+                {
+                    *session_mapping_publication = selection
+                        .replace(PreparedSessionMappingPublication::Unchanged)
+                        .publish(&context.worktree_context.ledger_directory());
+                },
+                _ => {},
+            }
+            consume(outcome, &context, &config)
+        },
     );
     match result {
         Ok(execution) => {
@@ -130,7 +160,6 @@ pub(super) fn acquire(
 fn consume(
     outcome: LedgerCommittedActionOutcome<ClaimRejection, CommittedReservationAcquisition>,
     context: &ClaimValidationContext,
-    reservation_id: ReservationId,
     config: &BerthConfig,
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
@@ -142,20 +171,7 @@ fn consume(
             output: committed,
             session_mapping_publication,
         } => {
-            // Answer events do not normally publish identity. A named claim explicitly does.
-            let publication = if matches!(
-                committed.kind,
-                ReservationAcquisitionKind::AlreadyHeld | ReservationAcquisitionKind::Answered
-            ) {
-                session::publish_reservation_identity(
-                    &context.worktree_context.ledger_directory(),
-                    context.run_validation.actor_run_id(),
-                    reservation_id,
-                )
-            } else {
-                session_mapping_publication
-            }
-            .for_explicit_reservation_selection();
+            let publication = session_mapping_publication.for_explicit_reservation_selection();
             let CommittedReservationAcquisition {
                 kind,
                 reservation_id,

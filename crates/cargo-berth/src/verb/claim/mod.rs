@@ -115,6 +115,7 @@ pub(crate) use recovery_command::ClaimRecoverySelector;
 use super::refusal;
 use crate::git::RepositorySnapshot;
 use crate::ledger::JournalEvent;
+use crate::session::PreparedSessionMappingPublication;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
@@ -236,6 +237,7 @@ struct PreparedClaim {
     coordination_identity_provenance: CoordinationIdentityProvenance,
 }
 
+#[derive(Clone)]
 struct ClaimValidationContext {
     repository:             Arc<RepositorySnapshot>,
     run_validation:         ClaimRunValidation,
@@ -675,10 +677,10 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
             )
     }
 
-    /// Choose the reservation named by the harness-session mapping read under the ledger lock.
+    /// Choose the reservation named by the prepared harness-session mapping.
     ///
-    /// The mapping is read inside the transaction, so it cannot move between that read and this
-    /// decision. The acting coordination run is not: it is the invoking process's own identity,
+    /// The transaction checks the mapping publication identity under the lock and prepares again
+    /// if it moved. The acting coordination run is the invoking process's own identity,
     /// resolved before the lock. A mapping naming a different run is therefore treated as no
     /// usable mapping and falls through to the unmapped selection, which admits only reservations
     /// belonging to the acting run — so a mapping written by another run can never redirect this
@@ -917,7 +919,7 @@ fn acquire_new(
     let outcome = prepared_claim.transact(
         &ledger,
         journal_mutation_actor,
-        ClaimValidationContext {
+        &ClaimValidationContext {
             repository: claim_repository_facts.repository,
             run_validation: claim_run_validation,
             worktree_context: worktree_context.clone(),
@@ -1166,8 +1168,7 @@ fn acquire_first_touch_with_reservation_selection(
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
     };
-    let execution =
-        transact_first_touch(&ledger, prepared_claim.clone(), validation_context.clone())?;
+    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
     // Only a refusal of the whole request stops the caller, so only it records the default.
     let (
         FirstTouchClaimExecution::Blocked { .. },
@@ -1183,25 +1184,44 @@ fn acquire_first_touch_with_reservation_selection(
         &prepared_claim.target.target,
         &validation_context,
     )?;
-    let execution = transact_first_touch(&ledger, prepared_claim, validation_context)?;
+    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
     Ok(Enrollment::Enrolled(
         execution.answered_by_default(answered),
     ))
 }
 
-/// Run one locked first-touch transaction and publish what it committed.
+/// Prepare a first-touch decision, validate its generation, and publish its committed result.
 fn transact_first_touch(
     ledger: &Ledger,
-    prepared_claim: PreparedClaim,
-    validation_context: FirstTouchValidationContext,
+    prepared_claim: &PreparedClaim,
+    validation_context: &FirstTouchValidationContext,
 ) -> Result<FirstTouchClaimExecution, ClaimError> {
     let coordination_run_id = validation_context.coordination_run_id;
     let reservation_selection = validation_context.reservation_selection;
     let worktree_context = validation_context.worktree_context.clone();
+    let selection = std::cell::RefCell::new(PreparedSessionMappingPublication::Unchanged);
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
         validation_context.worktree_id,
         coordination_run_id,
-        |state| validate_first_touch_transaction(&state, prepared_claim, validation_context),
+        |state| {
+            let validation = validate_first_touch_transaction(
+                &state,
+                prepared_claim.clone(),
+                validation_context.clone(),
+            );
+            *selection.borrow_mut() = match &validation {
+                CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
+                    acquisition,
+                    session_mapping: AlreadyHeldSessionMapping::PublishSelectedReservation,
+                }) => session::PreparedSessionMappingPublication::prepare_selection(
+                    &worktree_context.ledger_directory(),
+                    coordination_run_id,
+                    acquisition.reservation_id,
+                ),
+                _ => PreparedSessionMappingPublication::Unchanged,
+            };
+            validation
+        },
         Ok::<_, Infallible>,
         |outcome| {
             first_touch_execution_from_outcome(
@@ -1209,6 +1229,7 @@ fn transact_first_touch(
                 coordination_run_id,
                 reservation_selection,
                 &worktree_context,
+                selection.replace(PreparedSessionMappingPublication::Unchanged),
             )
         },
     );
@@ -1221,7 +1242,7 @@ fn transact_first_touch(
 
 /// Record the repository's default answer to every foreign holder of a refused first touch.
 ///
-/// The conflicts are recomputed under the ledger lock. Any refusal here appends nothing and
+/// Conflicts are prepared before acquisition and checked against intervening events. A refusal
 /// answers no holder; the first touch retried after it reports whatever still stops the edit.
 fn record_first_touch_default_answer(
     ledger: &Ledger,
@@ -1283,6 +1304,7 @@ fn first_touch_execution_from_outcome(
     coordination_run_id: CoordinationRunId,
     reservation_selection: CheckReservationSelection,
     worktree_context: &WorktreeContext,
+    selection: PreparedSessionMappingPublication,
 ) -> Result<FirstTouchClaimExecution, ClaimError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
@@ -1307,11 +1329,7 @@ fn first_touch_execution_from_outcome(
                     SessionIdentityMappingPublication::LeftUnmapped
                 },
                 AlreadyHeldSessionMapping::PublishSelectedReservation => {
-                    session::publish_reservation_identity(
-                        &worktree_context.ledger_directory(),
-                        coordination_run_id,
-                        output.reservation_id,
-                    )
+                    selection.publish(&worktree_context.ledger_directory())
                 },
             };
             let session_mapping_publication =
@@ -1622,7 +1640,7 @@ fn validate_claim_transaction(
     }
 }
 
-/// Replay the locked reservations, observe the acting head, and validate the acting run.
+/// Read the prepared reservations, observe the acting head, and validate the acting run.
 fn locked_claim_reservations(
     state: &ReplayedLedgerState<'_>,
     run_validation: ClaimRunValidation,
@@ -2595,17 +2613,17 @@ fn count_reaches_limit(count: usize, maximum: u32) -> bool {
 }
 
 impl PreparedClaim {
-    /// Validate and publish the prepared claim while holding the mutation lock.
+    /// Validate the claim before acquisition, then publish it after checking its generation.
     fn transact(
         self,
         ledger: &Ledger,
         requester: ResolvedJournalMutationActor,
-        context: ClaimValidationContext,
+        context: &ClaimValidationContext,
     ) -> Result<LedgerTransactionOutcome<ClaimRejection>, ClaimError> {
         Ok(ledger.transact(
             requester.worktree_id,
             requester.coordination_run_id,
-            |state| validate_claim_transaction(&state, self, context),
+            |state| validate_claim_transaction(&state, self.clone(), context.clone()),
         )?)
     }
 

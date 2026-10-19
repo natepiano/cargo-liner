@@ -608,19 +608,15 @@ const PAUSE_MODE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_PAUSE";
 const PAUSE_MODE_HEAD: &str = "head";
 const PAUSE_MODE_MERGE_BASE: &str = "merge-base";
 const PAUSED_GIT_WRAPPER: &str = r#"#!/bin/sh
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ]; then
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+    IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
 fi
 if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "cat-file" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
     while IFS= read -r expression; do
-        if [ "$expression" = "HEAD" ]; then
+        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
             : > "$CARGO_BERTH_TEST_GIT_READY"
-            while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-                sleep 0.01
-            done
+            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
         fi
         printf '%s\n' "$expression"
     done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
@@ -653,6 +649,14 @@ impl PausedBerthProcess {
         fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
         let ready_path = wrapper_directory.path().join("ready");
         let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo")
+            .arg(&continue_path)
+            .output()
+            .expect("continuation FIFO command should run");
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
         let original_path = std::env::var_os("PATH").expect("test PATH should exist");
         let wrapped_path = std::env::join_paths(
             std::iter::once(wrapper_directory.path().to_path_buf())
@@ -1405,7 +1409,7 @@ fn assert_check_session_rejections(repository: &TempDir) {
 }
 
 #[test]
-fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
+fn rewritten_integration_reachability_leaves_the_mutation_lock_available() {
     let repository = initialized_repository();
     let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     advance_trunk_past(repository.path());
@@ -1432,6 +1436,14 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
         PAUSE_MODE_MERGE_BASE,
     );
     resolution.wait_until_paused();
+    let competing_lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(".git/cargo-berth/mutation.lock"))
+        .expect("ledger mutation lock should exist");
+    competing_lock
+        .try_lock()
+        .expect("recovery Git preparation must leave the mutation lock available");
 
     let contender = run_contended_berth(
         berth_command(BERTH_EXECUTABLE)
@@ -1443,6 +1455,9 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
 
     assert_eq!(contender.status.code(), Some(6));
     assert_eq!(json_output(&contender)["status"], "contention");
+    competing_lock
+        .unlock()
+        .expect("competing holder should unlock");
     let resolution = resolution.continue_and_wait();
     let resolution_envelope = json_output(&resolution);
     assert_eq!(resolution.status.code(), Some(5), "{resolution_envelope}");
@@ -1459,8 +1474,6 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
 #[test]
 fn identity_clear_session_reports_mutation_lock_contention() {
     let repository = initialized_repository();
-    let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    advance_trunk_past(repository.path());
     let session_id = "contended-clear-session";
     let claim = run_berth_with_session(
         repository.path(),
@@ -1473,19 +1486,13 @@ fn identity_clear_session_reports_mutation_lock_contention() {
         ],
         session_id,
     );
-    let reservation_id = reservation_id(&claim);
-    let mut resolution = PausedBerthProcess::spawn(
-        repository.path(),
-        &[
-            "resolve",
-            &reservation_id,
-            "--integrated-as",
-            &earlier_trunk,
-            "--json",
-        ],
-        PAUSE_MODE_MERGE_BASE,
-    );
-    resolution.wait_until_paused();
+    assert!(claim.status.success(), "{}", json_output(&claim));
+    let competing_lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(".git/cargo-berth/mutation.lock"))
+        .expect("ledger mutation lock should exist");
+    competing_lock.lock().expect("competing holder should lock");
 
     let clear_session = run_contended_berth(
         berth_command(BERTH_EXECUTABLE)
@@ -1497,7 +1504,9 @@ fn identity_clear_session_reports_mutation_lock_contention() {
 
     assert_eq!(clear_session.status.code(), Some(6));
     assert_eq!(json_output(&clear_session)["status"], "contention");
-    drop(resolution.continue_and_wait());
+    competing_lock
+        .unlock()
+        .expect("competing holder should unlock");
 }
 
 #[test]

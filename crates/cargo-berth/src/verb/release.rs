@@ -31,13 +31,11 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
-use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
-use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerRetirement;
@@ -342,29 +340,41 @@ fn sweep_current_marker_against_active_reservations(
     worktree_id: WorktreeId,
     coordination_run_id: CoordinationRunId,
 ) -> Result<(), ReleaseError> {
-    let outcome = ledger.transact(worktree_id, coordination_run_id, |state| {
-        let result = state
-            .reservations()
-            .map_err(ReleaseError::ReservationReplay)
-            .and_then(|reservations| {
-                worktree_context
-                    .sweep_coordination_run_marker(|marker_run_id| {
-                        reservations.iter().any(|reservation| {
+    let outcome = ledger
+        .transact_with_committed_action(
+            worktree_id,
+            coordination_run_id,
+            |state| match state.reservations() {
+                Ok(reservations) => CommittedActionValidation::AlreadySatisfied(
+                    reservations
+                        .iter()
+                        .filter(|reservation| {
                             reservation.is_active_for_coordination_run_and_worktree(
-                                marker_run_id,
+                                reservation.actor().run,
                                 worktree_id,
                             )
                         })
-                    })
+                        .map(|reservation| reservation.actor().run)
+                        .collect::<Vec<_>>(),
+                ),
+                Err(error) => {
+                    CommittedActionValidation::Reject(ReleaseError::ReservationReplay(error))
+                },
+            },
+            |active_runs| {
+                worktree_context
+                    .sweep_coordination_run_marker(|run| active_runs.contains(&run))
                     .map_err(ReleaseError::Ledger)
-            });
-        TransactionValidation::Reject(result)
-    })?;
+            },
+        )
+        .map_err(|error| match error {
+            LedgerCommittedActionError::Transaction(error) => ReleaseError::Transaction(error),
+            LedgerCommittedActionError::Action(error) => error,
+        })?;
     match outcome {
-        LedgerTransactionOutcome::Rejected(result) => result,
-        LedgerTransactionOutcome::Appended { .. } => {
-            Err(ReleaseError::UnexpectedMarkerSweepMutation)
-        },
+        LedgerCommittedActionOutcome::AlreadySatisfied { output, .. }
+        | LedgerCommittedActionOutcome::Appended { output, .. } => Ok(output),
+        LedgerCommittedActionOutcome::Rejected(error) => Err(error),
     }
 }
 
@@ -1267,7 +1277,6 @@ enum ReleaseError {
     AlreadyReleased(ReservationId),
     ForeignActiveReservation(ReservationId),
     RequiresReconcileFirst,
-    UnexpectedMarkerSweepMutation,
     EdgeReplay(EdgeReplayError),
 }
 
@@ -1297,9 +1306,6 @@ impl Display for ReleaseError {
             ),
             Self::RequiresReconcileFirst => {
                 formatter.write_str("reservation lifecycle requires reconciliation")
-            },
-            Self::UnexpectedMarkerSweepMutation => {
-                formatter.write_str("marker sweep unexpectedly appended a journal event")
             },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
         }
