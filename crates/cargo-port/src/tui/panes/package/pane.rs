@@ -14,7 +14,7 @@ use crate::tui::panes::RenderStyles;
 use crate::tui::panes::package;
 use crate::tui::render_context::PaneRenderCtx;
 
-// ── Package ─────────────────────────────────────────────────────
+// `PackagePane` owns package content, focus, viewport and per-row hit-test rectangles.
 pub struct PackagePane {
     pub viewport:        Viewport,
     pub focus:           RenderFocus,
