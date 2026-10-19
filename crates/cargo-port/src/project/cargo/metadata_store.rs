@@ -333,9 +333,9 @@ fn capture_config_chain(workspace_root: &Path) -> io::Result<BTreeMap<PathBuf, O
         }
     }
 
-    // Ancestor walk never reached `CARGO_HOME` (e.g. it's outside the
-    // project's ancestor chain). Probe it explicitly so a user-wide
-    // `~/.cargo/config.toml` still participates in the fingerprint.
+    // If the ancestor walk never reaches `cargo_home`, add its config candidates
+    // to `configs` through `optional_stamp`, so user-wide ~/.cargo/config.toml
+    // outside the project ancestry still affects the fingerprint.
     if let Some(home) = cargo_home
         && visited.as_deref() != Some(home.as_path())
     {
@@ -417,9 +417,9 @@ mod tests {
 
     #[test]
     fn identical_bytes_written_via_rename_stay_equal() {
-        // Simulates an editor's atomic-save: write to a temp then rename.
-        // Inode changes, but bytes are identical — fingerprint must NOT
-        // invalidate.
+        // `fs::rename` moves `tmp_path` to `path` to simulate an editor atomic save:
+        // the inode changes but the bytes do not, so `FileStamp::from_path` must
+        // produce equal `first` and `second` fingerprints without invalidation.
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("file.toml");
         write_file(&path, b"payload");
@@ -457,9 +457,9 @@ mod tests {
 
         let before = ManifestFingerprint::capture(&workspace).unwrap();
 
-        // Creating a .cargo/config.toml somewhere in the ancestor chain
-        // must register as a change — the new Some file stamp replaces a
-        // previous None slot.
+        // When `write_file` creates .cargo/config.toml in the ancestor chain,
+        // `ManifestFingerprint::capture` must replace an absent `before.configs`
+        // candidate with a present `FileStamp` in `after.configs`, changing the fingerprint.
         write_file(&workspace.join(".cargo/config.toml"), b"[build]\n");
         let after = ManifestFingerprint::capture(&workspace).unwrap();
 
@@ -615,10 +615,10 @@ mod tests {
 
     #[test]
     fn package_for_path_returns_none_when_metadata_has_no_matching_package() {
-        // Transient case: metadata covers this workspace but the
-        // specific package-dir path doesn't match any manifest (e.g. a
-        // Cargo.toml was just added and the follow-up dispatch hasn't
-        // landed yet). Callers should treat None as "Loading…".
+        // `store.package_for_path` returns None for `phantom_member` while cached
+        // `WorkspaceMetadata` covers the checkout but has no matching manifest
+        // (e.g. after adding Cargo.toml before refreshed metadata arrives).
+        // Consumers should keep Loading….
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
@@ -644,9 +644,9 @@ mod tests {
 
     #[test]
     fn set_out_of_tree_target_bytes_declines_stale_target_dir() {
-        // A follow-up metadata arrival re-pointed target_directory between
-        // the walk's dispatch and its arrival. The old walk must NOT stamp
-        // the new metadata.
+        // `store.upsert` installs `current_target` between the `stale_target` walk's
+        // dispatch and arrival; `set_out_of_tree_target_bytes` must reject that
+        // walk so old measurements cannot overwrite the new metadata.
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let stale_target = AbsolutePath::from(PathBuf::from("/old/target"));

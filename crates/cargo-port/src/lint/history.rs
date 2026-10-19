@@ -81,7 +81,8 @@ pub(super) fn archive_run_output(
         let archived_name = format!("{}.log", command.name);
         let archived_rel = format!("runs/{}/{archived_name}", run.run_id);
 
-        // Resolve the source from the old relative log_file path
+        // Resolve `source` from `command.log_file` under `project_dir` before
+        // assigning `archived_rel` to that field.
         let source = project_dir.join(&command.log_file);
         command.log_file = archived_rel;
 
@@ -298,7 +299,8 @@ fn prune_runs_under(
         return Ok(PruneStats::default());
     }
 
-    // Sort oldest first so we remove the least-recent runs first.
+    // Sort `runs` by `PrunableRun::sort_key`, then history path and line index,
+    // so the least-recent runs are evicted first.
     runs.sort_unstable_by(|lhs, rhs| {
         lhs.sort_key
             .cmp(&rhs.sort_key)
@@ -310,7 +312,8 @@ fn prune_runs_under(
     let mut target = batch_bytes;
     let mut reclaimed: u64 = 0;
 
-    // Track which runs to remove, keyed by history file path.
+    // `removed` maps each `PrunableRun::history_path` to the history line indices
+    // to remove.
     let mut removed: HashMap<AbsolutePath, Vec<usize>> = HashMap::new();
     let mut runs_evicted: usize = 0;
 
@@ -326,7 +329,8 @@ fn prune_runs_under(
             continue;
         }
 
-        // Remove the archived output directory for this run.
+        // Remove `run_dir`, derived from `run.project_cache_dir` and `run.run_id`,
+        // and subtract its bytes.
         let run_dir = run.project_cache_dir.join("runs").join(&run.run_id);
         if run_dir.is_dir() {
             let dir_bytes = total_bytes_under(&run_dir);
@@ -341,15 +345,17 @@ fn prune_runs_under(
             .push(run.line_index);
         runs_evicted += 1;
 
-        // Hit the current batch target but still over the cache limit —
-        // advance to the next fixed 5% multiple.
+        // When `reclaimed` reaches `target` but `total_bytes` exceeds `cache_size`,
+        // advance `target` to the next `batch_bytes` multiple, preserving fixed
+        // 5% batches.
         if reclaimed >= target && total_bytes > cache_size {
             let batches_done = reclaimed / batch_bytes;
             target = batches_done.saturating_add(1).saturating_mul(batch_bytes);
         }
     }
 
-    // Rewrite each affected history file, keeping only non-removed lines.
+    // For each `history_path` in `removed`, `rewrite_history_file` keeps only
+    // indices outside `removed_set`.
     for (history_path, removed_indices) in &removed {
         let file = File::open(history_path)?;
         let reader = BufReader::new(file);
@@ -360,7 +366,8 @@ fn prune_runs_under(
             .filter(|index| !removed_set.contains(index))
             .collect();
 
-        // Subtract the removed history line bytes from total.
+        // Subtract `file_before - file_after` after `rewrite_history_file` from
+        // `total_bytes` to account for deleted history lines.
         let file_before = std::fs::metadata(history_path).map_or(0, |m| m.len());
         rewrite_history_file(history_path, &kept)?;
         let file_after = std::fs::metadata(history_path).map_or(0, |m| m.len());
@@ -548,23 +555,25 @@ mod tests {
         let archived =
             archive_run_output(cache_dir.path(), project_dir.path(), &completed).expect("archive");
 
-        // Archived run should have updated log_file paths pointing at runs/{run_id}/
+        // `archived.commands[*].log_file` should point into `runs/{run_id}/` after
+        // `archive_run_output`.
         assert_eq!(archived.commands.len(), 2);
         assert_eq!(archived.commands[0].log_file, "runs/run-abc/clippy.log");
         assert_eq!(archived.commands[1].log_file, "runs/run-abc/mend.log");
 
-        // Archived files should exist on disk
+        // `run_dir` should contain both command log files copied by
+        // `archive_run_output`.
         let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
         let run_dir = project_cache.join("runs/run-abc");
         assert!(run_dir.join("clippy.log").exists());
         assert!(run_dir.join("mend.log").exists());
 
-        // Content should match originals
+        // `clippy_content` should equal the original log content from `write_fake_logs`.
         let clippy_content = std::fs::read_to_string(run_dir.join("clippy.log")).expect("read");
         assert_eq!(clippy_content, "clippy: test output\n");
 
-        // The archived run carries the total bytes of its copied logs, summed
-        // once at archive time so reading history never walks the directory.
+        // `archived.archive_bytes` sums `clippy_bytes` and `mend_bytes` once during
+        // `archive_run_output`, so history reads never walk the archive directory.
         let clippy_bytes = std::fs::metadata(run_dir.join("clippy.log"))
             .expect("clippy meta")
             .len();
@@ -574,7 +583,8 @@ mod tests {
         assert!(clippy_bytes > 0 && mend_bytes > 0);
         assert_eq!(archived.archive_bytes, clippy_bytes + mend_bytes);
 
-        // Latest logs should still exist (convenience copies)
+        // `output_dir` should retain clippy-latest.log and mend-latest.log as
+        // convenience copies after archiving.
         let output_dir = paths::output_dir_under(cache_dir.path(), project_dir.path());
         assert!(output_dir.join("clippy-latest.log").exists());
         assert!(output_dir.join("mend-latest.log").exists());
@@ -586,19 +596,21 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let completed = run_with_commands("run-missing", "2026-04-04T10:00:00-04:00");
 
-        // Don't write any log files — archive should still succeed gracefully
+        // Call `archive_run_output` without `write_fake_logs`; missing logs must
+        // not fail archiving.
         let archived =
             archive_run_output(cache_dir.path(), project_dir.path(), &completed).expect("archive");
 
-        // Paths updated even if files don't exist
+        // `archived.commands[0].log_file` changes even when its source log is absent.
         assert_eq!(archived.commands[0].log_file, "runs/run-missing/clippy.log");
 
-        // No archived file on disk (nothing to copy)
+        // `run_dir` contains no clippy.log because `archive_run_output` had no
+        // source log to copy.
         let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
         let run_dir = project_cache.join("runs/run-missing");
         assert!(!run_dir.join("clippy.log").exists());
 
-        // Nothing copied, so the persisted archive size is zero.
+        // `archived.archive_bytes` is zero because `archive_run_output` copied no logs.
         assert_eq!(archived.archive_bytes, 0);
     }
 
@@ -639,19 +651,19 @@ mod tests {
             Some(cache_size),
         );
 
-        // Only newer run should remain in history
+        // `read_history_under` returns only the `newer` run after pruning.
         let runs = read_history_under(cache_dir.path(), project_dir.path());
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, "run-newer");
 
-        // Older run's archived directory should be deleted
+        // `project_cache/runs/run-older` should be removed by `append_archived_run` pruning.
         let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
         assert!(
             !project_cache.join("runs/run-older").exists(),
             "older run directory should be pruned"
         );
 
-        // Newer run's archived directory should still exist
+        // `project_cache/runs/run-newer` should survive `append_archived_run` pruning.
         assert!(
             project_cache.join("runs/run-newer").exists(),
             "newer run directory should survive"
@@ -681,24 +693,25 @@ mod tests {
             "project-b output with padding to exceed batch size",
         );
 
-        // Budget: total with both archived + room for B's history line, minus 1
-        // byte so the pruner must delete A's run to fit.
+        // `cache_size` is `total_before_append + new_b_line_bytes - 1`, forcing
+        // pruning of `old_a` to fit while retaining `new_b`.
         let total_before_append = total_bytes_under(cache_dir.path());
         let new_b_line_bytes = serde_json::to_string(&new_b).expect("serialize").len() as u64 + 1;
         let cache_size = total_before_append + new_b_line_bytes - 1;
 
         append_archived_run(cache_dir.path(), project_b.path(), &new_b, Some(cache_size));
 
-        // Project A's older run should be pruned
+        // `read_history_under` for `project_a` yields empty `runs_a` after pruning
+        // the older run.
         let runs_a = read_history_under(cache_dir.path(), project_a.path());
         assert!(runs_a.is_empty(), "older project A run should be pruned");
 
-        // Project B's newer run should survive
+        // `read_history_under` for `project_b` retains `new_b` in `runs_b`.
         let runs_b = read_history_under(cache_dir.path(), project_b.path());
         assert_eq!(runs_b.len(), 1);
         assert_eq!(runs_b[0].run_id, "run-new-b");
 
-        // Project A's archived directory should be deleted
+        // `cache_a/runs/run-old-a` should be absent after pruning `old_a`.
         let cache_a = paths::project_dir_under(cache_dir.path(), project_a.path());
         assert!(
             !cache_a.join("runs/run-old-a").exists(),
@@ -719,7 +732,8 @@ mod tests {
             "keep this output",
         );
 
-        // Generous cache size — nothing should be pruned
+        // The large cache-size argument to `append_archived_run` keeps `completed`
+        // and its archive.
         append_archived_run(
             cache_dir.path(),
             project_dir.path(),
@@ -786,7 +800,7 @@ mod tests {
         );
         append_archived_run(cache_dir.path(), project_dir.path(), &older, None);
 
-        // Newer run whose archived logs alone far exceed the cache budget.
+        // `huge_content` makes the `newer` run's archived logs exceed the cache budget.
         let huge_content = "x".repeat(10_000);
         let newer = archive_run_with_logs(
             cache_dir.path(),
@@ -796,9 +810,9 @@ mod tests {
             &huge_content,
         );
 
-        // Tiny cache forces eviction; even wiping the older run cannot get
-        // below cache_size because the newer run alone is far larger. The
-        // newer run should survive because it was just appended.
+        // `append_archived_run` gets a tiny cache limit: removing `older` cannot
+        // fit the `newer` archive, but its protected just-appended `run_id` must
+        // survive.
         let stats = append_archived_run(cache_dir.path(), project_dir.path(), &newer, Some(500));
 
         let runs = read_history_under(cache_dir.path(), project_dir.path());
