@@ -150,7 +150,8 @@ fn linked_status_from_gitfile(git_path: &Path, dir: &Path) -> WorktreeStatus {
         return WorktreeStatus::NotGit;
     };
     let gitdir = AbsolutePath::resolve(gitdir_str.trim(), dir);
-    // gitdir is `<primary>/.git/worktrees/<name>` — go up 3 levels
+    // `gitdir` names `<primary>/.git/worktrees/<name>`; the three `Path::parent`
+    // steps recover `primary_root`.
     let Some(primary_root) = gitdir
         .parent()
         .and_then(Path::parent)
