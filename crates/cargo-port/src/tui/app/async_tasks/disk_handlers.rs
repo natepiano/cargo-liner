@@ -99,20 +99,10 @@ impl App {
         entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
         self.scan.bump_generation();
-        // Every path inside this tree counts as "seen" — not just
-        // the tree root. `group_disk_usage_trees` folds nested
-        // discovered projects (workspace members, linked
-        // worktrees, etc.) under their shallowest ancestor as
-        // `root_path` and lists the rest in `entries`. When the
-        // startup-disk phase's `expected` set was built from
-        // `ProjectList::iter()` (after `build_tree` consolidated
-        // workspaces and worktree groups) but the disk-usage
-        // scan was dispatched from phase-1's flat
-        // `disk_entries`, the two sources can disagree about
-        // what's "the" root. Marking only `root_path` leaves any
-        // expected path that ends up listed in `entries` stuck
-        // pending in the panel row forever; marking all of them is
-        // a no-op for keys that aren't tracked.
+        // Insert root_path and each entries path into startup.disk.seen: group_disk_usage_trees
+        // groups flat disk_entries under shallow ancestors while ProjectList::iter follows
+        // build_tree workspaces/worktree groups, so root-only marking could leave expected paths
+        // permanently pending; untracked keys are harmless.
         self.startup.disk.seen.insert(root_path.clone());
         for (path, sizes) in &entries {
             if path != root_path {
