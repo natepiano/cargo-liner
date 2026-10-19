@@ -89,9 +89,9 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
         },
     };
 
-    // On Unix, `isolate_owned_process` makes the cargo child PID the process
-    // group ID. The child cannot enter a live lifecycle until a strong identity
-    // has been observed and revalidated for that root lifetime.
+    // On Unix, `isolate_owned_process` makes `child.id()` the process-group ID;
+    // `activate_owned_run` cannot enter a live lifecycle until that root lifetime's strong
+    // process identity is observed and revalidated.
     let process_group_id = child.id();
     let CurrentProcessIdentityObservation::Verified(verified_process_identity) =
         identity::observe_current_process_identity(process_group_id)
@@ -175,9 +175,9 @@ fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Comma
             command.arg(CARGO_PACKAGE_FLAG).arg(package_name);
         },
     }
-    // Cargo does not auto-enable a target's `required-features`, so a
-    // feature-gated target (e.g. an example with `required-features`)
-    // errors out unless we pass them ourselves.
+    // `cargo_command_for_owned_run` passes `pending_example_run.required_features` with
+    // `CARGO_FEATURES_FLAG` because Cargo does not enable target required-features automatically,
+    // so feature-gated targets would otherwise fail.
     if !pending_example_run.required_features.is_empty() {
         command
             .arg(CARGO_FEATURES_FLAG)
@@ -226,7 +226,7 @@ fn read_with_progress(
             b => buf.push(b),
         }
     }
-    // Flush any remaining data
+    // Flush remaining `buf` bytes as `OwnedRunEvent::Output` after the stream ends.
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
         let _ = example_sender.send(OwnedRunEvent::Output { owned_run_id, line });
@@ -258,8 +258,8 @@ pub(super) fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
 }
 
 pub(super) fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
-    // Derive (repo_url, owner, repo) from local git info — no network needed.
-    // Use `fetch_url_for` so a worktree without upstream tracking still resolves.
+    // `spawn_ci_fetch` derives `repo_url` and `owner_repo` from local Git information without
+    // network access; `fetch_url_for` resolves worktrees even without upstream tracking.
     let path = Path::new(&fetch.project_path);
     let Some(repo_url) = app.project_list.fetch_url_for(path) else {
         return false;

@@ -37,6 +37,7 @@ use crate::agent_cell::AgentTile;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::LOCAL_SCAN_INTERVAL;
 use crate::footer_colors::FooterColors;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -120,6 +121,7 @@ fn summary_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
     let accounts = AccountsTable::NotConfigured;
     let colors = FooterColors::default();
     let frame = SummaryFrame {
+        accounts_sort:  AccountsSort::SourceOrder,
         accounts:       &accounts,
         machines:       &machines,
         placement:      &placement,
@@ -139,6 +141,7 @@ fn summary_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
             AccountColumn::Hidden,
             SummarySort::default(),
             &accounts,
+            AccountsSort::SourceOrder,
         ),
         u16::try_from(summary::height(&machines, &placement, &accounts)).expect("small summary"),
     );

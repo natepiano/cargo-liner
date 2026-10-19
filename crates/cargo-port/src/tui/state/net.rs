@@ -550,10 +550,9 @@ mod tests {
 
     #[test]
     fn only_confirmed_outage_recovery_triggers_refetch() {
-        // A transient blip absorbed by the grace window recovers `Silent` and
-        // must not refetch — its re-dispatched fetches would leak standalone
-        // toasts after the startup panel hands off. Only a confirmed outage
-        // (a toast the user saw) refetches on recovery.
+        // `RecoveryOutcome::Silent` absorbs a grace-window blip and `triggers_refetch` must stay
+        // false: redispatched fetches could leak standalone toasts after startup handoff. Only a
+        // confirmed user-visible `RecoveryOutcome::WithToast` outage refetches.
         assert!(!RecoveryOutcome::NoTransition.triggers_refetch());
         assert!(!RecoveryOutcome::Silent.triggers_refetch());
         assert!(RecoveryOutcome::WithToast(ToastId(1)).triggers_refetch());
@@ -565,8 +564,8 @@ mod tests {
         avail.mark_unauthenticated();
         assert_eq!(avail.status(), AvailabilityStatus::Unauthenticated);
         assert!(avail.status().is_unauthenticated());
-        // Unauthenticated is not "available" — the git pane reads this
-        // to suppress real values and surface the auth hint instead.
+        // `AvailabilityStatus::Unauthenticated.is_available()` is false, so Git pane readers
+        // suppress real values and show the authentication hint.
         assert!(!avail.status().is_available());
     }
 
@@ -575,8 +574,8 @@ mod tests {
         let mut avail = ServiceAvailability::new();
         avail.mark_not_installed();
         assert_eq!(avail.status(), AvailabilityStatus::NotInstalled);
-        // `gh` missing is still "no auth token" — the predicate the git
-        // pane and pane-data readers branch on must cover both gaps.
+        // `AvailabilityStatus::NotInstalled.is_unauthenticated()` must cover missing gh as well as
+        // missing login tokens, since Git-pane and pane-data readers branch on that predicate.
         assert!(avail.status().is_unauthenticated());
         assert!(!avail.status().is_available());
     }

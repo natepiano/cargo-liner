@@ -56,7 +56,7 @@ impl Scan {
         }
     }
 
-    // ── scan-state machine ──────────────────────────────────────────
+    // `Scan::state` tracks scan progress for `is_complete` and `needs_animation`.
 
     pub(crate) const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
 
@@ -68,13 +68,14 @@ impl Scan {
         !self.is_complete() || self.has_active_shimmers()
     }
 
-    // ── data generation ─────────────────────────────────────────────
+    // `generation` and `bump_generation` read and advance `data_generation`.
 
     pub(crate) const fn generation(&self) -> u64 { self.data_generation }
 
     pub(crate) const fn bump_generation(&mut self) { self.data_generation += 1; }
 
-    // ── discovery shimmers ──────────────────────────────────────────
+    // `discovery_shimmers` and `discovery_shimmers_mut` expose the path-indexed discovery
+    // animations.
 
     pub(crate) const fn discovery_shimmers(&self) -> &HashMap<AbsolutePath, DiscoveryShimmer> {
         &self.discovery_shimmers
@@ -97,7 +98,7 @@ impl Scan {
     /// should keep ticking.
     pub(crate) fn has_active_shimmers(&self) -> bool { !self.discovery_shimmers.is_empty() }
 
-    // ── pending git first-commit cache ──────────────────────────────
+    // `pending_git_first_commit` and its mutable accessor expose the pending first-commit cache.
 
     #[cfg(test)]
     pub const fn pending_git_first_commit(&self) -> &HashMap<AbsolutePath, CommitDate> {
@@ -110,7 +111,7 @@ impl Scan {
         &mut self.pending_git_first_commit
     }
 
-    // ── metadata store ──────────────────────────────────────────────
+    // `metadata_store` and `metadata_store_handle` expose shared `WorkspaceMetadataStore` access.
 
     pub(crate) const fn metadata_store(&self) -> &Arc<Mutex<WorkspaceMetadataStore>> {
         &self.metadata_store
@@ -132,9 +133,10 @@ impl Scan {
             .and_then(|store| store.resolved_target_dir(path).cloned())
     }
 
-    // ── target-dir index ────────────────────────────────────────────
+    // `Scan::target_dir_index` indexes workspace target directories.
 
-    // ── priority fetch path ─────────────────────────────────────────
+    // `priority_fetch_path` and `set_priority_fetch_path` read and update the priority fetch
+    // selection.
 
     pub(crate) const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
         self.priority_fetch_path.as_ref()
@@ -144,7 +146,7 @@ impl Scan {
         self.priority_fetch_path = path;
     }
 
-    // ── retry-spawn mode (test-only) ────────────────────────────────
+    // Test-only `retry_spawn_mode` and `set_retry_spawn_mode` control retry spawning.
 
     #[cfg(test)]
     pub const fn retry_spawn_mode(&self) -> RetrySpawnMode { self.retry_spawn_mode }
@@ -164,7 +166,8 @@ impl Scan {
             return false;
         };
         let Some(checkout_root) = store.containing_checkout_root(project_path) else {
-            // No metadata covers this path — nothing to verify against.
+            // No `store.containing_checkout_root(project_path)` exists, so
+            // `should_verify_before_clean` has no metadata to verify against.
             return true;
         };
         let Some(metadata) = store.get(checkout_root) else {

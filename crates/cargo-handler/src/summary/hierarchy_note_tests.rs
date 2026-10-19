@@ -18,6 +18,7 @@ use crate::census::hierarchy::HierarchyError;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::HierarchySnapshot;
 use crate::census::scan::ScanStage;
+use crate::sort::AccountsSort;
 
 fn rows() -> Vec<AgentRow> {
     vec![
@@ -74,6 +75,7 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
         ).expect("account section below discovery note"));
         let colors = FooterColors::default();
         let frame = SummaryFrame {
+            accounts_sort:  AccountsSort::SourceOrder,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -93,6 +95,7 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &accounts,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(height(&machines, &placement, &accounts)).expect("small measured height"),
         );
