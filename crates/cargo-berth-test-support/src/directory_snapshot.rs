@@ -14,11 +14,14 @@ use std::fs::Permissions;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+
+use crate::repository_template;
 
 /// The files and directories under one root, with each file's permissions.
 pub struct DirectorySnapshot {
@@ -161,10 +164,8 @@ impl ImmutableShellExecutable {
         let mut identity = DefaultHasher::new();
         contents.hash(&mut identity);
         permissions.mode().hash(&mut identity);
-        let cache = env::temp_dir().join(format!(
-            "cargo-berth-test-executables-{}",
-            env::var("USER").expect("test user should be named")
-        ));
+        let binary = env::current_exe().expect("fixture executable should resolve");
+        let cache = repository_template::fixture_cache_root(&binary).join("executables");
         fs::create_dir_all(&cache).expect("executable cache should exist");
         let source = cache.join(format!("{:016x}", identity.finish()));
         let lock = File::create(source.with_extension("lock"))
@@ -203,7 +204,14 @@ impl ImmutableShellExecutable {
             fs::remove_file(destination).expect("previous executable name should unlink");
         }
         fs::hard_link(&self.source, destination)
-            .expect("fixture should link its immutable executable on the same filesystem");
+            .or_else(|error| {
+                if error.kind() == ErrorKind::CrossesDevices {
+                    fs::copy(&self.source, destination).map(|_| ())
+                } else {
+                    Err(error)
+                }
+            })
+            .expect("fixture should link its executable or copy it across filesystems");
     }
 }
 
@@ -214,7 +222,7 @@ impl DirectorySnapshot {
     /// mutable arguments belong in environment variables or private data files.
     ///
     /// # Panics
-    /// Panics if the executable cannot be prepared or hardlinked.
+    /// Panics if the executable cannot be prepared, linked or copied.
     pub fn write_shared_shell_script(path: &Path, script: &str) {
         let body = script
             .strip_prefix("#!/bin/sh\n")
