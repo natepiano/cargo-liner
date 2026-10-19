@@ -232,7 +232,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a fixed 16 MiB tail limit and a fixed 4 MiB head limit, because both gave wrong rows.
 
-### Phase 8 — Reviewers and Claude dispatch seats  · status: todo
+### Phase 8 — Reviewers and Claude dispatch seats  · status: done
 
 **Depends on:** Phase 7
 

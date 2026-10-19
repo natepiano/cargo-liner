@@ -152,9 +152,10 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
         }
     }
     let links = HierarchyEdges(vec![HierarchyEdge {
-        manager: SHOWRUNNER.into(),
-        member:  UNIT.into(),
-        role:    HierarchyRole::Unit,
+        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+        manager:  SHOWRUNNER.into(),
+        member:   UNIT.into(),
+        role:     HierarchyRole::Unit,
     }]);
     let runner = Arc::new(PublicationAttempts(Mutex::new(VecDeque::from([
         Ok(links.clone()),
@@ -207,9 +208,10 @@ fn hierarchy_configured_unmatched_and_disabled_sources_publish_distinct_outcomes
     impl HierarchyRunner for ForeignSessions {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "another-production".into(),
-                member:  "another-session".into(),
-                role:    HierarchyRole::Unit,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "another-production".into(),
+                member:   "another-session".into(),
+                role:     HierarchyRole::Unit,
             }]))
         }
     }
@@ -290,9 +292,10 @@ fn unmatched_hierarchy_note_stays_drawn_while_expired_links_await_refresh() {
     impl HierarchyRunner for ForeignHierarchy {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "foreign-manager".into(),
-                member:  "foreign-unit".into(),
-                role:    HierarchyRole::Unit,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "foreign-manager".into(),
+                member:   "foreign-unit".into(),
+                role:     HierarchyRole::Unit,
             }]))
         }
     }

@@ -8,7 +8,9 @@ use summary::SummaryFrame;
 use super::*;
 use crate::census::AccountColumn;
 use crate::census::AgentActivity;
+use crate::census::RoleFallback;
 use crate::census::accounts::AccountsTable;
+use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -54,6 +56,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
         )
     };
     let carrier = AgentRow {
+        role_fallback: RoleFallback::None,
         agent: Agent::CodexThreadHost,
         account: home("codex1"),
         directory: "~/rust/dashboard".to_string(),
@@ -68,6 +71,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     ]
     .into_iter()
     .map(|(manager, member, role)| HierarchyEdge {
+        reviewer: ReviewerState::NotPool,
         manager: manager.to_string(),
         member: member.to_string(),
         role,
@@ -307,6 +311,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
     let local = mockup(["claude2"; 3]);
     let remote = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             agent: Agent::Codex,
             account: home("codex2"),
             ..agent(50, "isolated", HOUR, None)
@@ -390,6 +395,7 @@ fn working_group() -> MachineState {
         ),
     ];
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         account: home("claude2"),
         children: vec![child(0, ChildKind::Shell, Some(107), "root command", HOUR)],
         ..agent(10, "production", 3 * HOUR, None)
@@ -500,6 +506,7 @@ fn no_tile_restores_the_removed_children_table_headers() {
 #[test]
 fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
     let row = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![
             child(
                 0,
@@ -718,14 +725,17 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
         let state = MachineState::Answered(
             vec![
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     account: home("claude2"),
                     ..agent(10, "alpha", 3 * HOUR, None)
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     account: home(second_account),
                     ..agent(20, "beta", 2 * HOUR, None)
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     agent: Agent::Codex,
                     account: home("codex1"),
                     service_tier: ServiceTier::Fast,

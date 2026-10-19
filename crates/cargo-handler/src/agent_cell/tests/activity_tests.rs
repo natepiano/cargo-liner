@@ -11,6 +11,7 @@ use ratatui::buffer::Cell;
 use super::*;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::RoleFallback;
 use crate::census::RunLocation;
 use crate::census::VerifyStep;
 use crate::census::worker_dispatch::WorkerTask;
@@ -31,6 +32,7 @@ fn activity_forest() -> MachineState {
         (50, "waiting-root", AgentActivity::Active(Activity::Waiting)),
     ]
     .map(|(pid, name, activity)| AgentRow {
+        role_fallback: RoleFallback::None,
         activity,
         children: vec![ChildRow {
             activity: AgentActivity::Active(Activity::Verify {
@@ -160,6 +162,7 @@ fn activity_tree_account_cells_hide_standard_tier_and_show_only_fast() {
             .expect("account");
     let state = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             children: vec![
                 ChildRow {
                     account: account.clone(),
@@ -229,14 +232,16 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         vec![root, writer, reader],
         HierarchyEdges(vec![
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "reader-id".into(),
-                role:    HierarchyRole::Test,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "reader-id".into(),
+                role:     HierarchyRole::Test,
             },
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "writer-id".into(),
-                role:    HierarchyRole::Impl,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "writer-id".into(),
+                role:     HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -299,14 +304,16 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         vec![root],
         HierarchyEdges(vec![
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  task_id.into(),
-                role:    HierarchyRole::Fix,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   task_id.into(),
+                role:     HierarchyRole::Fix,
             },
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  unreadable_id.into(),
-                role:    HierarchyRole::Test,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   unreadable_id.into(),
+                role:     HierarchyRole::Test,
             },
         ])
         .into(),

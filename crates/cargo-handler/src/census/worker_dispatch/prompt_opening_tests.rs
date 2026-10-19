@@ -90,6 +90,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
     let state = MachineState::Answered(
         rows,
         HierarchyEdges(vec![HierarchyEdge {
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
             manager: "fixture-root-id".into(),
             member: THREAD.into(),
             role,

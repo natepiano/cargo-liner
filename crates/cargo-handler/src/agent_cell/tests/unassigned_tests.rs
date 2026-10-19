@@ -9,6 +9,7 @@
 use tui_pane::CellPoint;
 
 use super::*;
+use crate::census::RoleFallback;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -16,14 +17,17 @@ use crate::tiles::TileKey;
 
 fn unassigned_forest() -> MachineState {
     let boss = AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude("boss-id".into()),
         ..agent(10, "director", 10 * HOUR, None)
     };
     let worker = AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude("impl-id".into()),
         ..agent(11, "assigned-worker", 9 * HOUR, None)
     };
     let ups = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![
             child(0, ChildKind::Shell, Some(21), "ups-shell", 2 * HOUR),
             child(1, ChildKind::Thread, None, "ups-codex", HOUR),
@@ -32,15 +36,17 @@ fn unassigned_forest() -> MachineState {
     };
     let nested = agent(22, "opened-session", 6 * HOUR, Some(20));
     let postmaster = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![child(0, ChildKind::Subagent, None, "post-task", HOUR)],
         ..agent(30, "postmaster", 4 * HOUR, None)
     };
     MachineState::Answered(
         vec![boss, worker, ups, nested, postmaster],
         HierarchyEdges(vec![HierarchyEdge {
-            manager: "boss-id".into(),
-            member:  "impl-id".into(),
-            role:    HierarchyRole::Impl,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "boss-id".into(),
+            member:   "impl-id".into(),
+            role:     HierarchyRole::Impl,
         }])
         .into(),
     )

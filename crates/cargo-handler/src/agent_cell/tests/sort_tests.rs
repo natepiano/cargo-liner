@@ -4,6 +4,8 @@ use tui_pane::CellPoint;
 
 use super::*;
 use crate::census::Activity;
+use crate::census::RoleFallback;
+use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -28,10 +30,12 @@ fn sort_account(label: &str) -> Account {
 /// The oldest sibling sorts after the younger by name, status, account and path.
 fn sorting_forest() -> MachineState {
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude("root-id".into()),
         ..agent(10, "root", 10 * HOUR, None)
     };
     let older = AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude("older-id".into()),
         account: sort_account("z-account"),
         activity: AgentActivity::from(Some("idle")),
@@ -40,6 +44,7 @@ fn sorting_forest() -> MachineState {
         ..agent(20, "zeta", 8 * HOUR, Some(10))
     };
     let younger = AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude("younger-id".into()),
         account: sort_account("a-account"),
         activity: AgentActivity::from(Some("thinking")),
@@ -49,6 +54,7 @@ fn sorting_forest() -> MachineState {
         ..agent(30, "alpha", 4 * HOUR, Some(10))
     };
     let nested = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![child(0, ChildKind::Thread, None, "z-thread", 3 * HOUR)],
         ..agent(40, "nested", 5 * HOUR, Some(20))
     };
@@ -56,14 +62,16 @@ fn sorting_forest() -> MachineState {
         vec![root, older, younger, nested],
         HierarchyEdges(vec![
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "older-id".into(),
-                role:    HierarchyRole::Fix,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "older-id".into(),
+                role:     HierarchyRole::Fix,
             },
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "younger-id".into(),
-                role:    HierarchyRole::Impl,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "younger-id".into(),
+                role:     HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -390,6 +398,7 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
         ..child(1, ChildKind::Thread, None, "a-work", 30 * MINUTE)
     };
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![
             child(0, ChildKind::Subagent, None, "work-parent", 2 * HOUR),
             older,
@@ -559,6 +568,7 @@ fn independent_sort_forest() -> MachineState {
     ] {
         let id = format!("id-{pid}");
         rows.push(AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(id.clone()),
             activity: AgentActivity::from(Some(status)),
             account: sort_account(account),
@@ -574,6 +584,7 @@ fn independent_sort_forest() -> MachineState {
             ..agent(pid, name, age, Some(10))
         });
         edges.push(HierarchyEdge {
+            reviewer: ReviewerState::NotPool,
             manager: "root-id".into(),
             member: id,
             role,
