@@ -275,6 +275,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render.rs` ≈243 `Cells::tile`, ≈248 `header_spans`, `agent_cell.rs` ≈1605).
+- Phase 12's accounts-header click: `render::cell_clicked` (`render.rs` ≈156–167) tries the summary's agent headers first. Then it rebuilds `summary::accounts_header_spans(area, &cells.summary_frame())` (`summary/mod.rs` ≈231) from the current accounts reading, clock and `App.accounts_sort`, and calls `AccountsSort::select` (`sort.rs`). `SummaryFrame.accounts_sort` carries the sort into `summary::width` and `summary::draw`, and `accounts::header_spans` reads the lines that `accounts::draw_sorted` draws. Keep these drawn accounts spans with the frame, as for the agent headers.
 
 **Spec:**
 1. `draw_tile_grid` (`tiles/draw.rs`) records, for each drawn piece, the cell's stable content identity, its drawn rect, and its visible (clipped) hit region, in the grid's own state, replacing the previous frame's record. Where pieces overlap, the one drawn on top wins. Model the record's state as a type that tells "never drawn" apart from "a frame drew no interactive content" (e.g. `enum DrawnHits { NotDrawn, Drawn(Vec<DrawnPiece>) }`), never a bare `Option`.
@@ -347,32 +348,26 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 5
 
-#### Work Order
+#### As-built
 
-**Goal:** the summary's accounts table colors each reset time from green (nearest) to red (furthest), and a click on an accounts-table header sorts the table by that column.
-
-**Source:** the user, 2026-10-18: "i want the resets in the summary to show a green to red gradient - green for the ones that are nearest and red for the ones that are furthest away - also the columns in the accounts table in the summary should also sort when i click on them". Showrunner ruling 2026-10-18: interpolate between the theme's success and error colors by the rank of the reset time; nearest is success, furthest is error; equal reset times get the same color; one account uses success. Header sort reuses the phase 2 agent-table sort code, not a second sort path.
-
-**Constraints from prior phases:**
-- Phase 5 built the accounts table (`summary/accounts.rs`; `resets_at` ≈173, rounded by `summary/constants.rs`). An account with no reset time keeps its present text and takes no gradient color.
-- Phase 2's sort lives in `crates/cargo-handler/src/sort.rs` (`TreeSort`) and `summary` (`SummarySort`, `summary/sort_tests.rs`); a header click reaches it through `render::cell_clicked`, which maps the click through header spans it builds from the current state. Today an accounts-header click is inert; this phase replaces that rule with a sort, through the same mapping. This phase runs before "Accurate clicks during motion" (showrunner, 2026-10-19), which later moves every header click, the accounts header included, to the drawn spans and owns the accounts-header click during motion.
-- Colors come from `SemanticTheme` (`theme.rs`): `success` and `error`. Interpolate in the theme's own color space; never write a color literal.
-
-**Spec:**
-1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. When only one distinct reset time exists (one account, or several accounts with the same time), every ranked account draws `success`; the interpolation never divides by zero.
-2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the shared `ColumnSort` direction toggle and tie rule), kept per summary in app state; no second sort path. `SummaryColumn` names agent columns and `ColumnSort::default()` always selects a column, so add an accounts column enum and a semantic state `SourceOrder | Sorted(<accounts column sort>)`, independent of the agent sort. Ordering: percentages and credits numeric, resets chronological, unavailable and unlimited values in a fixed place after real values, ties by source index. The default order stays the source order until a header is clicked. Architect finding 5, 2026-10-19.
-3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; three accounts with one shared reset time all draw success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through `render::cell_clicked` on the drawn summary.
+- Reset times shade by the rank of each distinct timestamp. The soonest draws the theme's success color. The latest draws its error color. Ranks between blend evenly in the theme's color space. Equal timestamps share a rank. One distinct time draws success.
+- `theme::ResetRank` (`positions(distinct)`, `color()`) makes only valid ranks. A missing reset keeps its plain text and does not shift ranks.
+- `sort::AccountsColumn` (`Account`, `Roles`, `WeeklyLeft`, `Resets`, `Credits`) implements `SortColumn`. `sort::AccountsSort { SourceOrder, Sorted(ColumnSort<AccountsColumn>) }` defaults to `SourceOrder`. `AccountsSort::select` starts at the column's natural direction, then uses the shared `ColumnSort` toggle.
+- A click on an accounts header sorts only the accounts table. A second click reverses it. Missing readings stay last in both directions. Equal values keep source order. The agent sort does not change.
+- `App.accounts_sort` holds the sort for the app run. `render::cell_clicked` maps an accounts-header click to `AccountsSort::select`.
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`
-- `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/app.rs`
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/theme.rs` — `ResetRank`
+- `crates/cargo-handler/src/sort.rs` — `AccountsColumn`, `AccountsSort`
+- `crates/cargo-handler/src/summary/accounts.rs` — comparators, `reset_colors`, `sorted_width`, `draw_sorted`, `header_spans`
+- `crates/cargo-handler/src/summary/mod.rs` — `SummaryFrame.accounts_sort`, `width`, `draw`, `accounts_header_spans`
+- `crates/cargo-handler/src/render.rs` — `cell_clicked` accounts-header branch
+- `crates/cargo-handler/src/app.rs` — `App.accounts_sort`
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `summary/accounts_header_sort_tests.rs` — gradient and sort tests
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — gradient, sort wiring, app state, CHANGELOG.
-- `test` — accounts gradient and header-sort rendering tests in `summary/`.
+**Binds later work:** "Accurate clicks during motion" depends on this click path. `render::cell_clicked` rebuilds `summary::accounts_header_spans(area, &cells.summary_frame())` at click time. `SummaryFrame.accounts_sort` carries `AccountsSort` into `summary::width` and `summary::draw`. The drawn accounts header spans must stay with the frame, as the agent header spans do.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary shows the gradient and sorts on a header click. The checkpoint carries `Change-Review: account resets shade from green (soonest) to red (latest), and accounts headers sort on click | open the summary and click each accounts header`.
+**Gotchas:** Compare readings for equality before `total_cmp`. If not, -0.0 and 0.0 skip the source-index tie rule. `ResetRank::color` carries `#[expect(clippy::cast_possible_truncation)]`; `positions` bounds the rank, so the rounded alpha stays at most 255.
 
 ### Phase 13 — Discovery tests prove no allocation without a clock  · status: done
 
