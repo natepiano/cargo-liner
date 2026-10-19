@@ -106,9 +106,9 @@ fn fetch_recent_runs(
 ) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let mut result: Vec<CiRun> = Vec::with_capacity(gh_runs.len());
 
-    // Partition into cached hits and misses.  Cached failures are
-    // re-fetched when their `updated_at` differs from the REST response,
-    // which indicates the run was re-run on GitHub.
+    // `load_cached_run` partitions cached `CiRun` hits from `uncached` misses.
+    // Failed runs whose `updated_at` differs from REST's `GhRun::updated_at`
+    // reenter `uncached`, because that change indicates a GitHub rerun.
     let mut uncached: Vec<&GhRun> = Vec::new();
     for gh_run in gh_runs {
         match load_cached_run(owner, repo, gh_run.id) {
@@ -123,7 +123,8 @@ fn fetch_recent_runs(
         }
     }
 
-    // Single GraphQL call: jobs for uncached runs + repo metadata.
+    // `client.batch_fetch_jobs_and_meta` fetches uncached jobs and
+    // `RepoMetaInfo` together in one GraphQL call.
     let (batch, signal) = client.batch_fetch_jobs_and_meta(owner, repo, &uncached);
     let (jobs_map, meta) = batch.unwrap_or_default();
     for gh_run in &uncached {
@@ -142,7 +143,8 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
     let mut seen = HashSet::new();
     let mut merged: Vec<CiRun> = Vec::new();
 
-    // Fetched runs take priority
+    // `merge_runs` inserts `fetched` into `seen` before `cached`, so fresh
+    // `CiRun` values win for duplicate `run_id` values.
     for run in fetched {
         if seen.insert(run.run_id) {
             merged.push(run);

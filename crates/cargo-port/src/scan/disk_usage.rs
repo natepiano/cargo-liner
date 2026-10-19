@@ -480,8 +480,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn size_walks_count_a_hard_linked_file_once() {
-        // cargo's layout: the binary built in `deps/` is hard-linked into
-        // the profile directory, so both paths name one 11-byte file.
+        // `built` under `deps` is hard-linked into `profile`, matching Cargo's
+        // layout so both paths refer to one 11-byte file.
         let tmp = tempfile::tempdir().expect("create hard-link test tempdir");
         let root: AbsolutePath = tmp.path().join("proj").into();
         let profile = root.join("target").join("debug");
@@ -530,8 +530,9 @@ mod tests {
 
         touch(&root.join("Cargo.toml"), older);
         touch(&src.join("lib.rs"), newer);
-        // Excluded from the source mtime even though they are newest: a build
-        // artifact under `target/` and a non-source file.
+        // `dir_sizes_for_tree` must exclude `target_debug/proj` and README.md
+        // from `DirSizes::max_source_mtime` despite their `newest` timestamp:
+        // one is a build artifact and the other is not lint source.
         touch(&target_debug.join("proj"), newest);
         touch(&root.join("README.md"), newest);
 

@@ -1,8 +1,8 @@
-// cargo metadata
+// `cargo_metadata::execute_cargo_metadata` passes `CARGO_OFFLINE_FLAG` to the metadata subprocess.
 
 pub(super) const CARGO_OFFLINE_FLAG: &str = "--offline";
 
-// src scan test_counts
+// `test_counts::count_in_line` checks parsed attribute paths against `TEST_ATTRIBUTES`.
 /// `#[test]`-family attribute paths counted as test functions. Each entry
 /// is the path as written between `#[` and the following `]` or `(`, so
 /// `#[tokio::test]` matches `tokio::test` and `#[test_case(...)]` matches
