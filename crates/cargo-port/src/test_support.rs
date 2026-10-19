@@ -44,9 +44,19 @@ pub(crate) fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
 }
 
 /// Initialize a repository with one commit, including any existing fixture files.
-pub(crate) fn init_git_repo(dir: &Path) {
-    let commands: [&[&str]; 3] = [
-        &["init"],
+pub(crate) fn init_git_repo(dir: &Path) { init_git_repo_on_branch(dir, "main"); }
+
+/// Reuse the empty commit fixture so empty repositories need no Git subprocess.
+pub(crate) fn init_git_repo_on_branch(dir: &Path, branch: &str) {
+    let has_files = std::fs::read_dir(dir)
+        .expect("read fixture directory")
+        .next()
+        .is_some();
+    install_git_seed(dir, branch);
+    if !has_files {
+        return;
+    }
+    let commands: [&[&str]; 2] = [
         &["add", "."],
         &[
             "-c",
@@ -55,7 +65,10 @@ pub(crate) fn init_git_repo(dir: &Path) {
             "user.email=cargo-port-tests@example.com",
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "maintenance.auto=false",
             "commit",
+            "--amend",
             "--allow-empty",
             "-m",
             "init",
@@ -73,6 +86,43 @@ pub(crate) fn init_git_repo(dir: &Path) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// These loose objects contain an empty tree and its single root commit.
+/// Real Git probes still read the fixture; only repeated setup commands are removed.
+fn install_git_seed(dir: &Path, branch: &str) {
+    const EMPTY_TREE_ID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const INITIAL_COMMIT_ID: &str = "b952c6511a0362a3689f650fc2b8f358085dfbbf";
+    let git_dir = dir.join(".git");
+    std::fs::create_dir_all(git_dir.join("refs/heads")).expect("Git fixture refs");
+    for (id, bytes) in [
+        (
+            EMPTY_TREE_ID,
+            include_bytes!("test_support/git_seed/4b825dc642cb6eb9a060e54bf8d69288fbee4904.zlib")
+                .as_slice(),
+        ),
+        (
+            INITIAL_COMMIT_ID,
+            include_bytes!("test_support/git_seed/b952c6511a0362a3689f650fc2b8f358085dfbbf.zlib")
+                .as_slice(),
+        ),
+    ] {
+        let (directory, name) = id.split_at(2);
+        let object_directory = git_dir.join("objects").join(directory);
+        std::fs::create_dir_all(&object_directory).expect("Git fixture object directory");
+        std::fs::write(object_directory.join(name), bytes).expect("Git fixture object");
+    }
+    std::fs::write(git_dir.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
+        .expect("fixture HEAD");
+    std::fs::write(
+        git_dir.join("refs/heads").join(branch),
+        format!("{INITIAL_COMMIT_ID}\n"),
+    )
+    .expect("fixture branch");
+    std::fs::write(
+        git_dir.join("config"),
+        format!("[core]\nrepositoryformatversion = 0\nbare = false\nfilemode = {}\nlogallrefupdates = true\n", cfg!(unix)),
+    ).expect("fixture configuration");
 }
 
 pub(crate) fn git_binary() -> &'static str {
@@ -179,6 +229,38 @@ pub(crate) fn count_allocations<R>(operation: impl FnOnce() -> R) -> (R, usize) 
         let result = operation();
         (result, measurement.finish())
     })
+}
+
+#[cfg(test)]
+mod git_fixture_tests {
+    use super::Command;
+    use super::git_binary;
+    use super::init_git_repo;
+
+    #[test]
+    fn seeded_repository_commits_fixture_files_once_and_starts_clean() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(directory.path().join("tracked.txt"), "fixture contents\n")
+            .expect("fixture file");
+        init_git_repo(directory.path());
+        for (args, expected) in [
+            (vec!["rev-list", "--count", "HEAD"], "1\n"),
+            (vec!["status", "--porcelain"], ""),
+            (vec!["show", "HEAD:tracked.txt"], "fixture contents\n"),
+        ] {
+            let output = Command::new(git_binary())
+                .args(args)
+                .current_dir(directory.path())
+                .output()
+                .expect("probe fixture repository");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+        }
+    }
 }
 
 #[cfg(test)]

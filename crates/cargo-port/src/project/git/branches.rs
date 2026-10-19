@@ -23,7 +23,6 @@ use super::constants::GIT_SHORT_ARG;
 use super::constants::GIT_SHOW_REF_COMMAND;
 use super::constants::GIT_SYMBOLIC_REF_COMMAND;
 use super::constants::GIT_VERIFY_ARG;
-use crate::config;
 use crate::config::CargoPortConfig;
 
 /// What a successful ref-presence query answered.
@@ -196,8 +195,11 @@ fn remote_ref_exists(
     )
 }
 
-pub(super) fn resolve_local_main_branch(repo_root: &Path) -> ResolvedBranch {
-    let config = config::active_config();
+/// The caller reads the configuration once for all its probes.
+pub(super) fn resolve_local_main_branch(
+    repo_root: &Path,
+    config: &CargoPortConfig,
+) -> ResolvedBranch {
     for name in std::iter::once(config.tui.main_branch.as_str())
         .chain(config.tui.other_primary_branches.iter().map(String::as_str))
     {

@@ -397,7 +397,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - When all roots are visible, `compute_visible_rows` pushes into its row `Vec`, so the count increases with the visible list. The discovery test keeps 8 visible roots in both lists (all others `Dismissed`), and the new leaf sorts last, so the insertion compares it with every root.
 - The `GlobalAlloc` impl has a test-only `#[allow(unsafe_code)]`. A `stats_alloc` replacement waits on the user's answer.
 
-### Phase 14 — Every cargo-port test runs under a second  · status: todo
+### Phase 14 — Every cargo-port test runs under a second  · status: done
 
 **Depends on:** none
 

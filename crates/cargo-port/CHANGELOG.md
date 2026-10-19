@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Test HTTP clients skip host proxy discovery, so fixture setup does not wait for the Mac network configuration service.
+- Independent Git metadata reads run concurrently on scoped threads, so repository and checkout probes do not wait for unrelated commands or network work in the shared thread pool.
+- Git fixtures reuse an empty commit seed, omit unused hook templates and automatic maintenance, and prepare tracking refs without a local push when no transport behavior is tested.
 - Project-list ordering no longer allocates for each comparison. Discovery comparison and deletion lookup tests count allocations directly, so machine load no longer causes timing failures.
 - A git command that fails is shown as `unreadable` in the Git pane and as `⛔` in the project list, instead of reading as a clean status, an existing branch or remote ref, or a missing value.
 - The vs-local comparison no longer assumes the configured main branch exists; it is hidden when no configured main branch exists locally.

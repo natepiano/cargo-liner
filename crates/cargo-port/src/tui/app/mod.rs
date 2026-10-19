@@ -4593,6 +4593,7 @@ mod tests {
         }
     }
     mod interaction {
+        use std::fmt::Write;
         use std::path::Path;
         use std::path::PathBuf;
         use std::process::Command;
@@ -6662,15 +6663,7 @@ mod tests {
                 assert!(output.status.success(), "{args:?}: {output:?}");
                 String::from_utf8(output.stdout).expect("git output")
             };
-            git(
-                directory,
-                &["init", "--bare", "-b", "main", bare.to_str().expect("path")],
-            );
-            let mut fixtures = Vec::new();
-            for (name, url) in [
-                ("p14sync", bare.to_str().expect("origin path")),
-                ("p14ci", "https://github.com/natepiano/p14ci-fixture.git"),
-            ] {
+            let probe = |name, url| {
                 let path = directory.join(name);
                 std::fs::create_dir(&path).expect("package directory");
                 std::fs::write(
@@ -6678,29 +6671,37 @@ mod tests {
                     "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
                 )
                 .expect("manifest");
-                crate::test_support::init_git_repo(&path);
-                git(&path, &["branch", "-M", "main"]);
-                git(&path, &["remote", "add", "origin", url]);
-                if name == "p14sync" {
-                    git(&path, &["push", "-u", "origin", "main"]);
-                    git(&path, &["remote", "set-head", "origin", "main"]);
-                } else {
-                    let sha = git(&path, &["rev-parse", "HEAD"]);
-                    std::fs::create_dir_all(path.join(".git/refs/remotes/origin"))
-                        .expect("remote refs");
-                    std::fs::write(path.join(".git/refs/remotes/origin/main"), sha)
-                        .expect("remote branch");
-                    git(&path, &["config", "branch.main.remote", "origin"]);
-                    git(&path, &["config", "branch.main.merge", "refs/heads/main"]);
-                }
+                crate::test_support::init_git_repo_on_branch(&path, "main");
+                let sha = git(&path, &["rev-parse", "HEAD"]);
+                std::fs::create_dir_all(path.join(".git/refs/remotes/origin"))
+                    .expect("remote refs");
+                std::fs::write(path.join(".git/refs/remotes/origin/main"), sha)
+                    .expect("remote branch");
+                let config_path = path.join(".git/config");
+                let mut config = std::fs::read_to_string(&config_path).expect("fixture config");
+                write!(
+                    config,
+                    "\n[remote \"origin\"]\nurl = {url}\nfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\nremote = origin\nmerge = refs/heads/main\n"
+                ).expect("append remote configuration");
+                std::fs::write(config_path, config).expect("remote config");
                 std::fs::write(path.join(".git/refs/remotes/origin/HEAD"), "garbage\n")
                     .expect("corrupt remote HEAD");
                 let repo = RepoInfo::get(&path).expect("repository probe");
                 let checkout =
                     CheckoutInfo::get(&path, &repo.local_main_branch).expect("checkout probe");
-                fixtures.push((name, path, checkout, repo));
-            }
-            fixtures
+                (name, path, checkout, repo)
+            };
+            // The URL cases have separate repositories; their real Git probes
+            // can run together without duplicating the fixture's critical path.
+            std::thread::scope(|scope| {
+                let local = scope.spawn(|| probe("p14sync", bare.to_str().expect("origin path")));
+                let github = scope
+                    .spawn(|| probe("p14ci", "https://github.com/natepiano/p14ci-fixture.git"));
+                vec![
+                    local.join().expect("local remote fixture"),
+                    github.join().expect("GitHub remote fixture"),
+                ]
+            })
         }
 
         #[test]
