@@ -29,8 +29,8 @@ use super::identity::RegisteredWorktreeBacklink;
 use super::identity::RegisteredWorktreeIdentity;
 use super::identity::RegisteredWorktreeOwnerObservation;
 use super::identity::ValidatedWorktreeOwner;
-use crate::git;
 use crate::git::GitError;
+use crate::git::RepositorySnapshot;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
@@ -156,9 +156,10 @@ enum WorktreeRegistrationState {
 
 impl WorktreeRegistry {
     /// Read and parse the repository's registered worktrees once.
-    pub(crate) fn read(worktree_context: &WorktreeContext) -> Result<Self, WorktreeRegistryError> {
-        let porcelain = git::worktree_list_porcelain(worktree_context.repository_root())?;
-        let mut registry = Self::parse(&porcelain)?;
+    pub(crate) fn read(snapshot: &RepositorySnapshot) -> Result<Self, WorktreeRegistryError> {
+        let worktree_context = snapshot.context();
+        let porcelain = snapshot.worktree_list_porcelain()?;
+        let mut registry = Self::parse(porcelain)?;
         for registration in &mut registry.registrations {
             if matches!(registration.state, WorktreeRegistrationState::Prunable) {
                 continue;

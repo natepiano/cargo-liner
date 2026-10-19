@@ -12,9 +12,9 @@ use std::path::Path;
 
 use super::command;
 use super::command::GitHookExecutionPolicy;
-use super::constants::GIT_COMMIT_PEEL_SUFFIX;
 use super::constants::GIT_FOR_EACH_REF_COMMAND;
 use super::constants::GIT_FULL_REF_FORMAT_ARG;
+#[cfg(test)]
 use super::constants::GIT_HEAD_REVISION;
 use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use super::constants::GIT_MAX_COUNT_ONE_ARG;
@@ -24,14 +24,13 @@ use super::constants::GIT_REFLOG_SHOW_ARG;
 use super::constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
 use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_STDIN_ARG;
-use super::constants::GIT_SYMBOLIC_REF_COMMAND;
 use super::constants::GIT_UPDATE_REF_COMMAND;
-use super::constants::GIT_UPSTREAM_SELECTOR_SUFFIX;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
-use super::error;
 use super::error::GitError;
+#[cfg(test)]
 use super::object;
 use super::object::CommitAvailability;
+use super::object::OperationObjectReader;
 use super::reachability;
 use super::reachability::Reachability;
 use super::reachability::ResolvedBatchCommitCandidates;
@@ -39,9 +38,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::FullRefName;
 
-const GIT_DETACHED_HEAD_EXIT_CODE: i32 = 1;
 const GIT_MISSING_REFERENCE_EXIT_CODE: i32 = 2;
-const GIT_QUIET_ARG: &str = "--quiet";
 const GIT_SHOW_REF_COMMAND: &str = "show-ref";
 const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
 
@@ -51,82 +48,48 @@ pub(crate) enum LocalTargetUpstream {
     Unavailable,
 }
 
-pub(crate) fn local_target_upstream(repository_root: &Path, branch: &str) -> LocalTargetUpstream {
-    // Git's upstream selector takes a branch name, not its refs/heads/ reference.
-    let revision = format!("{branch}{GIT_UPSTREAM_SELECTOR_SUFFIX}{GIT_COMMIT_PEEL_SUFFIX}");
-    object::object_id(repository_root, &revision).map_or(
-        LocalTargetUpstream::Unavailable,
-        LocalTargetUpstream::Available,
-    )
+pub(crate) fn local_target_upstream(
+    objects: &OperationObjectReader,
+    branch: &str,
+) -> Result<LocalTargetUpstream, GitError> {
+    let branch = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}");
+    let upstreams = objects.upstream_references()?;
+    let Some(reference) = upstreams
+        .get(&branch)
+        .filter(|reference| !reference.is_empty())
+    else {
+        return Ok(LocalTargetUpstream::Unavailable);
+    };
+    match objects.commit(reference) {
+        Ok(commit) => Ok(LocalTargetUpstream::Available(commit)),
+        Err(
+            GitError::MissingCommitExpression { .. } | GitError::WrongCommitExpressionType { .. },
+        ) => Ok(LocalTargetUpstream::Unavailable),
+        Err(error) => Err(error),
+    }
 }
 
-/// Read the full object id currently named by `HEAD`.
-pub(crate) fn head_object_id(repository_root: &Path) -> Result<GitObjectId, GitError> {
+/// Read fixture HEAD after a test mutates the repository.
+#[cfg(test)]
+pub(super) fn head_object_id(repository_root: &Path) -> Result<GitObjectId, GitError> {
     object::object_id(repository_root, GIT_HEAD_REVISION)
 }
 
 /// Read the full object id currently named by a local branch.
 pub(crate) fn branch_object_id(
-    repository_root: &Path,
+    objects: &OperationObjectReader,
     branch: &str,
 ) -> Result<GitObjectId, GitError> {
-    object::object_id(
-        repository_root,
-        &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
-    )
-}
-
-/// Ask Git for the branch reference named by `HEAD`.
-pub(crate) fn symbolic_head_reference(repository_root: &Path) -> Result<FullRefName, GitError> {
-    let output = error::completed_git_command(
-        command::git_output(
-            repository_root,
-            [GIT_SYMBOLIC_REF_COMMAND, GIT_HEAD_REVISION],
-        )
-        .into(),
-    )?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_SYMBOLIC_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let reference = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    reference
-        .trim()
-        .parse()
-        .map_err(|_| GitError::InvalidReferenceName { reference })
+    objects.commit(&format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"))
 }
 
 /// Whether Git currently reports `HEAD` as attached to a branch or detached.
+#[derive(Clone)]
 pub(crate) enum HeadAttachment {
     /// `HEAD` names this full branch reference.
     Branch { full_ref: FullRefName },
     /// `HEAD` names a commit directly.
     Detached,
-}
-
-/// Ask Git whether `HEAD` is attached to a branch or detached.
-pub(crate) fn head_attachment(repository_root: &Path) -> Result<HeadAttachment, GitError> {
-    let output = command::git_output(
-        repository_root,
-        [GIT_SYMBOLIC_REF_COMMAND, GIT_QUIET_ARG, GIT_HEAD_REVISION],
-    )?;
-    if output.status.success() {
-        let reference = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-        return reference
-            .trim()
-            .parse()
-            .map(|full_ref| HeadAttachment::Branch { full_ref })
-            .map_err(|_| GitError::InvalidReferenceName { reference });
-    }
-    if output.status.code() == Some(GIT_DETACHED_HEAD_EXIT_CODE) {
-        return Ok(HeadAttachment::Detached);
-    }
-    Err(GitError::CommandFailed {
-        command: GIT_SYMBOLIC_REF_COMMAND,
-        stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-    })
 }
 
 /// Whether a full git reference currently resolves to an object.
@@ -392,6 +355,7 @@ pub(crate) fn write_reservation_retention_ref(
 /// Apply all retention-ref repairs and deletions in one ref-mutating transaction.
 pub(crate) fn update_reservation_retention_refs(
     repository_root: &Path,
+    objects: &OperationObjectReader,
     repairs: &[ReservationRetentionRefRepair],
     deletions: &[ReservationId],
 ) -> Result<(), GitError> {
@@ -405,7 +369,7 @@ pub(crate) fn update_reservation_retention_refs(
     let availability = if protected_tips.is_empty() {
         Vec::new()
     } else {
-        object::commit_availability(repository_root, &protected_tips)?
+        objects.commit_availability(&protected_tips)?
     };
     let input = repairs.iter().zip(availability).fold(
         String::new(),
@@ -427,6 +391,21 @@ pub(crate) fn update_reservation_retention_refs(
             "delete {}",
             reservation_retention_ref_name(*reservation_id)
         );
+        input
+    });
+    if input.is_empty() {
+        return Ok(());
+    }
+    apply_transaction(repository_root, &input)
+}
+
+/// Retire private references without resolving any object.
+pub(crate) fn delete_reservation_retention_refs(
+    repository_root: &Path,
+    deletions: &[ReservationId],
+) -> Result<(), GitError> {
+    let input = deletions.iter().fold(String::new(), |mut input, id| {
+        let _ = writeln!(input, "delete {}", reservation_retention_ref_name(*id));
         input
     });
     if input.is_empty() {

@@ -44,20 +44,16 @@ pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 
 // flags
 /// Ask `cat-file` to classify one object per input line.
-pub(super) const GIT_BATCH_CHECK_ARG: &str = "--batch-check";
 /// Ask `cat-file` for the resolved object id and object type of each input expression.
 pub(super) const GIT_BATCH_CHECK_OBJECT_FORMAT_ARG: &str =
     "--batch-check=%(objectname) %(objecttype)";
 /// Mark commits that have a patch-equivalent on the other side of a symmetric difference.
 pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 /// Ask `rev-parse` for the shared administrative directory.
-pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 /// Report only the number of selected commits.
 pub(super) const GIT_COUNT_ARG: &str = "--count";
 /// Show a merge path only when its result differs from every parent.
 pub(super) const GIT_DENSE_COMBINED_ARG: &str = "--diff-merges=dense-combined";
-/// Test whether an object can be read without printing it.
-pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.
 pub(super) const GIT_FIRST_PARENT_ARG: &str = "--first-parent";
 /// Continue a revision walk when one supplied object cannot be resolved.
@@ -111,7 +107,6 @@ pub(super) const GIT_REFLOG_SHOW_ARG: &str = "show";
 /// Print only each reflog entry's subject.
 pub(super) const GIT_REFLOG_SUBJECT_FORMAT_ARG: &str = "--format=%gs";
 /// Ask `rev-parse` for the repository worktree root.
-pub(super) const GIT_SHOW_TOPLEVEL_ARG: &str = "--show-toplevel";
 /// Read revision arguments from standard input.
 pub(super) const GIT_STDIN_ARG: &str = "--stdin";
 /// Disable rename detection through the merge strategy option boundary.
@@ -172,7 +167,6 @@ pub(super) const GIT_REVERT_STATE_PATH: &str = "REVERT_HEAD";
 /// Infix selecting the commits reachable from exactly one of two revisions.
 pub(super) const GIT_SYMMETRIC_RANGE_INFIX: &str = "...";
 /// Suffix selecting a local branch's configured upstream.
-pub(super) const GIT_UPSTREAM_SELECTOR_SUFFIX: &str = "@{upstream}";
 /// The private namespace used to retain reservation commits.
 pub(super) const RESERVATION_RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 

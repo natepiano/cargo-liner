@@ -215,7 +215,10 @@ fn build_initialized_repository(root: &Path) -> TestResult {
     commit(root, "initial");
     assert_success(&run(root, &["init", "--json"])?);
     GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-    commit(root, "track berth configuration");
+    GIT.run_without_hooks(
+        root,
+        ["commit", "--quiet", "-m", "track berth configuration"],
+    );
     Ok(())
 }
 

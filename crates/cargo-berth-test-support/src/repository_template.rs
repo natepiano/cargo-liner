@@ -27,7 +27,6 @@ use tempfile::tempdir;
 use uuid::Uuid;
 
 use crate::DirectorySnapshot;
-use crate::git_driver;
 
 /// Beside a template's builds, the file whose lock one builder at a time holds.
 const BUILD_LOCK_FILE_NAME: &str = "build.lock";
@@ -205,7 +204,7 @@ impl LedgerTemplate {
     /// Copy this fixture, renewing all owners and discarding derived replay files.
     ///
     /// # Panics
-    /// Panics when the fixture cannot be built, copied, relocated or refreshed.
+    /// Panics when the fixture cannot be built, copied or relocated.
     #[must_use]
     pub fn instantiate(self) -> TempDir {
         let template_root = self.built_root();
@@ -234,12 +233,8 @@ impl LedgerTemplate {
                 }
             }
         }
-        let refreshed = git_driver::git_command(self.repository.executable)
-            .args(["update-index", "-q", "--refresh"])
-            .current_dir(&repository_root)
-            .status()
-            .expect("git should run");
-        assert!(refreshed.success(), "git update-index --refresh failed");
+        // The copied index keeps its staged contents. Git refreshes stale stat
+        // entries when a later operation reads them; restoring needs no process.
         repository
     }
 
@@ -367,7 +362,107 @@ fn remove_stale_builds(builds: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
+    use crate::git_driver;
+
+    const RESTORE_PROBE_GIT: &str = "CARGO_BERTH_RESTORE_PROBE_GIT";
+
+    #[test]
+    fn template_restore_needs_no_git_and_preserves_clean_and_dirty_indexes() {
+        let templates = [
+            index_template("clean-index", build_clean_index),
+            index_template("dirty-index", build_dirty_index),
+        ];
+        if let Some(git) = env::var_os(RESTORE_PROBE_GIT) {
+            for (template, expected) in templates
+                .into_iter()
+                .zip(["", "M  staged.txt\n M working.txt\n"])
+            {
+                let repository = template.instantiate();
+                let output = Command::new(&git)
+                    .current_dir(repository.path())
+                    .args(["status", "--porcelain", "--untracked-files=all"])
+                    .output()
+                    .expect("Git should inspect the restored index");
+                assert!(output.status.success(), "{output:?}");
+                assert_eq!(
+                    String::from_utf8(output.stdout).expect("status should be UTF-8"),
+                    expected
+                );
+            }
+            return;
+        }
+        for template in templates {
+            template.built_root();
+        }
+        let git = env::split_paths(&env::var_os("PATH").expect("PATH should exist"))
+            .map(|directory| directory.join("git"))
+            .find(|path| path.is_file())
+            .expect("Git should be on PATH")
+            .canonicalize()
+            .expect("Git should canonicalize");
+        let empty_path = tempdir().expect("empty PATH directory should exist");
+        let output = Command::new(env::current_exe().expect("test binary should resolve"))
+            .args(["--exact", "repository_template::tests::template_restore_needs_no_git_and_preserves_clean_and_dirty_indexes", "--nocapture"])
+            .env("PATH", empty_path.path())
+            .env(RESTORE_PROBE_GIT, git)
+            .output()
+            .expect("restore probe should start");
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    fn index_template(name: &'static str, build: fn(&Path)) -> LedgerTemplate {
+        LedgerTemplate {
+            repository:   RepositoryTemplate {
+                target_directory: concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/tmp"),
+                executable: "/bin/sh",
+                name,
+                build,
+            },
+            ledger:       LedgerFixture::Empty,
+            build_timing: TemplateBuildTiming::InTest,
+        }
+    }
+
+    fn build_clean_index(root: &Path) {
+        run_index_git(root, &["init", "--initial-branch=main"]);
+        for name in ["staged.txt", "working.txt", "unchanged.txt"] {
+            fs::write(root.join(name), "original\n").expect("tracked file should write");
+        }
+        run_index_git(root, &["add", "."]);
+        run_index_git(
+            root,
+            &[
+                "-c",
+                "user.name=Template Test",
+                "-c",
+                "user.email=template@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+    }
+
+    fn build_dirty_index(root: &Path) {
+        build_clean_index(root);
+        fs::write(root.join("staged.txt"), "staged change\n").expect("staged file should write");
+        run_index_git(root, &["add", "staged.txt"]);
+        fs::write(root.join("working.txt"), "working change\n").expect("working file should write");
+    }
+
+    fn run_index_git(root: &Path, arguments: &[&str]) {
+        let output = git_driver::fixture_git_command()
+            .current_dir(root)
+            .args(arguments)
+            .output()
+            .expect("fixture Git should start");
+        assert!(output.status.success(), "{arguments:?}: {output:?}");
+    }
 
     #[test]
     fn before_run_template_builds_itself_when_setup_did_not_supply_it() {

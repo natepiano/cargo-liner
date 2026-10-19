@@ -1145,7 +1145,7 @@ fn stale_marker_recovery_preserves_the_frozen_corpus_text(repository: &TempDir) 
         None,
     )?;
     let mut paused =
-        PausedHookCall::spawn(repository.path(), &payload, "pre-tool-use", "rev-parse")?;
+        PausedHookCall::spawn(repository.path(), &payload, "pre-tool-use", "cat-file")?;
     paused.wait_until_paused()?;
     let released = run_berth(repository.path(), &["release", marker_seed_id, "--json"])?;
     require_success(&released, "marker seed release")?;
@@ -1599,7 +1599,7 @@ impl PausedHookCall {
 const fn paused_git_wrapper() -> &'static str {
     r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "$CARGO_BERTH_TEST_GIT_OBSERVATION" ] \
-    && { [ "$2" = "diff-tree" ] || [ "$3" = "HEAD" ]; }; then
+    && { [ "$2" = "diff-tree" ] || [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; }; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
     while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
         sleep 0.01

@@ -54,10 +54,29 @@ pub(super) fn continue_rebase(holder: &Path) {
 
 /// Edit the first picked commit while preserving update-ref commands in the todo.
 pub(super) fn write_first_rebase_action(editor: &Path, action: &str) {
-    DirectorySnapshot::write_shared_shell_script(
-        editor,
-        &format!(
-            "#!/bin/sh\nsed '1s/^pick /{action} /' \"$1\" > \"$1.edited\"\nmv \"$1.edited\" \"$1\"\n"
-        ),
-    );
+    let script = r#"#!/bin/sh
+# Read the todo completely before opening it for writing. Shell builtins keep
+# the real rebase editor without starting sed and mv for every split.
+todo=''
+first=1
+newline='
+'
+while :; do
+    terminator=$newline
+    if ! IFS= read -r line; then
+        [ -n "$line" ] || break
+        terminator=''
+    fi
+    if [ "$first" -eq 1 ]; then
+        case $line in
+            'pick '*) line='__ACTION__ '"${line#pick }" ;;
+        esac
+        first=0
+    fi
+    todo=$todo$line$terminator
+    [ -n "$terminator" ] || break
+done < "$1"
+printf '%s' "$todo" > "$1"
+"#;
+    DirectorySnapshot::write_shared_shell_script(editor, &script.replace("__ACTION__", action));
 }

@@ -614,11 +614,17 @@ if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-l
         sleep 0.01
     done
 fi
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "rev-parse" ] && [ "$3" = "HEAD" ]; then
-    : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "cat-file" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
+    while IFS= read -r expression; do
+        if [ "$expression" = "HEAD" ]; then
+            : > "$CARGO_BERTH_TEST_GIT_READY"
+            while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
+                sleep 0.01
+            done
+        fi
+        printf '%s\n' "$expression"
+    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    exit $?
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;

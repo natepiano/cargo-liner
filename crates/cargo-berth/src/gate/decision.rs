@@ -202,8 +202,9 @@ pub(super) fn evaluate_locked(
     let journal_mutation_actor = resolved_edit_authorization
         .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
     retry_rewrite_reconciliation(|| {
+        let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
         let rewrite_preflight =
-            reconcile::prepare_rewrite_reconciliation(&worktree_context, &ledger, &berth_config)
+            reconcile::prepare_rewrite_reconciliation(&repository, &ledger, &berth_config)
                 .map_err(GateError::Reconciliation)?;
         let outcome = ledger
             .transact_reconciliation(
@@ -212,7 +213,6 @@ pub(super) fn evaluate_locked(
                 |state| {
                     let prepared = match reconcile::prepare_gate_reconciliation(
                         &state,
-                        &worktree_context,
                         ledger_repository,
                         &berth_config,
                         update,

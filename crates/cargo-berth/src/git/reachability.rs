@@ -41,12 +41,12 @@ use super::constants::GIT_WRITE_TREE_ARG;
 use super::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use super::error;
 use super::error::GitError;
-use super::object;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::patch::HistoricalIntegrationCandidateDiscovery;
 use super::patch::ScopedPatchTargetHistory;
 use super::refs::LocalTargetUpstream;
+use super::snapshot::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
@@ -373,12 +373,13 @@ pub(crate) struct ReservationCheckpointCommits {
 
 /// Resolve the checkpoint's known commit expressions through one object batch.
 pub(crate) fn reservation_checkpoint_commits(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     trunk_branch: &str,
 ) -> Result<ReservationCheckpointCommits, GitError> {
     let trunk_expression = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{trunk_branch}");
     let expressions = [GIT_HEAD_REVISION.to_owned(), trunk_expression.clone()];
-    let [protected_tip, trunk] = object::commit_object_resolutions(repository_root, &expressions)?
+    let [protected_tip, trunk] = repository
+        .resolve_commit_objects(&expressions)?
         .try_into()
         .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
             expected: expressions.len(),
@@ -413,21 +414,21 @@ fn required_commit_expression(
 
 /// Resolve `HEAD` and classify every candidate ancestor through one object batch.
 pub(crate) fn head_commit_reachability(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachability, GitError> {
-    commit_target_reachability(repository_root, GIT_HEAD_REVISION, candidate_ancestors)
+    commit_target_reachability(repository, GIT_HEAD_REVISION, candidate_ancestors)
         .map(|observation| observation.reachability)
 }
 
 /// Resolve one local branch and classify every candidate ancestor through one object batch.
 pub(crate) fn branch_commit_reachability(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     branch: &str,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
     commit_target_reachability(
-        repository_root,
+        repository,
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
         candidate_ancestors,
     )
@@ -721,25 +722,25 @@ enum TargetHistoryRead {
 
 /// Resolve one target expression through an object batch of its own.
 fn sole_commit_target(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_expression: &str,
 ) -> Result<SoleCommitTarget, GitError> {
-    let [resolution] =
-        object::commit_object_resolutions(repository_root, &[target_expression.to_owned()])?
-            .try_into()
-            .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
-                expected: 1,
-                actual:   resolutions.len(),
-            })?;
+    let [resolution] = repository
+        .resolve_commit_objects(&[target_expression.to_owned()])?
+        .try_into()
+        .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
+            expected: 1,
+            actual:   resolutions.len(),
+        })?;
     Ok(SoleCommitTarget::from(resolution))
 }
 
 /// Answer for a target with no candidates, which needs no history walk at all.
 fn uncontested_commit_target_reachability(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_expression: &str,
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    let reachability = match sole_commit_target(repository_root, target_expression)? {
+    let reachability = match sole_commit_target(repository, target_expression)? {
         SoleCommitTarget::Resolved(target) => CommitTargetReachability::Resolved {
             target,
             candidates: Vec::new(),
@@ -755,15 +756,15 @@ fn uncontested_commit_target_reachability(
 
 /// Read the target's ancestry graph and the candidate object batch at the same time.
 fn read_target_history_and_candidates(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_expression: &str,
     candidate_expressions: &[String],
 ) -> Result<(TargetHistoryRead, Vec<CommitObjectResolution>), GitError> {
     thread::scope(|scope| {
         let target_history_worker =
-            scope.spawn(|| target_commit_history(repository_root, target_expression));
-        let candidate_resolution_worker = scope
-            .spawn(|| object::commit_object_resolutions(repository_root, candidate_expressions));
+            scope.spawn(|| target_commit_history(repository.repository_root(), target_expression));
+        let candidate_resolution_worker =
+            scope.spawn(|| repository.resolve_commit_objects(candidate_expressions));
         let target_history =
             target_history_worker
                 .join()
@@ -785,12 +786,12 @@ fn read_target_history_and_candidates(
 
 /// Decide whether a failed history walk is an error or an unusable target expression.
 fn diagnose_failed_target_history(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_expression: &str,
     history_error: GitError,
     resolved_candidates: ResolvedBatchCommitCandidates,
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    match sole_commit_target(repository_root, target_expression)? {
+    match sole_commit_target(repository, target_expression)? {
         SoleCommitTarget::Resolved(_) => Err(history_error),
         SoleCommitTarget::Unusable(unusable) => Ok(CommitTargetReachabilityObservation {
             reachability: unusable.into_reachability(),
@@ -850,7 +851,7 @@ fn classify_candidates_against_target(
 }
 
 fn commit_target_reachability(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_expression: &str,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
@@ -859,13 +860,10 @@ fn commit_target_reachability(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     if candidate_expressions.is_empty() {
-        return uncontested_commit_target_reachability(repository_root, target_expression);
+        return uncontested_commit_target_reachability(repository, target_expression);
     }
-    let (target_history, candidate_resolutions) = read_target_history_and_candidates(
-        repository_root,
-        target_expression,
-        &candidate_expressions,
-    )?;
+    let (target_history, candidate_resolutions) =
+        read_target_history_and_candidates(repository, target_expression, &candidate_expressions)?;
     let resolved_candidates = ResolvedBatchCommitCandidates(
         candidate_resolutions
             .iter()
@@ -884,7 +882,7 @@ fn commit_target_reachability(
         TargetHistoryRead::Walked(target_history) => target_history,
         TargetHistoryRead::Failed(history_error) => {
             return diagnose_failed_target_history(
-                repository_root,
+                repository,
                 target_expression,
                 history_error,
                 resolved_candidates,
@@ -942,7 +940,7 @@ fn target_commit_history(
 
 /// Classify every candidate ancestor against one target with a fixed number of git invocations.
 pub(crate) fn reachability_to_target(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     candidate_ancestors: &[GitObjectId],
     target: &GitObjectId,
 ) -> Result<Vec<Reachability>, GitError> {
@@ -952,7 +950,7 @@ pub(crate) fn reachability_to_target(
     let mut queried_objects = Vec::with_capacity(candidate_ancestors.len() + 1);
     queried_objects.extend(candidate_ancestors.iter().cloned());
     queried_objects.push(target.clone());
-    let object_availability = object::commit_availability(repository_root, &queried_objects)?;
+    let object_availability = repository.commit_availability(&queried_objects)?;
     let Some((target_availability, candidate_availability)) = object_availability.split_last()
     else {
         return Err(GitError::InvalidBatchObjectCount {
@@ -963,7 +961,8 @@ pub(crate) fn reachability_to_target(
     if matches!(target_availability, CommitAvailability::ObjectUnknown) {
         return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
     }
-    let target_history = target_commit_history(repository_root, &target.to_string())?.graph;
+    let target_history =
+        target_commit_history(repository.repository_root(), &target.to_string())?.graph;
     Ok(candidate_ancestors
         .iter()
         .zip(candidate_availability)
@@ -1374,7 +1373,7 @@ mod tests {
         fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
         let trunk = fixture.commit("rewrite protected hunk")?;
         let observation = super::branch_commit_reachability(
-            fixture.root(),
+            &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;
@@ -1461,7 +1460,7 @@ mod tests {
         fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
         let trunk = fixture.commit("rewrite phase after merge")?;
         let observation = super::branch_commit_reachability(
-            fixture.root(),
+            &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;
