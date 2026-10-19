@@ -9,6 +9,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::process::Output;
 use std::string::FromUtf8Error;
+use std::sync::Arc;
 
 use super::command::GitCommandOutputAvailability;
 use crate::ids::GitObjectId;
@@ -26,6 +27,8 @@ use crate::ids::InvalidReservationScopePath;
 /// that stopped before reporting.
 #[derive(Debug)]
 pub(crate) enum GitError {
+    /// Every consumer of a snapshot sees the first unsuccessful read.
+    SnapshotReadFailed(Arc<Self>),
     /// Git could not be started or read.
     Io(std::io::Error),
     /// Git completed unsuccessfully.
@@ -86,6 +89,7 @@ pub(crate) enum GitError {
 impl Display for GitError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SnapshotReadFailed(error) => Display::fmt(error, formatter),
             Self::Io(error) => write!(formatter, "could not run git: {error}"),
             Self::CommandFailed { command, stderr } => {
                 write!(formatter, "git {command} failed: {stderr}")
@@ -174,7 +178,14 @@ impl Display for GitError {
     }
 }
 
-impl std::error::Error for GitError {}
+impl std::error::Error for GitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SnapshotReadFailed(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for GitError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }

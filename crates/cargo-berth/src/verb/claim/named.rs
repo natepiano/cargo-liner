@@ -1,6 +1,7 @@
 //! Claims that continue an explicitly selected reservation.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use super::AnswerKind;
 use super::AnsweringWorktree;
@@ -33,6 +34,7 @@ use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::OrderingGraph;
+use crate::git;
 use crate::ids::ReservationId;
 use crate::ledger;
 use crate::ledger::CommittedActionValidation;
@@ -92,6 +94,7 @@ pub(super) fn acquire(
     let scopes = normalized_claim_scopes(declared_scopes, &source, path_case);
     let ledger = Ledger::open_from_discovered_worktree(&worktree)?;
     let context = ClaimValidationContext {
+        repository: Arc::new(git::RepositorySnapshot::new(worktree.clone())),
         run_validation,
         worktree_context: worktree,
         recovery_command_line: recovery.clone(),
@@ -406,7 +409,7 @@ fn locked_reservations(
     locked_claim_reservations(
         state,
         context.run_validation,
-        &context.worktree_context,
+        &context.repository,
         context.worktree_id,
         &context.recovery_command_line,
         target,

@@ -889,9 +889,9 @@ fn waiting_ordering_edge(entry: &serde_json::Value) -> serde_json::Value {
 fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
     let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
@@ -1009,9 +1009,9 @@ fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavaila
 fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "empty-holder");
     let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
@@ -1057,9 +1057,9 @@ fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadabl
 fn outstanding_reservation_report_retains_protected_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "protected-holder");
     let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
@@ -1200,9 +1200,9 @@ fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
 fn released_abandoned_reservation_reports_its_merge_extent_at_release_while_active_stays_live() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "abandoned-holder");
     let id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
@@ -2184,9 +2184,9 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let fresh_root = add_worktree(repository.path(), worktrees.path(), "fresh-holder");
@@ -3115,9 +3115,9 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
@@ -3385,9 +3385,9 @@ fn board_git_cost_separates_each_scaling_dimension() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
@@ -6051,9 +6051,9 @@ fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let orphan_root = add_worktree(repository.path(), worktrees.path(), "orphan-recovery");
@@ -6148,7 +6148,8 @@ fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservatio
             .lines()
             .filter(|line| *line == protected_object_query)
             .count(),
-        1
+        0,
+        "orphan object availability must reuse the operation's batch reader"
     );
     assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(trace.lines().filter(|line| *line == retention).count(), 1);

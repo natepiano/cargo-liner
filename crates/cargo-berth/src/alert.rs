@@ -14,6 +14,7 @@ use crate::edge::JudgedTargetTip;
 use crate::edge::RepositoryReservationEvidence;
 use crate::git;
 use crate::git::GitError;
+use crate::git::OperationObjectReader;
 use crate::git::Reachability;
 use crate::git::ReferenceLookup;
 use crate::ids::GitObjectId;
@@ -760,6 +761,7 @@ impl Display for RecoverabilityVerdict {
 /// Derive an alert only for an outstanding reservation proven orphaned.
 pub(crate) fn for_orphaned_outstanding(
     repository_root: &Path,
+    objects: &OperationObjectReader,
     reservation: &Reservation,
     worktree_liveness: WorktreeLiveness,
     integration_evidence: OrphanIntegrationEvidence,
@@ -772,8 +774,7 @@ pub(crate) fn for_orphaned_outstanding(
     }
 
     let branch_ref_status = branch_status(repository_root, reservation)?;
-    let object_availability = if git::commit_is_available(repository_root, protected_tip.as_ref())?
-    {
+    let object_availability = if objects.commit_is_available(protected_tip.as_ref())? {
         ObjectAvailability::Available
     } else {
         ObjectAvailability::Unavailable

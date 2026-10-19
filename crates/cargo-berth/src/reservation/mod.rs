@@ -28,7 +28,6 @@ pub(crate) use evidence::ProtectedReservationTip;
 pub(crate) use evidence::ReservationIntegrationJudgment;
 pub(crate) use evidence::ScopedPatchComparisonObservation;
 pub(crate) use evidence::ScopedPatchIntegrationEvaluation;
-pub(crate) use evidence::current_head;
 pub(crate) use evidence::current_trunk;
 pub(crate) use evidence::integration_status;
 pub(crate) use evidence::judge_integration;

@@ -7,6 +7,8 @@
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
@@ -124,6 +126,11 @@ impl GitDriver {
         Argument: AsRef<OsStr>,
     {
         let (mut command, arguments) = self.prepare(repository_root, arguments);
+        if let FixtureReferenceRead::Resolved(object) =
+            fixture_reference_read(repository_root, &arguments)
+        {
+            return object;
+        }
         let output = capture(&mut command);
         assert_success(&output, &arguments);
         String::from_utf8(output.stdout)
@@ -274,6 +281,89 @@ impl GitDriver {
     }
 }
 
+/// A known fixture reference can be read directly; every other expression stays Git's job.
+enum FixtureReferenceRead {
+    Resolved(String),
+    UseGit,
+}
+
+fn fixture_reference_read(root: &Path, arguments: &[OsString]) -> FixtureReferenceRead {
+    let [command, reference] = arguments else {
+        return FixtureReferenceRead::UseGit;
+    };
+    if command != "rev-parse" {
+        return FixtureReferenceRead::UseGit;
+    }
+    let Some(reference) = reference.to_str() else {
+        return FixtureReferenceRead::UseGit;
+    };
+    // These fixture branches are created explicitly. Revision expressions, options and
+    // ambiguous short names must still be interpreted by Git.
+    let reference = match reference {
+        "HEAD" => "HEAD",
+        "main" | "refs/heads/main" => "refs/heads/main",
+        "integration" | "refs/heads/integration" => "refs/heads/integration",
+        _ => return FixtureReferenceRead::UseGit,
+    };
+    read_fixture_reference(root, reference)
+        .map_or(FixtureReferenceRead::UseGit, FixtureReferenceRead::Resolved)
+}
+
+/// The optional result is a filesystem fast-path boundary, never a missing-ref verdict.
+fn read_fixture_reference(root: &Path, reference: &str) -> Option<String> {
+    let git = root.join(".git");
+    let administration = if git.is_dir() {
+        git
+    } else {
+        let pointer = fs::read_to_string(git).ok()?;
+        root.join(pointer.trim().strip_prefix("gitdir: ")?)
+    };
+    let common = match fs::read_to_string(administration.join("commondir")) {
+        Ok(relative) => administration.join(relative.trim()),
+        Err(error) if error.kind() == ErrorKind::NotFound => administration.clone(),
+        Err(_) => return None,
+    };
+    let mut reference = reference.to_owned();
+    for _ in 0..8 {
+        let directory = if reference == "HEAD" {
+            &administration
+        } else {
+            &common
+        };
+        match fs::read_to_string(directory.join(&reference)) {
+            Ok(value) => {
+                let value = value.trim();
+                if let Some(target) = value.strip_prefix("ref: ") {
+                    if !target.starts_with("refs/") || target.split('/').any(|part| part == "..") {
+                        return None;
+                    }
+                    target.clone_into(&mut reference);
+                } else {
+                    return fixture_object_name(value);
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let packed = fs::read_to_string(common.join("packed-refs")).ok()?;
+                for line in packed.lines() {
+                    if let Some((object, name)) = line.split_once(' ')
+                        && name == reference
+                    {
+                        return fixture_object_name(object);
+                    }
+                }
+                return None;
+            },
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn fixture_object_name(value: &str) -> Option<String> {
+    (matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| value.to_owned())
+}
+
 fn capture(command: &mut Command) -> Output { command.output().expect("git should run") }
 
 fn assert_success(output: &Output, arguments: &[OsString]) {
@@ -301,6 +391,101 @@ mod tests {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
         command
+    }
+
+    #[test]
+    fn fixture_reference_reads_need_no_git_for_loose_packed_and_linked_heads() {
+        const PROBE: &str = "CARGO_BERTH_FIXTURE_REF_PROBE";
+        if let Some(root) = std::env::var_os(PROBE) {
+            let driver = super::GitDriver {
+                executable:          "unused-berth",
+                optional_locks:      super::OptionalLocks::Taken,
+                cleared_environment: &[],
+            };
+            let root = std::path::Path::new(&root);
+            let main = std::env::var("CARGO_BERTH_FIXTURE_MAIN").expect("expected main");
+            let integration =
+                std::env::var("CARGO_BERTH_FIXTURE_INTEGRATION").expect("expected integration");
+            assert_eq!(driver.stdout(root, ["rev-parse", "HEAD"]), main);
+            assert_eq!(driver.stdout(root, ["rev-parse", "main"]), main);
+            assert_eq!(
+                driver.stdout(root, ["rev-parse", "integration"]),
+                integration
+            );
+            assert_eq!(
+                driver.stdout(&root.join("linked"), ["rev-parse", "HEAD"]),
+                integration
+            );
+            assert_eq!(
+                driver.stdout(&root.join("linked"), ["rev-parse", "main"]),
+                main
+            );
+            return;
+        }
+        let repository = tempdir().expect("fixture should exist");
+        let root = repository.path();
+        let run = |arguments: &[&str]| {
+            let output = machine_independent_git()
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(arguments)
+                .current_dir(root)
+                .output()
+                .expect("fixture Git should run");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("Git output should be UTF-8")
+                .trim()
+                .to_owned()
+        };
+        run(&["init", "--quiet", "--initial-branch=main"]);
+        run(&["commit", "--quiet", "--allow-empty", "-m", "base"]);
+        let integration = run(&["rev-parse", "HEAD"]);
+        run(&["branch", "integration"]);
+        run(&["commit", "--quiet", "--allow-empty", "-m", "main"]);
+        let main = run(&["rev-parse", "HEAD"]);
+        run(&[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            "linked",
+            "integration",
+        ]);
+        let empty_path = tempdir().expect("empty PATH should exist");
+        let probe = || {
+            let output = Command::new(std::env::current_exe().expect("test binary should resolve"))
+                .args(["--exact", "git_driver::tests::fixture_reference_reads_need_no_git_for_loose_packed_and_linked_heads", "--nocapture"])
+                .env(PROBE, root)
+                .env("CARGO_BERTH_FIXTURE_MAIN", &main)
+                .env("CARGO_BERTH_FIXTURE_INTEGRATION", &integration)
+                .env("PATH", empty_path.path())
+                .output()
+                .expect("reference probe should run");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        probe();
+        run(&["pack-refs", "--all", "--prune"]);
+        probe();
+        let driver = super::GitDriver {
+            executable:          "unused-berth",
+            optional_locks:      super::OptionalLocks::Refused,
+            cleared_environment: &[],
+        };
+        assert_eq!(driver.stdout(root, ["rev-parse", "HEAD^{commit}"]), main);
     }
 
     #[test]

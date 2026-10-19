@@ -48,7 +48,6 @@ use super::constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
 use super::constants::GIT_SYMMETRIC_RANGE_INFIX;
 use super::constants::GIT_WRITE_TREE_ARG;
 use super::error::GitError;
-use super::object;
 use super::reachability::PhaseStartTargetFirstParentHistories;
 use crate::ids::GitObjectId;
 use crate::ledger::ReservationScopeSet;
@@ -292,11 +291,12 @@ impl ScopedSymmetricDifference {
 /// a bare equivalence test read a dropped commit exactly like a replayed one. Position
 /// separates them: only the replayed commits are contiguous at the tip.
 pub(crate) fn rewritten_phase_anchor(
-    repository_root: &Path,
+    repository: &super::RepositorySnapshot,
     phase_start: &GitObjectId,
     previous_tip: &GitObjectId,
     proposed_tip: &GitObjectId,
 ) -> Result<GitObjectId, GitError> {
+    let repository_root = repository.repository_root();
     let phase_commit_count = commit_count(
         repository_root,
         &format!("{phase_start}{GIT_ANCESTOR_RANGE_INFIX}{previous_tip}"),
@@ -315,10 +315,9 @@ pub(crate) fn rewritten_phase_anchor(
         .iter()
         .take_while(|commit| equivalents.contains(commit))
         .count();
-    object::object_id(
-        repository_root,
-        &format!("{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"),
-    )
+    repository.object_reader().commit(&format!(
+        "{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"
+    ))
 }
 
 /// Count the commits selected by one revision range.
@@ -1214,7 +1213,7 @@ mod tests {
             &crate::git::PhaseStartTargetFirstParentHistories::default(),
         );
         let observation = super::super::reachability::branch_commit_reachability(
-            fixture.root(),
+            &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;

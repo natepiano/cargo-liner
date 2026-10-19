@@ -6,6 +6,7 @@
 //! to `IntegrationRepository::new`; the free functions here only read what those
 //! runs produced.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -15,6 +16,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
+use std::sync::Mutex;
 
 use serde_json::Value;
 use tempfile::Builder;
@@ -37,6 +39,10 @@ const CLEARED_GIT_ENVIRONMENT: &[&str] = &[
     "GIT_DIR",
     "GIT_COMMON_DIR",
 ];
+
+/// One real initialized seed for each berth executable used by this builder process.
+/// Cold setup and its cold probe are separate processes, so each builds its own seed.
+static INITIALIZED_MAIN_SEEDS: Mutex<BTreeMap<&'static str, TempDir>> = Mutex::new(BTreeMap::new());
 
 /// What [`IntegrationRepository::capture`] took from one repository, for
 /// [`IntegrationRepository::restore`] to write back.
@@ -134,6 +140,27 @@ impl IntegrationRepository {
     ///
     /// Panics when a fixture file cannot be written or git or berth fails.
     pub fn build_main_template(root: &Path, executable: &'static str) {
+        let source = {
+            let mut seeds = INITIALIZED_MAIN_SEEDS
+                .lock()
+                .expect("initialized main seeds should lock");
+            let seed = seeds.entry(executable).or_insert_with(|| {
+                let seed = tempdir().expect("main seed directory should exist");
+                Self::build_main_seed(seed.path(), executable);
+                seed
+            });
+            let source = fs::canonicalize(seed.path()).expect("main seed should canonicalize");
+            drop(seeds);
+            source
+        };
+        let destination = fs::canonicalize(root).expect("main template should canonicalize");
+        let mut snapshot = DirectorySnapshot::capture(&source);
+        let _ = snapshot.replace_text(&source.to_string_lossy(), &destination.to_string_lossy());
+        IdentityRenewal::read(&source).apply(&mut snapshot);
+        snapshot.restore(&destination);
+    }
+
+    fn build_main_seed(root: &Path, executable: &'static str) {
         let git = GitDriver {
             executable,
             optional_locks: OptionalLocks::Taken,

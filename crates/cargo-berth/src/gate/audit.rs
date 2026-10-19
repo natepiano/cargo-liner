@@ -39,8 +39,9 @@ pub(super) fn commit_forced_permit_audits(
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
     decision::retry_rewrite_reconciliation(|| {
+        let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
         let rewrite_preflight =
-            reconcile::prepare_rewrite_reconciliation(worktree_context, &ledger, berth_config)
+            reconcile::prepare_rewrite_reconciliation(&repository, &ledger, berth_config)
                 .map_err(GateError::Reconciliation)?;
         let outcome = ledger
             .transact_reconciliation(
@@ -49,7 +50,6 @@ pub(super) fn commit_forced_permit_audits(
                 |state| {
                     let prepared = match reconcile::prepare_gate_reconciliation(
                         &state,
-                        worktree_context,
                         ledger_repository,
                         berth_config,
                         update,

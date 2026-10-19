@@ -140,7 +140,9 @@ fn build_rewrite_main(root: &Path) {
         root,
         ["add", "--force", "phase.txt", ".claude/config/berth.toml"],
     );
-    GIT.run(
+    // The unreserved-trunk gate regression covers this source and policy baseline.
+    // Rewrites after a phase starts keep every capture and drift hook.
+    GIT.run_without_hooks(
         root,
         [
             "commit",

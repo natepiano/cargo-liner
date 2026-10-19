@@ -3735,20 +3735,20 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"],
-        "a status observation accompanies the batched phase history and drift status; HEAD is trunk, so no branch merge query starts"
+        vec!["diff-tree", "status"],
+        "reconciliation and drift share one status observation; HEAD is trunk, so no branch merge query starts"
     );
     assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
-    assert_eq!(cheap.fingerprint_commands(), vec!["status", "status"]);
+    assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
     let mut cheap_commands = cheap.commands();
     cheap_commands.sort_unstable();
     assert_eq!(
         cheap_commands,
-        vec!["cat-file", "status", "status", "worktree"],
+        vec!["cat-file", "status", "worktree"],
         "the cheap PostToolUse engine path must reuse its discovered ledger and administrative directory",
     );
 
@@ -3757,7 +3757,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(missing_cache.output.status.success());
     assert_eq!(
         missing_cache.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"]
+        vec!["diff-tree", "status"]
     );
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
@@ -3771,7 +3771,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(corrupt_cache.output.status.success());
     assert_eq!(
         corrupt_cache.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"]
+        vec!["diff-tree", "status"]
     );
     assert_batched_full_attribution_commands(&corrupt_cache.commands());
 }
@@ -4783,9 +4783,10 @@ fn build_initialized_repository(repository_root: &Path) {
             .success()
     );
     git(repository_root, &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    // This unreserved trunk commit has no hook effect; gate.rs proves that contract.
+    GIT.run_without_hooks(
         repository_root,
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
 }
 

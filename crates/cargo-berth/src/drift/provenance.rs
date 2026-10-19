@@ -28,6 +28,7 @@ use crate::edge::JudgedTargetTip;
 use crate::edge::RepositorySnapshot;
 use crate::git;
 use crate::git::IncursionPathLogInvocation;
+use crate::git::LocalTargetUpstream;
 use crate::ids::CommitterTime;
 use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
@@ -92,19 +93,31 @@ enum IncursionCommitOriginMembership {
 
 impl IncursionCommitOriginMembership {
     fn observe(
-        repository_root: &Path,
+        repository: &git::RepositorySnapshot,
         origin_basis: &JudgedTargetTip,
         target: &GitObjectId,
         recorded_target: &IntegrationTarget,
+        anchors: &HashMap<GitObjectId, IncursionAnchorAttribution>,
     ) -> Self {
         let JudgedTargetTip::Resolved(origin_basis) = origin_basis else {
             return Self::CannotClassifyOrigin;
         };
+        let Ok(upstream) = recorded_target.local_upstream(&repository.object_reader()) else {
+            return Self::CannotClassifyOrigin;
+        };
+        if matches!(upstream, LocalTargetUpstream::Unavailable)
+            && let Some(anchor) = anchors.get(origin_basis)
+            && anchor.state == IncursionAttributionAnchorState::UsableAncestor
+        {
+            // The range graph already excludes this basis. Without an upstream,
+            // origin classification asks exactly the same membership question.
+            return Self::Classified(anchor.range_commits.clone());
+        }
         git::commits_outside_origin_basis(
-            repository_root,
+            repository.repository_root(),
             origin_basis,
             target,
-            &recorded_target.local_upstream(repository_root),
+            &upstream,
         )
         .map_or(Self::CannotClassifyOrigin, Self::Classified)
     }
@@ -116,13 +129,14 @@ impl IncursionCommitOriginMembership {
 /// carried it. Nothing is read when there are none, or when the observation is not a full
 /// comparison with an anchored target — a cheap comparison reads no committed history.
 pub(super) fn read_committed_foreign_paths(
-    repository_root: &Path,
+    repository: &git::RepositorySnapshot,
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
     acting_identity: DriftActingIdentity,
     repository_snapshot: &RepositorySnapshot,
     committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
 ) -> Result<CommittedForeignPathHistory, DriftFingerprintError> {
+    let repository_root = repository.repository_root();
     let mut anchors = Vec::new();
     let mut paths = Vec::new();
     let mut origin_targets = HashMap::new();
@@ -186,10 +200,11 @@ pub(super) fn read_committed_foreign_paths(
             .into_iter()
             .map(|(target, observation)| {
                 let membership = IncursionCommitOriginMembership::observe(
-                    repository_root,
+                    repository,
                     &observation,
                     observed_tip,
                     &target,
+                    &batch.anchors,
                 );
                 (target, membership)
             })

@@ -13,6 +13,8 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -75,6 +77,11 @@ const GIT: cargo_berth_test_support::GitDriver = cargo_berth_test_support::GitDr
 use cargo_berth_test_support::git_command;
 
 fn main() {
+    if env::args().any(|argument| argument == "--probe-stalled-template") {
+        let (_sender, receiver) = mpsc::channel();
+        require_template_progress(&receiver, &["stalled-fixture"], Duration::from_millis(25));
+        return;
+    }
     let templates = [
         edges_templates::RECORDED_PROJECTION,
         edges_templates::MERGE_EXTENT_MAIN,
@@ -118,7 +125,13 @@ fn main() {
         }
         if !env::args().any(|argument| argument == "--ignored") {
             println!("cold_single_target_setup_builds_every_recorded_template: test");
+            println!("stalled_template_build_fails_with_a_clear_deadline: test");
         }
+        return;
+    }
+    if env::args().any(|argument| argument == "stalled_template_build_fails_with_a_clear_deadline")
+    {
+        assert_stalled_template_deadline();
         return;
     }
     if env::args()
@@ -135,10 +148,22 @@ fn main() {
             .expect("template build should have a key"),
     );
     std::thread::scope(|scope| {
+        let (completed, progress) = mpsc::channel();
         for template in templates {
             let builds = &builds;
-            scope.spawn(move || template.prepare_before_run(builds));
+            let completed = completed.clone();
+            scope.spawn(move || {
+                template.prepare_before_run(builds);
+                completed
+                    .send(template.repository.name)
+                    .expect("setup progress should publish");
+            });
         }
+        drop(completed);
+        // Cold SETUP took 39.527 s under tracing. Allow over three times that
+        // for one completion, so machine load does not look like a stalled child.
+        let names = templates.map(|template| template.repository.name);
+        require_template_progress(&progress, &names, Duration::from_secs(120));
     });
     if env::var_os("CARGO_BERTH_SINGLE_TARGET_SETUP_PROBE").is_none() {
         prepare_single_target_setup_probe(&directory);
@@ -156,6 +181,38 @@ fn main() {
     }
 }
 
+/// Bound stalled setup rather than leave nextest waiting on a stuck fixture child.
+fn require_template_progress(progress: &mpsc::Receiver<&str>, names: &[&str], deadline: Duration) {
+    let mut unfinished = names.to_vec();
+    while !unfinished.is_empty() {
+        match progress.recv_timeout(deadline) {
+            Ok(name) => {
+                unfinished.retain(|pending| *pending != name);
+                eprintln!("cargo-berth template complete: {name}");
+            },
+            Err(error) => {
+                eprintln!(
+                    "cargo-berth template SETUP failed: no template completed within {deadline:?}; unfinished templates: {}: {error}",
+                    unfinished.join(", ")
+                );
+                std::process::exit(1);
+            },
+        }
+    }
+}
+
+fn assert_stalled_template_deadline() {
+    let output = Command::new(env::current_exe().expect("builder should resolve"))
+        .arg("--probe-stalled-template")
+        .output()
+        .expect("stalled setup probe should run");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("template SETUP failed: no template completed within 25ms; unfinished templates: stalled-fixture")
+    );
+}
+
 fn template_cache_directory() -> PathBuf {
     env::var_os("CARGO_BERTH_TEMPLATE_CACHE").map_or_else(
         || Path::new(env!("CARGO_TARGET_TMPDIR")).join("cargo-berth-templates"),
@@ -164,7 +221,7 @@ fn template_cache_directory() -> PathBuf {
 }
 
 /// Exercise the actual wrapper with no listing or cache, under nextest's setup
-/// clock. The test checks these real artifacts; it never substitutes a builder.
+/// clock, reusing this executable. The test checks the real template artifacts.
 fn prepare_single_target_setup_probe(directory: &Path) {
     let probe = directory.join("single-target-setup");
     if probe.exists() {
@@ -183,6 +240,10 @@ fn prepare_single_target_setup_probe(directory: &Path) {
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/setup-recorded-templates.sh"))
         .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .env("CARGO_BERTH_TEMPLATE_CACHE", &probe)
+        .env(
+            "CARGO_BERTH_TEMPLATE_BUILDER",
+            env::current_exe().expect("running builder should resolve"),
+        )
         .env("CARGO_BERTH_SINGLE_TARGET_SETUP_PROBE", "1")
         .env("NEXTEST_ENV", &environment)
         .output()
@@ -190,6 +251,13 @@ fn prepare_single_target_setup_probe(directory: &Path) {
     assert!(
         output.status.success(),
         "cold single-target setup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line == "cargo-berth template builder source: explicit builder"),
+        "cold setup should reuse the running builder: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let publication = fs::read_to_string(environment).expect("probe publication should read");

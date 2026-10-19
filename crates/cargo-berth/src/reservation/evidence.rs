@@ -16,6 +16,7 @@ use super::lifecycle::IntegrationWitness;
 use super::merge_extent::MergeExtent;
 use crate::git;
 use crate::git::GitError;
+use crate::git::OperationObjectReader;
 use crate::git::Reachability;
 use crate::git::ScopedPatchComparison;
 use crate::ids::GitObjectId;
@@ -116,17 +117,12 @@ pub(crate) enum ScopedPatchComparisonObservation {
     Deferred,
 }
 
-/// Read the full commit currently named by `HEAD`.
-pub(crate) fn current_head(repository_root: &Path) -> Result<GitObjectId, GitError> {
-    git::head_object_id(repository_root)
-}
-
 /// Read the full commit currently named by the configured trunk branch.
 pub(crate) fn current_trunk(
-    repository_root: &Path,
+    objects: &OperationObjectReader,
     trunk_branch: &str,
 ) -> Result<GitObjectId, GitError> {
-    git::branch_object_id(repository_root, trunk_branch)
+    git::branch_object_id(objects, trunk_branch)
 }
 
 /// Integration of the complete reservation, including its current uncommitted work.

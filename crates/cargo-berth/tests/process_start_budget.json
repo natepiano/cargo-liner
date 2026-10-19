@@ -1,0 +1,37 @@
+{
+  "suite_total": 46393,
+  "by_origin": {
+    "product_git": 26112,
+    "berth": 3174,
+    "fixture_git": 6390,
+    "other": 9372,
+    "hook_berth": 1335,
+    "hook_git": 9,
+    "berth_worker": 1
+  },
+  "minimum_tests": 1174,
+  "expensive_tests": {
+    "cargo-berth::gate::retention_ref_transactions_have_constant_git_invocations_across_cardinalities": 328,
+    "cargo-berth::lifecycle::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first": 319,
+    "cargo-berth::lifecycle::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first": 295,
+    "cargo-berth::lifecycle::interactive_split_keeps_both_protected_hunks_in_the_active_phase": 282,
+    "cargo-berth::hooks::post_tool_use_states_lost_evidence_after_the_incursion_was_answered": 278,
+    "cargo-berth::gate::active_lower_reservation_keeps_both_split_commits_after_update_refs": 272,
+    "cargo-berth::gate::budget_deferred_rewrite_obeys_ordering_in_direct_integration": 268,
+    "cargo-berth::lifecycle::split_checkpoint_survives_switching_the_issuing_checkout_before_board": 265,
+    "cargo-berth::lifecycle::interactive_split_keeps_both_protected_hunks_in_the_checkpoint": 263,
+    "cargo-berth::edges::checkpoint_readiness_covers_incorporation_and_missing_objects": 264,
+    "cargo-berth::gate::budget_deferred_rewrite_obeys_ordering_in_explicit_integration": 263,
+    "cargo-berth::gate::observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints": 251,
+    "cargo-berth::liveness::released_integration_target_witness_can_be_replaced": 245,
+    "cargo-berth::lifecycle::soft_reset_split_keeps_both_protected_hunks_in_the_checkpoint": 241,
+    "cargo-berth::liveness::direct_release_waits_for_a_cover_at_a_present_integration_target": 241,
+    "cargo-berth::lifecycle::soft_reset_split_keeps_both_protected_hunks_in_the_active_phase": 234,
+    "cargo-berth::gate::trunk_gate_checks_successor_recorded_against_another_target": 233,
+    "cargo-berth::gate::target_gate_holds_a_default_answered_requester_that_sequence_orders": 229,
+    "cargo-berth::gate::target_gate_rejects_successor_until_predecessor_lands_on_target": 229,
+    "cargo-berth::liveness::orphan_alert_and_manual_recovery_use_the_reservation_target": 214,
+    "cargo-berth::gate::pending_rewrite_gate_shares_its_object_reader_with_preflight": 291,
+    "cargo-berth::gate::pending_rewrite_board_shares_its_object_reader_with_reconciliation": 277
+  }
+}

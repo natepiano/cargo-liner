@@ -337,9 +337,10 @@ fn decide(
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
+    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
     let acting_head_containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        &worktree_context,
+        &repository,
         resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);

@@ -6,11 +6,6 @@ use std::path::Path;
 use std::thread;
 use std::thread::ScopedJoinHandle;
 
-use super::constants::GIT_NO_RENAMES_ARGUMENT;
-use super::constants::GIT_NUL_TERMINATED_ARGUMENT;
-use super::constants::GIT_PORCELAIN_ARGUMENT;
-use super::constants::GIT_STATUS_COMMAND;
-use super::constants::GIT_UNTRACKED_FILES_ALL_ARGUMENT;
 use super::fingerprint;
 use super::fingerprint::StoredWorkingTreeFingerprint;
 use super::fingerprint::WorkingTreeFingerprint;
@@ -27,6 +22,7 @@ use crate::git;
 use crate::git::CommitCandidateReachability;
 use crate::git::CommitTargetReachability;
 use crate::git::Reachability;
+use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -405,7 +401,7 @@ impl PostWriteClaimSubject {
 
 pub(super) fn observe(
     choice: DriftComparisonChoice,
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     reservations: &RetainedReservationSet,
     reservation_ids: &[ReservationId],
     cache_path: &Path,
@@ -413,17 +409,17 @@ pub(super) fn observe(
     match choice {
         DriftComparisonChoice::CheapDelta => match fingerprint::read_fingerprint(cache_path) {
             StoredWorkingTreeFingerprint::Available(previous) => {
-                observe_cheap(repository_root, &previous)
+                observe_cheap(repository, &previous)
             },
             StoredWorkingTreeFingerprint::Unavailable => observe_full(
-                repository_root,
+                repository,
                 reservations,
                 reservation_ids,
                 DriftComparisonMode::FullPhaseStartFallback,
             ),
         },
         DriftComparisonChoice::FullPhaseStart => observe_full(
-            repository_root,
+            repository,
             reservations,
             reservation_ids,
             DriftComparisonMode::FullPhaseStart,
@@ -432,10 +428,10 @@ pub(super) fn observe(
 }
 
 fn observe_cheap(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     previous: &WorkingTreeFingerprint,
 ) -> Result<FingerprintObservation, DriftFingerprintError> {
-    let working_tree_status = observe_working_tree_status(repository_root)?;
+    let working_tree_status = observe_working_tree_status(repository)?;
     let current = WorkingTreeFingerprint {
         tracked_paths:   working_tree_status.tracked(),
         untracked_paths: working_tree_status.untracked,
@@ -460,7 +456,7 @@ fn observe_cheap(
 }
 
 fn observe_full(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     reservations: &RetainedReservationSet,
     reservation_ids: &[ReservationId],
     comparison: DriftComparisonMode,
@@ -478,9 +474,8 @@ fn observe_full(
         reservation_anchors.insert(*reservation_id, phase_start);
     }
     let (phase_history, working_tree_status) = thread::scope(|scope| {
-        let phase_history_worker = scope.spawn(|| observe_phase_history(repository_root, &anchors));
-        let working_tree_status_worker =
-            scope.spawn(|| observe_working_tree_status(repository_root));
+        let phase_history_worker = scope.spawn(|| observe_phase_history(repository, &anchors));
+        let working_tree_status_worker = scope.spawn(|| observe_working_tree_status(repository));
         (
             join_full_observation_worker(
                 phase_history_worker,
@@ -564,10 +559,14 @@ fn observe_full(
 /// every partition drops it. A committed change to that file still counts through
 /// `git::unmerged_branch_paths`.
 pub(crate) fn observe_merge_working_tree(
+    repository: &RepositorySnapshot,
     repository_root: &Path,
 ) -> Result<WorkingTreeFingerprint, String> {
+    let output = repository
+        .working_tree_status_at(repository_root)
+        .map_err(|error| error.to_string())?;
     let mut status =
-        observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
+        git_output::parse_working_tree_status(&output.stdout).map_err(|error| error.to_string())?;
     let configuration_path = BerthConfig::relative_path();
     for paths in [
         &mut status.staged,
@@ -584,18 +583,9 @@ pub(crate) fn observe_merge_working_tree(
 }
 
 fn observe_working_tree_status(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
 ) -> Result<WorkingTreeChangePartition, DriftFingerprintError> {
-    let status = git_output::run_git(
-        repository_root,
-        &[
-            GIT_STATUS_COMMAND,
-            GIT_PORCELAIN_ARGUMENT,
-            GIT_NUL_TERMINATED_ARGUMENT,
-            GIT_NO_RENAMES_ARGUMENT,
-            GIT_UNTRACKED_FILES_ALL_ARGUMENT,
-        ],
-    )?;
+    let status = repository.working_tree_status()?;
     git_output::parse_working_tree_status(&status.stdout)
 }
 
@@ -609,7 +599,7 @@ fn join_full_observation_worker<T>(
 }
 
 fn observe_phase_history(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     anchors: &[GitObjectId],
 ) -> Result<ObservedPhaseHistory, DriftFingerprintError> {
     if anchors.is_empty() {
@@ -619,7 +609,7 @@ fn observe_phase_history(
             head_commit:         HeadCommitOwnAttribution::CommittedHistoryNotRead,
         });
     }
-    let (target, reachability) = match git::head_commit_reachability(repository_root, anchors)
+    let (target, reachability) = match git::head_commit_reachability(repository, anchors)
         .map_err(DriftFingerprintError::from)?
     {
         CommitTargetReachability::Resolved { target, candidates } => (target, candidates),
@@ -664,7 +654,8 @@ fn observe_phase_history(
     if !requested_anchors.contains(&target) {
         requested_anchors.push(target.clone());
     }
-    let execution = git::phase_committed_path_diffs(repository_root, &requested_anchors, &target);
+    let execution =
+        git::phase_committed_path_diffs(repository.repository_root(), &requested_anchors, &target);
     let output =
         git_output::completed_git_output(execution, &["diff-tree", "batched phase starts"])?;
     let mut committed_by_anchor =
