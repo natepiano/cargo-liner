@@ -54,9 +54,16 @@ pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 // ledger layout
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 
+// mutation preparation
+/// Bound optimistic re-preparation when another writer invalidates a decision.
+pub(super) const MUTATION_PREPARATION_ATTEMPTS: u32 = 8;
+/// Exponential jitter window base in milliseconds, before unlocked re-preparation.
+pub(super) const MUTATION_RETRY_WINDOW_BASE_MILLISECONDS: u64 = 2;
+
 // lock acquisition
 pub(crate) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(60);
 /// Test-only signal path that makes a waiting `MutationLock::acquire` observable.
+/// Successful queued acquisitions append their wait nanoseconds to its `.waits` sibling.
 pub(super) const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str =
     "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 

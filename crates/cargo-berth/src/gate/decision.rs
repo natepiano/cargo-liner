@@ -32,6 +32,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
+use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WireOrderedReservationIds;
 use crate::ledger;
@@ -58,6 +59,7 @@ use crate::reconcile::GateReconciliation;
 use crate::reconcile::GateReconciliationAction;
 use crate::reconcile::GateReconciliationError;
 use crate::reconcile::GateReconciliationPurpose;
+use crate::reconcile::GenerationBoundReconciliation;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
@@ -201,30 +203,26 @@ pub(super) fn evaluate_locked(
     let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
     let journal_mutation_actor = resolved_edit_authorization
         .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
+    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
     retry_rewrite_reconciliation(|| {
-        let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
-        let rewrite_preflight =
-            reconcile::prepare_rewrite_reconciliation(&repository, &ledger, &berth_config)
-                .map_err(GateError::Reconciliation)?;
         let outcome = ledger
-            .transact_reconciliation(
+            .transact_reconciliation_then(
                 journal_mutation_actor.worktree_id,
                 journal_mutation_actor.coordination_run_id,
                 |state| {
-                    let prepared = match reconcile::prepare_gate_reconciliation(
-                        &state,
+                    let observation =
+                        reconcile::GenerationBoundReconciliation::new(state, &repository);
+                    let state = observation.state();
+                    let prepared = match prepare_gate_reconciliation(
+                        &observation,
+                        &ledger,
                         ledger_repository,
                         &berth_config,
                         update,
                         GateReconciliationPurpose::PreparedDecision,
-                        rewrite_preflight,
                     ) {
                         Ok(prepared) => prepared,
-                        Err(error) => {
-                            return ReconciliationValidation::Reject(
-                                GateTransactionRejection::Reconciliation(error),
-                            );
-                        },
+                        Err(error) => return ReconciliationValidation::Reject(error),
                     };
                     if let Err(rejection) =
                         validate_gate_identity(prepared.reservations(), &identity_validation)
@@ -266,9 +264,10 @@ pub(super) fn evaluate_locked(
                         action,
                     }
                 },
-                |action: GateReconciliationAction<GateDecision>, state, failures| {
-                    action.commit(state, failures, journal_mutation_actor.worktree_id)
+                |action: GateReconciliationAction<GateDecision>, _, failures| {
+                    action.commit_repairs(failures)
                 },
+                |action, state, _| action.finish(state, journal_mutation_actor.worktree_id),
             )
             .map_err(|error| match error {
                 LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
@@ -276,6 +275,29 @@ pub(super) fn evaluate_locked(
             })?;
         finish_gate_decision(outcome, &update.target)
     })
+}
+
+/// Prepare gate evidence against the fresh facts belonging to this replay generation.
+pub(super) fn prepare_gate_reconciliation(
+    observation: &GenerationBoundReconciliation<'_>,
+    ledger: &Ledger,
+    ledger_repository: RepoInstanceId,
+    berth_config: &BerthConfig,
+    update: &ProposedTargetMove,
+    purpose: GateReconciliationPurpose,
+) -> Result<GateReconciliation, GateTransactionRejection> {
+    let rewrite_preflight =
+        reconcile::prepare_rewrite_reconciliation(observation.repository(), ledger, berth_config)
+            .map_err(GateTransactionRejection::ReconciliationPreparation)?;
+    reconcile::prepare_gate_reconciliation(
+        observation.state(),
+        ledger_repository,
+        berth_config,
+        update,
+        purpose,
+        rewrite_preflight,
+    )
+    .map_err(GateTransactionRejection::Reconciliation)
 }
 
 fn finish_gate_decision(

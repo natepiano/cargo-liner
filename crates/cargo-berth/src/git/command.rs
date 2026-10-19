@@ -68,7 +68,7 @@ pub(super) fn git_command(repository_root: &Path) -> io::Result<Command> {
 }
 
 /// Build a git subprocess with an explicit repository-hook execution policy.
-fn git_command_with_hook_execution_policy(
+pub(super) fn git_command_with_hook_execution_policy(
     repository_root: &Path,
     hook_execution_policy: GitHookExecutionPolicy,
 ) -> io::Result<Command> {
@@ -173,7 +173,14 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy_and_input(
 
 /// Run a configured git command while writing its complete standard input concurrently.
 fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<Output> {
-    let mut child = spawn_with_piped_output(command.stdin(Stdio::piped()))?;
+    child_output_with_input(
+        spawn_with_piped_output(command.stdin(Stdio::piped()))?,
+        input,
+    )
+}
+
+/// Finish an already started command while draining its output and supplying its input.
+pub(super) fn child_output_with_input(mut child: Child, input: &[u8]) -> io::Result<Output> {
     let mut stdin = child
         .stdin
         .take()

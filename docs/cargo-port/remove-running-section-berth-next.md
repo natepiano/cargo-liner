@@ -552,7 +552,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Ruled out:** Holding this phase open for the Mac per-test goal; that goal is its own phase, built after the route estimates.
 
-### Phase 19 — A cargo-berth write holds the ledger lock only for its own check and append  · status: todo
+### Phase 19 — A cargo-berth write holds the ledger lock only for its own check and append  · status: done
 
 #### Work Order
 
@@ -586,11 +586,60 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. `phase19-lock-holds.md` holds the Spec 2 list and times and the Spec 6 before and after table, with every hold under 100 ms at the 95th percentile. The Spec 6 concurrency test and the Spec 7 regression tests pass.
 
-### Phase 20 — Every cargo-berth test runs under a second on the Mac  · status: todo
+### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: todo
 
 #### Work Order
 
-**Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures).
+**Depends on:** phase 19 (it changes `git/refs.rs` and the read and write paths this phase touches).
+
+**Goal:** A `packed-refs.lock` that no process holds never makes a cargo-berth read fail. A read still answers the board, and a refused Git write says which lock refused it, how old it is and whether a process holds it.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-19, after a 0-byte `/home/natepiano/rust/cargo-liner/.git/packed-refs.lock` stayed from 01:03:15 to 01:11. Cause: a user interrupt cancelled a PostToolUse `cargo-berth hook post-tool-use`, and its `git update-ref --stdin` retention-ref transaction died after it made the lock. While the lock stayed, every ledger read failed with "git update-ref failed … packed-refs.lock: File exists", and four style units stopped at refill with "board unavailable". The harness can stop a hook at any time, so the fix is on the read side. Approved verbatim: "(1) a read defers the retention-ref repair and still answers; (2) a refused git write reports the lock path, its age and whether a process holds it, and cargo-berth does not delete the lock."
+2. **A read defers the repair.** A ledger read (board, check, drift, hook) whose retention-ref repair or deletion (`git::refs::update_reservation_retention_refs`) fails because of a Git lock still returns its answer. The repair stays pending, as a type, and the next write that can take the lock runs it. The read's output names the deferred repair once.
+3. **A refused write names the lock.** When a Git ref write fails because a `*.lock` exists, the error is a typed variant that carries the lock path, its age from the file's modification time, and whether a process holds it open. Its text states all three. cargo-berth never deletes the lock.
+4. **Tests**, each named for the behavior it pins, each with a 0-byte `packed-refs.lock` that no process holds: a board read with a pending retention-ref deletion answers and names the deferred repair; a write that needs `packed-refs.lock` fails with the lock path, its age and "no process holds it", and the lock file is still there afterwards.
+
+**Files:**
+- `crates/cargo-berth/src/git/refs.rs`, `crates/cargo-berth/src/git/error.rs` — the typed lock refusal
+- `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/reconcile.rs` — where a read runs the retention-ref repair
+- `crates/cargo-berth/tests/` — the two tests
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** No deletion of any Git lock by cargo-berth. No raised lock tolerance or longer timeout. The process-start budget may only go down.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
+
+### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 19 (it changes `drift/execution.rs` and the ledger paths the post-write check reads).
+
+**Goal:** When a merge brings a covered branch's own commits into the cover's target, the post-write check treats it as the integration the cover exists for. It reports no incursion and tells nobody to stop.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-19. It merged style hand-off 12cc3b9 (`style/main`) into `main` in `/home/natepiano/rust/cargo-liner` with `merge_checkpoint.py`. The PostToolUse hook printed "POST-WRITE INCURSION: nothing was reserved … crates/cargo-port/src/lint/reclaim.rs inside foreign reservations 01a15345-3e06-75b3-a3e3-457fb29c00a7 … stop and resolve the incursion". That reservation is the cover for `style/main` on `main` (source `cover`, purpose "Cover integration branch style/main"). The merge brought in only the covered branch's commits. The next board read showed the cover as resolved and no outstanding incursion, so only the post-write report was wrong.
+2. **A covered integration is not an incursion.** In drift's foreign-path classification (`drift/classification.rs`), a path that a cover reservation holds is not entered when every commit that brings the path into the checkout is reachable from that cover's covered branch tip. The decision is a type the classification returns, not a guard in the report.
+3. **Other writes into a cover stay incursions.** A commit that changes a covered path and that the covered branch does not contain is still an incursion, with today's text.
+4. **Tests**, each named for the behavior it pins: merging a covered branch into its target reports no incursion and leaves no outstanding incursion; a commit outside the covered branch that changes a covered path is still reported as an incursion.
+
+**Files:**
+- `crates/cargo-berth/src/drift/classification.rs`, `crates/cargo-berth/src/drift/provenance.rs` — the covered-integration decision
+- `crates/cargo-berth/tests/` — the two tests
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** No new Git process per hook call: use the reachability reads drift already makes. The process-start budget may only go down.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
+
+### Phase 22 — Every cargo-berth test runs under a second on the Mac  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures), phase 20 and phase 21.
 
 **Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. The showrunner picks the route from measured estimates before it is built.
 
@@ -600,15 +649,17 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 3. **Estimates.** For each route, on the five binaries, measure on a prototype of one representative test per binary and extrapolate: process starts by origin, and Mac time per test and per binary. Send the table to the showrunner, then wait for its pick. This step builds nothing beyond the prototypes.
 4. **Build the picked route.** Route 1 keeps a real-CLI test for each command. Route 2 keeps every ref and config form Git supports and the typed difference between missing and failed, falling back to Git where it cannot. Adding `gix` is the showrunner's pick under route 2.
 5. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
+6. **Phase 19 lock holds at quiet load.** Source: the showrunner, 2026-10-19: phase 19 was accepted on busy evidence (reconcile p95 227 ms, load above 100), and "the quiet-machine re-measure (20 paired runs at load 16 or less) goes to phase 22." Run phase 19's paired lock-hold timing again at load 16 or less, 20 pairs for each of the six paths, with phase 19's method (its notes are in `/tmp/claude/unit/a433b49e-d462-472a-9f5b-3e767f5be8b6/phase19-lock-holds.md`), and record the table in this phase's summary. Every path's p95 must be under 100 ms. A miss is fixed in this phase.
 
 **Files:**
 - `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/drift.rs` — the five slowest binaries
 - `crates/cargo-berth-test-support/src/` — shared fixtures and the in-process runner (route 1)
 - `crates/cargo-berth/src/git/` — status, worktree list and ref reads (route 2)
 - `crates/cargo-berth/tests/process_start_budget.json` — the start pin, lowered to the new count
+- `crates/cargo-berth/src/ledger/` — only if the quiet lock-hold run (Spec 6) misses
 
 **Workers:** 1 writer, `mac`.
 
 **Constraints:** As phase 18: no thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. Mac runs: one `mac_test.py claim` per run, released when it ends. A natedev run at a load above 16 of 32 is untrusted.
 
-**Acceptance gate:** The estimate table went to the showrunner and its pick is recorded in this Work Order before the build. `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s.
+**Acceptance gate:** The estimate table went to the showrunner and its pick is recorded in this Work Order before the build. `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. The quiet paired lock-hold run shows every path under 100 ms at p95.

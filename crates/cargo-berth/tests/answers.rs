@@ -104,6 +104,14 @@ impl PausedBerthProcess {
         fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
         let ready_path = wrapper_directory.path().join("ready");
         let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo")
+            .arg(&continue_path)
+            .output()
+            .expect("continuation FIFO command should run");
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
         let original_path = std::env::var_os("PATH").expect("test PATH should exist");
         let wrapped_path = std::env::join_paths(
             std::iter::once(wrapper_directory.path().to_path_buf())
@@ -3012,11 +3020,9 @@ fn paused_git_wrapper() -> String {
         r#"#!/bin/sh
 if [ "$1" = "{GIT_NO_OPTIONAL_LOCKS_ARG}" ] && [ "$2" = "{GIT_CAT_FILE_COMMAND}" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
     while IFS= read -r expression; do
-        if [ "$expression" = "HEAD" ]; then
+        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
             : > "$CARGO_BERTH_TEST_GIT_READY"
-            while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-                sleep 0.01
-            done
+            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
         fi
         printf '%s\n' "$expression"
     done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"

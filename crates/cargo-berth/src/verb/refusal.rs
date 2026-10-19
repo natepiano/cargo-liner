@@ -31,7 +31,7 @@ pub(super) fn record(
         TransactionValidation::<Infallible>::Append(Box::new(JournalOperation::OverlapRefused {
             verb,
             scopes: scopes.clone(),
-            holders,
+            holders: holders.clone(),
         }))
     });
 }

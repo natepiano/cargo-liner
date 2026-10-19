@@ -20,6 +20,7 @@ use crate::reconcile::ReconcileError;
 
 #[derive(Debug)]
 pub(super) enum GateTransactionRejection {
+    ReconciliationPreparation(ReconcileError),
     Reconciliation(GateReconciliationError),
     Git(GitError),
     PermitReplay(ForcedIntegrationPermitReplayError),
@@ -100,6 +101,9 @@ impl Error for GateError {}
 impl From<GateTransactionRejection> for GateError {
     fn from(rejection: GateTransactionRejection) -> Self {
         match rejection {
+            GateTransactionRejection::ReconciliationPreparation(error) => {
+                Self::Reconciliation(error)
+            },
             GateTransactionRejection::Reconciliation(error) => Self::Planning(error),
             GateTransactionRejection::Git(error) => Self::Git(error),
             GateTransactionRejection::PermitReplay(error) => Self::PermitReplay(error),

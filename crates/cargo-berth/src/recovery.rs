@@ -94,6 +94,7 @@ pub(crate) enum IncursionAnswerScope {
 }
 
 /// The mutually exclusive reservation recovery decisions.
+#[derive(Clone)]
 pub(crate) enum ReservationRecoveryDecision {
     /// Move surviving work to the invoking replacement worktree.
     Recovered,
@@ -192,7 +193,7 @@ fn execute_resolution(
 ) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     match resolve_request.decision {
         ResolveDecision::Reservation(recovery) => {
-            execute_reservation_resolution(ReservationResolutionRequest {
+            execute_reservation_resolution(&ReservationResolutionRequest {
                 reservation_id: resolve_request.reservation_id,
                 recovery,
             })
@@ -386,7 +387,7 @@ fn execute_one_incursion_resolution(
 }
 
 fn execute_reservation_resolution(
-    resolve_request: ReservationResolutionRequest,
+    resolve_request: &ReservationResolutionRequest,
 ) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
@@ -441,7 +442,7 @@ fn execute_reservation_resolution(
                     reservations,
                     resolve_request.reservation_id,
                     &repository_trunk,
-                    resolve_request.recovery,
+                    resolve_request.recovery.clone(),
                 ) {
                     Ok(recovery_request) => recovery_request,
                     Err(error) => return CommittedActionValidation::Reject(error),
@@ -452,7 +453,7 @@ fn execute_reservation_resolution(
                     resolve_request.reservation_id,
                     recovery_request,
                     journal_mutation_actor.worktree_id,
-                    current_worktree_root,
+                    current_worktree_root.clone(),
                     worktree_context.administrative_locator().clone(),
                 ) {
                     Ok((operation, resolve_payload_seed, committed_action)) => {
