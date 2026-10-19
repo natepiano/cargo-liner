@@ -318,7 +318,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** Holding rows after a failed first command — a failure is the answer, and a hold hides every Claude session while the command is broken.
 
-### Phase 11 — Catch-up hierarchy answer off the scheduler thread  · status: todo
+### Phase 11 — Catch-up hierarchy answer off the scheduler thread  · status: done
 
 **Depends on:** Phase 10
 

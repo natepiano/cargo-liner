@@ -36,7 +36,10 @@ use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyCache;
 use super::hierarchy::HierarchyError;
 use super::hierarchy::HierarchyNotice;
+use super::hierarchy::HierarchyPreparation;
 use super::hierarchy::HierarchyPublication;
+use super::hierarchy::HierarchyRefreshScope;
+use super::hierarchy::HierarchyRequestKind;
 use super::hierarchy::HierarchyRunner;
 use super::hierarchy::ReviewerPools;
 use super::probe;
@@ -132,6 +135,45 @@ impl PendingPlacementRows {
         )
     }
 
+    /// One unresolved identity holds every row in its retained linked component.
+    fn refreshing(rows: Vec<AgentRow>, scope: &HierarchyRefreshScope) -> Self {
+        let mut waiting: HashSet<String> = rows
+            .iter()
+            .flat_map(HierarchyRefreshScope::placement_ids)
+            .filter(|id| scope.waits_for(id))
+            .map(str::to_owned)
+            .collect();
+        loop {
+            let before = waiting.len();
+            for row in &rows {
+                if HierarchyRefreshScope::placement_ids(row).any(|id| waiting.contains(id)) {
+                    waiting.extend(HierarchyRefreshScope::placement_ids(row).map(str::to_owned));
+                }
+            }
+            for edge in &scope.links().0 {
+                if waiting.contains(edge.manager.as_str()) || waiting.contains(edge.member.as_str())
+                {
+                    waiting.insert(edge.manager.clone());
+                    waiting.insert(edge.member.clone());
+                }
+            }
+            if waiting.len() == before {
+                break;
+            }
+        }
+        Self(
+            rows.into_iter()
+                .map(|row| {
+                    if HierarchyRefreshScope::placement_ids(&row).any(|id| waiting.contains(id)) {
+                        PendingPlacementRow::AwaitingHierarchy(row)
+                    } else {
+                        PendingPlacementRow::Independent(row)
+                    }
+                })
+                .collect(),
+        )
+    }
+
     fn independent(&self) -> Vec<AgentRow> {
         self.0
             .iter()
@@ -153,10 +195,10 @@ impl PendingPlacementRows {
     }
 }
 
-/// Session ids present when the first command started, before later scan results.
-struct FirstHierarchySessions(HashSet<String>);
+/// Session ids observed at request launch, before later scan results.
+struct HierarchyRequestSessions(HashSet<String>);
 
-impl FirstHierarchySessions {
+impl HierarchyRequestSessions {
     fn new(rows: &[AgentRow]) -> Self {
         Self(
             rows.iter()
@@ -179,7 +221,7 @@ impl FirstHierarchySessions {
     }
 }
 
-/// Rows whose first hierarchy outcome has not arrived yet.
+/// Rows whose required hierarchy outcome has not arrived yet.
 struct HeldHierarchyRows {
     rows:     PendingPlacementRows,
     stage:    ScanStage,
@@ -190,12 +232,34 @@ struct HeldHierarchyRows {
 enum LocalHierarchy {
     Available(HierarchyCache),
     Pending {
-        cache:     HierarchyCache,
-        source:    HierarchySource,
-        answer:    Receiver<Result<HierarchyEdges, HierarchyError>>,
-        requested: FirstHierarchySessions,
-        publish:   HeldHierarchyRows,
+        cache:   Box<HierarchyCache>,
+        source:  HierarchySource,
+        request: PendingHierarchyRequest,
+        publish: HeldHierarchyRows,
     },
+}
+
+/// A request owns its receiver and the session ids its command could observe.
+struct HierarchyRequestAnswer {
+    answer:    Receiver<Result<HierarchyEdges, HierarchyError>>,
+    requested: HierarchyRequestSessions,
+}
+
+/// Initial outcomes initialize checked ids; refresh outcomes must retain them.
+enum PendingHierarchyRequest {
+    Initial(HierarchyRequestAnswer),
+    Refresh {
+        answer:    HierarchyRequestAnswer,
+        placement: HierarchyRefreshScope,
+    },
+}
+
+impl PendingHierarchyRequest {
+    const fn answer(&self) -> &HierarchyRequestAnswer {
+        match self {
+            Self::Initial(answer) | Self::Refresh { answer, .. } => answer,
+        }
+    }
 }
 
 impl Default for LocalHierarchy {
@@ -204,6 +268,7 @@ impl Default for LocalHierarchy {
 
 /// A scan publishes through shared state so detail reads cannot delay a ready hierarchy answer.
 pub(crate) struct LocalAnswers {
+    /// Share one cache owner so scheduler wakeups can publish during scan detail reads.
     publications: Arc<Mutex<LocalPublications>>,
 }
 
@@ -230,13 +295,24 @@ impl LocalAnswers {
             .publish_at(stage, rows, now)
     }
 
+    /// Older sequential fixtures accept the worker reply before they publish the next scan.
+    #[cfg(test)]
+    pub(super) fn settle_test_request(&self) -> Result<(), SendError<CensusUpdate>> {
+        let mut publications = self
+            .publications
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let budget = publications.first_budget;
+        publications.finish_pending(budget)
+    }
+
     /// Completed-only fixtures represent one whole scan per call.
     #[cfg(test)]
     pub(crate) fn send(&self, rows: Vec<AgentRow>) -> Result<(), SendError<CensusUpdate>> {
         self.publications
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .discover_at(rows, ScanStage::Completed, Instant::now())
+            .send_completed_fixture(rows)
     }
 }
 
@@ -259,6 +335,28 @@ struct LocalPublications {
 }
 
 impl LocalPublications {
+    /// Completed-only fixtures wait explicitly because they have no detail callback to hold open.
+    #[cfg(test)]
+    fn send_completed_fixture(
+        &mut self,
+        rows: Vec<AgentRow>,
+    ) -> Result<(), SendError<CensusUpdate>> {
+        let source = self.hierarchy.snapshot();
+        let now = Instant::now();
+        let LocalHierarchy::Available(cache) = &mut self.state else {
+            return Ok(());
+        };
+        match cache.prepare_snapshot(source.clone(), &rows, now) {
+            HierarchyPreparation::Request(kind) => {
+                self.start_request(source, rows, ScanStage::Completed, now, kind)?;
+                self.finish_pending(self.first_budget)
+            },
+            HierarchyPreparation::Ready(hierarchy) => {
+                self.deliver(rows, hierarchy, ScanStage::Completed)
+            },
+        }
+    }
+
     /// Tests can advance observation time without sleeping.
     pub(super) fn publish_at(
         &mut self,
@@ -275,13 +373,22 @@ impl LocalPublications {
             self.state = LocalHierarchy::default();
             self.discovery = ScanDiscovery::Unstarted;
         }
-        if let LocalHierarchy::Pending { publish, .. } = &mut self.state {
+        if let LocalHierarchy::Pending {
+            publish, request, ..
+        } = &mut self.state
+        {
+            let rows = match request {
+                PendingHierarchyRequest::Initial(_) => PendingPlacementRows::new(rows),
+                PendingHierarchyRequest::Refresh { placement, .. } => {
+                    PendingPlacementRows::refreshing(rows, placement)
+                },
+            };
             *publish = HeldHierarchyRows {
-                rows: PendingPlacementRows::new(rows),
+                rows,
                 stage,
                 observed: now,
             };
-            self.finish_first(Duration::ZERO)?;
+            self.finish_pending(Duration::ZERO)?;
             return self.deliver_held();
         }
         let LocalHierarchy::Available(cache) = &mut self.state else {
@@ -310,7 +417,7 @@ impl LocalPublications {
             }
         }
         match cache.publication(source.clone(), &rows) {
-            HierarchyPublication::Pending => self.start_first(source, rows, stage, now),
+            HierarchyPublication::Pending => self.start_initial(source, rows, stage, now),
             HierarchyPublication::RefreshNeeded => self.discover_at(rows, stage, now),
             HierarchyPublication::Ready(hierarchy) => {
                 self.deliver(rows.clone(), hierarchy, ScanStage::Classified)?;
@@ -329,13 +436,27 @@ impl LocalPublications {
         }
     }
 
-    /// The command continues after the first-publication budget expires.
-    fn start_first(
+    /// Only the scan worker spends the startup budget; scheduler wakeups never wait.
+    fn start_initial(
         &mut self,
         source: HierarchySource,
         rows: Vec<AgentRow>,
         stage: ScanStage,
         now: Instant,
+    ) -> Result<(), SendError<CensusUpdate>> {
+        self.start_request(source, rows, stage, now, HierarchyRequestKind::Initial)?;
+        self.finish_pending(self.first_budget)?;
+        self.deliver_held()
+    }
+
+    /// Every command runs on its own worker, without blocking publication or the scheduler.
+    fn start_request(
+        &mut self,
+        source: HierarchySource,
+        rows: Vec<AgentRow>,
+        stage: ScanStage,
+        now: Instant,
+        kind: HierarchyRequestKind,
     ) -> Result<(), SendError<CensusUpdate>> {
         let LocalHierarchy::Available(cache) = std::mem::take(&mut self.state) else {
             return Ok(());
@@ -344,78 +465,106 @@ impl LocalPublications {
         let runner = Arc::clone(&self.runner);
         let command = source.clone();
         let events = self.events.clone();
-        let requested = FirstHierarchySessions::new(&rows);
+        let requested = HierarchyRequestSessions::new(&rows);
         thread::spawn(move || {
             let _ = sender.send(hierarchy::read(&command, runner.as_ref()));
             let _ = events.send(ScheduleEvent::HierarchyReady);
         });
+        let answer = HierarchyRequestAnswer { answer, requested };
+        let (request, rows) = match kind {
+            HierarchyRequestKind::Initial => (
+                PendingHierarchyRequest::Initial(answer),
+                PendingPlacementRows::new(rows),
+            ),
+            HierarchyRequestKind::Refresh(placement) => {
+                let rows = PendingPlacementRows::refreshing(rows, &placement);
+                (PendingHierarchyRequest::Refresh { answer, placement }, rows)
+            },
+        };
         self.state = LocalHierarchy::Pending {
-            cache,
+            cache: Box::new(cache),
             source,
-            answer,
-            requested,
+            request,
             publish: HeldHierarchyRows {
-                rows: PendingPlacementRows::new(rows),
+                rows,
                 stage,
                 observed: now,
             },
         };
-        self.finish_first(self.first_budget)?;
-        self.deliver_held()
+        self.finish_pending(Duration::ZERO)
     }
 
-    /// Only rows typed as independent can publish before the first answer.
-    fn deliver_held(&self) -> Result<(), SendError<CensusUpdate>> {
-        if let LocalHierarchy::Pending { publish, .. } = &self.state {
-            self.deliver(
-                publish.rows.independent(),
-                HierarchySnapshot::default(),
-                publish.stage,
-            )?;
-        }
+    /// Publish independent rows while either hierarchy request is pending.
+    /// Refreshes use `Classified` because `Completed` reloads footer colors in
+    /// terminal.rs `drain_census` and must wait for the full row set.
+    fn deliver_held(&mut self) -> Result<(), SendError<CensusUpdate>> {
+        let LocalHierarchy::Pending {
+            publish,
+            cache,
+            source,
+            request,
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+        let rows = publish.rows.independent();
+        let hierarchy = cache.retained(source.clone());
+        let stage = match request {
+            PendingHierarchyRequest::Initial(_) => publish.stage,
+            PendingHierarchyRequest::Refresh { .. } => ScanStage::Classified,
+        };
+        self.deliver(rows, hierarchy, stage)?;
         Ok(())
     }
 
     /// Publish held rows only with the command's outcome, then restore cache ownership.
-    fn finish_first(&mut self, timeout: Duration) -> Result<(), SendError<CensusUpdate>> {
+    fn finish_pending(&mut self, timeout: Duration) -> Result<(), SendError<CensusUpdate>> {
         if let LocalHierarchy::Pending { source, .. } = &self.state
             && *source != self.hierarchy.snapshot()
         {
-            self.state = LocalHierarchy::default();
+            let old = std::mem::take(&mut self.state);
             self.discovery = ScanDiscovery::Unstarted;
+            if let LocalHierarchy::Pending { publish, .. } = old {
+                return self.discover_at(publish.rows.into_rows(), publish.stage, publish.observed);
+            }
             return Ok(());
         }
         let outcome = match &self.state {
             LocalHierarchy::Available(_) => return Ok(()),
-            LocalHierarchy::Pending { answer, .. } => match answer.recv_timeout(timeout) {
-                Ok(outcome) => outcome,
-                Err(RecvTimeoutError::Timeout) => return Ok(()),
-                Err(RecvTimeoutError::Disconnected) => Err(HierarchyError::OutputUnreadable),
+            LocalHierarchy::Pending { request, .. } => {
+                match request.answer().answer.recv_timeout(timeout) {
+                    Ok(outcome) => outcome,
+                    Err(RecvTimeoutError::Timeout) => return Ok(()),
+                    Err(RecvTimeoutError::Disconnected) => Err(HierarchyError::OutputUnreadable),
+                }
             },
         };
         if let LocalHierarchy::Pending {
             mut cache,
             source,
             publish,
-            requested,
-            ..
+            request,
         } = std::mem::take(&mut self.state)
         {
             let rows = publish.rows.into_rows();
-            let mut hierarchy =
-                cache.first_outcome(source.clone(), &rows, outcome, publish.observed);
+            let (hierarchy, requested) = match request {
+                PendingHierarchyRequest::Initial(answer) => (
+                    cache.first_outcome(source.clone(), &rows, outcome, publish.observed),
+                    answer.requested,
+                ),
+                PendingHierarchyRequest::Refresh { answer, .. } => (
+                    cache.refresh_outcome(source.clone(), &rows, outcome, publish.observed),
+                    answer.requested,
+                ),
+            };
             if !matches!(hierarchy.notice, HierarchyNotice::Failed(_))
                 && matches!(
                     cache.publication(source.clone(), &requested.newcomers(&rows)),
                     HierarchyPublication::RefreshNeeded
                 )
             {
-                hierarchy = cache.snapshot(
-                    source.clone(),
-                    &rows,
-                    self.runner.as_ref(),
-                    publish.observed,
-                );
+                self.state = LocalHierarchy::Available(*cache);
+                return self.discover_at(rows, publish.stage, publish.observed);
             }
             self.discovery = match publish.stage {
                 ScanStage::Classified => ScanDiscovery::Classified {
@@ -424,7 +573,7 @@ impl LocalPublications {
                 },
                 ScanStage::Completed => ScanDiscovery::Unstarted,
             };
-            self.state = LocalHierarchy::Available(cache);
+            self.state = LocalHierarchy::Available(*cache);
             self.deliver(rows, hierarchy, publish.stage)?;
         }
         Ok(())
@@ -437,19 +586,26 @@ impl LocalPublications {
         stage: ScanStage,
         now: Instant,
     ) -> Result<(), SendError<CensusUpdate>> {
-        if let LocalHierarchy::Available(cache) = &mut self.state {
-            let source = self.hierarchy.snapshot();
-            let hierarchy = cache.snapshot(source.clone(), &rows, self.runner.as_ref(), now);
-            self.discovery = match stage {
-                ScanStage::Classified => ScanDiscovery::Classified {
-                    source,
-                    expires: cache.reuse_deadline(now),
-                },
-                ScanStage::Completed => ScanDiscovery::Unstarted,
-            };
-            self.deliver(rows, hierarchy, stage)?;
+        let source = self.hierarchy.snapshot();
+        let LocalHierarchy::Available(cache) = &mut self.state else {
+            return Ok(());
+        };
+        match cache.prepare_snapshot(source.clone(), &rows, now) {
+            HierarchyPreparation::Request(kind) => {
+                self.start_request(source, rows, stage, now, kind)?;
+                self.deliver_held()
+            },
+            HierarchyPreparation::Ready(hierarchy) => {
+                self.discovery = match stage {
+                    ScanStage::Classified => ScanDiscovery::Classified {
+                        source,
+                        expires: cache.reuse_deadline(now),
+                    },
+                    ScanStage::Completed => ScanDiscovery::Unstarted,
+                };
+                self.deliver(rows, hierarchy, stage)
+            },
         }
-        Ok(())
     }
 
     fn deliver(
@@ -577,7 +733,7 @@ fn spawn_staged_with(
                     if publications
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .finish_first(Duration::ZERO)
+                        .finish_pending(Duration::ZERO)
                         .is_err()
                     {
                         return;
@@ -655,6 +811,37 @@ pub(super) fn spawn_with_test_source_and_budget(
             .first_budget = budget;
         scan_local(answers);
     })
+}
+
+/// Exercise remote progress while a fixture holds local discovery or detail reads.
+#[cfg(test)]
+pub(super) fn spawn_with_test_remote_and_budget(
+    remotes: RemoteMachines,
+    hierarchy: HierarchyCommand,
+    hierarchy_runner: Arc<dyn HierarchyRunner>,
+    remote_runner: Arc<dyn RemoteRunner>,
+    budget: Duration,
+    mut scan_local: impl FnMut(&mut LocalAnswers) + Send + 'static,
+) -> Receiver<CensusUpdate> {
+    spawn_staged_with(
+        remotes,
+        hierarchy,
+        hierarchy_runner,
+        remote_runner,
+        move |answers| {
+            answers
+                .publications
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .first_budget = budget;
+            scan_local(answers);
+            ScanSchedule::Finished
+        },
+        Cadence {
+            local:  LOCAL_SCAN_INTERVAL,
+            remote: REMOTE_PROBE_INTERVAL / 500,
+        },
+    )
 }
 
 /// Probe `host` on a thread of its own, unless its last probe is still
@@ -742,6 +929,8 @@ mod tests {
     const QUICK: &str = "quick";
     /// How long the test waits for any one answer before failing.
     const PATIENCE: Duration = Duration::from_secs(5);
+    /// Bound channel waits for a late hierarchy answer while its source stays open.
+    const LATE_ANSWER_WAIT: Duration = Duration::from_millis(200);
 
     /// A completed answer with a visible discovery diagnostic and no retained links.
     fn noted(rows: Vec<AgentRow>, notice: HierarchyNotice) -> CensusUpdate {
@@ -839,6 +1028,9 @@ mod tests {
                         )
                         .expect("classification publishes");
                     answers
+                        .settle_test_request()
+                        .expect("accept classification discovery");
+                    answers
                         .publish_at(
                             ScanStage::Completed,
                             vec![session_row("worker", 1)],
@@ -890,12 +1082,18 @@ mod tests {
                     .publish_at(ScanStage::Classified, vec![session_row("worker", 1)], start)
                     .expect("classification publishes");
                 answers
+                    .settle_test_request()
+                    .expect("accept classification discovery");
+                answers
                     .publish_at(
                         ScanStage::Completed,
                         vec![session_row("worker", 1)],
                         start + HIERARCHY_REFRESH_INTERVAL,
                     )
                     .expect("expired discovery refreshes");
+                answers
+                    .settle_test_request()
+                    .expect("accept expired discovery");
             },
         );
         let completions = updates
@@ -1090,6 +1288,29 @@ mod tests {
         }
     }
 
+    /// Require the late failure while the fixture still keeps its scan source open.
+    fn expect_failed_hierarchy_completion(updates: &Receiver<CensusUpdate>) {
+        let deadline = Instant::now() + LATE_ANSWER_WAIT;
+        loop {
+            let update = updates
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("late completion publishes without ending the source");
+            if matches!(
+                update,
+                CensusUpdate::Local {
+                    stage: ScanStage::Completed,
+                    hierarchy: HierarchySnapshot {
+                        notice: HierarchyNotice::Failed(_),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+    }
+
     /// A pending hierarchy run cannot withhold completed row details already scanned.
     #[test]
     fn completed_rows_arrive_before_a_blocked_hierarchy_run_finishes() {
@@ -1129,6 +1350,7 @@ mod tests {
             release: Mutex::new(released),
             attempts: AtomicUsize::new(0),
         });
+        let (finish, open) = mpsc::channel();
         let rows = vec![session_row("worker", 2)];
         let expected = rows.clone();
         let updates = spawn_with_test_source(
@@ -1145,13 +1367,15 @@ mod tests {
                         Instant::now() + HIERARCHY_REFRESH_INTERVAL,
                     )
                     .expect("publish rows");
+                open.recv()
+                    .expect("keep detail source open for the late answer");
             },
         );
         let timeout = waiting
-            .recv_timeout(Duration::from_millis(200))
+            .recv_timeout(LATE_ANSWER_WAIT)
             .expect("discovery starts");
-        let initial = updates.try_recv();
-        let answer = updates.try_recv();
+        let initial = updates.recv_timeout(LATE_ANSWER_WAIT);
+        let answer = updates.recv_timeout(LATE_ANSWER_WAIT);
         release
             .send(())
             .expect("release the command before assertions");
@@ -1175,7 +1399,8 @@ mod tests {
                 stage:     ScanStage::Classified,
             }
         );
-        assert!(updates.recv_timeout(Duration::from_millis(200)).is_ok());
+        expect_failed_hierarchy_completion(&updates);
+        finish.send(()).expect("release the source");
     }
 
     /// A slow first command cannot delay safe rows or expose a possible unit as top level.

@@ -170,6 +170,9 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
             sender
                 .publish_at(ScanStage::Completed, production_rows(), now)
                 .expect("successful publication");
+            sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
             let mut changed = production_rows();
             let mut additional = changed[0].clone();
             additional.pid = 99;
@@ -184,8 +187,14 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
                 )
                 .expect("failed discovery publication");
             sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
+            sender
                 .publish_at(ScanStage::Completed, changed, now + Duration::from_secs(4))
                 .expect("recovered publication");
+            sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
         },
     );
     let mut completions = updates.into_iter().filter(|update| {

@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 
 ### Fixed
+- Hierarchy refresh commands run on their own workers. Remote probes and settled local rows continue while a follow-up answer is pending; linked rows wait together, and checked session ids stay checked across catch-up answers.
 - The first hierarchy wait is bounded to one second; Claude sessions and Codex thread carriers stay held when the answer is late, so a unit or worker cannot flash under the wrong owner. A late answer publishes during detail reads. Each new session missing from a hierarchy answer gets one extra check. Known links survive a PID change or a failed command.
 - On startup, agents appear before their details are read. A refresh never drops details, a resumed session keeps its cell, and remote probes no longer wait for the local scan.
 - A widened agents summary draws unbroken rows across column bands, including long directories.
