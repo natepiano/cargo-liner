@@ -53,7 +53,8 @@ pub(super) struct Overlays {
 impl Overlays {
     pub(super) fn new() -> Self { Self::default() }
 
-    // ── finder ──────────────────────────────────────────────────────
+    // `is_finder_open`, `open_finder` and `close_finder` manage `FinderMode`; the corresponding
+    // sccache methods manage `SccacheMode`.
 
     pub(super) const fn is_finder_open(&self) -> bool { matches!(self.finder, FinderMode::Visible) }
 
@@ -83,7 +84,7 @@ impl Overlays {
 
     pub(super) fn close_settings(&mut self) { self.inline_error = None; }
 
-    // ── inline error ────────────────────────────────────────────────
+    // `inline_error`, `set_inline_error` and `clear_inline_error` manage transient error feedback.
 
     pub(super) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
 
@@ -93,7 +94,7 @@ impl Overlays {
 
     pub(super) fn clear_inline_error(&mut self) { self.inline_error = None; }
 
-    // ── status flash ────────────────────────────────────────────────
+    // `status_flash` and `set_status_flash` expose and replace the transient message and timestamp.
 
     pub(super) const fn status_flash(&self) -> Option<&(String, Instant)> {
         self.status_flash.as_ref()
@@ -103,5 +104,5 @@ impl Overlays {
         self.status_flash = Some((message, at));
     }
 
-    // ── render-state accessors ──────────────────────────────────────
+    // `finder_pane` and `sccache_pane` store overlay render state directly on `Overlays`.
 }

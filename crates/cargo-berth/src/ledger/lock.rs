@@ -6,11 +6,13 @@ use std::fmt::Formatter;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::fs::TryLockError;
+use std::io::Write;
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use super::constants;
 use super::constants::MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
@@ -50,10 +52,22 @@ impl MutationLock {
         // Queue in the kernel instead of competing with later arrivals after a backoff.
         // On timeout the receiver closes; the worker then drops the acquired descriptor,
         // so an abandoned request can never leave a lock held in the background.
+        let queued = Instant::now();
         thread::Builder::new()
             .name("ledger-lock-wait".to_owned())
             .spawn(move || {
-                let acquired = descriptor.lock().map(|()| Self { descriptor });
+                let acquired = descriptor.lock().and_then(|()| {
+                    let waited = queued.elapsed();
+                    if let Some(ready_path) = std::env::var_os(MUTATION_LOCK_READY_PATH_ENVIRONMENT)
+                    {
+                        let mut waits = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(Path::new(&ready_path).with_extension("waits"))?;
+                        writeln!(waits, "{}", waited.as_nanos())?;
+                    }
+                    Ok(Self { descriptor })
+                });
                 std::mem::drop(sender.send(acquired));
             })?;
         if let Some(ready_path) = std::env::var_os(MUTATION_LOCK_READY_PATH_ENVIRONMENT) {

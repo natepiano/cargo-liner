@@ -68,7 +68,8 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
 const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "configured",
     build: |root| {
-        let built = build_initialized_repository(root).and_then(|()| {
+        INITIALIZED_REPOSITORY.restore_into(root);
+        let built = (|| {
             run_git(root, &["add", "--force", CONFIGURATION_PATH])?;
             run_git(
                 root,
@@ -83,7 +84,7 @@ const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
                     "configure cargo-berth",
                 ],
             )
-        });
+        })();
         assert!(
             built.is_ok(),
             "configured hook repository template failed: {built:?}"
@@ -101,6 +102,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
+use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -575,6 +577,120 @@ fn a_rejected_request_states_the_engine_message() -> TestResult {
         "permits at most 0 live reservations",
         "reservation limit refusal",
     )
+}
+
+#[test]
+fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> TestResult {
+    let repository = initialized_repository()?;
+    let mut worktrees = Vec::new();
+    for index in 0..8 {
+        let worktree = add_worktree(&repository, &format!("parallel-hook-{index}"))?;
+        fs::write(
+            worktree.1.join(format!("writer-{index}.rs")),
+            "actual hook write\n",
+        )?;
+        worktrees.push(worktree);
+    }
+    let holder = File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(MUTATION_LOCK_PATH))?;
+    holder.lock()?;
+    let signals = TempDir::new_in(SCRATCH_ROOT)?;
+    let mut writers = Vec::new();
+    for (index, (_, root)) in worktrees.iter().enumerate() {
+        let payload = bash_payload(root, &format!("parallel-hook-session-{index}"));
+        let mut child = berth_command(BERTH_EXECUTABLE)
+            .args(["hook", "post-tool-use"])
+            .current_dir(root)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+            .env(
+                MUTATION_LOCK_READY_ENVIRONMENT,
+                signals.path().join(index.to_string()),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| failure("hook stdin should be piped"))?
+            .write_all(&serde_json::to_vec(&payload)?)?;
+        writers.push(child);
+    }
+    let reconcile = berth_command(BERTH_EXECUTABLE)
+        .args(["board", "--json"])
+        .current_dir(repository.path())
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .env(
+            MUTATION_LOCK_READY_ENVIRONMENT,
+            signals.path().join("reconcile"),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let queued = Instant::now();
+    while ((0..8).any(|index| !signals.path().join(index.to_string()).is_file())
+        || !signals.path().join("reconcile").is_file())
+        && queued.elapsed() < Duration::from_millis(500)
+    {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let ready = (0..8).all(|index| signals.path().join(index.to_string()).is_file())
+        && signals.path().join("reconcile").is_file();
+    holder.unlock()?;
+    let mut writer_answers = Vec::new();
+    for writer in writers {
+        let output = writer.wait_with_output()?;
+        require_success(&output, "concurrent hook writer")?;
+        writer_answers.push(String::from_utf8(output.stdout)?);
+    }
+    let output = reconcile.wait_with_output()?;
+    require_success(&output, "concurrent reconciliation")?;
+    assert!(
+        ready,
+        "every hook and reconciliation must enter the same held ledger queue"
+    );
+    let events = journal_events(repository.path())?;
+    for index in 0..8 {
+        assert_hook_writer_waits_under_two_seconds(signals.path(), index)?;
+        let path = format!("writer-{index}.rs");
+        assert!(
+            events.iter().any(|event| event["op"] == "claim"
+                && event["scopes"]
+                    .as_array()
+                    .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == path))),
+            "hook writer {index} must acquire its actual changed path; answers: {writer_answers:?}"
+        );
+    }
+    Ok(())
+}
+
+fn assert_hook_writer_waits_under_two_seconds(signals: &Path, index: usize) -> TestResult {
+    let waits = fs::read_to_string(signals.join(index.to_string()).with_extension("waits"))?;
+    assert!(
+        !waits.is_empty(),
+        "writer {index} must report its held-lock wait"
+    );
+    let mut total_wait_nanoseconds = 0;
+    for waited in waits.lines() {
+        let nanoseconds = waited.parse::<u128>()?;
+        total_wait_nanoseconds += nanoseconds;
+        assert!(
+            nanoseconds < Duration::from_secs(2).as_nanos(),
+            "writer {index} lock wait exceeds 2 s: {nanoseconds} ns"
+        );
+    }
+    assert!(
+        total_wait_nanoseconds < Duration::from_secs(2).as_nanos(),
+        "writer {index} cumulative lock wait exceeds 2 s: {total_wait_nanoseconds} ns"
+    );
+    Ok(())
 }
 
 #[test]
@@ -1530,6 +1646,11 @@ impl PausedHookCall {
         fs::set_permissions(&wrapper_path, permissions)?;
         let ready_path = wrapper_directory.path().join("ready");
         let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo").arg(&continue_path).output()?;
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
         let original_path =
             std::env::var_os("PATH").ok_or_else(|| failure("test process should supply PATH"))?;
         let wrapped_path = std::env::join_paths(
@@ -1599,11 +1720,10 @@ impl PausedHookCall {
 const fn paused_git_wrapper() -> &'static str {
     r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "$CARGO_BERTH_TEST_GIT_OBSERVATION" ] \
-    && { [ "$2" = "diff-tree" ] || [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; }; then
+    && { [ "$2" = "diff-tree" ] || [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; } \
+    && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+    IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#

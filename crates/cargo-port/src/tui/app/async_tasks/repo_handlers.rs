@@ -154,23 +154,20 @@ impl App {
             "checkout_info_applied"
         );
         let status = info.status;
-        // Vendored crates and workspace members share their owning checkout's
-        // `.git`, so a probe of their path resolves up to the worktree and
-        // reports the worktree's branch / main delta and tracked ref — none of
-        // which describe the child. They have no independent git identity (CI,
-        // branch, and lint already resolve them to the owner), so never store
-        // worktree state under a child path. The startup-tracking and
-        // repo-fetch bookkeeping below still runs: those resolve `path` to the
-        // owner's git directory / repo, so a child-path probe correctly counts
-        // toward the owner.
+        // Workspace members and vendored paths share an owning checkout: stores_own_git_state
+        // prevents storing CheckoutInfo::status/branch/main_delta/tracked_ref into child
+        // ProjectInfo::local_git_state; startup_git_directory_for_path and maybe_trigger_repo_fetch
+        // still resolve path to its owner so bookkeeping counts toward the owner. Their path probes
+        // resolve to the worktree's .git and report its state, which does not describe the child;
+        // CI, branch and lint already resolve ownership to that checkout.
         let stores_own_git_state = !self.project_list.is_vendored_path(path)
             && !self.project_list.is_workspace_member_path(path);
         if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
-        // The worktree-summary cache embeds each entry's branch name read
-        // from this in-memory state; drop it so the rows recompute against
-        // the checkout info that just landed.
+        // `panes.clear_worktree_summary_cache` discards branch names read from
+        // `ProjectInfo::local_git_state`, so worktree summary rows recompute from the
+        // `CheckoutInfo` that just landed.
         self.panes.clear_worktree_summary_cache();
         // Detected git state implies the entry (or submodule) is in a
         // git repo. Ensure a `GitRepo` slot exists for `path` so per-repo
@@ -232,10 +229,9 @@ impl App {
     /// diverged). The `path` is the primary's path — the emitter is
     /// responsible for that contract.
     pub(in crate::tui::app) fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
-        // Preserve a previously-fetched `first_commit` across refresh.
-        // `RepoInfo::get` always returns `None` for it; the value is
-        // filled in either by a prior `handle_git_first_commit` write
-        // or via the `pending_git_first_commit` map below.
+        // Preserve a fetched `RepoInfo::first_commit` across refresh: `RepoInfo::get` yields
+        // `FirstCommit::AwaitingProbe`, while a prior `handle_git_first_commit` write or
+        // `scan.pending_git_first_commit_mut()` may supply `FirstCommit::Probed`.
         let preserved_first_commit = self
             .project_list
             .repo_info_for(path)
@@ -272,7 +268,8 @@ impl App {
             }
         } else if let Some(entry) = self.project_list.entry_containing_mut(path) {
             if entry.root_item.path().as_path() != path {
-                // Non-primary write — discard per the policy above.
+                // Return when `entry.root_item.path()` differs from `path`, enforcing
+                // `handle_repo_info`'s primary-only write policy.
                 return;
             }
             let git_repo = entry.git_repo.get_or_insert_with(Default::default);
@@ -293,8 +290,8 @@ impl App {
     /// baseline; on transition, push or extend the "Sync changes" task
     /// toast.
     fn record_sync_observation(&mut self, path: &Path) {
-        // Skip while git info is still loading — a not-yet-resolved value is
-        // not a real sync state and must not become a baseline.
+        // Return unless `primary_sync_resolution` yields `SyncResolution::Resolved`; unresolved Git
+        // state is not a real sync state and must not seed the `sync_tracker` baseline.
         let SyncResolution::Resolved(current) = self.project_list.primary_sync_resolution(path)
         else {
             return;
@@ -364,13 +361,10 @@ impl App {
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        // Grow the repo denominator for as long as the startup panel is open,
-        // so a fetch queued after local-git completes (and the denominator
-        // stabilized) still feeds the GitHub row and holds the panel until it
-        // finishes. A re-fetch of an already-seen repo un-marks it, so the
-        // row cannot read done while this fetch is in flight. Once the panel
-        // has closed, the fetch only drives the steady-state "Retrieving
-        // GitHub repo details" toast.
+        // While startup.is_collecting, startup.repo.expected gains repo and seen/complete_at are
+        // reset even after local-git denominator stabilization, holding the GitHub row until
+        // completion; after closure net.github_running_mut and sync_running_repo_fetch_toast drive
+        // only the steady-state toast.
         if self.startup.is_collecting() {
             self.startup.repo.expected.insert(repo.clone());
             self.startup.repo.seen.remove(&repo);
@@ -566,8 +560,8 @@ impl App {
             return false;
         }
         let service_item = item.clone();
-        // Insert into the hierarchy directly — under a parent workspace if
-        // one exists, otherwise as a top-level peer.
+        // `tree.insert_into_hierarchy` inserts `item` under an existing parent workspace or as a
+        // top-level peer; `regroup_members` reapplies `inline_dirs`.
         let discovered_path = item.path().to_path_buf();
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
         let dispatch = self.metadata_dispatch();
@@ -586,28 +580,27 @@ impl App {
         self.background
             .register_item_background_services(&service_item);
         self.register_lint_project_if_eligible(&service_item);
-        // Signal that derived state and caches need refresh.
-        // The caller batches multiple discoveries before refreshing once.
+        // Return `true` so `poll_background` batches `scan.bump_generation` and
+        // `maybe_priority_fetch` across multiple `handle_project_discovered` results, refreshing
+        // derived state and caches once.
         true
     }
     pub(in crate::tui::app) fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
         let service_item = item.clone();
-        // Replace the leaf in project_list_items, transferring runtime data
-        // from the old item to the incoming one. `worktree_health` is
-        // filesystem-detected at refresh time and must survive the info copy.
-        // `worktree_status` is no longer on `ProjectInfo` — it lives directly
-        // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
-        // assign to `worktree_status`.
+        // tree.replace_leaf_by_path replaces the project_list leaf and collect_project_info
+        // transfers runtime state; preserve freshly probed ProjectInfo::worktree_health, while
+        // worktree_status stays on Workspace/Package/NonRustProject and cannot be overwritten
+        // through ProjectInfo.
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
         let dispatch = self.metadata_dispatch();
         {
             let mut tree = self.mutate_tree();
-            // The probe-side leaf comes back with a default `Cargo`, so
-            // each replace re-dispatches `cargo metadata`; the first
-            // (transient extraction) dispatch is superseded by the
-            // second via the store's per-root generation counter.
+            // The incoming probe leaf carries default Rust project state, so
+            // `tree.replace_leaf_by_path` redispatches cargo metadata on each replacement.
+            // `WorkspaceMetadataStore`'s per-root generation counter lets the second,
+            // runtime-enriched replacement supersede the first transient extraction dispatch.
             let Some(old) = tree.replace_leaf_by_path(&path, item.clone(), &dispatch) else {
                 return false;
             };
@@ -625,7 +618,8 @@ impl App {
                 // so transfer the values the old item already holds.
                 transfer_crates_io(&old, &mut item, &project_path);
             }
-            // Re-replace with the runtime-data-enriched version.
+            // `tree.replace_leaf_by_path` reinstalls `item` after `transfer_lint_runs` and
+            // `transfer_crates_io` enrich it with prior runtime state.
             tree.replace_leaf_by_path(&path, item, &dispatch);
             tree.regroup_members(&inline_dirs);
             tree.regroup_top_level_worktrees();
@@ -642,7 +636,8 @@ impl App {
         self.background
             .register_item_background_services(&service_item);
         self.register_lint_project_if_eligible(&service_item);
-        // Signal that derived state needs refresh (batched by caller).
+        // Return `true` so `poll_background` batches generation and detail refresh after
+        // `handle_project_refreshed`.
         true
     }
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {

@@ -172,6 +172,22 @@ impl RepositoryTemplate {
         .instantiate()
     }
 
+    /// Restore an empty-ledger fixture into an existing empty directory.
+    ///
+    /// Related fixture builders share their base without replaying its Git and
+    /// initialization commands. Paths and identities are renewed for the destination.
+    ///
+    /// # Panics
+    /// Panics under the same conditions as [`Self::instantiate`].
+    pub fn restore_into(self, root: &Path) {
+        LedgerTemplate {
+            repository:   self,
+            ledger:       LedgerFixture::Empty,
+            build_timing: TemplateBuildTiming::InTest,
+        }
+        .restore_into(root);
+    }
+
     /// Directory shared by every before-run template built by this executable.
     ///
     /// # Panics
@@ -207,10 +223,15 @@ impl LedgerTemplate {
     /// Panics when the fixture cannot be built, copied or relocated.
     #[must_use]
     pub fn instantiate(self) -> TempDir {
-        let template_root = self.built_root();
         let repository = tempdir().expect("temporary repository should exist");
+        self.restore_into(repository.path());
+        repository
+    }
+
+    fn restore_into(self, root: &Path) {
+        let template_root = self.built_root();
         let repository_root =
-            fs::canonicalize(repository.path()).expect("temporary repository should canonicalize");
+            fs::canonicalize(root).expect("destination repository should canonicalize");
         let mut snapshot = DirectorySnapshot::capture(&template_root);
         let relocated = snapshot.replace_text(
             &template_root.to_string_lossy(),
@@ -235,7 +256,6 @@ impl LedgerTemplate {
         }
         // The copied index keeps its staged contents. Git refreshes stale stat
         // entries when a later operation reads them; restoring needs no process.
-        repository
     }
 
     /// The root of this template's build for the running test binary, built
@@ -380,7 +400,8 @@ mod tests {
                 .into_iter()
                 .zip(["", "M  staged.txt\n M working.txt\n"])
             {
-                let repository = template.instantiate();
+                let repository = tempdir().expect("restore destination should exist");
+                template.repository.restore_into(repository.path());
                 let output = Command::new(&git)
                     .current_dir(repository.path())
                     .args(["status", "--porcelain", "--untracked-files=all"])

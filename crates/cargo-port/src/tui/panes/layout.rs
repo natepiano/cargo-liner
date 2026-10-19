@@ -196,9 +196,8 @@ fn tiled_row_constraints(
     let minimum_outer_rows = 8;
     let top_content = top_required_inner.saturating_add(PANE_BORDER_HEIGHT);
 
-    // The bottom row keeps the size it had when the middle was pinned to the
-    // CPU floor: the previous split handed the top and bottom 35:25 of the
-    // leftover, so the bottom took 25/60 of it.
+    // `bottom` preserves the old bottom-row height: with the middle pinned to `cpu_floor`, the old
+    // 35:25 top/bottom split gave the bottom 25/60 of `prior_slack`.
     let prior_slack = total_height.saturating_sub(cpu_floor);
     let bottom = prior_slack.saturating_mul(25) / 60;
 
@@ -206,8 +205,8 @@ fn tiled_row_constraints(
         .saturating_add(bottom)
         .saturating_add(minimum_outer_rows);
     if total_height >= reserved {
-        // Cap the top so the middle — everything the content-sized top leaves
-        // between itself and the bottom — never drops below the CPU floor.
+        // Clamp `top_content` to `max_top` so the middle row between `top` and `bottom` never falls
+        // below `cpu_floor`.
         let max_top = total_height
             .saturating_sub(cpu_floor)
             .saturating_sub(bottom);
@@ -358,9 +357,8 @@ mod tests {
 
     #[test]
     fn resolved_layout_floors_cpu_at_required_height_when_top_is_tall() {
-        // A top row whose content needs more than the screen can spare is
-        // capped so the middle (CPU) row keeps at least the CPU pane's
-        // required height.
+        // `resolve_layout` caps an oversized top row so `PaneId::Cpu` retains at least
+        // `cpu::cpu_required_pane_height(12)`.
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
             30,
@@ -377,8 +375,8 @@ mod tests {
 
     #[test]
     fn resolved_layout_sizes_top_row_to_content_when_it_fits() {
-        // With room to spare, the top row is the measured content inner height
-        // plus the pane border — no taller, so the leftover goes to the middle.
+        // With room to spare, `resolve_layout` gives `PaneId::Package` exactly `top_inner +
+        // PANE_BORDER_HEIGHT`, leaving the remaining height to the middle row.
         let top_inner = 8;
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 41),
@@ -396,8 +394,8 @@ mod tests {
 
     #[test]
     fn resolved_layout_grows_middle_when_top_content_is_short() {
-        // A short top row leaves the middle row taller than the CPU floor, so
-        // the Targets pane below shows more rows than when the top is tall.
+        // `short` gives `PaneId::Cpu` more than `cpu_floor` and `PaneId::Targets` more height than
+        // `tall`, because its shorter top row frees middle-row space.
         let cpu_floor = super::cpu::cpu_required_pane_height(12);
         let tall = resolve_layout(
             Rect::new(0, 0, 120, 40),

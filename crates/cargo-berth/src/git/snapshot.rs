@@ -21,8 +21,19 @@ use super::object::CommitObjectResolution;
 use super::object::OperationObjectReader;
 use super::refs::HeadAttachment;
 use crate::ids::GitObjectId;
+use crate::ids::ReservationScopePath;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
+
+#[derive(Eq, Hash, PartialEq)]
+struct BranchPathKey {
+    checkout: PathBuf,
+    trunk:    GitObjectId,
+    head:     GitObjectId,
+}
+
+type BranchPathFacts = HashMap<BranchPathKey, Arc<RepositoryFact<Vec<ReservationScopePath>>>>;
+type CheckoutStatusFacts = HashMap<PathBuf, Arc<RepositoryFact<Output>>>;
 
 /// A fact can be initialized once, including an unsuccessful read. Workers see
 /// the same failure instead of retrying Git independently.
@@ -41,13 +52,15 @@ impl<T> RepositoryFact<T> {
 
 /// One operation's repository paths and first observations. A new pass after a
 /// mutation owns a new snapshot; sharing this value never starts a fact twice.
+#[derive(Clone)]
 pub(crate) struct RepositorySnapshot {
     context:               WorktreeContext,
-    worktrees:             RepositoryFact<Vec<u8>>,
-    status:                RepositoryFact<Output>,
-    other_checkout_status: Mutex<HashMap<PathBuf, Arc<RepositoryFact<Output>>>>,
-    head:                  RepositoryFact<GitObjectId>,
-    attachment:            RepositoryFact<HeadAttachment>,
+    worktrees:             Arc<RepositoryFact<Vec<u8>>>,
+    status:                Arc<RepositoryFact<Output>>,
+    other_checkout_status: Arc<Mutex<CheckoutStatusFacts>>,
+    branch_paths:          Arc<Mutex<BranchPathFacts>>,
+    head:                  Arc<RepositoryFact<GitObjectId>>,
+    attachment:            Arc<RepositoryFact<HeadAttachment>>,
     objects:               OperationObjectReader,
 }
 
@@ -62,11 +75,27 @@ impl RepositorySnapshot {
         Self {
             objects: OperationObjectReader::new(context.repository_root()),
             context,
-            worktrees: RepositoryFact::unread(),
-            status: RepositoryFact::unread(),
-            other_checkout_status: Mutex::new(HashMap::new()),
-            head: RepositoryFact::unread(),
-            attachment: RepositoryFact::unread(),
+            worktrees: Arc::new(RepositoryFact::unread()),
+            status: Arc::new(RepositoryFact::unread()),
+            other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
+            branch_paths: Arc::new(Mutex::new(HashMap::new())),
+            head: Arc::new(RepositoryFact::unread()),
+            attachment: Arc::new(RepositoryFact::unread()),
+        }
+    }
+
+    /// Refresh mutable observations after generation invalidation, retaining the same object
+    /// reader and immutable object-pair evidence for this operation.
+    pub(crate) fn fresh_observation(&self) -> Self {
+        Self {
+            context:               self.context.clone(),
+            worktrees:             Arc::new(RepositoryFact::unread()),
+            status:                Arc::new(RepositoryFact::unread()),
+            other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
+            branch_paths:          Arc::clone(&self.branch_paths),
+            head:                  Arc::new(RepositoryFact::unread()),
+            attachment:            Arc::new(RepositoryFact::unread()),
+            objects:               self.objects.clone(),
         }
     }
 
@@ -133,6 +162,34 @@ impl RepositorySnapshot {
                 stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             })
         }
+    }
+
+    /// Keep immutable branch-path evidence across generation retries and holders sharing an
+    /// object pair. Return the actual Git queries this caller started, excluding cache hits.
+    pub(crate) fn unmerged_branch_paths(
+        &self,
+        checkout: &Path,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> Result<(Vec<ReservationScopePath>, u64), GitError> {
+        let key = BranchPathKey {
+            checkout: std::fs::canonicalize(checkout)?,
+            trunk:    trunk.clone(),
+            head:     head.clone(),
+        };
+        let fact = self
+            .branch_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Arc::new(RepositoryFact::unread()))
+            .clone();
+        let mut queries = 0;
+        let paths = fact.read(|| {
+            queries = super::unmerged_branch_path_queries(trunk, head);
+            super::unmerged_branch_paths(checkout, trunk, head)
+        })?;
+        Ok((paths.clone(), queries))
     }
 
     pub(crate) fn head_object_id(&self) -> Result<&GitObjectId, GitError> {
@@ -274,6 +331,29 @@ mod tests {
         assert_ne!(fresh.worktree_list_porcelain()?, worktrees);
         assert!(matches!(fresh.head_attachment()?, HeadAttachment::Detached));
         assert_eq!(fresh.common_directory(), snapshot.common_directory());
+        let current_head = fresh.head_object_id()?;
+        std::thread::scope(|scope| -> FixtureResult {
+            let readers = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        snapshot.unmerged_branch_paths(fixture.root(), &head, current_head)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut queries = 0;
+            for reader in readers {
+                let (paths, started) = reader.join().map_err(|_| "path worker panicked")??;
+                assert!(paths.is_empty(), "the new commit changes no tree paths");
+                queries += started;
+            }
+            assert_eq!(queries, 2, "all workers share one branch-path read");
+            Ok(())
+        })?;
+        let (_, queries) = fresh.unmerged_branch_paths(fixture.root(), &head, current_head)?;
+        assert_eq!(
+            queries, 2,
+            "a fresh pass reads its own branch-path evidence"
+        );
         Ok(())
     }
 

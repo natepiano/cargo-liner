@@ -55,6 +55,7 @@ use crate::git::GitError;
 use crate::git::HistoricalIntegrationCandidateDiscovery;
 use crate::git::OperationObjectReader;
 use crate::git::PhaseStartTargetFirstParentHistories;
+use crate::git::PreparedRetentionRefTransaction;
 use crate::git::ProtectedTipSuccessorHeadClassification;
 use crate::git::ProtectedTipSuccessorHeads;
 use crate::git::Reachability;
@@ -76,6 +77,7 @@ use crate::ledger;
 use crate::ledger::BypassOccurrenceTime;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::CommittedActionValidation;
 use crate::ledger::CoverClaimActor;
 use crate::ledger::ExistingCoordinationRun;
 use crate::ledger::IntegrationTarget;
@@ -83,10 +85,10 @@ use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
+use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
-use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ObservedReservation;
 use crate::ledger::ObservedReservationSet;
 use crate::ledger::ProtectedPhaseStartHead;
@@ -99,7 +101,6 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::ScopeKind;
 use crate::ledger::TargetSelectionRequest;
-use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -251,7 +252,7 @@ pub(crate) struct ReconciliationGitCost {
     pub(crate) merge_extent_path_queries:            u64,
 }
 
-/// Attempted Git queries made while deriving all holder merge extents under one lock.
+/// Attempted Git queries made while preparing all holder merge extents.
 #[derive(Default)]
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
@@ -879,7 +880,7 @@ enum ScopedPatchComparisonJournalUpdate {
     },
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct ScopedPatchEvaluationKey {
     phase_start_head: GitObjectId,
     protected_tip:    GitObjectId,
@@ -890,7 +891,7 @@ struct ScopedPatchEvaluationKey {
 }
 
 /// The immutable history and location evidence used by one scoped comparison.
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 enum ScopedPatchComparisonDestination {
     /// Ordinary integration evidence compares to the admission trunk itself.
     Trunk,
@@ -907,7 +908,7 @@ struct ProposedTargetObservation {
     judged_reservations: HashSet<ReservationId>,
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct ScopedPatchEvaluationScope {
     path:       ReservationScopePath,
     scope_kind: ScopedPatchEvaluationScopeKind,
@@ -935,7 +936,7 @@ impl From<ScopeKind> for ScopedPatchEvaluationScopeKind {
 /// comparison records and reports exactly what the previous one did. A reservation whose proof
 /// still stands never reaches this budget at all -- [`IntegrationProofStanding::Holds`] answers
 /// it from the batched ancestry query -- so a deferral can no longer unseat a proof.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ReconciliationScopedPatchEvaluationBudget {
     evaluations:       HashMap<ScopedPatchEvaluationKey, ScopedPatchIntegrationEvaluation>,
     evaluated_targets: HashSet<GitObjectId>,
@@ -1230,7 +1231,7 @@ pub(crate) enum GateReconciliationPurpose {
     CommittedAudit,
 }
 
-/// Actual repository reconciliation plus proposed-target constraints prepared under one lock.
+/// Actual repository reconciliation and proposed-target constraints for one journal generation.
 pub(crate) struct GateReconciliation {
     reconciliation:            ReconciliationPlan,
     constraints:               IntegrationConstraintProjection,
@@ -1276,7 +1277,7 @@ struct ReconciliationAction {
     object_reader:                 OperationObjectReader,
     retention_repairs:             Vec<ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
-    retention_commit_resolution:   RetentionCommitResolution,
+    retention_transaction:         PreparedRetentionRefTransaction,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     /// Reservations whose lost-evidence directive has been derived by two consecutive passes.
@@ -1310,39 +1311,6 @@ impl ReconciliationAction {
             &self.covered_targets,
             reservation_id,
         )
-    }
-}
-
-/// Which commit batch establishes availability for the final retention repairs.
-enum RetentionCommitResolution {
-    /// The initial observation includes every commit the final repairs name.
-    InitialObservation(ResolvedBatchCommitCandidates),
-    /// Settlement introduced a witness, so resolve the final repairs together after append.
-    IncludeSettlementWitness,
-}
-
-impl RetentionCommitResolution {
-    /// Write all final repairs and deletions after the journal append succeeds.
-    fn apply(
-        &self,
-        repository_root: &Path,
-        objects: &OperationObjectReader,
-        repairs: &[ReservationRetentionRefRepair],
-        deletions: &[ReservationId],
-    ) -> Result<(), GitError> {
-        match self {
-            Self::InitialObservation(resolved_candidates) => {
-                git::update_reservation_retention_refs_from_resolved_batch(
-                    repository_root,
-                    repairs,
-                    deletions,
-                    resolved_candidates,
-                )
-            },
-            Self::IncludeSettlementWitness => {
-                git::update_reservation_retention_refs(repository_root, objects, repairs, deletions)
-            },
-        }
     }
 }
 
@@ -1462,29 +1430,37 @@ fn drift_observation_reservations_after_current_marker_sweep(
         worktree_context.worktree_kind(),
     )?;
     let outcome = ledger
-        .transact(worktree_identity.id, CoordinationRunId::new(), |state| {
-            let prepared_reservations = state
-                .reservations()
-                .map_err(ReconcileError::Replay)
-                .and_then(|reservations| {
-                    worktree_context
-                        .sweep_coordination_run_marker(|coordination_run_id| {
-                            reservations.iter().any(|reservation| {
-                                reservation.is_active_for_coordination_run_and_worktree(
-                                    coordination_run_id,
-                                    worktree_identity.id,
-                                )
-                            })
+        .transact_with_committed_action(
+            worktree_identity.id,
+            CoordinationRunId::new(),
+            |state| match state.reservations() {
+                Ok(reservations) => {
+                    CommittedActionValidation::AlreadySatisfied(reservations.clone())
+                },
+                Err(error) => CommittedActionValidation::Reject(ReconcileError::Replay(error)),
+            },
+            |reservations| {
+                worktree_context
+                    .sweep_coordination_run_marker(|run| {
+                        reservations.iter().any(|reservation| {
+                            reservation.is_active_for_coordination_run_and_worktree(
+                                run,
+                                worktree_identity.id,
+                            )
                         })
-                        .map_err(ReconcileError::Ledger)?;
-                    Ok(reservations.clone())
-                });
-            TransactionValidation::Reject(prepared_reservations)
-        })
-        .map_err(ReconcileError::Transaction)?;
+                    })
+                    .map_err(ReconcileError::Ledger)?;
+                Ok::<_, ReconcileError>(reservations)
+            },
+        )
+        .map_err(|error| match error {
+            LedgerCommittedActionError::Transaction(error) => ReconcileError::Transaction(error),
+            LedgerCommittedActionError::Action(error) => error,
+        })?;
     match outcome {
-        LedgerTransactionOutcome::Rejected(prepared_reservations) => prepared_reservations,
-        LedgerTransactionOutcome::Appended { .. } => {
+        LedgerCommittedActionOutcome::AlreadySatisfied { output, .. } => Ok(output),
+        LedgerCommittedActionOutcome::Rejected(error) => Err(error),
+        LedgerCommittedActionOutcome::Appended { .. } => {
             Err(ReconcileError::UnexpectedDriftPreflightMutation)
         },
     }
@@ -1555,7 +1531,7 @@ fn reconcile_with_open_ledger(
 ) -> Result<ReconciliationReport, ReconcileError> {
     let first = reconcile_with_open_ledger_once(repository, ledger, berth_config, request)?;
     if matches!(first.cover_creation, CoverCreation::Created) {
-        let fresh = git::RepositorySnapshot::new(repository.context().clone());
+        let fresh = repository.fresh_observation();
         reconcile_with_open_ledger_once(&fresh, ledger, berth_config, request)
     } else {
         Ok(first)
@@ -1569,48 +1545,48 @@ fn reconcile_with_open_ledger_once(
     request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let worktree_context = initial_repository.context();
+    let mut observation_pass = ReconciliationObservationPass::SharedInitial;
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
-    let mut first_attempt = true;
     retry_rewrite_reconciliation(
         || {
-            // A rejected rewrite subject invalidates every observation in that pass.
-            let retry_repository;
-            let repository = if std::mem::replace(&mut first_attempt, false) {
-                initial_repository
-            } else {
-                retry_repository = git::RepositorySnapshot::new(worktree_context.clone());
-                &retry_repository
-            };
-            let rewrite_preflight =
-                prepare_rewrite_reconciliation(repository, ledger, berth_config)?;
             let outcome = ledger
-                .transact_reconciliation(
+                .transact_reconciliation_then(
                     journal_mutation_actor.worktree_id,
                     journal_mutation_actor.coordination_run_id,
-                    |state| match prepare_reconciliation_transaction(
-                        &state,
-                        berth_config,
-                        request,
-                        ledger_repository,
-                        rewrite_preflight,
-                    ) {
-                        Ok(prepared) => ReconciliationValidation::Apply {
-                            operations:             prepared.operations,
-                            cover_actors:           prepared.cover_actors,
-                            recoverable_operations: prepared.recoverable_operations,
-                            action:                 prepared.action,
-                        },
-                        Err(error) => ReconciliationValidation::Reject(error),
+                    |state| {
+                        let observation = observation_pass.bind(state, initial_repository);
+                        let preflight = match prepare_rewrite_reconciliation(
+                            observation.repository(),
+                            ledger,
+                            berth_config,
+                        ) {
+                            Ok(preflight) => preflight,
+                            Err(error) => return ReconciliationValidation::Reject(error),
+                        };
+                        match prepare_reconciliation_transaction(
+                            observation.state(),
+                            berth_config,
+                            request,
+                            ledger_repository,
+                            preflight,
+                        ) {
+                            Ok(prepared) => ReconciliationValidation::Apply {
+                                operations:             prepared.operations,
+                                cover_actors:           prepared.cover_actors,
+                                recoverable_operations: prepared.recoverable_operations,
+                                action:                 prepared.action,
+                            },
+                            Err(error) => {
+                                ReconciliationValidation::Reject(ReconcileError::from(error))
+                            },
+                        }
                     },
-                    |action: ReconciliationAction, state, recoverable_failures| {
-                        action.commit(
-                            state,
-                            recoverable_failures,
-                            journal_mutation_actor.worktree_id,
-                        )
+                    |action: ReconciliationAction, _, recoverable_failures| {
+                        action.commit_repairs(recoverable_failures)
                     },
+                    |action, state, _| action.finish(state, journal_mutation_actor.worktree_id),
                 )
                 .map_err(|error| match error {
                     LedgerCommittedActionError::Transaction(error) => {
@@ -1626,7 +1602,7 @@ fn reconcile_with_open_ledger_once(
                     report.session_mapping_publication = session_mapping_publication;
                     Ok(report)
                 },
-                LedgerReconciliationOutcome::Rejected(error) => Err(error.into()),
+                LedgerReconciliationOutcome::Rejected(error) => Err(error),
             }
         },
         |error| matches!(error, ReconcileError::RewriteSubjectChanged(_)),
@@ -1650,6 +1626,7 @@ pub(crate) fn retry_rewrite_reconciliation<Output, Failure>(
 }
 
 /// The outstanding phase revision a rewrite candidate must still describe under the lock.
+#[derive(Clone)]
 struct RewriteSubjectValidation {
     /// Reservation nominated by the rewrite map.
     reservation_id: ReservationId,
@@ -1680,6 +1657,7 @@ impl RewriteSubjectValidation {
 }
 
 /// Rewrite destinations that must retain ordering holds until their content check completes.
+#[derive(Clone)]
 struct DeferredRewriteIntegrationSubject {
     /// The outstanding phase expected after all accepted preflight resnapshots.
     validation:     RewriteSubjectValidation,
@@ -1711,16 +1689,61 @@ impl DeferredRewriteIntegrationSubject {
     }
 }
 
+/// Concurrent readers share the initial pass; invalidation always starts fresh mutable facts.
+enum ReconciliationObservationPass {
+    SharedInitial,
+    Retry,
+}
+
+impl ReconciliationObservationPass {
+    fn bind<'replay>(
+        &mut self,
+        state: ReplayedLedgerState<'replay>,
+        repository: &git::RepositorySnapshot,
+    ) -> GenerationBoundReconciliation<'replay> {
+        let repository = match self {
+            Self::SharedInitial => repository.clone(),
+            Self::Retry => repository.fresh_observation(),
+        };
+        *self = Self::Retry;
+        GenerationBoundReconciliation { state, repository }
+    }
+}
+
+/// Mutable repository facts belong to precisely the ledger generation being prepared.
+/// A retry constructs another observation through the same operation object reader.
+pub(crate) struct GenerationBoundReconciliation<'replay> {
+    state:      ReplayedLedgerState<'replay>,
+    repository: git::RepositorySnapshot,
+}
+
+impl<'replay> GenerationBoundReconciliation<'replay> {
+    pub(crate) fn new(
+        state: ReplayedLedgerState<'replay>,
+        repository: &git::RepositorySnapshot,
+    ) -> Self {
+        Self {
+            state,
+            repository: repository.fresh_observation(),
+        }
+    }
+
+    pub(crate) const fn state(&self) -> &ReplayedLedgerState<'replay> { &self.state }
+
+    pub(crate) const fn repository(&self) -> &git::RepositorySnapshot { &self.repository }
+}
+
 /// A rewrite preflight bound to the observation that must judge its transaction.
 /// The consumer receives the repository only through this value, so it cannot
 /// substitute a fresh snapshot or object reader between preflight and planning.
+#[derive(Clone)]
 pub(crate) struct PreparedRewriteReconciliation<'operation> {
     repository: &'operation git::RepositorySnapshot,
     preflight:  RewriteReconciliationPreflight,
 }
 
 /// Accepted rewrite proofs, deferred entry candidates, and their shared comparison budget.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RewriteReconciliationPreflight {
     /// Sequential expected subjects; multiple maps may advance the same reservation.
     validations:            Vec<RewriteSubjectValidation>,
@@ -1738,7 +1761,7 @@ struct RewriteReconciliationPreflight {
     trunk_resolution_calls: u64,
 }
 
-/// Why a rewrite proof cannot be projected onto the locked reservation replay.
+/// Why a rewrite proof cannot be projected onto the prepared reservation replay.
 #[derive(Debug)]
 enum RewriteProjectionError {
     /// A concurrent transaction changed the phase that was checked.
@@ -1768,7 +1791,7 @@ impl RewriteReconciliationPreflight {
             });
     }
 
-    /// Check each preflight proof under the lock before projecting any repository facts.
+    /// Check each preflight proof against the preparation generation before projecting facts.
     fn project(
         &self,
         reservations: &RetainedReservationSet,
@@ -2260,6 +2283,7 @@ fn prepare_reconciliation_transaction(
         &mut reconciliation_evidence_context,
     )
     .map_err(|error| match error {
+        ReconciliationBuildError::Git(error) => ReconciliationPlanningError::Git(error),
         ReconciliationBuildError::Config(error) => ReconciliationPlanningError::Config(error),
         ReconciliationBuildError::Reservation(error) => {
             ReconciliationPlanningError::Reservation(error)
@@ -2314,7 +2338,7 @@ struct HolderMergeExtentChange {
     reservations: ObservedReservationSet,
 }
 
-/// Journal updates and successful holder observations derived under the reconciliation lock.
+/// Journal updates and successful holder observations prepared for one journal generation.
 struct MergeExtentReconciliation {
     operations:         Vec<JournalOperation>,
     observed_by_holder: HashMap<(WorktreeId, IntegrationTarget), MergeExtent>,
@@ -2625,9 +2649,10 @@ fn observe_merge_extent(
             extent: MergeExtent::derived(key, scopes),
         });
     }
-    git_cost.path_queries += git::unmerged_branch_path_queries(trunk, head);
-    let committed_paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
+    let (committed_paths, path_queries) = repository
+        .unmerged_branch_paths(root.as_ref(), trunk, head)
         .map_err(|error| error.to_string())?;
+    git_cost.path_queries += path_queries;
     let mut paths = committed_paths;
     paths.extend(key.working_tree.tracked_paths.iter().cloned());
     paths.extend(key.working_tree.untracked_paths.iter().cloned());
@@ -2654,7 +2679,6 @@ fn build_plan(
     reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
 ) -> Result<ReconciliationPlan, ReconciliationBuildError> {
     let common_git_directory = worktree_context.common_git_directory();
-    let repository_root = worktree_context.repository_root();
     let ObservedRepositoryFacts {
         worktree_registry,
         repository_trunk,
@@ -2702,25 +2726,22 @@ fn build_plan(
         Vec::new(),
         cross_target_predecessors,
     );
-    let active_holders = active_reservation_holders(reservations);
     let mut plan = ReconciliationPlan {
         operations:   changes.operations,
         cover_actors: HashMap::new(),
         action:       ReconciliationAction {
-            active_holders,
+            active_holders: active_reservation_holders(reservations),
             cover_marker_publications: Vec::new(),
             cover_creation: CoverCreation::NoneCreated,
             uncovered_targets: Vec::new(),
             covered_targets: HashSet::new(),
             cover_requirements: HashMap::new(),
             marker_contexts: worktree_registry.marker_sweep_contexts(common_git_directory),
-            repository_root: repository_root.to_path_buf(),
+            repository_root: worktree_context.repository_root().to_path_buf(),
             object_reader: reconciliation_evidence_context.repository.object_reader(),
+            retention_transaction: git::PreparedRetentionRefTransaction::empty(),
             retention_repairs: changes.retention_repairs,
             retention_deletions: changes.retention_deletions,
-            retention_commit_resolution: RetentionCommitResolution::InitialObservation(
-                resolved_candidates,
-            ),
             alert_subjects,
             settlements: Vec::new(),
             evidence: changes.evidence,
@@ -2746,6 +2767,16 @@ fn build_plan(
         reconciliation_evidence_context,
         &mut plan,
     )?;
+    // Settlement can select a witness absent from the initial candidate batch.
+    plan.action.retention_transaction =
+        git::PreparedRetentionRefTransaction::prepare_reconciliation(
+            worktree_context.repository_root(),
+            &plan.action.object_reader,
+            &plan.action.retention_repairs,
+            &plan.action.retention_deletions,
+            &resolved_candidates,
+        )
+        .map_err(ReconciliationBuildError::Git)?;
     Ok(plan)
 }
 
@@ -3471,6 +3502,7 @@ pub(crate) fn prepare_gate_reconciliation(
         &mut reconciliation_evidence_context,
     )
     .map_err(|error| match error {
+        ReconciliationBuildError::Git(error) => GateReconciliationError::Git(error),
         ReconciliationBuildError::Config(error) => GateReconciliationError::Config(error),
         ReconciliationBuildError::Reservation(error) => GateReconciliationError::Reservation(error),
         ReconciliationBuildError::WorktreeRegistry(error) => {
@@ -3717,11 +3749,7 @@ impl GateReconciliation {
     pub(crate) fn into_committed_hook_action(
         self,
         additional_operations: Vec<JournalOperation>,
-    ) -> (
-        Vec<JournalOperation>,
-        HashMap<ReservationId, CoverClaimActor>,
-        CommittedHookReconciliationAction,
-    ) {
+    ) -> Result<PreparedCommittedHookReconciliation, GitError> {
         let mut operations = self
             .reconciliation
             .operations
@@ -3752,20 +3780,27 @@ impl GateReconciliation {
             .collect::<HashMap<_, _>>()
             .into_iter()
             .map(|(id, tip)| ReservationRetentionRefRepair::new(id, tip))
-            .collect();
+            .collect::<Vec<_>>();
+        let retention_transaction = self
+            .reconciliation
+            .action
+            .retention_transaction
+            .for_committed_hook(
+                &self.reconciliation.action.repository_root,
+                &self.reconciliation.action.object_reader,
+                &retention_repairs,
+            )?;
         operations.extend(additional_operations);
-        (
+        Ok(PreparedCommittedHookReconciliation {
             operations,
             // The committed audit retains no claim from the reconciliation plan.
-            HashMap::new(),
-            CommittedHookReconciliationAction {
-                repository_root: self.reconciliation.action.repository_root,
-                object_reader: self.reconciliation.action.object_reader,
-                retention_repairs,
+            cover_actors: HashMap::new(),
+            action: CommittedHookReconciliationAction {
+                retention_transaction,
                 completed_markers: self.reconciliation.action.completed_rewrite_markers,
                 updated_markers: self.reconciliation.action.updated_rewrite_markers,
             },
-        )
+        })
     }
 
     /// Join a gate decision and its journal records to the prepared reconciliation.
@@ -3790,18 +3825,21 @@ impl GateReconciliation {
     }
 }
 
+/// Journal records and ordered repairs prepared for one committed-hook audit.
+pub(crate) struct PreparedCommittedHookReconciliation {
+    pub(crate) operations:   Vec<JournalOperation>,
+    pub(crate) cover_actors: HashMap<ReservationId, CoverClaimActor>,
+    pub(crate) action:       CommittedHookReconciliationAction,
+}
+
 /// Post-append repairs for an audit that preserves reservation lifecycles.
 pub(crate) struct CommittedHookReconciliationAction {
-    /// Repository containing the accepted rewritten commits.
-    repository_root:   PathBuf,
-    /// Object queries share the child used while preparing this action.
-    object_reader:     OperationObjectReader,
-    /// Final accepted tip for each rewritten outstanding reservation.
-    retention_repairs: Vec<ReservationRetentionRefRepair>,
+    /// The complete ref write, with all object availability established before acquisition.
+    retention_transaction: PreparedRetentionRefTransaction,
     /// Fully imported maps retired after their resnapshots commit.
-    completed_markers: Vec<PendingBranchRewriteMarker>,
+    completed_markers:     Vec<PendingBranchRewriteMarker>,
     /// Partial import progress retained for the next pass.
-    updated_markers:   Vec<PendingBranchRewriteMarker>,
+    updated_markers:       Vec<PendingBranchRewriteMarker>,
 }
 
 impl CommittedHookReconciliationAction {
@@ -3811,14 +3849,7 @@ impl CommittedHookReconciliationAction {
         _state: &ReplayedLedgerState<'_>,
         _recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<(), ReconcileError> {
-        if !self.retention_repairs.is_empty() {
-            git::update_reservation_retention_refs(
-                &self.repository_root,
-                &self.object_reader,
-                &self.retention_repairs,
-                &[],
-            )?;
-        }
+        self.retention_transaction.commit()?;
         permit::update_branch_rewrite_markers(&self.updated_markers).map_err(LedgerError::Io)?;
         permit::delete_branch_rewrite_markers(&self.completed_markers).map_err(LedgerError::Io)?;
         Ok(())
@@ -3826,23 +3857,30 @@ impl CommittedHookReconciliationAction {
 }
 
 impl<Decision> GateReconciliationAction<Decision> {
-    /// Commit reconciliation repairs while retaining the already validated gate decision.
-    pub(crate) fn commit(
+    /// Apply ordered repairs without constructing the response under the lock.
+    pub(crate) fn commit_repairs(
+        mut self,
+        failures: &RecoverableReconciliationAppendFailures,
+    ) -> Result<Self, ReconcileError> {
+        self.reconciliation = self.reconciliation.commit_repairs(failures)?;
+        Ok(self)
+    }
+
+    /// Build the gate report from committed journal truth after unlocking.
+    pub(crate) fn finish(
         self,
         state: &ReplayedLedgerState<'_>,
-        recoverable_failures: &RecoverableReconciliationAppendFailures,
         invoking_worktree: WorktreeId,
     ) -> Result<(ReconciliationReport, Decision), ReconcileError> {
-        let report = self
-            .reconciliation
-            .commit(state, recoverable_failures, invoking_worktree)?;
+        let report = self.reconciliation.finish(state, invoking_worktree)?;
         Ok((report, self.decision))
     }
 }
 
-/// A locked gate read could not produce complete replayed constraints.
+/// Gate preparation could not produce complete replayed constraints.
 #[derive(Debug)]
 pub(crate) enum GateReconciliationError {
+    Git(GitError),
     Config(ConfigError),
     /// Reservation replay failed.
     Reservation(ReservationReplayError),
@@ -3859,6 +3897,7 @@ pub(crate) enum GateReconciliationError {
 impl Display for GateReconciliationError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Git(error) => error.fmt(formatter),
             Self::Config(error) => error.fmt(formatter),
             Self::RewriteSubjectChanged(id) => write!(
                 formatter,
@@ -4762,13 +4801,7 @@ fn rebuild_settlement_retention(
                 .push(reservation.id());
         } else {
             let retained_commit = match disposition {
-                Some(ReleaseDisposition::RewrittenIntegration(witness)) => {
-                    if settled.contains_key(&reservation.id()) {
-                        reconciliation.action.retention_commit_resolution =
-                            RetentionCommitResolution::IncludeSettlementWitness;
-                    }
-                    witness.as_ref()
-                },
+                Some(ReleaseDisposition::RewrittenIntegration(witness)) => witness.as_ref(),
                 _ => protected_tip.as_ref(),
             };
             reconciliation
@@ -5337,19 +5370,11 @@ impl ReconciliationAction {
         Ok(())
     }
 
-    fn commit(
+    fn commit_repairs(
         mut self,
-        state: &ReplayedLedgerState<'_>,
         recoverable_failures: &RecoverableReconciliationAppendFailures,
-        invoking_worktree: WorktreeId,
-    ) -> Result<ReconciliationReport, ReconcileError> {
-        let reservations = state.reservations().map_err(ReconcileError::Replay)?;
-        let ordering_graph = OrderingGraph::replay(state.coordination_events())
-            .map_err(ReconcileError::EdgeReplay)?;
-        let constraints = ordering_graph
-            .integration_constraints(reservations, &self.repository_snapshot, state.generation())
-            .map_err(ReconcileError::MissingReadinessFact)?;
-        for pending_import in self.pending_bypass_imports {
+    ) -> Result<Self, ReconcileError> {
+        for pending_import in std::mem::take(&mut self.pending_bypass_imports) {
             if recoverable_failures.contains(pending_import.operation()) {
                 self.unrecorded_bypass_occurrences
                     .push(pending_import.occurrence_time().clone());
@@ -5358,12 +5383,11 @@ impl ReconciliationAction {
                     .push(pending_import.into_recovered_marker());
             }
         }
-        self.retention_commit_resolution.apply(
-            &self.repository_root,
-            &self.object_reader,
-            &self.retention_repairs,
-            &self.retention_deletions,
-        )?;
+        std::mem::replace(
+            &mut self.retention_transaction,
+            PreparedRetentionRefTransaction::empty(),
+        )
+        .commit()?;
         permit::update_branch_rewrite_markers(&self.updated_rewrite_markers)
             .map_err(LedgerError::Io)?;
         permit::delete_branch_rewrite_markers(&self.completed_rewrite_markers)
@@ -5373,6 +5397,27 @@ impl ReconciliationAction {
             &self.active_holders,
             &self.cover_marker_publications,
         )?;
+        if matches!(
+            self.recovered_bypass_reporting,
+            RecoveredBypassReporting::Report
+        ) {
+            permit::delete_recovered_bypass_markers(&self.recovered_bypass_markers)
+                .map_err(LedgerError::Io)?;
+        }
+        Ok(self)
+    }
+
+    fn finish(
+        self,
+        state: &ReplayedLedgerState<'_>,
+        invoking_worktree: WorktreeId,
+    ) -> Result<ReconciliationReport, ReconcileError> {
+        let reservations = state.reservations().map_err(ReconcileError::Replay)?;
+        let ordering_graph = OrderingGraph::replay(state.coordination_events())
+            .map_err(ReconcileError::EdgeReplay)?;
+        let constraints = ordering_graph
+            .integration_constraints(reservations, &self.repository_snapshot, state.generation())
+            .map_err(ReconcileError::MissingReadinessFact)?;
         let mut alerts = reservation_alerts(
             reservations,
             &self.repository_snapshot,
@@ -5408,11 +5453,7 @@ impl ReconciliationAction {
             .map(Alert::recovery_evidence_query_count)
             .sum();
         let recovered_bypass_markers = match self.recovered_bypass_reporting {
-            RecoveredBypassReporting::Report => {
-                permit::delete_recovered_bypass_markers(&self.recovered_bypass_markers)
-                    .map_err(LedgerError::Io)?;
-                self.recovered_bypass_markers
-            },
+            RecoveredBypassReporting::Report => self.recovered_bypass_markers,
             RecoveredBypassReporting::Defer => Vec::new(),
         };
         Ok(ReconciliationReport {
@@ -5447,6 +5488,7 @@ impl ReconciliationAction {
 
 #[derive(Debug)]
 enum ReconciliationPlanningError {
+    Git(GitError),
     Config(ConfigError),
     Reservation(ReservationReplayError),
     Edge(EdgeReplayError),
@@ -5466,6 +5508,7 @@ impl From<RewriteProjectionError> for ReconciliationPlanningError {
 }
 
 enum ReconciliationBuildError {
+    Git(GitError),
     Config(ConfigError),
     Reservation(ReservationReplayError),
     WorktreeRegistry(WorktreeRegistryError),
@@ -5594,6 +5637,7 @@ impl From<WorktreeRegistryError> for ReconcileError {
 impl From<ReconciliationPlanningError> for ReconcileError {
     fn from(error: ReconciliationPlanningError) -> Self {
         match error {
+            ReconciliationPlanningError::Git(error) => Self::Git(error),
             ReconciliationPlanningError::Config(error) => Self::Config(error),
             ReconciliationPlanningError::Reservation(error) => Self::Replay(error),
             ReconciliationPlanningError::Edge(error) => Self::EdgeReplay(error),

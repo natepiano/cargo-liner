@@ -145,7 +145,8 @@ pub(in crate::tui) fn build_finder_index(
         add_pull_request_items(entries, &mut items, &mut seen_pull_requests, entry);
     }
 
-    // Pre-compute column widths from the full index
+    // Compute `col_widths` from all `FinderItem` values and `FINDER_HEADERS`, preserving popup size
+    // when queries filter the index.
     let mut col_widths: [usize; FINDER_COLUMN_COUNT] = FINDER_HEADERS.map(str::len);
     for item in &items {
         col_widths[0] = col_widths[0].max(item.display_name.len());
@@ -425,14 +426,14 @@ fn add_project_items_from_typed(
     let branch = context.branch.to_string();
     let dir = context.display_path.to_string();
 
-    // Build base token fields shared by all rows. Cargo name is included so
-    // all targets remain findable by Cargo name when the directory differs.
+    // `base_fields` shares `project_name`, `dir`, `branch` and optional `cargo_name` across rows,
+    // keeping every target findable by its Cargo name when the directory name differs.
     let base_fields: Vec<&str> = [&project_name as &str, &dir, &branch]
         .into_iter()
         .chain(cargo_name.as_deref())
         .collect();
 
-    // The project itself
+    // Add a `FinderKind::Project` result for `context.abs_path`.
     let kind = FinderKind::Project;
     let mut project_tokens = base_fields.clone();
     project_tokens.push(kind.label());
@@ -448,7 +449,7 @@ fn add_project_items_from_typed(
         pr_target: None,
     });
 
-    // Binary
+    // Add a `FinderKind::Binary` result when `types` contains `ProjectType::Binary`.
     if types.contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
         let mut tokens = base_fields.clone();
@@ -466,7 +467,8 @@ fn add_project_items_from_typed(
         });
     }
 
-    // Examples (with category prefix)
+    // Add `FinderKind::Example` results from `examples`, prefixing `display` with
+    // `ExampleGroup::category` when present.
     for group in examples {
         for name in &group.names {
             let display = if group.category.is_empty() {
@@ -492,7 +494,7 @@ fn add_project_items_from_typed(
         }
     }
 
-    // Benches
+    // Add a `FinderKind::Bench` result for each name in `benches`.
     for name in benches {
         let kind = FinderKind::Bench;
         let mut tokens = vec![name.as_str()];

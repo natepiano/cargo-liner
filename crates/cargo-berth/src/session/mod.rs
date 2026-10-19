@@ -9,6 +9,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -238,6 +239,29 @@ pub(crate) enum SessionIdentityLookup {
     Unavailable,
 }
 
+/// The atomic session mapping publication used by a prepared ledger decision.
+#[derive(Eq, PartialEq)]
+pub(crate) enum SessionMappingVersion {
+    /// No mapping file has been published.
+    Absent,
+    /// Every publication replaces this inode, even when no journal event is appended.
+    Published { device: u64, inode: u64 },
+}
+
+impl SessionMappingVersion {
+    /// Observe publication identity without decoding the session index under the lock.
+    pub(crate) fn read(ledger_directory: &Path) -> std::io::Result<Self> {
+        match fs::metadata(ledger_directory.join(SessionIdentityStore::FILE_NAME)) {
+            Ok(metadata) => Ok(Self::Published {
+                device: metadata.dev(),
+                inode:  metadata.ino(),
+            }),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::Absent),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// The current harness session's mapping state for locked first-touch selection.
 #[derive(Clone, Copy)]
 pub(crate) enum FirstTouchSessionReservationMapping {
@@ -396,104 +420,261 @@ pub(crate) fn resolve_first_touch_mapping(
         )
 }
 
-/// Apply the mapping consequence of one already-appended journal event.
-pub(crate) fn apply_journal_event(
-    ledger_directory: &Path,
-    event: &JournalEvent,
-) -> SessionIdentityMappingPublication {
-    let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
-    let publication = match &event.operation {
-        JournalOperation::Claim {
-            source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
-            ..
-        } => Ok(()),
-        JournalOperation::Claim { reservation_id, .. }
-        | JournalOperation::Widen { reservation_id, .. } => {
-            return publish_reservation_identity(
-                ledger_directory,
-                event.actor.run,
-                *reservation_id,
-            );
-        },
-        JournalOperation::Checkpoint { reservation_id, .. }
-        | JournalOperation::Release { reservation_id, .. }
-        | JournalOperation::MergeExtentObserved {
-            reservation_id,
-            extent: MergeExtent::Empty { .. },
-            run_status: ReservationRunStatus::Ended,
-        } => retire_reservation_mappings(ledger_directory, &mapping_path, &[*reservation_id]),
-        JournalOperation::HolderMergeExtentObserved {
-            extent: MergeExtent::Empty { .. },
-            reservations,
-        } => {
-            let ended = reservations
-                .as_slice()
-                .iter()
-                .filter(|observed| observed.run_status == ReservationRunStatus::Ended)
-                .map(|observed| observed.reservation_id)
-                .collect::<Vec<_>>();
-            if ended.is_empty() {
-                Ok(())
-            } else {
-                retire_reservation_mappings(ledger_directory, &mapping_path, &ended)
-            }
-        },
-        _ => Ok(()),
-    };
-    publication.into()
+/// Mapping bytes computed during generation- and session-version-bound preparation.
+pub(crate) enum PreparedSessionMappingPublication {
+    Unchanged,
+    Ready { bytes: Vec<u8> },
+    Unavailable { diagnostic: String },
 }
 
-/// Remove every harness-session mapping that names one of `retired`.
-fn retire_reservation_mappings(
-    ledger_directory: &Path,
-    mapping_path: &Path,
-    retired: &[ReservationId],
-) -> Result<(), SessionIdentityStoreError> {
-    let mut store = SessionIdentityStore::read_for_update(mapping_path);
-    store
-        .identities
-        .retain(|_, identity| !retired.contains(&identity.reservation_id));
-    store.publish(ledger_directory, mapping_path)
+/// One journal fact's effect on the disposable harness-session index.
+enum SessionMappingChange {
+    Unchanged,
+    Select {
+        session:  HarnessSessionId,
+        identity: SessionReservationIdentity,
+    },
+    Retire(Vec<ReservationId>),
 }
 
-/// Publish the current harness session's known coordination identity.
-pub(crate) fn publish_reservation_identity(
-    ledger_directory: &Path,
-    coordination_run_id: CoordinationRunId,
-    reservation_id: ReservationId,
-) -> SessionIdentityMappingPublication {
-    let HarnessSessionIdentity::Available {
-        harness_session_id, ..
-    } = HarnessSessionId::from_current_process()
-    else {
-        return SessionIdentityMappingPublication::Published;
-    };
-    let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
-    let mut store = SessionIdentityStore::read_for_update(&mapping_path);
-    store.identities.insert(
-        harness_session_id,
-        SessionReservationIdentity::new(coordination_run_id, reservation_id),
-    );
-    store.publish(ledger_directory, &mapping_path).into()
-}
-
-/// Remove only the current process's harness-session mapping.
-pub(crate) fn remove_current_mapping(
-    ledger_directory: &Path,
-) -> Result<CurrentSessionMappingRemoval, SessionIdentityStoreError> {
-    let HarnessSessionIdentity::Available {
-        harness_session_id, ..
-    } = HarnessSessionId::from_current_process()
-    else {
-        return Ok(CurrentSessionMappingRemoval::CurrentSessionUnavailable);
-    };
-    let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
-    let mut store = SessionIdentityStore::read_for_removal(&mapping_path)?;
-    if store.identities.remove(&harness_session_id).is_none() {
-        return Ok(CurrentSessionMappingRemoval::AlreadyAbsent);
+impl SessionMappingChange {
+    fn for_event(event: &JournalEvent) -> Self {
+        Self::for_operation(&event.operation, event.actor.run)
     }
-    store.publish(ledger_directory, &mapping_path)?;
-    Ok(CurrentSessionMappingRemoval::Removed)
+
+    fn for_operation(operation: &JournalOperation, run: CoordinationRunId) -> Self {
+        match operation {
+            JournalOperation::Claim {
+                source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
+                ..
+            } => Self::Unchanged,
+            JournalOperation::Claim { reservation_id, .. }
+            | JournalOperation::Widen { reservation_id, .. } => {
+                match HarnessSessionId::from_current_process() {
+                    HarnessSessionIdentity::Available {
+                        harness_session_id, ..
+                    } => Self::Select {
+                        session:  harness_session_id,
+                        identity: SessionReservationIdentity::new(run, *reservation_id),
+                    },
+                    HarnessSessionIdentity::Unavailable => Self::Unchanged,
+                }
+            },
+            JournalOperation::Checkpoint { reservation_id, .. }
+            | JournalOperation::Release { reservation_id, .. }
+            | JournalOperation::MergeExtentObserved {
+                reservation_id,
+                extent: MergeExtent::Empty { .. },
+                run_status: ReservationRunStatus::Ended,
+            } => Self::Retire(vec![*reservation_id]),
+            JournalOperation::HolderMergeExtentObserved {
+                extent: MergeExtent::Empty { .. },
+                reservations,
+            } => {
+                let ended = reservations
+                    .as_slice()
+                    .iter()
+                    .filter(|observed| observed.run_status == ReservationRunStatus::Ended)
+                    .map(|observed| observed.reservation_id)
+                    .collect::<Vec<_>>();
+                if ended.is_empty() {
+                    Self::Unchanged
+                } else {
+                    Self::Retire(ended)
+                }
+            },
+            _ => Self::Unchanged,
+        }
+    }
+}
+
+impl PreparedSessionMappingPublication {
+    /// Fold a complete append's consequences without publishing before its journal facts.
+    pub(crate) fn prepare(ledger_directory: &Path, events: &[JournalEvent]) -> Self {
+        let changes = events
+            .iter()
+            .map(SessionMappingChange::for_event)
+            .filter(|change| !matches!(change, SessionMappingChange::Unchanged))
+            .collect::<Vec<_>>();
+        if changes.is_empty() {
+            return Self::Unchanged;
+        }
+        let mut store = SessionIdentityStore::read_for_update(
+            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+        );
+        for change in changes {
+            match change {
+                SessionMappingChange::Unchanged => {},
+                SessionMappingChange::Select { session, identity } => {
+                    store.identities.insert(session, identity);
+                },
+                SessionMappingChange::Retire(retired) => {
+                    store
+                        .identities
+                        .retain(|_, identity| !retired.contains(&identity.reservation_id));
+                },
+            }
+        }
+        serde_json::to_vec(&store).map_or_else(
+            |error| Self::Unavailable {
+                diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
+            },
+            |bytes| Self::Ready { bytes },
+        )
+    }
+
+    /// Publish once, after the append and its source session version were checked under lock.
+    pub(crate) fn publish(self, ledger_directory: &Path) -> SessionIdentityMappingPublication {
+        match self {
+            Self::Unchanged => SessionIdentityMappingPublication::Published,
+            Self::Ready { bytes } => SessionIdentityStore::publish_bytes(
+                &bytes,
+                ledger_directory,
+                &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+            )
+            .into(),
+            Self::Unavailable { diagnostic } => {
+                SessionIdentityMappingPublication::Unavailable { diagnostic }
+            },
+        }
+    }
+}
+
+/// A session-only mutation bound to the publication it read before acquiring the lock.
+pub(crate) enum PreparedCurrentSessionRemoval {
+    UnavailableSession {
+        version: SessionMappingVersion,
+    },
+    Absent {
+        version: SessionMappingVersion,
+    },
+    Removal {
+        version: SessionMappingVersion,
+        bytes:   Vec<u8>,
+    },
+}
+
+impl PreparedCurrentSessionRemoval {
+    pub(crate) fn prepare(ledger_directory: &Path) -> Result<Self, SessionIdentityStoreError> {
+        let version =
+            SessionMappingVersion::read(ledger_directory).map_err(SessionIdentityStoreError::Io)?;
+        let HarnessSessionIdentity::Available {
+            harness_session_id, ..
+        } = HarnessSessionId::from_current_process()
+        else {
+            return Ok(Self::UnavailableSession { version });
+        };
+        let mut store = SessionIdentityStore::read_for_removal(
+            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+        )?;
+        if store.identities.remove(&harness_session_id).is_none() {
+            return Ok(Self::Absent { version });
+        }
+        let bytes = serde_json::to_vec(&store).map_err(SessionIdentityStoreError::Encoding)?;
+        Ok(Self::Removal { version, bytes })
+    }
+
+    pub(crate) fn still_current(&self, ledger_directory: &Path) -> std::io::Result<bool> {
+        let version = match self {
+            Self::UnavailableSession { version }
+            | Self::Absent { version }
+            | Self::Removal { version, .. } => version,
+        };
+        Ok(*version == SessionMappingVersion::read(ledger_directory)?)
+    }
+
+    pub(crate) fn publish(
+        self,
+        ledger_directory: &Path,
+    ) -> Result<CurrentSessionMappingRemoval, SessionIdentityStoreError> {
+        match self {
+            Self::UnavailableSession { .. } => {
+                Ok(CurrentSessionMappingRemoval::CurrentSessionUnavailable)
+            },
+            Self::Absent { .. } => Ok(CurrentSessionMappingRemoval::AlreadyAbsent),
+            Self::Removal { bytes, .. } => {
+                SessionIdentityStore::publish_bytes(
+                    &bytes,
+                    ledger_directory,
+                    &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+                )?;
+                Ok(CurrentSessionMappingRemoval::Removed)
+            },
+        }
+    }
+}
+
+impl PreparedSessionMappingPublication {
+    /// Prepare each append's cumulative effect, preserving prerequisite order without reading
+    /// or encoding the index after acquisition. Unchanged operations publish no index.
+    pub(crate) fn prepare_sequence(
+        ledger_directory: &Path,
+        run: CoordinationRunId,
+        operations: &[JournalOperation],
+    ) -> Vec<Self> {
+        let changes = operations
+            .iter()
+            .map(|operation| SessionMappingChange::for_operation(operation, run))
+            .collect::<Vec<_>>();
+        if changes
+            .iter()
+            .all(|change| matches!(change, SessionMappingChange::Unchanged))
+        {
+            return changes.into_iter().map(|_| Self::Unchanged).collect();
+        }
+        let mut store = SessionIdentityStore::read_for_update(
+            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+        );
+        changes
+            .into_iter()
+            .map(|change| {
+                match change {
+                    SessionMappingChange::Unchanged => return Self::Unchanged,
+                    SessionMappingChange::Select { session, identity } => {
+                        store.identities.insert(session, identity);
+                    },
+                    SessionMappingChange::Retire(retired) => {
+                        store
+                            .identities
+                            .retain(|_, identity| !retired.contains(&identity.reservation_id));
+                    },
+                }
+                serde_json::to_vec(&store).map_or_else(
+                    |error| Self::Unavailable {
+                        diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
+                    },
+                    |bytes| Self::Ready { bytes },
+                )
+            })
+            .collect()
+    }
+
+    /// Prepare an explicit selection while its ledger decision is still unlocked.
+    pub(crate) fn prepare_selection(
+        ledger_directory: &Path,
+        coordination_run_id: CoordinationRunId,
+        reservation_id: ReservationId,
+    ) -> Self {
+        let HarnessSessionIdentity::Available {
+            harness_session_id, ..
+        } = HarnessSessionId::from_current_process()
+        else {
+            return Self::Unchanged;
+        };
+        let mut store = SessionIdentityStore::read_for_update(
+            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
+        );
+        store.identities.insert(
+            harness_session_id,
+            SessionReservationIdentity::new(coordination_run_id, reservation_id),
+        );
+        serde_json::to_vec(&store).map_or_else(
+            |error| Self::Unavailable {
+                diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
+            },
+            |bytes| Self::Ready { bytes },
+        )
+    }
 }
 
 impl SessionIdentityStore {
@@ -516,12 +697,11 @@ impl SessionIdentityStore {
         }
     }
 
-    fn publish(
-        &self,
+    fn publish_bytes(
+        bytes: &[u8],
         ledger_directory: &Path,
         mapping_path: &Path,
     ) -> Result<(), SessionIdentityStoreError> {
-        let bytes = serde_json::to_vec(self).map_err(SessionIdentityStoreError::Encoding)?;
         let publication_id = Uuid::now_v7();
         let temporary_path =
             ledger_directory.join(format!("{}.{publication_id}.tmp", Self::FILE_NAME));
@@ -530,7 +710,7 @@ impl SessionIdentityStore {
                 .write(true)
                 .create_new(true)
                 .open(&temporary_path)?;
-            temporary_file.write_all(&bytes)?;
+            temporary_file.write_all(bytes)?;
             temporary_file.sync_all()?;
             fs::rename(&temporary_path, mapping_path)?;
             fs::File::open(ledger_directory)?.sync_all()

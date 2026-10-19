@@ -13,7 +13,7 @@
 //! are shared by `panes::pane_data` (row building) and
 //! `panes::package` (rendering).
 
-// Git pane constants
+// `FIT_TEXT_ELLIPSIS` and `PULL_REQUEST_MIN_TITLE_WIDTH` bound Git pane text fitting.
 
 use std::ops::Range;
 
@@ -27,8 +27,8 @@ use crate::tui::columns::RowLifecycle;
 pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
-// Tree row prefix strings and segments — single source of truth for width calc
-// and render.
+// Tree prefixes such as `PREFIX_ROOT_EXPANDED` and `TreeRowExpansion::prefix` provide the single
+// source of text for width calculation and rendering.
 
 const DELETED_DISK_TEXT: &str = "0.0";
 
@@ -159,7 +159,7 @@ pub(super) fn tree_prefix_width(depth: TreeRowDepth) -> usize {
     depth.0 * dw(TREE_PREFIX_BLANK).max(dw(TREE_PREFIX_CONTINUATION)) + ending_width
 }
 
-// tests detail rows
+// `TESTS_IGNORED_LABEL` and `TESTS_TOTAL_LABEL` identify Tests detail rows.
 
 /// Label of the `(ignored)` annotation row in the Tests section. Shared
 /// with the renderer, which dims this row's value (the count is a
@@ -171,7 +171,8 @@ pub(super) const TESTS_IGNORED_LABEL: &str = "(ignored)";
 /// empty label to render the value in bold accent color.
 pub(super) const TESTS_TOTAL_LABEL: &str = "";
 
-// src tui panes ci
+// `CI_BRANCH_*`, `CI_COMMIT_*` and `CI_JOB_LABEL_*` bound CI pane columns; `OTHER_JOBS_HEADER`
+// labels remaining jobs.
 pub(super) const CI_BRANCH_LONG_MIN_WIDTH: usize = 16;
 pub(super) const CI_BRANCH_MIN_WIDTH: usize = 6;
 pub(super) const CI_COMMIT_LONG_MIN_WIDTH: usize = 22;
@@ -181,7 +182,7 @@ pub(super) const CI_JOB_LABEL_MIN_WIDTH: usize = 8;
 pub(super) const CI_STATUS_GAP_WIDTH: usize = 1;
 pub(super) const OTHER_JOBS_HEADER: &str = "Other";
 
-// src tui panes cpu
+// `CPU_BAR_WIDTH` and the `CPU_*_ROWS` constants size CPU pane bars and pinned rows.
 pub(super) const CPU_BAR_WIDTH: usize = 10;
 /// Breakdown rows pinned below the cores band: System, User, Idle.
 pub(super) const CPU_BREAKDOWN_ROWS: usize = 3;
@@ -213,7 +214,7 @@ pub(super) const GPU_UNAVAILABLE_TEXT: &str = "n/a";
 #[cfg(not(target_os = "macos"))]
 pub(super) const GPU_UNAVAILABLE_TEXT: &str = "unavailable";
 
-// src tui panes description
+// `DescriptionBlock` uses `NO_DESCRIPTION_AVAILABLE` for empty descriptions.
 /// "No description available" placeholder rendered by the Package pane
 /// when the source description is empty. Lives here so [`super::DescriptionBlock`]
 /// owns both the placeholder text and the row wrapping that consumes it —
@@ -221,7 +222,7 @@ pub(super) const GPU_UNAVAILABLE_TEXT: &str = "unavailable";
 /// invariant.
 pub(super) const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
-// src tui panes git
+// `BRANCH_HEADER` and the remote, pull-request and worktree column constants label Git pane tables.
 pub(super) const BRANCH_HEADER: &str = "Branch";
 /// Floor for the flexible columns (Remotes URL, Worktrees Name). When the
 /// pane is too narrow they truncate with an ellipsis down to this width,
@@ -241,16 +242,17 @@ pub(super) const SYNC_HEADER: &str = "Sync";
 pub(super) const TRACKED_HEADER: &str = "Tracked";
 pub(super) const WORKTREES_NAME_HEADER: &str = "Name";
 
-// src tui panes lang
+// `LANG_NUM_COL` sizes the Languages pane numeric column.
 /// Fixed numeric column width for language stats.
 pub(super) const LANG_NUM_COL: u16 = 8;
 
-// src tui panes layout
+// `PANE_BORDER_HEIGHT` contributes border rows to pane layout.
 /// Rows a bordered pane spends on its top and bottom border. Outer pane height
 /// is inner content height plus this.
 pub(super) const PANE_BORDER_HEIGHT: u16 = 2;
 
-// src tui panes package
+// The package pane uses `DESCRIPTION_BOX` and `METADATA_BOX` for tree leaves and the following
+// title and width constants for its statistics column.
 /// Title of the crates.io sub-section rule in the stats column.
 pub(super) const CRATES_IO_TITLE: &str = "crates.io";
 /// Leaf index of the description box in the package tree.
@@ -267,6 +269,6 @@ pub(super) const STATS_TITLE: &str = "Structure";
 /// Title of the Tests sub-section rule in the stats column.
 pub(super) const TESTS_TITLE: &str = "Tests";
 
-// src tui panes project_list
+// `DISMISS_SUFFIX` marks dismissible project-list rows; `TITLE_ELLIPSIS` marks truncated titles.
 pub(in crate::tui) const DISMISS_SUFFIX: &str = " [x]";
 pub(super) const TITLE_ELLIPSIS: &str = "\u{2026}";

@@ -297,8 +297,8 @@ pub(super) fn dispatch_navigation_action(
         FocusedPane::Framework(FrameworkFocusId::Toasts) => navigate_toasts(app, action),
     }
 
-    // When the cursor could not move — the list was already at its edge —
-    // roll focus to the adjacent pane in tab order instead of stopping.
+    // When `list_cursor(focused, app)` still equals `Some(cursor_before)`, the list cursor hit an
+    // edge; use `EdgeAdvance` to roll focus to the adjacent pane in tab order.
     if let Some((advance, cursor_before)) = edge_advance
         && list_cursor(focused, app) == Some(cursor_before)
     {
@@ -526,9 +526,8 @@ fn navigate_ci_runs(app: &mut App, action: NavAction) {
 /// extend the range against the frozen snapshot (the cursor is one end, the
 /// anchor the other).
 fn navigate_output(app: &mut App, action: NavAction) {
-    // Plain motions move the single-row selection (or grow it while in
-    // vim visual-line mode); `navigate` keeps the anchor, snapshot, and
-    // follow state in sync with the cursor.
+    // `borrows.output.navigate` moves the single-row selection or extends visual-line mode, keeping
+    // its anchor, snapshot and follow state synchronized with the cursor.
     let borrows = app.split_output_for_navigation();
     let live = borrows.output_presentation.captured_lines();
     borrows.output.navigate(live, |viewport| {
@@ -565,9 +564,8 @@ fn project_list_half_page_step(app: &App) -> Option<usize> {
 }
 
 pub(super) fn request_clean(app: &mut App) {
-    // Gated through App::clean_selection — the single source of truth
-    // for clean eligibility, regardless of which pane currently owns
-    // focus.
+    // `app.project_list.clean_selection()` is the single source of truth for clean eligibility
+    // regardless of which pane owns focus.
     if let Some(selection) = app.project_list.clean_selection() {
         match selection {
             CleanSelection::Project { root } => {
@@ -665,7 +663,8 @@ fn open_url(url: &str) {
 
 #[cfg(test)]
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
-    // Pane scope first — TOML rebinds win over navigation defaults.
+    // Check `ci_runs.action_for` before `framework_keymap.navigation()` so TOML pane rebinds win
+    // over navigation defaults.
     let bind = KeyBind::from_parts(event.code, event.modifiers);
     if let Some(action) = app.keymap.current().ci_runs.action_for(&bind) {
         match action {
@@ -682,7 +681,8 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
         return;
     }
 
-    // Navigation scope.
+    // `framework_keymap.navigation()` supplies the `NavAction` fallback after the CI pane action
+    // lookup misses.
     let dispatch_bind = TuiKeyBind::from(*event);
     if let Some(nav_scope) = app.framework_keymap.navigation()
         && let Some(nav_action) = nav_scope.action_for(&dispatch_bind)
@@ -734,9 +734,8 @@ fn handle_ci_fetch_more(app: &mut App) {
                 .and_then(|item| item.name().map(str::to_string))
         })
         .unwrap_or_else(|| project::home_relative_path(&ci_path));
-    // Always start with Sync: pick up runs newer than the cached set. If
-    // Sync surfaces nothing, `poll_ci_fetches` automatically chains a
-    // `CiFetchKind::Older` uses the cached tail as the cursor.
+    // Queue `PendingCiFetch` with `CiFetchKind::Sync` to find runs newer than the cached set; when
+    // it finds none, the CI polling path chains `CiFetchKind::Older` using the cached tail cursor.
     app.inflight.set_pending_ci_fetch(PendingCiFetch {
         project_path:      ci_path.display().to_string(),
         ci_run_count:      app.config.ci_run_count(),
@@ -811,10 +810,9 @@ fn clear_lint_history(app: &mut App) {
     if !app.selected_row_owns_lint() {
         return;
     }
-    // A worktree-group parent row aggregates every visible checkout's
-    // history, so clearing it must clear each checkout — otherwise the
-    // aggregate rebuild keeps re-showing the linked checkouts' runs.
-    // Other rows clear their single selected path.
+    // `clear_lint_history` uses `selected_worktree_group_checkout_paths` to clear every visible
+    // checkout for a group parent, whose aggregate would otherwise re-show linked runs; other rows
+    // use their single selected path.
     let paths: Vec<AbsolutePath> = app
         .project_list
         .selected_worktree_group_checkout_paths()
@@ -828,8 +826,8 @@ fn clear_lint_history(app: &mut App) {
     if paths.is_empty() {
         return;
     }
-    // Tally before deleting: how many runs go away and the disk they held,
-    // summing each run's archived-log bytes across every checkout being cleared.
+    // Before deletion, sum `run_count` and `freed_bytes` from each checkout's lint runs and
+    // `archive_bytes`.
     let mut run_count: usize = 0;
     let mut freed_bytes: u64 = 0;
     for abs_path in &paths {
@@ -841,10 +839,9 @@ fn clear_lint_history(app: &mut App) {
         }
     }
     for abs_path in &paths {
-        // Removes the per-project cache dir AND decrements the cache-size
-        // index so the lint cache-usage total stays accurate. A bare
-        // `remove_dir_all` would leave the index (at the cache root, outside
-        // this dir) overcounting until the next walk-and-rewrite.
+        // `lint::reclaim_project_cache` removes the per-project directory and decrements the
+        // cache-size index so total cache usage stays accurate; bare `remove_dir_all` would leave
+        // the index at the cache root overcounting until its next walk-and-rewrite.
         lint::reclaim_project_cache(abs_path.as_path());
 
         if let Some(lr) = app.lint_at_path_mut(abs_path.as_path()) {
@@ -879,9 +876,9 @@ fn open_lint_run_output(app: &App) {
     let Some(run) = data.runs.get(pos) else {
         return;
     };
-    // Resolve logs against the checkout the run came from (the primary for
-    // a single project, or the specific checkout for a worktree-group
-    // aggregate), not the selected row's path.
+    // `data.owner_path_for_run(pos)` resolves logs against the run's checkout: the primary for one
+    // project or the specific checkout in a worktree-group aggregate, rather than the selected
+    // row's path.
     let Some(abs_path) = data.owner_path_for_run(pos) else {
         return;
     };
