@@ -270,10 +270,14 @@ pub(crate) const CODEX_SERVICE_TIER_KEY: &str = "service_tier";
 /// The `type` of a rollout's first line, whose `payload.timestamp` is
 /// when its thread began.
 pub(crate) const CODEX_SESSION_META_LINE: &str = "session_meta";
+/// Marker for a rollout record that can contain the first task.
+pub(crate) const CODEX_USER_MARKER: &[u8] = b"\"user\"";
 /// The `type` of a rollout line carrying an event.
 pub(crate) const CODEX_EVENT_LINE: &str = "event_msg";
-/// The `payload.type` of the event recording a thread's settings, its
-/// requested tier among them. Lines without it are not parsed.
+/// A rollout response record can change activity or supply the first task.
+pub(crate) const CODEX_RESPONSE_LINE: &str = "response_item";
+/// The `payload.type` of the event that records a thread's settings,
+/// including its requested tier.
 pub(crate) const CODEX_THREAD_SETTINGS_EVENT: &str = "thread_settings_applied";
 /// The codex-pacer's state under the home directory, whose `history`
 /// lists each change of the tier it launches threads at.
@@ -341,9 +345,8 @@ pub(crate) const TRANSCRIPT_SPAN_READ_LIMIT: u64 = 32 * 1024 * 1024;
 /// Bytes of a transcript's end read first when looking for its last
 /// turn.
 pub(crate) const TRANSCRIPT_TAIL_START: u64 = 64 * 1024;
-/// Bytes of a transcript's end read at most when looking for its last
-/// turn.
-pub(crate) const TRANSCRIPT_TAIL_LIMIT: u64 = 16 * 1024 * 1024;
+/// Growth factor for disjoint backward transcript reads.
+pub(crate) const TRANSCRIPT_TAIL_GROWTH: u64 = 4;
 /// The flag Claude Code's shell tool runs its script under.
 pub(crate) const SHELL_SCRIPT_FLAG: &str = "-c";
 /// Text the script of every Claude Code shell tool call holds: it
