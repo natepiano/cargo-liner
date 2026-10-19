@@ -627,10 +627,10 @@ mod targets_from_metadata {
 
     #[test]
     fn standalone_package_uses_package_name_as_source_label() {
-        // bevy_liminal etc. - a project with no `[workspace]` table
-        // and a single package. Cargo still reports it with a
-        // workspace_root pointing at the package dir, but the
-        // Source column must say the package name, not "workspace".
+        // For a standalone package such as bevy_liminal with no workspace table, Cargo still
+        // reports a workspace root at the package directory; `TargetsData::from_workspace_metadata`
+        // must use `TargetSource::member` so Source displays its package name rather than
+        // "workspace".
         let pkg = record(
             "bevy_liminal",
             "/repo/bevy_liminal/Cargo.toml",
@@ -653,9 +653,9 @@ mod targets_from_metadata {
 
     #[test]
     fn primary_binary_matches_package_name_only() {
-        // A bin target named "demo" is considered the default-run
-        // binary; other bin targets are not lifted into the
-        // workspace-aggregated binary list.
+        // `TargetsData::from_workspace_metadata` lifts the `TargetKind::Bin` named "demo" as the
+        // default-run binary because it matches the package name; other binary targets stay outside
+        // the workspace-aggregated list.
         let with_match = record(
             "demo",
             "/ws/demo/Cargo.toml",
@@ -776,10 +776,9 @@ mod targets_from_metadata {
 
     #[test]
     fn filters_to_member_when_selected_is_a_member_path() {
-        // When the selected project is a workspace member, the
-        // Targets pane shows only that member's targets - selecting
-        // sibling members or the workspace root surfaces a different
-        // view. Confirms the user-visible "narrow on member" rule.
+        // `TargetsData::from_workspace_metadata` narrows a workspace-member selection to that
+        // member's targets; selecting sibling members or the root produces different results,
+        // confirming the user-visible narrow-on-member rule.
         let metadata = three_package_workspace();
         let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/core"));
 
@@ -797,9 +796,9 @@ mod targets_from_metadata {
 
     #[test]
     fn member_filter_returns_empty_for_unknown_path() {
-        // A selected path that doesn't match any member's manifest
-        // dir produces an empty pane rather than falling back to the
-        // workspace aggregation - selection must be unambiguous.
+        // `TargetsData::from_workspace_metadata` returns empty lists when the selected path matches
+        // no member manifest directory; falling back to workspace aggregation would make selection
+        // ambiguous.
         let metadata = three_package_workspace();
         let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/unknown"));
 
@@ -810,9 +809,8 @@ mod targets_from_metadata {
 
     #[test]
     fn virtual_workspace_has_no_workspace_source() {
-        // No root package - only members. Selecting the workspace
-        // root still aggregates both members, but no entry maps to
-        // No entry uses the workspace-root source kind.
+        // With no root package, `TargetsData::from_workspace_metadata` still aggregates both
+        // members for root selection, but no entry uses `TargetSource::workspace_root`.
         let m1 = record(
             "m1",
             "/ws/crates/m1/Cargo.toml",
