@@ -134,8 +134,8 @@ pub(super) fn event_loop(
             },
         );
 
-        // Block until the next event or animation tick. `frame_ms` above
-        // measures real work only — the wait is deliberately excluded.
+        // `wait_for_event` blocks until an event or animation tick; `FrameMetrics::frame_elapsed`
+        // measures only the preceding work, deliberately excluding this wait.
         wait_for_event(app, input_rx);
     }
     Ok(())
@@ -165,7 +165,8 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
     if app.panes.cpu.is_sampling() {
         select.recv(app.panes.cpu.sample_rx());
     }
-    // The fired index is ignored: the loop body drains every source.
+    // Ignore the index from `select.ready_timeout(timeout)` because `event_loop` drains every
+    // source.
     let _ = select.ready_timeout(timeout);
 }
 
