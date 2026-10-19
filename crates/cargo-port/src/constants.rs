@@ -173,13 +173,14 @@ pub(crate) const DEFAULT_REMOTE_HOST_URL: &str = "https://github.com/";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
 pub(crate) const MIN_CPU_POLL_MS: u64 = 250;
 
-// src config
+// Byte-unit constants for `crate::config::canonical_cache_size_unit` and the default cache-size
+// setting.
 pub(crate) const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
 pub(crate) const BYTES_PER_KIB: u64 = 1024;
 pub(crate) const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
 pub(crate) const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
-// src sccache
+// `crate::sccache::read_stats` uses these command arguments and output labels.
 pub(crate) const SCCACHE_BINARY: &str = "sccache";
 /// `sccache --show-stats` label whose value is the on-disk cache size.
 pub(crate) const SCCACHE_CACHE_SIZE_LABEL: &str = "Cache size";
