@@ -45,6 +45,26 @@ const TEMPLATES_DIRECTORY: &str = "cargo-berth-templates";
 /// The main worktree's identity, relative to the repository root.
 const WORKTREE_IDENTITY_PATH: &str = ".git/cargo-berth-worktree-id";
 
+/// The build-owned root shared by repositories and their executable fixtures.
+pub(crate) fn fixture_cache_root(executable: &Path) -> PathBuf {
+    let directory = executable
+        .parent()
+        .expect("fixture executable should have a directory");
+    let profile = if directory.file_name().is_some_and(|name| name == "deps") {
+        directory
+            .parent()
+            .expect("test executable should have a profile directory")
+    } else {
+        directory
+    };
+    let target = profile
+        .parent()
+        .expect("fixture profile should have a target directory");
+    let root = target.join("tmp").join(TEMPLATES_DIRECTORY);
+    fs::create_dir_all(&root).expect("fixture cache root should exist");
+    fs::canonicalize(root).expect("fixture cache root should resolve")
+}
+
 /// What journal state a repository template is allowed to keep.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LedgerFixture {
