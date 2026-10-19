@@ -177,12 +177,12 @@ fn supervisor_loop(
     timing: LintTiming,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
-    // Lazy hydration: the cache starts empty and `cached_status_for_project`
-    // reads disk on miss. Disk hydration is terminal-only: leftover
-    // `Running` files from a dead process are cleared and do not enter this
-    // cache. The previous eager scan walked every cache subdirectory (~8000
-    // stale project keys after a few months of use), blocking the supervisor
-    // for ~2s before it could process a single registration.
+    // `status_cache` starts empty; `cached_status_for_project` reads disk on
+    // a miss. `read_status_from_disk` excludes `LintRunStatus::Running` records
+    // from the cached status and clears abandoned markers from disk.
+    // The previous eager scan walked every cache subdirectory: roughly 8000
+    // stale project keys after months of use delayed the supervisor's first
+    // registration by about 2s.
     let status_cache: Arc<Mutex<HashMap<String, CachedLintStatus>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let catch_up: Arc<Mutex<HashSet<AbsolutePath>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -806,8 +806,9 @@ impl WorkerContext {
             if let Some(scheduled) = scheduled_run
                 && Instant::now() >= scheduled.deadline
             {
-                // A deferred run comes back as its retry; triggers that arrive
-                // during the wait coalesce into it like any other schedule.
+                // `run_due` returns a retry `ScheduledLintRun` on deferral;
+                // `schedule_lint_run` coalesces later triggers into
+                // `scheduled_run` during that retry wait.
                 scheduled_run = self.run_due(scheduled);
             }
         }
@@ -943,8 +944,9 @@ impl WorkerContext {
             &self.child_slot,
             origin,
         );
-        // A pause landed mid-run and killed the child; queue the interrupted
-        // project for the resume sweep.
+        // If `PauseState::is_project_paused` reports a mid-run pause,
+        // `remember_catch_up` queues `project_root` in `catch_up` for resume
+        // after its child was killed.
         if self.pause_state.is_project_paused(&self.project_root) {
             remember_catch_up(&self.catch_up, &self.project_root);
         }
@@ -1527,8 +1529,10 @@ mod tests {
 
     #[test]
     fn startup_lint_adopts_a_foreign_run_that_started_after_the_source_change() {
-        // Another instance began linting after the edit; this instance then
-        // restarts and its staleness check requests the same lint.
+        // `foreign_started_at` follows `source_changed_at`: another instance
+        // began linting after the edit. The `RuntimeHandle::request_startup_lint`
+        // call models this instance restarting and its staleness check
+        // requesting the same lint.
         let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
         let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
         let source_changed_at = SystemTime::now() - Duration::from_secs(10);
@@ -1579,7 +1583,8 @@ mod tests {
             &foreign_run(LintRunStatus::Passed, prior_started_at),
         )
         .expect("write prior run");
-        // The waiting instance's change landed after the prior run started.
+        // `requested_at` follows `prior_started_at`, so `covering_status` must
+        // reject the restored prior record for the waiting instance.
         let requested_at = prior_started_at + chrono::Duration::seconds(1);
         let (background_tx, _background_rx) = channel::unbounded();
         let pause_state = PauseState::default();
@@ -1616,7 +1621,8 @@ mod tests {
     #[test]
     fn status_reads_waiting_until_the_retry_runs() {
         let (project_dir, _cache_dir, mut cargo_port_config) = single_project_fixture();
-        // Defers the first call and passes every call after it.
+        // `cargo_port_config.lint.commands` creates the deferred file and exits
+        // with `DEFER_EXIT_CODE` once; subsequent calls find that file and pass.
         cargo_port_config.lint.commands = vec![LintCommandConfig {
             name:    "defer-once".to_string(),
             command: format!(
@@ -1657,8 +1663,8 @@ mod tests {
 
     #[test]
     fn restart_relints_a_run_interrupted_by_exit() {
-        // The previous process exited mid-run: its `Running` marker is on disk
-        // and its run lock went away with the process.
+        // `write_latest_under` leaves a `LintRunStatus::Running` record without
+        // a held `RunLock` to model a previous process exiting mid-run.
         let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
         let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
         read_write::write_latest_under(
