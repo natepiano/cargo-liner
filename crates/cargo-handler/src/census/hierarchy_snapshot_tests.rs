@@ -152,9 +152,10 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
         }
     }
     let links = HierarchyEdges(vec![HierarchyEdge {
-        manager: SHOWRUNNER.into(),
-        member:  UNIT.into(),
-        role:    HierarchyRole::Unit,
+        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+        manager:  SHOWRUNNER.into(),
+        member:   UNIT.into(),
+        role:     HierarchyRole::Unit,
     }]);
     let runner = Arc::new(PublicationAttempts(Mutex::new(VecDeque::from([
         Ok(links.clone()),
@@ -165,9 +166,13 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
         HierarchyCommand::new(HierarchySource::Command("fixture hierarchy".into())),
         runner,
         |sender| {
+            let now = Instant::now();
             sender
-                .send(production_rows())
+                .publish_at(ScanStage::Completed, production_rows(), now)
                 .expect("successful publication");
+            sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
             let mut changed = production_rows();
             let mut additional = changed[0].clone();
             additional.pid = 99;
@@ -175,20 +180,41 @@ fn hierarchy_scheduler_publishes_failure_and_recovery_without_losing_managed_row
                 SessionIdentity::Claude("new-session-triggers-discovery".into());
             changed.push(additional);
             sender
-                .send(changed.clone())
+                .publish_at(
+                    ScanStage::Completed,
+                    changed.clone(),
+                    now + Duration::from_secs(2),
+                )
                 .expect("failed discovery publication");
-            sender.send(changed).expect("recovered publication");
+            sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
+            sender
+                .publish_at(ScanStage::Completed, changed, now + Duration::from_secs(4))
+                .expect("recovered publication");
+            sender
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
         },
     );
+    let mut completions = updates.into_iter().filter(|update| {
+        matches!(
+            update,
+            CensusUpdate::Local {
+                stage: ScanStage::Completed,
+                ..
+            }
+        )
+    });
     let mut census = Census::new("natedev".into());
     for expected in [
         HierarchyNotice::Clear,
         HierarchyNotice::Failed(HierarchyError::TimedOut),
         HierarchyNotice::Clear,
     ] {
-        let update = updates
-            .recv_timeout(Duration::from_millis(200))
-            .expect("background scheduler publishes promptly");
+        let update = completions
+            .next()
+            .expect("background scheduler completes each scan");
         census.apply(update);
         let machines = census.machines(&[]);
         assert_eq!(machines[0].state.hierarchy_notice(), expected);
@@ -207,9 +233,10 @@ fn hierarchy_configured_unmatched_and_disabled_sources_publish_distinct_outcomes
     impl HierarchyRunner for ForeignSessions {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "another-production".into(),
-                member:  "another-session".into(),
-                role:    HierarchyRole::Unit,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "another-production".into(),
+                member:   "another-session".into(),
+                role:     HierarchyRole::Unit,
             }]))
         }
     }
@@ -264,7 +291,6 @@ fn hierarchy_classified_sessions_draw_roles_before_slow_details_complete() {
         },
     );
     let classified = updates.recv_timeout(Duration::from_millis(200));
-    let managed = updates.recv_timeout(Duration::from_millis(200));
     // `release_details.send(())` unblocks `details_released.recv()` before
     // assertions, even when the update receive operations timed out.
     release_details.send(()).expect("release detail reads");
@@ -272,10 +298,9 @@ fn hierarchy_classified_sessions_draw_roles_before_slow_details_complete() {
         .recv_timeout(Duration::from_millis(200))
         .expect("the source finishes promptly");
     let mut census = Census::new("natedev".into());
-    census.apply(classified.expect("classification reaches the frame before discovery"));
+    census.apply(classified.expect("classified roles reach the frame before details"));
     let machines = census.machines(&[]);
     assert_eq!(machines[0].state.rows().len(), 2);
-    census.apply(managed.expect("roles must arrive while detail reads are still held"));
     let machines = census.machines(&[]);
     assert_eq!(machines[0].state.hierarchy_notice(), HierarchyNotice::Clear);
     assert_unit_draws_under_showrunner(
@@ -290,9 +315,10 @@ fn unmatched_hierarchy_note_stays_drawn_while_expired_links_await_refresh() {
     impl HierarchyRunner for ForeignHierarchy {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "foreign-manager".into(),
-                member:  "foreign-unit".into(),
-                role:    HierarchyRole::Unit,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "foreign-manager".into(),
+                member:   "foreign-unit".into(),
+                role:     HierarchyRole::Unit,
             }]))
         }
     }

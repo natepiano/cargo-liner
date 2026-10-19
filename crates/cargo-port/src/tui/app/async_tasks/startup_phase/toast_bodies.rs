@@ -24,8 +24,9 @@ pub(super) fn startup_panel_body(
     let mut lines = Vec::with_capacity(rows.len());
     let mut colors = Vec::with_capacity(rows.len());
     for row in rows {
-        // A determinate row shows a fill bar + percent; an indeterminate or
-        // failed row shows an empty bar + a short word in the percent column.
+        // `ProgressState::Active` renders a proportional `bar` and percent `suffix`; `CompleteHeld`
+        // renders full progress, while `Waiting` and `Failed` render an empty bar and state
+        // word.
         let (bar, suffix) = match row.state {
             ProgressState::Active(percentage) => (
                 progress_bar(percentage),
@@ -128,13 +129,14 @@ mod tests {
         assert_eq!(colors.len(), 2);
         assert!(lines[0].contains(&full_bar()) && lines[0].ends_with("100%"));
         assert!(lines[1].contains(&empty_bar()) && lines[1].ends_with("0%"));
-        // Labels are padded to the widest so the bars line up.
+        // `startup_panel_body` pads `ProgressRow::label` to the widest label so `bar_column` agrees
+        // across `lines`.
         let bar_column = |line: &str| {
             line.find(STARTUP_BAR_FILLED)
                 .or_else(|| line.find(STARTUP_BAR_EMPTY))
         };
         assert_eq!(bar_column(&lines[0]), bar_column(&lines[1]));
-        // 0% is white, 100% is full green.
+        // `colors[0]` is full green for 100% and `colors[1]` white for 0%.
         assert_eq!(colors[0], Color::Rgb(0, 255, 0));
         assert_eq!(colors[1], Color::Rgb(255, 255, 255));
     }
@@ -149,7 +151,7 @@ mod tests {
             row_color(ProgressState::Active(Percentage::full())),
             Color::Rgb(0, 255, 0)
         );
-        // 50% sits halfway between white and green.
+        // `row_color` at 50% returns `Color::Rgb(128, 255, 128)`, halfway between white and green.
         let half = row_color(ProgressState::Active(Percentage::from_fraction(1, 2)));
         assert_eq!(half, Color::Rgb(128, 255, 128));
     }

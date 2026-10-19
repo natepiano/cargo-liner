@@ -433,9 +433,11 @@ mod tests {
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::hierarchy::ReviewerState;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
@@ -872,6 +874,7 @@ fraying = "leading"
             timer: None,
         };
         AgentRow {
+            role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,
             service_tier:    ServiceTier::Unrecorded,
@@ -927,6 +930,7 @@ fraying = "leading"
             let member = format!("member-{}", root.pid);
             root.session_id = SessionIdentity::Claude(manager.clone());
             members.push(AgentRow {
+                role_fallback: RoleFallback::None,
                 session_id: SessionIdentity::Claude(member.clone()),
                 pid: root.pid + 1_000_000,
                 name: member.clone(),
@@ -934,6 +938,7 @@ fraying = "leading"
                 ..root.clone()
             });
             edges.push(HierarchyEdge {
+                reviewer: ReviewerState::NotPool,
                 manager,
                 member,
                 role: HierarchyRole::Impl,
@@ -1139,6 +1144,7 @@ fraying = "leading"
     fn relationship_rows() -> Vec<AgentRow> {
         vec![
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 session_id: SessionIdentity::Claude("production".to_string()),
                 name: "production".to_string(),
                 pid: 1,
@@ -1146,6 +1152,7 @@ fraying = "leading"
                 ..boss(3 * 60 * 60)
             },
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 session_id: SessionIdentity::Claude("member".to_string()),
                 name: "member".to_string(),
                 pid: 2,
@@ -1174,6 +1181,7 @@ fraying = "leading"
             let edges = HierarchyEdges(
                 role.into_iter()
                     .map(|role| HierarchyEdge {
+                        reviewer: ReviewerState::NotPool,
                         manager: "production".to_string(),
                         member: "member".to_string(),
                         role,
@@ -1262,6 +1270,7 @@ fraying = "leading"
         app.loaded_config.config.tiles.widen_summary = true;
         let agents = (0..5)
             .map(|index| AgentRow {
+                role_fallback: RoleFallback::None,
                 pid: 1_579_022 + index,
                 name: format!("agent {index}"),
                 directory: format!(
@@ -1329,6 +1338,7 @@ fraying = "leading"
             host:  "mac".to_string(),
             state: MachineState::Answered(
                 vec![AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     name: "remote-session".to_string(),
                     ..boss(3600)
                 }],
@@ -1400,6 +1410,7 @@ fraying = "leading"
             vec![
                 boss(21 * 60 * 60),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     pid: 428_044,
                     name: "enh/handler".to_string(),
                     directory: "~/rust/handler".to_string(),

@@ -148,7 +148,7 @@ fn incremental_codex_cold_tail_keeps_first_task_worktree_start_and_historical_ti
     );
     assert_eq!(large.began, small.began);
     assert!(
-        large.began.is_some(),
+        matches!(large.began, tier::RolloutStart::Recorded(_)),
         "session start must survive tail bootstrapping"
     );
     assert_eq!(rollout_tier(large.clone()), ServiceTier::Fast);

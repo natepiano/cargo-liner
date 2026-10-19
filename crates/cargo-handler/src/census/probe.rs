@@ -17,18 +17,28 @@ use super::Account;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::ChildKind;
+use super::ChildRow;
+use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
 use super::HierarchySnapshot;
 use super::HierarchySource;
+use super::ServiceTier;
 use super::SessionIdentity;
+use super::Timer;
 use super::account::AccountLabels;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyAnswer;
 use super::hierarchy::HierarchyError;
+use super::hierarchy::ReviewerOutcome;
+use super::idle_activity;
 use super::local_machine_name;
 use super::scan::LocalScanner;
+use super::worker_dispatch::JobText;
+use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerTask;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
@@ -36,10 +46,151 @@ use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
 use crate::startup_log;
 
+/// The schema-3 task variants understood by older receivers.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyWorkerTask {
+    #[default]
+    Unrecorded,
+    RoleOnly,
+    Task(String),
+}
+
+impl LegacyWorkerTask {
+    const fn is_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+}
+
+/// Reviewer data is an optional wire extension, not a new legacy task variant.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewerTaskWire {
+    #[default]
+    Absent,
+    Recorded {
+        name: String,
+        job:  JobText,
+    },
+}
+
+impl ReviewerTaskWire {
+    const fn is_absent(&self) -> bool { matches!(self, Self::Absent) }
+}
+
+/// Child rows keep the schema-3 task vocabulary at the wire boundary.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct ProbeChildRow {
+    /// Task naming survives placement so the final hierarchy role supplies its label.
+    #[serde(default, skip_serializing_if = "LegacyWorkerTask::is_unrecorded")]
+    worker_task:   LegacyWorkerTask,
+    /// New receivers restore the reviewer name; older receivers ignore this field.
+    #[serde(default, skip_serializing_if = "ReviewerTaskWire::is_absent")]
+    reviewer_task: ReviewerTaskWire,
+    /// The last turn event, read incrementally from a live thread's rollout.
+    #[serde(
+        default = "idle_activity",
+        alias = "thread_state",
+        skip_serializing_if = "AgentActivity::is_idle"
+    )]
+    activity:      AgentActivity,
+    /// A roster-backed launcher identity, resolved only during the scan.
+    #[serde(default, skip_serializing_if = "WorkerDispatch::is_plain")]
+    dispatch:      WorkerDispatch,
+    /// The Codex thread this child represents, when recorded.
+    #[serde(default, skip_serializing_if = "CodexThreadId::is_unrecorded")]
+    thread_id:     CodexThreadId,
+    /// How many levels below the agent the row sits; the rows directly
+    /// under the agent are at 0.
+    depth:         u8,
+    /// What the row is.
+    kind:          ChildKind,
+    /// The tier a Codex thread or process asked for;
+    /// [`ServiceTier::Unrecorded`] for any other row. Missing from a
+    /// probe printed before it existed.
+    #[serde(default)]
+    service_tier:  ServiceTier,
+    /// The app server's home, for a Codex thread; unrecorded for any other row.
+    /// Missing from a probe printed before it existed.
+    #[serde(default, skip_serializing_if = "Account::is_unrecorded")]
+    account:       Account,
+    /// Its process; none for a subagent or a thread, which have none of
+    /// their own.
+    pid:           Option<u32>,
+    /// What the row says it is doing: a shell's description or command,
+    /// a subagent's description, a session's or thread's name, or a
+    /// process's.
+    name:          String,
+    /// When it started, in unix seconds.
+    started:       u64,
+    /// The `sleep` a shell row's command is waiting out, where that
+    /// `sleep` is the one process at the bottom of the shell's subtree;
+    /// none for any other row. Missing from a probe printed before it
+    /// existed, and left out of one for a row that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timer:         Option<Timer>,
+}
+
+impl From<ChildRow> for ProbeChildRow {
+    fn from(row: ChildRow) -> Self {
+        let (worker_task, reviewer_task) = match row.worker_task {
+            WorkerTask::Unrecorded => (LegacyWorkerTask::Unrecorded, ReviewerTaskWire::Absent),
+            WorkerTask::RoleOnly => (LegacyWorkerTask::RoleOnly, ReviewerTaskWire::Absent),
+            WorkerTask::Task(task) => (LegacyWorkerTask::Task(task), ReviewerTaskWire::Absent),
+            WorkerTask::Reviewer { name, job } => (
+                LegacyWorkerTask::RoleOnly,
+                ReviewerTaskWire::Recorded { name, job },
+            ),
+        };
+        Self {
+            worker_task,
+            reviewer_task,
+            activity: row.activity,
+            dispatch: row.dispatch,
+            thread_id: row.thread_id,
+            depth: row.depth,
+            kind: row.kind,
+            service_tier: row.service_tier,
+            account: row.account,
+            pid: row.pid,
+            name: row.name,
+            started: row.started,
+            timer: row.timer,
+        }
+    }
+}
+
+impl From<ProbeChildRow> for ChildRow {
+    fn from(row: ProbeChildRow) -> Self {
+        let worker_task = match row.reviewer_task {
+            ReviewerTaskWire::Recorded { name, job } => WorkerTask::Reviewer { name, job },
+            ReviewerTaskWire::Absent => match row.worker_task {
+                LegacyWorkerTask::Unrecorded => WorkerTask::Unrecorded,
+                LegacyWorkerTask::RoleOnly => WorkerTask::RoleOnly,
+                LegacyWorkerTask::Task(task) => WorkerTask::Task(task),
+            },
+        };
+        Self {
+            worker_task,
+            activity: row.activity,
+            dispatch: row.dispatch,
+            thread_id: row.thread_id,
+            depth: row.depth,
+            kind: row.kind,
+            service_tier: row.service_tier,
+            account: row.account,
+            pid: row.pid,
+            name: row.name,
+            started: row.started,
+            timer: row.timer,
+        }
+    }
+}
+
 /// A probe row before compatibility defaults are resolved into domain values.
 #[derive(Deserialize)]
 pub(super) struct ProbeAgentRow {
     agent:           super::Agent,
+    #[serde(default)]
+    role_fallback:   super::RoleFallback,
     #[serde(default)]
     session_id:      Option<String>,
     #[serde(default)]
@@ -66,6 +217,7 @@ impl From<ProbeAgentRow> for AgentRow {
     fn from(row: ProbeAgentRow) -> Self {
         Self {
             agent:           row.agent,
+            role_fallback:   row.role_fallback,
             session_id:      row
                 .session_id
                 .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
@@ -92,6 +244,8 @@ impl From<ProbeAgentRow> for AgentRow {
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
     schema:           u32,
+    #[serde(default)]
+    reviewers:        Vec<ReviewerOutcome>,
     /// The printing machine's short host name.
     machine:          String,
     /// Its agents, oldest first, each with what it is running.
@@ -122,6 +276,7 @@ impl ProbeReport {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
         Self {
             schema: PROBE_SCHEMA,
+            reviewers: Vec::new(),
             machine,
             rows,
             edges,
@@ -133,7 +288,7 @@ impl ProbeReport {
 
     /// Restore transport-only identity before handing an answer to the census.
     fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
-        let rows = self
+        let mut rows: Vec<AgentRow> = self
             .rows
             .into_iter()
             .chain(self.thread_hosts.into_iter().map(|mut host| {
@@ -141,11 +296,16 @@ impl ProbeReport {
                 host
             }))
             .collect();
+        hierarchy::ReviewerPools::apply_outcomes(&mut rows, &self.reviewers);
         let hierarchy = match self.hierarchy_notice {
-            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed(reason),
+            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed {
+                reason,
+                reviewers: self.reviewers,
+            },
             HierarchyNotice::NoSessionMatched => HierarchyAnswer::Unmatched(self.edges),
-            HierarchyNotice::Clear if self.hierarchy_failed => {
-                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+            HierarchyNotice::Clear if self.hierarchy_failed => HierarchyAnswer::Failed {
+                reason:    HierarchyError::ExitedUnsuccessfully,
+                reviewers: self.reviewers,
             },
             HierarchyNotice::Clear => HierarchyAnswer::Answered(self.edges),
         };
@@ -175,8 +335,16 @@ pub(crate) fn print() -> ExitCode {
         .scan(),
         HierarchyEdges::default(),
     );
+    let pools = hierarchy::ReviewerPools::root().read();
+    report.reviewers = pools.outcomes();
+    hierarchy::ReviewerPools::apply_outcomes(&mut report.rows, &report.reviewers);
+    hierarchy::ReviewerPools::apply_outcomes(&mut report.thread_hosts, &report.reviewers);
     match hierarchy::read(&source, &CommandRunner) {
-        Ok(edges) => {
+        Ok(mut edges) => {
+            let pools = hierarchy::ReviewerPools::root().read();
+            pools.refresh(&mut edges);
+            hierarchy::ReviewerPools::apply(&mut report.rows, &edges);
+            hierarchy::ReviewerPools::apply(&mut report.thread_hosts, &edges);
             let snapshot = HierarchySnapshot {
                 edges,
                 notice: HierarchyNotice::Clear,
@@ -213,7 +381,7 @@ pub(super) fn parse_report(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyEdg
     parse_answer(output).map(|(rows, hierarchy)| {
         let edges = match hierarchy {
             HierarchyAnswer::Answered(edges) | HierarchyAnswer::Unmatched(edges) => edges,
-            HierarchyAnswer::Failed(_) => HierarchyEdges::default(),
+            HierarchyAnswer::Failed { .. } => HierarchyEdges::default(),
         };
         (rows, edges)
     })
@@ -254,6 +422,7 @@ mod tests {
     use crate::census::ChildRow;
     use crate::census::Machine;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::Timer;
     use crate::census::worker_dispatch::WorkerDispatch;
@@ -282,6 +451,7 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
+            reviewers:        Vec::new(),
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
             schema:           PROBE_SCHEMA,
@@ -291,6 +461,7 @@ mod tests {
             rows:             vec![
                 AgentRow {
                     agent:           Agent::Codex,
+                    role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
@@ -307,6 +478,7 @@ mod tests {
                 },
                 AgentRow {
                     agent:           Agent::Claude,
+                    role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
                     service_tier:    ServiceTier::Unrecorded,
                     account:         Account::Unrecorded,
@@ -373,6 +545,7 @@ mod tests {
     fn worker() -> AgentRow {
         AgentRow {
             agent:           Agent::Claude,
+            role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
@@ -398,16 +571,16 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","session_id":null,"service_tier":"unrecorded","account":null,"name":"ChatGPT","activity":"unreported","started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"natemccoy-30","activity":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"schema":3,"reviewers":[],"machine":"mac","rows":["#,
+                r#"{"agent":"codex","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"ChatGPT","activity":"unreported","started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"natemccoy-30","activity":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","session_id":null,"service_tier":"unrecorded","account":null,"name":"worker","activity":{"active":"thinking"},"started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[],"hierarchy_notice":"clear"}"#,
+                r#"{"agent":"claude","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"worker","activity":{"active":"thinking"},"started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}],"edges":[],"hierarchy_notice":"clear"}"#,
             )
         );
         assert_eq!(
@@ -454,9 +627,10 @@ mod tests {
         report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
         report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
         report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
-            manager: "manager".to_string(),
-            member:  "member".to_string(),
-            role:    super::super::HierarchyRole::Review,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "manager".to_string(),
+            member:   "member".to_string(),
+            role:     super::super::HierarchyRole::Review,
         }]);
         let output = serde_json::to_vec(&report).expect("the extended report should serialize");
         assert_eq!(
@@ -521,7 +695,10 @@ mod tests {
             parse_answer(&bytes),
             Ok((
                 report.rows,
-                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+                HierarchyAnswer::Failed {
+                    reason:    HierarchyError::ExitedUnsuccessfully,
+                    reviewers: Vec::new(),
+                }
             ))
         );
     }

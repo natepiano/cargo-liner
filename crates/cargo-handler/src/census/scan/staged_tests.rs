@@ -22,6 +22,7 @@ use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyEdges;
+use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::account::AccountLabels;
@@ -44,6 +45,29 @@ fn staged_child() -> ChildRow {
         name:         "build.sh".to_string(),
         started:      110,
         timer:        None,
+    }
+}
+
+fn staged_agent() -> AgentRow {
+    AgentRow {
+        role_fallback:   RoleFallback::None,
+        session_id:      SessionIdentity::Claude("abcd1234".to_string()),
+        agent:           Agent::Claude,
+        account:         Account::Home(AccountLabels::default().resolve(
+            Path::new("/home/test/.claude1"),
+            Some(Path::new("/home/test")),
+        )),
+        service_tier:    ServiceTier::Unrecorded,
+        name:            "handler".to_string(),
+        activity:        AgentActivity::from(Some("busy")),
+        started:         100,
+        process_started: 100,
+        pid:             428_044,
+        desktop:         None,
+        directory:       "~/rust/handler".to_string(),
+        branch:          None,
+        launched_by:     None,
+        children:        Vec::new(),
     }
 }
 
@@ -79,25 +103,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
         status:     Some("busy".to_string()),
         entrypoint: None,
     }];
-    let classified = AgentRow {
-        session_id:      SessionIdentity::Claude("abcd1234".to_string()),
-        agent:           Agent::Claude,
-        account:         Account::Home(AccountLabels::default().resolve(
-            Path::new("/home/test/.claude1"),
-            Some(Path::new("/home/test")),
-        )),
-        service_tier:    ServiceTier::Unrecorded,
-        name:            "handler".to_string(),
-        activity:        AgentActivity::from(Some("busy")),
-        started:         100,
-        process_started: 100,
-        pid:             428_044,
-        desktop:         None,
-        directory:       "~/rust/handler".to_string(),
-        branch:          None,
-        launched_by:     None,
-        children:        Vec::new(),
-    };
+    let classified = staged_agent();
     let child = staged_child();
     let (sender, updates) = mpsc::channel();
 
@@ -145,6 +151,7 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
     assert_eq!(
         detailed_rows,
         [AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             branch: Some("main".to_string()),
             children: vec![child],
             ..classified

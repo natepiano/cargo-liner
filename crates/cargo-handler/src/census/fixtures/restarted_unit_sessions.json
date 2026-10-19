@@ -1,0 +1,56 @@
+{
+  "processes": [
+    {
+      "pid": 10,
+      "parent": 1,
+      "arguments": [
+        "claude",
+        "--resume",
+        "96b016bf-87cf-4a19-af7a-77425852c2e2"
+      ],
+      "directory": "/work/fixture"
+    },
+    {
+      "pid": 20,
+      "parent": 1,
+      "arguments": [
+        "claude",
+        "--resume",
+        "80636f6b-b7f3-4a3f-9853-ead35573c524",
+        "--remote-control",
+        "shutdown",
+        "-n",
+        "shutdown"
+      ],
+      "directory": "/home/fixture/worktrees/shutdown"
+    },
+    {
+      "pid": 30,
+      "parent": 1,
+      "arguments": [
+        "claude"
+      ],
+      "directory": "/home/fixture"
+    }
+  ],
+  "sessions": [
+    {
+      "pid": 10,
+      "sessionId": "96b016bf-87cf-4a19-af7a-77425852c2e2",
+      "name": "natedev",
+      "cwd": "/work/fixture"
+    },
+    {
+      "pid": 20,
+      "sessionId": "80636f6b-b7f3-4a3f-9853-ead35573c524",
+      "name": "shutdown-unit",
+      "cwd": "/home/fixture/worktrees/shutdown"
+    },
+    {
+      "pid": 30,
+      "sessionId": "ordinary-session",
+      "name": "ordinary home session",
+      "cwd": "/home/fixture"
+    }
+  ]
+}

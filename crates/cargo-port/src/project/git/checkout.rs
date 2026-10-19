@@ -301,7 +301,8 @@ fn bisect_progress(repo_root: &Path) -> Option<BisectProgress> {
         }
     }
 
-    // git can only estimate remaining work once both bounds are marked.
+    // `BisectProgress::Awaiting` is returned until `bad` is true and `good` is
+    // nonempty, because Git needs both bisect bounds to estimate remaining work.
     if !bad || good.is_empty() {
         return Some(BisectProgress::Awaiting);
     }

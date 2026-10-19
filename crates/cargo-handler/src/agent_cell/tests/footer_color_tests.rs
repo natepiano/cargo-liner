@@ -5,6 +5,7 @@ use ratatui::style::Color;
 use super::*;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::RoleFallback;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
@@ -129,12 +130,14 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
 fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
     let colors = FooterColors::parse("account.codex1=pink\naccount.claude2=teal");
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         agent: Agent::Codex,
         service_tier: ServiceTier::Fast,
         account: account("codex1"),
         ..agent(10, "root", HOUR, None)
     };
     let member = AgentRow {
+        role_fallback: RoleFallback::None,
         account: account("claude2"),
         ..agent(20, "member", MINUTE, Some(10))
     };
@@ -166,6 +169,7 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
     );
 
     let unrecorded = AgentRow {
+        role_fallback: RoleFallback::None,
         account: Account::Unrecorded,
         ..root.clone()
     };
@@ -265,6 +269,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
             ..child(0, ChildKind::Thread, None, "worker task", MINUTE)
         };
         let root = AgentRow {
+            role_fallback: RoleFallback::None,
             children: vec![worker.clone()],
             ..agent(10, "root", HOUR, None)
         };
@@ -341,6 +346,7 @@ fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
 #[test]
 fn absent_footer_colors_preserve_the_existing_tile_styles() {
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         account: account("claude2"),
         children: vec![ChildRow {
             worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
@@ -378,6 +384,7 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
 #[test]
 fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![
             child(0, ChildKind::Thread, None, "unroled task", MINUTE),
             child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),

@@ -114,7 +114,7 @@ impl HttpClient {
             return (None, signal);
         };
 
-        // Parse repo metadata.
+        // Build `RepoMetaInfo` from the `GITHUB_GRAPHQL_REPO_KEY` object.
         let meta = data.get(GITHUB_GRAPHQL_REPO_KEY).and_then(|r| {
             let stars = r.get(GITHUB_GRAPHQL_STARGAZER_COUNT_KEY)?.as_u64()?;
             let description = r
@@ -125,7 +125,7 @@ impl HttpClient {
             Some(RepoMetaInfo { stars, description })
         });
 
-        // Parse run nodes.
+        // Decode `GqlRunNode` values and index their check runs by `database_id`.
         let jobs = data
             .as_object()
             .map(|obj| {

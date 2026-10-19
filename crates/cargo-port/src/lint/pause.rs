@@ -12,6 +12,7 @@ use std::path::Path;
 use super::paths;
 use crate::cache_paths;
 use crate::config::CargoPortConfig;
+use crate::constants::LINTS_PAUSED_MARKER;
 use crate::project::AbsolutePath;
 
 /// Write the pause marker. Best-effort: a failure to persist leaves the
@@ -65,7 +66,7 @@ pub(crate) fn is_project_set_under(cache_root: &Path, project_root: &Path) -> bo
 
 fn project_pause_marker_under(cache_root: &Path, project_root: &Path) -> AbsolutePath {
     paths::project_dir_under(cache_root, project_root)
-        .join(crate::constants::LINTS_PAUSED_MARKER)
+        .join(LINTS_PAUSED_MARKER)
         .into()
 }
 

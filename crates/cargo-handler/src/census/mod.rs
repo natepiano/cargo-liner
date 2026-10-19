@@ -18,7 +18,11 @@ pub(crate) mod account;
 pub(crate) mod accounts;
 pub(crate) mod activity;
 mod branch;
+#[cfg(test)]
+mod catch_up_hierarchy_tests;
 pub(crate) mod classify;
+#[cfg(test)]
+mod claude_seat_tests;
 pub(crate) mod codex;
 pub(crate) mod desktop;
 pub(crate) mod hierarchy;
@@ -27,6 +31,10 @@ mod incremental_read_tests;
 mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
+#[cfg(test)]
+mod restart_hierarchy_tests;
+#[cfg(test)]
+mod reviewer_tests;
 pub(crate) mod scan;
 pub(crate) mod schedule;
 pub(crate) mod tier;
@@ -55,6 +63,7 @@ pub(crate) use activity::VerifyStep;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
+use hierarchy::ReviewerState;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
@@ -210,11 +219,13 @@ impl HierarchyRole {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct HierarchyEdge {
     /// The manager's Claude Code session id, possibly on another machine.
-    pub(crate) manager: String,
+    pub(crate) manager:  String,
     /// The member's Claude session id or Codex app-server thread id.
-    pub(crate) member:  String,
+    pub(crate) member:   String,
     /// What the member does for its manager.
-    pub(crate) role:    HierarchyRole,
+    pub(crate) role:     HierarchyRole,
+    #[serde(default)]
+    pub(crate) reviewer: ReviewerState,
 }
 
 /// The management links reported by one machine.
@@ -280,6 +291,16 @@ impl HierarchyCommand {
     }
 }
 
+/// A process role used only when no production relationship names a role.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RoleFallback {
+    #[default]
+    None,
+    Review,
+    Worker(HierarchyRole),
+}
+
 /// One agent someone can talk to, or an app server transporting workers
 /// for placement without appearing in the summary or its own cell.
 /// The field order is the
@@ -291,6 +312,7 @@ pub(crate) struct AgentRow {
     pub(crate) agent:           Agent,
     /// Claude Code session identity, or unrecorded for other rows.
     pub(crate) session_id:      SessionIdentity,
+    pub(crate) role_fallback:   RoleFallback,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.
     pub(crate) service_tier:    ServiceTier,
@@ -413,28 +435,15 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 /// One row of an agent's cell: something the agent started that is
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "probe::ProbeChildRow", into = "probe::ProbeChildRow")]
 pub(crate) struct ChildRow {
     /// Task naming survives placement so the final hierarchy role supplies its label.
-    #[serde(
-        default,
-        skip_serializing_if = "worker_dispatch::WorkerTask::is_unrecorded"
-    )]
     pub(crate) worker_task:  WorkerTask,
     /// The last turn event, read incrementally from a live thread's rollout.
-    #[serde(
-        default = "idle_activity",
-        alias = "thread_state",
-        skip_serializing_if = "AgentActivity::is_idle"
-    )]
     pub(crate) activity:     AgentActivity,
     /// A roster-backed launcher identity, resolved only during the scan.
-    #[serde(
-        default,
-        skip_serializing_if = "worker_dispatch::WorkerDispatch::is_plain"
-    )]
     pub(crate) dispatch:     WorkerDispatch,
     /// The Codex thread this child represents, when recorded.
-    #[serde(default, skip_serializing_if = "CodexThreadId::is_unrecorded")]
     pub(crate) thread_id:    CodexThreadId,
     /// How many levels below the agent the row sits; the rows directly
     /// under the agent are at 0.
@@ -444,11 +453,9 @@ pub(crate) struct ChildRow {
     /// The tier a Codex thread or process asked for;
     /// [`ServiceTier::Unrecorded`] for any other row. Missing from a
     /// probe printed before it existed.
-    #[serde(default)]
     pub(crate) service_tier: ServiceTier,
     /// The app server's home, for a Codex thread; unrecorded for any other row.
     /// Missing from a probe printed before it existed.
-    #[serde(default, skip_serializing_if = "Account::is_unrecorded")]
     pub(crate) account:      Account,
     /// Its process; none for a subagent or a thread, which have none of
     /// their own.
@@ -463,7 +470,6 @@ pub(crate) struct ChildRow {
     /// `sleep` is the one process at the bottom of the shell's subtree;
     /// none for any other row. Missing from a probe printed before it
     /// existed, and left out of one for a row that has none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) timer:        Option<Timer>,
 }
 
@@ -542,13 +548,17 @@ impl RemoteHierarchyAnswers {
                     },
                 )
             },
-            Ok((rows, HierarchyAnswer::Failed(reason))) => MachineState::Answered(
-                rows,
-                HierarchySnapshot {
-                    edges:  self.edges.get(host).cloned().unwrap_or_default(),
-                    notice: HierarchyNotice::Failed(reason),
-                },
-            ),
+            Ok((rows, HierarchyAnswer::Failed { reason, reviewers })) => {
+                let edges = self.edges.entry(host.to_string()).or_default();
+                hierarchy::ReviewerPools::update_edges(edges, &reviewers);
+                MachineState::Answered(
+                    rows,
+                    HierarchySnapshot {
+                        edges:  edges.clone(),
+                        notice: HierarchyNotice::Failed(reason),
+                    },
+                )
+            },
             Err(reason) => MachineState::Failed(reason),
         }
     }
@@ -726,6 +736,7 @@ mod tests {
     fn row(started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            role_fallback: crate::census::RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
@@ -773,9 +784,10 @@ mod tests {
         let mut answers = RemoteHierarchyAnswers::default();
         let mut census = Census::new("local".to_string());
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            manager: "boss".to_string(),
-            member:  "worker".to_string(),
-            role:    HierarchyRole::Unit,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "boss".to_string(),
+            member:   "worker".to_string(),
+            role:     HierarchyRole::Unit,
         }]);
         for (host, started, hierarchy, expected) in [
             (
@@ -787,13 +799,19 @@ mod tests {
             (
                 "remote",
                 2,
-                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
+                HierarchyAnswer::Failed {
+                    reason:    HierarchyError::ExitedUnsuccessfully,
+                    reviewers: Vec::new(),
+                },
                 edges.clone(),
             ),
             (
                 "other",
                 3,
-                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
+                HierarchyAnswer::Failed {
+                    reason:    HierarchyError::ExitedUnsuccessfully,
+                    reviewers: Vec::new(),
+                },
                 HierarchyEdges::default(),
             ),
             (
@@ -805,12 +823,15 @@ mod tests {
             (
                 "remote",
                 5,
-                HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully),
+                HierarchyAnswer::Failed {
+                    reason:    HierarchyError::ExitedUnsuccessfully,
+                    reviewers: Vec::new(),
+                },
                 HierarchyEdges::default(),
             ),
         ] {
             let notice = match &hierarchy {
-                HierarchyAnswer::Failed(reason) => HierarchyNotice::Failed(*reason),
+                HierarchyAnswer::Failed { reason, .. } => HierarchyNotice::Failed(*reason),
                 HierarchyAnswer::Answered(_) => HierarchyNotice::Clear,
                 HierarchyAnswer::Unmatched(_) => HierarchyNotice::NoSessionMatched,
             };
@@ -838,7 +859,10 @@ mod tests {
                 "removed",
                 Ok((
                     vec![row(6)],
-                    HierarchyAnswer::Failed(HierarchyError::ExitedUnsuccessfully)
+                    HierarchyAnswer::Failed {
+                        reason:    HierarchyError::ExitedUnsuccessfully,
+                        reviewers: Vec::new(),
+                    }
                 ))
             ),
             MachineState::Answered(
@@ -939,6 +963,7 @@ mod tests {
         assert!(!census.lists_an_agent(&configured));
 
         let idle = AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             activity: AgentActivity::from(Some("idle")),
             ..row(2)
         };

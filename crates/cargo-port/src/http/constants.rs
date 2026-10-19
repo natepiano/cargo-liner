@@ -41,7 +41,7 @@ pub(super) const USER_AGENT_HEADER: &str = "User-Agent";
 pub(super) const GITHUB_JSON_MEDIA_TYPE: &str = "application/vnd.github+json";
 pub(super) const JSON_MEDIA_TYPE: &str = "application/json";
 
-// src http rate_limit
+// `HttpClient::set_force_github_rate_limit` uses this duration to initialize `force_reset_at`.
 /// Lead time for the synthetic force-rate-limit countdown. `3599`
 /// rather than `3600` so the first displayed value is `00:59:59`
 /// instead of briefly flashing `01:00:00`.

@@ -383,6 +383,7 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
+    use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
     use crate::sort::SummaryColumn;
@@ -408,6 +409,7 @@ mod tests {
                 let mut child = row(root.pid + 1000, root.started + 1);
                 child.session_id = SessionIdentity::Claude(member.clone());
                 edges.push(HierarchyEdge {
+                    reviewer: ReviewerState::NotPool,
                     manager,
                     member,
                     role: HierarchyRole::Impl,

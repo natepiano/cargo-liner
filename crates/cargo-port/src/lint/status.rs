@@ -228,9 +228,9 @@ pub(super) fn parse_run(run: &LintRun) -> LintStatus {
             if elapsed > chrono::Duration::from_std(STALE_TIMEOUT).unwrap_or_default() {
                 LintStatus::Stale
             } else {
-                // A record read back from disk never carries live blocking state:
-                // the phase is published straight from the worker's output reader
-                // and deliberately never persisted.
+                // `LintRun` deliberately does not persist `LintRunPhase`; `parse_run`
+                // uses `LintRunPhase::Executing` because only the worker's output
+                // reader publishes live `LintRunPhase::Blocked` state.
                 LintStatus::Running(ts, LintRunPhase::Executing)
             }
         },
@@ -420,8 +420,8 @@ mod tests {
             DiscoveryLint::Deferred
         ));
 
-        // A terminal result re-lints only when a source mtime post-dates the run
-        // start, regardless of discovery config.
+        // `passed.should_lint_on_startup` re-lints a terminal result only when the
+        // source mtime post-dates `started`, independently of `DiscoveryLint`.
         let started: DateTime<FixedOffset> =
             DateTime::parse_from_rfc3339("2026-03-30T14:22:01-05:00").expect("parse start");
         let run_epoch = SystemTime::UNIX_EPOCH
@@ -438,13 +438,15 @@ mod tests {
             Some(run_epoch - Duration::from_secs(5)),
             DiscoveryLint::Deferred,
         ));
-        // Same whole second is not "newer" — the second-granularity guard.
+        // `source_is_newer` rejects a source mtime in the same whole second as
+        // `started`, preserving the rounding-noise guard.
         assert!(!passed.should_lint_on_startup(
             Some(started),
             Some(run_epoch),
             DiscoveryLint::Immediate,
         ));
-        // No source mtime collected → a terminal result cannot be stale.
+        // `should_lint_on_startup` treats `max_source_mtime: None` as insufficient
+        // evidence to re-lint a terminal result.
         assert!(!passed.should_lint_on_startup(Some(started), None, DiscoveryLint::Immediate));
     }
 }

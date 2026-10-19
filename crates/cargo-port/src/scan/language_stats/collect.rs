@@ -170,8 +170,8 @@ fn build_language_stats(
         .iter()
         .filter(|(_, lang)| lang.code > 0 || !lang.reports.is_empty())
         .map(|(lang_type, lang)| {
-            // Merge embedded languages (e.g., doc comments classified as
-            // Markdown) back into the parent language's counts.
+            // Sum `report.stats` from `lang.children` into `LangEntry` counts
+            // so embedded Markdown doc comments count toward their parent language.
             let (child_code, child_comments, child_blanks) = lang
                 .children
                 .values()

@@ -4646,6 +4646,7 @@ mod tests {
         use crate::config::CargoPortConfig;
         use crate::config::EdgeScroll;
         use crate::config::NavigationKeys;
+        use crate::constants::GIT_STATUS_UNREADABLE;
         use crate::constants::GIT_UNREADABLE_LABEL;
         use crate::lint::LintCommand;
         use crate::lint::LintCommandStatus;
@@ -4697,6 +4698,7 @@ mod tests {
         use crate::tui::app::ConfirmAction;
         use crate::tui::app::HoveredPaneRow;
         use crate::tui::app_render_state::OverlayRenderInputs;
+        use crate::tui::columns::COL_NAME;
         use crate::tui::dismiss_target::DismissTarget;
         use crate::tui::finder;
         use crate::tui::hit_test::HoverTarget;
@@ -6551,7 +6553,7 @@ mod tests {
                     let (x, _) = find_text_cell(&header, label).expect("sync column header");
                     assert_eq!(
                         buffer[(x, y)].symbol(),
-                        crate::constants::GIT_STATUS_UNREADABLE,
+                        GIT_STATUS_UNREADABLE,
                         "{label} marks unreadable input"
                     );
                 }
@@ -6567,10 +6569,7 @@ mod tests {
             super::apply_git_info(&mut app, project.path(), (checkout, repo));
             let (buffer, _) = super::render_tree_buffer(&mut app);
             let (_, y) = find_text_cell(&buffer, "demo").expect("project row");
-            assert!(
-                find_text_cell_in_row(&buffer, y, crate::constants::GIT_STATUS_UNREADABLE)
-                    .is_some()
-            );
+            assert!(find_text_cell_in_row(&buffer, y, GIT_STATUS_UNREADABLE).is_some());
         }
 
         #[test]
@@ -6730,9 +6729,7 @@ mod tests {
                         );
                     }
                     let (tree, _) = super::render_tree_buffer(&mut app);
-                    assert!(
-                        find_text_cell(&tree, crate::constants::GIT_STATUS_UNREADABLE).is_some()
-                    );
+                    assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
                 }
             }
         }
@@ -6786,7 +6783,7 @@ mod tests {
                 }
                 assert!(find_text_cell(&buffer, GitStatus::Clean.label()).is_none());
                 let (tree, _) = super::render_tree_buffer(&mut app);
-                assert!(find_text_cell(&tree, crate::constants::GIT_STATUS_UNREADABLE).is_some());
+                assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
             }
         }
 
@@ -6908,9 +6905,7 @@ mod tests {
                 find_text_cell(buffer, label).expect("project list row should render");
             let drawn_width = usize::from(column) + crate::tui::columns::display_width(label) - 1;
             assert_eq!(
-                app.project_list
-                    .cached_fit_widths
-                    .get(crate::tui::columns::COL_NAME),
+                app.project_list.cached_fit_widths.get(COL_NAME),
                 panes::name_width_with_gutter(drawn_width),
                 "fitted Name width must equal the drawn prefix and label plus its gutter"
             );
@@ -6934,7 +6929,7 @@ mod tests {
                 .expect("linked package worktree should render");
             let drawn_width = usize::from(column) + crate::tui::columns::display_width(linked_name);
             assert_eq!(
-                widths.get(crate::tui::columns::COL_NAME),
+                widths.get(COL_NAME),
                 panes::name_width_with_gutter(drawn_width),
                 "fitted Name width must reserve the drawn prefix and label plus its gutter"
             );
@@ -7093,10 +7088,7 @@ mod tests {
                 let (buffer, _) = super::render_tree_buffer(&mut app);
                 let (_, row) = find_text_cell(&buffer, linked_name)
                     .expect("broken worktree row should render");
-                assert!(
-                    find_text_cell_in_row(&buffer, row, crate::constants::GIT_STATUS_UNREADABLE)
-                        .is_none()
-                );
+                assert!(find_text_cell_in_row(&buffer, row, GIT_STATUS_UNREADABLE).is_none());
                 for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
                     let (column, y) =
                         find_text_cell(&buffer, text).expect("whole broken row text should render");

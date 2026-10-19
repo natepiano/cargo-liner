@@ -69,9 +69,9 @@ impl App {
                     sender: &sender,
                     fetch_context: fetch_context.as_ref(),
                     abs_path: &abs_path,
-                    // Startup crates.io fetches flow through the fetch
-                    // plan below, not the per-leaf detail task; only the
-                    // watcher probe path passes a name here.
+                    // `ProjectDetailRequest::name` stays `None` because
+                    // `dispatch_crates_io_fetches` consumes the `CratesIoFetchPlan` instead of a
+                    // per-leaf detail task; only the watcher probe supplies a crate name.
                     name: None,
                     repo_presence,
                 };

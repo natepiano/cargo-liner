@@ -524,6 +524,8 @@ pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
 pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// Allow the measured 0.62-second hierarchy command to finish inside the two-second scan budget.
+pub(crate) const HIERARCHY_FIRST_PUBLISH_BUDGET: Duration = Duration::from_secs(1);
 
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,
@@ -590,3 +592,21 @@ pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 /// Columns in the source-ordered account usage table.
 pub(crate) const ACCOUNTS_HEADERS: [&str; 5] =
     ["account", "role", "weekly left", "resets", "credits"];
+
+// reviewer discovery
+/// Review pool directory below the user's home.
+pub(crate) const REVIEW_POOL_DIRECTORY: &str = ".local/state/review-pool";
+/// One production's reviewer lease document.
+pub(crate) const REVIEW_POOL_FILE: &str = "pool.json";
+/// Claude print-mode arguments.
+pub(crate) const CLAUDE_PRINT_ARGUMENTS: [&str; 2] = ["--print", "-p"];
+/// Claude permission selector.
+pub(crate) const CLAUDE_PERMISSION_ARGUMENT: &str = "--permission-mode";
+/// Claude plan permission mode.
+pub(crate) const CLAUDE_PLAN_MODE: &str = "plan";
+/// Claude plan permission selector in assignment form.
+pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan";
+/// Extension of launcher identity documents.
+pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
+/// Markdown heading opening for a pooled review job.
+pub(crate) const REVIEW_JOB_HEADING: &str = "# ";

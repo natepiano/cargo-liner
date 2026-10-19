@@ -46,9 +46,9 @@ impl Shortcuts<App> for OutputPane {
         match action {
             OutputAction::Cancel => {
                 if ctx.panes.output.selection().is_visual() {
-                    // A visual selection is active: Esc collapses it back to
-                    // the cursor row rather than stopping a run or closing
-                    // the pane. Matches the title's "(y copy · Esc done)".
+                    // `ctx.panes.output.selection().is_visual()` makes `OutputAction::Cancel`
+                    // collapse the selection to the cursor row instead of stopping a run or
+                    // closing the pane, matching the title's "(y copy · Esc done)".
                     "done"
                 } else if ctx.inflight.owned_run().is_running() {
                     "stop"

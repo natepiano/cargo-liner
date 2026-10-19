@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 use std::mem::MaybeUninit;
 
+#[cfg(target_os = "macos")]
+use libc::RUSAGE_INFO_V0;
 use processkit::process_info;
 
 /// A process identity whose creation token distinguishes a recycled PID.
@@ -335,14 +337,15 @@ fn query_macos_monotonic_process_start(pid: u32) -> MacosMonotonicProcessStartOb
     let query_result = unsafe {
         libc::proc_pid_rusage(
             native_pid,
-            libc::RUSAGE_INFO_V0,
+            RUSAGE_INFO_V0,
             rusage_info.as_mut_ptr().cast::<libc::rusage_info_t>(),
         )
     };
     if query_result != 0 {
         return MacosMonotonicProcessStartObservation::QueryFailed;
     }
-    // SAFETY: a successful query initialized the V0 buffer.
+    // SAFETY: `query_result == 0` means `proc_pid_rusage` initialized the V0 buffer
+    // `rusage_info` before `assume_init`.
     let process_rusage = unsafe { rusage_info.assume_init() };
     MacosMonotonicProcessStartObservation::validate_successful_query(
         process_rusage.ri_proc_start_abstime,

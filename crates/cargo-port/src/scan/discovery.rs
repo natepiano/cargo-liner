@@ -115,7 +115,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         }
     }
 
-    // Crates.io version + downloads (network)
+    // `client.fetch_crates_io_info` returns version/download details over the
+    // network for `CratesIoVersion`; `emit_service_signal` forwards service observations.
     if let Some(name) = req.name {
         let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
             name: name.to_string(),
