@@ -4593,6 +4593,7 @@ mod tests {
         }
     }
     mod interaction {
+        use std::fmt::Write;
         use std::path::Path;
         use std::path::PathBuf;
         use std::process::Command;
@@ -6662,15 +6663,7 @@ mod tests {
                 assert!(output.status.success(), "{args:?}: {output:?}");
                 String::from_utf8(output.stdout).expect("git output")
             };
-            git(
-                directory,
-                &["init", "--bare", "-b", "main", bare.to_str().expect("path")],
-            );
-            let mut fixtures = Vec::new();
-            for (name, url) in [
-                ("p14sync", bare.to_str().expect("origin path")),
-                ("p14ci", "https://github.com/natepiano/p14ci-fixture.git"),
-            ] {
+            let probe = |name, url| {
                 let path = directory.join(name);
                 std::fs::create_dir(&path).expect("package directory");
                 std::fs::write(
@@ -6678,29 +6671,37 @@ mod tests {
                     "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
                 )
                 .expect("manifest");
-                crate::test_support::init_git_repo(&path);
-                git(&path, &["branch", "-M", "main"]);
-                git(&path, &["remote", "add", "origin", url]);
-                if name == "p14sync" {
-                    git(&path, &["push", "-u", "origin", "main"]);
-                    git(&path, &["remote", "set-head", "origin", "main"]);
-                } else {
-                    let sha = git(&path, &["rev-parse", "HEAD"]);
-                    std::fs::create_dir_all(path.join(".git/refs/remotes/origin"))
-                        .expect("remote refs");
-                    std::fs::write(path.join(".git/refs/remotes/origin/main"), sha)
-                        .expect("remote branch");
-                    git(&path, &["config", "branch.main.remote", "origin"]);
-                    git(&path, &["config", "branch.main.merge", "refs/heads/main"]);
-                }
+                crate::test_support::init_git_repo_on_branch(&path, "main");
+                let sha = git(&path, &["rev-parse", "HEAD"]);
+                std::fs::create_dir_all(path.join(".git/refs/remotes/origin"))
+                    .expect("remote refs");
+                std::fs::write(path.join(".git/refs/remotes/origin/main"), sha)
+                    .expect("remote branch");
+                let config_path = path.join(".git/config");
+                let mut config = std::fs::read_to_string(&config_path).expect("fixture config");
+                write!(
+                    config,
+                    "\n[remote \"origin\"]\nurl = {url}\nfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\nremote = origin\nmerge = refs/heads/main\n"
+                ).expect("append remote configuration");
+                std::fs::write(config_path, config).expect("remote config");
                 std::fs::write(path.join(".git/refs/remotes/origin/HEAD"), "garbage\n")
                     .expect("corrupt remote HEAD");
                 let repo = RepoInfo::get(&path).expect("repository probe");
                 let checkout =
                     CheckoutInfo::get(&path, &repo.local_main_branch).expect("checkout probe");
-                fixtures.push((name, path, checkout, repo));
-            }
-            fixtures
+                (name, path, checkout, repo)
+            };
+            // The URL cases have separate repositories; their real Git probes
+            // can run together without duplicating the fixture's critical path.
+            std::thread::scope(|scope| {
+                let local = scope.spawn(|| probe("p14sync", bare.to_str().expect("origin path")));
+                let github = scope
+                    .spawn(|| probe("p14ci", "https://github.com/natepiano/p14ci-fixture.git"));
+                vec![
+                    local.join().expect("local remote fixture"),
+                    github.join().expect("GitHub remote fixture"),
+                ]
+            })
         }
 
         #[test]
@@ -15234,7 +15235,6 @@ mod tests {
     mod worktrees {
         use std::collections::BTreeMap;
         use std::collections::HashMap;
-        use std::time::Duration;
 
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
@@ -16506,48 +16506,67 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_does_not_allocate_per_comparison() {
-            const DISCOVERY_PROJECTS: usize = 200;
-            const MAX_DISCOVERY_ELAPSED: Duration = std::time::Duration::from_millis(500);
+            const VISIBLE_PROJECTS: usize = 8;
+
+            fn allocations_for_discovery(app: &mut App, project_count: usize) -> usize {
+                app.project_list = ProjectList::default();
+                for index in 0..project_count {
+                    let path = format!("/abs/project_{index:04}");
+                    let mut package = make_package_raw(None, &path, None);
+                    // Keep the visible-row buffer the same size in both fixtures.
+                    // Dismissed roots still participate in insertion comparisons.
+                    if index >= VISIBLE_PROJECTS {
+                        package.visibility = Dismissed;
+                    }
+                    app.project_list
+                        .push(RootItem::Rust(RustProject::Package(package)));
+                }
+                let path = format!("/abs/project_{project_count:04}");
+                let newcomer =
+                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
+                // The new leaf sorts last, so insertion compares it with every root.
+                let (inserted, allocations) =
+                    test_support::count_allocations(|| app.handle_project_discovered(newcomer));
+                assert!(inserted);
+                assert_eq!(app.project_list.len(), project_count + 1);
+                assert_eq!(app.project_list[project_count].path(), &test_path(&path));
+                allocations
+            }
 
             let mut app = make_app(&[]);
-            let start = std::time::Instant::now();
-            for i in 0..DISCOVERY_PROJECTS {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.handle_project_discovered(item);
-            }
-            let elapsed = start.elapsed();
-            assert_eq!(app.project_list.len(), DISCOVERY_PROJECTS);
-            assert!(
-                elapsed < MAX_DISCOVERY_ELAPSED,
-                "discovery of {DISCOVERY_PROJECTS} projects took {elapsed:?}; expected less than {MAX_DISCOVERY_ELAPSED:?}"
+            let small = allocations_for_discovery(&mut app, VISIBLE_PROJECTS);
+            let large = allocations_for_discovery(&mut app, 200);
+            assert_eq!(
+                large, small,
+                "discovery allocations must not grow with comparisons"
             );
         }
 
         #[test]
         fn is_deleted_does_not_allocate_display_paths() {
-            let mut app = make_app(&[]);
-            for i in 0..200 {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.project_list.push(item);
+            let mut project_list = ProjectList::default();
+            for index in 0..200 {
+                let path = format!("/abs/project_{index}");
+                project_list.push(RootItem::Rust(RustProject::Package(make_package_raw(
+                    None, &path, None,
+                ))));
             }
-            let target = app.project_list[100].path().to_path_buf();
-            app.project_list
+            let target = project_list[199].path().to_path_buf();
+            let visible = project_list[0].path().to_path_buf();
+            let missing = Path::new("/abs/missing_project");
+            project_list
                 .at_path_mut(&target)
                 .expect("target project should exist")
                 .visibility = Deleted;
-            let start = std::time::Instant::now();
-            for _ in 0..1000 {
-                let _ = app.project_list.is_deleted(&target);
-            }
-            let elapsed = start.elapsed();
-            assert!(
-                elapsed.as_millis() < 100,
-                "1000 is_deleted calls took {elapsed:?} -- possible display_path allocation regression"
-            );
+            let (deleted, allocations) = test_support::count_allocations(|| {
+                (
+                    project_list.is_deleted(&target),
+                    project_list.is_deleted(&visible),
+                    project_list.is_deleted(missing),
+                )
+            });
+            assert_eq!(deleted, (true, false, false));
+            assert_eq!(allocations, 0, "deletion lookups must borrow paths");
         }
     }
 
