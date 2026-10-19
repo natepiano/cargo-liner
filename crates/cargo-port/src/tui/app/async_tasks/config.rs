@@ -144,7 +144,8 @@ impl App {
     }
 
     pub(super) fn show_keymap_diagnostics(&mut self, messages: &[String]) {
-        // Dismiss previous diagnostics toast if any.
+        // `dismiss_keymap_diagnostics` removes the prior persistent diagnostics toast, if any,
+        // before `show_keymap_diagnostics` installs its replacement.
         self.dismiss_keymap_diagnostics();
 
         let body = messages.join("\n");
@@ -306,8 +307,8 @@ impl App {
             transparent,
         );
 
-        // Dismiss the prior miss toast unconditionally; we'll push a
-        // fresh one below if this resolve also missed.
+        // `themes.take_miss_toast_id()` and `framework.toasts.dismiss` remove the prior miss toast
+        // unconditionally; `resolved.miss` creates a fresh one below if this resolve also missed.
         if let Some(id) = self.themes.take_miss_toast_id() {
             self.framework.toasts.dismiss(id);
         }
@@ -462,7 +463,9 @@ impl App {
         &mut self,
         cargo_port_config: &CargoPortConfig,
     ) {
-        // Runtime: respawn the lint runtime.
+        // `startup_services.spawn_lint_runtime` replaces `lint.runtime` through `set_runtime`, then
+        // `reapply_lint_pause_after_runtime_swap` and `sync_lint_runtime_projects` restore runtime
+        // policy and registrations.
         let lint_spawn = self
             .startup_services
             .spawn_lint_runtime(cargo_port_config, self.background.background_sender());
@@ -470,15 +473,16 @@ impl App {
         self.reapply_lint_pause_after_runtime_swap();
         self.sync_lint_runtime_projects();
 
-        // Scan state on App: clear lint state, refresh from
-        // disk, bump generation.
+        // `clear_all_lint_state` and `refresh_lint_runs_from_disk` reset project lint records;
+        // `sync_running_lint_toast` reconciles the toast and `scan.bump_generation` invalidates
+        // detail views.
         self.clear_all_lint_state();
         self.sync_running_lint_toast();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // Recompute fit widths — column schema differs with lint
-        // enabled / disabled.
+        // `project_list.reset_fit_widths` recomputes fit widths because `config.lint_enabled()`
+        // changes the available column schema.
         self.project_list
             .reset_fit_widths(self.config.lint_enabled());
 
@@ -502,17 +506,20 @@ mod tests {
 
     #[test]
     fn paints_backdrop_only_when_terminal_disagrees() {
-        // Theme matches the terminal → leave it transparent.
+        // `background_when_mismatched` returns `None` when both appearances are `Appearance::Dark`,
+        // retaining terminal transparency.
         assert_eq!(
             background_when_mismatched(Some(Appearance::Dark), Appearance::Dark, Color::Black),
             None
         );
-        // Forced dark theme on a light terminal → paint the dark backdrop.
+        // `background_when_mismatched` returns `Some(Color::Black)` for a resolved
+        // `Appearance::Dark` on a terminal `Appearance::Light`, painting the forced-dark backdrop.
         assert_eq!(
             background_when_mismatched(Some(Appearance::Light), Appearance::Dark, Color::Black),
             Some(Color::Black)
         );
-        // Terminal background unknown (probe failed) → never paint.
+        // `background_when_mismatched` returns `None` for an unknown terminal appearance after
+        // probe failure, leaving the terminal unpainted.
         assert_eq!(
             background_when_mismatched(None, Appearance::Dark, Color::Black),
             None

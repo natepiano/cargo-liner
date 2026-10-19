@@ -70,8 +70,8 @@ impl App {
             return;
         };
         let owner_abs = owner_path;
-        // `Waiting` reloads too: the deferred run's in-flight row gives way to
-        // the restored prior result.
+        // Include `LintStatus::Waiting` in `status_is_terminal`, so `reload_lint_history` replaces
+        // a deferred run's in-flight row with the restored prior result.
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_)
