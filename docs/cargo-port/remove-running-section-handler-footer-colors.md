@@ -322,33 +322,26 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 10
 
-#### Work Order
+#### As-built
 
-**Goal:** a hierarchy command that runs after the first answer never holds the scheduler thread or the publication lock, so remote probes and local publication continue while it runs.
-
-**Source:** phase 10 closure review, 2026-10-19 (finding F008, minor, and the open doc finding F007). The ledger closed phase 10 with both open; this phase repairs them next, before any other phase.
-
-**Constraints from prior phases:**
-- Phase 10 runs the local scan on its own worker thread, shares `LocalPublications` through `Arc<Mutex<_>>` (`census/schedule.rs`), and delivers the first hierarchy answer through `ScheduleEvent::HierarchyReady` with `finish_first(Duration::ZERO)`. The first-answer wait has a one-second budget (`HIERARCHY_FIRST_PUBLISH_BUDGET`, `constants.rs`).
-- Showrunner rules from phase 10 still hold: one refresh per new unnamed session id, then the id is recorded as checked, with no timer; no session is hidden by its name.
-
-**Spec:**
-1. No hierarchy command runs on the scheduler thread or under the publication lock, on any path: the catch-up in `finish_first` when `HierarchyReady` finds a session that arrived while the first answer was pending (`schedule.rs` ≈413), and every `cache.snapshot` call in `LocalPublications::discover_at` (new ids, cache expiry, retries). Each refresh is a typed pending state with its own receiver, delivered by `HierarchyReady`. Rows that wait on a refresh stay held only until its answer arrives. Showrunner ruling, 2026-10-19 (architect finding 1).
-2. `LocalAnswers.publications` (`schedule.rs` ≈207) gets a doc comment that states why publication ownership is shared.
-3. A refresh answer is accepted with refresh semantics, distinct from the initial answer: `HierarchyCache::first_outcome` resets `CheckedUnlinkedSessions`, but a refresh keeps the ids already checked. Name the request types for those two roles.
-4. A failed follow-up command releases the held rows with the retained links and the failure notice. A change of the hierarchy source, or a disabled source, while a follow-up is pending prevents its late answer from restoring old links.
-5. Tests, with the drawn rows read back as the phase 10 restart tests do: the follow-up command blocks; remote probes and local publication of other rows continue while it is blocked; the newcomer draws nested under its showrunner once the answer is released. Chained catch-up answers give an already-checked unnamed id no extra refresh (exact command counts). A failed follow-up releases rows with the notice; a source change during a pending follow-up keeps old links out.
+- Every hierarchy request runs on a worker thread through `start_request`. No command runs on the scheduler thread or under the `LocalPublications` lock. The initial request (`start_initial`) keeps the 1 s first-publish budget. `finish_pending(timeout)` collects the answer.
+- `prepare_snapshot` returns `HierarchyPreparation::{Request(HierarchyRequestKind), Ready(snapshot)}`. It reserves the checked ids before a refresh starts. A refresh keeps the ids that are already checked. The initial answer resets them.
+- `HierarchyRequestKind::Refresh(HierarchyRefreshScope)` fixes three sets when the refresh starts: the ids that wait (unchecked and not named by a retained edge), the ids already observed, and the retained links. `PendingHierarchyRequest::Refresh { answer, placement }` holds that scope until the answer arrives.
+- `PendingPlacementRows::refreshing` holds each waiting row together with its full linked component (row ids and retained edges). Sessions that are already checked continue to publish.
+- `deliver_held` publishes independent rows while either request kind is pending. A refresh publishes them as `ScanStage::Classified`.
+- Live on natedev: first local publish 440 ms.
 
 **Files:**
-- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/src/census/catch_up_hierarchy_tests.rs`, `crates/cargo-handler/src/census/fixtures/`
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/schedule.rs` — scheduler, pending requests, held rows, `deliver_held`
+- `crates/cargo-handler/src/census/hierarchy.rs` — cache, `prepare_snapshot`, `HierarchyRefreshScope`
+- `crates/cargo-handler/src/census/catch_up_hierarchy_tests.rs` — rendered catch-up tests
+- `crates/cargo-handler/src/census/fixtures/catch_up_{rows,links,unnamed_thread}.json` — catch-up process trees and answers
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — scheduler and cache production changes, test hooks, `mod` lines, the doc comment, CHANGELOG.
-- `test` — a new catch-up scheduler test module (`census/catch_up_hierarchy_tests.rs`) and its fixtures, including remote progress and rendered placement.
+**Gotchas:**
+- Build a refresh's scope before the request's ids are marked checked.
+- A refresh must not publish as `ScanStage::Completed`, because `Completed` reloads footer colors in `drain_census` (`terminal.rs`).
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. No visible change, so no `Change-Review:` line.
+**Ruled out:** A per-row hold — it splits a manager from its linked unit. Holding every unnamed id — it hides sessions that are already checked.
 
 ### Phase 12 — Accounts table: reset gradient and header sort  · status: todo
 
