@@ -359,9 +359,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Colors come from `SemanticTheme` (`theme.rs`): `success` and `error`. Interpolate in the theme's own color space; never write a color literal.
 
 **Spec:**
-1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. One ranked account draws `success`.
+1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. When only one distinct reset time exists (one account, or several accounts with the same time), every ranked account draws `success`; the interpolation never divides by zero.
 2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the shared `ColumnSort` direction toggle and tie rule), kept per summary in app state; no second sort path. `SummaryColumn` names agent columns and `ColumnSort::default()` always selects a column, so add an accounts column enum and a semantic state `SourceOrder | Sorted(<accounts column sort>)`, independent of the agent sort. Ordering: percentages and credits numeric, resets chronological, unavailable and unlimited values in a fixed place after real values, ties by source index. The default order stays the source order until a header is clicked. Architect finding 5, 2026-10-19.
-3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
+3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; three accounts with one shared reset time all draw success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`
@@ -401,27 +401,23 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** no cargo-port test takes 1 s or more on the Mac in a full package run.
-
-**Source:** the showrunner, 2026-10-19, from the phase 13 full run: 24 cargo-port tests took 1 s or more on the Mac (for example `unreadable_branch_evidence_hides_cached_runs_in_ci_pane` 1.639 s, `corrupt_remote_head_renders_unreadable_branch_and_marks_project` 1.529 s, `unreadable_remote_listing_renders_unreadable_ci_instead_of_missing_remote` 1.283 s).
-
-**Constraints from prior phases:**
-- No test may take a second, and no test may fail because of machine load. A cut that only holds on a quiet machine is not a fix.
-- Fix the shared cause, not each test: find what the slow tests have in common (fixture setup, real `git` processes, waits or sleeps, a shared runtime) before any edit.
-- Phase 13 added a test-only counting allocator (`count_allocations` in `crates/cargo-port/src/test_support.rs`, registered in `main.rs` under `cfg(test)`). Use it, not a clock, when a test must prove that a path does no work per item. The two discovery tests that build a 200-project list take about 0.39 s each; they are not among the 24.
-
-**Spec:**
-1. Measure: list every cargo-port test at 1 s or more in a full Mac run, and for each, where its time goes. Write the shared causes in the summary, with the measured cost of each.
-2. Fix each shared cause where it lives (fixture helpers, `test_support.rs`, the production code a test waits on), so that every test that uses it gets faster. A test keeps every assertion it has; only its cost changes.
-3. Exit: a full `verify.sh test cargo-port` on the Mac with no test at 1 s or more. State the slowest test and its time.
+- `http/client.rs` has `enum ProxyPolicy { System, #[cfg(test)] Disabled }` and `fn build_client(proxy_policy: ProxyPolicy) -> Result<Client, Error>`. Production uses `System`. The test client uses `Disabled` (`.no_proxy()`), so tests do no system proxy discovery. The child-process test `disabled_proxy_policy_ignores_proxy_environment` proves this.
+- `project/git/probes.rs` has `pub(super) fn run_independent_probes<A: Send, B: Send>(left, right) -> (A, B)`. It runs two git probes on `std::thread::scope`. `finish_probe` joins each thread and re-raises a probe panic with `resume_unwind`. Results and error order do not change.
+- `repo/info.rs` reads remote names and push URLs through `run_independent_probes`, and runs `branches::resolve_local_main_branch(&repo_root, &config)` on a scoped thread. The test `independent_git_probes_run_outside_the_callers_rayon_pool` pins the thread context.
+- The shared git fixture initializer in `test_support.rs` copies two seeded loose objects (`EMPTY_TREE_ID`, `INITIAL_COMMIT_ID`) from `test_support/git_seed/*.zlib` and starts no git subprocess for the empty repository. Fixtures with files still run `git add` and `git commit --amend`.
+- The full cargo-port suite takes 4.0 s. The slowest test takes 0.453 s.
 
 **Files:**
-- `crates/cargo-port/src/`
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/http/client.rs` — `ProxyPolicy` and `build_client`
+- `crates/cargo-port/src/project/git/probes.rs` — the scoped-thread probe pair
+- `crates/cargo-port/src/project/git/{mod.rs, branches.rs, checkout.rs, repo/info.rs}` — probe call sites, `resolve_local_main_branch(repo_root, &config)`
+- `crates/cargo-port/src/test_support.rs`, `crates/cargo-port/src/test_support/git_seed/{.gitattributes, README.md, two .zlib}` — the seeded empty repository
+- `crates/cargo-port/src/tui/app/mod.rs` — tests on the shared fixture
 
-**Workers:** 1 writer.
-- `impl` — measurement, the shared-cause fixes and CHANGELOG.
+**Gotchas:**
+- The parallel git probes use scoped threads, not `rayon::join`. Callers run inside `rayon::spawn` (crates.io refresh, enrichment) and `spawn_blocking` (watcher refresh). There, `rayon::join` waits on the same pool as blocking network requests.
+- `.gitattributes` marks `*.zlib binary`. Text diff tools and the banned-word scanner must skip these files. `README.md` holds the Python script that makes them again.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` clean on the Mac, with no test at 1 s or more.
+**Ruled out:** `rayon::join` for the probe pair — it shares the pool with blocking crates.io requests.
