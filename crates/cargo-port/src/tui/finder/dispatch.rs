@@ -109,7 +109,7 @@ pub(super) fn search_finder(
     (indices, total)
 }
 
-// ── Input handling ──────────────────────────────────────────────────────
+// `dispatch_finder_action` and `handle_finder_text_key` handle finder input.
 
 pub(in crate::tui) fn dispatch_finder_action(action: FinderAction, app: &mut App) {
     match action {
@@ -198,14 +198,15 @@ fn confirm_finder(app: &mut App) {
     app.overlays.finder_pane.viewport.home();
     app.set_focus(return_target);
 
-    // Navigate to the project
+    // `project_list.select_project_in_tree` selects `item.project_path` before any target or
+    // pull-request navigation.
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
     app.project_list
         .select_project_in_tree(item.project_path.as_path(), include_non_rust);
 
     match item.kind {
         FinderKind::Project => {
-            // Already navigated
+            // `FinderKind::Project` needs no further action after `select_project_in_tree`.
         },
         FinderKind::Binary | FinderKind::Example | FinderKind::Bench => {
             navigate_to_target(app, &item);
@@ -246,7 +247,8 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
     }
     app.set_focus(FocusedPane::App(AppPaneId::Targets));
 
-    // Find the matching target entry and land the cursor on it.
+    // Match `entry.name` and `entry.run_target_kind` against `target_name` and `target_kind`, then
+    // call `app.panes.targets.viewport.set_pos(i)`.
     let entries = panes::build_target_list_from_data(&targets_data);
     let target_kind = match item.kind {
         FinderKind::Binary => RunTargetKind::Binary,
@@ -295,7 +297,7 @@ fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
     }
 }
 
-// ── Rendering ───────────────────────────────────────────────────────────
+// `render_finder_pane_body` lays out `FinderPane`; `render_finder_results` paints its table.
 
 /// Body of `FinderPane::render`. Same pattern as the other
 /// Phase-4/5 absorptions: typed parameters through `ctx`.
@@ -308,10 +310,12 @@ pub(in crate::tui) fn render_finder_pane_body(
     pane: &mut FinderPane,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    // Use cached column widths (computed at index build time) for stable popup sizing
+    // Use `ctx.project_list.finder.col_widths`, cached during index construction, to keep popup
+    // sizing stable across query results.
     let col_widths = ctx.project_list.finder.col_widths;
 
-    // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
+    // Compute `natural_width` from `col_widths` plus four gaps and two borders; clamp `popup_width`
+    // to `frame.area().width`.
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
     let max_popup_width = frame.area().width;
     let popup_width = u16::try_from(natural_width)
@@ -343,7 +347,7 @@ pub(in crate::tui) fn render_finder_pane_body(
         return;
     }
 
-    // Search input line
+    // `input_line` shows the finder query in `input_area` beside its slash prompt.
     let input_area = Rect {
         x:      inner.x,
         y:      inner.y,
@@ -362,7 +366,7 @@ pub(in crate::tui) fn render_finder_pane_body(
     ]);
     frame.render_widget(ratatui::widgets::Paragraph::new(input_line), input_area);
 
-    // Separator
+    // Render the separator `Line` named `sep` into `sep_area` below the query.
     if inner.height < 4 {
         return;
     }
@@ -378,7 +382,7 @@ pub(in crate::tui) fn render_finder_pane_body(
     ));
     frame.render_widget(ratatui::widgets::Paragraph::new(sep), sep_area);
 
-    // Results table
+    // `results_area` reserves the remaining `inner` rectangle for `render_finder_results`.
     let results_area = Rect {
         x:      inner.x,
         y:      inner.y + 2,
@@ -426,7 +430,8 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
     let mut buf = Vec::new();
     let haystack = Utf32Str::new(text, &mut buf);
 
-    // Pre-build char-index → byte-range lookup
+    // Build `char_byte_ranges` to translate `Atom::indices` character offsets into byte slices of
+    // `text`.
     let char_byte_ranges: Vec<(usize, usize)> = text
         .char_indices()
         .map(|(pos, ch)| (pos, pos + ch.len_utf8()))
@@ -447,7 +452,8 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
         }
     }
 
-    // Merge runs of same-highlight state into spans
+    // Merge adjacent `text` characters with equal `highlight_mask` state into a single styled
+    // `Span`.
     let mut spans = Vec::new();
     let mut chars = text.char_indices().peekable();
     while let Some(&(start, _)) = chars.peek() {

@@ -1,4 +1,4 @@
-// src tui finder index
+// `index::build_finder_index` uses these finder table dimensions and header labels.
 /// Column width metrics cached at index build time so the popup renders at a
 /// stable size regardless of the current query results.
 pub(in crate::tui) const FINDER_COLUMN_COUNT: usize = 5;

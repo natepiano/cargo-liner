@@ -3,7 +3,7 @@ use super::config_reload::ConfigHandler;
 use super::config_reload::ConfigKey;
 use super::framework_keymap::AppPaneId;
 
-// src tui integration config_reload
+// `config_reload::collect_reload_actions` applies `CONFIG_HANDLERS` to changed `ConfigKey` values.
 pub(super) const CONFIG_HANDLERS: &[ConfigHandler] = &[
     ConfigHandler {
         key:  ConfigKey::CpuPollMs,
@@ -83,7 +83,8 @@ pub(super) const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
 ];
 
-// src tui integration framework_keymap
+// `framework_keymap` uses the tab-order constants and `KEYMAP_OVERLAY_PANE_ORDER` to order pane
+// navigation and help sections.
 pub(super) const CI_RUNS_TAB_ORDER: i16 = 7;
 pub(super) const CPU_TAB_ORDER: i16 = 4;
 pub(super) const GIT_TAB_ORDER: i16 = 2;
