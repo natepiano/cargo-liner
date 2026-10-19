@@ -264,8 +264,8 @@ struct CpuPanelLayout {
 
 impl CpuPanelLayout {
     fn new(inner: Rect, core_count: usize, cursor_pos: usize, prior_offset: usize) -> Self {
-        // The cores band is box 1; only its prior offset is meaningful, the
-        // pinned boxes never scroll.
+        // `cpu_region(core_count).place` applies `prior_offset` only to region 1, the core band;
+        // the pinned regions never scroll.
         let placed = cpu_region(core_count).place(inner, cursor_pos, &[0, prior_offset, 0, 0]);
         let head = placed[0].content;
         let head_row = |offset: u16| Rect {
@@ -680,9 +680,9 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
     if band_visible == 0 {
         return;
     }
-    // The cores band owns selectable rows [CPU_PINNED_HEAD_ROWS,
-    // CPU_PINNED_HEAD_ROWS + core_count); on one of those the pager anchors to
-    // that core, otherwise to the current scroll offset.
+    // `band_cursor` maps `cursor_pos` in [CPU_PINNED_HEAD_ROWS, CPU_PINNED_HEAD_ROWS +
+    // layout.core_count) to its core, otherwise falling back to `layout.band_offset` for the pager
+    // anchor.
     let band_cursor = cursor_pos
         .checked_sub(CPU_PINNED_HEAD_ROWS)
         .filter(|local| *local < layout.core_count)
@@ -716,14 +716,11 @@ mod tests {
     use crate::config::CpuConfig;
     use crate::tui::panes::constants::CPU_CONTENT_WIDTH;
 
-    // A 15-core CPU. The pinned head is 2 rows (Cores, Device), so the cores
-    // band is logical rows [2, 17) and the breakdown starts at logical 17. On
-    // macOS the fixed rows total 11 (2 head + 1+3 breakdown + 1+4 GPU), so a
-    // 12-row inner leaves the cores band 1 row and it must scroll; a 26-row
-    // inner fits all 15 cores. Other platforms have a single GPU row (8 fixed
-    // rows), so the same 12-row inner leaves a 4-row band and a 23-row inner
-    // fits every core. The cores band's resolved scroll offset is box index
-    // 1's `scroll_offset`.
+    // `cores_offset` places `cpu_region(15)`: its two pinned head rows make cores logical [2,17),
+    // with breakdown starting at 17. macOS has 11 fixed rows (2 head, 1+3 breakdown, 1+4 GPU), so
+    // inner heights 12 and 26 leave 1 and 15 core rows. Other platforms have 8 fixed rows and a
+    // single GPU row, so heights 12 and 23 leave 4 and 15 core rows. Region 1's `scroll_offset`
+    // reports the core-band offset.
     /// Build a core row with the default config, supplying the macOS-only
     /// cluster argument as unmapped so the bar assertions stay platform-neutral.
     fn bar_line_for_test(core_number: usize, number_width: usize, percent: u8) -> Line<'static> {
@@ -749,8 +746,8 @@ mod tests {
 
     #[test]
     fn band_offset_tracks_cursor_inside_the_band() {
-        // Cursor on logical row 14 (band-local 12) scrolls the band to its
-        // last full page.
+        // `cores_offset(12, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
+        // page.
         #[cfg(target_os = "macos")]
         assert_eq!(cores_offset(12, 14, 0), 12);
         #[cfg(not(target_os = "macos"))]
@@ -759,15 +756,15 @@ mod tests {
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_head_row() {
-        // Cursor on the Cores count row (logical 0) is outside the band, so the
-        // band stays where it was.
+        // `cores_offset(12, 0, 7)` retains prior offset 7 because logical cursor 0 is the pinned
+        // core-count row outside the band.
         assert_eq!(cores_offset(12, 0, 7), 7);
     }
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_tail_row() {
-        // Cursor on the first breakdown row (logical 17) holds the prior
-        // offset, clamped to the band's last page (15 cores - visible band).
+        // `cores_offset(12, 17, 20)` keeps the prior offset for breakdown cursor 17 outside the
+        // band, clamped to its last page (15 minus visible core rows).
         #[cfg(target_os = "macos")]
         assert_eq!(cores_offset(12, 17, 20), 14);
         #[cfg(not(target_os = "macos"))]
@@ -776,8 +773,7 @@ mod tests {
 
     #[test]
     fn band_offset_is_zero_when_every_core_fits() {
-        // Cores band taller than the core count: no scroll regardless of
-        // cursor.
+        // `cores_offset` returns zero when the core band fits all 15 cores, regardless of cursor.
         #[cfg(target_os = "macos")]
         assert_eq!(cores_offset(26, 14, 0), 0);
         #[cfg(not(target_os = "macos"))]
@@ -790,9 +786,8 @@ mod tests {
 
     #[test]
     fn core_number_renders_as_text_on_the_filled_bar() {
-        // 35% fills 4 of 10 cells, so a 2-wide number plus its margin sit
-        // entirely on the fill (as background shading) and the bar
-        // continues with one block glyph.
+        // `bar_line_for_test(12, 2, 35)` fills 4 of 10 cells: the two-column number and margin fit
+        // entirely on shaded fill, leaving one block glyph in `line.spans[3]`.
         let line = bar_line_for_test(12, 2, 35);
         assert_eq!(line.spans[1].content, "12 ");
         assert_eq!(line.spans[1].style.fg, Some(text_default()));
@@ -803,8 +798,8 @@ mod tests {
 
     #[test]
     fn core_number_splits_at_the_fill_boundary() {
-        // 10% fills 1 cell: the first digit is shaded by the fill, the
-        // second digit and the margin render on the row background.
+        // `bar_line_for_test(12, 2, 10)` fills one cell: `line.spans[1]` shades the first digit and
+        // `line.spans[2]` leaves the second digit and margin on the row background.
         let line = bar_line_for_test(12, 2, 10);
         assert_eq!(line.spans[1].content, "1");
         assert_eq!(line.spans[2].content, "2 ");
@@ -841,8 +836,8 @@ mod tests {
         };
         assert!(row(Some(tui_pane::CoreCluster::Performance)).starts_with(" 12 P "));
         assert!(row(Some(tui_pane::CoreCluster::Efficiency)).starts_with(" 12 E "));
-        // An unmapped core keeps the pre-marker number field, so the bar's
-        // block glyphs resume right after the number's one-cell margin.
+        // `row(None)` retains the number field without a cluster marker, so block glyphs resume
+        // immediately after its one-cell margin.
         assert!(row(None).starts_with(" 12 █"));
     }
 

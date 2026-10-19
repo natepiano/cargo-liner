@@ -219,8 +219,8 @@ fn render_git_column_inner(
         },
     );
     append_pull_requests_section(&mut accum, ctx, flat_len, current_section, inner_area.width);
-    // Remotes and Worktrees share one column layout so their Branch /
-    // Tracked / Sync columns line up vertically across both sections.
+    // `sync_col_layout` computes one `SyncColLayout` for `append_remotes_section` and
+    // `append_worktrees_section`, aligning their Branch, Tracked and Sync columns vertically.
     let sync_layout = sync_col_layout(
         ctx.data.remotes.listed(),
         &ctx.data.worktrees,
@@ -275,7 +275,8 @@ fn append_remotes_section(
         _ => None,
     };
     let title = section_title_text("Remotes", ctx.data.remotes.listed().len(), cursor);
-    // Blank spacer row + placeholder row for the rule overlay.
+    // Push a blank spacer into `accum.lines`, then record `SectionRule::inner_y` and reserve its
+    // placeholder line for the overlay.
     accum.lines.push(Line::from(Span::raw(String::new())));
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
@@ -904,10 +905,10 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     }
 }
 
-// ── Remotes table ────────────────────────────────────────────────────
+// `SyncColLayout` shares trailing column widths between Remotes and Worktrees.
 
-// The trailing Branch/Tracked/Sync trio is shared by both tables so the
-// columns line up vertically across the Remotes and Worktrees sections.
+// `SyncColLayout` supplies shared Branch/Tracked/Sync widths to `render_remote_header` and
+// `render_worktree_header`, aligning both sections vertically.
 
 /// Column layout shared between the Remotes and Worktrees tables. The
 /// leading columns differ (Remote/URL vs Name), but the trailing
@@ -983,8 +984,8 @@ fn sync_col_layout(
         .unwrap_or(0)
         .max(SYNC_HEADER.width());
 
-    // Fixed leading widths (everything before the flexible column), plus the
-    // 2-space gap that precedes the Branch column.
+    // `remote_fixed` and `worktree_fixed` include fixed leading widths before their flexible column
+    // and the two-space gap before Branch.
     let remote_fixed = 1 + REMOTE_ICON_COL + remote_name + 2 + 2;
     let worktree_fixed = 1 + 2;
 
@@ -1001,8 +1002,8 @@ fn sync_col_layout(
 
     SyncColLayout {
         remote_name,
-        // Clamp each flexible column to what `lead` leaves for it; the render
-        // path ellipsis-truncates the content to this width.
+        // Clamp `SyncColLayout::remote_url` and `worktree_name` to the space `lead` leaves;
+        // `fit_text` ellipsis-truncates their rendered content to those widths.
         remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
         worktree_name: worktree_name.min(lead.saturating_sub(worktree_fixed)),
         lead,
@@ -1067,8 +1068,8 @@ fn remote_row_line(
         .as_deref()
         .map(|annotation| format!("  {annotation}"))
         .unwrap_or_default();
-    // Width already spent by the leading space + icon spans, then the
-    // Remote/URL columns, before the Branch column begins.
+    // `consumed` totals the leading space, icon, Remote and URL widths before Branch; `pad` fills
+    // the remainder up to `layout.lead`.
     let consumed = 1 + REMOTE_ICON_COL + layout.remote_name + 2 + layout.remote_url;
     let pad = " ".repeat(layout.lead.saturating_sub(consumed));
     let url = fit_text(&row.display_url, layout.remote_url);
@@ -1108,7 +1109,8 @@ fn remote_row_line(
     ])
 }
 
-// ── Worktrees table ──────────────────────────────────────────────────
+// `render_worktree_header` and `worktree_row_line` render Worktrees with the shared
+// `SyncColLayout`.
 
 fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
     let style = column_header_style(focused);
@@ -1194,10 +1196,9 @@ pub(super) fn render_git_pane_body(
     }
 
     pane.viewport.set_len(total_rows);
-    // The lower blocks add header/spacing rows the addressable-row count omits,
-    // and a multi-line description renders taller than its single cursor row,
-    // so the rendered height is not the flat row count. Tell the viewport the
-    // rendered height so the scroll pager pages on what actually renders.
+    // `pane.viewport.set_content_height(git_content_height(...))` includes headers and spacing from
+    // `git_lower_content_height` plus the synced multiline description: these exceed the
+    // addressable `total_rows`, so the pager must use rendered height.
     pane.viewport.set_content_height(git_content_height(
         usize::from(ctx.synced_description_height.rows()),
         description_rows > 0,
@@ -1313,10 +1314,9 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
 
-    // Build the same DescriptionBlock that `sync_floor` consumed at the
-    // top of the frame and let it render — the block owns the wrapped
-    // rows so the rendered content can't drift from the height that
-    // fed the inter-pane sync.
+    // `DescriptionBlock::for_pane` rebuilds the wrapped rows used for the frame's synced
+    // description height; `block.render_with_selection` renders those owned rows so the content
+    // cannot drift from the height used for inter-pane synchronization.
     let block = DescriptionBlock::for_pane(
         ctx.description,
         ctx.outer_area,
@@ -1495,7 +1495,7 @@ mod tests {
         let text = line_text(&lines[0]);
         assert!(text.contains("Branch"));
         assert!(text.contains("Tracked"));
-        // Sync is the last, right-aligned column.
+        // `render_remote_header` places the right-aligned Sync column at the end of `text`.
         assert!(text.ends_with("Sync"));
     }
 
@@ -1612,7 +1612,8 @@ mod tests {
 
         let line = remote_row_line(&row, &layout, PaneSelectionState::Unselected);
 
-        // Right-aligned Sync is the last column, so no trailing pad follows.
+        // `remote_row_line` right-aligns the Sync column at the end of `line`, so no trailing
+        // padding follows.
         assert!(line_text(&line).ends_with("☑️"));
     }
 
@@ -1643,8 +1644,8 @@ mod tests {
 
         let remote_text = line_text(&remote_header[0]);
         let worktree_text = line_text(&worktree_header[0]);
-        // The shared trio starts at the same column in both tables. Leading
-        // text is ASCII, so byte index equals display column here.
+        // `remote_text` and `worktree_text` place Branch, Tracked and Sync at matching columns;
+        // their leading ASCII text makes byte indices equal display columns.
         assert_eq!(remote_text.find("Branch"), worktree_text.find("Branch"));
         assert_eq!(remote_text.find("Tracked"), worktree_text.find("Tracked"));
         assert!(remote_text.ends_with("Sync"));
@@ -1655,8 +1656,8 @@ mod tests {
     fn flex_columns_truncate_before_trio() {
         let remote = sample_remote();
         let wt = sample_worktree();
-        // Narrow enough to shrink the URL / Name columns while the
-        // Branch/Tracked/Sync trio stays at full width.
+        // `sync_col_layout(..., 67)` shrinks the URL and Name columns while preserving full Branch,
+        // Tracked and Sync widths.
         let layout = sync_col_layout(std::slice::from_ref(&remote), std::slice::from_ref(&wt), 67);
 
         let remote_line = line_text(&remote_row_line(
@@ -1670,10 +1671,10 @@ mod tests {
             PaneSelectionState::Unselected,
         ));
 
-        // The flexible columns ellipsize...
+        // `remote_line` and `worktree_line` ellipsis-truncate their flexible columns...
         assert!(remote_line.contains("..."));
         assert!(worktree_line.contains("..."));
-        // ...but the Sync delta survives at the right edge of both rows.
+        // ...while preserving the Sync delta at the right edge of both rows.
         assert!(remote_line.ends_with("☑️"));
         assert!(worktree_line.ends_with("☑️"));
     }
@@ -1681,8 +1682,8 @@ mod tests {
     #[test]
     fn flex_columns_stop_shrinking_at_floor() {
         let remote = sample_remote();
-        // Absurdly narrow: the URL can't squeeze past the floor, so the line
-        // is left to clip rather than shrinking the column to nothing.
+        // `sync_col_layout(..., 4)` keeps `layout.remote_url` at `MIN_FLEX_COL`; the line clips
+        // instead of shrinking the URL column to nothing.
         let layout = sync_col_layout(std::slice::from_ref(&remote), &[], 4);
 
         assert_eq!(layout.remote_url, MIN_FLEX_COL);
