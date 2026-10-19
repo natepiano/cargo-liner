@@ -126,7 +126,7 @@ pub(crate) fn execute(
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Sequence, &error.to_string()),
     };
-    output_envelope.with_alerts(reconciliation_report.alerts)
+    reconciliation_report.into_output(output_envelope)
 }
 
 fn execute_sequence(

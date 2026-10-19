@@ -574,7 +574,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Gotchas:** A ref `commit` after a durable append can fail: the call returns an error and the event stays in the journal. Each nonempty retry starts another update-ref process. Slow busy holds come from journal sync (340 ms) and ordered retention-ref writes (214/134 ms), not from sync alone.
 
-### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: todo
+### Phase 20 — A stale git lock never makes the cargo-berth board unavailable  · status: done
 
 #### Work Order
 
@@ -602,7 +602,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass, with both tests.
 
-### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: todo
+### Phase 21 — Merging a covered branch into its target never reports an incursion  · status: done
 
 #### Work Order
 
@@ -632,13 +632,13 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 #### Work Order
 
-**Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures), phase 20 and phase 21.
+**Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures), phase 20, phase 21 and phase 23 (its build-owned fixture caches change setup cost and fixture Git starts).
 
 **Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. The showrunner picks the route from measured estimates before it is built.
 
 **Spec:**
 1. Source: the showrunner, 2026-10-18, verbatim: "Then plan the Mac per-test goal as its own phase. Before you build it, send me a measured estimate for each route on the five slowest binaries (lifecycle, gate, board, parallel_phases, drift): (1) berth commands in-process in the tests, with shared fixture repositories; (2) gix for the status, worktree list and ref reads, which are the largest product Git origins. Give the starts and the Mac time for each route. Route 1 must still test the real CLI in at least one test for each command. I decide with those numbers."
-2. Baseline: phase 18's cold Mac run (1175 tests, 105.775 s, 389 tests at 1 s or more, SETUP 11.8 s, load 6 → 23) and its start count 46,393 (product Git 26,112; fixture Git 6,390; berth 3,174; hook berth 1,335). First take a cold full Mac timing and process-origin measurement of the composed phase 19+20+21 checkpoint, recording its commit, load, setup cost and complete test count. Compare it with the phase 18 and phase 19 results. Use this composed measurement as both prototypes' baseline, including retention-transaction starts that preparation retries discard.
+2. Baseline: phase 18's cold Mac run (1175 tests, 105.775 s, 389 tests at 1 s or more, SETUP 11.8 s, load 6 → 23) and its start count 46,393 (product Git 26,112; fixture Git 6,390; berth 3,174; hook berth 1,335). First take a cold full Mac timing and process-origin measurement of the composed phase 19+20+21+23 checkpoint, recording its commit, load, setup cost and complete test count. Compare it with the phase 18 and phase 19 results. Use this composed measurement as both prototypes' baseline, including retention-transaction starts that preparation retries discard.
 3. **Estimates.** For each route, on the five binaries, measure on a prototype of one representative test per binary and extrapolate: process starts by origin, and Mac time per test and per binary. Send the table to the showrunner, then wait for its pick. This step builds nothing beyond the prototypes.
 4. **Build the picked route.** Route 1 keeps a real-CLI test for each command. Route 2 keeps every ref and config form Git supports and the typed difference between missing and failed, falling back to Git where it cannot. Adding `gix` is the showrunner's pick under route 2.
 5. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
@@ -656,36 +656,27 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Constraints:** As phase 18: no thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. Mac runs: one `mac_test.py claim` per run, released when it ends. A natedev run at a load above 16 of 32 is untrusted.
 
-**Constraints from prior phases:** Phase 19 prepares observations outside the ledger lock and checks replay generation and session mappings under it. Keep the bounded re-preparation and its exhaustion error; never retry a durable append because a later ref action failed. A replaced journal source triggers a full replay, with no new user-facing state. The phase 19 invalidation and compaction tests stay authoritative. Phase 20 makes a stale-lock retention failure after the append a deferred outcome; phase 21 makes the covered-integration decision per holder.
+**Constraints from prior phases:** Phase 19 prepares observations outside the ledger lock and checks replay generation and session mappings under it. Keep the bounded re-preparation and its exhaustion error; never retry a durable append because a later ref action failed. A replaced journal source triggers a full replay, with no new user-facing state. The phase 19 invalidation and compaction tests stay authoritative. Phase 20 makes a stale-lock retention failure after the append a deferred outcome; phase 21 makes the covered-integration decision per holder. Phase 23 keeps every fixture cache that outlives a test process under `target/tmp/cargo-berth-templates` (`fixture_cache_root`), with one build owner, `prepare_fixture_build`; a shared fixture this phase adds goes there too, never under `TMPDIR`, and `tests/temporary_directories.rs` stays green.
 
 **Acceptance gate:** The estimate table went to the showrunner and its pick is recorded in this Work Order before the build. `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. The quiet paired lock-hold run shows every path under 100 ms at p95. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence.
 
 ### Phase 23 — A cargo-berth test run leaves no repository in `/tmp`  · status: done
 
-#### Work Order
+#### As-built
 
-**Depends on:** none. It runs beside phases 20 and 21 and checkpoints before phase 22. It has the number 23 because phase 22 was already planned and named to the showrunner.
-
-**Goal:** Each repository that a cargo-berth test makes is removed when its test ends, also when the test fails or panics. A full test run adds no directory to `/tmp`.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-19: "cargo-berth tests leak temp git repos into /tmp, and the leak is live now." It counted 423 `/tmp/.tmp*` directories made from 2026-10-18 12:00 until now, 13 to 72 each hour. They hold repositories with commits by "Berth Test" ("initial", "track berth configuration"), `.claude/` and `README.md`; some are empty. The start time agrees with the phase 18 and 19 fixture changes (`repository_template.rs`, `board/test_support.rs`, `restore_into`). Verbatim asks: "(1) find each leaking path — a TempDir kept with keep/into_path, moved into a killed child, or created outside the per-test TMPDIR … (2) fix it by construction, so a test repo cannot outlive its test; (3) add a red-first check that a test run leaves no new /tmp/.tmp* dir; (4) do not delete the leaked dirs."
-2. **Find each leaker.** Run the whole `cargo-berth` package, setup script included, with a per-test `TMPDIR`: a nextest target runner (`--config 'target.x86_64-unknown-linux-gnu.runner="<script>"'`, never the `CARGO_TARGET_*_RUNNER` variable) that gives each test its own `TMPDIR` under a scratch root, records the test name, and removes the directory when it is empty after the test. Each directory that stays names one leaking test. Also find directories made outside the per-test `TMPDIR` (a fixed `/tmp` path, `temp_dir()` read before the runner sets it, the setup script, a child process given a cleared environment, a template build). Record each leaker with its cause in the summary: file, test or fixture, and why the directory outlives it.
-3. **Fix by construction.** A fixture that makes a repository returns a value that owns it and removes it on drop, and nothing gives that ownership away: no `keep`, no `into_path`, no `mem::forget`, no path returned without its guard. A cache that must outlive a test process (a seed built once per test binary) lives under the build's target directory, never in `/tmp`. A test process that is killed and cannot unwind is out of scope: no measured leak came from one, and the realistic paths are return and panic (unit director, 2026-10-19, at review). Fix each leaker where it lives. Do not delete leaked directories, and do not add a cleanup sweep: a sweep hides a leak and does not stop it.
-4. **Red-first check.** Add a test that fails while a leak is present and passes after the fix. It runs a fixture path that leaked (or the fixture builder with the defect shape) under a private `TMPDIR` and asserts that no directory stays when the fixture is dropped, the panic path included. Show it red on the unfixed tree, in the summary. Then show a full package run under the per-test runner with no directory left.
-5. **Other leakers.** List the `/tmp/.tmp*` directories made since 2026-10-18 that are not cargo-berth's (about 70), grouped by what they hold and, where the contents name it, by the crate or tool that made them. Report them in the summary. Do not change those crates in this phase.
+- Seed repositories, prepared integration pairs, and copied test executables live in build-owned caches under `target/tmp/cargo-berth-templates`. `fixture_cache_root` returns that root. No static `TempDir` map remains.
+- `prepare_fixture_build` owns the lock, the completion check, the rebuild, and the publish for a seed or a pair. `InitializedMainSeed::prepare` uses it. Each seed and pair is built once per build, not once per test process.
+- A hard link from `target` to a `TMPDIR` on another filesystem fails with `EXDEV`. The executable cache copies the file on `CrossesDevices`.
+- `tests/temporary_directories.rs` runs each repository builder with a private `TMPDIR`. It proves that nothing remains after a normal return or a panic. Two more tests pin the cache root and the cross-filesystem copy.
 
 **Files:**
-- `crates/cargo-berth-test-support/src/`, `crates/cargo-berth-test-support/Cargo.toml` — the repository template, integration repository and the guards that own each repository
-- `crates/cargo-berth/src/board/test_support.rs`, `crates/cargo-berth/src/ledger/test_support.rs`, `crates/cargo-berth/src/git/fixture.rs` — unit-test fixtures
-- `crates/cargo-berth/tests/support/` — shared integration-test fixtures
-- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/answers.rs`, `crates/cargo-berth/tests/liveness.rs`, `crates/cargo-berth/tests/presentation.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/compaction.rs`, `crates/cargo-berth/tests/engine_instructions.rs`, `crates/cargo-berth/tests/front_end_corpus.rs`, `crates/cargo-berth/tests/recorded_templates.rs`, `crates/cargo-berth/tests/setup-recorded-templates.sh` — fixture call sites that leak
-- `crates/cargo-berth/tests/temporary_directories.rs` — new: the red-first check
+- `crates/cargo-berth-test-support/src/repository_template.rs` — `fixture_cache_root`
+- `crates/cargo-berth-test-support/src/integration_repository.rs` — `prepare_fixture_build`, `InitializedMainSeed::prepare`
+- `crates/cargo-berth-test-support/src/directory_snapshot.rs` — executable cache and the `CrossesDevices` copy fallback
+- `crates/cargo-berth/tests/temporary_directories.rs` — leak tests and cache tests
 
-**Workers:** 1 writer, `test`, owning every file above.
+**Binds later work:** A fixture cache that must outlive a test process lives under `target/tmp`, never under `TMPDIR`. `temporary_directories.rs` stays green. The cache lock and the complete marker are read only by test fixtures.
 
-**Constraints:** Runs beside phases 20 and 21: do not edit `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/src/drift/`, `crates/cargo-berth/src/git/refs.rs`, `crates/cargo-berth/src/git/error.rs`, `crates/cargo-berth/src/git/command.rs`, `crates/cargo-berth/src/git/mod.rs`, `crates/cargo-berth/src/gate/audit.rs`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/output.rs` or `crates/cargo-berth/src/verb/`. A leaker in one of those files is named to the unit director with its fix; it is not edited here. No deletion of any existing `/tmp` directory. No suite `TMPDIR` setting in nextest configuration: the per-test runner is a diagnostic tool only. No test may take a second. The process-start budget may only go down. Saved diagnostic output stays under a few GB; read each run and delete its output before the next.
+**Gotchas:** A test process killed without unwinding can still leave its own `TempDir`. This case is out of scope.
 
-**Constraints from prior phases:** Phase 18 templates are built once per build of a test binary under `CARGO_TARGET_TMPDIR` and copied into each test; keep that, and keep the `BeforeRun` setup-script build. Phase 19 prepares observations outside the ledger lock; the phase 19 invalidation and compaction tests stay authoritative.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The new check was red before the fix. A full package run under the per-test runner leaves no directory, and a count of `/tmp/.tmp*` before and after a full package run shows no new cargo-berth repository.
+**Ruled out:** cleanup of a killed test; a cleanup sweep or deletion of the existing leaked `/tmp` directories.

@@ -103,7 +103,9 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Release),
         };
+    let maintenance = reconciliation_report.retention_maintenance.clone();
     release_reconciled_request(release_request, reconciliation_report)
+        .with_retention_maintenance(&maintenance)
 }
 
 /// Complete a release request using the settlements and evidence just revalidated.
