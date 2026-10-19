@@ -210,75 +210,51 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 7 — First scan under two seconds  · status: done
 
-**Depends on:** Phase 6
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-handler's first full scan on natedev finishes in under 2 s in a release build, and no later scan re-reads a whole transcript.
-
-**Source:** the showrunner, 2026-10-17: "A 35 s first scan is a defect; fast comes before features. Target: first full scan under 2 s in release on natedev, measured before and after, with the cost named per source. Read only new transcript bytes, and never re-read whole files each scan."
-
-**Constraints from prior phases:**
-- Measured 2026-10-17 00:20 EDT on natedev: `~/.cargo/bin/cargo-handler probe` (release, installed 22:45) takes 35 s for a full scan; the debug build took 218 s. Roles no longer wait on this scan: hierarchy discovery runs at the `ScanStage::Classified` publication, before detail reads.
-- Detail reads live in `census/scan.rs`, and `census/tier.rs` (`RolloutRead`) reads Codex rollouts incrementally with a per-path offset. The Claude transcript read added for worker rows (job text, last `tool_use`) is the likely cost; transcripts reach 1 GB.
-- The full-file Claude activity read starts in `TranscriptRead::advance` (`census/activity.rs`); `census/transcript.rs` owns the historical-span and subagent-tail readers.
-- `RolloutRead` takes the session start, worktree, first task and service tier from records that can sit any distance before the tail, and `scan.rs` uses that first task to find rosters and detached gates. A tail alone cannot supply them.
-- Measure under the real config home. A scratch `XDG_CONFIG_HOME` makes the hierarchy command drop every showrunner-to-unit edge, so a capture that needs one prefixes `hierarchy_command` with `XDG_CONFIG_HOME=/home/natepiano/.config`.
-
-**Spec:**
-1. Measure before changing anything: time the release `cargo-handler probe` on natedev, and name the cost of each detail source (Claude transcripts, Codex rollouts, session files, process tree, accounts). Put the table in the summary.
-2. Every transcript and rollout source reads only bytes appended since its last read, kept as a typed per-path position. A first read takes only what the row needs (for example the transcript's tail, read backward to the last whole record), never the whole file. Head metadata (session start, worktree, first task, service tier) is read once per path, kept as a typed bootstrap state beside the position, and never re-read; historical lookups that need older records read only the span they need.
-3. The first full scan finishes in under 2 s in release on natedev, measured after the change with the same command, cost per source in the summary.
-4. Tests: a source read twice reads only the appended bytes the second time; a first read of a large file reads a bounded tail; rows read from a tail match the rows read from the whole file, including fixtures that put the head metadata records outside the tail; a byte count per read proves the bound.
+- Each transcript and rollout path keeps a `JsonlCursor { NeverRead, AfterHead { offset, buffered }, Following { offset, pending } }` in `census/transcript.rs`. After the first read, `JsonlCursor::read_until(path, initial_tail_bytes, decisive)` reads only appended bytes. A file shorter than its `Following` offset resets the cursor to `NeverRead`.
+- A cold read starts at `TRANSCRIPT_TAIL_START` (64 KiB) from the end. It grows backward through disjoint ranges by `TRANSCRIPT_TAIL_GROWTH` (4x) until `decisive` holds or the read reaches the head floor. There is no fixed tail limit.
+- `RolloutRead` (`census/tier.rs`) reads the head forward only until `HeadValues` is `Complete` (`session_meta` and the first task are known). The cursor is then `AfterHead`, and the head is not read again.
+- `ReadBatch { lines, bytes_read }` returns complete records and the real file traffic of one read. `record_kind` parses only the `type` header into `RecordKind { Claude, Codex, Session, Other }`.
+- Rows from these reads are equal to rows from a whole-file replay. The release first scan on natedev fell from 92 s to 0.40 s. Codex rollout bytes on a cold scan fell from 65.8 MB to 7.4 MB. Claude transcript bytes are 37.0 MB.
 
 **Files:**
-- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tier.rs`, `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/scan/`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/transcript.rs` — `JsonlCursor`, `ReadBatch`, `RecordKind`, `SubagentReads`
+- `crates/cargo-handler/src/census/tier.rs` — `RolloutRead` and `HeadValues` on the cursor
+- `crates/cargo-handler/src/census/activity.rs` — `TranscriptRead` on the cursor
+- `crates/cargo-handler/src/census/scan.rs` — keeps the readers from scan to scan
+- `crates/cargo-handler/src/constants.rs` — `TRANSCRIPT_TAIL_START`, `TRANSCRIPT_TAIL_GROWTH`
+- `crates/cargo-handler/src/census/incremental_read_tests.rs` — appended-bytes, bounded-tail and whole-replay equivalence tests
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the measurement, the incremental and tail reads, `mod` lines, CHANGELOG.
-- `test` — the append, bounded-tail and tail-equals-whole tests and their fixtures.
+**Binds later work:** census readers use `JsonlCursor` with `TranscriptRead`, `RolloutRead` and `SubagentReads`. No reader does a whole-file read. A cold tail grows backward until `decisive` holds, so `decisive` must require each value the row shows (for example, the latest task). A value between the head and the tail is read only if `decisive` requires it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean; the release `cargo-handler probe` on natedev finishes a full scan in under 2 s, before and after times in the summary. The checkpoint carries `Change-Review: cargo-handler shows every session's details within two seconds of starting | start cargo-handler on natedev and watch the worker rows fill in`.
+**Gotchas:** large-fixture tests must stay near 1 MiB. Larger fixtures took 2.9 s in the full suite.
 
-### Phase 8 — Reviewers and Claude dispatch seats  · status: todo
+**Ruled out:** a fixed 16 MiB tail limit and a fixed 4 MiB head limit, because both gave wrong rows.
 
-**Depends on:** Phase 7
+### Phase 8 — Reviewers and Claude dispatch seats  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a pool reviewer shows under its unit while it runs a review, an unnamed Claude plan-mode reviewer shows role `review`, and a dispatch to a Claude-backed seat folds into its row like a Codex seat does.
-
-**Source:** showrunner-approved add-ons, 2026-10-16. Runs after phase 7 (run order since 2026-10-17: 6 live roles, 7 first scan, 8 reviewers, 9 clicks); it uses phase 5's prompt-opening parser for reviewer jobs. Pool reviewers moved here from phase 4 on 2026-10-16 so all reviewer rows land together; the producer's reviewer edges (enh-showrunner checkpoint 3b2d8848 in `~/.claude`) must be merged and installed before the live check.
-
-**Constraints from prior phases:**
-- Phase 4's `AgentActivity` and `VerificationProgress` (`census/activity.rs`) own every drawn status word, its color and Status sorting; `RunRecord::Ignored` drops non-verify mesh_runs records at the read (implementation-only). Keep `FirstTaskPrompt{Unread,Recorded}`, `ThreadWorktree{Unrecorded,Recorded}`, `WorkerTask::RoleOnly`, the incremental transcript/rollout cursors (`TranscriptRead`, `RolloutRead::read_to`) and the role-only fallback; any new per-scan file read is incremental the same way.
-- `census/hierarchy.rs` (≈190) reads `production_tree.py --json` edges and drops reviewer `state`; its cache reuses edges for 30 s while the Claude session ids are unchanged, so a reviewer's busy state can go stale while its app-server thread lives.
-- Dispatch resolution carries a Codex `thread_id` and folds the launcher shell's children into the thread's children; it cannot name a Claude session row today. `ParsedDispatch` drops the launcher's `--phase` argument.
-- Phase 6 publishes the hierarchy as `HierarchySnapshot{edges, notice}` (`HierarchyNotice{Clear, Failed(HierarchyError), NoSessionMatched}`) inside `CensusUpdate::Local{rows, hierarchy, stage}` and `MachineState::Answered(rows, HierarchySnapshot)`, discovered at `ScanStage::Classified`, once per scan. The probe sends the legacy `hierarchy_failed` flag beside `hierarchy_notice` for older receivers. Reviewer metadata crossing that boundary keeps the existing note, retention, early-role and older-receiver tests passing.
-- Live checks run under the real config home: a scratch `XDG_CONFIG_HOME` drops every showrunner-to-unit and reviewer edge, so a capture prefixes `hierarchy_command` with `XDG_CONFIG_HOME=/home/natepiano/.config`.
-- The `["claude", "--print", "review"]` value in `census/tree.rs` is test fixture data, not a production rule. Today an unlisted Claude descendant can be treated as a carrier process rather than a visible row.
-
-**Spec:**
-1. A `claude --print --permission-mode plan` process with no other role mapping shows role `review`. Trace the real discovery-to-row path (`census/classify.rs`, `census/tree.rs`, `census/placement.rs`) and make such a process a visible row; the `review` fallback is typed and never overrides a role that already comes from the hierarchy edge or a roster. Phase 3 groups top-level `RoleLabel::Unlabeled` roots into the unassigned tile and draws their role `—` (`agent_cell.rs` ≈460, ≈758): a top-level reviewer with no production role still joins that tile, but draws `review`, so the fallback is its own `RoleLabel` variant (or carried beside it) that grouping places with unlabeled roots and the role cell names.
-2. The dispatch fold resolves a Claude-backed seat through `<session dir>/impl_worker_<slot>.json` (written by `implement.sh` ≈230 at the session dir root, with no phase field) (family `claude` → `worker_id` is the session id), joining the dispatch to that Claude session's row the way phase 1 joins a Codex seat through `mesh_roster.json`. Model the joined worker as a family-aware identity, e.g. `enum WorkerIdentity { CodexThread(ThreadId), ClaudeSession(SessionId) }`, so identical id text from the two families never matches. The file is rewritten at each launch and holds only `name`, `slot`, `family`, `model` and `worker_id`, with no pid; `implement.sh` records the launcher's claim pid separately in `impl_claim_<slot>.json`. Join the identity only when it belongs to the launch that the live claim describes: correlate the two files of the same launch explicitly (by their recorded launch, never by "some launcher for this slot is alive"), so an identity file left by an earlier launch joins nothing even while a new launcher holds the same slot. Showrunner ruling 2026-10-17: `implement.sh` keeps `impl_worker_<slot>.json` as the worker's durable identity across follow-ups, and its claims carry `pid`, `worker` and `turn_id` with no launch id, so no same-launch claim is made: a seat row matches its worker by worker name plus a live claim pid, inside cargo-handler only, and an identity whose claim pid is not live joins nothing. Read both files' real shapes from a live run (this session dir has `impl_worker_impl.json` and `impl_claim_impl.json`) before writing the parser, and record them in the summary.
-3. Pool reviewers (showrunner add-on, 2026-10-16, from the user's comparison: hana has 21 permanent pool reviewers and its tile shows none; revised the same day; the user: "i don't need to see them if they are not active - but if they are ruynning i expect to see them"). A pool reviewer is a leased Codex thread stored on disk, resumed for each review; `busy_pid` is the process running that review. cargo-handler shows running agents, so a stored thread is not a row. Source: `~/.local/state/review-pool/<production slug>/pool.json`, `reviewers.<name>` with `type`, `thread_id`, `lease.unit`, `busy_pid`; edges run from the leased unit to the reviewer with role `review`, emitted by the producer (`production_tree.py`, natedev's ruling 2026-10-16; enh-showrunner checkpoint 3b2d8848). `production_tree.py --json` (schema 1) adds an edge per leased reviewer: `manager` (director's Claude session id), `member` = `thread_id` (reviewer thread), `role` `review`, `unit` (lease unit), `state` `busy` while busy_pid runs else `idle`, `type` `code`|`design`; templates, unleased reviewers and directors on another machine are left out. Draw only `state: busy` edges. The user, later the same day: "i don't need to see pool reviewers that are idle … we should just only be showing active ssessions and certainly flag any that happens to have a reviewr role AS a reviewer when it's reviewing": the tile adds no row for a reviewer that is not running, and a running session that holds a reviewer lease draws role `review`, whichever row it would otherwise have. A unit can hold several reviewers (the pool forks one when all are busy); each busy one is its own row.
-   - Liveness: carry each reviewer edge's `state` through `census/hierarchy.rs` as a type, and never reuse a cached reviewer state past the pool's own change: key the reviewer part of the cache on `pool.json`'s modification time (busy_pid is written and cleared there), so busy → idle → busy shows with an unchanged director and a surviving app server. `production_tree.py` derives `state` from whether `busy_pid` runs now, so a reviewer process can exit with no pool-file rewrite: re-check each busy reviewer's `busy_pid` liveness every scan as well, including while phase 6 retains hierarchy links after a failed discovery.
-   - Name and job: the reviewer name is the `pool.json` `reviewers.<name>` whose `thread_id` matches the edge's `member`; the job is the current review's task (the rollout's latest task prompt through phase 5's parser), not `FirstTaskPrompt`, so a reviewer taking a second job drops the first job's label.
-   - The current review's task is read incrementally: `RolloutRead` (`census/tier.rs`) keeps only `FirstTaskPrompt` today, and `JobText`/`JobSource` are private to `worker_dispatch/mod.rs`. Add a semantic current-review prompt state beside the preserved first prompt, read by the same cursor, and expose the parser to it inside the crate.
-   - A reviewer draws only while `busy_pid` names a live process: a `review` row under its unit, named `<reviewer> · <job>` the way phase 4 names worker rows, with its `AgentActivity` status word. A leased reviewer that is not busy, and every `templates` entry, draws nothing.
-   - Its job comes from the same typed prompt opening phase 5 built (`JobText::parse` in `census/worker_dispatch/mod.rs`). Pool review prompts open `You are a pooled reviewer for <unit>, phase N…`, which phase 5 parses as a plain first line, so that sentence would draw as the job. Recognize this opening as a role preamble in the same parser (showrunner, 2026-10-16), naming the job from the prompt's own job text, or role-only when it has none; no per-caller special case. A test reads the drawn row back for a real pool-review opening taken from this run's prompts.
-4. Tests, with fixture files: a reviewer started with `--print --permission-mode plan` reaches the drawn Role column as `review` (rendered through grouped tiles, `agent_cell::group_tiles`, not only `cell_order_placed`, including a top-level reviewer inside the unassigned tile); a hierarchy-given role still wins; a Claude-seat dispatch folds into its session's row; an identity file whose claim pid is not live joins nothing; a busy reviewer whose process exits with no pool-file rewrite stops drawing on the next scan; a Codex thread id and a Claude session id with the same text stay apart; from a fixture `production_tree.py --json` payload, a busy reviewer edge drawn as a `review` row under its unit, and an idle edge drawn as nothing; busy → idle → busy with an unchanged director; one reviewer taking two jobs in turn, drawn with the second job.
+- A `claude --print` or `-p --permission-mode plan` process with no other role mapping classifies as role `review` (`WorkerRoleInput::ReviewerLease`). A top-level reviewer joins the unassigned tile and draws `review`. A role from a hierarchy edge or a roster wins over this fallback.
+- A dispatch to a Claude-backed seat folds into that seat's Claude session row. `impl_worker_<slot>.json` holds the durable identity (`name`, `slot`, `family`, `model`, `worker_id`); a join also needs a live claim pid in `impl_claim_<slot>.json`. `SeatFamily` keeps a Codex thread id and a Claude session id with the same text apart. `ParsedDispatch` carries the pass role, and the slot token is the fallback.
+- A busy pool reviewer draws as a `review` row under its leased unit, named `<reviewer> · <job>`, with the current review's job. Typed pool documents (`ReviewerPoolDocument`, `PoolReviewer`, `PoolTemplate`, `PoolLease`, `ReviewerProcessClaim`, `ReviewAllocation`) read `pool.json`. The reviewer cache is keyed on the `pool.json` modification time, and each scan checks that `busy_pid` is live. Edge state crosses as `HierarchyWireReviewerState` into `ReviewerState`. Idle reviewers and templates draw nothing.
+- `RolloutRead` holds `RolloutStart{Recorded(u64), Unavailable}` and `CurrentReviewPrompt` beside `FirstTaskPrompt`. Its backward `decisive` predicate also requires the latest task prompt. A row is role-only until a prompt recorded after the busy lease began arrives.
+- The probe stays at schema 3: `ChildRow` becomes `ProbeChildRow` at the wire, with the reviewer task in a defaulted `reviewer_task` field beside the legacy `worker_task`. `HierarchyAnswer::Failed{reason, reviewers}` keeps reviewer outcomes when discovery fails. `ReviewerPoolLocation{MissingHome, Directory}`: `MissingHome` only clears the cache.
 
 **Files:**
-- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/census/tier.rs`
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/render.rs`
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/hierarchy.rs` — pool reading, reviewer edges, reviewer liveness
+- `crates/cargo-handler/src/census/classify.rs` — plan-mode reviewer role fallback
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — Claude seat identity (`SeatFamily`), reviewer job parse
+- `crates/cargo-handler/src/census/tier.rs` — `RolloutRead` start and current-review prompt
+- `crates/cargo-handler/src/census/probe.rs` — `ProbeChildRow` wire rows
+- `reviewer_tests.rs`, `claude_seat_tests.rs` and fixtures — reviewer rows, liveness, Claude seat joins
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — production files, migrations of existing tests outside the tester's files, `mod` lines.
-- `test` — `worker_dispatch/tests.rs`, the incremental two-job reviewer rendering regression, and new reviewer hierarchy/liveness, Claude-identity and grouped-rendering test modules with their fixtures.
+**Binds later work:** A helper-session mark must win over the `claude --print`/`-p --permission-mode plan` review fallback in `census/classify.rs`. Child rows cross to remote receivers through `ProbeChildRow` at schema 3; new data goes in defaulted extension fields such as `reviewer_task`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live tile shows a plan-mode reviewer as `review` and a busy pool reviewer under its unit. The checkpoint carries `Change-Review: Claude plan-mode reviewers show role review; dispatches to Claude seats fold into their row | open a tile running a Claude reviewer or a Claude-seat dispatch` and `Change-Review: a pool reviewer shows under its unit as a review row while it runs a review, and not otherwise | look under a hana unit while its code review runs`.
+**Gotchas:** A pooled reviewer's job text comes from the prompt's `this is phase N of <plan>, "<title>"` sentence or a `# ` heading. Without either, it draws no job, so closure prompts must carry that sentence.
+
+**Ruled out:** Guarding the `pool.json` lease reread race — stale for at most one scan.
 
 ### Phase 9 — Accurate clicks during motion  · status: todo
 
@@ -290,7 +266,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Goal:** a click hits the cell, and the header column, that is drawn under the pointer, including while tiles are moving after an add, a remove or `+`.
 
-**Source:** the user (via the showrunner), 2026-10-16: "can cargo handler make mouse clicks accurate…". The repro sent to the showrunner found that misses happen only during add/remove/`+` motion. `cell_at` answers against the destination layout (`tui_pane/src/tiles/grid.rs:2763`) while drawing interpolates (`drawing_at`, `grid.rs` ≈2880), and there is a gap between tick, advance and draw. Showrunner ruling: `draw_tile_grid` records the last-drawn piece rects and their cell, and `cell_at` answers from the last drawn frame, which also covers the tick gap. Keep `cell_at`'s public signature. Run cargo-tile's suites. Live-check a click during motion in both apps. Since phase 6, `summary::machine_height` counts hierarchy notice lines, so a first-machine notice appearing or clearing moves later machines' clickable headers; add a two-machine draw → notice change → click regression.
+**Source:** the user (via the showrunner), 2026-10-16: "can cargo handler make mouse clicks accurate…". The repro sent to the showrunner found that misses happen only during add/remove/`+` motion. `cell_at` answers against the destination layout (`tui_pane/src/tiles/grid.rs:2894`) while drawing interpolates (`drawing_at`, `grid.rs` ≈3019), and there is a gap between tick, advance and draw. Showrunner ruling: `draw_tile_grid` records the last-drawn piece rects and their cell, and `cell_at` answers from the last drawn frame, which also covers the tick gap. Keep `cell_at`'s public signature. Run cargo-tile's suites. Live-check a click during motion in both apps. Since phase 6, `summary::machine_height` counts hierarchy notice lines, so a first-machine notice appearing or clearing moves later machines' clickable headers; add a two-machine draw → notice change → click regression.
 
 **Constraints from prior phases:**
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
@@ -298,14 +274,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 2's cell-local click hook (`cell_content_at`, `tiles/host.rs`) resolves content from current slots and the destination layout through a crate-private settled-geometry helper in `tiles/grid.rs`. This phase moves it to the last-drawn record too, so the header hit-test matches what is on screen.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
-- Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render.rs` ≈229 `Cells::tile`/`header_spans`, `agent_cell.rs` ≈1384).
-- Before writing the Work Order's prompt, refresh the `grid.rs`/`draw.rs` line refs above against main after tile-fixes phase 20 merges.
+- Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render.rs` ≈243 `Cells::tile`, ≈248 `header_spans`, `agent_cell.rs` ≈1605).
 
 **Spec:**
 1. `draw_tile_grid` (`tiles/draw.rs`) records, for each drawn piece, the cell's stable content identity, its drawn rect, and its visible (clipped) hit region, in the grid's own state, replacing the previous frame's record. Where pieces overlap, the one drawn on top wins. Model the record's state as a type that tells "never drawn" apart from "a frame drew no interactive content" (e.g. `enum DrawnHits { NotDrawn, Drawn(Vec<DrawnPiece>) }`), never a bare `Option`.
 2. `TileGrid::cell_at(&self, Position) -> Option<usize>` keeps its public signature, as the compatibility boundary, and answers from that record. Before the first draw it answers from the layout as today.
 3. Phase 2's content lookup in `tiles/host.rs` uses the same record, and resolves the content by the identity recorded at draw time, not by the slot's current occupant.
-4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. `tiles/host.rs` ≈137 calls `focus_cell(index)` on a current slot: resolve the drawn identity to its current slot at the public `Option<usize>` boundary, with a retired-content outcome inside, so a click on a vanished drawn tile never focuses its replacement. If `Cells::tile` (`render.rs` ≈224) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
+4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. `tiles/host.rs` ≈138 calls `focus_cell(index)` on a current slot: resolve the drawn identity to its current slot at the public `Option<usize>` boundary, with a retired-content outcome inside, so a click on a vanished drawn tile never focuses its replacement. If `Cells::tile` (`render.rs` ≈243) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
 5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort and focuses no replacement; an accounts reading that changes the summary's demand between draw and click still selects the drawn agents column, and an accounts-header click stays inert. cargo-tile's suites pass.
 
 **Files:**
@@ -318,3 +293,67 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `app` — cargo-handler: drawn header spans kept with the frame, `render::cell_clicked`, their tests, cargo-handler CHANGELOG.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean. A live click during motion lands on the drawn cell in cargo-handler and in cargo-tile. The checkpoint carries `Change-Review: clicks land on the tile drawn under the pointer, even while tiles move | add or remove a tile and click a moving one at once, in cargo-handler and cargo-tile`.
+
+### Phase 10 — Helper sessions stay out of the top-level table  · status: todo
+
+**Depends on:** Phase 8
+
+#### Work Order
+
+**Goal:** a short-lived helper session, such as the `shutdown` session that a unit director starts, never shows as a row in the summary's top-level agents table or as its own top-level tile.
+
+**Source:** the user, 2026-10-18 (screenshot): the summary's top-level agents table shows the `shutdown` session (claude2, cwd `~`, status thinking, age seconds) while it runs, then it goes away. "it's a unit director so it shouldn't happen - it's not a showrunner or a top level agent". Showrunner approved as a follow-up phase.
+
+**Constraints from prior phases:**
+- Phase 3 groups top-level `RoleLabel::Unlabeled` roots into the unassigned tile; phase 8 adds the typed `review` fallback beside it. A helper is not an unlabeled root: it gets its own typed classification, never a string match at draw time.
+- The top-level count ("N top-level agents", phase 1) counts only top-level rows, so it drops the helper too.
+- Keep the incremental readers of phase 7 (`JsonlCursor`); classification must not add a whole-file read.
+- Phase 8's `census/classify.rs` gives a `claude --print` / `-p` process with `--permission-mode plan` the role `review`, also with no hierarchy edge. If the helper starts with those flags, its helper mark must win over that fallback, or it draws as a top-level `review` row.
+- Phase 8 sends child rows to remote receivers through `ProbeChildRow` (`census/probe.rs`) at schema 3, with new data in defaulted extension fields such as `reviewer_task`. A helper variant that crosses the wire follows the same rule: no schema bump, older receivers still parse.
+
+**Spec:**
+1. Find from a live run how the `shutdown` session's Claude process starts (`~/.claude/scripts/shutdown/`, `~/.claude/commands/shutdown.md`) and which durable mark tells it is a helper of the session that asked for it: its argv, its parent process, its environment or its session name. Record the mark in the summary. Prefer a mark the launcher sets on purpose; if none exists, report it to the unit director before you parse a weaker one.
+2. Classify a helper session by that mark as a typed variant in `census/classify.rs` / `census/placement.rs`. A helper whose requesting session is visible draws as that session's child row; a helper with no visible requester draws nothing. It never counts as a top-level agent.
+3. Tests, with fixture process trees: a helper started by a unit director draws under that director, not in the top-level table; the top-level count excludes it; a helper whose requester is gone draws nothing; an ordinary Claude session in `~` with no helper mark still draws as top-level.
+
+**Files:**
+- `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`
+- `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the helper mark, its classification and placement, CHANGELOG.
+- `test` — the fixture process trees and the summary/tile rendering tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary taken while a `shutdown` session runs shows no top-level row for it. The checkpoint carries `Change-Review: helper sessions such as shutdown stay out of the top-level agents table | run a shutdown from a unit director and watch the summary`.
+
+### Phase 11 — Accounts table: reset gradient and header sort  · status: todo
+
+**Depends on:** Phase 9
+
+#### Work Order
+
+**Goal:** the summary's accounts table colors each reset time from green (nearest) to red (furthest), and a click on an accounts-table header sorts the table by that column.
+
+**Source:** the user, 2026-10-18: "i want the resets in the summary to show a green to red gradient - green for the ones that are nearest and red for the ones that are furthest away - also the columns in the accounts table in the summary should also sort when i click on them". Showrunner ruling 2026-10-18: interpolate between the theme's success and error colors by the rank of the reset time; nearest is success, furthest is error; equal reset times get the same color; one account uses success. Header sort reuses the phase 2 agent-table sort code, not a second sort path.
+
+**Constraints from prior phases:**
+- Phase 5 built the accounts table (`summary/accounts.rs`; `resets_at` ≈173, rounded by `summary/constants.rs`). An account with no reset time keeps its present text and takes no gradient color.
+- Phase 2's sort lives in `crates/cargo-handler/src/sort.rs` (`TreeSort`) and `summary` (`SummarySort`, `summary/sort_tests.rs`); a header click reaches it through `render::cell_clicked`. Phase 9 makes a click resolve against the header spans that were drawn, and its regression says "an accounts-header click stays inert": this phase replaces that inert rule with a sort, through the same drawn-span mapping.
+- Colors come from `SemanticTheme` (`theme.rs`): `success` and `error`. Interpolate in the theme's own color space; never write a color literal.
+
+**Spec:**
+1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. One ranked account draws `success`.
+2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the same key type, direction toggle and tie rule), kept per summary in app state; no second sort path. The default order stays the source order until a header is clicked.
+3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`
+- `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/app.rs`
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — gradient, sort wiring, app state, CHANGELOG.
+- `test` — accounts gradient and header-sort rendering tests in `summary/`.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary shows the gradient and sorts on a header click. The checkpoint carries `Change-Review: account resets shade from green (soonest) to red (latest), and accounts headers sort on click | open the summary and click each accounts header`.

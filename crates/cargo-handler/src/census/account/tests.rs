@@ -25,6 +25,7 @@ use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
+use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::classify::ProcessEntry;
@@ -325,6 +326,7 @@ fn account_column_counts_the_same_label_on_two_machines_once() {
 fn agent_row(account: Account) -> AgentRow {
     AgentRow {
         agent: Agent::Codex,
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Standard,
         account,

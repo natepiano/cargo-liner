@@ -1,6 +1,7 @@
 //! Literal worker launcher commands and their roster-backed thread identities.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fs;
 use std::iter::Peekable;
 use std::path::Path;
@@ -12,15 +13,24 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::de::IgnoredAny;
+use serde::ser::SerializeStruct;
 
 use super::HierarchyRole;
+use super::RoleFallback;
+use super::classify::ProcessEntry;
 use super::tier::ThreadWorktree;
+use crate::constants::REVIEW_JOB_HEADING;
 use crate::constants::SESSION_ROOTS;
 use crate::constants::UUID_TEXT_LENGTH;
+use crate::constants::WORKER_DOCUMENT_EXTENSION;
 use crate::constants::WORKER_LABEL;
 
 /// The roster filename inside a dispatch's session directory.
 const ROSTER_FILE: &str = "mesh_roster.json";
+const WORKER_FILE_PREFIX: &str = "impl_worker_";
+const CLAIM_FILE_PREFIX: &str = "impl_claim_";
+const POOL_PREAMBLE: &str = "You are a pooled reviewer for ";
+const POOL_PHASE_DESCRIPTION: &str = "this is phase ";
 /// The launcher interpreter, including when it is given as an absolute path.
 const LAUNCHER_INTERPRETER: &str = "bash";
 /// The launcher path suffix shared by literal commands and process argv.
@@ -89,6 +99,8 @@ impl DispatchRole {
 /// The available authority for a Codex worker's role.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum WorkerRoleInput<'a> {
+    /// A live pool lease identifies the current review.
+    ReviewerLease,
     /// A management edge is authoritative over any dispatch seat.
     Hierarchy(HierarchyRole),
     /// An unmanaged worker may carry a resolved dispatch seat.
@@ -98,6 +110,8 @@ pub(crate) enum WorkerRoleInput<'a> {
 /// The authoritative source of one visible Codex worker's responsibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerRoleSource {
+    /// The source validated a busy reviewer lease.
+    ReviewerLease,
     /// A management edge outranks every seat source.
     Hierarchy(HierarchyRole),
     /// The session roster or its seat token resolved the dispatch's role.
@@ -112,6 +126,7 @@ impl WorkerRoleSource {
     /// Resolve hierarchy first, then the session's dispatch role and seat token.
     pub(crate) fn resolve(input: WorkerRoleInput<'_>) -> Self {
         match input {
+            WorkerRoleInput::ReviewerLease => Self::ReviewerLease,
             WorkerRoleInput::Hierarchy(role) => Self::Hierarchy(role),
             WorkerRoleInput::Dispatch(DispatchLabel::Worker(dispatch)) => match dispatch.role {
                 DispatchRole::Worker(role) => Self::Dispatch(role),
@@ -129,6 +144,7 @@ impl WorkerRoleSource {
     /// Every Codex row is a worker, including one with no recorded responsibility.
     pub(crate) const fn text(self) -> &'static str {
         match self {
+            Self::ReviewerLease => WorkerRole::Review.text(),
             Self::Hierarchy(role) => role.text(),
             Self::SeatToken(role) | Self::Dispatch(role) => role.text(),
             Self::Unroled => WORKER_LABEL,
@@ -152,20 +168,47 @@ impl WorkerDispatch {
     pub(super) const fn is_plain(&self) -> bool { matches!(self, Self::Plain) }
 }
 
-/// A worker seat with the thread identity needed to join its shell and row.
+/// The agent family is part of the worker identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerIdentity {
+    CodexThread(String),
+    ClaudeSession(String),
+}
+
+/// A worker seat with the thread identity needed to join its shell and row.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(from = "ProbedWorkerDispatch")]
 pub(crate) struct ResolvedWorkerDispatch {
     /// The complete seat key in the mesh roster.
-    seat:                 String,
+    seat:                String,
     /// The recorded thread belonging to that seat.
-    pub(super) thread_id: String,
+    pub(super) identity: WorkerIdentity,
     /// The extracted responsibility, or a preamble with no usable job.
-    job:                  JobText,
+    job:                 JobText,
     /// The seat with its worktree directory prefix removed.
-    short_seat:           String,
+    short_seat:          String,
     /// The roster responsibility, falling back to the short seat's role stem.
-    role:                 DispatchRole,
+    role:                DispatchRole,
+}
+
+impl Serialize for ResolvedWorkerDispatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut record = serializer.serialize_struct("ResolvedWorkerDispatch", 6)?;
+        record.serialize_field("seat", &self.seat)?;
+        record.serialize_field(
+            "thread_id",
+            match &self.identity {
+                WorkerIdentity::CodexThread(id) => id.as_str(),
+                WorkerIdentity::ClaudeSession(_) => "",
+            },
+        )?;
+        record.serialize_field("identity", &self.identity)?;
+        record.serialize_field("job", &self.job)?;
+        record.serialize_field("short_seat", &self.short_seat)?;
+        record.serialize_field("role", &self.role)?;
+        record.end()
+    }
 }
 
 /// Probe compatibility boundary: old payloads did not record a seat role.
@@ -174,7 +217,10 @@ struct ProbedWorkerDispatch {
     /// The full seat key preserved by the probe.
     seat:       String,
     /// The thread joined with the dispatch shell.
+    #[serde(default)]
     thread_id:  String,
+    #[serde(default)]
+    identity:   Option<WorkerIdentity>,
     /// The dispatched responsibility text.
     job:        String,
     /// The role stem source when an older probe omitted its role.
@@ -208,7 +254,9 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
         };
         Self {
             seat: probe.seat,
-            thread_id: probe.thread_id,
+            identity: probe
+                .identity
+                .unwrap_or(WorkerIdentity::CodexThread(probe.thread_id)),
             job: JobText::parse(&probe.job, JobSource::DispatchJob),
             short_seat: probe.short_seat,
             role,
@@ -219,6 +267,17 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
 impl ResolvedWorkerDispatch {
     /// The worker row's display name, on one line however the job was written.
     pub(crate) fn label(&self) -> String { self.job.label(&self.short_seat) }
+    pub(super) const fn fallback(&self) -> super::RoleFallback {
+        match self.role {
+            DispatchRole::Unroled => RoleFallback::None,
+            DispatchRole::Worker(role) => RoleFallback::Worker(match role {
+                WorkerRole::Impl => HierarchyRole::Impl,
+                WorkerRole::Test => HierarchyRole::Test,
+                WorkerRole::Review => HierarchyRole::Review,
+                WorkerRole::Fix => HierarchyRole::Fix,
+            }),
+        }
+    }
 }
 
 /// The task-backed fallback name, resolved with the final hierarchy role at draw time.
@@ -232,11 +291,10 @@ pub(crate) enum WorkerTask {
     RoleOnly,
     /// The first task line; neither a UUID nor an arbitrary later prompt.
     Task(String),
+    /// A pool name belongs to the current review, not to the first task.
+    Reviewer { name: String, job: JobText },
 }
 impl WorkerTask {
-    /// Older child payloads have no task naming extension.
-    pub(super) const fn is_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
-
     /// Resolve a task line once at the rollout boundary.
     pub(crate) fn from_prompt(prompt: &str) -> Self {
         match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
@@ -247,6 +305,7 @@ impl WorkerTask {
     /// A final role names every thread, including unreadable or old raw-id rows.
     pub(crate) fn label(&self, role: WorkerRoleSource, original: &str) -> String {
         match self {
+            Self::Reviewer { name, job } => job.label(name),
             Self::RoleOnly => role.text().to_owned(),
             Self::Task(job) => format!("{} · {job}", role.text()),
             Self::Unrecorded => {
@@ -262,13 +321,140 @@ impl WorkerTask {
     }
 }
 
+/// Identity and claim documents are complete snapshots written by the launcher.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum SeatDocument {
+    Worker(SeatWorker),
+    Claim(SeatClaim),
+    Unavailable(IgnoredAny),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SeatFamily {
+    Claude,
+    Codex,
+    #[serde(other)]
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SeatWorker {
+    name:      String,
+    slot:      String,
+    family:    SeatFamily,
+    worker_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SeatClaim {
+    pid:    u32,
+    worker: String,
+}
+
 /// A roster cached by its file modification time, never searched globally.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
     rosters: BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
+    seats:   BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
 }
 
 impl WorkerNames {
+    /// Rewritten identity files are fetched once per observed modification time.
+    fn seat_document(&mut self, path: PathBuf) -> &SeatDocument {
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let read = |path: &Path| {
+            fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or(SeatDocument::Unavailable(IgnoredAny))
+        };
+        let cached = match self.seats.entry(path) {
+            Entry::Vacant(entry) => {
+                let document = read(entry.key());
+                entry.insert((modified, document))
+            },
+            Entry::Occupied(mut entry) => {
+                if entry.get().0 != modified {
+                    let document = read(entry.key());
+                    entry.insert((modified, document));
+                }
+                entry.into_mut()
+            },
+        };
+        &cached.1
+    }
+
+    /// Join a durable Claude seat only while its named claim process is live.
+    pub(super) fn resolve_claude(
+        &mut self,
+        dispatch: &ParsedDispatch,
+        processes: &[ProcessEntry],
+        dispatch_pid: u32,
+    ) -> WorkerDispatch {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&dispatch.session_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let filename = entry.file_name();
+            let Some(filename) = filename.to_str() else {
+                continue;
+            };
+            if !filename.starts_with(WORKER_FILE_PREFIX)
+                || !entry.path().extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case(WORKER_DOCUMENT_EXTENSION)
+                })
+            {
+                continue;
+            }
+            let SeatDocument::Worker(seat) = self.seat_document(entry.path()).clone() else {
+                continue;
+            };
+            if !matches!(seat.family, SeatFamily::Claude) || seat.worker_id.is_empty() {
+                continue;
+            }
+            let SeatDocument::Claim(claim) =
+                self.seat_document(dispatch.session_dir.join(format!(
+                    "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
+                    seat.slot
+                )))
+            else {
+                continue;
+            };
+            if claim.worker != seat.name
+                || !processes.iter().any(|process| process.pid == claim.pid)
+            {
+                continue;
+            }
+            let selected = match &dispatch.seat {
+                SeatSelection::Named(name) => name == &seat.name,
+                SeatSelection::Launcher => claim.pid == dispatch_pid,
+            };
+            if selected {
+                found.push(ResolvedWorkerDispatch {
+                    seat:       seat.name,
+                    identity:   WorkerIdentity::ClaudeSession(seat.worker_id),
+                    job:        JobText::parse(&dispatch.job, JobSource::DispatchJob),
+                    short_seat: seat.slot.clone(),
+                    role:       match dispatch.pass_role {
+                        DispatchRole::Worker(role) => DispatchRole::Worker(role),
+                        DispatchRole::Unroled => DispatchRole::from_short_seat(&seat.slot),
+                    },
+                });
+            }
+        }
+        if found.len() == 1 {
+            WorkerDispatch::Worker(found.remove(0))
+        } else {
+            WorkerDispatch::Plain
+        }
+    }
+
     /// Session paths mentioned by the first task prompt, in either supported root.
     pub(super) fn session_dirs(prompt: &str) -> Vec<PathBuf> {
         let mut paths = Vec::new();
@@ -336,7 +522,7 @@ impl WorkerNames {
                     modified,
                     ResolvedWorkerDispatch {
                         seat:       seat.clone(),
-                        thread_id:  thread_id.to_owned(),
+                        identity:   WorkerIdentity::CodexThread(thread_id.to_owned()),
                         job:        JobText::parse(prompt, JobSource::FirstTaskPrompt),
                         short_seat: short.to_owned(),
                         role:       match worker.role {
@@ -372,7 +558,7 @@ impl WorkerNames {
 
 /// A usable job, distinct from a preamble whose opening names no task.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum JobText {
+pub(crate) enum JobText {
     Recorded(String),
     Unrecorded,
 }
@@ -402,6 +588,24 @@ impl JobText {
 
     /// One extraction serves roster, fallback and dispatch names.
     fn parse(prompt: &str, source: JobSource) -> Self {
+        if let Some((_, review)) = prompt.split_once(POOL_PREAMBLE) {
+            // Pool memory precedes the role preamble. The phase title names the job.
+            if let Some((_, phase)) = review.split_once(POOL_PHASE_DESCRIPTION)
+                && let Some((_, title)) = phase.split_once('"')
+                && let Some((title, _)) = title.split_once('"')
+            {
+                return Self::from_line(title);
+            }
+            if let Some(heading) = review
+                .lines()
+                .skip(1)
+                .map(str::trim)
+                .find(|line| line.starts_with(REVIEW_JOB_HEADING))
+            {
+                return Self::from_line(heading);
+            }
+            return Self::Unrecorded;
+        }
         let first = prompt
             .lines()
             .find(|line| !line.trim().is_empty())
@@ -431,7 +635,7 @@ impl JobText {
             .lines()
             .skip(1)
             .map(str::trim)
-            .find(|line| line.starts_with("# "))
+            .find(|line| line.starts_with(REVIEW_JOB_HEADING))
         {
             return Self::from_line(heading);
         }
@@ -444,6 +648,12 @@ impl JobText {
             Self::Unrecorded => role.to_owned(),
             Self::Recorded(job) => format!("{role} · {job}"),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for JobText {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|text| Self::from_line(&text))
     }
 }
 
@@ -477,6 +687,8 @@ pub(super) struct ParsedDispatch {
     seat:                   SeatSelection,
     /// The launcher's responsibility argument.
     job:                    String,
+    /// The pass role can differ from the durable seat slot.
+    pass_role:              DispatchRole,
 }
 
 /// The command cannot safely be interpreted as one worker invocation.
@@ -587,6 +799,7 @@ impl ParsedDispatch {
             worktree: PathBuf::from(worktree),
             seat,
             job: job.to_owned(),
+            pass_role: DispatchRole::from_short_seat(remaining[0]),
         })
     }
 
@@ -618,7 +831,7 @@ impl ParsedDispatch {
             .to_owned();
         WorkerDispatch::Worker(ResolvedWorkerDispatch {
             seat: seat.clone(),
-            thread_id: entry.thread_id.clone(),
+            identity: WorkerIdentity::CodexThread(entry.thread_id.clone()),
             job: JobText::parse(&self.job, JobSource::DispatchJob),
             role: match entry.role {
                 DispatchRole::Unroled => DispatchRole::from_short_seat(&short_seat),

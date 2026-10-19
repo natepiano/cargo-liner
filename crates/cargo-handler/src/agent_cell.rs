@@ -36,6 +36,7 @@ use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::HierarchyRole;
 use crate::census::Placement;
+use crate::census::RoleFallback;
 use crate::census::RoleLabel;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
@@ -43,6 +44,7 @@ use crate::census::Timer;
 use crate::census::worker_dispatch::DispatchLabel;
 use crate::census::worker_dispatch::WorkerRoleInput;
 use crate::census::worker_dispatch::WorkerRoleSource;
+use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::LAUNCHED_BY_LABEL;
 use crate::constants::MISSING_VALUE;
@@ -444,8 +446,29 @@ impl TreeLine<'_> {
     /// Classify a visible row once for all of its presentation decisions.
     fn kind(&self) -> LineKind {
         match self.subject {
-            LineSubject::UnassignedSession => LineKind::UnassignedSession,
+            LineSubject::UnassignedSession => {
+                if self.row.role_fallback == RoleFallback::Review {
+                    LineKind::Session(RoleLabel::ReviewFallback)
+                } else {
+                    LineKind::UnassignedSession
+                }
+            },
             LineSubject::Agent(role) => LineKind::Session(role),
+            LineSubject::ManagedThread(
+                ChildRow {
+                    worker_task: WorkerTask::Reviewer { .. },
+                    ..
+                },
+                _,
+            )
+            | LineSubject::Work(Work {
+                child:
+                    ChildRow {
+                        worker_task: WorkerTask::Reviewer { .. },
+                        ..
+                    },
+                kind: WorkKind::Thread,
+            }) => LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::ReviewerLease)),
             LineSubject::ManagedThread(_, role) => {
                 LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)))
             },
@@ -595,7 +618,9 @@ impl TreeLine<'_> {
             },
             LineKind::Session(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
             | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.role(role.into()),
-            LineKind::Worker(_) => colors.role(FooterRole::Worker),
+            LineKind::Session(RoleLabel::ReviewFallback) | LineKind::Worker(_) => {
+                colors.role(FooterRole::Worker)
+            },
             LineKind::Shell | LineKind::Subagent => FooterTint::Plain,
         }
     }
@@ -735,7 +760,7 @@ pub(crate) fn tile_keys(placement: &AgentPlacement<'_>) -> HashSet<TileKey> {
         .iter()
         .filter(|row| row.placement == Placement::Root)
         .map(|root| match placement.role_label(root.identity) {
-            RoleLabel::Unlabeled => TileKey::Unassigned {
+            RoleLabel::Unlabeled | RoleLabel::ReviewFallback => TileKey::Unassigned {
                 machine: root.identity.machine.to_owned(),
             },
             RoleLabel::Stated(_) | RoleLabel::Inferred(_) => TileKey::Agent(AgentCell {
@@ -768,7 +793,10 @@ pub(crate) fn group_tiles<'a>(
     let session_sorts = agents
         .iter()
         .map(|entry| {
-            let key = if entry.role_label == RoleLabel::Unlabeled {
+            let key = if matches!(
+                entry.role_label,
+                RoleLabel::Unlabeled | RoleLabel::ReviewFallback
+            ) {
                 TileKey::Unassigned {
                     machine: entry.machine.to_owned(),
                 }
@@ -790,11 +818,17 @@ pub(crate) fn group_tiles<'a>(
             RoleLabel::Stated(_) | RoleLabel::Inferred(_) => {
                 tiles.push(AgentTile::Agent(entry.clone()));
             },
-            RoleLabel::Unlabeled if pooled_machines.insert(entry.machine) => {
+            RoleLabel::Unlabeled | RoleLabel::ReviewFallback
+                if pooled_machines.insert(entry.machine) =>
+            {
                 let mut roots: Vec<_> = ordered
                     .iter()
                     .filter(|root| {
-                        root.machine == entry.machine && root.role_label == RoleLabel::Unlabeled
+                        root.machine == entry.machine
+                            && matches!(
+                                root.role_label,
+                                RoleLabel::Unlabeled | RoleLabel::ReviewFallback
+                            )
                     })
                     .collect();
                 roots.sort_by(|left, right| {
@@ -812,7 +846,7 @@ pub(crate) fn group_tiles<'a>(
                     lines,
                 }));
             },
-            RoleLabel::Unlabeled => {},
+            RoleLabel::Unlabeled | RoleLabel::ReviewFallback => {},
         }
     }
     tiles
@@ -894,7 +928,9 @@ impl<'a> TreeBuild<'_, 'a> {
     ) -> TreeLine<'a> {
         TreeLine {
             dispatch_label: match subject {
-                LineSubject::Agent(_) | LineSubject::UnassignedSession => DispatchLabel::Original,
+                LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                    self.placement.row_dispatch_label(identity)
+                },
                 LineSubject::ManagedThread(child, _) => self.placement.dispatch_label(child),
                 LineSubject::Work(work) => self.placement.dispatch_label(work.child),
             },
@@ -1094,7 +1130,9 @@ fn unclaimed_work<'a>(
             row.children
                 .iter()
                 .enumerate()
-                .filter(|(_, child)| placement.folds_dispatch(child))
+                .filter(|(_, child)| {
+                    placement.folds_dispatch(child) || placement.hides_thread(child)
+                })
                 .map(|(index, _)| index),
         )
         .collect();
@@ -1956,8 +1994,10 @@ mod tests {
     use crate::census::HierarchyRole;
     use crate::census::Machine;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
@@ -2001,6 +2041,7 @@ mod tests {
     /// seconds before [`NOW`] and opened by `launched_by`.
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
@@ -2044,6 +2085,7 @@ mod tests {
     /// tool-based-ui-arrange.
     fn trunk() -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             desktop: Some("berth_fix".to_string()),
             children: vec![
                 child(
@@ -2305,6 +2347,7 @@ mod tests {
     #[test]
     fn a_codex_tier_follows_its_program() {
         let codex = AgentRow {
+            role_fallback: RoleFallback::None,
             agent: Agent::Codex,
             service_tier: ServiceTier::Fast,
             children: vec![ChildRow {
@@ -2354,6 +2397,7 @@ mod tests {
     #[test]
     fn a_cell_compresses_where_its_directory_would_be_broken() {
         let arrange = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: "~/rust/hana_catalyst/crates/hana_video/src/permission_queue/deep/nested/module/source".to_string(),
             children: vec![child(0, ChildKind::Shell, Some(2_424_763), "cargo nextest run", 45)],
             ..agent(ARRANGE, "arrange", 2 * HOUR, Some(BOSS))
@@ -2373,6 +2417,7 @@ mod tests {
     #[test]
     fn a_cell_compresses_where_its_tree_would_cut_a_name() {
         let arrange = AgentRow {
+            role_fallback: RoleFallback::None,
             children: vec![
                 child(
                     0,
@@ -2447,6 +2492,7 @@ mod tests {
     #[test]
     fn only_labels_take_the_label_color() {
         let trunk = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: LONG_DIRECTORY.to_string(),
             ..trunk()
         };
@@ -2487,6 +2533,7 @@ mod tests {
     #[test]
     fn the_height_is_the_rows_drawn_at_every_width() {
         let trunk = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: LONG_DIRECTORY.to_string(),
             ..trunk()
         };
@@ -2525,6 +2572,7 @@ mod tests {
         MachineState::Answered(
             vec![
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     branch: Some("main".to_string()),
                     directory: "~/rust/cargo-liner".to_string(),
                     children: vec![
@@ -2541,6 +2589,7 @@ mod tests {
                     ..agent(BOSS, "boss of bosses", 23 * HOUR, None)
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     branch: Some("enh/trunk".to_string()),
                     directory: "~/rust/ui-trunk".to_string(),
                     children: vec![
@@ -2563,6 +2612,7 @@ mod tests {
                     ..agent(TRUNK, "tool-based-ui-trunk", 21 * HOUR, Some(BOSS))
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     activity: AgentActivity::from(Some("idle")),
                     branch: Some("enh/arrange".to_string()),
                     directory: "~/rust/ui-arrange".to_string(),
@@ -2576,6 +2626,7 @@ mod tests {
                     ..agent(ARRANGE, "tool-based-ui-arrange", 3 * HOUR, Some(BOSS))
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     activity: AgentActivity::from(Some("idle")),
                     directory: "~/scratch/impl".to_string(),
                     ..agent(TRUNK_IMPL, "trunk-impl", 2 * HOUR, Some(TRUNK))
@@ -2631,6 +2682,7 @@ mod tests {
         );
         let detailed = MachineState::Answered(
             vec![AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 started: process_started - HOUR,
                 ..row.clone()
             }],
@@ -2647,6 +2699,7 @@ mod tests {
 
         let reused_pid = MachineState::Answered(
             vec![AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 process_started: process_started + 1,
                 ..row
             }],
@@ -2878,6 +2931,7 @@ mod tests {
         let natedev = boss_group();
         let cells = natedev_cells(&natedev);
         let trunk = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: LONG_DIRECTORY.to_string(),
             ..trunk()
         };
@@ -2922,6 +2976,7 @@ mod tests {
     #[test]
     fn a_narrow_launched_cell_cuts_its_header_to_one_line() {
         let trunk = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: LONG_DIRECTORY.to_string(),
             ..trunk()
         };
@@ -2968,6 +3023,7 @@ mod tests {
     #[test]
     fn a_compressed_cell_starts_with_its_tree_header() {
         let arrange = AgentRow {
+            role_fallback: RoleFallback::None,
             children: vec![
                 child(
                     0,
@@ -3176,6 +3232,7 @@ mod tests {
     #[test]
     fn a_timer_row_shows_its_pie_and_time_left() {
         let seat = AgentRow {
+            role_fallback: RoleFallback::None,
             children: vec![
                 child(
                     0,
@@ -3218,9 +3275,10 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    manager: (*manager).to_string(),
-                    member:  (*member).to_string(),
-                    role:    HierarchyRole::Unit,
+                    reviewer: ReviewerState::NotPool,
+                    manager:  (*manager).to_string(),
+                    member:   (*member).to_string(),
+                    role:     HierarchyRole::Unit,
                 })
                 .collect(),
         )
@@ -3229,6 +3287,7 @@ mod tests {
     /// A recorded Claude session, with its own stable cross-machine id.
     fn identified(pid: u32, name: &str, age: u64, launcher: Option<u32>) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(name.to_string()),
             ..agent(pid, name, age, launcher)
         }
@@ -3242,6 +3301,7 @@ mod tests {
             vec![
                 identified(1, "production", 3 * HOUR, None),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     children: vec![child(0, ChildKind::Shell, Some(99), "local work", MINUTE)],
                     ..identified(7, "local unit", HOUR, None)
                 },
@@ -3250,6 +3310,7 @@ mod tests {
         );
         let mac = MachineState::Answered(
             vec![AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 children: vec![child(0, ChildKind::Shell, Some(99), "remote work", MINUTE)],
                 ..identified(7, "remote unit", 2 * HOUR, None)
             }],
@@ -3330,6 +3391,7 @@ mod tests {
         let state = MachineState::Answered(
             vec![
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     children: vec![child(
                         0,
                         ChildKind::Session(Agent::Claude),
@@ -3341,6 +3403,7 @@ mod tests {
                 },
                 identified(2, "manager", 2 * HOUR, None),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     children: vec![child(0, ChildKind::Shell, Some(99), "member work", MINUTE)],
                     ..identified(3, "worker", HOUR, Some(1))
                 },
@@ -3395,6 +3458,7 @@ mod tests {
             MachineState::Answered(vec![identified(1, "unit", HOUR, None)], links(&[]).into());
         let mac = MachineState::Answered(
             vec![AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 agent: Agent::Codex,
                 children: vec![
                     thread,
@@ -3440,6 +3504,7 @@ mod tests {
             vec![
                 identified(1, "unit", HOUR, None),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     agent: Agent::Codex,
                     children: vec![
                         ChildRow {
@@ -3501,14 +3566,16 @@ mod tests {
             ],
             HierarchyEdges(vec![
                 HierarchyEdge {
-                    manager: "production".to_string(),
-                    member:  "unit".to_string(),
-                    role:    HierarchyRole::Impl,
+                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                    manager:  "production".to_string(),
+                    member:   "unit".to_string(),
+                    role:     HierarchyRole::Impl,
                 },
                 HierarchyEdge {
-                    manager: "unit".to_string(),
-                    member:  "nested".to_string(),
-                    role:    HierarchyRole::Showrunner,
+                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                    manager:  "unit".to_string(),
+                    member:   "nested".to_string(),
+                    role:     HierarchyRole::Showrunner,
                 },
             ])
             .into(),

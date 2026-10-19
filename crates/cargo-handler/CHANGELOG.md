@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Plan-mode Claude reviewers show `review`. Live pool reviewers show their current review under their unit; idle reviewers and templates stay hidden. Claude-seat dispatches fold into their live session rows.
 - Session detail readers start with small transcript tails and expand only to find the required values. Rollout head reads stop when the session metadata and first task are found. Later scans read only appended bytes and retain unfinished records.
 - Production roles arrive before slow session detail reads. Hierarchy failures and unmatched sessions show a summary note; footer text colors meet 4.5:1 contrast on the active theme, including stale account labels.
 - The summary can show stored account roles, weekly usage, resets and credits from a configured accounts command, refreshed in the background. Worker job names skip dispatch role preambles.

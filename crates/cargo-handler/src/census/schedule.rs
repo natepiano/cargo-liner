@@ -153,10 +153,11 @@ impl LocalAnswers {
 
     fn deliver(
         &self,
-        rows: Vec<AgentRow>,
+        mut rows: Vec<AgentRow>,
         hierarchy: HierarchySnapshot,
         stage: ScanStage,
     ) -> Result<(), SendError<CensusUpdate>> {
+        super::hierarchy::ReviewerPools::apply(&mut rows, &hierarchy.edges);
         let update = CensusUpdate::Local {
             rows,
             hierarchy,
@@ -375,6 +376,7 @@ mod tests {
     use crate::census::HierarchyNotice;
     use crate::census::HierarchySnapshot;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::hierarchy::HierarchyError;
@@ -458,9 +460,10 @@ mod tests {
                     Err(HierarchyError::TimedOut)
                 } else {
                     Ok(HierarchyEdges(vec![super::super::HierarchyEdge {
-                        manager: "boss".into(),
-                        member:  "worker".into(),
-                        role:    super::super::HierarchyRole::Unit,
+                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                        manager:  "boss".into(),
+                        member:   "worker".into(),
+                        role:     super::super::HierarchyRole::Unit,
                     }]))
                 }
             }
@@ -577,6 +580,7 @@ mod tests {
     fn session_row(id: &str, pid: u32) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
             service_tier: ServiceTier::Unrecorded,
             account: Account::Unrecorded,
@@ -629,9 +633,10 @@ mod tests {
             &MachineState::Answered(
                 vec![session_row("worker", 1)],
                 super::super::HierarchyEdges(vec![super::super::HierarchyEdge {
-                    manager: "remote-boss".to_string(),
-                    member:  "worker".to_string(),
-                    role:    super::super::HierarchyRole::Impl,
+                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                    manager:  "remote-boss".to_string(),
+                    member:   "worker".to_string(),
+                    role:     super::super::HierarchyRole::Impl,
                 }])
                 .into()
             )
@@ -964,9 +969,10 @@ mod tests {
             }
         }
         let edges = HierarchyEdges(vec![super::super::HierarchyEdge {
-            manager: "boss".to_string(),
-            member:  "worker".to_string(),
-            role:    super::super::HierarchyRole::Unit,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "boss".to_string(),
+            member:   "worker".to_string(),
+            role:     super::super::HierarchyRole::Unit,
         }]);
         let reports = [
             (false, edges.clone()),
@@ -1035,9 +1041,10 @@ mod tests {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             let round = self.0.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(HierarchyEdges(vec![super::super::HierarchyEdge {
-                manager: format!("manager-{round}"),
-                member:  "worker".to_string(),
-                role:    super::super::HierarchyRole::Test,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  format!("manager-{round}"),
+                member:   "worker".to_string(),
+                role:     super::super::HierarchyRole::Test,
             }]))
         }
     }

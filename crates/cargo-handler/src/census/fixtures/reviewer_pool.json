@@ -1,0 +1,31 @@
+{
+  "generation": 0,
+  "templates": {
+    "code": {
+      "name": "code-template",
+      "thread_id": "template-thread"
+    }
+  },
+  "reviewers": {
+    "code3": {
+      "type": "code",
+      "thread_id": "review-thread",
+      "lease": {
+        "unit": "handler-enh-unit",
+        "ordinal": 4
+      },
+      "busy_pid": 701,
+      "last_allocated": 1792213973.1942666
+    },
+    "design1": {
+      "type": "design",
+      "thread_id": "idle-thread",
+      "lease": {
+        "unit": "handler-enh-unit",
+        "ordinal": 3
+      },
+      "busy_pid": null,
+      "last_allocated": 1792213973.0
+    }
+  }
+}
