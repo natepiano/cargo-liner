@@ -57,7 +57,8 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         return;
     }
 
-    // Extract worktree items (highest index first to preserve lower indices)
+    // Sort `moves` by `Reverse(entry.0)` before `items.remove` so removing
+    // higher worktree indices preserves lower indices.
     let mut moves: Vec<(usize, AbsolutePath)> = worktree_indices
         .iter()
         .filter_map(|&wi| {
@@ -74,7 +75,8 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         extracted.push((item, id));
     }
 
-    // Rebuild primary_indices after removals
+    // Rebuild `primary_map` from remaining `items` because `items.remove`
+    // shifted the old `primary_indices`.
     let mut primary_map: HashMap<AbsolutePath, usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         if let Some(id) = item_worktree_identity(item)
@@ -85,8 +87,8 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         }
     }
 
-    // Group linked worktrees by identity, preserving encounter order within
-    // each group.
+    // `into_group_map` builds `linked_by_id` keyed by primary `AbsolutePath`,
+    // preserving `extracted` encounter order within each group.
     let mut linked_by_id: HashMap<AbsolutePath, Vec<RootItem>> = extracted
         .into_iter()
         .map(|(item, id)| (id, item))

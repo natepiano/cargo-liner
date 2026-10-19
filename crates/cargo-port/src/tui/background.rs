@@ -76,7 +76,8 @@ impl Background {
         }
     }
 
-    // ── Senders (cloned by spawn paths) ──────────────────────────────
+    // `background_sender`, `ci_fetch_sender`, `clean_sender` and `example_sender`
+    // clone `Sender` handles for task spawning.
 
     pub(super) fn background_sender(&self) -> Sender<BackgroundMsg> { self.sender.clone() }
 
@@ -86,7 +87,8 @@ impl Background {
 
     pub(super) fn example_sender(&self) -> Sender<OwnedRunEvent> { self.example_tx.clone() }
 
-    // ── Receiver access ──────────────────────────────────────────────
+    // `background_receiver`, `ci_fetch_rx`, `clean_rx` and `example_rx`
+    // borrow the subsystem's `Receiver` handles for event polling.
 
     pub(super) const fn background_receiver(&self) -> &Receiver<BackgroundMsg> { &self.receiver }
 
@@ -202,7 +204,8 @@ mod tests {
             "stale sender must not reach the swapped-in rx"
         );
 
-        // A fresh send via the new sender DOES reach the new rx.
+        // `background.background_sender().send(make_msg())` delivers to
+        // `background.background_receiver()` after `swap_background_channel`.
         background
             .background_sender()
             .send(make_msg())
