@@ -148,10 +148,10 @@ impl App {
         let startup_plan =
             self.build_startup_plan(lint_registered, crates_io_plan.names(), plan_effects);
         self.initialize_startup_phase_tracker_with_plan(&startup_plan);
-        // When nothing will ever increment `seen` (lint runtime disabled or
-        // no eligible projects), no later message drives completion. This runs
-        // after plan installation, so every startup obligation has already
-        // been declared before readiness can be considered.
+        // When `lint_registered == 0` (runtime disabled or no eligible projects), no later message
+        // increments `startup.lint_count.seen`; call `maybe_complete_startup_lint_cache`
+        // after `initialize_startup_phase_tracker_with_plan`, so readiness follows
+        // declaration of all startup obligations.
         if lint_registered == 0 {
             self.maybe_complete_startup_lint_cache();
         }
@@ -245,8 +245,8 @@ impl App {
     }
     pub(super) fn start_startup_toast(&mut self) {
         let now = Instant::now();
-        // These rows are visible from panel creation; stamp their
-        // minimum-visible floor now. Repo renders `Waiting` from the start.
+        // Call `stamp_first_seen(now)` for each startup row at panel creation to establish its
+        // minimum-visible floor; `startup.repo` initially renders `ProgressState::Waiting`.
         self.startup.disk.stamp_first_seen(now);
         self.startup.git.stamp_first_seen(now);
         self.startup.repo.stamp_first_seen(now);
@@ -298,9 +298,9 @@ impl App {
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
             return;
         };
-        // Once the panel has closed, a late phase result must not re-run
-        // the gate or touch the (taken) panel toast. The per-phase `seen`
-        // bookkeeping in the handlers is idempotent and harmless.
+        // Return when `startup.is_collecting()` is false so late results cannot re-run
+        // `maybe_complete_startup_ready` or update the taken `startup.toast`; handlers may still
+        // mark phase `seen` sets idempotently.
         if !self.startup.is_collecting() {
             return;
         }
@@ -310,9 +310,9 @@ impl App {
         self.maybe_complete_startup_repo(now, scan_complete_at);
         self.maybe_complete_startup_metadata(now, scan_complete_at);
         self.maybe_complete_startup_lint_history(now, scan_complete_at);
-        // crates.io, languages, and test counts have no special logging;
-        // just record their completion timestamp (for the min-visible floor)
-        // once every expected entry has been seen.
+        // `startup.crates_io`, `startup.languages` and `startup.tests` need no special logging;
+        // `complete_once(now)` records completion after every expected entry is seen, establishing
+        // the minimum-visible floor.
         self.startup.crates_io.complete_once(now);
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
@@ -511,15 +511,11 @@ impl App {
         // `RepoFetchQueued` still joins the stable denominator and reopens the
         // row while startup is open.
         self.startup.repo.expected.stabilize();
-        // Hold the row open while a repo-fetch worker is spawned but has not
-        // yet reported. The worker joins this row's denominator only when it
-        // sends `RepoFetchQueued`; in the window between spawn and that
-        // message the row would otherwise read complete and let the
-        // startup→steady-state network handoff fire, stranding the fetch's
-        // standalone "Retrieving GitHub repo details" toast outside the panel
-        // that is supposed to own it. `RepoInfo` arrives before the
-        // `CheckoutInfo` that marks git terminal (same channel, FIFO), so every
-        // repo's first fetch is already in `repo_fetch_in_flight` here.
+        // `net.github.has_repo_fetch_in_flight()` holds `startup.repo` open between worker spawn
+        // and `RepoFetchQueued` joining its denominator, preventing early steady-state
+        // handoff and a stranded standalone fetch toast outside its owning panel. FIFO
+        // delivery on the same channel puts `RepoInfo` before the `CheckoutInfo` that makes
+        // git terminal, so every repo's first fetch is already tracked here.
         if self.net.github.has_repo_fetch_in_flight() {
             return;
         }
@@ -616,15 +612,15 @@ impl App {
         self.refresh_startup_panel(now);
         let closing = ready.begin_closing(&mut self.startup);
         self.net.begin_steady_state_network_toasts(&closing.network);
-        // Paint the final all-complete panel, then switch only the Startup
-        // toast into a timed countdown. Startup owns colored rows, not task
-        // items, so it must not enter the task linger fade path.
+        // After `refresh_startup_panel` paints the final complete rows,
+        // `finish_startup_toast_with_countdown` starts only the `StartupToast` countdown;
+        // its colored rows, rather than task items, must bypass the task linger fade path.
         if let Some(toast) = closing.toast {
             self.finish_startup_toast_with_countdown(toast);
         }
-        // The panel no longer owns the network rows: install the steady-state
-        // toast slots only after the startup-owned trackers have been drained
-        // or explicitly abandoned after a failed startup row.
+        // Call `sync_running_crates_io_toast` and `sync_running_repo_fetch_toast` only after
+        // `begin_steady_state_network_toasts` drains startup-owned trackers or abandons work for a
+        // failed startup row, since the panel no longer owns these rows.
         self.sync_running_crates_io_toast();
         self.sync_running_repo_fetch_toast();
         // Startup is fully closed: every disk walk has reported, so each

@@ -11,8 +11,8 @@ pub(super) use config_reload::collect_reload_actions;
 pub(super) use framework_keymap::AppGlobalAction;
 pub(super) use framework_keymap::AppNavigation;
 pub(super) use framework_keymap::AppPaneId;
-// Only the keymap round-trip tests name these panes directly; the
-// production paths reach them through the registered keymap scopes.
+// Only keymap round-trip tests name `CiRunsPane`, `GitPane` and `PackagePane` directly;
+// production reaches those panes through registered keymap scopes.
 #[cfg(test)]
 pub(super) use framework_keymap::CiRunsPane;
 pub(super) use framework_keymap::FinderPane;

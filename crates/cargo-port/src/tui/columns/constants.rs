@@ -1,4 +1,4 @@
-// src tui columns mod
+// `COL_*` constants index the project table columns; `NUM_COLS` fixes its column count.
 pub(super) const COL_CI: usize = 2;
 pub(in crate::tui) const COL_DISK: usize = 7;
 pub(super) const COL_GIT_PATH: usize = 4;
