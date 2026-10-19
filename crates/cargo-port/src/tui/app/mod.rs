@@ -1082,9 +1082,7 @@ impl App {
         self.set_ci_display_mode_for_inner(path, mode);
     }
 
-    pub(super) fn reset_cpu_placeholder(&mut self) {
-        self.panes.reset_cpu(&self.config.current().cpu);
-    }
+    pub(super) fn reset_cpu_monitor(&mut self) { self.panes.reset_cpu(&self.config.current().cpu); }
 
     // ── Group 3 cross-subsystem orchestrators (post-Phase-9) ────────
     //
@@ -1261,7 +1259,7 @@ impl App {
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
-            PaneBehavior::ProjectList => true,
+            PaneBehavior::ProjectList | PaneBehavior::Cpu => true,
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.project_list.selected_project_path().is_some(),
                 PaneId::Lang => self
@@ -1280,7 +1278,6 @@ impl App {
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.panes.cpu.content().is_some(),
             PaneBehavior::DetailTargets => self
                 .panes
                 .targets

@@ -168,7 +168,7 @@ fn resolve_tiled_layout(
     left_width: u16,
     bottom_row: panes::BottomRow,
 ) -> ResolvedPaneLayout<PaneId> {
-    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
+    let core_count = app.panes.cpu.core_count();
     let (package_width, git_width) = panes::top_pane_widths(top_area, left_width);
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {

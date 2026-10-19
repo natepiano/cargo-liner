@@ -22,6 +22,7 @@ use tui_pane::text_default;
 use tui_pane::warning_color;
 
 use super::CpuPane;
+use super::pane::CpuSamplePhase;
 use crate::config::CpuConfig;
 use crate::tui::panes::constants::CPU_BAR_WIDTH;
 use crate::tui::panes::constants::CPU_BREAKDOWN_ROWS;
@@ -621,7 +622,6 @@ pub(super) fn render_cpu_pane_body(
     pane: &mut CpuPane,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
-    let pane_focus_state = pane.focus.pane_focus_state;
     let inner = tui_pane::frame_inner(area);
     let mut chrome = PaneFrameChrome {
         title: cpu_panel_title().to_string(),
@@ -635,21 +635,52 @@ pub(super) fn render_cpu_pane_body(
         return chrome;
     }
 
-    let usage = pane
-        .content()
-        .cloned()
-        .unwrap_or_else(|| tui_pane::CpuUsage::placeholder(1));
-    let cursor_pos = pane.viewport.pos();
-    let layout = CpuPanelLayout::new(
+    render_cpu_sample_phase(
+        frame,
         inner,
-        usage.cores.len(),
-        cursor_pos,
-        pane.viewport.scroll_offset(),
+        area,
+        pane,
+        &ctx.config.current().cpu,
+        &mut chrome,
     );
+    chrome
+}
 
-    push_cpu_dividers(area, &layout, &mut chrome);
+pub(super) fn render_cpu_sample_phase(
+    frame: &mut Frame,
+    inner: Rect,
+    area: Rect,
+    pane: &mut CpuPane,
+    cpu_cfg: &CpuConfig,
+    chrome: &mut PaneFrameChrome,
+) {
+    let usage = match pane.sample_phase() {
+        CpuSamplePhase::AwaitingFirstSample { core_count } => {
+            let core_count = *core_count;
+            render_cpu_status(
+                frame,
+                inner,
+                pane,
+                format!("{core_count} cores\nAwaiting CPU sample"),
+            );
+            return;
+        },
+        CpuSamplePhase::Suppressed => {
+            render_cpu_status(frame, inner, pane, "CPU suppressed");
+            return;
+        },
+        CpuSamplePhase::Unavailable => {
+            render_cpu_status(frame, inner, pane, "CPU unavailable");
+            return;
+        },
+        CpuSamplePhase::Sampled(usage) => usage,
+    };
+    let core_count = usage.cores.len();
+    let cursor_pos = pane.viewport.pos();
+    let layout = CpuPanelLayout::new(inner, core_count, cursor_pos, pane.viewport.scroll_offset());
 
-    let cpu_cfg = &ctx.config.current().cpu;
+    push_cpu_dividers(area, &layout, chrome);
+
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     let viewport = &pane.viewport;
     render_cpu_metric_rows(
@@ -657,20 +688,27 @@ pub(super) fn render_cpu_pane_body(
         viewport,
         &mut row_rects,
         cpu_cfg,
-        &usage,
+        usage,
         &layout,
-        pane_focus_state,
+        pane.focus.pane_focus_state,
     );
     render_cores_affordance(frame, &layout, cursor_pos);
-    sync_cpu_pane_state(
-        &mut pane.viewport,
-        inner,
-        usage.cores.len(),
-        layout.band_offset,
-    );
+    sync_cpu_pane_state(&mut pane.viewport, inner, core_count, layout.band_offset);
     pane.set_row_rects(row_rects);
+}
 
-    chrome
+fn render_cpu_status(
+    frame: &mut Frame,
+    inner: Rect,
+    pane: &mut CpuPane,
+    message: impl Into<String>,
+) {
+    pane.viewport.clear_surface();
+    pane.clear_row_rects();
+    frame.render_widget(
+        Paragraph::new(message.into()).style(Style::default().fg(label_color())),
+        inner,
+    );
 }
 
 /// Draw the `▲ n of m ▼` overflow label on the cores band when more cores
