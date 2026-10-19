@@ -66,7 +66,7 @@ impl CpuMonitorSlot {
     }
 }
 
-// ── Cpu ─────────────────────────────────────────────────────────
+// `CpuPane` owns CPU samples, focus, viewport and per-row hit-test rectangles.
 pub struct CpuPane {
     pub viewport:     Viewport,
     pub focus:        RenderFocus,

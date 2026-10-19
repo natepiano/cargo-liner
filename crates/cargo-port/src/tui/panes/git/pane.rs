@@ -21,7 +21,7 @@ use crate::tui::panes::WorktreeInfo;
 use crate::tui::panes::git;
 use crate::tui::render_context::PaneRenderCtx;
 
-// ── Git ─────────────────────────────────────────────────────────
+// `GitPane` owns Git detail content, focus, viewport, worktree-summary caching and hit-test layout.
 pub struct GitPane {
     pub viewport:           Viewport,
     pub focus:              RenderFocus,
