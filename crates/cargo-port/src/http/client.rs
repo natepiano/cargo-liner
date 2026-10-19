@@ -375,9 +375,9 @@ impl HttpClient {
     async fn probe_github_rate_limit_async(&self) -> bool {
         let (github_rate_limit, _signal) = self.fetch_rate_limit_async().await;
         if self.github_rate_limit_forced() {
-            // Forced mode: display keeps updating via /rate_limit above,
-            // but never report recovery — the error toast must persist
-            // for testing.
+            // `fetch_rate_limit_async` keeps the quota display current, but
+            // `github_rate_limit_forced()` prevents reporting recovery so
+            // the error toast persists for testing.
             return false;
         }
         match github_rate_limit {
@@ -606,13 +606,14 @@ mod tests {
         assert!(reset_at >= before + SYNTHETIC_RATE_LIMIT_SECS);
         assert!(reset_at <= after + SYNTHETIC_RATE_LIMIT_SECS);
 
-        // `graphql` stays real so the live-refresh path is still
-        // observable during debug.
+        // `github_rate_limit.graphql` retains `real_graphql` so quota
+        // refresh remains observable while forced rate limiting is on.
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
 
         client.set_force_github_rate_limit(false);
         let github_rate_limit = client.rate_limit();
-        // Real core was never populated, so clearing force leaves it
+        // Only the GraphQL bucket was set with `update_rate_limit_bucket`,
+        // so disabling `force_github_rate_limit` leaves `github_rate_limit.core`
         // at `None`.
         assert!(github_rate_limit.core.is_none());
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
