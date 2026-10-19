@@ -18,6 +18,8 @@ pub(crate) mod account;
 pub(crate) mod accounts;
 pub(crate) mod activity;
 mod branch;
+#[cfg(test)]
+mod catch_up_hierarchy_tests;
 pub(crate) mod classify;
 #[cfg(test)]
 mod claude_seat_tests;

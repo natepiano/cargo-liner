@@ -758,6 +758,75 @@ pub(super) enum HierarchyPublication {
     Ready(HierarchySnapshot),
 }
 
+/// Placement identities that one refresh must resolve, with its retained links.
+pub(super) struct HierarchyRefreshScope {
+    /// Only unchecked, unnamed identities require this request's answer.
+    waiting:  BTreeSet<String>,
+    /// Later arrivals must wait for a catch-up instead of using an older answer.
+    observed: BTreeSet<String>,
+    /// Keep linked rows together even if only one identity needs an answer.
+    links:    HierarchyEdges,
+}
+
+impl HierarchyRefreshScope {
+    fn new(rows: &[AgentRow], checked: &CheckedUnlinkedSessions, links: HierarchyEdges) -> Self {
+        let mut settled = checked.0.clone();
+        for edge in &links.0 {
+            settled.insert(edge.manager.clone());
+            settled.insert(edge.member.clone());
+        }
+        let waiting = rows
+            .iter()
+            .flat_map(Self::placement_ids)
+            .filter(|id| !settled.contains(*id))
+            .map(str::to_owned)
+            .collect();
+        let mut observed = settled;
+        observed.extend(rows.iter().flat_map(Self::placement_ids).map(str::to_owned));
+        Self {
+            waiting,
+            observed,
+            links,
+        }
+    }
+
+    /// A row carries one session and any threads whose placement follows it.
+    pub(super) fn placement_ids(row: &AgentRow) -> impl Iterator<Item = &str> {
+        let session = match &row.session_id {
+            SessionIdentity::Claude(id) => Some(id.as_str()),
+            SessionIdentity::Unrecorded => None,
+        };
+        session.into_iter().chain(
+            row.children
+                .iter()
+                .filter_map(|child| match &child.thread_id {
+                    CodexThreadId::Recorded(id) => Some(id.as_str()),
+                    CodexThreadId::Unrecorded => None,
+                }),
+        )
+    }
+
+    /// Frozen eligibility keeps checked sessions visible across later scan stages.
+    pub(super) fn waits_for(&self, id: &str) -> bool {
+        self.waiting.contains(id) || !self.observed.contains(id)
+    }
+
+    /// Retained links define the components that must publish together.
+    pub(super) const fn links(&self) -> &HierarchyEdges { &self.links }
+}
+
+/// The command role determines whether checked session ids are initialized or retained.
+pub(super) enum HierarchyRequestKind {
+    Initial,
+    Refresh(HierarchyRefreshScope),
+}
+
+/// Prepared cache work never runs a command while its owner is locked.
+pub(super) enum HierarchyPreparation {
+    Request(HierarchyRequestKind),
+    Ready(HierarchySnapshot),
+}
+
 /// Edges reused until their source, local sessions, or freshness changes.
 #[derive(Default)]
 pub(super) struct HierarchyCache {
@@ -796,7 +865,8 @@ impl HierarchyCache {
         &self.success
     }
 
-    /// Refresh expired links; unsuccessful attempts retain success and retry next tick.
+    /// Sequential cache fixtures use the same preparation and acceptance path as workers.
+    #[cfg(test)]
     pub(super) fn edges(
         &mut self,
         source: HierarchySource,
@@ -804,36 +874,7 @@ impl HierarchyCache {
         runner: &dyn HierarchyRunner,
         now: Instant,
     ) -> HierarchyEdges {
-        let pool_key = self.pool_root.path().update(&mut self.pools);
-        if self.pool_key != pool_key {
-            self.retry = HierarchyRetry::NextTick;
-            self.pool_key = pool_key;
-        }
-        self.cached(source);
-        if matches!(self.source, HierarchySource::Off) {
-            return HierarchyEdges::default();
-        }
-        let unchecked = self.unchecked_sessions(rows);
-        if let LastSuccessfulHierarchy::Answered { refreshed, edges } = &self.success
-            && unchecked.is_empty()
-            && matches!(self.retry, HierarchyRetry::OnExpiration)
-            && now.saturating_duration_since(*refreshed) < HIERARCHY_REFRESH_INTERVAL
-        {
-            let mut edges = edges.clone();
-            self.pools.refresh(&mut edges);
-            return edges;
-        }
-        match &mut self.discovery {
-            HierarchyDiscovery::Pending => {
-                self.discovery = HierarchyDiscovery::Answered(CheckedUnlinkedSessions::default());
-            },
-            HierarchyDiscovery::Answered(checked) => checked.0.extend(unchecked),
-        }
-        let outcome = read(&self.source, runner);
-        self.accept(outcome, now);
-        let mut edges = self.success.edges();
-        self.pools.refresh(&mut edges);
-        edges
+        self.snapshot(source, rows, runner, now).edges
     }
 
     /// New ids may cause one extra attempt; process changes do not create new ids.
@@ -875,6 +916,63 @@ impl HierarchyCache {
         }
     }
 
+    /// Decide and reserve a request before its worker starts, so checked ids survive chains.
+    pub(super) fn prepare_snapshot(
+        &mut self,
+        source: HierarchySource,
+        rows: &[AgentRow],
+        now: Instant,
+    ) -> HierarchyPreparation {
+        self.cached(source.clone());
+        if matches!(source, HierarchySource::Off) {
+            return HierarchyPreparation::Ready(self.retained(source));
+        }
+        let pool_key = self.pool_root.path().update(&mut self.pools);
+        if self.pool_key != pool_key {
+            self.retry = HierarchyRetry::NextTick;
+            self.pool_key = pool_key;
+        }
+        if matches!(self.discovery, HierarchyDiscovery::Pending) {
+            return HierarchyPreparation::Request(HierarchyRequestKind::Initial);
+        }
+        let unchecked = self.unchecked_sessions(rows);
+        if let LastSuccessfulHierarchy::Answered { refreshed, .. } = &self.success
+            && unchecked.is_empty()
+            && matches!(self.retry, HierarchyRetry::OnExpiration)
+            && now.saturating_duration_since(*refreshed) < HIERARCHY_REFRESH_INTERVAL
+        {
+            let snapshot = self.retained(source).matched(rows);
+            self.notice = snapshot.notice;
+            return HierarchyPreparation::Ready(snapshot);
+        }
+        match &mut self.discovery {
+            HierarchyDiscovery::Pending => {
+                HierarchyPreparation::Request(HierarchyRequestKind::Initial)
+            },
+            HierarchyDiscovery::Answered(checked) => {
+                let scope = HierarchyRefreshScope::new(rows, checked, self.success.edges());
+                checked.0.extend(unchecked);
+                HierarchyPreparation::Request(HierarchyRequestKind::Refresh(scope))
+            },
+        }
+    }
+
+    /// Accept a follow-up without making previously checked sessions eligible again.
+    pub(super) fn refresh_outcome(
+        &mut self,
+        source: HierarchySource,
+        rows: &[AgentRow],
+        outcome: Result<HierarchyEdges, HierarchyError>,
+        now: Instant,
+    ) -> HierarchySnapshot {
+        self.cached(source.clone());
+        self.pool_key = self.pool_root.path().update(&mut self.pools);
+        self.accept(outcome, now);
+        let snapshot = self.retained(source).matched(rows);
+        self.notice = snapshot.notice;
+        snapshot
+    }
+
     /// Accept the bounded first attempt after its worker returns.
     pub(super) fn first_outcome(
         &mut self,
@@ -892,7 +990,8 @@ impl HierarchyCache {
         snapshot
     }
 
-    /// Refresh links and keep the diagnostic bound to this command result.
+    /// Sequential fixtures execute a prepared request and accept its distinct outcome.
+    #[cfg(test)]
     pub(super) fn snapshot(
         &mut self,
         source: HierarchySource,
@@ -900,18 +999,16 @@ impl HierarchyCache {
         runner: &dyn HierarchyRunner,
         now: Instant,
     ) -> HierarchySnapshot {
-        let enabled = matches!(source, HierarchySource::Command(_));
-        let edges = self.edges(source, rows, runner, now);
-        let snapshot = HierarchySnapshot {
-            edges,
-            notice: self.notice,
-        };
-        if enabled {
-            let snapshot = snapshot.matched(rows);
-            self.notice = snapshot.notice;
-            snapshot
-        } else {
-            snapshot
+        match self.prepare_snapshot(source.clone(), rows, now) {
+            HierarchyPreparation::Ready(snapshot) => snapshot,
+            HierarchyPreparation::Request(HierarchyRequestKind::Initial) => {
+                let outcome = read(&source, runner);
+                self.first_outcome(source, rows, outcome, now)
+            },
+            HierarchyPreparation::Request(HierarchyRequestKind::Refresh(_)) => {
+                let outcome = read(&source, runner);
+                self.refresh_outcome(source, rows, outcome, now)
+            },
         }
     }
 

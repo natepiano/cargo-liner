@@ -296,39 +296,29 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 10 — Restarted unit directors stay under their showrunner  · status: done
 
-**Depends on:** Phase 8
+#### As-built
 
-#### Work Order
-
-**Goal:** a unit director whose showrunner edge exists never draws as a row in the summary's top-level agents table or as its own top-level tile, also in the short window after the session restarts.
-
-**Source:** the user, 2026-10-18 (screenshot): the summary's top-level agents table shows the `shutdown` session (claude2, cwd `~`, status thinking, age seconds), then it goes away. "it's a unit director so it shouldn't happen - it's not a showrunner or a top level agent". Showrunner ruling, 2026-10-18: the session is `shutdown-unit`, a unit director of the build-followups production; its showrunner is natedev. `~/.claude/scripts/shutdown/restart.py` gives every restarted session `-n <name> --remote-control <name>`, so that argv is not a helper mark: do not parse it and do not hide a session by its name. No helper session with a launcher mark exists, so no helper type is built. The hierarchy command (`production_tree.py --json`) has the edge natedev → `80636f6b-b7f3-4a3f-9853-ead35573c524`, role `unit`, at 01:13. The showrunner asked to find where the gap is before the fix: an edge that cargo-handler drops is fixed in cargo-handler; an edge the source lacks goes to natedev through the showrunner.
-
-**Constraints from prior phases:**
-- Phase 3 groups top-level `RoleLabel::Unlabeled` roots into the unassigned tile; phase 8 adds the typed `review` fallback beside it. A session with a hierarchy edge is placed by that edge, never by a string match at draw time.
-- The top-level count ("N top-level agents", phase 1) counts only top-level rows, so it drops the unit director too.
-- Keep the incremental readers of phase 7 (`JsonlCursor`); placement must not add a whole-file read.
-- Phase 8 sends child rows to remote receivers through `ProbeChildRow` (`census/probe.rs`) at schema 3, with new data in defaulted extension fields such as `reviewer_task`. No schema bump; older receivers still parse.
-
-**Spec:**
-1. Trace result (impl, 01:25): two gaps in cargo-handler. (a) `census/schedule.rs` publishes the first `Classified` rows from `cache.retained` before discovery runs, so on a new scheduler every unit draws top-level for one scan even when the command has its edge. (b) The hierarchy answer is cached for 30 s; an answer taken while a restarted unit's new Claude process has not yet written its session record (`production_tree.py` emits a unit edge only for a `LiveClaude` from that record) has no edge, and it stays for up to 30 s. That window matches the screenshot (age seconds, then gone).
-2. Fix (a): when no prior hierarchy answer exists, the first scan holds back every session the answer could place, by a typed first-scan state, until the first answer arrives; it never publishes them as top-level rows. The wait is bounded so the first publish stays in phase 7's budget (first scan under two seconds); a late answer publishes the rest and keeps the held sessions back until it comes. Measure the first-publish time and report it with the checkpoint. Showrunner condition, 2026-10-18.
-3. Fix (b): a scan that finds a Claude session id that the cached answer does not name, as manager or member, refreshes the hierarchy once for that id, instead of waiting for the 30 s expiry. After that refresh the id is recorded as checked, so a real top-level session that stays unnamed causes one refresh only, never one every scan. A known edge still survives a pid-only restart and a failed command. Showrunner condition, 2026-10-18.
-4. Make each pending state a typed variant, never a bare `Option` or a flag checked at draw time.
-5. Tests, with fixture process trees and hierarchy answers for the restart window: a unit director under its showrunner never draws top-level on the first scan; after an answer without its edge, the next answer with the edge places it under its showrunner within one refresh, not after 30 s; the top-level count excludes it; an ordinary Claude session in `~` with no edge still draws as top-level and causes one refresh only; a first scan whose answer is late publishes no unit as a top-level row.
+- The first scan holds every row that the first hierarchy answer can place. `LocalHierarchy::Pending` keeps them as `PendingPlacementRows`, a list of `PendingPlacementRow::{Independent, AwaitingHierarchy}`. A Claude row, or a carrier with an identified Codex thread, is `AwaitingHierarchy`. No held row publishes as a top-level row.
+- `FirstHierarchySessions` records the session ids present when the first command starts. `HierarchyCache::publication` returns `HierarchyPublication::RefreshNeeded` for an id that the answer does not name. `HierarchyDiscovery::Answered(CheckedUnlinkedSessions)` records each checked id, so one new unnamed id causes one refresh only. A known edge still survives a pid-only restart and a failed command.
+- The wait for the first answer has the limit `HIERARCHY_FIRST_PUBLISH_BUDGET` (1 s). When the limit expires, the scan publishes the `Independent` rows and keeps the held rows until the answer arrives.
+- The local scan runs on its own worker thread. `LocalPublications` is behind `Arc<Mutex<_>>`. `ScheduleEvent::HierarchyReady` calls `finish_first(Duration::ZERO)`. `Finished` exits at once.
+- A failed first command releases the held rows with its failure notice. The scan uses that failed outcome again for the rest of the scan.
+- Live on natedev: first frame 11 ms; first local publish 840 ms with all rows; the hierarchy command takes about 0.61 s.
 
 **Files:**
-- `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/`
-- `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/`
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/schedule.rs` — first-scan hold, worker-thread scan, `LocalPublications`, `finish_first`
+- `crates/cargo-handler/src/census/hierarchy.rs` — `HierarchyDiscovery`, `CheckedUnlinkedSessions`, `HierarchyCache::publication`
+- `crates/cargo-handler/src/constants.rs` — `HIERARCHY_FIRST_PUBLISH_BUDGET`
+- `crates/cargo-handler/src/census/restart_hierarchy_tests.rs` — restart-window tests
+- `crates/cargo-handler/src/census/fixtures/restarted_unit_{sessions,hierarchy,codex,worker_hierarchy}.json` — restart-window process trees and answers
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — fixes (a) and (b), their typed states, CHANGELOG.
-- `test` — the restart-window fixtures and the summary/tile rendering tests.
+**Binds later work:** "Catch-up hierarchy answer off the scheduler thread" moves the catch-up and cache-refresh hierarchy commands off the scheduler thread. Today they run there while they hold the `LocalPublications` lock.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. A live summary taken just after a unit director restarts shows no top-level row for it. The checkpoint carries `Change-Review: a unit director stays under its showrunner after a restart, never a top-level row | restart a unit director and watch the summary`.
+**Gotchas:** A late-answer test must not pass through the `Finished` exit, because that exit publishes all rows.
 
-### Phase 11 — Catch-up hierarchy answer off the scheduler thread  · status: todo
+**Ruled out:** Holding rows after a failed first command — a failure is the answer, and a hold hides every Claude session while the command is broken.
+
+### Phase 11 — Catch-up hierarchy answer off the scheduler thread  · status: done
 
 **Depends on:** Phase 10
 
@@ -343,17 +333,20 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Showrunner rules from phase 10 still hold: one refresh per new unnamed session id, then the id is recorded as checked, with no timer; no session is hidden by its name.
 
 **Spec:**
-1. When `HierarchyReady` finds a session that arrived while the first answer was pending (the F004 path, `schedule.rs` ≈413), the follow-up `hierarchy::read` runs off the scheduler thread, by the same pending path as the first answer: a typed pending state with its own receiver, delivered by `HierarchyReady`. The scheduler and the publication lock are never held across a command. The newcomer's rows stay held only until that answer arrives.
+1. No hierarchy command runs on the scheduler thread or under the publication lock, on any path: the catch-up in `finish_first` when `HierarchyReady` finds a session that arrived while the first answer was pending (`schedule.rs` ≈413), and every `cache.snapshot` call in `LocalPublications::discover_at` (new ids, cache expiry, retries). Each refresh is a typed pending state with its own receiver, delivered by `HierarchyReady`. Rows that wait on a refresh stay held only until its answer arrives. Showrunner ruling, 2026-10-19 (architect finding 1).
 2. `LocalAnswers.publications` (`schedule.rs` ≈207) gets a doc comment that states why publication ownership is shared.
-3. Test, with the drawn rows read back as the phase 10 restart tests do: the follow-up command blocks; remote probes and local publication of other rows continue while it is blocked; the newcomer draws nested under its showrunner once the answer is released.
+3. A refresh answer is accepted with refresh semantics, distinct from the initial answer: `HierarchyCache::first_outcome` resets `CheckedUnlinkedSessions`, but a refresh keeps the ids already checked. Name the request types for those two roles.
+4. A failed follow-up command releases the held rows with the retained links and the failure notice. A change of the hierarchy source, or a disabled source, while a follow-up is pending prevents its late answer from restoring old links.
+5. Tests, with the drawn rows read back as the phase 10 restart tests do: the follow-up command blocks; remote probes and local publication of other rows continue while it is blocked; the newcomer draws nested under its showrunner once the answer is released. Chained catch-up answers give an already-checked unnamed id no extra refresh (exact command counts). A failed follow-up releases rows with the notice; a source change during a pending follow-up keeps old links out.
 
 **Files:**
-- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/src/census/catch_up_hierarchy_tests.rs`, `crates/cargo-handler/src/census/fixtures/`
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester. All the code lands in `schedule.rs`, so `impl` takes the whole set.
-- `impl` — the pending follow-up state, the doc comment, the test in the `schedule.rs` tests module, CHANGELOG.
-- `test` — none in these files; it opens on no work and stands down.
+**Workers:** 1 writer + 1 tester.
+- `impl` — scheduler and cache production changes, test hooks, `mod` lines, the doc comment, CHANGELOG.
+- `test` — a new catch-up scheduler test module (`census/catch_up_hierarchy_tests.rs`) and its fixtures, including remote progress and rendered placement.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean. No visible change, so no `Change-Review:` line.
 
@@ -374,7 +367,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Spec:**
 1. Reset gradient: rank the accounts that have a reset time by that time (equal times share a rank). Rank 0 draws `success`, the last rank draws `error`, and ranks between are interpolated evenly. One ranked account draws `success`.
-2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the same key type, direction toggle and tie rule), kept per summary in app state; no second sort path. The default order stays the source order until a header is clicked.
+2. Header sort: each accounts-table column header is a sort target. A click sorts by it through phase 2's sort code (the shared `ColumnSort` direction toggle and tie rule), kept per summary in app state; no second sort path. `SummaryColumn` names agent columns and `ColumnSort::default()` always selects a column, so add an accounts column enum and a semantic state `SourceOrder | Sorted(<accounts column sort>)`, independent of the agent sort. Ordering: percentages and credits numeric, resets chronological, unavailable and unlimited values in a fixed place after real values, ties by source index. The default order stays the source order until a header is clicked. Architect finding 5, 2026-10-19.
 3. Tests, rendered through the summary draw and read back from the buffer: three accounts with different reset times draw success, the midpoint and error in time order; two equal reset times draw the same color; one account draws success; an account with no reset time draws its plain text; a click on each accounts header sorts by that column and a second click reverses it, through the drawn header spans.
 
 **Files:**

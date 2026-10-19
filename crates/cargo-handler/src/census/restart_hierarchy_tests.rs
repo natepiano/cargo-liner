@@ -322,15 +322,27 @@ fn restart_hierarchy_new_session_is_placed_before_its_first_published_frame() {
                 .publish_at(ScanStage::Classified, before.clone(), now)
                 .expect("showrunner classified");
             answers
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
+            answers
                 .publish_at(ScanStage::Completed, before, now)
                 .expect("showrunner completed");
+            answers
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
             let resumed = now + LOCAL_SCAN_INTERVAL;
             answers
                 .publish_at(ScanStage::Classified, production_rows(200), resumed)
                 .expect("new unit classified");
             answers
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
+            answers
                 .publish_at(ScanStage::Completed, production_rows(200), resumed)
                 .expect("new unit completed");
+            answers
+                .settle_test_request()
+                .expect("accept fixture hierarchy reply");
         },
     );
     let mut unit_publications = 0;
