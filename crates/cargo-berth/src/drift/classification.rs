@@ -7,6 +7,7 @@ use super::observation::ReservationPhaseHistory;
 use super::ordering;
 use super::provenance;
 use super::provenance::CommittedForeignPathHistory;
+use super::provenance::CoveredPathContribution;
 use super::provenance::PathCommitAuthorship;
 use super::report::DriftComparisonMode;
 use super::report::DriftEffect;
@@ -202,7 +203,7 @@ impl PreLockForeignPathClassification {
         subject: &Reservation,
         path: &ReservationScopePath,
         reservations: &RetainedReservationSet,
-        holders: &[ReservationId],
+        holder: ReservationId,
     ) -> ForeignPathAuthorship {
         let Some(candidate) = self
             .candidates
@@ -214,13 +215,34 @@ impl PreLockForeignPathClassification {
         if matches!(candidate.write_origin, ForeignPathWriteOrigin::WorkingTree) {
             return ForeignPathAuthorship::Entered(IncursionCoverageEvidence::WorkingTreeWrites);
         }
+        if matches!(
+            candidate.write_origin,
+            ForeignPathWriteOrigin::CommittedOnly
+        ) {
+            match provenance::covered_path_contribution(
+                &self.committed_history,
+                subject.phase_start_head().as_ref(),
+                path,
+                holder,
+            ) {
+                CoveredPathContribution::CoveredIntegration => {
+                    return ForeignPathAuthorship::CoveredIntegration;
+                },
+                CoveredPathContribution::EvidenceUnavailable => {
+                    return ForeignPathAuthorship::Entered(
+                        IncursionCoverageEvidence::HistoryUnavailable,
+                    );
+                },
+                CoveredPathContribution::EnteringWork => {},
+            }
+        }
         match provenance::path_commit_authorship(
             &self.committed_history,
             subject.id(),
             subject.phase_start_head().as_ref(),
             path,
             reservations,
-            holders,
+            &[holder],
         ) {
             PathCommitAuthorship::NoEnteringCommits
                 if matches!(
@@ -244,6 +266,34 @@ impl PreLockForeignPathClassification {
         }
     }
 
+    /// The covered contribution of a refused run's committed path, using prepared history.
+    /// A working-tree write or a missing reporting anchor cannot prove covered integration.
+    fn refused_path_contribution(
+        &self,
+        reservations: &RetainedReservationSet,
+        path: &ReservationScopePath,
+        holder: ReservationId,
+    ) -> CoveredPathContribution {
+        let Some(candidate) = self.candidates.iter().find(|candidate| {
+            candidate.path == *path
+                && matches!(
+                    candidate.write_origin,
+                    ForeignPathWriteOrigin::CommittedOnly
+                )
+        }) else {
+            return CoveredPathContribution::EvidenceUnavailable;
+        };
+        let Ok(subject) = reservations.reservation(candidate.reservation_id) else {
+            return CoveredPathContribution::EvidenceUnavailable;
+        };
+        provenance::covered_path_contribution(
+            &self.committed_history,
+            subject.phase_start_head().as_ref(),
+            path,
+            holder,
+        )
+    }
+
     /// Whether a present foreign holder stood on the path when the invocation began.
     fn was_foreign(&self, reservation_id: ReservationId, path: &ReservationScopePath) -> bool {
         self.candidates
@@ -253,6 +303,7 @@ impl PreLockForeignPathClassification {
 }
 
 enum ForeignPathAuthorship {
+    CoveredIntegration,
     Inherited,
     Entered(IncursionCoverageEvidence),
 }
@@ -342,14 +393,24 @@ impl DriftEffectBuilder {
         blockers: Vec<ReservationId>,
     ) {
         if prior.was_foreign(reservation.id(), path) {
-            let ForeignPathAuthorship::Entered(coverage) =
-                prior.coverage_evidence(reservation, path, reservations, &blockers)
-            else {
+            let mut entered_holders = Vec::new();
+            let mut evidence = Vec::new();
+            for holder in blockers {
+                match prior.coverage_evidence(reservation, path, reservations, holder) {
+                    ForeignPathAuthorship::CoveredIntegration
+                    | ForeignPathAuthorship::Inherited => {},
+                    ForeignPathAuthorship::Entered(coverage) => {
+                        entered_holders.push(holder);
+                        evidence.push(coverage);
+                    },
+                }
+            }
+            let Some(coverage) = evidence.into_iter().reduce(combine_entering_evidence) else {
                 return;
             };
             self.incursions.push(IncursionPathObservation {
                 path: path.clone(),
-                holders: blockers,
+                holders: entered_holders,
                 coverage,
             });
         } else {
@@ -467,6 +528,27 @@ impl DriftEffectBuilder {
 pub(super) struct DriftTransactionDecision {
     pub(super) operations: Vec<JournalOperation>,
     pub(super) report:     DriftReport,
+}
+
+/// Preserve [`IncursionCoverageEvidence::KnownEnteringCommits`] when the per-holder
+/// loop in [`DriftEffectBuilder::observe_foreign_path`] regroups decisions for one path.
+/// The regrouped incident must retain every entering commit its holders account for.
+fn combine_entering_evidence(
+    left: IncursionCoverageEvidence,
+    right: IncursionCoverageEvidence,
+) -> IncursionCoverageEvidence {
+    if left == right {
+        return left;
+    }
+    match (left, right) {
+        (
+            IncursionCoverageEvidence::KnownEnteringCommits { commits: left },
+            IncursionCoverageEvidence::KnownEnteringCommits { commits: right },
+        ) => IncursionCoverageEvidence::KnownEnteringCommits {
+            commits: left.union(right),
+        },
+        _ => IncursionCoverageEvidence::HistoryUnavailable,
+    }
 }
 
 pub(super) fn classify_locked(
@@ -625,6 +707,7 @@ pub(super) enum RefusedRunPathEntry {
 pub(super) fn attribute_refused_run_entry(
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
+    prior: &PreLockForeignPathClassification,
     refused: IssuingWorktreeRun,
     path_case: PathCase,
 ) -> RefusedRunPathEntry {
@@ -644,12 +727,42 @@ pub(super) fn attribute_refused_run_entry(
     ) else {
         return RefusedRunPathEntry::NoHolderEntered;
     };
-    let conflicts = reservations.conflicts_for_first_touch(
-        &candidate,
-        refused.coordination_run_id,
-        refused.worktree_id,
-        path_case,
-    );
+    let conflicts = reservations
+        .conflicts_for_first_touch(
+            &candidate,
+            refused.coordination_run_id,
+            refused.worktree_id,
+            path_case,
+        )
+        .into_iter()
+        .filter_map(|mut conflict| {
+            let entered_scopes = conflict
+                .overlapping_scopes
+                .as_slice()
+                .iter()
+                .filter(|held| {
+                    observed_paths.iter().any(|path| {
+                        let entered_scope = ReservationScope {
+                            path: path.clone(),
+                            kind: ScopeKind::File,
+                        };
+                        held.overlaps(&entered_scope, path_case)
+                            && !matches!(
+                                prior.refused_path_contribution(
+                                    reservations,
+                                    path,
+                                    conflict.reservation_id
+                                ),
+                                CoveredPathContribution::CoveredIntegration
+                            )
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            conflict.overlapping_scopes = ReservationScopeSet::try_from(entered_scopes).ok()?;
+            Some(conflict)
+        })
+        .collect::<Vec<_>>();
     let entered = observed_paths
         .into_iter()
         .filter(|path| {
@@ -658,7 +771,10 @@ pub(super) fn attribute_refused_run_entry(
                 kind: ScopeKind::File,
             };
             conflicts.iter().any(|conflict| {
-                conflict
+                !matches!(
+                    prior.refused_path_contribution(reservations, path, conflict.reservation_id),
+                    CoveredPathContribution::CoveredIntegration
+                ) && conflict
                     .overlapping_scopes
                     .as_slice()
                     .iter()

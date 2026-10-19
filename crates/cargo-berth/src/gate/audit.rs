@@ -113,7 +113,13 @@ pub(super) fn commit_forced_permit_audits(
                 LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
             })?;
         match outcome {
-            LedgerReconciliationOutcome::Appended { output: (), .. } => Ok(()),
+            LedgerReconciliationOutcome::Appended {
+                output: maintenance,
+                ..
+            } => {
+                maintenance.report();
+                Ok(())
+            },
             LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
         }
     })

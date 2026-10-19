@@ -21,3 +21,7 @@ pub(crate) const DERIVED_ORPHAN_RETIREMENT_REASON: &str = "berth retired this or
      git no longer registers the holder worktree, and the last completed merge-extent \
      observation proved the branch level with its integration target and nothing uncommitted, so the \
      reservation protected nothing and no later observation could change that";
+
+/// Summary shared by all renderers of deferred retention maintenance.
+pub(crate) const RETENTION_MAINTENANCE_DEFERRED_SUMMARY: &str =
+    "Retention-ref maintenance deferred.";
