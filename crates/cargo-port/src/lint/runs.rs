@@ -186,8 +186,8 @@ mod tests {
         let mut lr = LintRuns::default();
         assert_eq!(lr.last_started_at(), None);
 
-        // Stored newest-first: the leading Running run is skipped; the next
-        // terminal run supplies the start timestamp.
+        // `LintRuns::last_started_at` skips the leading `LintRunStatus::Running`
+        // entry in newest-first `runs` and uses the next terminal run's `started_at`.
         lr.set_runs(vec![
             run_at("c", "2026-04-24T12:00:05Z", LintRunStatus::Running),
             run_at("b", "2026-04-24T12:00:03Z", LintRunStatus::Passed),
