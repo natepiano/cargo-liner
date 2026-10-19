@@ -254,8 +254,9 @@ impl RootItem {
     }
 
     pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
-        // Check submodules first to avoid double-borrowing through the main
-        // hierarchy and then falling back to submodules on the same `&mut self`.
+        // `submodules` and `submodule_info_mut` run before the main `RootItem` match
+        // to avoid borrowing the hierarchy and then reborrowing submodules through
+        // the same `&mut self`.
         if self.submodules().iter().any(|s| s.path.as_path() == path) {
             return submodule_info_mut(self, path);
         }
@@ -527,7 +528,8 @@ pub(crate) fn strip_worktree_badge_suffix(label: &str) -> &str {
     prefix
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// `submodule_info_mut` and `find_in_group_mut` provide mutable hierarchy access;
+// `sum_disk` aggregates known measurements.
 
 /// Mutable access to a submodule's `ProjectInfo` by path.
 ///
