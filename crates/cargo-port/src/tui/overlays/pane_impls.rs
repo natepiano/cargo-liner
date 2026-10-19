@@ -35,7 +35,8 @@ impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
         ctx: &PaneRenderCtx<'_>,
     ) -> Option<PaneFrameChrome> {
         settings::render_settings_pane_body(frame, self, ctx);
-        // An overlay floats over the grid and draws its own border.
+        // `SettingsPane` draws its own floating border in `settings::render_settings_pane_body`, so
+        // `render` returns no `PaneFrameChrome` for the grid.
         None
     }
 }
