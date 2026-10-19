@@ -535,13 +535,14 @@ mod tests {
 
     #[test]
     fn collect_cargo_metadata_roots_unions_primary_and_linked_worktrees() {
-        // Merge a primary + two linked worktrees into a group, then assert
-        // every worktree gets its own metadata root.
+        // `tree::merge_worktrees_new` combines `primary`, `linked_a` and
+        // `linked_b`; `collect_cargo_metadata_roots` must retain a metadata
+        // root for every checkout.
         let primary = make_workspace(Some("ws"), "/ws", false, Some("/ws"));
         let linked_a = make_workspace(Some("ws_feat"), "/ws_feat", true, Some("/ws"));
         let linked_b = make_workspace(Some("ws_bug"), "/ws_bug", true, Some("/ws"));
         let mut items = vec![primary, linked_a, linked_b];
-        // Use the merge logic the production scan uses.
+        // `tree::merge_worktrees_new` is also used by the production scan.
         tree::merge_worktrees_new(&mut items);
         assert_eq!(items.len(), 1, "merged into one worktree group");
 
@@ -560,9 +561,9 @@ mod tests {
 
     #[test]
     fn collect_cargo_metadata_roots_dedupes_repeated_paths() {
-        // Shouldn't happen in practice (each project has a unique path),
-        // but the deduping logic is cheap and catches any future caller
-        // that accidentally feeds the same root twice.
+        // Projects normally have unique paths; `collect_cargo_metadata_roots`
+        // uses its `seen` set to cheaply deduplicate repeated paths from
+        // future callers.
         let pkg_a = make_package(Some("a"), "/pkg", false, Some("/pkg"));
         let pkg_b = make_package(Some("b"), "/pkg", false, Some("/pkg"));
 

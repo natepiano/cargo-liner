@@ -258,8 +258,8 @@ impl BackgroundMsg {
     /// `None` — they invalidate via their own routes (or don't need to).
     pub(crate) fn detail_relevance(&self) -> Option<&Path> {
         match self {
-            // Per-project path bearing — each maps to a field rendered
-            // inside the detail set.
+            // These `BackgroundMsg` variants return `path` for fields rendered
+            // in the detail set.
             Self::DiskUsage { path, .. }              // package.disk
             | Self::CiRuns { path, .. }                // ci.runs
             | Self::CheckoutInfo { path, .. }          // git.branch / git.status
@@ -270,8 +270,8 @@ impl BackgroundMsg {
             | Self::Submodules { path, .. }            // submodules detail
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
 
-            // Discovery/refresh of an item is detail-relevant for that
-            // item's path (ahead/behind cache, package fields, etc.).
+            // `ProjectDiscovered` and `ProjectRefreshed` return `RootItem::path`,
+            // since changes can affect ahead/behind caches and package fields.
             Self::ProjectDiscovered { item }
             | Self::ProjectRefreshed { item } => Some(item.path()),
 
@@ -289,10 +289,10 @@ impl BackgroundMsg {
             // Batch arrivals are aggregated and the handler bumps
             // generation explicitly (see `handle_disk_usage_batch_msg`).
             | Self::DiskUsageBatch { .. }
-            // The project-pane footer reads this stored aggregate rather
-            // than feeding selected-project detail data.
+            // `ProjectStorage` feeds the project-pane footer aggregate,
+            // rather than selected-project detail data.
             | Self::ProjectStorage { .. }
-            // Counted language progress only feeds the startup panel.
+            // `LanguageStatsProgressPlan` feeds only the startup progress panel.
             | Self::LanguageStatsProgressPlan { .. }
             // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
@@ -300,10 +300,12 @@ impl BackgroundMsg {
             // batch the handler bumps generation explicitly (see
             // `handle_test_counts_batch`).
             | Self::TestCountsBatch { .. }
-            // On-demand tooling overlay data does not affect project detail.
+            // `SccacheStats` and `SccacheSummary` feed on-demand tooling/status
+            // UI without changing project detail.
             | Self::SccacheStats { .. }
             | Self::SccacheSummary(_)
-            // Fetch lifecycle is reflected via toasts, not detail data.
+            // These repository/PR/crates.io lifecycle `BackgroundMsg` variants
+            // update toasts rather than selected-project detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
             | Self::PullRequests { .. }
@@ -316,25 +318,27 @@ impl BackgroundMsg {
             // raises a toast.
             | Self::CratesIoNewRelease { .. }
             | Self::ProjectDetailsDeclared { .. }
-            // Live lint statuses resolve the lint-owning project before
-            // invalidating detail panes; doing it in the handler keeps
-            // owner remaps and toast state tied to the same model update.
+            // `LintStatus` invalidates detail only after its handler resolves
+            // the lint-owning project, tying owner remaps and toast state to
+            // the same model update.
             | Self::LintStatus { .. }
-            // Cache pruning and cache usage refreshes are internal to
-            // the lint subsystem.
+            // `LintCachePruned` and `LintCacheUsage` affect lint-subsystem
+            // state without per-project invalidation here.
             | Self::LintCachePruned { .. }
             | Self::LintCacheUsage { .. }
-            // Startup history load is a batch spanning every project; the
-            // handler bumps generation explicitly after applying it.
+            // `LintHistoryLoaded` spans projects; its handler bumps generation
+            // explicitly after applying the startup batch.
             | Self::LintHistoryLoaded { .. }
-            // Service availability is a separate UI surface.
+            // `ServiceReachable`, `ServiceRecovered`, `ServiceUnreachable`,
+            // `ServiceUnreachableConfirmed` and `ServiceRateLimited` update
+            // service availability UI separately from project detail.
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
             | Self::ServiceUnreachable { .. }
             | Self::ServiceUnreachableConfirmed { .. }
             | Self::ServiceRateLimited { .. }
-            // OS appearance changes swap the active theme; no per-project
-            // detail data flows through this variant.
+            // `AppearanceChanged` swaps the active theme without sending
+            // per-project detail data.
             | Self::AppearanceChanged(_) => None,
         }
     }
@@ -344,9 +348,9 @@ pub(super) const fn combine_service_signal(
     left: Option<ServiceSignal>,
     right: Option<ServiceSignal>,
 ) -> Option<ServiceSignal> {
-    // Priority: Unreachable > RateLimited > Reachable — any bad signal
-    // wins over a good one, and network failure trumps rate-limit when
-    // both show up in the same batch.
+    // `combine_service_signal` gives `ServiceSignal::Unreachable` priority
+    // over `RateLimited` and `Reachable`, so failure wins over success and
+    // network failure trumps rate limiting within a batch.
     match (left, right) {
         (Some(ServiceSignal::Unreachable(service)), _)
         | (_, Some(ServiceSignal::Unreachable(service))) => {
