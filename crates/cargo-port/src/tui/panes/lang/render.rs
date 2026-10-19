@@ -27,30 +27,31 @@ use crate::tui::theme_roles;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
 pub fn language_icon(language: &str) -> &'static str {
+    // Each trailing comment shows the glyph its escape renders.
     match language.to_ascii_lowercase().as_str() {
-        "rust" => "\u{1f980}", // `language_icon` renders 🦀 for rust.
-        "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", /* `language_icon` renders 🌊 for c, c++, c header, c++ header, c++ module. */
-        "java" => "\u{2615}", // `language_icon` renders ☕ for java.
+        "rust" => "\u{1f980}",                                                 // 🦀
+        "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", // 🌊
+        "java" => "\u{2615}",                                                  // ☕
         "go" => "Go",
-        "python" => "\u{1f40d}", // `language_icon` renders 🐍 for python.
+        "python" => "\u{1f40d}", // 🐍
         "javascript" | "jsx" => "JS",
         "typescript" | "tsx" => "TS",
-        "markdown" => "M\u{2193}", // `language_icon` renders M↓ for markdown.
+        "markdown" => "M\u{2193}", // M↓
         "shell" | "bash" | "zsh" | "fish" => "$_",
-        "liquid" => "\u{1f4a7}", // `language_icon` renders 💧 for liquid.
-        "toml" => "\u{2699}\u{fe0f}", // `language_icon` renders ⚙️ for toml.
+        "liquid" => "\u{1f4a7}",      // 💧
+        "toml" => "\u{2699}\u{fe0f}", // ⚙️
         "json" => "{}",
-        "html" => "\u{1f310}",       // `language_icon` renders 🌐 for html.
-        "plain text" => "\u{1f4c4}", // `language_icon` renders 📄 for plain text.
+        "html" => "\u{1f310}",       // 🌐
+        "plain text" => "\u{1f4c4}", // 📄
         "xml" => "<>",
-        "glsl" | "webgpu shader language" => "\u{1f53a}", /* `language_icon` renders 🔺 for the GLSL and WebGPU shading languages. */
-        "svg" => "\u{1f4d0}",                             // `language_icon` renders 📐 for svg.
+        "glsl" | "webgpu shader language" => "\u{1f53a}", // 🔺 (shading languages)
+        "svg" => "\u{1f4d0}",                             // 📐
         "yaml" => "Y:",
-        "bitbake" => "\u{1f35e}", // `language_icon` renders 🍞 for bitbake.
-        "cmake" => "\u{1f528}",   // `language_icon` renders 🔨 for cmake.
-        "makefile" => "\u{1f6e0}\u{fe0f}", // `language_icon` renders 🛠️ for makefile.
-        "autoconf" => "\u{1f527}", // `language_icon` renders 🔧 for autoconf.
-        "asciidoc" => "A\u{2193}", // `language_icon` renders A↓ for asciidoc.
+        "bitbake" => "\u{1f35e}",          // 🍞
+        "cmake" => "\u{1f528}",            // 🔨
+        "makefile" => "\u{1f6e0}\u{fe0f}", // 🛠️
+        "autoconf" => "\u{1f527}",         // 🔧
+        "asciidoc" => "A\u{2193}",         // A↓
         "batch" => "C:",
         // `language_icon` maps tokei's "Rusty Object Notation" name to the abbreviated RON label.
         "rusty object notation" => "RON",
