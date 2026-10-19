@@ -7,7 +7,6 @@
 mod pane;
 mod presentation;
 #[cfg(test)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod presentation_tests;
 mod render;
 mod selection;
