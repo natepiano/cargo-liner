@@ -599,7 +599,7 @@ impl App {
         // filesystem-detected at refresh time and must survive the info copy.
         // `worktree_status` is no longer on `ProjectInfo` — it lives directly
         // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
-        // clobber it.
+        // assign to `worktree_status`.
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
         let dispatch = self.metadata_dispatch();
         {
