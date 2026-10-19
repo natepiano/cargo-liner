@@ -135,7 +135,8 @@ mod tests {
             status_line.claim_poll(start),
             SccachePollDecision::Claimed
         ));
-        // In flight: no second process while the first is outstanding.
+        // `SccachePoll::InFlight` makes `claim_poll` return `SccachePollDecision::NotDue`,
+        // preventing a second process while the first remains outstanding.
         assert!(matches!(
             status_line.claim_poll(start + Duration::from_secs(REFRESH_INTERVAL_SECS)),
             SccachePollDecision::NotDue

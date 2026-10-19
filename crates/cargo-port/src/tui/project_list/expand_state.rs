@@ -108,9 +108,9 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                     }
                 }
             },
-            // A single live worktree renders like a plain workspace — its named
-            // groups are keyed `Group`, not `WorktreeGroup` (see
-            // `compute_visible_rows`).
+            // `worktree_group.single_live()` renders as a plain workspace, so
+            // `compute_visible_rows` keys its named groups with `ExpandKey::Group`, not
+            // `ExpandKey::WorktreeGroup`.
             RootItem::Worktrees(worktree_group) => {
                 if let Some(RustProject::Workspace(ws)) = worktree_group.single_live() {
                     for (gi, group) in ws.groups().iter().enumerate() {
