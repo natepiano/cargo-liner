@@ -242,15 +242,15 @@ pub fn run() -> ExitCode {
         },
     };
     tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
-    // Probe the terminal background while no thread is reading input yet,
-    // so the OSC 11 response can't be swallowed by `spawn_input_thread`.
+    // Call `detect_terminal_appearance` before `event_loop::spawn_input_thread` starts reading
+    // input, so it cannot consume the OSC 11 response.
     app.set_terminal_appearance(detect_terminal_appearance());
     let input_rx = event_loop::spawn_input_thread();
 
     let result = event_loop::event_loop(&mut terminal, &mut app, &input_rx);
 
-    // Persist tree UI state on exit — including a restart, so the relaunched
-    // process restores the same selection and expansions.
+    // `tree_state::save_tree_state` persists selection and expansions on exit, including restart,
+    // so the relaunched process restores the same state.
     tree_state::save_tree_state(&app);
 
     let should_restart = app.framework.restart_requested();
