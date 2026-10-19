@@ -22,6 +22,7 @@ use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::render;
+use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
 use crate::theme::RainbowHue;
@@ -318,6 +319,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
         &mut buffer,
         AREA,
         &SummaryFrame {
+            accounts_sort:  AccountsSort::SourceOrder,
             accounts:       &AccountsTable::NotConfigured,
             machines:       &machines,
             placement:      &placement,

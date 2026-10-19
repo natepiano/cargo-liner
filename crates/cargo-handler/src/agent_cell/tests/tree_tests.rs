@@ -19,6 +19,7 @@ use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_STATUS_HEADER;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 
 /// A remote probe's account value, independent of the runner's home directory.
@@ -758,6 +759,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             frame_account_column,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let rect = area(
             width,
@@ -768,6 +770,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             &mut buffer,
             rect,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,

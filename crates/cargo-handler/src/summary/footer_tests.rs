@@ -16,6 +16,7 @@ use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
+use crate::sort::AccountsSort;
 
 /// Fixed census time for deterministic age labels.
 const NOW: u64 = 1_000_000;
@@ -103,6 +104,7 @@ fn rendered_with_colors(
             account_column,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         ),
         u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
             .expect("fixture height"),
@@ -112,6 +114,7 @@ fn rendered_with_colors(
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts_sort: AccountsSort::SourceOrder,
             accounts: &AccountsTable::NotConfigured,
             machines: &machines,
             placement: &placement,
