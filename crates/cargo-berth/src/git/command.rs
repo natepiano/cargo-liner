@@ -5,15 +5,39 @@ use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
+use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::thread;
 
 use super::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 use super::constants::GIT_BINARY;
 use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
 use super::constants::GIT_REPOSITORY_ENVIRONMENT;
+
+// Pipe creation and child spawn form one critical section. A persistent child
+// must never inherit another concurrent command's not-yet-sealed pipe ends.
+static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
+
+/// Seal every piped stream before another child can inherit file descriptors.
+pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<Child> {
+    let spawn = PROCESS_SPAWN
+        .lock()
+        .map_err(|_| io::Error::other("Git spawn lock was poisoned"))?;
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    drop(spawn);
+    child
+}
+
+/// Capture output without holding the spawn lock while the child runs.
+pub(super) fn command_output(command: &mut Command) -> io::Result<Output> {
+    spawn_with_piped_output(command.stdin(Stdio::null()))?.wait_with_output()
+}
 
 /// Whether a git invocation may execute repository hooks.
 #[derive(Clone, Copy)]
@@ -90,7 +114,7 @@ pub(super) fn git_output<const ARGUMENT_COUNT: usize>(
     repository_root: &Path,
     arguments: [&str; ARGUMENT_COUNT],
 ) -> io::Result<Output> {
-    git_command(repository_root)?.args(arguments).output()
+    command_output(git_command(repository_root)?.args(arguments))
 }
 
 /// Run one read-only git operation through the typed process-execution boundary.
@@ -99,7 +123,7 @@ pub(crate) fn git_execution(
     arguments: &[&str],
 ) -> GitCommandOutputAvailability {
     git_command(repository_root)
-        .and_then(|mut command| command.args(arguments).output())
+        .and_then(|mut command| command_output(command.args(arguments)))
         .into()
 }
 
@@ -108,7 +132,7 @@ pub(super) fn git_output_dynamic(
     repository_root: &Path,
     arguments: &[String],
 ) -> io::Result<Output> {
-    git_command(repository_root)?.args(arguments).output()
+    command_output(git_command(repository_root)?.args(arguments))
 }
 
 /// Run one dynamically assembled git operation with complete standard input.
@@ -128,9 +152,10 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy(
     arguments: &[String],
     hook_execution_policy: GitHookExecutionPolicy,
 ) -> io::Result<Output> {
-    git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?
-        .args(arguments)
-        .output()
+    command_output(
+        git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?
+            .args(arguments),
+    )
 }
 
 /// Run one dynamically assembled git operation with a repository-hook execution policy.
@@ -148,11 +173,7 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy_and_input(
 
 /// Run a configured git command while writing its complete standard input concurrently.
 fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<Output> {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child = spawn_with_piped_output(command.stdin(Stdio::piped()))?;
     let mut stdin = child
         .stdin
         .take()

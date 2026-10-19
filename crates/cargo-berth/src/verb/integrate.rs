@@ -68,13 +68,19 @@ fn execute_for_target(
     repository_root: &Path,
     target: IntegrationTarget,
 ) -> OutputEnvelope {
-    let previous = match git::branch_object_id(repository_root, target.short_name()) {
+    let repository = match git::RepositorySnapshot::discover(repository_root) {
+        Ok(repository) => repository,
+        Err(error) => {
+            return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
+        },
+    };
+    let previous = match git::branch_object_id(&repository.object_reader(), target.short_name()) {
         Ok(previous) => previous,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
         },
     };
-    let proposed = match git::head_object_id(repository_root) {
+    let proposed = match repository.head_object_id().cloned() {
         Ok(proposed) => proposed,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
@@ -211,12 +217,14 @@ fn integration_directories() -> Result<(PathBuf, PathBuf), Box<OutputEnvelope>> 
             &error.to_string(),
         ))
     })?;
-    let repository_root = git::repository_root(&invocation_directory).map_err(|error| {
-        Box::new(OutputEnvelope::ledger_unreadable(
-            CommandVerb::Integrate,
-            &error.to_string(),
-        ))
-    })?;
+    let repository_root = git::RepositorySnapshot::discover(&invocation_directory)
+        .map(|snapshot| snapshot.repository_root().to_path_buf())
+        .map_err(|error| {
+            Box::new(OutputEnvelope::ledger_unreadable(
+                CommandVerb::Integrate,
+                &error.to_string(),
+            ))
+        })?;
     Ok((invocation_directory, repository_root))
 }
 

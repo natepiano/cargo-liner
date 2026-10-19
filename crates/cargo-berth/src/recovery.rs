@@ -15,6 +15,7 @@ use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::RepositorySnapshot;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
 use crate::ids::RecordedAt;
@@ -404,6 +405,7 @@ fn execute_reservation_resolution(
     let current_worktree_root = canonical_root(&worktree_context)?;
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let repository_trunk = configured_recovery_trunk(&berth_config)?;
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
     let outcome = ledger
         .transact_with_committed_action(
             journal_mutation_actor.worktree_id,
@@ -435,7 +437,7 @@ fn execute_reservation_resolution(
                     },
                 };
                 let recovery_request = match validate_recovery_request(
-                    repository_root,
+                    &repository,
                     reservations,
                     resolve_request.reservation_id,
                     &repository_trunk,
@@ -570,12 +572,13 @@ enum IntegrationEvidenceReachabilityBasis {
 }
 
 fn validate_recovery_request(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     reservations: &RetainedReservationSet,
     reservation_id: ReservationId,
     repository_trunk: &IntegrationTarget,
     recovery_request: ReservationRecoveryDecision,
 ) -> Result<ReservationRecoveryDecision, RecoveryRejection> {
+    let repository_root = repository.repository_root();
     let ReservationRecoveryDecision::IntegratedAs(trunk_commit) = recovery_request else {
         return Ok(recovery_request);
     };
@@ -594,9 +597,11 @@ fn validate_recovery_request(
             IntegrationEvidenceReachabilityBasis::RepositoryTrunk
         },
     };
-    let target_oid =
-        reservation::current_trunk(repository_root, judging_branch.target().short_name())
-            .map_err(RecoveryRejection::Git)?;
+    let target_oid = reservation::current_trunk(
+        &repository.object_reader(),
+        judging_branch.target().short_name(),
+    )
+    .map_err(RecoveryRejection::Git)?;
     match git::reachability(repository_root, trunk_commit.as_ref(), &target_oid)
         .map_err(RecoveryRejection::Git)?
     {
@@ -883,9 +888,8 @@ impl RecoveryCommittedAction {
         self,
         worktree_context: &WorktreeContext,
     ) -> Result<ResolvePayloadSeed, RecoveryError> {
-        git::update_reservation_retention_refs(
+        git::delete_reservation_retention_refs(
             worktree_context.repository_root(),
-            &[],
             &self.retention_deletions,
         )?;
         match self.committed_action {

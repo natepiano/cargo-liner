@@ -154,7 +154,7 @@ const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
 /// lacks. Every branch path read is those two invocations. Authorship also reads the
 /// locally available upstream once per distinct integration target.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 17;
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 13;
 const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -221,15 +221,9 @@ if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] 
 fi
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_origin_classification" ] \
     && [ "$1" = "--no-optional-locks" ] \
-    && [ "$2" = "rev-list" ] \
-    && [ -n "${3:-}" ] \
-    && [ -z "${4:-}" ]; then
-    case "$3" in
-        *..*)
-            printf '%s\n' 'injected origin classification failure' >&2
-            exit 23
-            ;;
-    esac
+    && [ "$2" = "for-each-ref" ]; then
+    printf '%s\n' 'injected origin classification failure' >&2
+    exit 23
 fi
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_target_history" ] \
     && [ "$1" = "--no-optional-locks" ] \
@@ -1153,35 +1147,44 @@ fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
 /// git's own records of the commit reads the same after it.
 #[test]
 fn hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged() {
-    let repository = staged_configuration_repository();
-    let git_directory = repository.path().join(".git");
-    let before = files_under(&git_directory);
-    let hooked_git = HookedGit::new();
-    hooked_git.run(
-        repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
-    );
-    hooked_git.assert_started(&[
-        "__reference-transaction prepared",
-        "__reference-transaction committed",
-        "drift --full",
-    ]);
+    for source_baseline in [false, true] {
+        let repository = staged_configuration_repository();
+        // The rewrite builder also adds a source baseline before any reservation exists.
+        if source_baseline {
+            fs::write(repository.path().join("phase.txt"), "phase baseline\n")
+                .expect("source baseline should write");
+            GIT.run(repository.path(), ["add", "phase.txt"]);
+        }
+        let git_directory = repository.path().join(".git");
+        let before = files_under(&git_directory);
+        let hooked_git = HookedGit::new();
+        hooked_git.run(
+            repository.path(),
+            &["commit", "--quiet", "-m", "configure berth"],
+        );
+        hooked_git.assert_started(&[
+            "__reference-transaction prepared",
+            "__reference-transaction committed",
+            "drift --full",
+        ]);
 
-    let after = files_under(&git_directory);
-    let commit_records = [
-        Path::new("COMMIT_EDITMSG"),
-        Path::new("index"),
-        Path::new("logs/HEAD"),
-        Path::new("logs/refs/heads/main"),
-        Path::new("refs/heads/main"),
-    ];
-    let commit_record = |path: &Path| commit_records.contains(&path) || path.starts_with("objects");
-    let changed: Vec<&PathBuf> = before
-        .keys()
-        .chain(after.keys())
-        .filter(|path| !commit_record(path) && before.get(*path) != after.get(*path))
-        .collect();
-    assert!(changed.is_empty(), "the hooked commit changed {changed:?}");
+        let after = files_under(&git_directory);
+        let commit_records = [
+            Path::new("COMMIT_EDITMSG"),
+            Path::new("index"),
+            Path::new("logs/HEAD"),
+            Path::new("logs/refs/heads/main"),
+            Path::new("refs/heads/main"),
+        ];
+        let commit_record =
+            |path: &Path| commit_records.contains(&path) || path.starts_with("objects");
+        let changed: Vec<&PathBuf> = before
+            .keys()
+            .chain(after.keys())
+            .filter(|path| !commit_record(path) && before.get(*path) != after.get(*path))
+            .collect();
+        assert!(changed.is_empty(), "the hooked commit changed {changed:?}");
+    }
 }
 
 /// A copy of `INITIALIZED_REPOSITORY` holds what `build_initialized_repository` writes in place.
@@ -3422,6 +3425,47 @@ fn packing_a_loose_trunk_ref_leaves_dispatch_unchanged_without_a_notice() {
 }
 
 #[test]
+fn packing_two_gated_refs_at_the_same_tip_succeeds_without_a_refusal() {
+    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    GIT.run_without_hooks(repository.root(), ["branch", "style/main", "main"]);
+    let lane = repository.lane("packing-lane", "style/main");
+    let claimed = repository.claim(&lane, "file:shared.txt", FIRST_RUN, Some("style/main"));
+    assert_success(&claimed);
+    set_gate_mode(repository.root(), "enforce");
+    let tip = git_stdout(repository.root(), &["rev-parse", "main"]);
+    assert_eq!(
+        git_stdout(repository.root(), &["rev-parse", "style/main"]),
+        tip
+    );
+    let before = fs::read(repository.root().join(JOURNAL_PATH)).expect("journal before packing");
+
+    let packed = git_output(repository.root(), &["pack-refs", "--all"]);
+
+    assert!(
+        packed.status.success(),
+        "packing unchanged gated refs must succeed: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    assert!(
+        packed.stderr.is_empty(),
+        "packing unchanged gated refs must not report a refusal: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let packed_refs = fs::read_to_string(repository.root().join(".git/packed-refs"))
+        .expect("packed refs should read");
+    for reference in ["refs/heads/main", "refs/heads/style/main"] {
+        assert!(
+            packed_refs.contains(&format!("{tip} {reference}\n")),
+            "{packed_refs}"
+        );
+    }
+    assert_eq!(
+        fs::read(repository.root().join(JOURNAL_PATH)).expect("journal after packing"),
+        before
+    );
+}
+
+#[test]
 fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
@@ -4333,6 +4377,69 @@ fn pending_rebase_checkpoint_with_ordering_hold() -> DeferredPair {
 }
 
 #[test]
+fn pending_rewrite_board_shares_its_object_reader_with_reconciliation() {
+    let fixture = two_pending_rewrites_with_ordering_hold();
+    let root = fixture.pair.repository.path();
+    let (board, invocations) = run_berth_with_raw_git_trace(root, &["board", "--json"]);
+    assert!(
+        board.status.success(),
+        "{}",
+        String::from_utf8_lossy(&board.stderr)
+    );
+    assert_eq!(
+        git_command_count(&invocations, "cat-file"),
+        1,
+        "{invocations:?}"
+    );
+    assert_eq!(
+        git_command_count(&invocations, "worktree"),
+        1,
+        "{invocations:?}"
+    );
+    assert_second_rewrite_remains_deferred(&fixture);
+}
+
+#[test]
+fn pending_rewrite_gate_shares_its_object_reader_with_preflight() {
+    let fixture = two_pending_rewrites_with_ordering_hold();
+    let root = fixture.pair.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let rewritten_tip = git_stdout(&fixture.pair.blocked_root, &["rev-parse", "HEAD"]);
+    let hook = root.join(".git/hooks/reference-transaction");
+    let update = format!("{base} {rewritten_tip} refs/heads/main");
+    // Git prepends its own executable directory before invoking hooks. Start the
+    // installed hook with the same input so its Git children keep our trace PATH.
+    let (direct, invocations) = run_command_with_raw_git_trace(
+        root,
+        OsStr::new("sh"),
+        &[
+            "-c",
+            "printf '%s\n' \"$2\" | \"$1\" prepared",
+            "prepared-hook",
+            hook.to_str().expect("hook path should be UTF-8"),
+            &update,
+        ],
+    );
+    assert!(
+        !direct.status.success(),
+        "a deferred rewrite must keep its ordering hold"
+    );
+    assert!(String::from_utf8_lossy(&direct.stderr).contains("Ordering edge"));
+    assert_eq!(
+        git_command_count(&invocations, "cat-file"),
+        1,
+        "{invocations:?}"
+    );
+    assert_eq!(
+        git_command_count(&invocations, "worktree"),
+        1,
+        "{invocations:?}"
+    );
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    assert_second_rewrite_remains_deferred(&fixture);
+}
+
+#[test]
 fn budget_deferred_rewrite_obeys_ordering_in_direct_integration() {
     let fixture = two_pending_rewrites_with_ordering_hold();
     let root = fixture.pair.repository.path();
@@ -5057,7 +5164,7 @@ fn hook_lock_contention_uses_one_shortened_lock_deadline() {
         "{diagnostic}"
     );
     assert!(!diagnostic.contains("total deadline"), "{diagnostic}");
-    assert!(diagnostic.contains("10-second"));
+    assert!(diagnostic.contains("60-second"));
     assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
 }
 
@@ -5276,8 +5383,6 @@ fn incursion_report_survives_origin_classification_failure() {
         ],
     );
     let entering_commit = git_stdout(&subject_root, &["rev-parse", "HEAD"]);
-    let origin_basis = git_stdout(&subject_root, &["rev-parse", "refs/heads/main"]);
-    let origin_range = format!("{origin_basis}..{entering_commit}");
     let (reported, trace) = run_berth_with_raw_git_behavior(
         &subject_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
@@ -5305,7 +5410,14 @@ fn incursion_report_survives_origin_classification_failure() {
     let origin_invocation_count = trace
         .iter()
         .filter(|invocation| {
-            invocation.arguments == ["git", "--no-optional-locks", "rev-list", &origin_range]
+            invocation.arguments
+                == [
+                    "git",
+                    "--no-optional-locks",
+                    "for-each-ref",
+                    "--format=%(refname)%00%(upstream)",
+                    "refs/heads/",
+                ]
         })
         .count();
     assert_eq!(origin_invocation_count, 1, "raw git trace: {trace:#?}");

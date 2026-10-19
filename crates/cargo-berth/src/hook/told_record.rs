@@ -10,8 +10,9 @@
 //! missing, unreadable or foreign record means nothing has been told yet, and a failed write
 //! only means a line may be stated again. `SessionStart` forgets the main agent's record,
 //! because the context that record describes is gone, and removes every record left unwritten
-//! for a week.
+//! for 24 hours.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -24,6 +25,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::process_binding::HarnessSessionIdentityAvailability;
+use crate::ledger::FINISHED_HISTORY_RETENTION;
 use crate::ledger::WorktreeContext;
 use crate::session;
 use crate::session::HarnessSessionId;
@@ -33,7 +35,7 @@ const TOLD_RECORD_FILE_PREFIX: &str = "hook-told-";
 /// The suffix every published told-record file carries.
 const TOLD_RECORD_FILE_SUFFIX: &str = ".json";
 /// How long a record may go unwritten before `SessionStart` removes it.
-const TOLD_RECORD_RETENTION: Duration = Duration::from_hours(7 * 24);
+const TOLD_RECORD_RETENTION: Duration = FINISHED_HISTORY_RETENTION;
 /// The FNV-1a 64-bit offset basis the record file name starts from.
 const FNV_OFFSET_BASIS: u64 = 14_695_981_039_346_656_037;
 /// The FNV-1a 64-bit prime.
@@ -70,6 +72,9 @@ struct ToldRecordFile {
     harness_session_id: String,
     agent_id:           Option<String>,
     lines:              BTreeSet<String>,
+    /// Each line expires even when other notices keep this reader's file active.
+    #[serde(default)]
+    stated_at:          BTreeMap<String, SystemTime>,
 }
 
 impl HookReader {
@@ -118,8 +123,21 @@ impl HookReader {
         if stated_lines.is_empty() {
             return UntoldDetail::Untold(detail.to_owned());
         }
+        remove_stale_records(ledger_directory, SystemTime::now());
         let record_path = self.record_path(ledger_directory);
         let mut record = self.read_record(&record_path);
+        let now = SystemTime::now();
+        let legacy_time = fs::metadata(&record_path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(now);
+        record.lines.retain(|line| {
+            let at = record.stated_at.entry(line.clone()).or_insert(legacy_time);
+            now.duration_since(*at)
+                .map_or(true, |elapsed| elapsed <= TOLD_RECORD_RETENTION)
+        });
+        record
+            .stated_at
+            .retain(|line, _| record.lines.contains(line));
         let untold_lines = stated_lines
             .into_iter()
             .filter(|line| !record.lines.contains(*line))
@@ -127,9 +145,10 @@ impl HookReader {
         if untold_lines.is_empty() {
             return UntoldDetail::NothingNew;
         }
-        record
-            .lines
-            .extend(untold_lines.iter().map(|line| (*line).to_owned()));
+        for line in &untold_lines {
+            record.lines.insert((*line).to_owned());
+            record.stated_at.insert((*line).to_owned(), now);
+        }
         publish_record(&record_path, &record);
         UntoldDetail::Untold(untold_lines.join("\n"))
     }
@@ -157,6 +176,7 @@ impl HookReader {
                 HookReaderAgent::Subagent { agent_id } => Some(agent_id.clone()),
             },
             lines:              BTreeSet::new(),
+            stated_at:          BTreeMap::new(),
         };
         fs::read(record_path)
             .ok()
@@ -169,7 +189,7 @@ impl HookReader {
     }
 }
 
-/// Forget what an opening session's main agent was told, and remove week-old records.
+/// Forget what an opening session's main agent was told, and remove expired records.
 ///
 /// `SessionStart` fires for a main agent alone, on startup, resume, clear, compaction and fork;
 /// in each case the context the main agent's record describes is not the one it now reads, so
@@ -349,15 +369,35 @@ mod tests {
     }
 
     #[test]
+    fn active_reader_expires_old_notice_lines_without_forgetting_recent_ones() {
+        let directory = TempDir::new().expect("scratch ledger");
+        let main = reader(None);
+        assert!(untold(&main, &directory, "old\nrecent").is_some());
+        let path = main.record_path(directory.path());
+        let mut stored = main.read_record(&path);
+        stored.stated_at.insert(
+            "old".to_owned(),
+            SystemTime::now() - Duration::from_hours(25),
+        );
+        super::publish_record(&path, &stored);
+        assert_eq!(
+            untold(&main, &directory, "old\nrecent"),
+            Some("old".to_owned()),
+            "a continuously active reader still expires yesterday's notices"
+        );
+        assert_eq!(untold(&main, &directory, "old\nrecent"), None);
+    }
+
+    #[test]
     fn only_told_records_past_the_retention_are_removed() {
         let ledger_directory = TempDir::new().expect("a scratch ledger directory");
         let now = SystemTime::now();
-        let week_old = now - TOLD_RECORD_RETENTION - Duration::from_secs(60);
+        let expired = now - TOLD_RECORD_RETENTION - Duration::from_secs(60);
         let paths = [
-            ("hook-told-stale.json", week_old, false),
-            ("hook-told-stale.json.leftover.tmp", week_old, false),
+            ("hook-told-stale.json", expired, false),
+            ("hook-told-stale.json.leftover.tmp", expired, false),
             ("hook-told-fresh.json", now, true),
-            ("journal.ndjson", week_old, true),
+            ("journal.ndjson", expired, true),
         ];
         for (name, modified, _) in paths {
             File::create(ledger_directory.path().join(name))

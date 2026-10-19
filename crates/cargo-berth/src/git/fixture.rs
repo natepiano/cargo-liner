@@ -7,6 +7,7 @@
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -44,11 +45,12 @@ impl PatchEquivalenceFixture {
             repository.path(),
             &["init", "--quiet", "--initial-branch", "main"],
         )?;
-        run_git(
-            repository.path(),
-            &["config", "user.email", "test@example.com"],
-        )?;
-        run_git(repository.path(), &["config", "user.name", "Test User"])?;
+        // This repository is private to the fixture. Appending its identity
+        // keeps git init's repository format and inherited configuration intact.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(repository.path().join(".git/config"))?
+            .write_all(b"\n[user]\n\temail = test@example.com\n\tname = Test User\n")?;
         write_file(repository.path(), PRIMARY_PATH, INITIAL_PRIMARY)?;
         write_file(repository.path(), SECONDARY_PATH, INITIAL_SECONDARY)?;
         write_file(repository.path(), SCRIPT_PATH, "#!/bin/sh\nexit 0\n")?;

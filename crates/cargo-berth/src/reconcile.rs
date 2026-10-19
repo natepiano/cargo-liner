@@ -53,6 +53,7 @@ use crate::git::CommitTargetReachability;
 use crate::git::CommitTargetReachabilityObservation;
 use crate::git::GitError;
 use crate::git::HistoricalIntegrationCandidateDiscovery;
+use crate::git::OperationObjectReader;
 use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::ProtectedTipSuccessorHeadClassification;
 use crate::git::ProtectedTipSuccessorHeads;
@@ -228,14 +229,14 @@ impl ReconciliationReport {
 
 /// Reconciliation state retained for the drift observation that immediately follows it.
 pub(crate) struct ReconciledDriftPreflight<ConcurrentObservation> {
+    /// Repository facts shared by reconciliation and the following drift pass.
+    pub(crate) repository:  git::RepositorySnapshot,
     /// The one complete reconciliation result whose alerts accompany the drift response.
-    pub(crate) report:           ReconciliationReport,
-    /// The filesystem-discovered worktree identity shared with drift execution.
-    pub(crate) worktree_context: WorktreeContext,
+    pub(crate) report:      ReconciliationReport,
     /// The already-located ledger used by drift's later mutation transaction.
-    pub(crate) ledger:           Ledger,
+    pub(crate) ledger:      Ledger,
     /// Drift facts read concurrently after current-marker reconciliation.
-    pub(crate) observation:      ConcurrentObservation,
+    pub(crate) observation: ConcurrentObservation,
 }
 
 /// Git query dimensions owned by reconciliation rather than board row projection.
@@ -308,6 +309,7 @@ struct ReconciliationPlan {
 }
 
 struct ReconciliationEvidenceContext<'context> {
+    repository:                               &'context git::RepositorySnapshot,
     merged_run_endings:                       MergedRunEndings,
     berth_config:                             &'context BerthConfig,
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
@@ -495,7 +497,7 @@ impl<'candidates> TrunkEdgeCandidates<'candidates> {
 
 impl TargetIntegrationReachability {
     fn observe_configured_trunk(
-        repository_root: &Path,
+        repository: &git::RepositorySnapshot,
         reservations: &RetainedReservationSet,
         ordering_graph: &OrderingGraph,
         trunk_branch: &str,
@@ -509,7 +511,7 @@ impl TargetIntegrationReachability {
             edge_candidates,
         )?;
         let observation =
-            git::branch_commit_reachability(repository_root, trunk_branch, &candidate_ancestors);
+            git::branch_commit_reachability(repository, trunk_branch, &candidate_ancestors);
         let Ok(observation) = observation else {
             return Ok((
                 TargetObservation::ObjectUnknown,
@@ -573,7 +575,7 @@ impl TargetIntegrationReachability {
     }
 
     fn observe(
-        repository_root: &Path,
+        repository: &git::RepositorySnapshot,
         reservations: &RetainedReservationSet,
         ordering_graph: &OrderingGraph,
         repository_trunk: &JudgedTargetTip,
@@ -593,9 +595,8 @@ impl TargetIntegrationReachability {
             selected_reservations,
             edge_candidates,
         )?;
-        let reachability =
-            git::reachability_to_target(repository_root, &candidate_ancestors, target)
-                .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
+        let reachability = git::reachability_to_target(repository, &candidate_ancestors, target)
+            .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
         Ok(Self {
             by_ancestor:         candidate_ancestors.into_iter().zip(reachability).collect(),
             resolved_candidates: git::ResolvedBatchCommitCandidates::default(),
@@ -692,7 +693,7 @@ impl TargetIntegrationReachability {
     /// Classify commits introduced by this reconciliation after the first trunk batch.
     fn extend_for_snapshot(
         &mut self,
-        repository_root: &Path,
+        repository: &git::RepositorySnapshot,
         trunk: &JudgedTargetTip,
         snapshots: &[RepositoryReservationSnapshot],
         reservations: &RetainedReservationSet,
@@ -730,7 +731,7 @@ impl TargetIntegrationReachability {
         }
         let reachability = match trunk {
             JudgedTargetTip::Resolved(target) => {
-                git::reachability_to_target(repository_root, &additional, target)
+                git::reachability_to_target(repository, &additional, target)
                     .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; additional.len()])
             },
             JudgedTargetTip::ObjectUnknown => vec![Reachability::ObjectUnknown; additional.len()],
@@ -1272,6 +1273,7 @@ struct ReconciliationAction {
     cover_requirements:            HashMap<IntegrationTarget, (WorktreeId, IntegrationTarget)>,
     marker_contexts:               Vec<WorktreeMarkerSweepContext>,
     repository_root:               PathBuf,
+    object_reader:                 OperationObjectReader,
     retention_repairs:             Vec<ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
     retention_commit_resolution:   RetentionCommitResolution,
@@ -1324,6 +1326,7 @@ impl RetentionCommitResolution {
     fn apply(
         &self,
         repository_root: &Path,
+        objects: &OperationObjectReader,
         repairs: &[ReservationRetentionRefRepair],
         deletions: &[ReservationId],
     ) -> Result<(), GitError> {
@@ -1337,7 +1340,7 @@ impl RetentionCommitResolution {
                 )
             },
             Self::IncludeSettlementWitness => {
-                git::update_reservation_retention_refs(repository_root, repairs, deletions)
+                git::update_reservation_retention_refs(repository_root, objects, repairs, deletions)
             },
         }
     }
@@ -1395,7 +1398,11 @@ pub(crate) fn reconcile(
 /// Reconcile once while retaining the discovered worktree and opened ledger for drift.
 pub(crate) fn reconcile_for_drift<ConcurrentObservation>(
     invocation_directory: &Path,
-    observe: impl FnOnce(&WorktreeContext, &Ledger, RetainedReservationSet) -> ConcurrentObservation
+    observe: impl FnOnce(
+        &git::RepositorySnapshot,
+        &Ledger,
+        RetainedReservationSet,
+    ) -> ConcurrentObservation
     + Send,
 ) -> Result<Enrollment<ReconciledDriftPreflight<ConcurrentObservation>>, ReconcileError>
 where
@@ -1410,11 +1417,12 @@ where
                     &worktree_context,
                     &ledger,
                 )?;
+            let repository = git::RepositorySnapshot::new(worktree_context.clone());
             let (report, observation) = thread::scope(|scope| {
                 let observation_worker =
-                    scope.spawn(|| observe(&worktree_context, &ledger, observation_reservations));
+                    scope.spawn(|| observe(&repository, &ledger, observation_reservations));
                 let report = reconcile_with_open_ledger(
-                    &worktree_context,
+                    &repository,
                     &ledger,
                     &berth_config,
                     ReconciliationRequest {
@@ -1431,8 +1439,8 @@ where
                 (report, observation)
             });
             Ok(Enrollment::Enrolled(ReconciledDriftPreflight {
+                repository,
                 report: report?,
-                worktree_context,
                 ledger,
                 observation: observation?,
             }))
@@ -1525,8 +1533,9 @@ fn reconcile_enrolled(
     recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
     reconcile_with_open_ledger(
-        worktree_context,
+        &repository,
         &ledger,
         berth_config,
         ReconciliationRequest {
@@ -1539,32 +1548,43 @@ fn reconcile_enrolled(
 
 /// Reconcile through one ledger already located from `worktree_context`.
 fn reconcile_with_open_ledger(
-    worktree_context: &WorktreeContext,
+    repository: &git::RepositorySnapshot,
     ledger: &Ledger,
     berth_config: &BerthConfig,
     request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
-    let first = reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)?;
+    let first = reconcile_with_open_ledger_once(repository, ledger, berth_config, request)?;
     if matches!(first.cover_creation, CoverCreation::Created) {
-        reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)
+        let fresh = git::RepositorySnapshot::new(repository.context().clone());
+        reconcile_with_open_ledger_once(&fresh, ledger, berth_config, request)
     } else {
         Ok(first)
     }
 }
 
 fn reconcile_with_open_ledger_once(
-    worktree_context: &WorktreeContext,
+    initial_repository: &git::RepositorySnapshot,
     ledger: &Ledger,
     berth_config: &BerthConfig,
     request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
+    let worktree_context = initial_repository.context();
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
+    let mut first_attempt = true;
     retry_rewrite_reconciliation(
         || {
+            // A rejected rewrite subject invalidates every observation in that pass.
+            let retry_repository;
+            let repository = if std::mem::replace(&mut first_attempt, false) {
+                initial_repository
+            } else {
+                retry_repository = git::RepositorySnapshot::new(worktree_context.clone());
+                &retry_repository
+            };
             let rewrite_preflight =
-                prepare_rewrite_reconciliation(worktree_context, ledger, berth_config)?;
+                prepare_rewrite_reconciliation(repository, ledger, berth_config)?;
             let outcome = ledger
                 .transact_reconciliation(
                     journal_mutation_actor.worktree_id,
@@ -1574,7 +1594,6 @@ fn reconcile_with_open_ledger_once(
                         berth_config,
                         request,
                         ledger_repository,
-                        worktree_context,
                         rewrite_preflight,
                     ) {
                         Ok(prepared) => ReconciliationValidation::Apply {
@@ -1692,9 +1711,17 @@ impl DeferredRewriteIntegrationSubject {
     }
 }
 
+/// A rewrite preflight bound to the observation that must judge its transaction.
+/// The consumer receives the repository only through this value, so it cannot
+/// substitute a fresh snapshot or object reader between preflight and planning.
+pub(crate) struct PreparedRewriteReconciliation<'operation> {
+    repository: &'operation git::RepositorySnapshot,
+    preflight:  RewriteReconciliationPreflight,
+}
+
 /// Accepted rewrite proofs, deferred entry candidates, and their shared comparison budget.
 #[derive(Default)]
-pub(crate) struct RewriteReconciliationPreflight {
+struct RewriteReconciliationPreflight {
     /// Sequential expected subjects; multiple maps may advance the same reservation.
     validations:            Vec<RewriteSubjectValidation>,
     /// Accepted replacements, in the same order as their expected subjects.
@@ -1822,13 +1849,14 @@ enum RewriteTargetTip<'cache> {
 }
 
 fn rewrite_target_tip_for_reservation<'cache>(
-    repository_root: &Path,
+    repository: &git::RepositorySnapshot,
     reservation_id: ReservationId,
     reservations: &RetainedReservationSet,
     repository_trunk: &IntegrationTarget,
     observations: &'cache mut RewriteTargetObservations,
     resolution_calls: &mut u64,
 ) -> Result<RewriteTargetTip<'cache>, ReconcileError> {
+    let repository_root = repository.repository_root();
     let target = reservations
         .target_of(reservation_id, repository_trunk)
         .map_err(ReconcileError::Replay)?;
@@ -1845,18 +1873,30 @@ fn rewrite_target_tip_for_reservation<'cache>(
         &mut observations.tips,
         judging_target,
         resolution_calls,
-        |target| git::branch_object_id(repository_root, target.short_name()),
+        |target| git::branch_object_id(&repository.object_reader(), target.short_name()),
     )
     .as_ref()
     .map_or(RewriteTargetTip::Unavailable, RewriteTargetTip::Resolved))
 }
 
 /// Read ready maps and check protected contents while no ledger mutation lock is held.
-pub(crate) fn prepare_rewrite_reconciliation(
-    worktree_context: &WorktreeContext,
+pub(crate) fn prepare_rewrite_reconciliation<'operation>(
+    repository: &'operation git::RepositorySnapshot,
+    ledger: &Ledger,
+    berth_config: &BerthConfig,
+) -> Result<PreparedRewriteReconciliation<'operation>, ReconcileError> {
+    Ok(PreparedRewriteReconciliation {
+        repository,
+        preflight: read_rewrite_preflight(repository, ledger, berth_config)?,
+    })
+}
+
+fn read_rewrite_preflight(
+    repository: &git::RepositorySnapshot,
     ledger: &Ledger,
     berth_config: &BerthConfig,
 ) -> Result<RewriteReconciliationPreflight, ReconcileError> {
+    let worktree_context = repository.context();
     let markers = permit::pending_branch_rewrite_markers(worktree_context.common_git_directory())
         .map_err(LedgerError::Io)?
         .into_iter()
@@ -1917,7 +1957,7 @@ pub(crate) fn prepare_rewrite_reconciliation(
         let histories = histories.unwrap_or_default();
         let mut deferred = earlier_map_deferred;
         deferred |= import_rewrite_candidates(
-            worktree_context.repository_root(),
+            repository,
             &mut marker,
             &histories,
             &mut reservations,
@@ -2016,7 +2056,7 @@ fn outstanding_rewrite_candidate(
 
 /// Compare this marker's outstanding phases and retain deferred work for a later pass.
 fn import_rewrite_candidates(
-    repository_root: &Path,
+    repository: &git::RepositorySnapshot,
     marker: &mut PendingBranchRewriteMarker,
     histories: &[RewrittenTipHistory],
     reservations: &mut RetainedReservationSet,
@@ -2024,6 +2064,7 @@ fn import_rewrite_candidates(
     target_observations: &mut RewriteTargetObservations,
     preflight: &mut RewriteReconciliationPreflight,
 ) -> Result<bool, ReconcileError> {
+    let repository_root = repository.repository_root();
     let mut deferred = false;
     let candidates = reservations.iter().map(Reservation::id).collect::<Vec<_>>();
     for reservation_id in candidates {
@@ -2033,10 +2074,7 @@ fn import_rewrite_candidates(
         let ReservationLifecycle::Outstanding { protected_tip } = reservation.lifecycle() else {
             continue;
         };
-        if marker.rewrite.completed_subjects.iter().any(|completed| {
-            completed.reservation_id == reservation_id
-                && completed.subject == reservation.integration_proof_subject_revision()
-        }) {
+        if rewrite_subject_is_complete(marker, reservation) {
             continue;
         }
         let interval = match outstanding_rewrite_candidate(
@@ -2060,7 +2098,7 @@ fn import_rewrite_candidates(
             continue;
         }
         let target_tip = rewrite_target_tip_for_reservation(
-            repository_root,
+            repository,
             reservation_id,
             reservations,
             repository_trunk,
@@ -2126,6 +2164,16 @@ fn import_rewrite_candidates(
     Ok(deferred)
 }
 
+fn rewrite_subject_is_complete(
+    marker: &PendingBranchRewriteMarker,
+    reservation: &Reservation,
+) -> bool {
+    marker.rewrite.completed_subjects.iter().any(|completed| {
+        completed.reservation_id == reservation.id()
+            && completed.subject == reservation.integration_proof_subject_revision()
+    })
+}
+
 /// Charge rewrite acceptance to the reservation's target while comparing the mapped destination.
 fn compare_mapped_phase(
     repository_root: &Path,
@@ -2181,9 +2229,12 @@ fn prepare_reconciliation_transaction(
     berth_config: &BerthConfig,
     request: ReconciliationRequest,
     ledger_repository: RepoInstanceId,
-    worktree_context: &WorktreeContext,
-    rewrite_preflight: RewriteReconciliationPreflight,
+    prepared: PreparedRewriteReconciliation<'_>,
 ) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
+    let PreparedRewriteReconciliation {
+        repository,
+        preflight: rewrite_preflight,
+    } = prepared;
     let reservations = state
         .reservations()
         .map_err(ReconciliationPlanningError::Reservation)?;
@@ -2194,6 +2245,7 @@ fn prepare_reconciliation_transaction(
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        repository,
         merged_run_endings: request.merged_run_endings,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
@@ -2204,7 +2256,7 @@ fn prepare_reconciliation_transaction(
         &ordering_graph,
         request.repository_observation_scope,
         ledger_repository,
-        worktree_context,
+        repository.context(),
         &mut reconciliation_evidence_context,
     )
     .map_err(|error| match error {
@@ -2223,7 +2275,7 @@ fn prepare_reconciliation_transaction(
     reconciliation_plan.action.updated_rewrite_markers = rewrite_preflight.updated_markers;
     reconciliation_plan.action.trunk_resolution_calls += rewrite_preflight.trunk_resolution_calls;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
-        worktree_context.common_git_directory(),
+        repository.common_directory(),
         state.coordination_events(),
     )
     .map_err(ReconciliationPlanningError::PendingBypass)?;
@@ -2271,6 +2323,7 @@ struct MergeExtentReconciliation {
 /// Share status and net branch reads across every reservation in the same holder checkout.
 /// The successful key lives in the journal, so process boundaries do not defeat the cache.
 fn derive_merge_extents(
+    repository: &git::RepositorySnapshot,
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
     planned: &[JournalOperation],
@@ -2281,7 +2334,16 @@ fn derive_merge_extents(
         snapshot,
         planned,
         git_cost,
-        observe_merge_extent,
+        |reservation, reservations, snapshot, planned, cost| {
+            observe_merge_extent(
+                repository,
+                reservation,
+                reservations,
+                snapshot,
+                planned,
+                cost,
+            )
+        },
     )
 }
 
@@ -2491,6 +2553,7 @@ fn observe_holder_merge_extents(
 
 /// Read the dirty union even on a cache hit: a fingerprint cannot be assumed unchanged.
 fn observe_merge_extent(
+    repository: &git::RepositorySnapshot,
     reservation: &Reservation,
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
@@ -2526,7 +2589,7 @@ fn observe_merge_extent(
         })
         .unwrap_or_else(|| reservation.worktree_root());
     git_cost.worktree_status_queries += 1;
-    let working_tree = drift::observe_merge_working_tree(root.as_ref())?;
+    let working_tree = drift::observe_merge_working_tree(repository, root.as_ref())?;
     let cached = holder_group(reservation, reservations, snapshot);
     let mut reservation_ids = cached.iter().map(|holder| holder.id()).collect::<Vec<_>>();
     reservation_ids.sort_unstable();
@@ -2639,14 +2702,7 @@ fn build_plan(
         Vec::new(),
         cross_target_predecessors,
     );
-    let active_holders = reservations
-        .iter()
-        .filter(|reservation| matches!(reservation.lifecycle(), ReservationLifecycle::Active))
-        .map(|reservation| ActiveHolder {
-            worktree_id:         reservation.actor().worktree,
-            coordination_run_id: reservation.actor().run,
-        })
-        .collect();
+    let active_holders = active_reservation_holders(reservations);
     let mut plan = ReconciliationPlan {
         operations:   changes.operations,
         cover_actors: HashMap::new(),
@@ -2659,6 +2715,7 @@ fn build_plan(
             cover_requirements: HashMap::new(),
             marker_contexts: worktree_registry.marker_sweep_contexts(common_git_directory),
             repository_root: repository_root.to_path_buf(),
+            object_reader: reconciliation_evidence_context.repository.object_reader(),
             retention_repairs: changes.retention_repairs,
             retention_deletions: changes.retention_deletions,
             retention_commit_resolution: RetentionCommitResolution::InitialObservation(
@@ -2692,6 +2749,17 @@ fn build_plan(
     Ok(plan)
 }
 
+fn active_reservation_holders(reservations: &RetainedReservationSet) -> Vec<ActiveHolder> {
+    reservations
+        .iter()
+        .filter(|reservation| matches!(reservation.lifecycle(), ReservationLifecycle::Active))
+        .map(|reservation| ActiveHolder {
+            worktree_id:         reservation.actor().worktree,
+            coordination_run_id: reservation.actor().run,
+        })
+        .collect()
+}
+
 /// Observe successors against the lifecycle this same actual-trunk transaction will commit.
 fn complete_reconciliation_plan(
     reservations: &RetainedReservationSet,
@@ -2704,6 +2772,7 @@ fn complete_reconciliation_plan(
 ) -> Result<(), ReservationReplayError> {
     append_cover_claims(reservations, worktree_registry, plan);
     let extents = derive_merge_extents(
+        context.repository,
         reservations,
         &plan.action.repository_snapshot,
         &plan.operations,
@@ -2760,6 +2829,7 @@ fn complete_reconciliation_plan(
     )?;
     plan.operations.extend(successors.operations);
     replace_completed_repository_snapshot(
+        context.repository,
         reservations,
         ordering_graph,
         observation_scope,
@@ -2819,6 +2889,7 @@ fn judge_live_integration(
 
 /// Rebuild the edge view from the reservation states the completed plan will commit.
 fn replace_completed_repository_snapshot(
+    repository: &git::RepositorySnapshot,
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
     observation_scope: RepositoryObservationScope,
@@ -2859,7 +2930,7 @@ fn replace_completed_repository_snapshot(
     }
     let observed_trunk = JudgedTargetTip::repository_trunk(&targets, &repository_trunk);
     plan.action.trunk_reachability.extend_for_snapshot(
-        &plan.action.repository_root,
+        repository,
         &observed_trunk,
         &snapshots,
         reservations,
@@ -2952,7 +3023,7 @@ fn append_cover_for_branch(
         TargetSelectionRequest::AutomaticAcquisition,
         repository_trunk,
         |candidate| {
-            git::branch_object_id(context.repository_root(), candidate.short_name()).is_ok()
+            git::branch_object_id(&plan.action.object_reader, candidate.short_name()).is_ok()
         },
     );
     let Ok(parent) = parent else {
@@ -2975,7 +3046,7 @@ fn append_cover_for_branch(
         return;
     }
     let Ok(parent_commit) =
-        git::branch_object_id(context.repository_root(), parent.target.short_name())
+        git::branch_object_id(&plan.action.object_reader, parent.target.short_name())
     else {
         return;
     };
@@ -3117,8 +3188,9 @@ fn observe_repository_facts(
     reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
 ) -> Result<ObservedRepositoryFacts, ReconciliationBuildError> {
     let repository_root = worktree_context.repository_root();
+    let repository = reconciliation_evidence_context.repository;
     thread::scope(|scope| {
-        let worktree_registry = scope.spawn(|| WorktreeRegistry::read(worktree_context));
+        let worktree_registry = scope.spawn(|| WorktreeRegistry::read(repository));
         let repository_trunk = reconciliation_evidence_context
             .berth_config
             .repository_trunk()
@@ -3144,7 +3216,7 @@ fn observe_repository_facts(
                 selected.clone(),
                 scope.spawn(move || {
                     TargetIntegrationReachability::observe_configured_trunk(
-                        repository_root,
+                        repository,
                         reservations,
                         ordering_graph,
                         &branch,
@@ -3181,7 +3253,7 @@ fn observe_repository_facts(
         );
         let (trunk_observation, trunk_reachability) =
             TargetIntegrationReachability::observe_configured_trunk(
-                repository_root,
+                repository,
                 reservations,
                 ordering_graph,
                 repository_trunk.short_name(),
@@ -3362,13 +3434,17 @@ fn scoped_patch_evaluation_order<'reservation>(
 /// each observed trunk target.
 pub(crate) fn prepare_gate_reconciliation(
     state: &ReplayedLedgerState<'_>,
-    worktree_context: &WorktreeContext,
     ledger_repository: RepoInstanceId,
     berth_config: &BerthConfig,
     proposed_move: &ProposedTargetMove,
     purpose: GateReconciliationPurpose,
-    rewrite_preflight: RewriteReconciliationPreflight,
+    prepared: PreparedRewriteReconciliation<'_>,
 ) -> Result<GateReconciliation, GateReconciliationError> {
+    let PreparedRewriteReconciliation {
+        repository,
+        preflight: rewrite_preflight,
+    } = prepared;
+    let worktree_context = repository.context();
     let reservations = state
         .reservations()
         .map_err(GateReconciliationError::Reservation)?;
@@ -3380,6 +3456,7 @@ pub(crate) fn prepare_gate_reconciliation(
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     // A gate decides one ref update; runs end on the ordinary reconciliation that follows.
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        repository,
         merged_run_endings: MergedRunEndings::Defer,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
@@ -3481,7 +3558,7 @@ fn observe_proposed_target(
         ordering_graph,
         repository_observation_scope,
         actual_snapshot,
-        worktree_context,
+        reconciliation_evidence_context.repository,
         proposed_move,
         &selected,
     )?;
@@ -3578,7 +3655,7 @@ fn proposed_target_reachability(
     ordering_graph: &OrderingGraph,
     scope: RepositoryObservationScope,
     actual_snapshot: &RepositorySnapshot,
-    worktree_context: &WorktreeContext,
+    repository: &git::RepositorySnapshot,
     proposed_move: &ProposedTargetMove,
     selected: &HashSet<ReservationId>,
 ) -> Result<TargetIntegrationReachability, GateReconciliationError> {
@@ -3600,7 +3677,7 @@ fn proposed_target_reachability(
         TrunkEdgeCandidates::Excluded
     };
     TargetIntegrationReachability::observe(
-        worktree_context.repository_root(),
+        repository,
         reservations,
         ordering_graph,
         &JudgedTargetTip::Resolved(proposed_move.proposed.clone()),
@@ -3683,6 +3760,7 @@ impl GateReconciliation {
             HashMap::new(),
             CommittedHookReconciliationAction {
                 repository_root: self.reconciliation.action.repository_root,
+                object_reader: self.reconciliation.action.object_reader,
                 retention_repairs,
                 completed_markers: self.reconciliation.action.completed_rewrite_markers,
                 updated_markers: self.reconciliation.action.updated_rewrite_markers,
@@ -3716,6 +3794,8 @@ impl GateReconciliation {
 pub(crate) struct CommittedHookReconciliationAction {
     /// Repository containing the accepted rewritten commits.
     repository_root:   PathBuf,
+    /// Object queries share the child used while preparing this action.
+    object_reader:     OperationObjectReader,
     /// Final accepted tip for each rewritten outstanding reservation.
     retention_repairs: Vec<ReservationRetentionRefRepair>,
     /// Fully imported maps retired after their resnapshots commit.
@@ -3734,6 +3814,7 @@ impl CommittedHookReconciliationAction {
         if !self.retention_repairs.is_empty() {
             git::update_reservation_retention_refs(
                 &self.repository_root,
+                &self.object_reader,
                 &self.retention_repairs,
                 &[],
             )?;
@@ -5279,6 +5360,7 @@ impl ReconciliationAction {
         }
         self.retention_commit_resolution.apply(
             &self.repository_root,
+            &self.object_reader,
             &self.retention_repairs,
             &self.retention_deletions,
         )?;
@@ -5307,6 +5389,7 @@ impl ReconciliationAction {
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
                 &self.repository_root,
+                &self.object_reader,
                 reservations
                     .reservation(alert_subject.reservation_id)
                     .map_err(ReconcileError::Replay)?,
@@ -5774,9 +5857,20 @@ mod tests {
     fn serial_merge_extent_reference(
         reservations: &RetainedReservationSet,
         snapshot: &RepositorySnapshot,
-    ) -> (super::MergeExtentReconciliation, super::MergeExtentGitCost) {
+    ) -> Result<
+        (super::MergeExtentReconciliation, super::MergeExtentGitCost),
+        Box<dyn std::error::Error>,
+    > {
         // This reference invokes the real observer serially, with the same accumulated counter.
         // Each fixture reservation has a distinct (worktree, target), so none may be deduplicated.
+        let repository = crate::git::RepositorySnapshot::discover(
+            reservations
+                .iter()
+                .next()
+                .ok_or("fixture has no holders")?
+                .worktree_root()
+                .as_ref(),
+        )?;
         let mut serial_cost = super::MergeExtentGitCost::default();
         let mut serial_operations = Vec::new();
         let mut serial_observed = HashMap::new();
@@ -5786,6 +5880,7 @@ mod tests {
                 snapshot.recorded_target(reservation.id()).clone(),
             );
             let observed = super::observe_merge_extent(
+                &repository,
                 reservation,
                 reservations,
                 snapshot,
@@ -5808,13 +5903,13 @@ mod tests {
                 .into(),
             });
         }
-        (
+        Ok((
             super::MergeExtentReconciliation {
                 operations:         serial_operations,
                 observed_by_holder: serial_observed,
             },
             serial_cost,
-        )
+        ))
     }
 
     #[test]
@@ -5825,7 +5920,7 @@ mod tests {
             reservations,
             snapshot,
         } = merge_extent_comparison_fixture()?;
-        let (serial, serial_cost) = serial_merge_extent_reference(&reservations, &snapshot);
+        let (serial, serial_cost) = serial_merge_extent_reference(&reservations, &snapshot)?;
         assert_eq!(
             serial.observed_by_holder.len(),
             2,
@@ -5836,6 +5931,14 @@ mod tests {
             serial_cost.path_queries > 0,
             "exercise real branch path queries"
         );
+        let repository = crate::git::RepositorySnapshot::discover(
+            reservations
+                .iter()
+                .next()
+                .ok_or("fixture has no holders")?
+                .worktree_root()
+                .as_ref(),
+        )?;
         let calls = std::sync::Mutex::new(Vec::new());
         let mut concurrent_cost = super::MergeExtentGitCost::default();
         let concurrent = super::derive_merge_extents_with_observer(
@@ -5848,7 +5951,14 @@ mod tests {
                     .lock()
                     .map_err(|_| "observer call mutex poisoned".to_owned())?
                     .push(reservation.id());
-                super::observe_merge_extent(reservation, reservations, snapshot, planned, cost)
+                super::observe_merge_extent(
+                    &repository,
+                    reservation,
+                    reservations,
+                    snapshot,
+                    planned,
+                    cost,
+                )
             },
         )?;
         let mut calls = calls

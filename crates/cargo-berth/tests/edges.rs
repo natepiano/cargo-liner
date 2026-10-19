@@ -65,6 +65,49 @@ fn board_replays_a_recorded_template_without_its_projection() {
     );
 }
 
+#[test]
+fn initialized_main_copies_keep_independent_owners_and_hook_contexts() {
+    let first = tempdir().expect("first repository should exist");
+    let second = tempdir().expect("second repository should exist");
+    IntegrationRepository::build_main_template(first.path(), BERTH_EXECUTABLE);
+    IntegrationRepository::build_main_template(second.path(), BERTH_EXECUTABLE);
+    assert_eq!(
+        GIT.stdout(first.path(), ["rev-parse", "HEAD"]),
+        GIT.stdout(second.path(), ["rev-parse", "HEAD"])
+    );
+    for identity in [
+        ".git/cargo-berth/repo-instance-id",
+        ".git/cargo-berth-worktree-id",
+    ] {
+        assert_ne!(
+            fs::read(first.path().join(identity)).expect("first identity should read"),
+            fs::read(second.path().join(identity)).expect("second identity should read")
+        );
+    }
+    for root in [first.path(), second.path()] {
+        let context = fs::read_to_string(root.join(".git/hooks/cargo-berth-hook-context"))
+            .expect("hook context should read");
+        let canonical = fs::canonicalize(root).expect("repository should canonicalize");
+        assert!(context.contains(canonical.to_str().expect("fixture path should be UTF-8")));
+    }
+    let claim = run_berth(
+        first.path(),
+        &["claim", "file:README.md", "--run", FIRST_RUN, "--json"],
+    );
+    assert_success(&claim);
+    let second_board = run_berth(second.path(), &["board", "--json"]);
+    assert_success(&second_board);
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&json(&second_board)),
+        Vec::<String>::new()
+    );
+    fs::write(first.path().join("README.md"), "private work\n").expect("first source should write");
+    assert_eq!(
+        fs::read_to_string(second.path().join("README.md")).expect("second source should read"),
+        "initial\n"
+    );
+}
+
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 

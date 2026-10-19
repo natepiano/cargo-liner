@@ -110,8 +110,7 @@ use crate::worktree::WorktreeEnrollmentReport;
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
     "Rebuilt reservations.json from journal truth without changing the journal.";
-const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str =
-    "The journal holds no superseded merge extent observation; it is unchanged.";
+const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str = "The journal holds no superseded observation or expired, unreferenced history; it is unchanged.";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
@@ -1888,7 +1887,7 @@ impl OutputEnvelope {
             ),
             JournalCompaction::Compacted { removed, remaining } => (
                 format!(
-                    "Compacted the journal: removed {} superseded merge extent observation(s) ({} bytes); {} record(s) ({} bytes) remain.",
+                    "Compacted the journal: removed {} superseded or expired record(s) ({} bytes); {} record(s) ({} bytes) remain.",
                     removed.records, removed.bytes, remaining.records, remaining.bytes
                 ),
                 JournalCompactionPayload::Compacted {

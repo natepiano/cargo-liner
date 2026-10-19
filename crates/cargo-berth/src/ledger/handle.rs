@@ -52,6 +52,7 @@ use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
+use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -295,10 +296,8 @@ impl Ledger {
     /// Production callers must match [`Enrollment`] from [`BerthConfig::read`] before opening the
     /// shared ledger.
     pub(crate) fn open(invocation_directory: &Path) -> Result<Self, LedgerError> {
-        let repository_root = git::repository_root(invocation_directory)?;
-        let ledger = Self::locate(&repository_root)?;
-        ledger.require_existing()?;
-        Ok(ledger)
+        let snapshot = git::RepositorySnapshot::discover(invocation_directory)?;
+        Self::open_from_discovered_worktree(snapshot.context())
     }
 
     /// Attach using a worktree context already discovered from `.git` filesystem metadata.
@@ -693,10 +692,10 @@ impl Ledger {
     }
 
     fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
-        let common_git_directory = git::common_directory(repository_root)?;
+        let snapshot = git::RepositorySnapshot::discover(repository_root)?;
         Ok(Self::at_common_git_directory(
-            &common_git_directory,
-            repository_root,
+            snapshot.common_directory(),
+            snapshot.repository_root(),
         ))
     }
 
@@ -768,7 +767,7 @@ impl Ledger {
     }
 
     /// Run `body` in `transaction`, then release its mutation lock and compact the journal when
-    /// the transaction's replay holds enough superseded records.
+    /// the replay holds enough superseded records or expired finished history.
     fn conclude<Concluded>(
         &self,
         mut transaction: LedgerTransaction,
@@ -776,8 +775,16 @@ impl Ledger {
     ) -> Concluded {
         let concluded = body(&mut transaction);
         let droppable_bytes = transaction.replay.superseded.droppable_bytes;
+        let history_due = transaction
+            .replay
+            .finished_history
+            .is_due(&RecordedAt::now());
         std::mem::drop(transaction);
-        self.compact_if_due(droppable_bytes);
+        if history_due {
+            self.compact_expired_history();
+        } else {
+            self.compact_if_due(droppable_bytes);
+        }
         concluded
     }
 

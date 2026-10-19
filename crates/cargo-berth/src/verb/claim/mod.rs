@@ -8,6 +8,7 @@ use std::fmt::Formatter;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -85,7 +86,6 @@ use crate::output::OutputEnvelope;
 use crate::output::TargetView;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
-use crate::reservation;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
@@ -113,6 +113,7 @@ pub(crate) use recovery_command::ClaimRecoveryCommand;
 pub(crate) use recovery_command::ClaimRecoverySelector;
 
 use super::refusal;
+use crate::git::RepositorySnapshot;
 use crate::ledger::JournalEvent;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
@@ -189,6 +190,7 @@ impl PhaseStartSelection {
 }
 
 struct ClaimRepositoryFacts {
+    repository:    Arc<RepositorySnapshot>,
     head_snapshot: ClaimHeadSnapshot,
     current_head:  GitObjectId,
     worktree_root: CanonicalWorktreeRoot,
@@ -235,6 +237,7 @@ struct PreparedClaim {
 }
 
 struct ClaimValidationContext {
+    repository:             Arc<RepositorySnapshot>,
     run_validation:         ClaimRunValidation,
     worktree_context:       WorktreeContext,
     recovery_command_line:  RecoveryCommandLine,
@@ -764,6 +767,7 @@ struct CommittedReservationAcquisition {
 
 #[derive(Clone)]
 struct FirstTouchValidationContext {
+    repository:            Arc<RepositorySnapshot>,
     run_validation:        ClaimRunValidation,
     worktree_context:      WorktreeContext,
     recovery_command_line: RecoveryCommandLine,
@@ -914,6 +918,7 @@ fn acquire_new(
         &ledger,
         journal_mutation_actor,
         ClaimValidationContext {
+            repository: claim_repository_facts.repository,
             run_validation: claim_run_validation,
             worktree_context: worktree_context.clone(),
             recovery_command_line: recovery_command_line.clone(),
@@ -1148,6 +1153,7 @@ fn acquire_first_touch_with_reservation_selection(
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
     let validation_context = FirstTouchValidationContext {
+        repository: repository_facts.repository,
         run_validation,
         worktree_context,
         recovery_command_line: recovery_command_line.clone(),
@@ -1230,7 +1236,7 @@ fn record_first_touch_default_answer(
             let reservations = match locked_claim_reservations(
                 &state,
                 validation_context.run_validation,
-                &validation_context.worktree_context,
+                &validation_context.repository,
                 validation_context.worktree_id,
                 &validation_context.recovery_command_line,
                 target,
@@ -1528,8 +1534,9 @@ fn validate_claim_transaction(
     context: ClaimValidationContext,
 ) -> TransactionValidation<ClaimRejection> {
     let ClaimValidationContext {
+        repository,
         run_validation,
-        worktree_context,
+        worktree_context: _,
         recovery_command_line,
         worktree_id,
         path_case,
@@ -1541,7 +1548,7 @@ fn validate_claim_transaction(
     let reservations = match locked_claim_reservations(
         state,
         run_validation,
-        &worktree_context,
+        &repository,
         worktree_id,
         &recovery_command_line,
         &prepared_claim.target.target,
@@ -1619,19 +1626,20 @@ fn validate_claim_transaction(
 fn locked_claim_reservations(
     state: &ReplayedLedgerState<'_>,
     run_validation: ClaimRunValidation,
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
     target: &IntegrationTarget,
     repository_trunk: &IntegrationTarget,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
+    let worktree_context = repository.context();
     let reservations = state
         .reservations()
         .map_err(ClaimRejection::Replay)?
         .clone();
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        worktree_context,
+        repository,
         worktree_id,
         target,
         repository_trunk,
@@ -1787,6 +1795,7 @@ fn validate_first_touch_transaction(
     context: FirstTouchValidationContext,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     let FirstTouchValidationContext {
+        repository,
         run_validation,
         worktree_context,
         recovery_command_line,
@@ -1807,7 +1816,7 @@ fn validate_first_touch_transaction(
     };
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        &worktree_context,
+        &repository,
         worktree_id,
         &prepared_claim.target.target,
         &repository_trunk,
@@ -2755,10 +2764,11 @@ impl ClaimRepositoryFacts {
         worktree_context: &WorktreeContext,
         run_validation: ClaimRunValidation,
     ) -> Result<Self, ClaimError> {
+        let repository = Arc::new(git::RepositorySnapshot::new(worktree_context.clone()));
         let (current_head, head_snapshot) = if run_validation.requires_live_head_revalidation() {
-            read_live_head_snapshot(worktree_context)?
+            read_live_head_snapshot(&repository)?
         } else {
-            read_head_snapshot_from_files(worktree_context)?
+            read_head_snapshot_from_files(&repository)?
         };
         let worktree_root = worktree_context
             .repository_root()
@@ -2767,6 +2777,7 @@ impl ClaimRepositoryFacts {
             .parse()
             .map_err(|_| ClaimError::InvalidCanonicalWorktreeRoot)?;
         Ok(Self {
+            repository,
             head_snapshot,
             current_head,
             worktree_root,
@@ -2775,10 +2786,10 @@ impl ClaimRepositoryFacts {
 }
 
 fn read_live_head_snapshot(
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
 ) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
-    let current_head = reservation::current_head(worktree_context.repository_root())?;
-    let head_snapshot = match git::head_attachment(worktree_context.repository_root())? {
+    let current_head = repository.head_object_id()?.clone();
+    let head_snapshot = match repository.head_attachment()?.clone() {
         HeadAttachment::Branch { full_ref } => ClaimHeadSnapshot::Branch {
             full_ref,
             head: ClaimHeadCommit::from(current_head.clone()),
@@ -2840,15 +2851,18 @@ fn select_target(
 }
 
 fn read_head_snapshot_from_files(
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
 ) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
+    let worktree_context = repository.context();
     let head = fs::read_to_string(worktree_context.administrative_directory().join("HEAD"))?;
     let head = head.trim();
     if let Some(reference) = head.strip_prefix("ref: ") {
-        let full_ref = reference.parse().or_else(|_| {
-            git::symbolic_head_reference(worktree_context.repository_root())
-                .map_err(|_| ClaimError::InvalidHeadReference)
-        })?;
+        let full_ref = reference
+            .parse()
+            .or_else(|_| match repository.head_attachment() {
+                Ok(HeadAttachment::Branch { full_ref }) => Ok(full_ref.clone()),
+                Ok(HeadAttachment::Detached) | Err(_) => Err(ClaimError::InvalidHeadReference),
+            })?;
         let current_head = read_reference(worktree_context, &full_ref.to_string())?;
         return Ok((
             current_head.clone(),

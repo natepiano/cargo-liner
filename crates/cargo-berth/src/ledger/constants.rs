@@ -10,6 +10,7 @@ pub(super) const GATE_TARGETS_TEMPORARY_FILE_NAME: &str = "gate-targets.tmp";
 pub(super) const JOURNAL_COMPACTION_REFUSAL_FILE_NAME: &str = "journal-compaction-refused.json";
 pub(super) const JOURNAL_COMPACTION_TEMPORARY_FILE_NAME: &str = "journal.ndjson.compact.tmp";
 pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
+pub(super) const HISTORY_COMPACTION_CHECK_FILE_NAME: &str = "history-compaction-checked";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";
 pub(super) const PROJECTION_TEMPORARY_FILE_NAME: &str = "reservations.json.tmp";
@@ -25,6 +26,8 @@ pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 ///
 /// A refused automatic compaction also holds the next one back until the journal grows this much.
 pub(super) const JOURNAL_COMPACTION_THRESHOLD_BYTES: u64 = 16 * 1_024 * 1_024;
+/// Reconsider old history retained by dependencies at most once per minute.
+pub(super) const HISTORY_COMPACTION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 // journal limits
 /// Maximum record bytes for a fact whose size a caller chose and can reduce.
@@ -52,9 +55,7 @@ pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 
 // lock acquisition
-pub(crate) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
-pub(super) const MUTATION_LOCK_INITIAL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-pub(super) const MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(60);
 /// Test-only signal path that makes a waiting `MutationLock::acquire` observable.
 pub(super) const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str =
     "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
@@ -91,7 +92,7 @@ pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// checkpoint written by another build is ignored instead of decoded.
 ///
 /// [`JournalReplay`]: super::journal::JournalReplay
-pub(super) const FOLD_FORMAT_VERSION: u32 = 2;
+pub(super) const FOLD_FORMAT_VERSION: u32 = 3;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {

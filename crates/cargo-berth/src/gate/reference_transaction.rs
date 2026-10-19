@@ -19,6 +19,7 @@ use super::rewrite;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git;
+use crate::git::OperationObjectReader;
 use crate::ids::GitObjectId;
 use crate::ledger::FullRefName;
 use crate::ledger::GATE_TARGETS_FILE_NAME;
@@ -113,6 +114,33 @@ pub(super) enum ReferenceObject {
     Object(GitObjectId),
     Symbolic(FullRefName),
     Absent,
+}
+
+/// Whether an update changes the logical value named by its reference.
+enum ReferenceMovement<'transaction> {
+    Move(ReferenceMove<'transaction>),
+    NoMove,
+}
+
+/// A reference update that changes its logical value rather than its storage.
+struct ReferenceMove<'transaction>(&'transaction ReferenceUpdate);
+
+impl<'transaction> ReferenceMovement<'transaction> {
+    fn classify(update: &'transaction ReferenceUpdate, objects: &OperationObjectReader) -> Self {
+        if update.previous == update.proposed {
+            return Self::NoMove;
+        }
+        // Packing can report a new storage entry for a ref that already names this tip.
+        if let (ReferenceObject::Absent, ReferenceObject::Object(proposed)) =
+            (&update.previous, &update.proposed)
+            && objects
+                .commit(update.reference.as_str())
+                .is_ok_and(|current| current == *proposed)
+        {
+            return Self::NoMove;
+        }
+        Self::Move(ReferenceMove(update))
+    }
 }
 
 enum ReferenceUpdateGateSubject {
@@ -329,14 +357,15 @@ pub(crate) fn evaluate_reference_transaction(
         trunk_reference,
     )?;
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
     let mut results = Vec::new();
-    for update in gated_updates {
+    for ReferenceMove(update) in gated_updates {
         let target = IntegrationTarget::from_branch_argument(update.reference.as_str()).map_err(
             |reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string())),
         )?;
         match update.gate_subject(target) {
             ReferenceUpdateGateSubject::ProposedTargetMove(update) => {
-                if update.materializes_existing_logical_target(worktree_context.repository_root()) {
+                if update.materializes_existing_logical_target(&repository.object_reader()) {
                     continue;
                 }
                 match transaction.phase {
@@ -405,7 +434,7 @@ fn gated_updates<'transaction>(
     phase: ReferenceTransactionPhase,
     worktree_context: &WorktreeContext,
     trunk_reference: &FullRefName,
-) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
+) -> Result<Vec<ReferenceMove<'transaction>>, GateError> {
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let reservations = ledger
         .read_validated_journal()?
@@ -428,18 +457,24 @@ fn gated_updates<'transaction>(
             gated_references.push(reference);
         }
     }
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
+    let objects = repository.object_reader();
     let gated_updates = updates
         .iter()
         .copied()
-        .filter(|update| {
-            gated_references.contains(&update.reference) && update.previous != update.proposed
-        })
+        .filter(|update| gated_references.contains(&update.reference))
+        .filter_map(
+            |update| match ReferenceMovement::classify(update, &objects) {
+                ReferenceMovement::Move(movement) => Some(movement),
+                ReferenceMovement::NoMove => None,
+            },
+        )
         .collect::<Vec<_>>();
     if phase == ReferenceTransactionPhase::Prepared && gated_updates.len() > 1 {
         return Err(GateError::MultipleGatedReferences(
             gated_updates
                 .iter()
-                .map(|update| update.reference.clone())
+                .map(|ReferenceMove(update)| update.reference.clone())
                 .collect(),
         ));
     }
@@ -447,9 +482,9 @@ fn gated_updates<'transaction>(
 }
 
 impl ProposedTargetMove {
-    fn materializes_existing_logical_target(&self, repository_root: &Path) -> bool {
+    fn materializes_existing_logical_target(&self, objects: &OperationObjectReader) -> bool {
         matches!(&self.previous, PreviousTargetTip::Absent)
-            && git::branch_object_id(repository_root, self.target.short_name())
+            && git::branch_object_id(objects, self.target.short_name())
                 .is_ok_and(|current| current == self.proposed)
     }
 }

@@ -19,6 +19,7 @@ use super::retention::RetainedReservationSet;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git;
+use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
@@ -68,9 +69,10 @@ impl ActingHeadContainment {
     /// Select the current checkout's recorded target, or its automatic branch target.
     pub(crate) fn observe_for_actor(
         reservations: &RetainedReservationSet,
-        context: &WorktreeContext,
+        repository: &RepositorySnapshot,
         authorization: ResolvedEditAuthorization,
     ) -> Self {
+        let context = repository.context();
         let acting_worktree = authorization.worktree_id;
         let Ok(Enrollment::Enrolled(config)) = BerthConfig::read(&context.configuration_lookup())
         else {
@@ -111,7 +113,7 @@ impl ActingHeadContainment {
         };
         Self::observe(
             reservations,
-            context,
+            repository,
             acting_worktree,
             &target,
             &repository_trunk,
@@ -132,11 +134,12 @@ impl ActingHeadContainment {
     /// and any failed read leaves that holder's complete protection in force.
     pub(crate) fn observe(
         reservations: &RetainedReservationSet,
-        context: &WorktreeContext,
+        repository: &RepositorySnapshot,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
         repository_trunk: &IntegrationTarget,
     ) -> Self {
+        let context = repository.context();
         let mut keys = reservations
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
@@ -162,7 +165,7 @@ impl ActingHeadContainment {
                 holder_heads,
             };
         }
-        let Ok(acting_head) = git::head_object_id(context.repository_root()) else {
+        let Ok(acting_head) = repository.head_object_id() else {
             return Self {
                 acting_worktree,
                 target: ContainmentTarget::Known {
@@ -178,7 +181,7 @@ impl ActingHeadContainment {
             acting_worktree,
             acting_target,
             repository_trunk,
-            &acting_head,
+            acting_head,
         )
     }
 

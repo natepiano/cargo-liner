@@ -149,7 +149,7 @@ const POST_TOOL_USE_STALE_SESSION_ENTRY: &str =
 const POST_TOOL_USE_WIDENED_ENTRY: &str = "test_incursion_board_read_cost_is_constant#4";
 const QUIET_DRIFT_SESSION: &str = "quiet-drift-session";
 const REPLAY_DRIFT_SESSION: &str = "replay-drift-session";
-const SESSION_START_CONTENTION_DETAIL: &str = "The engine already spent its single 10-second retry budget; the hook did not invoke board \
+const SESSION_START_CONTENTION_DETAIL: &str = "The engine already spent its single 60-second retry budget; the hook did not invoke board \
      again. Run `cargo-berth board --json` when the ledger is free.";
 const SESSION_START_CONTENTION_SUMMARY: &str =
     "cargo-berth exhausted its ledger-lock deadline at SessionStart.";
@@ -1145,7 +1145,7 @@ fn stale_marker_recovery_preserves_the_frozen_corpus_text(repository: &TempDir) 
         None,
     )?;
     let mut paused =
-        PausedHookCall::spawn(repository.path(), &payload, "pre-tool-use", "rev-parse")?;
+        PausedHookCall::spawn(repository.path(), &payload, "pre-tool-use", "cat-file")?;
     paused.wait_until_paused()?;
     let released = run_berth(repository.path(), &["release", marker_seed_id, "--json"])?;
     require_success(&released, "marker seed release")?;
@@ -1599,7 +1599,7 @@ impl PausedHookCall {
 const fn paused_git_wrapper() -> &'static str {
     r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "$CARGO_BERTH_TEST_GIT_OBSERVATION" ] \
-    && { [ "$2" = "diff-tree" ] || [ "$3" = "HEAD" ]; }; then
+    && { [ "$2" = "diff-tree" ] || [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; }; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
     while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
         sleep 0.01

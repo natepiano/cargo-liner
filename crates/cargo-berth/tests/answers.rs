@@ -59,10 +59,9 @@ const AFTER_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
-const GIT_HEAD_REVISION: &str = "HEAD";
 const GIT_LOOKUP_COMMAND: &str = "command -v git";
 const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
-const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
+const GIT_CAT_FILE_COMMAND: &str = "cat-file";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds on this claim";
@@ -3011,11 +3010,17 @@ where
 fn paused_git_wrapper() -> String {
     format!(
         r#"#!/bin/sh
-if [ "$1" = "{GIT_NO_OPTIONAL_LOCKS_ARG}" ] && [ "$2" = "{GIT_REV_PARSE_COMMAND}" ] && [ "$3" = "{GIT_HEAD_REVISION}" ]; then
-    : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+if [ "$1" = "{GIT_NO_OPTIONAL_LOCKS_ARG}" ] && [ "$2" = "{GIT_CAT_FILE_COMMAND}" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
+    while IFS= read -r expression; do
+        if [ "$expression" = "HEAD" ]; then
+            : > "$CARGO_BERTH_TEST_GIT_READY"
+            while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
+                sleep 0.01
+            done
+        fi
+        printf '%s\n' "$expression"
+    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    exit $?
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#
