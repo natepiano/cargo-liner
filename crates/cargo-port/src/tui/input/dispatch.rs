@@ -120,7 +120,7 @@ impl KeyDispatchLayer {
 enum OutputCancelPreflight {
     ExitVisualSelection,
     StopRunningExample,
-    CloseVisibleOutput,
+    CloseVisible,
     Pass,
 }
 
@@ -220,7 +220,7 @@ fn classify_output_cancel_preflight(
     match (output_visual, running_example, visible_output) {
         (true, _, _) => OutputCancelPreflight::ExitVisualSelection,
         (false, true, _) => OutputCancelPreflight::StopRunningExample,
-        (false, false, true) => OutputCancelPreflight::CloseVisibleOutput,
+        (false, false, true) => OutputCancelPreflight::CloseVisible,
         (false, false, false) => OutputCancelPreflight::Pass,
     }
 }
@@ -235,7 +235,7 @@ fn dispatch_output_cancel_preflight(app: &mut App, preflight: OutputCancelPrefli
             let _ = terminal::signal_owned_run(&mut app.inflight);
             true
         },
-        OutputCancelPreflight::CloseVisibleOutput => {
+        OutputCancelPreflight::CloseVisible => {
             let was_on_output = app.focus_is(PaneId::Output);
             app.inflight.clear_owned_run_output();
             if was_on_output {
@@ -640,7 +640,7 @@ fn handle_output_drag(app: &mut App, column: u16, row: u16) {
         return;
     }
     let pos = Position::new(column, row);
-    let CapturedOutputRow::Row(row) = app.panes.output.captured_output_row_at(pos) else {
+    let CapturedOutputRow::Inside(row) = app.panes.output.captured_output_row_at(pos) else {
         return;
     };
     let live = app.inflight.owned_run().output().to_vec();

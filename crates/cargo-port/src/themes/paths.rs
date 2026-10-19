@@ -11,7 +11,7 @@ use crate::config::CargoPortConfigurationPathResolution;
 enum ThemesDirectoryResolutionSource {
     /// A thread-local test fixture supplies the complete themes directory.
     #[cfg(test)]
-    TestSpecificDirectory(PathBuf),
+    TestSpecific(PathBuf),
     /// Cargo Port resolves `themes/` under its shared configuration root.
     SharedConfigurationRoot,
 }
@@ -30,7 +30,7 @@ pub(crate) fn themes_dir() -> CargoPortConfigurationPathResolution {
     let themes_directory_resolution_source = THEMES_DIR_OVERRIDE.with(|slot| {
         slot.borrow().clone().map_or(
             ThemesDirectoryResolutionSource::SharedConfigurationRoot,
-            ThemesDirectoryResolutionSource::TestSpecificDirectory,
+            ThemesDirectoryResolutionSource::TestSpecific,
         )
     });
     #[cfg(not(test))]
@@ -49,7 +49,7 @@ fn resolve_themes_dir(
 ) -> CargoPortConfigurationPathResolution {
     match themes_directory_resolution_source {
         #[cfg(test)]
-        ThemesDirectoryResolutionSource::TestSpecificDirectory(path) => {
+        ThemesDirectoryResolutionSource::TestSpecific(path) => {
             CargoPortConfigurationPathResolution::Resolved(path.clone())
         },
         ThemesDirectoryResolutionSource::SharedConfigurationRoot => {
@@ -90,10 +90,6 @@ pub(crate) fn set_themes_dir_override_for_test(path: PathBuf) -> ThemesDirOverri
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 
@@ -105,7 +101,7 @@ mod tests {
 
         assert_eq!(
             resolve_themes_dir(
-                &ThemesDirectoryResolutionSource::TestSpecificDirectory(test_themes_dir.clone()),
+                &ThemesDirectoryResolutionSource::TestSpecific(test_themes_dir.clone()),
                 &shared_configuration_root,
             ),
             CargoPortConfigurationPathResolution::Resolved(test_themes_dir)

@@ -73,7 +73,7 @@ pub(crate) enum KeymapErrorReason {
 enum KeymapPathResolutionSource {
     /// A thread-local test fixture supplies the complete keymap path.
     #[cfg(test)]
-    TestSpecificPath(PathBuf),
+    TestSpecific(PathBuf),
     /// Cargo Port resolves `keymap.toml` under its shared configuration root.
     SharedConfigurationRoot,
 }
@@ -95,7 +95,7 @@ pub(crate) fn keymap_path() -> CargoPortConfigurationPathResolution {
     let keymap_path_resolution_source = KEYMAP_PATH_OVERRIDE.with(|slot| {
         slot.borrow().clone().map_or(
             KeymapPathResolutionSource::SharedConfigurationRoot,
-            KeymapPathResolutionSource::TestSpecificPath,
+            KeymapPathResolutionSource::TestSpecific,
         )
     });
     #[cfg(not(test))]
@@ -113,7 +113,7 @@ fn resolve_keymap_path(
 ) -> CargoPortConfigurationPathResolution {
     match keymap_path_resolution_source {
         #[cfg(test)]
-        KeymapPathResolutionSource::TestSpecificPath(path) => {
+        KeymapPathResolutionSource::TestSpecific(path) => {
             CargoPortConfigurationPathResolution::Resolved(path.clone())
         },
         KeymapPathResolutionSource::SharedConfigurationRoot => {
@@ -828,7 +828,7 @@ clear_history = "d"
 
         assert_eq!(
             resolve_keymap_path(
-                &KeymapPathResolutionSource::TestSpecificPath(test_keymap_path.clone()),
+                &KeymapPathResolutionSource::TestSpecific(test_keymap_path.clone()),
                 &shared_configuration_root,
             ),
             CargoPortConfigurationPathResolution::Resolved(test_keymap_path)

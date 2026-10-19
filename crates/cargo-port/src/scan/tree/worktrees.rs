@@ -117,11 +117,7 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests should panic on unexpected values"
-)]
+#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::merge_worktrees_new;
     use crate::project::AbsolutePath;

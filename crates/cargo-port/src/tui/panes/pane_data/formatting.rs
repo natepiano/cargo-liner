@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::UNIX_EPOCH;
 
 use super::DetailField;
 use crate::constants::GIT_STATUS_UNREADABLE;
@@ -409,7 +410,7 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         return base;
     };
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
     format!("{base} resets {}", tui_pane::format_progressive(secs))

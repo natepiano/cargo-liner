@@ -295,8 +295,9 @@ pub(super) fn run_commands_for_project(
     let run_started = Instant::now();
     let started_at = Local::now().fixed_offset();
     let mut run = build_pending_run(commands, started_at.to_rfc3339());
-    // Read before the `Running` marker replaces it, so a deferred run can put
-    // the prior result back byte for byte.
+    // Read `prior_latest` with `read_latest_bytes_under` before
+    // `write_latest_under` stores `LintRunStatus::Running`, so deferral can
+    // restore the prior bytes exactly.
     let prior_latest = read_write::read_latest_bytes_under(cache_root, project_root)?;
     read_write::write_latest_under(cache_root, project_root, &run)?;
     let finalize = RunFinalizeGuard {
@@ -344,12 +345,13 @@ pub(super) fn run_commands_for_project(
             return Ok(RunAttempt::Ended);
         },
         CommandsResult::Interrupted => {
-            // A pause killed this run mid-flight. The run was triggered by a
-            // source change and never finished, so its outcome is unknown — do
-            // not fall back to the prior (now-stale) terminal status. Clear the
-            // on-disk `Running` marker ourselves so the `RunFinalizeGuard` drop
-            // is a no-op, then publish `Stale`. Resume re-lints the project (the
-            // supervisor remembers it in its catch-up set).
+            // `CommandsResult::Interrupted` means a pause stopped this
+            // source-change run before its outcome was known, so the prior
+            // terminal status is stale. `read_write::clear_latest_under`
+            // removes `LintRunStatus::Running`, making `RunFinalizeGuard::drop`
+            // a no-op, then `finalize.publish` sends `LintStatus::Stale`.
+            // The supervisor retains the project through `remember_catch_up`
+            // and retries it on resume.
             let _ = read_write::clear_latest_under(cache_root, project_root);
             finalize.publish(LintStatus::Stale);
             return Ok(RunAttempt::Ended);
@@ -450,9 +452,9 @@ fn execute_commands(
     pause_state: &PauseState,
 ) -> io::Result<CommandsResult> {
     let project_root = context.project_root;
-    // The probe spawns a child, so it answers to the same two guards every
-    // command in the loop below does: a project deleted or paused between the
-    // run being scheduled and starting runs nothing at all.
+    // `env_probe` spawns a child, so `project_still_runnable` and
+    // `PauseState::is_project_paused` guard it as they guard `run_command`:
+    // deletion or pause between scheduling and start runs nothing.
     if !project_still_runnable(project_root) {
         return Ok(CommandsResult::ProjectRemoved);
     }
@@ -705,8 +707,9 @@ fn scan_stream<R: Read>(
             Ok(_) => {},
         }
         let line = String::from_utf8_lossy(&bytes[line_start..]);
-        // Cargo prints nothing when it finally acquires the lock, so any line
-        // that is not another wait notice means the command resumed.
+        // Cargo emits no acquisition notice, so `line` without
+        // `FILE_LOCK_WAIT_MARKER` sets this `OutputStream` to
+        // `LintRunPhase::Executing`.
         let phase = if line.contains(FILE_LOCK_WAIT_MARKER) {
             LintRunPhase::Blocked
         } else {
@@ -744,9 +747,10 @@ fn run_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Own a process group so a pause can kill the whole tree (`/bin/sh` plus
-    // the `cargo`/`rustc` descendants). A plain `Child::kill` would only signal
-    // the shell, leaving cargo running and the run effectively un-cancelled.
+    // `isolate_lint_process` makes `shell` lead a process group so pause
+    // handling can stop `/bin/sh` and its cargo/rustc descendants.
+    // `Child::kill` alone would only signal the shell, leaving descendants
+    // running and the lint uncancelled.
     isolate_lint_process(&mut shell);
     let spawn_result = shell.spawn();
 
@@ -765,8 +769,10 @@ fn run_command(
                 thread::spawn(move || scan_stream(stderr, OutputStream::Stderr, &stderr_reporter));
             let mut bytes = stdout_join.join().unwrap_or_default();
             bytes.extend(stderr_join.join().unwrap_or_default());
-            // Both pipes are at EOF; a wait notice that was the last thing the
-            // command printed must not outlive it.
+            // `stdout_join` and `stderr_join` have reached EOF;
+            // `context.reporter.clear()` removes any final
+            // `FILE_LOCK_WAIT_MARKER` state so `LintRunPhase::Blocked` cannot
+            // outlive the command.
             context.reporter.clear();
             let taken = child_slot.lock().ok().and_then(|mut slot| slot.take());
             match taken {
@@ -1049,8 +1055,9 @@ mod tests {
 
     #[test]
     fn scanning_output_reports_file_lock_waits_and_passes_log_bytes_through() {
-        // Cargo wraps the leading status word in ANSI escapes and prints
-        // nothing at all when it finally takes the lock.
+        // `raw` contains Cargo's ANSI-wrapped `FILE_LOCK_WAIT_MARKER` and a
+        // subsequent Checking line: acquisition emits no notice, so
+        // `scan_stream` must detect recovery from later progress.
         let raw = concat!(
             "    Compiling demo v0.1.0\n",
             "\u{1b}[1m\u{1b}[92m    Blocking\u{1b}[0m waiting for file lock on build directory\n",
