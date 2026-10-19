@@ -62,7 +62,9 @@ impl App {
         self.apply_disk_usage(path, sizes.total);
     }
     pub(super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
-        // Set disk usage on the matching project item and update visibility.
+        // `project_list.at_path_mut` locates the `ProjectInfo` whose `disk_usage_bytes` and
+        // `visibility` are updated to reflect `Deleted` or `Visible`; `lint_runtime_changed` tracks
+        // required registration updates.
         let mut lint_runtime_changed = false;
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.disk_usage_bytes = Some(bytes);

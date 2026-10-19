@@ -163,8 +163,9 @@ impl App {
                     if self.inflight.finish_owned_run(owned_run_id)
                         == OwnedRunMessageUpdate::Applied
                     {
-                        // Process exit resumes following the tail so the final output is
-                        // visible — unless a selection is holding the view.
+                        // `panes.output.on_process_exit` resumes tail-follow after
+                        // `OwnedRunEvent::Finished`, so final output is visible unless output
+                        // selection holds the view.
                         self.panes.output.on_process_exit();
                     }
                 },
@@ -178,9 +179,9 @@ impl App {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
-                    // The process exit is the completion signal. Disk
-                    // usage updates may arrive earlier while `cargo
-                    // clean` is still deleting files.
+                    // `CleanMsg::Finished` signals completion for removal through
+                    // `inflight.clean_mut()` and `sync_running_clean_toast`; disk-usage messages
+                    // can arrive while cargo clean is still deleting files.
                     if self
                         .inflight
                         .clean_mut()

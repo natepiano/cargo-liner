@@ -29,7 +29,8 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // Try to restore selection
+        // Restore `selected_path` with `project_list.select_project_in_tree`, or `set_cursor(0)`
+        // when selection is absent and the list is nonempty.
         if let Some(path) = selected_path {
             let include_non_rust = self.config.include_non_rust().includes_non_rust();
             self.project_list
@@ -55,16 +56,16 @@ impl App {
         // re-applies them once the new tree is built.
         let preserved_expanded = self.project_list.export_expanded();
         self.project_list.clear();
-        // disk_usage lives on project items — cleared with projects above
+        // `project_list.clear()` removes `ProjectInfo::disk_usage_bytes` along with the previous
+        // project items.
         self.ci.fetch_tracker.clear();
         self.ci.clear_display_modes();
         self.clear_all_lint_state();
         self.lint.set_cache_usage(CacheUsage::default());
         self.net.clear_for_tree_change();
-        // The rescan re-opens the consolidated startup panel, which takes back
-        // ownership of the GitHub / crates.io rows: finish any live standalone
-        // network toasts and return the stage to startup-owned so a fetch
-        // dispatched during this scan cannot leak a standalone toast.
+        // `enter_startup_owned_network_stage` finishes live standalone GitHub and crates.io task
+        // toasts and restores startup ownership before `startup.reset()` reopens the consolidated
+        // panel, so fetches during rescan cannot create standalone network toasts.
         self.enter_startup_owned_network_stage();
         self.scan.discovery_shimmers_mut().clear();
         self.scan.state.phase = ScanPhase::Running;

@@ -142,11 +142,10 @@ impl App {
                     Some(task_id)
                 },
                 ReactivateOutcome::DismissedByUser => {
-                    // User closed the toast for this tracker session.
-                    // Keep the slot wired (so we don't create a
-                    // duplicate next frame) but don't touch the toast.
-                    // The underlying tracker keeps running; only the
-                    // UI surface stays gone.
+                    // `ReactivateOutcome::DismissedByUser` retains `toast_slot`'s `task_id`, so
+                    // `sync_running_toast` cannot create a duplicate next frame. Leave
+                    // `framework.toasts` untouched while the tracker continues running and its UI
+                    // remains dismissed.
                     Some(task_id)
                 },
                 ReactivateOutcome::NotFound => Some(self.start_running_toast(title, running_items)),
