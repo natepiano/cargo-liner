@@ -198,7 +198,7 @@ fn build_ci_data_row(
     for col in cols {
         let data = ci_column_data(ci_run, col);
         if let Some(data) = data {
-            let style = render::conclusion_style(Some(data.status));
+            let style = render::ci_status_style(Some(data.status));
             cells.push(ci_metric_cell(
                 data.duration.trim(),
                 data.status,
@@ -210,7 +210,7 @@ fn build_ci_data_row(
         }
     }
 
-    let total_style = render::conclusion_style(Some(ci_run.ci_status));
+    let total_style = render::ci_status_style(Some(ci_run.ci_status));
     cells.push(ci_metric_cell(
         total_dur.trim(),
         ci_run.ci_status,

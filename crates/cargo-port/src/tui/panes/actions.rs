@@ -58,7 +58,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
             abs_path:                 entry.project_path.display().to_string(),
             target_name:              entry.name.clone(),
             display_path:             target_display_path(app, entry),
-            cargo_package_invocation: CargoPackageInvocation::Package(entry.package_name.clone()),
+            cargo_package_invocation: CargoPackageInvocation::Named(entry.package_name.clone()),
             run_target_kind:          entry.run_target_kind,
             build_mode:               mode,
             required_features:        entry.required_features.clone(),

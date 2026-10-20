@@ -1320,7 +1320,7 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
     let block = DescriptionBlock::for_pane(
         ctx.description,
         ctx.outer_area,
-        EmptyDescriptionBehavior::RenderEmpty,
+        EmptyDescriptionBehavior::RenderNothing,
     );
     let description_height = block.render_with_selection(
         frame,
