@@ -12,7 +12,7 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
-use crate::project::Visibility;
+#[cfg(test)]
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
@@ -33,6 +33,7 @@ use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
 use crate::tui::panes::constants::TreeRowDepth;
 use crate::tui::panes::constants::TreeRowExpansion;
 use crate::tui::panes::lang;
+use crate::tui::panes::widths;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
 use crate::tui::project_list::VisibleRow;
@@ -300,23 +301,30 @@ fn worktree_group_is_inline(
     }
 }
 
-fn tree_prefix(
-    project_list: &ProjectList,
-    lineages: &[TreeLineage],
-    row_index: usize,
-    row: VisibleRow,
-) -> String {
-    let Some(lineage) = lineages.get(row_index) else {
-        return String::new();
-    };
+struct TreeRow {
+    row:     VisibleRow,
+    lineage: TreeLineage,
+}
+
+impl TreeRow {
+    fn new(project_list: &ProjectList, row: VisibleRow) -> Self {
+        Self {
+            row,
+            lineage: tree_lineage(project_list, row),
+        }
+    }
+}
+
+fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[TreeRow]) -> String {
+    let TreeRow { row, lineage } = tree_row;
     if lineage.len() <= 1 {
-        return root_prefix(project_list, row).to_string();
+        return root_prefix(project_list, *row).to_string();
     }
 
     let mut prefix = String::new();
     let depth = TreeRowDepth::from_lineage_length(lineage.len());
     for segment_index in depth.ancestor_indices() {
-        if has_later_sibling(lineages, row_index, lineage, segment_index) {
+        if has_later_sibling(later_rows, lineage, segment_index) {
             prefix.push_str(TREE_PREFIX_CONTINUATION);
         } else {
             prefix.push_str(TREE_PREFIX_BLANK);
@@ -324,17 +332,12 @@ fn tree_prefix(
     }
 
     let row_segment_index = lineage.len() - 1;
-    let expansion = match project_list.expand_key_for_row(row) {
+    let expansion = match project_list.expand_key_for_row(*row) {
         Some(key) if project_list.expanded.contains(&key) => TreeRowExpansion::Expanded,
         Some(_) => TreeRowExpansion::Collapsed,
         None => TreeRowExpansion::Leaf,
     };
-    prefix.push_str(expansion.prefix(has_later_sibling(
-        lineages,
-        row_index,
-        lineage,
-        row_segment_index,
-    )));
+    prefix.push_str(expansion.prefix(has_later_sibling(later_rows, lineage, row_segment_index)));
     prefix
 }
 
@@ -356,19 +359,15 @@ fn root_prefix(project_list: &ProjectList, row: VisibleRow) -> &'static str {
 }
 
 fn has_later_sibling(
-    lineages: &[TreeLineage],
-    row_index: usize,
+    later_rows: &[TreeRow],
     lineage: &[TreeSegment],
     segment_index: usize,
 ) -> bool {
-    lineages
-        .iter()
-        .skip(row_index.saturating_add(1))
-        .any(|candidate| {
-            candidate.len() > segment_index
-                && candidate[..segment_index] == lineage[..segment_index]
-                && candidate[segment_index] != lineage[segment_index]
-        })
+    later_rows.iter().map(|row| &row.lineage).any(|candidate| {
+        candidate.len() > segment_index
+            && candidate[..segment_index] == lineage[..segment_index]
+            && candidate[segment_index] != lineage[segment_index]
+    })
 }
 
 fn render_root_item(
@@ -550,7 +549,14 @@ fn render_worktree_entry<'a>(
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
-    let (worktree_name, _) = worktree_entry_name_and_expandable(item, wi, &dp);
+    let worktree_name = match &item.root_item {
+        RootItem::Worktrees(group) => widths::worktree_entry_label(
+            group.entry(wi).unwrap_or(&group.primary),
+            group.visible_entry_count(),
+            wi == 0,
+        ),
+        _ => dp,
+    };
     let worktree_path = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
     let disk = disk::formatted_disk(ctx.project_list, worktree_path);
     let disk_bytes = worktree_entry_disk_bytes(item, wi);
@@ -603,34 +609,6 @@ fn worktree_entry_disk_bytes(item: &RootItem, wi: usize) -> Option<u64> {
         return item.disk_usage_bytes();
     };
     group.entry(wi).and_then(ProjectFields::disk_usage_bytes)
-}
-
-fn worktree_entry_name_and_expandable(
-    item: &RootItem,
-    wi: usize,
-    fallback: &str,
-) -> (String, bool) {
-    let RootItem::Worktrees(group) = item else {
-        return (fallback.to_string(), false);
-    };
-    let entry = group.entry(wi).unwrap_or(&group.primary);
-    let mut name = entry.root_directory_name().into_string();
-    if renders_primary_marker(group, wi) {
-        name.push_str(" (p)");
-    }
-    let expandable = match entry {
-        RustProject::Workspace(ws) => ws.has_members() || !ws.vendored().is_empty(),
-        RustProject::Package(pkg) => !pkg.vendored().is_empty(),
-    };
-    (name, expandable)
-}
-
-fn renders_primary_marker(group: &WorktreeGroup, wi: usize) -> bool {
-    wi == 0
-        && group.visible_entry_count() > 2
-        && group
-            .entry(wi)
-            .is_some_and(|entry| entry.visibility() == Visibility::Visible)
 }
 
 fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
@@ -1228,19 +1206,20 @@ pub(super) fn render_tree_items(
     let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = ctx.project_list.cursor();
 
-    let rows = ctx.project_list.visible_rows();
-    let lineages: Vec<_> = rows
+    let rows: Vec<_> = ctx
+        .project_list
+        .visible_rows()
         .iter()
         .copied()
-        .map(|row| tree_lineage(ctx.project_list, row))
+        .map(|row| TreeRow::new(ctx.project_list, row))
         .collect();
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let prefix = tree_prefix(ctx.project_list, &lineages, row_index, *row);
+            let prefix = tree_prefix(ctx.project_list, row, &rows[row_index + 1..]);
             let item = render_tree_item(
                 ctx,
-                *row,
+                row.row,
                 &prefix,
                 &root_labels,
                 root_sorted,
