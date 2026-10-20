@@ -1424,6 +1424,7 @@ mod tests {
     use super::CiRunDisplayMode;
     use super::DiscoveryRowKind;
     use super::DiscoveryShimmer;
+    use super::phase_state::PhaseCompletion;
     use super::scan_state::ScanPhase;
     use crate::ci::CiRun;
     use crate::ci::CiStatus;
@@ -1639,7 +1640,7 @@ mod tests {
                 "quiet ScanResult must not wait for project-detail declarations"
             );
             assert!(
-                app.startup.details_declared.complete_at.is_some(),
+                app.startup.details_declared.complete_at().is_some(),
                 "empty declaration phase should complete immediately"
             );
         }
@@ -10762,6 +10763,8 @@ mod tests {
         use crate::tui::app::ConfirmationModalState;
         use crate::tui::app::ConfirmationReadiness;
         use crate::tui::app::phase_state::Denominator;
+        use crate::tui::app::phase_state::FailureReason;
+        use crate::tui::app::phase_state::PhaseLifecycle;
         use crate::tui::app::target_index::CleanSelection;
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
@@ -11531,7 +11534,7 @@ mod tests {
             assert_eq!(expected.len(), 2);
             assert!(expected.contains(project_a.path().as_path()));
             assert!(expected.contains(project_b.path().as_path()));
-            assert!(app.startup.lint_phase.complete_at.is_none());
+            assert!(app.startup.lint_phase.complete_at().is_none());
 
             // The single off-thread history-load batch marks every project seen and
             // completes the row.
@@ -11542,7 +11545,7 @@ mod tests {
                 ],
             });
 
-            assert!(app.startup.lint_phase.complete_at.is_some());
+            assert!(app.startup.lint_phase.complete_at().is_some());
             app.prune_toasts();
         }
 
@@ -13724,7 +13727,7 @@ mod tests {
                 "successful metadata was upserted into the store"
             );
             assert!(
-                app.startup.metadata.complete_at.is_some(),
+                app.startup.metadata.complete_at().is_some(),
                 "with only one expected root, the phase completes on arrival"
             );
         }
@@ -14182,13 +14185,13 @@ mod tests {
             app.maybe_complete_startup_repo(now, scan_started);
 
             assert!(
-                app.startup.disk.complete_at.is_some()
-                    && app.startup.git.complete_at.is_some()
-                    && app.startup.repo.complete_at.is_some(),
+                app.startup.disk.complete_at().is_some()
+                    && app.startup.git.complete_at().is_some()
+                    && app.startup.repo.complete_at().is_some(),
                 "disk/git/repo phases are now complete"
             );
             assert!(
-                app.startup.metadata.complete_at.is_none(),
+                app.startup.metadata.complete_at().is_none(),
                 "metadata still pending"
             );
             app.maybe_complete_startup_ready(now, scan_started);
@@ -14213,7 +14216,7 @@ mod tests {
             });
 
             assert!(
-                app.startup.metadata.complete_at.is_some(),
+                app.startup.metadata.complete_at().is_some(),
                 "metadata phase completes after the arrival"
             );
             // Every phase has resolved, but the panel holds each row visible until
@@ -14403,7 +14406,7 @@ mod tests {
             app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
             app.startup.details_declared.expected =
                 Denominator::Stable(HashSet::from([detail_path.clone()]));
-            app.startup.details_declared.complete_at = None;
+            app.startup.details_declared.lifecycle.reopen();
             app.maybe_log_startup_phase_completions();
             app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
 
@@ -14437,7 +14440,7 @@ mod tests {
             app.maybe_complete_startup_git(now, scan_started);
             app.maybe_complete_startup_repo(now, scan_started);
             assert!(
-                app.startup.repo.complete_at.is_some(),
+                app.startup.repo.complete_at().is_some(),
                 "GitHub row completes when git is terminal and no repos are queued"
             );
 
@@ -14445,7 +14448,7 @@ mod tests {
             let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
             app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
             assert!(
-                app.startup.repo.complete_at.is_none(),
+                app.startup.repo.complete_at().is_none(),
                 "a late repo fetch reopens the completed GitHub row"
             );
             assert!(
@@ -14460,7 +14463,7 @@ mod tests {
             // Completing it marks it seen and re-completes the row.
             app.handle_bg_msg(BackgroundMsg::RepoFetchComplete { repo: repo.clone() });
             assert!(
-                app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at.is_some(),
+                app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at().is_some(),
                 "completing the late fetch marks it seen and re-completes the row"
             );
         }
@@ -14484,7 +14487,7 @@ mod tests {
             app.startup.repo.seen.insert(repo.clone());
             app.maybe_complete_startup_repo(now, scan_started);
             assert!(
-                app.startup.repo.complete_at.is_some(),
+                app.startup.repo.complete_at().is_some(),
                 "the seeded repo row starts complete"
             );
 
@@ -14494,7 +14497,7 @@ mod tests {
                 "a queued re-fetch un-marks the repo"
             );
             assert!(
-                app.startup.repo.complete_at.is_none(),
+                app.startup.repo.complete_at().is_none(),
                 "a queued re-fetch reopens the completed GitHub row"
             );
         }
@@ -14519,7 +14522,7 @@ mod tests {
                 name: "serde".to_string(),
             });
             assert!(
-                app.startup.crates_io.complete_at.is_some(),
+                app.startup.crates_io.complete_at().is_some(),
                 "row completes once the seeded fetch reports"
             );
 
@@ -14532,7 +14535,7 @@ mod tests {
                 "a queued re-fetch un-marks the name"
             );
             assert!(
-                app.startup.crates_io.complete_at.is_none(),
+                app.startup.crates_io.complete_at().is_none(),
                 "a queued re-fetch reopens the completed row"
             );
 
@@ -14557,7 +14560,7 @@ mod tests {
                 name: "tokio".to_string(),
             });
             assert!(
-                app.startup.crates_io.complete_at.is_some(),
+                app.startup.crates_io.complete_at().is_some(),
                 "completing the late fetches re-completes the row"
             );
         }
@@ -14716,7 +14719,7 @@ mod tests {
             // marks git terminal, so the row never completes first; clear the row's
             // init-time completion to model that ordering.
             app.net.github.repo_fetch_in_flight_mut().insert(repo);
-            app.startup.repo.complete_at = None;
+            app.startup.repo.lifecycle.reopen();
             app.maybe_log_startup_phase_completions();
 
             app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
@@ -14894,6 +14897,60 @@ mod tests {
                     .network_toasts()
                     .is_some_and(|toasts| toasts.github.is_some()),
                 "a steady-state repo fetch creates the standalone GitHub toast"
+            );
+        }
+
+        #[test]
+        fn late_crates_io_work_completes_timed_out_phase_after_startup_closes() {
+            let mut app = make_app(&[]);
+            app.scan.state.phase = ScanPhase::Complete;
+            app.initialize_startup_phase_tracker();
+            app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+                name: "serde".into(),
+            });
+            let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+            let late = std::time::Instant::now()
+                + crate::tui::constants::STARTUP_ROW_TIMEOUT
+                + std::time::Duration::from_secs(1);
+            assert!(
+                app.startup
+                    .crates_io
+                    .time_out(late, crate::tui::constants::STARTUP_ROW_TIMEOUT)
+                    .is_some()
+            );
+            assert!(app.startup.crates_io.is_failed());
+            app.maybe_complete_startup_ready(late, scan_started);
+            assert!(!app.startup.is_collecting());
+
+            app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+                name: "serde".into(),
+            });
+            assert!(matches!(
+                app.startup.crates_io.lifecycle,
+                PhaseLifecycle::Completed { .. }
+            ));
+            assert!(
+                !app.startup.is_collecting(),
+                "late work must not reopen startup"
+            );
+        }
+
+        #[test]
+        fn late_repo_work_does_not_erase_fetch_failure() {
+            let mut app = make_app(&[]);
+            app.scan.state.phase = ScanPhase::Complete;
+            app.initialize_startup_phase_tracker();
+            let repo = crate::ci::OwnerRepo::new("acme", "example");
+            app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+            app.startup.repo.lifecycle.fail(FailureReason::FetchError);
+            // A retry queued while startup owns the row must not clear the failure.
+            app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+            app.handle_bg_msg(BackgroundMsg::RepoFetchComplete { repo });
+            assert_eq!(
+                app.startup.repo.lifecycle,
+                PhaseLifecycle::Failed {
+                    reason: FailureReason::FetchError,
+                }
             );
         }
 

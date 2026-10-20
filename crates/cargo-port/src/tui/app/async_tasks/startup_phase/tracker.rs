@@ -298,12 +298,6 @@ impl App {
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
             return;
         };
-        // Return when `startup.is_collecting()` is false so late results cannot re-run
-        // `maybe_complete_startup_ready` or update the taken `startup.toast`; handlers may still
-        // mark phase `seen` sets idempotently.
-        if !self.startup.is_collecting() {
-            return;
-        }
         let now = Instant::now();
         self.maybe_complete_startup_disk(now, scan_complete_at);
         self.maybe_complete_startup_git(now, scan_complete_at);
@@ -317,6 +311,11 @@ impl App {
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
         self.startup.details_declared.complete_once(now);
+        // Late work still completes timed-out phases after the panel closes,
+        // without reopening the toast or repeating the readiness handoff.
+        if !self.startup.is_collecting() {
+            return;
+        }
         self.refresh_startup_panel(now);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
@@ -406,10 +405,10 @@ impl App {
             return;
         }
         let repo = &mut self.startup.repo;
-        if repo.failure.is_some() || repo.complete_at.is_some() || repo.expected.is_unknown() {
+        if repo.is_terminal() || repo.expected.is_unknown() {
             return;
         }
-        repo.failure = Some(reason);
+        repo.lifecycle.fail(reason);
         self.maybe_log_startup_phase_completions();
     }
     /// Add counted language scan work to the startup row. The final stats still
@@ -583,8 +582,8 @@ impl App {
             return;
         }
         let network = self.net.startup_network_readiness(
-            self.startup.repo.failure.is_some(),
-            self.startup.crates_io.failure.is_some(),
+            self.startup.repo.is_failed(),
+            self.startup.crates_io.is_failed(),
         );
         let Some(collecting) = self.startup.take_collecting() else {
             return;
