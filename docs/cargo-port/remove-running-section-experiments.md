@@ -38,48 +38,28 @@ I want you to create a new unit director in charge of creating a design, working
 
 ### Phase 1 — A first draft of the experiment framework design  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `docs/experiments/framework.md` holds a complete first draft of a framework, with which agents run experiments on any of our code bases and on our process and get results that are reliable and repeatable. `docs/experiments/worked-examples.md` applies the draft to past experiments.
-
-**Spec:**
-1. Source: the user's words in **Source** above, and the showrunner, 2026-10-20: "a design only, under docs/experiments/. No code. The design covers how agents run experiments on any of our code bases and on our process: hypothesis, baseline, controls, measures, repeat runs, the noise floor, how a result is accepted, and how an accepted result is adopted and kept. It must fit our environment: natedev and the Mac, shared build locks and load, verify.sh, berth, units and showrunners, the test-time rules (no multi-second tests), and the lessons in the memory files about load and timing."
-2. Use the scientific method from start to end. The design answers each item below, and each answer is specific to our environment:
-   1. **Question and hypothesis.** How an agent writes a question, a falsifiable hypothesis, the change under test and the one primary measure, before any run.
-   2. **Pre-registration.** What the agent records before the first run (hypothesis, measure, sample size, stop rule, acceptance rule), where it records it, and how a later reader sees that the rule did not change after the data came in.
-   3. **Baseline and control.** How the baseline is the same tree and conditions minus the one change (A/B on the same commit base, paired or interleaved runs), for code (a crate on natedev or the Mac) and for process (a skill, a prompt, a model, a review regime, where agent output is not deterministic).
-   4. **Conditions.** How a run records and controls machine load, build holds, concurrent units, sccache and cold or warm caches, the machine, the account and the model. When a sample is untrusted (for example, natedev load above 16 of 32).
-   5. **Measures.** The primary and secondary measures for each kind of experiment (wall clock, process starts, tokens and cost, defects found, review rounds, user corrections), and which existing store supplies each one (Key files). Wall clock is the only time that counts.
-   6. **Repeat runs and noise floor.** How the agent measures the noise floor from A/A runs before it reads a difference, how it picks the number of runs, and which statistic it uses (for example, a median with a bootstrap interval, a paired test). Small samples of agent runs are the usual case; say how to deal with them.
-   7. **Live effect, not best case.** How a result must show the gain in real use and not only in a best-case benchmark (the mend + clippy lesson), and how an experiment estimates the gain per day or week from the stores.
-   8. **Acceptance.** The rule that accepts, rejects or calls a result not proven, and who decides (the unit, the showrunner, the user) at each level of cost and risk, under `~/.claude/docs/decision_criteria.md`.
-   9. **Adoption and keeping.** How an accepted result becomes the default (a config, a skill, a style rule, a memory, a plan phase), how it is recorded so that agents find and use it, and how a later check finds a regression or a result that is no longer true.
-   10. **Repeatability.** What a record holds so that another agent can repeat the experiment on another day and get the same answer within the noise floor: commit, commands, conditions, raw data, analysis.
-   11. **Place in the production model.** How an experiment runs as work in a unit or a showrunner: berth reservations, build holds, `verify.sh` runs one at a time, Mac slots, and how it avoids disturbing other units' work and timings.
-   12. **Records and tools.** The record format and where records live, which existing stores and scripts it reuses, and the smallest new tool set a later build needs. Keep it simple: few concepts and one way to do each thing. The next agent must find an accepted result again: say where the result lives, and how a later session finds it before it runs the same experiment again (showrunner, 2026-10-20, from the user's words "if we run an experiment and we find a good result, then we're going to want to use this").
-   13. **Tooling** (the user via the showrunner, 2026-10-20: tooling like cargo-berth, a CLI with commands and hooks, and maybe an experiment view in cargo-handler). Design it; do not build it.
-       - **CLI:** a cargo-berth-style binary in this workspace. Commands to register a pre-registered protocol, start and record runs with their conditions, compute the A/A noise floor and the verdict, accept or reject, adopt, and find past results by subject. Define the record format and where it is stored. Use the same envelope style as cargo-berth's `--json` (`docs/cargo-berth/as-built/json-contract.md`).
-       - **Hooks:** for example, a hook that shows a session the prior accepted results for the code or process it is about to change, and a hook that blocks or warns when a run's conditions break its protocol (load, a build hold, the wrong machine). Say which hook events they use and what each prints. A hook prints a line once, and only when the line is true for that case.
-       - **cargo-handler view:** what an experiment view shows (open experiments, runs done and left, the noise floor, the verdict) and where it lives in the app. Keep it in simple text.
-3. `docs/experiments/framework.md` holds the design. It begins with a short summary and a one-page procedure that an agent follows step by step. It ends with a list of open questions for the user.
-4. `docs/experiments/worked-examples.md` applies the procedure to at least three past experiments from the Key files, among them the mend + clippy one compile and the review regime trial. For each, it shows what the framework would have required, and whether that would have changed the result or found the error sooner. It also writes one complete pre-registered protocol for a first live experiment that the user can pick to run after approval.
-5. The unit director starts the designer thread with this Work Order and the Delegation Context, and records the thread id and `CODEX_HOME` in the unit notes.
+- Two documents under `docs/experiments/` hold a design for an experiment framework. Agents use it to run experiments on any code base and on the process, and to get results that are reliable and repeatable.
+- The design is a proposal only. It has no code.
+- The framework follows the scientific method from question to adoption. Each section fits this environment: natedev and the Mac, build holds and load, `verify.sh`, berth, units and showrunners, and the test-time rules.
+- `cargo-experiment` is a proposed binary name only. The SDLC showrunner owns the name.
 
 **Files:**
-- `docs/experiments/framework.md` — the design (new)
-- `docs/experiments/worked-examples.md` — the procedure applied to past experiments, and the first live protocol (new)
+- `docs/experiments/framework.md` — a short summary, a one-page procedure, and sections 1-13: question and hypothesis, pre-registration, baseline and control, conditions, measures and existing evidence, repeat runs and noise floor, live effect and daily value, acceptance and authority, adoption and keeping the result, repeatability, place in a production, records and tools (experiment directory, protocol and attempt fields, named states, smallest new tool set), and tooling (CLI, JSON envelope, hooks, cargo-handler view). It ends with the open questions for the user.
+- `docs/experiments/worked-examples.md` — the procedure applied to five past experiments: mend and clippy in one compile, the review regime trial, cargo-berth test-time reduction, the director model study, and review-pool reset and fork probes. Section 6 is a complete pre-registered protocol for the first live experiment: review context after reset.
 
-**Workers:** 1 writer: the Astra designer thread holds both documents, because the examples follow the procedure and cannot split from it.
-- `impl` — the Astra designer (`gpt-6-astra`, xhigh); `docs/experiments/framework.md`, `docs/experiments/worked-examples.md`
-- `test` — opens as impl; no test lane
+**Binds later work:**
+- Three questions stay open for the user: which first live study to run, the showrunner spending limit, and how long to keep evidence. The review of the design sends them to the showrunner with the design.
+- The named states in `framework.md` §12 and the tools in §13 are a proposal for a later build, not a contract.
 
-**Constraints from prior phases:** none.
-
-**Acceptance gate:** Both documents exist and answer each item of Spec 2 in its own section. Each claim about a store, script or past experiment names the file it comes from. The documents hold no forbidden words. The unit notes hold the designer thread id and `CODEX_HOME`.
+**Gotchas:** The existing stores have limits. The build log has no one-minute load. No store counts process starts or user corrections. A measure that needs one of these has no source until a later build adds it.
 
 ### Phase 2 — The design passes Astra review  · status: todo
 
 #### Work Order
+
+**Depends on:** phase 1 (it reviews and revises phase 1's documents).
 
 **Goal:** After at most three `/astra_review` rounds, each followed by a revision in the same designer thread, the design has no open correctness finding, and the showrunner has the design with any open findings listed.
 
@@ -97,6 +77,6 @@ I want you to create a new unit director in charge of creating a design, working
 - `impl` — the Astra designer thread from phase 1; `docs/experiments/framework.md`, `docs/experiments/worked-examples.md`
 - `test` — opens as impl; no test lane
 
-**Constraints from prior phases:** The designer thread from phase 1 is the only designer session; resume it and never start a second one.
+**Constraints from prior phases:** The designer thread from phase 1 is the only designer session; resume it and never start a second one. Phase 1 wrote `docs/experiments/framework.md` (a one-page procedure, sections 1–13, and three open questions for the user: the first study, a showrunner spending limit, and evidence retention) and `docs/experiments/worked-examples.md` (five past experiments, and a first live protocol for review context after reset). The proposed tool is `cargo-experiment` (`crates/cargo-experiment`); SDLC owns the final name and the owner of the shared index. Spec 4's message to the showrunner also carries the three open questions.
 
 **Acceptance gate:** The last review has no open correctness finding, or three rounds are done and each open finding is listed with a ruling. The documents hold no forbidden words. The showrunner has the message of Spec 4.
