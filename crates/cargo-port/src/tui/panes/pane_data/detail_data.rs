@@ -1013,7 +1013,7 @@ mod tests {
                 ]
             );
         }
-        rust.crates_io = CratesIoReleaseState::AwaitingRelease;
+        rust.crates_io = CratesIoReleaseState::Awaiting;
         assert_eq!(
             crates_io_section(Some(&rust), Some(&vendored), ServiceStatus::Available),
             CratesIoSection::Released(vendored_release)
