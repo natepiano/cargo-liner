@@ -132,7 +132,7 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
             .map(|context| match &context.pinned_commit {
                 PinnedCommit::Sha(sha) => sha.clone(),
                 PinnedCommit::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
-                PinnedCommit::NotPinned => String::new(),
+                PinnedCommit::Absent => String::new(),
             })
             .unwrap_or_default(),
         _ => field.git_value(data),
@@ -453,7 +453,7 @@ mod tests {
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            tracked_ref:     crate::project::TrackedRef::Named("main".to_string()),
             status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
                 ahead:  0,
                 behind: 0,
@@ -512,7 +512,7 @@ mod tests {
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            tracked_ref:     crate::project::TrackedRef::Named("main".to_string()),
             status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
                 ahead:  0,
                 behind: 0,

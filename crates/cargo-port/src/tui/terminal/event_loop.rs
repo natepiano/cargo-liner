@@ -161,7 +161,7 @@ fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
     select.recv(app.background.background_receiver());
     select.recv(app.background.ci_fetch_rx());
     select.recv(app.background.clean_rx());
-    select.recv(app.background.example_rx());
+    select.recv(app.background.owned_run_receiver());
     if app.panes.cpu.is_sampling() {
         select.recv(app.panes.cpu.sample_rx());
     }
@@ -290,7 +290,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         lint_status_msgs = bg_stats.lint_status_msgs,
         language_progress_msgs = bg_stats.language_progress_msgs,
         ci_msgs = bg_stats.ci_msgs,
-        example_msgs = bg_stats.example_msgs,
+        example_msgs = bg_stats.owned_run_events,
         tree_results = bg_stats.tree_results,
         fit_results = bg_stats.fit_results,
         disk_results = bg_stats.disk_results,

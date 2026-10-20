@@ -23,7 +23,7 @@ pub(in crate::tui) struct PollBackgroundStats {
     pub lint_status_msgs:       usize,
     pub language_progress_msgs: usize,
     pub ci_msgs:                usize,
-    pub example_msgs:           usize,
+    pub owned_run_events:       usize,
     pub tree_results:           usize,
     pub fit_results:            usize,
     pub disk_results:           usize,
