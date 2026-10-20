@@ -88,9 +88,9 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
-    // Local git info — includes git status but skips first_commit,
-    // which is handled separately by
-    // `schedule_git_first_commit_refreshes` (batched by repo root).
+    // `emit_git_info` sends local Git metadata, including Git status, but skips
+    // `first_commit`, which `schedule_git_first_commit_refreshes` handles separately
+    // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
     }
