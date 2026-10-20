@@ -240,10 +240,6 @@ pub(super) fn remove(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::error::Error;
     use std::fs;
