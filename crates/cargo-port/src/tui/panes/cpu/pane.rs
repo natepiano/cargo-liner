@@ -205,7 +205,7 @@ mod tests {
     use crate::tui::startup_services::StartupServices;
 
     const CPU_AWAITING_SHOT: &str = r"|┌ CPU / GPU ──────┐|
-|│ CPU Cores    16 │|
+|│ CPU cores    16 │|
 |│ Sampling…       │|
 |│                 │|
 |│                 │|
@@ -223,8 +223,8 @@ mod tests {
 ";
 
     const CPU_SAMPLED_SHOT: &str = r"|┌ CPU / GPU ──────┐|
-|│ CPU Cores     8 │|
-|│ Device      37% │|
+|│ CPU cores     8 │|
+|│ Total       37% │|
 |│ 1 ███       42% │|
 |│ 2 █         17% │|
 |│ 3 ███████   88% │|
@@ -413,6 +413,42 @@ mod tests {
     }
 
     #[test]
+    fn core_count_label_uses_sentence_case_before_and_after_sampling() {
+        let mut pane = quiet_pane();
+        for phase in [
+            CpuSamplePhase::AwaitingFirstSample { core_count: 8 },
+            CpuSamplePhase::Sampled(usage_with_cores(8, 42)),
+        ] {
+            pane.sample_phase = phase;
+            let rows = draw_rows(&mut pane, 24);
+            assert_eq!(rows[1].trim(), "CPU cores     8", "{rows:?}");
+        }
+    }
+
+    #[test]
+    fn aggregate_cpu_usage_is_labeled_total() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+        let rows = draw_rows(&mut pane, 24);
+        assert_eq!(rows[2].trim(), "Total       37%", "{rows:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gpu_usage_keeps_the_device_label() {
+        let mut pane = quiet_pane();
+        let mut usage = sampled_usage();
+        usage.gpu.device_percent = Some(73);
+        pane.sample_phase = CpuSamplePhase::Sampled(usage);
+        let rows = draw_rows(&mut pane, 24);
+        assert_eq!(rows[2].trim(), "Total       37%", "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.trim() == "Device      73%"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
     fn sampled_totals_use_labels_without_colons() {
         let mut pane = quiet_pane();
         pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
@@ -465,7 +501,7 @@ mod tests {
         pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
         let rows = draw_rows(&mut pane, 24);
         let label_column = Some(2);
-        assert_eq!(rows[1].find("CPU Cores"), label_column);
+        assert_eq!(rows[1].find("CPU cores"), label_column);
         for (phase, word) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
@@ -593,7 +629,7 @@ mod tests {
                 pane.sample_phase(),
                 CpuSamplePhase::AwaitingFirstSample { .. }
             ) {
-                assert!(screen.contains("CPU Cores"));
+                assert!(screen.contains("CPU cores"));
                 assert_eq!(pane.core_count(), 8);
             }
         }
@@ -608,11 +644,11 @@ mod tests {
         for (phase, expected_lines) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
-                &["CPU Cores    16", "Sampling…"][..],
+                &["CPU cores    16", "Sampling…"][..],
             ),
             (
                 CpuSamplePhase::Sampled(usage),
-                &["CPU Cores    16", "Device      37%"][..],
+                &["CPU cores    16", "Total       37%"][..],
             ),
             (CpuSamplePhase::Suppressed, &["Monitoring off"][..]),
             (CpuSamplePhase::Unavailable, &["Unavailable"][..]),
