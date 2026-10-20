@@ -26,6 +26,8 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
+use crate::project::CratesIoRelease;
+use crate::project::CratesIoReleaseState;
 use crate::project::DisplayPath;
 use crate::project::GitHubInfo;
 use crate::project::GitRepo;
@@ -2321,18 +2323,16 @@ impl ProjectList {
         }
     }
 
-    /// Stamp crates.io version+downloads onto the matching project.
+    /// Store a complete crates.io release on the matching project.
     pub(in crate::tui) fn handle_crates_io_version_msg(
         &mut self,
         path: &Path,
-        version: String,
-        prerelease: Option<String>,
-        downloads: u64,
+        release: CratesIoRelease,
     ) {
         if let Some(rust_info) = self.rust_info_at_path_mut(path) {
-            rust_info.set_crates_io(version, prerelease, downloads);
+            rust_info.crates_io = CratesIoReleaseState::Released(release);
         } else if let Some(vendored) = self.vendored_at_path_mut(path) {
-            vendored.set_crates_io(version, prerelease, downloads);
+            vendored.crates_io = CratesIoReleaseState::Released(release);
         }
     }
 

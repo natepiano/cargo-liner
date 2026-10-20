@@ -1082,9 +1082,7 @@ impl App {
         self.set_ci_display_mode_for_inner(path, mode);
     }
 
-    pub(super) fn reset_cpu_placeholder(&mut self) {
-        self.panes.reset_cpu(&self.config.current().cpu);
-    }
+    pub(super) fn reset_cpu_monitor(&mut self) { self.panes.reset_cpu(&self.config.current().cpu); }
 
     // ── Group 3 cross-subsystem orchestrators (post-Phase-9) ────────
     //
@@ -1261,7 +1259,7 @@ impl App {
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
-            PaneBehavior::ProjectList => true,
+            PaneBehavior::ProjectList | PaneBehavior::Cpu => true,
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.project_list.selected_project_path().is_some(),
                 PaneId::Lang => self
@@ -1280,7 +1278,6 @@ impl App {
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.panes.cpu.content().is_some(),
             PaneBehavior::DetailTargets => self
                 .panes
                 .targets
@@ -3015,7 +3012,7 @@ mod tests {
         #[test]
         fn package_activate_state_disabled_when_no_crates_version() {
             // `package_fields_from_data` omits the CratesIo row when
-            // `crates_version` is `None`, so no cursor position lands on a
+            // the crates.io release is still awaited, so no cursor position lands on a
             // row whose Activate dispatch does anything — the state must be
             // Disabled regardless of where the cursor sits.
             let project = super::make_project(Some("demo"), "~/demo");
@@ -10738,6 +10735,7 @@ mod tests {
         use crate::project::AheadBehind;
         use crate::project::CommitDate;
         use crate::project::Comparison;
+        use crate::project::CratesIoRelease;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
         use crate::project::HeadState;
@@ -12045,9 +12043,11 @@ mod tests {
             )]);
             app.project_list.handle_crates_io_version_msg(
                 vendored_path.as_path(),
-                "0.4.0".to_string(),
-                None,
-                3_208,
+                CratesIoRelease {
+                    version:    "0.4.0".to_string(),
+                    prerelease: None,
+                    downloads:  3_208,
+                },
             );
 
             let vendored = app
@@ -12063,8 +12063,14 @@ mod tests {
                     .map(|s| s.entries.len()),
                 Some(1)
             );
-            assert_eq!(vendored.crates_version(), Some("0.4.0"));
-            assert_eq!(vendored.crates_downloads(), Some(3_208));
+            assert_eq!(
+                vendored.crates_io,
+                crate::project::CratesIoReleaseState::Released(crate::project::CratesIoRelease {
+                    version:    "0.4.0".to_string(),
+                    prerelease: None,
+                    downloads:  3_208,
+                })
+            );
         }
 
         #[test]
@@ -12074,9 +12080,11 @@ mod tests {
 
             app.project_list.handle_crates_io_version_msg(
                 path.as_path(),
-                "0.20.2".to_string(),
-                Some("0.21.0-rc.2".to_string()),
-                663,
+                CratesIoRelease {
+                    version:    "0.20.2".to_string(),
+                    prerelease: Some("0.21.0-rc.2".to_string()),
+                    downloads:  663,
+                },
             );
 
             // A filesystem-triggered refresh re-scans the project. The fresh item has
@@ -12093,9 +12101,14 @@ mod tests {
                 .project_list
                 .rust_info_at_path(path.as_path())
                 .expect("package should remain addressable after refresh");
-            assert_eq!(rust_info.crates_version(), Some("0.20.2"));
-            assert_eq!(rust_info.crates_prerelease(), Some("0.21.0-rc.2"));
-            assert_eq!(rust_info.crates_downloads(), Some(663));
+            assert_eq!(
+                rust_info.crates_io,
+                crate::project::CratesIoReleaseState::Released(crate::project::CratesIoRelease {
+                    version:    "0.20.2".to_string(),
+                    prerelease: Some("0.21.0-rc.2".to_string()),
+                    downloads:  663,
+                })
+            );
         }
 
         #[test]

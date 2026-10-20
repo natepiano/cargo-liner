@@ -84,10 +84,8 @@ fn emit_crates_io(
     scan::emit_service_signal(sender, signal);
     if let Some(info) = info {
         let _ = sender.send(BackgroundMsg::CratesIoVersion {
-            path:       path.clone(),
-            version:    info.version,
-            prerelease: info.prerelease,
-            downloads:  info.downloads,
+            path:    path.clone(),
+            release: info,
         });
     }
     let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
