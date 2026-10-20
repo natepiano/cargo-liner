@@ -5,7 +5,7 @@
 //!   [`Background::swap_background_channel`])
 //! - `ci_fetch_tx` / `ci_fetch_rx`
 //! - `clean_tx` / `clean_rx`
-//! - `example_tx` / `example_rx`
+//! - `owned_run_tx` / `owned_run_rx`
 //! - `watcher`
 //!
 //! Spawn / poll facade methods live on `App` (and inside
@@ -76,7 +76,7 @@ impl Background {
         }
     }
 
-    // `background_sender`, `ci_fetch_sender`, `clean_sender` and `example_sender`
+    // `background_sender`, `ci_fetch_sender`, `clean_sender` and `owned_run_sender`
     // clone `Sender` handles for task spawning.
 
     pub(super) fn background_sender(&self) -> Sender<BackgroundMsg> { self.sender.clone() }
@@ -87,7 +87,7 @@ impl Background {
 
     pub(super) fn owned_run_sender(&self) -> Sender<OwnedRunEvent> { self.owned_run_tx.clone() }
 
-    // `background_receiver`, `ci_fetch_rx`, `clean_rx` and `example_rx`
+    // `background_receiver`, `ci_fetch_rx`, `clean_rx` and `owned_run_receiver`
     // borrow the subsystem's `Receiver` handles for event polling.
 
     pub(super) const fn background_receiver(&self) -> &Receiver<BackgroundMsg> { &self.receiver }
