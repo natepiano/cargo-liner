@@ -19,6 +19,7 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::Comparison;
+use crate::project::CratesIoReleaseState;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::LocalGitState;
@@ -361,14 +362,14 @@ impl App {
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        // While startup.is_collecting, startup.repo.expected gains repo and seen/complete_at are
+        // While startup.is_collecting, startup.repo.expected gains repo and seen/lifecycle are
         // reset even after local-git denominator stabilization, holding the GitHub row until
         // completion; after closure net.github_running_mut and sync_running_repo_fetch_toast drive
         // only the steady-state toast.
         if self.startup.is_collecting() {
             self.startup.repo.expected.insert(repo.clone());
             self.startup.repo.seen.remove(&repo);
-            self.startup.repo.complete_at = None;
+            self.startup.repo.lifecycle.reopen();
         }
         self.net.github_running_mut().insert(repo, Instant::now());
         self.sync_running_repo_fetch_toast();
@@ -656,28 +657,25 @@ fn transfer_lint_runs(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) 
     }
 }
 
-/// Copy crates.io version/downloads from `old` onto the freshly-scanned
+/// Copy the complete crates.io release from `old` onto the freshly-scanned
 /// `item` for the node at `path`. The node is either a `RustInfo` (workspace
 /// root, member, or standalone package) or a `VendoredPackage`; both store the
 /// values set by `BackgroundMsg::CratesIoVersion`.
 fn transfer_crates_io(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) {
     if let Some(source) = old.rust_info_at_path(path)
-        && let (Some(version), Some(downloads)) =
-            (source.crates_version(), source.crates_downloads())
+        && let CratesIoReleaseState::Released(_) = &source.crates_io
         && let Some(target) = item.rust_info_at_path_mut(path)
     {
-        let prerelease = source.crates_prerelease().map(str::to_string);
-        target.set_crates_io(version.to_string(), prerelease, downloads);
+        target.crates_io = source.crates_io.clone();
     }
     if let Some(source) = old.vendored_at_path(path)
-        && let (Some(version), Some(downloads)) =
-            (source.crates_version(), source.crates_downloads())
+        && let CratesIoReleaseState::Released(_) = &source.crates_io
         && let Some(target) = item.vendored_at_path_mut(path)
     {
-        let prerelease = source.crates_prerelease().map(str::to_string);
-        target.set_crates_io(version.to_string(), prerelease, downloads);
+        target.crates_io = source.crates_io.clone();
     }
 }
+
 fn preserve_live_pr_snapshot_while_loading(
     data: &ProjectPrData,
     prior: Option<&ProjectPrInfo>,

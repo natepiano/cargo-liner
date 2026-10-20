@@ -107,12 +107,14 @@ impl App {
     /// landed. Looks the project up via either the rust-info or vendored
     /// accessor; `None` for either resolution means "no version yet."
     pub(super) fn displayed_crates_io_version(&self, path: &AbsolutePath) -> Option<&str> {
-        if let Some(rust) = self.project_list.rust_info_at_path(path.as_path()) {
-            return rust.crates_version();
-        }
         self.project_list
-            .vendored_at_path(path.as_path())
-            .and_then(|vendored| vendored.crates_version())
+            .rust_info_at_path(path.as_path())
+            .and_then(|rust| rust.crates_io.version())
+            .or_else(|| {
+                self.project_list
+                    .vendored_at_path(path.as_path())
+                    .and_then(|vendored| vendored.crates_io.version())
+            })
     }
     /// Fan the plan out to [`CRATES_IO_FETCH_WORKERS`] rayon workers, each
     /// driving its share through the crates.io fetch lifecycle — queued
@@ -134,9 +136,7 @@ impl App {
                         for path in paths {
                             let _ = sender.send(BackgroundMsg::CratesIoVersion {
                                 path,
-                                version: info.version.clone(),
-                                prerelease: info.prerelease.clone(),
-                                downloads: info.downloads,
+                                release: info.clone(),
                             });
                         }
                     }

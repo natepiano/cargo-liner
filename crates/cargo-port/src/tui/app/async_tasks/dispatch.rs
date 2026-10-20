@@ -164,17 +164,10 @@ impl App {
             BackgroundMsg::Submodules { path, submodules } => {
                 self.handle_submodules_msg(path.as_path(), submodules);
             },
-            BackgroundMsg::CratesIoVersion {
-                path,
-                version,
-                prerelease,
-                downloads,
-            } => self.project_list.handle_crates_io_version_msg(
-                path.as_path(),
-                version,
-                prerelease,
-                downloads,
-            ),
+            BackgroundMsg::CratesIoVersion { path, release } => {
+                self.project_list
+                    .handle_crates_io_version_msg(path.as_path(), release);
+            },
             BackgroundMsg::CratesIoNewRelease {
                 display_name,
                 previous_version,

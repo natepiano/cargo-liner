@@ -25,6 +25,7 @@ use crate::tui::app::CountedPhase;
 use crate::tui::app::KeyedPhase;
 use crate::tui::app::LanguagePhase;
 use crate::tui::app::phase_state::PhaseCompletion;
+use crate::tui::app::phase_state::PhaseLifecycle;
 use crate::tui::state::StartupNetworkPending;
 use crate::tui::state::StartupNetworkReadiness;
 use crate::tui::state::StartupNetworkReady;
@@ -183,7 +184,7 @@ impl StartupPlanning {
             .reset_with_expected(plan.detail_expected.clone());
         startup.lint_count.expected = Some(plan.lint_count_expected);
         startup.lint_count.seen = 0;
-        startup.lint_count.complete_at = None;
+        startup.lint_count.lifecycle = PhaseLifecycle::Running;
         startup.phase = StartupPhase::Collecting(self.into_collecting());
     }
 

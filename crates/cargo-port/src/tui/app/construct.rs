@@ -327,7 +327,6 @@ fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -
 
 impl App {
     fn finish_new(&mut self) {
-        self.panes.install_cpu_placeholder();
         self.load_initial_keymap();
         if let Some(warning) = self
             .overlays

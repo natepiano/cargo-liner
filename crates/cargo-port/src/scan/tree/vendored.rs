@@ -52,14 +52,12 @@ pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
     for &(vi, destination) in &vendored_map {
         let vendored = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => VendoredPackage {
-                path:              p.path.clone(),
-                name:              p.name.clone(),
-                worktree_status:   p.worktree_status.clone(),
-                project_info:      p.rust.project_info.clone(),
-                cargo:             p.rust.cargo.clone(),
-                crates_version:    p.rust.crates_version.clone(),
-                crates_prerelease: p.rust.crates_prerelease.clone(),
-                crates_downloads:  p.rust.crates_downloads,
+                path:            p.path.clone(),
+                name:            p.name.clone(),
+                worktree_status: p.worktree_status.clone(),
+                project_info:    p.rust.project_info.clone(),
+                cargo:           p.rust.cargo.clone(),
+                crates_io:       p.rust.crates_io.clone(),
             },
             RootItem::Rust(RustProject::Workspace(ws)) => VendoredPackage {
                 path: ws.path().clone(),
