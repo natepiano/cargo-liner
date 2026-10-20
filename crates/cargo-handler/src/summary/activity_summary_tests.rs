@@ -20,7 +20,7 @@ fn row(pid: u32, name: &str, activity: AgentActivity) -> AgentRow {
     let mut row: AgentRow = serde_json::from_value(serde_json::json!({
         "agent":"codex", "name":name, "status":null,
         "pid":pid, "started":100 + pid, "directory":"/fixture", "desktop":null,
-        "branch":null, "launched_by":null, "children":[]
+        "branch":null, "launched_by":null, "children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
     }))
     .expect("probe-compatible row");
     row.activity = activity;

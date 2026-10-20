@@ -146,20 +146,22 @@ fn grouped_text(dispatch: &WorkerDispatch) -> String {
     let placement = AgentPlacement::from_machines(&machines);
     let agents = agent_cell::cell_order_placed(&placement);
     let tiles = agent_cell::group_tiles(&placement, &agents, &HashMap::new(), 1000);
-    let AgentTile::Unassigned(entry) = &tiles[0] else {
-        panic!("unassigned root must use its pool")
+    let AgentTile::Agent(entry) = &tiles[0] else {
+        panic!("a root with dispatched work must own a hierarchy tile")
     };
     let area = Rect::new(
         0,
         0,
         240,
-        u16::try_from(agent_cell::unassigned_height(entry)).expect("small fixture"),
+        u16::try_from(agent_cell::height(entry, 240, 1000, AccountColumn::Hidden))
+            .expect("small fixture"),
     );
     let mut buffer = Buffer::empty(area);
-    agent_cell::draw_unassigned(
+    agent_cell::draw(
         &mut buffer,
         area,
         entry,
+        &agents,
         1000,
         AccountColumn::Hidden,
         &FooterColors::default(),

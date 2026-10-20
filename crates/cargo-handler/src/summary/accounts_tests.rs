@@ -66,7 +66,7 @@ fn agents() -> Vec<AgentRow> {
         .map(|(pid, name, started)| {
             serde_json::from_value(serde_json::json!({
                 "agent":"claude","name":name,"started":started,"pid":pid,
-                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[]
+                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
             }))
             .expect("agent fixture")
         })

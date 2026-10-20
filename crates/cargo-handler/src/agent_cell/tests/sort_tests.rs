@@ -149,7 +149,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "alpha",
             "└─ alpha impl thinking a-account a-branch /a-directory 4h",
         ),
-        ("a-shell", "└─ a-shell — command — — — 2h"),
+        ("a-shell", "└─ a-shell — command a-account — — 2h"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(

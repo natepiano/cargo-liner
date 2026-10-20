@@ -58,7 +58,7 @@ fn with_agents(mut app: App) -> App {
             .map(|(pid, name, started)| {
                 serde_json::from_value(serde_json::json!({
                     "agent":"claude","name":name,"pid":pid,"started":started,
-                    "directory":"/fixture","children":[]
+                    "directory":"/fixture","children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
                 }))
                 .expect("agent fixture")
             })
@@ -153,7 +153,7 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
         let second = accounts_gradient_tests::drawn(&app);
         assert_order(&second, &descending);
         assert_eq!(app.summary_sort, original_sort);
-        let agent_header = accounts_gradient_tests::locate(&second, "name");
+        let agent_header = accounts_gradient_tests::locate(&second, "session");
         render::cell_clicked(
             &mut app,
             CellClick {

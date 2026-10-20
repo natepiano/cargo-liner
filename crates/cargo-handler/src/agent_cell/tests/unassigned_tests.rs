@@ -52,6 +52,32 @@ fn unassigned_forest() -> MachineState {
     )
 }
 
+fn standalone_forest() -> MachineState {
+    let mut state = unassigned_forest();
+    if let MachineState::Answered(rows, _) = &mut state {
+        for row in rows.iter_mut().filter(|row| row.pid >= 20) {
+            row.children.clear();
+            row.launched_by = None;
+        }
+    }
+    state
+}
+
+fn work_buffer(name: &str) -> Buffer {
+    let state = unassigned_forest();
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = cell_order_placed(&placement);
+    let owner = cells
+        .iter()
+        .find(|entry| entry.row.name == name)
+        .expect("work owner");
+    drawn_into(owner, &cells, 220, 12)
+}
+
 fn pool<'t, 'a>(tiles: &'t [AgentTile<'a>], machine: &str) -> &'t UnassignedEntry<'a> {
     tiles
         .iter()
@@ -104,19 +130,23 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
     ];
     let placement = AgentPlacement::from_machines(&machines);
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
-    assert_eq!(tiles.len(), 3, "one assigned root and two machine pools");
+    assert_eq!(tiles.len(), 4, "three hierarchy owners and one remote pool");
     for tile in &tiles {
         if let AgentTile::Agent(entry) = tile {
-            assert_eq!(entry.row.name, "director");
             let buffer = drawn_into(entry, &cell_order_placed(&placement), 220, 12);
-            assert!(find(&buffer, "assigned-worker").is_some());
-            assert!(find(&buffer, "postmaster").is_none());
+            match entry.row.name.as_str() {
+                "director" => assert!(find(&buffer, "assigned-worker").is_some()),
+                "ups" => assert!(find(&buffer, "ups-codex").is_some()),
+                "postmaster" => assert!(find(&buffer, "post-task").is_some()),
+                _ => panic!("unexpected hierarchy owner"),
+            }
         }
     }
-    let buffer = draw_pool(pool(&tiles, "natedev"), 220);
-    assert!(find(&buffer, "ups").is_some());
-    assert!(find(&buffer, "postmaster").is_some());
-    assert!(find(&buffer, "assigned-worker").is_none());
+    assert!(
+        !tiles
+            .iter()
+            .any(|tile| matches!(tile, AgentTile::Unassigned(entry) if entry.machine == "natedev"))
+    );
     let buffer = draw_pool(pool(&tiles, "mac"), 220);
     assert!(find(&buffer, "remote-session").is_some());
     assert!(find(&buffer, "postmaster").is_none());
@@ -124,7 +154,7 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
 
 #[test]
 fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
-    let state = unassigned_forest();
+    let state = standalone_forest();
     let machines = [Machine {
         name:  "natedev",
         state: &state,
@@ -135,10 +165,7 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
     for (name, prefix) in [
         ("ups", "ups — thinking"),
         ("postmaster", "postmaster — thinking"),
-        ("opened-session", "├─ opened-session session thinking"),
-        ("ups-shell", "└─ ups-shell — command"),
-        ("ups-codex", "└─ ups-codex worker idle"),
-        ("post-task", "└─ post-task subagent claude"),
+        ("opened-session", "opened-session — thinking"),
     ] {
         assert!(
             row_text(&buffer, name).starts_with(prefix),
@@ -153,21 +180,25 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
         assert_eq!(buffer[(role_x, y)].fg, Color::Indexed(141));
         assert!((buffer.area.x..name_x).all(|x| buffer[(x, y)].symbol() == " "));
     }
-    let order = [
-        "ups",
-        "opened-session",
-        "ups-shell",
-        "ups-codex",
-        "postmaster",
-        "post-task",
-    ]
-    .map(|name| find(&buffer, name).expect("row drawn").1);
+    let order = ["ups", "opened-session", "postmaster"]
+        .map(|name| find(&buffer, name).expect("row drawn").1);
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+    let work = work_buffer("ups");
+    for (name, prefix) in [
+        ("opened-session", "├─ opened-session session thinking"),
+        ("ups-shell", "└─ ups-shell — command"),
+        ("ups-codex", "└─ ups-codex worker idle"),
+    ] {
+        assert!(row_text(&work, name).starts_with(prefix));
+    }
+    assert!(
+        row_text(&work_buffer("postmaster"), "post-task").starts_with("└─ post-task subagent idle")
+    );
 }
 
 #[test]
 fn unassigned_session_header_aligns_with_flat_roots_and_keeps_nested_branch_indent() {
-    let state = unassigned_forest();
+    let state = standalone_forest();
     let machines = [Machine {
         name:  "natedev",
         state: &state,
@@ -186,9 +217,10 @@ fn unassigned_session_header_aligns_with_flat_roots_and_keeps_nested_branch_inde
                 "header aligns with {name} at width {width}"
             );
         }
-        let (name_x, row) = find(&buffer, "ups-shell").expect("nested shell name");
+        let work = work_buffer("ups");
+        let (name_x, row) = find(&work, "ups-shell").expect("nested shell name");
         let glyph_x = (buffer.area.x..name_x)
-            .find(|&x| buffer[(x, row)].symbol() == "└")
+            .find(|&x| work[(x, row)].symbol() == "└")
             .expect("nested shell keeps its branch glyph");
         assert!(name_x > glyph_x);
         assert!(name_x > header_x);
@@ -197,7 +229,7 @@ fn unassigned_session_header_aligns_with_flat_roots_and_keeps_nested_branch_inde
 
 #[test]
 fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
-    let state = unassigned_forest();
+    let state = standalone_forest();
     let machines = [Machine {
         name:  "natedev",
         state: &state,
@@ -219,7 +251,6 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
             ("ups", RainbowHue::Yellow),
             ("opened-session", RainbowHue::Green),
             ("postmaster", RainbowHue::Cyan),
-            ("ups-codex", RainbowHue::Yellow),
         ] {
             assert_eq!(
                 buffer[find(&buffer, name).expect("name drawn")].fg,
@@ -230,15 +261,24 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let ups_y = find(&buffer, "ups").expect("ups").1;
         let post_y = find(&buffer, "postmaster").expect("postmaster").1;
         assert_eq!(post_y < ups_y, direction == SortDirection::Ascending);
-        let work_y = find(&buffer, "ups-codex").expect("ups worker").1;
-        assert!(work_y > ups_y);
-        assert_eq!(work_y < post_y, direction == SortDirection::Descending);
+        let work = work_buffer("ups");
+        assert_eq!(
+            work[find(&work, "ups-codex").expect("ups worker")].fg,
+            Role::Rainbow(RainbowHue::Yellow)
+                .style()
+                .fg
+                .expect("owner hue")
+        );
+        assert!(
+            find(&work, "ups-codex").expect("worker").1
+                > find(&work, TREE_SESSION_HEADER).expect("header").1
+        );
     }
 }
 
 #[test]
 fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
-    let state = unassigned_forest();
+    let state = standalone_forest();
     let machines = [Machine {
         name:  "natedev",
         state: &state,

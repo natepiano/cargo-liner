@@ -38,6 +38,7 @@ use crate::census::HierarchyRole;
 use crate::census::Placement;
 use crate::census::RoleFallback;
 use crate::census::RoleLabel;
+use crate::census::RootPresentation;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
 use crate::census::Timer;
@@ -213,10 +214,10 @@ struct Work<'a> {
 }
 
 impl<'a> Work<'a> {
-    const fn account(self) -> &'a Account {
-        match self.kind {
-            WorkKind::Thread => &self.child.account,
-            WorkKind::Shell | WorkKind::Subagent => &Account::Unrecorded,
+    const fn account(self, parent: &'a Account) -> &'a Account {
+        match (self.kind, &self.child.account) {
+            (WorkKind::Thread, _) | (_, Account::Home(_)) => &self.child.account,
+            (WorkKind::Shell | WorkKind::Subagent, Account::Unrecorded) => parent,
         }
     }
 
@@ -226,8 +227,7 @@ impl<'a> Work<'a> {
                 || self.child.runs_label().into_owned(),
                 |timer| timer_label(timer, now),
             ),
-            WorkKind::Subagent => self.child.runs_label().into_owned(),
-            WorkKind::Thread => self.child.activity.text().to_string(),
+            WorkKind::Subagent | WorkKind::Thread => self.child.activity.text().to_string(),
         }
     }
 }
@@ -413,12 +413,12 @@ impl TreeLine<'_> {
         }
     }
 
-    /// The account belongs to an agent or thread, never its shell or subagent.
+    /// Work without its own recorded account uses the owning session's account.
     const fn account(&self) -> &Account {
         match self.subject {
             LineSubject::Agent(_) | LineSubject::UnassignedSession => &self.row.account,
             LineSubject::ManagedThread(child, _) => &child.account,
-            LineSubject::Work(work) => work.account(),
+            LineSubject::Work(work) => work.account(&self.row.account),
         }
     }
 
@@ -438,8 +438,17 @@ impl TreeLine<'_> {
     /// The program whose account this line names.
     const fn program(&self) -> Agent {
         match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.agent,
-            LineSubject::ManagedThread(_, _) | LineSubject::Work(_) => Agent::Codex,
+            LineSubject::Agent(_)
+            | LineSubject::UnassignedSession
+            | LineSubject::Work(Work {
+                kind: WorkKind::Shell | WorkKind::Subagent,
+                ..
+            }) => self.row.agent,
+            LineSubject::ManagedThread(_, _)
+            | LineSubject::Work(Work {
+                kind: WorkKind::Thread,
+                ..
+            }) => Agent::Codex,
         }
     }
 
@@ -580,9 +589,12 @@ impl TreeLine<'_> {
             LineSubject::ManagedThread(child, _)
             | LineSubject::Work(Work {
                 child,
-                kind: WorkKind::Thread,
+                kind: WorkKind::Thread | WorkKind::Subagent,
             }) => thread_status_role(child.activity),
-            LineSubject::Work(work) => runs_role(work.kind),
+            LineSubject::Work(Work {
+                kind: WorkKind::Shell,
+                ..
+            }) => Role::Shell,
         }
     }
 }
@@ -759,11 +771,11 @@ pub(crate) fn tile_keys(placement: &AgentPlacement<'_>) -> HashSet<TileKey> {
         .rows
         .iter()
         .filter(|row| row.placement == Placement::Root)
-        .map(|root| match placement.role_label(root.identity) {
-            RoleLabel::Unlabeled | RoleLabel::ReviewFallback => TileKey::Unassigned {
+        .map(|root| match placement.root_presentation(root.identity) {
+            RootPresentation::Unassigned => TileKey::Unassigned {
                 machine: root.identity.machine.to_owned(),
             },
-            RoleLabel::Stated(_) | RoleLabel::Inferred(_) => TileKey::Agent(AgentCell {
+            RootPresentation::Hierarchy => TileKey::Agent(AgentCell {
                 machine:         root.identity.machine.to_owned(),
                 pid:             root.row.pid,
                 process_started: root.row.process_started,
@@ -793,10 +805,11 @@ pub(crate) fn group_tiles<'a>(
     let session_sorts = agents
         .iter()
         .map(|entry| {
-            let key = if matches!(
-                entry.role_label,
-                RoleLabel::Unlabeled | RoleLabel::ReviewFallback
-            ) {
+            let key = if placement.root_presentation(RowIdentity {
+                machine: entry.machine,
+                pid:     entry.row.pid,
+            }) == RootPresentation::Unassigned
+            {
                 TileKey::Unassigned {
                     machine: entry.machine.to_owned(),
                 }
@@ -814,21 +827,22 @@ pub(crate) fn group_tiles<'a>(
     let mut tiles = Vec::new();
     let mut pooled_machines = HashSet::new();
     for entry in &ordered {
-        match entry.role_label {
-            RoleLabel::Stated(_) | RoleLabel::Inferred(_) => {
+        match placement.root_presentation(RowIdentity {
+            machine: entry.machine,
+            pid:     entry.row.pid,
+        }) {
+            RootPresentation::Hierarchy => {
                 tiles.push(AgentTile::Agent(entry.clone()));
             },
-            RoleLabel::Unlabeled | RoleLabel::ReviewFallback
-                if pooled_machines.insert(entry.machine) =>
-            {
+            RootPresentation::Unassigned if pooled_machines.insert(entry.machine) => {
                 let mut roots: Vec<_> = ordered
                     .iter()
                     .filter(|root| {
                         root.machine == entry.machine
-                            && matches!(
-                                root.role_label,
-                                RoleLabel::Unlabeled | RoleLabel::ReviewFallback
-                            )
+                            && placement.root_presentation(RowIdentity {
+                                machine: root.machine,
+                                pid:     root.row.pid,
+                            }) == RootPresentation::Unassigned
                     })
                     .collect();
                 roots.sort_by(|left, right| {
@@ -846,7 +860,7 @@ pub(crate) fn group_tiles<'a>(
                     lines,
                 }));
             },
-            RoleLabel::Unlabeled | RoleLabel::ReviewFallback => {},
+            RootPresentation::Unassigned => {},
         }
     }
     tiles
@@ -1955,15 +1969,6 @@ fn time_left_label(left: u64) -> String {
 /// The same activity colors used for a Claude session's busy and idle states.
 const fn thread_status_role(state: AgentActivity) -> Role { state.color_role() }
 
-/// The program color of a retained work line's status.
-const fn runs_role(kind: WorkKind) -> Role {
-    match kind {
-        WorkKind::Shell => Role::Shell,
-        WorkKind::Subagent => Role::Claude,
-        WorkKind::Thread => Role::Codex,
-    }
-}
-
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1982,6 +1987,8 @@ mod tests {
     mod footer_color_tests;
     #[path = "sort_tests.rs"]
     mod sort_tests;
+    #[path = "subagent_row_tests.rs"]
+    mod subagent_row_tests;
     #[path = "tree_tests.rs"]
     mod tree_tests;
     #[path = "unassigned_tests.rs"]
@@ -2284,7 +2291,7 @@ mod tests {
                 "    session                                                                role      status   branch  directory  age ▼",
                 " ├─ Launch the Phase 1 implementation seat                                 —         command  —       —          12m",
                 " │  └─ tool-based-ui-trunk-impl                                            worker    idle     —       —          11m",
-                " └─ Review the permission queue                                            subagent  claude   —       —          5m 3s",
+                " └─ Review the permission queue                                            subagent  idle     —       —          5m 3s",
                 "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  —         command  —       —          45s",
             ]
         );
@@ -2413,7 +2420,7 @@ mod tests {
     }
 
     /// A tree whose widest name cannot fit switches to compressed columns;
-    /// statuses retain their program colors.
+    /// statuses retain their activity and command colors.
     #[test]
     fn a_cell_compresses_where_its_tree_would_cut_a_name() {
         let arrange = AgentRow {
@@ -2459,8 +2466,8 @@ mod tests {
             Role::Shell.style().fg
         );
         assert_eq!(
-            Some(cut[find(&cut, "claude").expect("subagent status")].fg),
-            Role::Claude.style().fg
+            Some(cut[find(&cut, "idle").expect("subagent status")].fg),
+            Role::Idle.style().fg
         );
     }
 

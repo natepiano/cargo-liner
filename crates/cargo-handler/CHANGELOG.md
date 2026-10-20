@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Summary headers use `account` and `session`, and only sessions heading a hierarchy appear in that table; sessions without a hierarchy appear only in `unassigned`. Codex sessions use their own recorded names, activity and fast tier, and an open rollout alone no longer creates a worker row. Codex thread rows retain a missing account when none was recorded.
+- Role words use the configured footer colors in tile titles and each accounts-table role. Subagents show their current transcript activity; nested work inherits its session account. Command names omit leading shell assignments.
 - Account resets shade from the theme’s success color for the nearest reset to its error color for the furthest. Click any accounts header to sort that table; click again to reverse it.
 - Plan-mode Claude reviewers show `review`. Live pool reviewers show their current review under their unit; idle reviewers and templates stay hidden. Claude-seat dispatches fold into their live session rows.
 - Session detail readers start with small transcript tails and expand only to find the required values. Rollout head reads stop when the session metadata and first task are found. Later scans read only appended bytes and retain unfinished records.

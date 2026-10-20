@@ -25,6 +25,186 @@ use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
 
+/// Shared statusline assignments with the approved brown account override.
+const ROLE_ACCOUNT_FIXTURE: &str = "role.showrunner=bright-magenta\nrole.unit-director=bright-blue\nrole.worker=bright-cyan\nrole.unassigned=purple\naccount.claude1=brown\naccount.claude2=magenta\naccount.claude3=blue\naccount.claude4=orange\naccount.codex1=pink\naccount.codex2=teal";
+/// A distance above 10 reads as a different color at a glance; 12 keeps that margin.
+const MINIMUM_LABEL_DISTANCE: f64 = 12.0;
+
+/// D65 CIELAB coordinates used only by the independent perceptual oracle.
+struct PerceptualColor {
+    lightness:   f64,
+    red_green:   f64,
+    yellow_blue: f64,
+}
+
+impl PerceptualColor {
+    fn from_terminal(color: Color) -> Self {
+        let (red, green, blue) = rgb(color);
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= SRGB_LINEAR_THRESHOLD {
+                value / SRGB_LINEAR_DIVISOR
+            } else {
+                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
+            }
+        };
+        let (red, green, blue) = (linear(red), linear(green), linear(blue));
+        // The sRGB-to-XYZ matrix and D65 reference white define this conversion.
+        let x = 0.180_437_5_f64.mul_add(blue, 0.357_576_1_f64.mul_add(green, 0.412_456_4 * red))
+            / 0.95047;
+        let y = 0.072_175_0_f64.mul_add(blue, 0.715_152_2_f64.mul_add(green, 0.212_672_9 * red));
+        let z = 0.950_304_1_f64.mul_add(blue, 0.119_192_0_f64.mul_add(green, 0.019_333_9 * red))
+            / 1.08883;
+        let transform = |value: f64| {
+            let delta = 6.0_f64 / 29.0;
+            if value > delta.powi(3) {
+                value.cbrt()
+            } else {
+                value / (3.0 * delta.powi(2)) + 4.0 / 29.0
+            }
+        };
+        Self {
+            lightness:   116.0f64.mul_add(transform(y), -16.0),
+            red_green:   500.0 * (transform(x) - transform(y)),
+            yellow_blue: 200.0 * (transform(y) - transform(z)),
+        }
+    }
+
+    /// CIEDE2000 with unit lightness, chroma and hue weighting factors.
+    fn distance(&self, other: &Self) -> f64 {
+        let mean_chroma = f64::midpoint(
+            self.red_green.hypot(self.yellow_blue),
+            other.red_green.hypot(other.yellow_blue),
+        );
+        let chroma_weight =
+            |chroma: f64| (chroma.powi(7) / (chroma.powi(7) + 25.0_f64.powi(7))).sqrt();
+        let adjustment = (1.0 - chroma_weight(mean_chroma)) / 2.0;
+        let first_red = (1.0 + adjustment) * self.red_green;
+        let second_red = (1.0 + adjustment) * other.red_green;
+        let first_chroma = first_red.hypot(self.yellow_blue);
+        let second_chroma = second_red.hypot(other.yellow_blue);
+        let hue = |red: f64, yellow: f64| yellow.atan2(red).to_degrees().rem_euclid(360.0);
+        let first_hue = hue(first_red, self.yellow_blue);
+        let second_hue = hue(second_red, other.yellow_blue);
+        let hue_delta = if first_chroma * second_chroma == 0.0 {
+            0.0
+        } else if (second_hue - first_hue).abs() <= 180.0 {
+            second_hue - first_hue
+        } else if second_hue <= first_hue {
+            second_hue - first_hue + 360.0
+        } else {
+            second_hue - first_hue - 360.0
+        };
+        let mean_hue = if first_chroma * second_chroma == 0.0 {
+            first_hue + second_hue
+        } else if (first_hue - second_hue).abs() <= 180.0 {
+            f64::midpoint(first_hue, second_hue)
+        } else if first_hue + second_hue < 360.0 {
+            (first_hue + second_hue + 360.0) / 2.0
+        } else {
+            (first_hue + second_hue - 360.0) / 2.0
+        };
+        let cosine = |degrees: f64| degrees.to_radians().cos();
+        let mean_lightness = f64::midpoint(self.lightness, other.lightness);
+        let mean_chroma = f64::midpoint(first_chroma, second_chroma);
+        let hue_scale = 0.20f64.mul_add(
+            -cosine(4.0f64.mul_add(mean_hue, -63.0)),
+            0.32f64.mul_add(
+                cosine(3.0f64.mul_add(mean_hue, 6.0)),
+                0.24f64.mul_add(
+                    cosine(2.0 * mean_hue),
+                    0.17f64.mul_add(-cosine(mean_hue - 30.0), 1.0),
+                ),
+            ),
+        );
+        let lightness_delta = (other.lightness - self.lightness)
+            / (1.0
+                + 0.015 * (mean_lightness - 50.0).powi(2)
+                    / (mean_lightness - 50.0)
+                        .mul_add(mean_lightness - 50.0, 20.0)
+                        .sqrt());
+        let chroma_delta = (second_chroma - first_chroma) / 0.045f64.mul_add(mean_chroma, 1.0);
+        let hue_delta =
+            2.0 * (first_chroma * second_chroma).sqrt() * (hue_delta / 2.0).to_radians().sin()
+                / (0.015 * mean_chroma).mul_add(hue_scale, 1.0);
+        let rotation = -2.0
+            * chroma_weight(mean_chroma)
+            * (60.0 * (-((mean_hue - 275.0) / 25.0).powi(2)).exp())
+                .to_radians()
+                .sin();
+        (rotation * chroma_delta)
+            .mul_add(
+                hue_delta,
+                hue_delta.mul_add(
+                    hue_delta,
+                    chroma_delta.mul_add(chroma_delta, lightness_delta.powi(2)),
+                ),
+            )
+            .sqrt()
+    }
+}
+
+#[test]
+fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
+    // Published CIEDE2000 reference pairs check the independent oracle first.
+    let reference = PerceptualColor {
+        lightness:   50.0,
+        red_green:   0.0,
+        yellow_blue: -82.7485,
+    };
+    for (red_green, yellow_blue, expected) in
+        [(2.6772, -79.7751, 2.0425), (3.1571, -77.2803, 2.8615)]
+    {
+        let sample = PerceptualColor {
+            lightness: 50.0,
+            red_green,
+            yellow_blue,
+        };
+        assert!(
+            (sample.distance(&reference) - expected).abs() < 0.0001,
+            "perceptual oracle reference pair"
+        );
+    }
+    let colors = FooterColors::parse(ROLE_ACCOUNT_FIXTURE);
+    let previous = tui_pane::theme();
+    let mut measurements = Vec::new();
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        let header = PerceptualColor::from_terminal(tui_pane::label_color());
+        let entries = [
+            ("role.showrunner", colors.role(FooterRole::Showrunner)),
+            ("role.unit-director", colors.role(FooterRole::UnitDirector)),
+            ("role.worker", colors.role(FooterRole::Worker)),
+            ("role.unassigned", colors.role(FooterRole::Unassigned)),
+            ("account.claude1", colors.account("claude1")),
+            ("account.claude2", colors.account("claude2")),
+            ("account.claude3", colors.account("claude3")),
+            ("account.claude4", colors.account("claude4")),
+            ("account.codex1", colors.account("codex1")),
+            ("account.codex2", colors.account("codex2")),
+        ];
+        for (entry, tint) in entries {
+            let ink = tint
+                .style(Style::default())
+                .fg
+                .expect("configured foreground");
+            let distance = PerceptualColor::from_terminal(ink).distance(&header);
+            measurements.push((name.clone(), entry, distance));
+        }
+    }
+    tui_pane::set_active_theme(previous);
+    for (name, entry, distance) in &measurements {
+        eprintln!("{name} {entry}: CIEDE2000={distance:.3}");
+    }
+    assert!(
+        measurements
+            .iter()
+            .all(|(_, _, distance)| *distance >= MINIMUM_LABEL_DISTANCE),
+        "role and account colors must differ from headers by at least {MINIMUM_LABEL_DISTANCE}: {measurements:?}"
+    );
+}
+
 /// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
 pub(crate) fn contrast_ratio(foreground: Color, background: Color) -> f64 {
     fn rgb(color: Color) -> (u8, u8, u8) {

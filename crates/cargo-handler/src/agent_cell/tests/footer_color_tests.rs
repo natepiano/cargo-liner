@@ -295,8 +295,17 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
             cells.push(cell);
         }
         for cell in cells {
-            for width in [80, 220] {
+            for width in [80, WIDE] {
                 let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
+                if width == WIDE {
+                    let (session_x, header_y) =
+                        find(&buffer, "session").expect("full session header");
+                    for header in ["role", "status", "account", "branch", "directory", "age"] {
+                        let (x, y) = find(&buffer, header).expect("full tree column header");
+                        assert_eq!(y, header_y, "{header} remains in the full header");
+                        assert!(x > session_x, "{header} remains its own column");
+                    }
+                }
                 let y = find(&buffer, "worker task").expect("worker row").1;
                 assert_eq!(tree_column(&buffer, "status", y), status);
                 assert_eq!(tree_column(&buffer, "account", y), "codex1 fast");

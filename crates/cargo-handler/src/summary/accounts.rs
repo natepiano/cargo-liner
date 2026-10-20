@@ -30,6 +30,7 @@ use super::constants::RESET_ROUNDING_SECONDS;
 use super::constants::RESET_TIME_FORMAT;
 use super::constants::STALE_ACCOUNT_SUFFIX;
 use super::constants::UNLIMITED_CREDITS_LABEL;
+use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
@@ -43,6 +44,7 @@ use crate::constants::HEADING_SEPARATOR;
 use crate::constants::MISSING_VALUE;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
 use crate::sort::ColumnSort;
@@ -318,11 +320,13 @@ fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
 }
 
 /// Pad with display widths so account labels and notes determine the same demand drawn.
-fn columns(values: [Span<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
+fn columns(values: [Line<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
     let mut spans = vec![Span::raw(SECTION_ITEM_INDENT)];
     for (index, value) in values.into_iter().enumerate() {
-        let width = cell_width(&value.content);
-        spans.push(value);
+        let width = value.spans.iter().fold(0u16, |width, span| {
+            width.saturating_add(cell_width(&span.content))
+        });
+        spans.extend(value.spans);
         if index + 1 < widths.len() {
             spans.push(Span::raw(
                 " ".repeat(usize::from(
@@ -332,6 +336,35 @@ fn columns(values: [Span<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
                 )),
             ));
         }
+    }
+    Line::from(spans)
+}
+
+/// Each responsibility has its own footer ink; punctuation keeps the row style.
+fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) -> Line<'static> {
+    let base = freshness.style();
+    if row.roles.is_empty() {
+        return Line::from(Span::styled(MISSING_VALUE, base));
+    }
+    let mut spans = Vec::new();
+    for role in &row.roles {
+        if !spans.is_empty() {
+            spans.push(Span::styled(ACCOUNT_ROLE_SEPARATOR, base));
+        }
+        let tint = match role {
+            AccountRole::Units => colors.role(FooterRole::UnitDirector),
+            AccountRole::Showrunners => colors.role(FooterRole::Showrunner),
+            AccountRole::Workers => colors.role(FooterRole::Worker),
+            AccountRole::Spare => {
+                spans.push(Span::styled(role.text(), base));
+                continue;
+            },
+        };
+        let style = match freshness {
+            Freshness::Fresh => tint.style(base),
+            Freshness::Stale(_) | Freshness::Unread => tint.subdued_style(base),
+        };
+        spans.push(Span::styled(role.text(), style));
     }
     Line::from(spans)
 }
@@ -380,7 +413,10 @@ fn sorted_lines(
         )),
         columns(
             AccountsColumn::ALL.map(|column| {
-                Span::styled(sort.header(column), Style::default().fg(label_color()))
+                Line::from(Span::styled(
+                    sort.header(column),
+                    Style::default().fg(label_color()),
+                ))
             }),
             &widths,
         ),
@@ -403,6 +439,8 @@ fn sorted_lines(
         if row.credit_use == CreditUse::Held {
             cells[4].style = base.add_modifier(Modifier::DIM);
         }
+        let mut cells = cells.map(Line::from);
+        cells[1] = role_words(row, &freshness, colors);
         result.push(columns(cells, &widths));
     }
     result.extend(reading.problems.iter().map(|problem| note(problem.clone())));

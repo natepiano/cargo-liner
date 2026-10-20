@@ -421,11 +421,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", MISSING_VALUE, "◑ 1:00", "—", "10m"),
+        ("clock job", MISSING_VALUE, "◑ 1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
-        ("review worker", "subagent", "claude", "—", "8m"),
-        ("nested command", MISSING_VALUE, "command", "—", "7m"),
-        ("root command", MISSING_VALUE, "command", "—", "1h"),
+        ("review worker", "subagent", "idle", "claude1", "8m"),
+        ("nested command", MISSING_VALUE, "command", "claude1", "7m"),
+        ("root command", MISSING_VALUE, "command", "claude2", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -472,7 +472,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     for (name, role) in [
         ("clock job", Role::Shell),
         ("unheld worker", Role::Idle),
-        ("review worker", Role::Claude),
+        ("review worker", Role::Idle),
     ] {
         assert_eq!(
             Some(buffer[(status_x, row_of(&buffer, name))].fg),
@@ -716,35 +716,52 @@ fn tree_heights_with_nested_work_match_drawn_rows_at_layout_widths() {
     assert_heights_at_widths(&boss_group());
 }
 
+fn summary_account_state(frame_account_column: AccountColumn) -> MachineState {
+    let second_account = match frame_account_column {
+        AccountColumn::Shown => "claude3",
+        AccountColumn::Hidden => "claude2",
+    };
+    MachineState::Answered(
+        vec![
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                account: home("claude2"),
+                ..agent(10, "alpha", 3 * HOUR, None)
+            },
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                account: home(second_account),
+                ..agent(20, "beta", 2 * HOUR, None)
+            },
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                agent: Agent::Codex,
+                account: home("codex1"),
+                service_tier: ServiceTier::Fast,
+                ..agent(30, "gamma", HOUR, None)
+            },
+            AgentRow {
+                account: home("claude2"),
+                ..agent(11, "alpha child", MINUTE, Some(10))
+            },
+            AgentRow {
+                account: home(second_account),
+                ..agent(21, "beta child", MINUTE, Some(20))
+            },
+            AgentRow {
+                agent: Agent::Codex,
+                account: home("codex1"),
+                ..agent(31, "gamma child", MINUTE, Some(30))
+            },
+        ],
+        HierarchyEdges::default().into(),
+    )
+}
+
 #[test]
 fn summary_agent_values_follow_the_same_frame_account_decision() {
     for frame_account_column in [AccountColumn::Shown, AccountColumn::Hidden] {
-        let second_account = match frame_account_column {
-            AccountColumn::Shown => "claude3",
-            AccountColumn::Hidden => "claude2",
-        };
-        let state = MachineState::Answered(
-            vec![
-                AgentRow {
-                    role_fallback: crate::census::RoleFallback::None,
-                    account: home("claude2"),
-                    ..agent(10, "alpha", 3 * HOUR, None)
-                },
-                AgentRow {
-                    role_fallback: crate::census::RoleFallback::None,
-                    account: home(second_account),
-                    ..agent(20, "beta", 2 * HOUR, None)
-                },
-                AgentRow {
-                    role_fallback: crate::census::RoleFallback::None,
-                    agent: Agent::Codex,
-                    account: home("codex1"),
-                    service_tier: ServiceTier::Fast,
-                    ..agent(30, "gamma", HOUR, None)
-                },
-            ],
-            HierarchyEdges::default().into(),
-        );
+        let state = summary_account_state(frame_account_column);
         let machines = [Machine {
             name:  "natedev",
             state: &state,
@@ -793,7 +810,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             assert_eq!(
                 column_value(
                     &buffer,
-                    "agent",
+                    "account",
                     row_of(&buffer, name),
                     &crate::constants::SUMMARY_HEADERS
                 ),

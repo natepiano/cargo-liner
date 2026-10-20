@@ -31,6 +31,7 @@ use std::time::UNIX_EPOCH;
 use chrono::DateTime;
 use serde::Deserialize;
 
+use super::AgentActivity;
 use crate::constants::ASSISTANT_LINE;
 use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
@@ -506,6 +507,8 @@ pub(super) struct Subagent {
     pub(super) started:     u64,
     /// Its own transcript, where the shell commands it runs are written.
     pub(super) transcript:  PathBuf,
+    /// The current tool activity from this subagent's own transcript.
+    pub(super) activity:    super::AgentActivity,
 }
 
 /// What a subagent's `.meta.json` says.
@@ -578,6 +581,7 @@ pub(super) fn running_subagents(
                 description,
                 started,
                 transcript,
+                activity: AgentActivity::Idle,
             })
         })
         .collect();
