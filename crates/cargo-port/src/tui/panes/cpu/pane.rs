@@ -192,6 +192,7 @@ mod tests {
     use tui_pane::CpuUsage;
     use tui_pane::GpuUsage;
     use tui_pane::Hittable;
+    use tui_pane::PaneBorders;
     use tui_pane::PaneFrameChrome;
 
     use super::CpuMonitorSlot;
@@ -202,6 +203,78 @@ mod tests {
     use crate::tui::panes::constants::CPU_PANE_WIDTH;
     use crate::tui::panes::cpu::render;
     use crate::tui::startup_services::StartupServices;
+
+    const CPU_AWAITING_SHOT: &str = r"|┌ CPU / GPU ──────┐|
+|│ CPU Cores    16 │|
+|│ Sampling…       │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|└─────────────────┘|
+";
+
+    const CPU_SAMPLED_SHOT: &str = r"|┌ CPU / GPU ──────┐|
+|│ CPU Cores     8 │|
+|│ Device      37% │|
+|│ 1 ███       42% │|
+|│ 2 █         17% │|
+|│ 3 ███████   88% │|
+|│ 4            0% │|
+|│ 5 ████████ 100% │|
+|│    1 of 2 ▼     │|
+|├─────────────────┤|
+|│ System      12% │|
+|│ User        25% │|
+|│ Idle        63% │|
+|├─────────────────┤|
+|│ GPU         n/a │|
+|└─────────────────┘|
+";
+
+    const CPU_SUPPRESSED_SHOT: &str = r"|┌ CPU / GPU ──────┐|
+|│ Monitoring off  │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|└─────────────────┘|
+";
+
+    const CPU_UNAVAILABLE_SHOT: &str = r"|┌ CPU / GPU ──────┐|
+|│ Unavailable     │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|│                 │|
+|└─────────────────┘|
+";
 
     fn quiet_pane() -> CpuPane {
         CpuPane::new(&CpuConfig::default(), StartupServices::quiet_unit_test())
@@ -249,6 +322,236 @@ mod tests {
             .collect()
     }
 
+    fn draw_rows(pane: &mut CpuPane, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render::render_cpu_sample_phase(
+                    frame,
+                    tui_pane::frame_inner(area),
+                    area,
+                    pane,
+                    &CpuConfig::default(),
+                    &mut PaneFrameChrome::default(),
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(CPU_PANE_WIDTH))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    fn usage_with_cores(count: usize, percent: u8) -> CpuUsage {
+        let mut usage = sampled_usage();
+        usage.cores[0].percent = percent;
+        usage.cores = vec![usage.cores[0].clone(); count];
+        usage
+    }
+
+    #[test]
+    fn overflowing_cores_keep_the_pager_on_its_own_row() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(16, 42));
+        for cursor in [0, 17] {
+            pane.viewport.set_pos(cursor);
+            let rows = draw_rows(&mut pane, 16);
+            let pagers: Vec<usize> = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| row.contains(" of ").then_some(index))
+                .collect();
+            assert_eq!(pagers.len(), 1, "one overflow pager: {rows:?}");
+            let pager = pagers[0];
+            assert!(!rows[pager].contains('%'), "pager covers a core: {rows:?}");
+            assert!(
+                rows[pager - 1].contains("42%"),
+                "pager is not at the band edge: {rows:?}"
+            );
+            assert!(
+                pane.row_rects
+                    .iter()
+                    .all(|(rect, _)| usize::from(rect.y) != pager)
+            );
+            let core_rows = pane
+                .row_rects
+                .iter()
+                .filter(|(_, row)| (2..18).contains(row));
+            for (rect, _) in core_rows {
+                assert!(
+                    rows[usize::from(rect.y)].contains("42%"),
+                    "core bar was covered: {rows:?}"
+                );
+            }
+            if cursor == 17 {
+                assert!(rows.iter().any(|row| row.trim_start().starts_with("16 ")));
+            }
+        }
+    }
+
+    #[test]
+    fn every_positive_core_usage_draws_a_visible_bar_cell() {
+        let mut pane = quiet_pane();
+        for percent in [0, 1, 17, 100] {
+            pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(1, percent));
+            let rows = draw_rows(&mut pane, 24);
+            let row = &rows[3];
+            assert!(
+                row.trim_start().starts_with("1 "),
+                "first core row: {rows:?}"
+            );
+            assert_eq!(
+                row.contains('█'),
+                percent > 0,
+                "core at {percent}%: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sampled_totals_use_labels_without_colons() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+        let rows = draw_rows(&mut pane, 24);
+        for expected in ["System      12%", "User        25%", "Idle        63%"] {
+            assert!(
+                rows.iter().any(|row| row.trim() == expected),
+                "missing {expected:?}: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_gpu_data_uses_one_row_and_returns_space_to_cores() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(16, 42));
+        let rows = draw_rows(&mut pane, 16);
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("n/a")).count(),
+            1,
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.trim() == "GPU         n/a"),
+            "{rows:?}"
+        );
+        assert_eq!(pane.viewport.len(), 22);
+        let unavailable_core_rows = rows.iter().filter(|row| row.contains("42%")).count();
+        assert_eq!(
+            unavailable_core_rows, 5,
+            "freed GPU rows must go to cores, with a separate pager: {rows:?}"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let mut usage = usage_with_cores(16, 42);
+            usage.gpu.core_count = Some(38);
+            pane.sample_phase = CpuSamplePhase::Sampled(usage);
+            let available = draw_rows(&mut pane, 16);
+            assert_eq!(pane.viewport.len(), 25);
+            assert_eq!(
+                available.iter().filter(|row| row.contains("42%")).count() + 3,
+                unavailable_core_rows
+            );
+        }
+    }
+
+    #[test]
+    fn phase_status_text_shares_the_metric_labels_left_edge() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+        let rows = draw_rows(&mut pane, 24);
+        let label_column = Some(2);
+        assert_eq!(rows[1].find("CPU Cores"), label_column);
+        for (phase, word) in [
+            (
+                CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
+                "Sampling",
+            ),
+            (CpuSamplePhase::Suppressed, "Monitoring off"),
+            (CpuSamplePhase::Unavailable, "Unavailable"),
+        ] {
+            pane.sample_phase = phase;
+            let rows = draw_rows(&mut pane, 24);
+            assert!(
+                rows.iter().any(|row| row.find(word) == label_column),
+                "status shifted: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn awaiting_sample_uses_a_single_cell_ellipsis() {
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::AwaitingFirstSample { core_count: 16 };
+        let rows = draw_rows(&mut pane, 24);
+        assert!(rows.iter().any(|row| row.trim() == "Sampling…"), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("...")));
+    }
+
+    #[test]
+    fn cpu_phase_shots_match_the_framed_pane_at_its_fixed_width() {
+        let mut pane = quiet_pane();
+        let mut usage = usage_with_cores(8, 42);
+        for (core, percent) in usage.cores.iter_mut().zip([42, 17, 88, 0, 100, 1, 25, 63]) {
+            core.percent = percent;
+        }
+        for (phase, expected) in [
+            (
+                CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
+                CPU_AWAITING_SHOT,
+            ),
+            (CpuSamplePhase::Sampled(usage), CPU_SAMPLED_SHOT),
+            (CpuSamplePhase::Suppressed, CPU_SUPPRESSED_SHOT),
+            (CpuSamplePhase::Unavailable, CPU_UNAVAILABLE_SHOT),
+        ] {
+            pane.sample_phase = phase;
+            let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 16)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    let pane_frame = tui_pane::PaneFrame::new(area);
+                    let mut chrome = PaneFrameChrome::default();
+                    render::render_cpu_sample_phase(
+                        frame,
+                        pane_frame.inner(),
+                        area,
+                        &mut pane,
+                        &CpuConfig::default(),
+                        &mut chrome,
+                    );
+                    let mut grid = tui_pane::GridLines::new(area);
+                    grid.add_titled(pane_frame, " CPU / GPU ");
+                    for rule in chrome.rules {
+                        grid.add_rule(pane_frame, rule);
+                    }
+                    grid.render(
+                        frame.buffer_mut(),
+                        tui_pane::default_pane_chrome(),
+                        PaneBorders::Separate,
+                    );
+                })
+                .unwrap();
+            let mut shot = String::new();
+            for row in terminal
+                .backend()
+                .buffer()
+                .content()
+                .chunks(usize::from(CPU_PANE_WIDTH))
+            {
+                shot.push('|');
+                for cell in row {
+                    shot.push_str(cell.symbol());
+                }
+                shot.push_str("|\n");
+            }
+            assert_eq!(shot, expected, "phase {:?}", pane.sample_phase());
+        }
+    }
+
     #[test]
     fn suppressed_monitor_stays_suppressed_and_reset_discards_old_rows() {
         let mut pane = quiet_pane();
@@ -264,7 +567,7 @@ mod tests {
         assert_eq!(pane.sample_phase(), &CpuSamplePhase::Suppressed);
         assert_eq!(pane.row_rects, [] as [(ratatui::prelude::Rect, usize); 0]);
         let screen = draw(&mut pane);
-        assert!(screen.contains("  Monitoring off"));
+        assert!(screen.contains(" Monitoring off"));
         assert!(!screen.contains('%'));
     }
 
@@ -274,10 +577,10 @@ mod tests {
         for (phase, message) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 8 },
-                "  Sampling...",
+                " Sampling…",
             ),
-            (CpuSamplePhase::Suppressed, "  Monitoring off"),
-            (CpuSamplePhase::Unavailable, "  Unavailable"),
+            (CpuSamplePhase::Suppressed, " Monitoring off"),
+            (CpuSamplePhase::Unavailable, " Unavailable"),
         ] {
             pane.sample_phase = phase;
             pane.set_row_rects(vec![(Rect::new(1, 1, 10, 1), 1)]);
@@ -305,7 +608,7 @@ mod tests {
         for (phase, expected_lines) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
-                &["CPU Cores    16", "Sampling..."][..],
+                &["CPU Cores    16", "Sampling…"][..],
             ),
             (
                 CpuSamplePhase::Sampled(usage),
@@ -315,31 +618,7 @@ mod tests {
             (CpuSamplePhase::Unavailable, &["Unavailable"][..]),
         ] {
             pane.sample_phase = phase;
-            let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 24)).unwrap();
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render::render_cpu_sample_phase(
-                        frame,
-                        tui_pane::frame_inner(area),
-                        area,
-                        &mut pane,
-                        &CpuConfig::default(),
-                        &mut PaneFrameChrome::default(),
-                    );
-                })
-                .unwrap();
-            let rows: Vec<String> = terminal
-                .backend()
-                .buffer()
-                .content()
-                .chunks(usize::from(CPU_PANE_WIDTH))
-                .map(|row| {
-                    row.iter()
-                        .map(ratatui::buffer::Cell::symbol)
-                        .collect::<String>()
-                })
-                .collect();
+            let rows = draw_rows(&mut pane, 24);
             if matches!(
                 pane.sample_phase(),
                 CpuSamplePhase::AwaitingFirstSample { .. } | CpuSamplePhase::Sampled(_)
@@ -381,7 +660,7 @@ mod tests {
         pane.tick();
         assert!(matches!(pane.sample_phase(), CpuSamplePhase::Sampled(_)));
         assert!(pane.core_count() > 0);
-        assert!(!draw(&mut pane).contains("Sampling..."));
+        assert!(!draw(&mut pane).contains("Sampling…"));
 
         // Disconnect sampling so a later tick has nothing new to replace the last real sample.
         let (_, samples) = channel::unbounded();
