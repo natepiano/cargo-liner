@@ -92,12 +92,12 @@ pub(crate) enum ProjectListRowDisplayPathResolution {
     /// The row remains present and supplies its display path.
     Resolved(DisplayPath),
     /// The row no longer resolves through the current project list.
-    RowUnavailable,
+    Unavailable,
 }
 
 impl From<Option<DisplayPath>> for ProjectListRowDisplayPathResolution {
     fn from(display_path: Option<DisplayPath>) -> Self {
-        display_path.map_or(Self::RowUnavailable, Self::Resolved)
+        display_path.map_or(Self::Unavailable, Self::Resolved)
     }
 }
 
