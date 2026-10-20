@@ -333,7 +333,7 @@ fn query_macos_monotonic_process_start(pid: u32) -> MacosMonotonicProcessStartOb
         return MacosMonotonicProcessStartObservation::QueryFailed;
     };
     let mut rusage_info = MaybeUninit::<libc::rusage_info_v0>::uninit();
-    // SAFETY: `rusage_info` is a writable V0 buffer that the query does not retain.
+    // SAFETY: `rusage_info` is a writable V0 buffer that `libc::proc_pid_rusage` does not retain.
     let query_result = unsafe {
         libc::proc_pid_rusage(
             native_pid,
