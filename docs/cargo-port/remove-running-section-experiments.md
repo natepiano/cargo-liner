@@ -55,7 +55,7 @@ I want you to create a new unit director in charge of creating a design, working
 
 **Gotchas:** The existing stores have limits. The build log has no one-minute load. No store counts process starts or user corrections. A measure that needs one of these has no source until a later build adds it.
 
-### Phase 2 — The design passes Astra review  · status: todo
+### Phase 2 — The design passes Astra review  · status: done
 
 #### Work Order
 
