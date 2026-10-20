@@ -93,10 +93,11 @@ impl RepoInfo {
         let repo_root = discovery::git_repo_root(probe_path)?;
         let active_config = config::active_config();
 
-        // Branch / upstream / default-branch context is probed here
-        // because `build_remote_info` uses it to resolve each remote's
-        // `tracked_ref` and compute `ahead_behind`. Siblings reuse this
-        // work; the canonical source is the primary checkout's view.
+        // `checkout::resolve_head_state`, `branches::get_upstream_branch` and the
+        // default-branch probe supply `RemoteResolveContext` because
+        // `remote::build_remote_info` uses it to resolve `RemoteInfo::tracked_ref`
+        // and compute `RemoteInfo::ahead_behind`. Linked checkouts reuse this
+        // work; the primary checkout's view remains the canonical source.
         let ((head, current_upstream), default_branch, local_main_branch) =
             std::thread::scope(|scope| {
                 let current = scope.spawn(|| {
