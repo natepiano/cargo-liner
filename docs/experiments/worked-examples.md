@@ -16,7 +16,7 @@ The live review did not confirm that projection. It estimated 5–25 minutes per
 
 The user stopped the change on 2026-10-04. The source was reverted. A later install found an experimental binary still installed.
 
-Source for this account and its numbers: `~/.claude/projects/-home-natepiano-rust-cargo-liner/memory/handoff-mend-clippy-one-compile.md`. Its sections identify the scratch scripts, buildlog query, commits, and live-review limits. Those scratch artifacts were not recovered for this draft.
+Source for this account and its numbers: `~/.claude/projects/-home-natepiano-rust-cargo-liner/memory/handoff-mend-clippy-one-compile.md`. Its sections identify the scratch scripts, buildlog query, commits, and live-review limits. Those scratch artifacts were not recovered for this document.
 
 ### Required protocol
 
@@ -199,7 +199,7 @@ The subject hook would show the instruction-loss finding before a reset-policy c
 
 This is a proposed protocol, not authority to run it. Its name is `history-site-startup-v1`. Its purpose is `framework_exercise`. The user chooses the first live study. This choice remains open in the framework's closing questions.
 
-The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. The owner assignment comes from this unit's Work Order and the unit director's round 3 ruling, dated 2026-10-20. Registration must retain the later instruction that approves execution and its operator.
+The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. Registration must retain the later instruction that approves execution and its operator.
 
 The exercise checks registration, pair launch, receipts, condition rules, scoring, analysis, and result lookup. It uses an existing read-only command. No inspected source establishes a recurring report that uses sealed snapshots. This exercise therefore makes no production claim.
 
@@ -207,7 +207,7 @@ Subject: `process/history-command`, `~/.claude/commands/history.md`, and `~/.cla
 
 The proposed B adds `-S`. This option disables automatic `import site` at initialization. Source: `/run/current-system/sw/bin/python3`, `--help`, read on 2026-10-20. Retain the selected interpreter's help and version at registration. No speed or correctness result exists for B.
 
-The budget is 1,800 command wall seconds and 60 operator minutes within 28 calendar days. There are no model calls, reviewer calls, builds, tests, installations, holds, or Mac jobs. Tool implementation has a separate Work Order. This budget buys evidence about the framework. It does not buy expected production savings.
+The budget is 1,800 command wall seconds and 60 operator minutes within 28 calendar days. There are no model calls, reviewer calls, builds, tests, installations, holds, or Mac jobs. Tool implementation is separate work with its own approval. This budget buys evidence about the framework. It does not buy expected production savings.
 
 ### Question, claim, and commands
 
