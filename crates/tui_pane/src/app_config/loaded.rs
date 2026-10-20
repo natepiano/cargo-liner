@@ -212,8 +212,6 @@ fn write_config<C: Serialize, I: AppIdentity>(config: &C, path: Option<PathBuf>)
 )]
 mod tests {
     use std::path::Path;
-    use std::time::Duration;
-    use std::time::UNIX_EPOCH;
 
     use serde::Deserialize;
 
@@ -412,7 +410,7 @@ mod tests {
         let original =
             "# formatting is intentional\ncount=0x3 # three\nunknown=true\nname='sample'\n";
         fs::write(&path, original).expect("fixture writes");
-        let timestamp = UNIX_EPOCH + Duration::from_secs(100);
+        let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(100);
         fs::File::options()
             .write(true)
             .open(&path)
