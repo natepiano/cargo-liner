@@ -13,14 +13,14 @@ pub(crate) struct CratesIoRelease {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CratesIoReleaseState {
     #[default]
-    AwaitingRelease,
+    Awaiting,
     Released(CratesIoRelease),
 }
 
 impl CratesIoReleaseState {
     pub(crate) fn version(&self) -> Option<&str> {
         match self {
-            Self::AwaitingRelease => None,
+            Self::Awaiting => None,
             Self::Released(release) => Some(&release.version),
         }
     }
