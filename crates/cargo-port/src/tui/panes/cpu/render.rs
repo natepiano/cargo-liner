@@ -4,6 +4,7 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 #[cfg(target_os = "macos")]
 use tui_pane::CoreCluster;
@@ -656,13 +657,11 @@ pub(super) fn render_cpu_sample_phase(
 ) {
     let usage = match pane.sample_phase() {
         CpuSamplePhase::AwaitingFirstSample { core_count } => {
-            let core_count = *core_count;
-            render_cpu_status(
-                frame,
-                inner,
-                pane,
-                format!("  {core_count} cores\n  Sampling..."),
-            );
+            let lines = vec![
+                cpu_core_count_line(*core_count, inner.width),
+                Line::from("  Sampling..."),
+            ];
+            render_cpu_status(frame, inner, pane, lines);
             return;
         },
         CpuSamplePhase::Suppressed => {
@@ -701,7 +700,7 @@ fn render_cpu_status(
     frame: &mut Frame,
     inner: Rect,
     pane: &mut CpuPane,
-    message: impl Into<String>,
+    message: impl Into<Text<'static>>,
 ) {
     pane.viewport.clear_surface();
     pane.clear_row_rects();

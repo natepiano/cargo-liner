@@ -293,7 +293,7 @@ mod tests {
                 pane.sample_phase(),
                 CpuSamplePhase::AwaitingFirstSample { .. }
             ) {
-                assert!(screen.contains("8 cores"));
+                assert!(screen.contains("CPU Cores"));
                 assert_eq!(pane.core_count(), 8);
             }
         }
@@ -302,14 +302,17 @@ mod tests {
     #[test]
     fn every_sample_phase_renders_complete_lines_at_cpu_pane_width() {
         let mut pane = quiet_pane();
+        let mut usage = sampled_usage();
+        usage.cores = vec![usage.cores[0].clone(); 16];
+        let mut core_rows = Vec::new();
         for (phase, expected_lines) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
-                &["16 cores", "Sampling..."][..],
+                &["CPU Cores    16", "Sampling..."][..],
             ),
             (
-                CpuSamplePhase::Sampled(sampled_usage()),
-                &["CPU Cores     1", "Device      37%"][..],
+                CpuSamplePhase::Sampled(usage),
+                &["CPU Cores    16", "Device      37%"][..],
             ),
             (CpuSamplePhase::Suppressed, &["Monitoring off"][..]),
             (CpuSamplePhase::Unavailable, &["Unavailable"][..]),
@@ -338,18 +341,26 @@ mod tests {
                     row.iter()
                         .map(ratatui::buffer::Cell::symbol)
                         .collect::<String>()
-                        .trim()
-                        .to_string()
                 })
                 .collect();
+            if matches!(
+                pane.sample_phase(),
+                CpuSamplePhase::AwaitingFirstSample { .. } | CpuSamplePhase::Sampled(_)
+            ) {
+                core_rows.push(rows[1].clone());
+            }
             for expected in expected_lines {
                 assert!(
-                    rows.iter().any(|row| row == expected),
+                    rows.iter().any(|row| row.trim() == *expected),
                     "missing complete line {expected:?} for {:?}: {rows:?}",
                     pane.sample_phase(),
                 );
             }
         }
+        assert_eq!(
+            core_rows[0], core_rows[1],
+            "first sample moved the core-count row"
+        );
     }
 
     #[test]
