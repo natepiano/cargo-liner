@@ -218,6 +218,7 @@ pub use diagnostics::CpuMonitor;
 pub use diagnostics::CpuPoller;
 pub use diagnostics::CpuSeverity;
 pub use diagnostics::CpuUsage;
+pub use diagnostics::GpuUsage;
 pub use diagnostics::PERF_LOG_TARGET;
 pub use diagnostics::RollingMean;
 pub use diagnostics::SLOW_BG_BATCH_MS;
