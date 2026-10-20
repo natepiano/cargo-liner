@@ -307,7 +307,7 @@ mod tests {
             relative_path: name.to_string(),
             url:           None,
             branch:        None,
-            commit:        PinnedCommit::NotPinned,
+            commit:        PinnedCommit::Absent,
             project_info:  ProjectInfo::default(),
             git_repo:      None,
         }

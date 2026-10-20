@@ -121,7 +121,7 @@ impl HeadRelation {
 #[derive(Clone, Copy, Debug, Default)]
 pub enum GitProbe<T> {
     #[default]
-    AwaitingProbe,
+    Awaiting,
     Probed(T),
 }
 
@@ -474,17 +474,17 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     let local_main_probe = repo_info.map_or(RepoBranchProbe::Awaiting, |repo| {
         RepoBranchProbe::Probed(&repo.local_main_branch)
     });
-    let local_main_branch = repo_info.map_or(GitProbe::AwaitingProbe, |repo| {
+    let local_main_branch = repo_info.map_or(GitProbe::Awaiting, |repo| {
         GitProbe::Probed(repo.local_main_branch.clone())
     });
-    let vs_local = checkout.map_or(GitProbe::AwaitingProbe, |info| {
+    let vs_local = checkout.map_or(GitProbe::Awaiting, |info| {
         GitProbe::Probed(info.ahead_behind_local)
     });
     let github = git_repo.and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
     let inception = repo_info.map_or(FirstCommit::AwaitingProbe, |repo| repo.first_commit.clone());
-    let last_commit = checkout.map_or(GitProbe::AwaitingProbe, |info| {
+    let last_commit = checkout.map_or(GitProbe::Awaiting, |info| {
         GitProbe::Probed(info.last_commit.clone())
     });
     let last_fetched = repo_info
@@ -757,7 +757,7 @@ pub(super) fn resolve_worktrees(app: &App, worktree_item: Option<&RootItem>) -> 
 /// without it there's nothing meaningful to render in the overlay.
 pub(super) fn build_submodule_context(submodule: &Submodule) -> Option<SubmoduleContext> {
     let pinned_commit = match &submodule.commit {
-        PinnedCommit::NotPinned => return None,
+        PinnedCommit::Absent => return None,
         PinnedCommit::Sha(_) | PinnedCommit::Unreadable => submodule.commit.clone(),
     };
     Some(SubmoduleContext {

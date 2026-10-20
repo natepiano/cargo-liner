@@ -105,7 +105,7 @@ pub(crate) enum CommitDate {
 /// The upstream ref confirmed by git for this checkout.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) enum TrackedRef {
-    Ref(String),
+    Named(String),
     #[default]
     Untracked,
     Unreadable,
@@ -172,8 +172,8 @@ impl CheckoutInfo {
     /// `repo.remotes[i].tracked_ref` — this is rendered data, not hot.
     pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
         match &self.primary_tracked_ref {
-            TrackedRef::Ref(want) => repo.remotes.listed().iter().find(
-                |remote| matches!(&remote.tracked_ref, TrackedRef::Ref(name) if name == want),
+            TrackedRef::Named(want) => repo.remotes.listed().iter().find(
+                |remote| matches!(&remote.tracked_ref, TrackedRef::Named(name) if name == want),
             ),
             TrackedRef::Untracked | TrackedRef::Unreadable => None,
         }
@@ -188,7 +188,7 @@ impl CheckoutInfo {
     pub(crate) fn primary_ahead_behind(&self, repo: &RepoInfo) -> Comparison {
         match &self.primary_tracked_ref {
             TrackedRef::Unreadable => Comparison::Unreadable,
-            TrackedRef::Ref(_) => match &repo.remotes {
+            TrackedRef::Named(_) => match &repo.remotes {
                 RemoteList::Unreadable => Comparison::Unreadable,
                 RemoteList::Listed(_) => self
                     .primary_remote(repo)

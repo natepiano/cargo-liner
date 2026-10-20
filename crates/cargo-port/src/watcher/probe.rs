@@ -31,7 +31,7 @@ pub(super) fn spawn_project_refresh(
             let cargo_toml = project_root.join(CARGO_TOML);
             project::from_cargo_toml(&cargo_toml)
                 .ok()
-                .map(scan::cargo_project_to_item)
+                .map(scan::cargo_parse_result_to_item)
         }) else {
             return;
         };

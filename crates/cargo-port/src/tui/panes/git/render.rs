@@ -751,7 +751,7 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
                 ahead: 0,
                 behind: 0,
             })) => GitValueStyle::Success,
-            GitProbe::AwaitingProbe | GitProbe::Probed(Comparison::NotCompared) => {
+            GitProbe::Awaiting | GitProbe::Probed(Comparison::NotCompared) => {
                 GitValueStyle::Inactive
             },
             GitProbe::Probed(Comparison::Counted(_)) => GitValueStyle::Plain,
@@ -1582,7 +1582,7 @@ mod tests {
             icon:            GIT_LOCAL,
             display_url:     "natepiano/bevy_window_manager".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     TrackedRef::Ref("origin/main".to_string()),
+            tracked_ref:     TrackedRef::Named("origin/main".to_string()),
             status:          Comparison::Counted(AheadBehind {
                 ahead:  0,
                 behind: 0,

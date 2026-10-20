@@ -513,7 +513,7 @@ fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> 
             },
             PackageVersion::AwaitingMetadata
             | PackageVersion::Manifest(_)
-            | PackageVersion::Submodule(PinnedCommit::Sha(_) | PinnedCommit::NotPinned) => {
+            | PackageVersion::Submodule(PinnedCommit::Sha(_) | PinnedCommit::Absent) => {
                 Style::default()
             },
         },
