@@ -330,7 +330,7 @@ An owner can decline adoption despite a positive result. Record that action and 
 
 For `framework_exercise`, report whether the registered record and analysis steps completed. Report its narrow timing result separately. `decide accepted` and `adopt` refuse this purpose. A completed exercise gives `not_proven` for production gain; a confirmed B correctness or cost failure gives `rejected`. This restriction is fixed at registration.
 
-At most three design review rounds apply to this document set. After round three, send the design with its open findings. This limit comes from the Work Order dated 2026-10-20. Repair limits in an implementation do not create permission to continue an experiment beyond its stop rule.
+Repair limits in an implementation do not create permission to continue an experiment beyond its stop rule.
 
 ## 9. Adoption and keeping the result
 
@@ -557,7 +557,7 @@ The detached runner recognizes live mesh workers. It returns exit 3 for other ca
 
 ### CLI
 
-Proposed workspace crate: `crates/cargo-experiment`. Both `cargo experiment` and `cargo-experiment` invoke it. SDLC owns the final name. No implementation is part of this phase.
+Proposed workspace crate: `crates/cargo-experiment`. Both `cargo experiment` and `cargo-experiment` invoke it. SDLC owns the final name. The design includes no implementation.
 
 | Command | Effect |
 | --- | --- |
@@ -687,10 +687,10 @@ The CLI supplies the projection. The view does no analysis. Read it off the UI t
 
 Use `loading`, `current`, `stale`, and `unavailable` display states. Take freshness from the publication check, not JSON validity or file age. Retain the last successful view with its generation and timestamp after a read failure. Do not show stale progress as current. An idle view performs no builds, store collection, or network scan. The first version is read-only; decisions remain CLI operations with recorded evidence.
 
-SDLC must confirm the binary name and the owner of the shared index. These are process assignments. They do not block review of this design.
+SDLC must confirm the binary name and the owner of the shared index. These are process assignments.
 
 ## Open questions for the user
 
 1. Which first live study should run after approval? The history proposal in `worked-examples.md` exercises the framework only. It permits 1,800 command wall seconds and 60 operator minutes within 28 days. It claims no recurring savings and cannot authorize adoption. This design has not verified a recurring workload for that protocol. The retained-context review study is unsupported in the first tool version.
 2. What recurring spending limit may a showrunner approve without a separate user decision?
-3. How long should non-adopted raw evidence remain after closure? This draft retains it until an explicit retention decision.
+3. How long should non-adopted raw evidence remain after closure? This design retains it until an explicit retention decision.
