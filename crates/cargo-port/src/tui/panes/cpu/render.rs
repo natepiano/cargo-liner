@@ -79,7 +79,7 @@ pub fn cpu_required_pane_height(core_count: usize) -> u16 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CpuSelectableRow {
     CoreCount,
-    Device,
+    Total,
     Core(usize),
     System,
     User,
@@ -99,7 +99,7 @@ impl CpuSelectableRow {
     const fn logical_index(self, core_count: usize) -> usize {
         match self {
             Self::CoreCount => 0,
-            Self::Device => 1,
+            Self::Total => 1,
             Self::Core(index) => index + 2,
             Self::System => core_count + 2,
             Self::User => core_count + 3,
@@ -218,18 +218,17 @@ fn gpu_core_count_line(core_count: Option<u16>, width: u16) -> Line<'static> {
         || (GPU_UNAVAILABLE_TEXT.to_string(), warning_color()),
         |core_count| (core_count.to_string(), text_default()),
     );
-    value_line("GPU Cores", value_text, value_color, width)
+    value_line("GPU cores", value_text, value_color, width)
 }
 
-/// Pinned `CPU Cores` head row: the live CPU core count.
+/// Pinned `CPU cores` head row: the live CPU core count.
 fn cpu_core_count_line(core_count: usize, width: u16) -> Line<'static> {
-    value_line("CPU Cores", core_count.to_string(), text_default(), width)
+    value_line("CPU cores", core_count.to_string(), text_default(), width)
 }
 
-/// Pinned `Device` head row: aggregate CPU utilization, mirroring the GPU
-/// `Device` row.
-fn device_line(percent: u8, width: u16) -> Line<'static> {
-    value_line("Device", format!("{percent:>3}%"), text_default(), width)
+/// Pinned `Total` head row: aggregate CPU utilization.
+fn total_line(percent: u8, width: u16) -> Line<'static> {
+    value_line("Total", format!("{percent:>3}%"), text_default(), width)
 }
 
 /// One `label  value` row: the label in label color on the left, the value
@@ -278,14 +277,14 @@ fn cpu_region(core_count: usize, gpu_rows: GpuRows, inner_height: u16) -> Region
     ])
 }
 
-/// Resolved rects for one CPU frame. The `Cores` count and `Device`
+/// Resolved rects for one CPU frame. The `CPU cores` count and `Total`
 /// utilization rows are pinned at the top; the cores band is the `Fill` box
 /// and scrolls; the breakdown rows and GPU follow. `band_offset` is the cores
 /// band's scroll position, held across frames so the cursor stays visible.
 struct CpuPanelLayout {
     core_count:     usize,
     core_count_row: Rect,
-    device:         Rect,
+    total:          Rect,
     cores:          Rect,
     cores_divider:  Rect,
     system:         Rect,
@@ -328,7 +327,7 @@ impl CpuPanelLayout {
         Self {
             core_count,
             core_count_row: head_row(0),
-            device: head_row(1),
+            total: head_row(1),
             cores: placed[1].content,
             cores_divider: placed[2].chrome,
             system: breakdown_row(0),
@@ -420,10 +419,10 @@ fn render_head_rows(
         frame,
         viewport,
         row_rects,
-        layout.device,
-        CpuSelectableRow::Device.logical_index(layout.core_count),
+        layout.total,
+        CpuSelectableRow::Total.logical_index(layout.core_count),
         focus,
-        Paragraph::new(device_line(usage.total_percent, layout.device.width)),
+        Paragraph::new(total_line(usage.total_percent, layout.total.width)),
     );
 }
 
