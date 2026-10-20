@@ -1,3 +1,4 @@
+mod crates_io_release;
 mod member_group;
 mod metadata_store;
 mod package;
@@ -7,6 +8,8 @@ mod rust_project;
 mod vendored_package;
 mod workspace;
 
+pub(crate) use crates_io_release::CratesIoRelease;
+pub(crate) use crates_io_release::CratesIoReleaseState;
 pub(crate) use member_group::MemberGroup;
 pub(crate) use metadata_store::FileStamp;
 pub(crate) use metadata_store::ManifestFingerprint;

@@ -21,7 +21,6 @@ pub(crate) use cargo_metadata::spawn_cargo_metadata_refresh;
 pub(crate) use cargo_metadata::spawn_out_of_tree_target_walk;
 pub(crate) use cargo_metadata::spawn_streaming_scan;
 pub(crate) use ci_cache::CiFetchResult;
-pub(crate) use ci_cache::CratesIoInfo;
 pub(crate) use ci_cache::ci_cache_dir_pub;
 pub(crate) use ci_cache::clear_exhausted;
 pub(crate) use ci_cache::fetch_ci_runs_cached;

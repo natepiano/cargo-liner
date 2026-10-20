@@ -12,13 +12,13 @@ use super::constants::USER_AGENT_HEADER;
 use super::rate_limit;
 use crate::constants::CRATES_IO_API_BASE;
 use crate::constants::CRATES_IO_USER_AGENT;
-use crate::scan::CratesIoInfo;
+use crate::project::CratesIoRelease;
 
 impl HttpClient {
     pub(crate) async fn fetch_crates_io_info_async(
         &self,
         crate_name: &str,
-    ) -> HttpOutcome<CratesIoInfo> {
+    ) -> HttpOutcome<CratesIoRelease> {
         let url = format!("{CRATES_IO_API_BASE}/crates/{crate_name}");
         let response = match self
             .client
@@ -68,7 +68,7 @@ impl HttpClient {
     }
 
     /// Fetch crates.io info (sync wrapper).
-    pub(crate) fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoInfo> {
+    pub(crate) fn fetch_crates_io_info(&self, crate_name: &str) -> HttpOutcome<CratesIoRelease> {
         self.handle
             .block_on(self.fetch_crates_io_info_async(crate_name))
     }
@@ -79,8 +79,8 @@ impl HttpClient {
 /// stable; `max_version` is the highest non-yanked release including
 /// prereleases, so when it differs from the stable it must be a newer
 /// prerelease. A crate with only prereleases shows the newest as its
-/// version. Returns `None` when neither field is present.
-fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
+/// version. Returns `None` when no version or download count is present.
+fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoRelease> {
     let stable = krate
         .get(CRATES_IO_MAX_STABLE_VERSION_KEY)
         .and_then(serde_json::Value::as_str);
@@ -97,9 +97,8 @@ fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
     };
     let downloads = krate
         .get(CRATES_IO_DOWNLOADS_KEY)
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    Some(CratesIoInfo {
+        .and_then(serde_json::Value::as_u64)?;
+    Some(CratesIoRelease {
         version,
         prerelease,
         downloads,
@@ -112,6 +111,8 @@ fn crates_io_info_from_crate(krate: &Value) -> Option<CratesIoInfo> {
     reason = "tests should panic on unexpected values"
 )]
 mod crates_io_tests {
+    use serde_json::Value;
+
     use super::crates_io_info_from_crate;
 
     #[test]
@@ -149,6 +150,26 @@ mod crates_io_tests {
         let info = crates_io_info_from_crate(&krate).expect("info");
         assert_eq!(info.version, "0.1.0-alpha.1");
         assert_eq!(info.prerelease, None);
+    }
+
+    #[test]
+    fn incomplete_release_does_not_invent_download_count() {
+        for downloads in [Value::Null, serde_json::json!("unknown")] {
+            let krate = serde_json::json!({
+                "max_stable_version": "1.2.3",
+                "downloads": downloads,
+            });
+            assert!(crates_io_info_from_crate(&krate).is_none());
+        }
+        let krate = serde_json::json!({ "max_stable_version": "1.2.3" });
+        assert!(crates_io_info_from_crate(&krate).is_none());
+    }
+
+    #[test]
+    fn zero_downloads_is_a_real_release_value() {
+        let krate = serde_json::json!({ "max_stable_version": "1.2.3", "downloads": 0 });
+        let release = crates_io_info_from_crate(&krate).expect("complete release");
+        assert_eq!(release.downloads, 0);
     }
 
     #[test]

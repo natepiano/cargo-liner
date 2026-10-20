@@ -142,17 +142,6 @@ pub struct WorktreeGroupSummary {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum PublishStatus {
-    Publishable,
-    #[default]
-    NotPublishable,
-}
-
-impl PublishStatus {
-    pub(super) const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PackagePresence {
     Present,
     #[default]

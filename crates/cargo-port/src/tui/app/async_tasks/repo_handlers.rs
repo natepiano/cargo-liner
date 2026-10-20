@@ -19,6 +19,7 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::Comparison;
+use crate::project::CratesIoReleaseState;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::LocalGitState;
@@ -656,28 +657,25 @@ fn transfer_lint_runs(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) 
     }
 }
 
-/// Copy crates.io version/downloads from `old` onto the freshly-scanned
+/// Copy the complete crates.io release from `old` onto the freshly-scanned
 /// `item` for the node at `path`. The node is either a `RustInfo` (workspace
 /// root, member, or standalone package) or a `VendoredPackage`; both store the
 /// values set by `BackgroundMsg::CratesIoVersion`.
 fn transfer_crates_io(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) {
     if let Some(source) = old.rust_info_at_path(path)
-        && let (Some(version), Some(downloads)) =
-            (source.crates_version(), source.crates_downloads())
+        && let CratesIoReleaseState::Released(_) = &source.crates_io
         && let Some(target) = item.rust_info_at_path_mut(path)
     {
-        let prerelease = source.crates_prerelease().map(str::to_string);
-        target.set_crates_io(version.to_string(), prerelease, downloads);
+        target.crates_io = source.crates_io.clone();
     }
     if let Some(source) = old.vendored_at_path(path)
-        && let (Some(version), Some(downloads)) =
-            (source.crates_version(), source.crates_downloads())
+        && let CratesIoReleaseState::Released(_) = &source.crates_io
         && let Some(target) = item.vendored_at_path_mut(path)
     {
-        let prerelease = source.crates_prerelease().map(str::to_string);
-        target.set_crates_io(version.to_string(), prerelease, downloads);
+        target.crates_io = source.crates_io.clone();
     }
 }
+
 fn preserve_live_pr_snapshot_while_loading(
     data: &ProjectPrData,
     prior: Option<&ProjectPrInfo>,

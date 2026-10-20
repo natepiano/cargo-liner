@@ -336,9 +336,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _: &str, abs_path: &str, name: Opt
             if let Some(info) = info {
                 let _ = sender.send(BackgroundMsg::CratesIoVersion {
                     path,
-                    version: info.version,
-                    prerelease: info.prerelease,
-                    downloads: info.downloads,
+                    release: info,
                 });
             }
             let _ = sender.send(BackgroundMsg::CratesIoFetchComplete { name: name.clone() });
