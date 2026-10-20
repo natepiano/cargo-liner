@@ -40,7 +40,7 @@ impl App {
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
-        stats.example_msgs = self.poll_example_msgs();
+        stats.owned_run_events = self.poll_owned_run_events();
         self.poll_clean_msgs();
         let now = Instant::now();
         self.refresh_project_storage_if_due(now);
@@ -64,7 +64,7 @@ impl App {
                 elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
                 bg_msgs = stats.bg_msgs,
                 ci_msgs = stats.ci_msgs,
-                example_msgs = stats.example_msgs,
+                example_msgs = stats.owned_run_events,
                 tree_results = stats.tree_results,
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
@@ -139,9 +139,9 @@ impl App {
         }
         count
     }
-    pub(super) fn poll_example_msgs(&mut self) -> usize {
+    pub(super) fn poll_owned_run_events(&mut self) -> usize {
         let mut count = 0;
-        while let Ok(msg) = self.background.example_rx().try_recv() {
+        while let Ok(msg) = self.background.owned_run_receiver().try_recv() {
             match msg {
                 OwnedRunEvent::Started { owned_run_id } => {
                     let _ = self.inflight.acknowledge_owned_run_started(owned_run_id);

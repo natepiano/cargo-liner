@@ -769,7 +769,9 @@ mod tests {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
                     verified_process_identity
                 },
-                observation => {
+                observation @ (CurrentProcessIdentityObservation::InitialUnavailable(_)
+                | CurrentProcessIdentityObservation::ReplacedDuringRevalidation(_)
+                | CurrentProcessIdentityObservation::RevalidationUnavailable(_)) => {
                     panic!(
                         "the actor child fixture should have a verified identity: {observation:?}"
                     )

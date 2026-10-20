@@ -3704,7 +3704,7 @@ mod tests {
                 relative_path: "submod".to_string(),
                 url:           None,
                 branch:        None,
-                commit:        PinnedCommit::NotPinned,
+                commit:        PinnedCommit::Absent,
                 project_info:  crate::project::ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -4803,7 +4803,7 @@ mod tests {
                     ahead:  0,
                     behind: 0,
                 }),
-                primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                 bisect:              None,
             };
             let repo = RepoInfo {
@@ -4812,7 +4812,7 @@ mod tests {
                     url:          url.map(str::to_string),
                     owner:        Some("natepiano".to_string()),
                     repo:         Some("demo".to_string()),
-                    tracked_ref:  crate::project::TrackedRef::Ref("origin/main".to_string()),
+                    tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
                     ahead_behind: crate::project::Comparison::Counted(
                         crate::project::AheadBehind {
                             ahead:  0,
@@ -5347,7 +5347,7 @@ mod tests {
                     relative_path: "vendor/dep".to_string(),
                     url:           None,
                     branch:        None,
-                    commit:        PinnedCommit::NotPinned,
+                    commit:        PinnedCommit::Absent,
                     project_info:  crate::project::ProjectInfo::default(),
                     git_repo:      None,
                 });
@@ -5387,7 +5387,7 @@ mod tests {
                     relative_path: "vendor/dep".to_string(),
                     url:           None,
                     branch:        None,
-                    commit:        PinnedCommit::NotPinned,
+                    commit:        PinnedCommit::Absent,
                     project_info:  crate::project::ProjectInfo::default(),
                     git_repo:      None,
                 });
@@ -8413,7 +8413,7 @@ mod tests {
                 relative_path: name.to_string(),
                 url:           None,
                 branch:        None,
-                commit:        PinnedCommit::NotPinned,
+                commit:        PinnedCommit::Absent,
                 project_info:  ProjectInfo::default(),
                 git_repo:      None,
             }
@@ -9255,7 +9255,7 @@ mod tests {
                 relative_path: "lib/linux_x64".to_string(),
                 url:           None,
                 branch:        None,
-                commit:        PinnedCommit::NotPinned,
+                commit:        PinnedCommit::Absent,
                 project_info:  crate::project::ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -11306,7 +11306,7 @@ mod tests {
                         head:                HeadState::Branch("feat/demo".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -11315,7 +11315,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::NotCompared,
@@ -11369,7 +11369,7 @@ mod tests {
                         head:                HeadState::Branch("main".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -11378,7 +11378,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::NotCompared,
@@ -11440,7 +11440,7 @@ mod tests {
                         head:                HeadState::Branch("feat/demo".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -11449,7 +11449,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::NotCompared,
@@ -12192,7 +12192,7 @@ mod tests {
                         head:                HeadState::Branch("feat/demo".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -12201,7 +12201,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        None,
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::Counted(
@@ -12248,7 +12248,7 @@ mod tests {
                     url:          Some("https://github.com/acme/demo".to_string()),
                     owner:        None,
                     repo:         Some("demo".to_string()),
-                    tracked_ref:  crate::project::TrackedRef::Ref("origin/main".to_string()),
+                    tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
                     ahead_behind: crate::project::Comparison::Counted(
                         crate::project::AheadBehind {
                             ahead:  1,
@@ -12290,7 +12290,7 @@ mod tests {
                         head:                HeadState::Branch("feat/demo".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                 },
@@ -12316,7 +12316,7 @@ mod tests {
                         head:                HeadState::Branch("feat/demo".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                 },
@@ -12648,7 +12648,7 @@ mod tests {
                             ahead:  0,
                             behind: 0,
                         }),
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -12657,7 +12657,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        None,
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::Counted(
@@ -13317,7 +13317,7 @@ mod tests {
                         head:                HeadState::Branch("main".to_string()),
                         last_commit:         CommitDate::NoCommits,
                         ahead_behind_local:  Comparison::NotCompared,
-                        primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
@@ -13326,7 +13326,7 @@ mod tests {
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  crate::project::TrackedRef::Ref(
+                            tracked_ref:  crate::project::TrackedRef::Named(
                                 "origin/main".to_string(),
                             ),
                             ahead_behind: crate::project::Comparison::NotCompared,
@@ -15712,7 +15712,7 @@ mod tests {
             assert_eq!(pending.abs_path, linked_path.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("hana".to_string())
+                panes::CargoPackageInvocation::Named("hana".to_string())
             );
             assert!(pending.build_mode.is_release());
         }
@@ -15768,7 +15768,7 @@ mod tests {
             assert_eq!(pending.abs_path, workspace_root.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("wasm_node_demo".to_string())
+                panes::CargoPackageInvocation::Named("wasm_node_demo".to_string())
             );
         }
 
@@ -17049,7 +17049,7 @@ mod tests {
         let cargo_toml = dir.join("Cargo.toml");
         let parsed = project::from_cargo_toml(&cargo_toml)
             .unwrap_or_else(|_| panic!("parse test Cargo.toml"));
-        scan::cargo_project_to_item(parsed)
+        scan::cargo_parse_result_to_item(parsed)
     }
 
     fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
@@ -17089,7 +17089,7 @@ mod tests {
             head:                HeadState::Branch("main".to_string()),
             last_commit:         CommitDate::NoCommits,
             ahead_behind_local:  Comparison::NotCompared,
-            primary_tracked_ref: TrackedRef::Ref("origin/main".to_string()),
+            primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
             bisect:              None,
         };
         let repo = RepoInfo {
@@ -17098,7 +17098,7 @@ mod tests {
                 url:          url.map(String::from),
                 owner:        Some("natepiano".to_string()),
                 repo:         None,
-                tracked_ref:  crate::project::TrackedRef::Ref("origin/main".to_string()),
+                tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
                 ahead_behind: crate::project::Comparison::NotCompared,
                 kind:         RemoteKind::Clone,
                 push:         crate::project::PushState::Enabled {

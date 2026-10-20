@@ -108,14 +108,14 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
 
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-    let started_sender = app.background.example_sender();
+    let started_sender = app.background.owned_run_sender();
     let stderr_reader = stderr.map(|stream| {
-        let example_sender = started_sender.clone();
-        thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
+        let owned_run_sender = started_sender.clone();
+        thread::spawn(move || read_with_progress(&owned_run_sender, owned_run_id, stream))
     });
     let stdout_reader = stdout.map(|stream| {
-        let example_sender = started_sender.clone();
-        thread::spawn(move || read_with_progress(&example_sender, owned_run_id, stream))
+        let owned_run_sender = started_sender.clone();
+        thread::spawn(move || read_with_progress(&owned_run_sender, owned_run_id, stream))
     });
     let mut output_readers = Vec::new();
     if let Some(stderr_reader) = stderr_reader {
@@ -171,7 +171,7 @@ fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Comma
     }
     match &pending_example_run.cargo_package_invocation {
         CargoPackageInvocation::WorkspaceDefault => {},
-        CargoPackageInvocation::Package(package_name) => {
+        CargoPackageInvocation::Named(package_name) => {
             command.arg(CARGO_PACKAGE_FLAG).arg(package_name);
         },
     }
@@ -201,7 +201,7 @@ fn isolate_owned_process(_: &mut Command) {}
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
 fn read_with_progress(
-    example_sender: &Sender<OwnedRunEvent>,
+    owned_run_sender: &Sender<OwnedRunEvent>,
     owned_run_id: OwnedRunId,
     stream: impl io::Read,
 ) {
@@ -213,13 +213,13 @@ fn read_with_progress(
         match byte[0] {
             b'\n' => {
                 let line = String::from_utf8_lossy(&buf).to_string();
-                let _ = example_sender.send(OwnedRunEvent::Output { owned_run_id, line });
+                let _ = owned_run_sender.send(OwnedRunEvent::Output { owned_run_id, line });
                 buf.clear();
             },
             b'\r' => {
                 if !buf.is_empty() {
                     let line = String::from_utf8_lossy(&buf).to_string();
-                    let _ = example_sender.send(OwnedRunEvent::Progress { owned_run_id, line });
+                    let _ = owned_run_sender.send(OwnedRunEvent::Progress { owned_run_id, line });
                     buf.clear();
                 }
             },
@@ -229,7 +229,7 @@ fn read_with_progress(
     // Flush remaining `buf` bytes as `OwnedRunEvent::Output` after the stream ends.
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        let _ = example_sender.send(OwnedRunEvent::Output { owned_run_id, line });
+        let _ = owned_run_sender.send(OwnedRunEvent::Output { owned_run_id, line });
     }
 }
 
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn named_package_invocation_passes_the_package_flag_and_name() {
         let command = cargo_command_for_owned_run(&pending_example_run(
-            CargoPackageInvocation::Package("demo-member".to_string()),
+            CargoPackageInvocation::Named("demo-member".to_string()),
         ));
 
         assert_eq!(

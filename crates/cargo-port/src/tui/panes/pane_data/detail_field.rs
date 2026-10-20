@@ -129,7 +129,7 @@ impl DetailField {
                     GIT_UNREADABLE_LABEL.to_string()
                 },
                 PackageVersion::AwaitingMetadata
-                | PackageVersion::Submodule(PinnedCommit::NotPinned) => "-".to_string(),
+                | PackageVersion::Submodule(PinnedCommit::Absent) => "-".to_string(),
             },
             Self::DiskTarget => data
                 .in_project_target
@@ -204,11 +204,11 @@ impl DetailField {
             Self::VsLocal => {
                 let branch = match &data.local_main_branch {
                     GitProbe::Probed(ResolvedBranch::Named(name)) => name.as_str(),
-                    GitProbe::AwaitingProbe
+                    GitProbe::Awaiting
                     | GitProbe::Probed(ResolvedBranch::NotFound | ResolvedBranch::Unreadable) => "",
                 };
                 match data.vs_local {
-                    GitProbe::AwaitingProbe => String::new(),
+                    GitProbe::Awaiting => String::new(),
                     GitProbe::Probed(comparison) => {
                         formatting::format_ahead_behind_against(comparison, branch)
                     },
@@ -222,7 +222,7 @@ impl DetailField {
                 FirstCommit::Probed(commit_date) => formatting::format_commit_date(commit_date),
             },
             Self::LastCommit => match &data.last_commit {
-                GitProbe::AwaitingProbe => String::new(),
+                GitProbe::Awaiting => String::new(),
                 GitProbe::Probed(commit_date) => formatting::format_commit_date(commit_date),
             },
             Self::RemotesUnreadable => GIT_UNREADABLE_LABEL.to_string(),
@@ -240,7 +240,7 @@ impl DetailField {
                 .map(|ctx| match &ctx.pinned_commit {
                     PinnedCommit::Sha(sha) => format!("{sha}  (parent HEAD)"),
                     PinnedCommit::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
-                    PinnedCommit::NotPinned => String::new(),
+                    PinnedCommit::Absent => String::new(),
                 })
                 .unwrap_or_default(),
             // Package fields — should not be called with git_value.
