@@ -539,7 +539,7 @@ fn render_worktree_entry<'a>(
         });
     let dp = match display_path {
         ProjectListRowDisplayPathResolution::Resolved(display_path) => display_path.to_string(),
-        ProjectListRowDisplayPathResolution::RowUnavailable => String::new(),
+        ProjectListRowDisplayPathResolution::Unavailable => String::new(),
     };
     let abs_path = ctx
         .project_list
