@@ -1188,7 +1188,7 @@ fn ci_display_style(display: &CiDisplay) -> Style {
         CiDisplay::Runs {
             ci_status: conclusion,
             ..
-        } => render::conclusion_style(*conclusion),
+        } => render::ci_status_style(*conclusion),
     }
 }
 

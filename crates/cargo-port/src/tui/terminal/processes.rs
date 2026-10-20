@@ -171,7 +171,7 @@ fn cargo_command_for_owned_run(pending_example_run: &PendingExampleRun) -> Comma
     }
     match &pending_example_run.cargo_package_invocation {
         CargoPackageInvocation::WorkspaceDefault => {},
-        CargoPackageInvocation::Package(package_name) => {
+        CargoPackageInvocation::Named(package_name) => {
             command.arg(CARGO_PACKAGE_FLAG).arg(package_name);
         },
     }
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn named_package_invocation_passes_the_package_flag_and_name() {
         let command = cargo_command_for_owned_run(&pending_example_run(
-            CargoPackageInvocation::Package("demo-member".to_string()),
+            CargoPackageInvocation::Named("demo-member".to_string()),
         ));
 
         assert_eq!(

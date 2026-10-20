@@ -15712,7 +15712,7 @@ mod tests {
             assert_eq!(pending.abs_path, linked_path.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("hana".to_string())
+                panes::CargoPackageInvocation::Named("hana".to_string())
             );
             assert!(pending.build_mode.is_release());
         }
@@ -15768,7 +15768,7 @@ mod tests {
             assert_eq!(pending.abs_path, workspace_root.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("wasm_node_demo".to_string())
+                panes::CargoPackageInvocation::Named("wasm_node_demo".to_string())
             );
         }
 

@@ -606,7 +606,7 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let origin_sync_align = compact_status_align(origin_sync);
     let main_align = compact_status_align(main_sync);
 
-    let ci_style = render::conclusion_style(row.ci);
+    let ci_style = render::ci_status_style(row.ci);
     let git_path_style = Style::default();
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
@@ -626,7 +626,7 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     cells[COL_CI] = CellContent {
         text: row
             .ci
-            .map_or(String::new(), |conclusion| String::from(conclusion.icon())),
+            .map_or(String::new(), |ci_status| String::from(ci_status.icon())),
         style: ci_style,
         align_override: None,
         ..CellContent::default()
