@@ -362,14 +362,14 @@ impl App {
         }
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        // While startup.is_collecting, startup.repo.expected gains repo and seen/complete_at are
+        // While startup.is_collecting, startup.repo.expected gains repo and seen/lifecycle are
         // reset even after local-git denominator stabilization, holding the GitHub row until
         // completion; after closure net.github_running_mut and sync_running_repo_fetch_toast drive
         // only the steady-state toast.
         if self.startup.is_collecting() {
             self.startup.repo.expected.insert(repo.clone());
             self.startup.repo.seen.remove(&repo);
-            self.startup.repo.complete_at = None;
+            self.startup.repo.lifecycle.reopen();
         }
         self.net.github_running_mut().insert(repo, Instant::now());
         self.sync_running_repo_fetch_toast();
