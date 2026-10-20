@@ -75,13 +75,13 @@ Sources: `~/.claude/docs/as-built/review-regime-trial.md` and `review-regime-tri
 
 First separate two questions. One asks whether a UX reviewer helps screen changes. The other asks whether a code-quality reviewer adds value when UX review already exists.
 
-For the second question, set A to the UX reviewer alone. Set B to UX plus code-quality review. Register remaining confirmed defects per assigned phase as primary. Record phase wall time, weighted tokens, repairs, and user corrections as secondary measures.
+For a supported paired study of the second question, set A to the UX reviewer alone. Set B to UX plus code-quality review. Give both arms the same frozen input and required checks. Register remaining confirmed defects per review task as primary. Define required correctness behavior separately from the scored defect count. Record review wall time, weighted tokens, and incorrect findings as secondary measures.
 
-Select screen-changing phases before assignment. Require the same merge check and scorer rubric in both arms. Record plan stage and task class. Allocate arms within those classes. Keep phases that fail, stop, or do not merge. A merged-phase-only sample can hide a policy's failed work.
+Select screen-changing tasks before either arm runs. Use one task per independent group and the same scorer rubric in both arms. Keep failed and stopped tasks. A merged-phase-only sample can hide a policy's failed work. The paired task study can establish a review effect. It cannot establish a phase-policy effect from different phases assigned to different arms.
 
-For A/A, have independent reviewers assess the same frozen outputs under the same policy. Measure disagreement and defect-count variation. Hide policy labels from the final scorer. A small number of phases cannot establish equal rare-defect rates.
+For A/A, have independent reviewers assess the same frozen input under policy A. Measure disagreement and defect-count variation. Use the framework's paired median interval for A/B. Register a minimum positive reduction in confirmed defects left after review. Conceal randomized policy labels from the final scorer until scores are sealed.
 
-Register an equal-quality margin if the intended claim is that removing a reviewer preserves quality. Specify the observation period for defects found after merge. Set the allowed delay and cost separately.
+The claim that removing a reviewer preserves quality needs a different design. Equal-quality margins and allocation of different phases are unsupported in the first tool version. Do not use the positive-gain rule to accept either claim. A later design must specify its estimator, independent groups, interval, and decision rule. Keep later merge defects and user corrections as observational evidence here.
 
 ### Decision under this framework
 
@@ -91,9 +91,9 @@ This does not require reversal of the user's policy decision. The policy can rem
 
 ### Tooling action
 
-`register` would reject an unspecified eligibility rule or primary measure. `run record` would preserve stopped and unmerged phases. `analyze` would report insufficient causal evidence for the historical comparison. `find --subject process/review-regime` would return both the decision and its limits.
+`register` would refuse the allocated-phase or equal-quality proposal as `unsupported_design`. It could register the narrower paired review-task study above. `run record` would preserve stopped tasks in that study. `analyze` could not accept the historical unpaired comparison. Its report could retain that history as exploratory evidence. `find --subject process/review-regime` would return the narrower result and its limits.
 
-The subject hook would show the policy and its conditions before a review-command edit. The condition hook would detect a changed reviewer model or missing required scorer evidence. It could not repair the historical allocation.
+The subject hook would show the policy and its conditions before a review-command edit. The condition hook would detect a changed reviewer model. `run score` would import sealed X/Y scores after each pair. The operator would apply the concealed mapping to the stop rules before the next pair. Missing scores would block that next launch. The hook could not repair the historical allocation.
 
 ## 3. Cargo-berth test-time reduction
 
@@ -131,6 +131,8 @@ The framework would have found the wrong measurement unit before the timing gate
 
 The condition hook would name the measured load and limit once. The subject hook would show the serial-measurement rule before another test-time phase. It would also link the no-multi-second-tests rule.
 
+A Mac comparison would use `run start --pair` for one serial remote job. The adapter would collect timing and conditions on the Mac. It would copy immutable arm receipts to natedev before `run record --pair` and scoring. A lost connection would require receipt recovery, not another test run. This reuses the explicit remote-status pattern in `~/.claude/scripts/production/mac_run.sh`, `on_mac`, under framework section 12. A lost required condition sample would stop as `not_proven`; the load-breach replacement rule would not apply.
+
 Sources for the gate rules: `~/.claude/projects/-home-natepiano-rust-cargo-liner/memory/no-multi-second-tests.md`, `reduce-test-load.md`, and `verify-runs-one-at-a-time.md` in the same directory.
 
 ## 4. Director model study
@@ -151,7 +153,9 @@ Keep the concurrent control and explicit model filters. Add a pre-registered tas
 
 A request-level study can answer a request-latency question. It cannot by itself answer which model completes equivalent phases faster or more cheaply.
 
-Use A/A phase or task pairs to measure task variation. Use independent task groups for the interval. Do not treat hundreds of requests from a few directors as hundreds of independent policy trials.
+Use A/A task pairs to measure task variation. Select one same-input pair per independent group for the interval. The first tool version does not support unpaired phase allocation or combined group estimates. Do not treat hundreds of requests from a few directors as hundreds of independent policy trials.
+
+For historical phase elapsed time, use `phase_started` and `phase_finished` with the same machine and `phase_instance_id`. Verify the run ID. Do not use `history.py phases` field `total_seconds`. It sums stage time and can include overlap or omit gaps. Sources: `~/.claude/scripts/history/history.py`, `_phase_rows`; `~/.claude/scripts/usage/collect.py`, `save_history_event`.
 
 ### Decision under this framework
 
@@ -161,7 +165,7 @@ The policy-level efficiency claim would remain `not_proven` without matched work
 
 ### Tooling action
 
-`register` would distinguish request latency from completed-task efficiency. `analyze` would count independent groups. `decide` would keep the narrower cost observation separate from adoption. The subject hook would show the model and effort limits before reusing the result.
+`register` would distinguish request latency from completed-task efficiency. It would refuse an unpaired policy design. `analyze` would use only independent same-input pairs for acceptance. The historical cost observation would remain exploratory evidence. The subject hook would show the model and effort limits before reusing the result.
 
 ## 5. Review-pool reset and fork probes
 
@@ -179,7 +183,9 @@ Source: `~/.claude/docs/as-built/review-pool-probes.md`. Its weights came from `
 
 Instruction retention is a required correctness check. A cheaper reply that loses instructions fails. The repaired pair supports a candidate for further study. It does not establish a default cost advantage.
 
-The result would be `not_proven` for recurring savings. Its raw-data coverage would be `evidence_unavailable` for the deleted artifacts. The first live protocol below tests the remaining cost question in real review work.
+The result would be `not_proven` for recurring savings. Its raw-data coverage would be `evidence_unavailable` for the deleted artifacts. The first tool version cannot test that policy claim with these probes. The current policy keeps each unit's reviewer and never resets it. Fresh fork is not its control. Rollback from any later reset trial must restore retained context without reset. Sources: `~/.claude/commands/unit/direct.md`, `LongLivedWorkers`; `~/.claude/scripts/direct/review_pool.py`, `_choose`.
+
+Repeated tasks in one retained thread share context and cache history. They form one dependency group. Different unit-and-date combinations also share units or dates. They do not establish independent pairs. A retained-context comparison needs a later design for related observations. `register` must refuse it as `unsupported_design`. No reset adoption follows from the old fork comparison.
 
 ### Tooling action
 
@@ -187,225 +193,120 @@ The result would be `not_proven` for recurring savings. Its raw-data coverage wo
 
 The subject hook would show the instruction-loss finding before a reset-policy change. The condition hook would stop a run with the wrong launcher hash or model settings.
 
-## 6. First live protocol: review context after reset
+## 6. First live protocol: a history-command framework exercise
 
-### Status and scope
+### Status, purpose, and owner
 
-This is a complete proposed protocol. It is not registered and has not run. The user can select it after approving the design. Registration must copy these rules into the proposed record format. It must bind the runtime identities by the rules below before any measured request.
+This is a proposed protocol, not authority to run it. Its name is `history-site-startup-v1`. Its purpose is `framework_exercise`. The user chooses the first live study. This choice remains open in the framework's closing questions.
 
-Protocol name: `review-context-reset-v1`.
+The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. The owner assignment comes from this unit's Work Order and the unit director's round 3 ruling, dated 2026-10-20. Registration must retain the later instruction that approves execution and its operator.
 
-Subject: `process/review-pool` and `~/.claude/scripts/agents/codex_mesh.py`.
+The exercise checks registration, pair launch, receipts, condition rules, scoring, analysis, and result lookup. It uses an existing read-only command. No inspected source establishes a recurring report that uses sealed snapshots. This exercise therefore makes no production claim.
 
-Owner: the unit that receives the approved experiment Work Order. Its showrunner owns any later shared-default decision. The study changes no production review policy while it runs.
+Subject: `process/history-command`, `~/.claude/commands/history.md`, and `~/.claude/scripts/history/history.py`. The command file invokes `python3` without `-S`. The script supports the `phases` query and a state-root override. These are verified command capabilities, not evidence of recurring demand. Sources: `~/.claude/commands/history.md`, Run and Subcommands; `~/.claude/scripts/history/history.py`, `_state_root` and `_cmd_phases`.
 
-The experiment uses live read-only review tasks. Both answers go to the normal director after blinded scoring. The director keeps responsibility for the actual phase decision. The experiment does not replace a required reviewer or add a code change.
+The proposed B adds `-S`. This option disables automatic `import site` at initialization. Source: `/run/current-system/sw/bin/python3`, `--help`, read on 2026-10-20. Retain the selected interpreter's help and version at registration. No speed or correctness result exists for B.
 
-### Question, claim, and measure
+The budget is 1,800 command wall seconds and 60 operator minutes within 28 calendar days. There are no model calls, reviewer calls, builds, tests, installations, holds, or Mac jobs. Tool implementation has a separate Work Order. This budget buys evidence about the framework. It does not buy expected production savings.
 
-Question: does an empty retained review thread reduce weighted usage compared with a fresh fork for equivalent review work?
+### Question, claim, and commands
 
-A: fork a new empty thread from the sealed reviewer template for each task.
+Question: can the framework complete its paired measurement and decision procedure for a read-only command with one changed option?
 
-B: reset one retained review thread to zero turns before each task. Keep the same standing instructions. Reuse that thread for the next task.
+The narrow timing claim is that B reduces median command wall time by more than 0.010 seconds on the fixed input. This threshold exercises the noise and interval rules. It is not a minimum useful production gain. Even seven calls at that threshold save only 0.070 command seconds per week. That amount does not justify a person's work on this change.
 
-Claim: B reduces median weighted tokens per assigned task by more than 2,000 tokens. B must retain the standing instructions and satisfy every required review check.
-
-Primary measure: weighted tokens from task preparation through the final review reply. Include every model request in that interval. Allocate B's one initial warmup equally across the twelve B tasks. Allocate any A-only setup model usage equally across the twelve A tasks. Prime and fork calls that use no model request contribute zero model tokens, but retain their wall time.
-
-Weights are fixed at uncached input 1, cached input 0.05, and output 5. Thinking, if included in output, is not added again. Report raw token classes beside the weighted value. This is a weighted-usage study, not a dollar or subscription-saving study.
-
-Sources for those historical model weights and request parsing: `~/.claude/scripts/usage/weights.py`, `~/.claude/scripts/usage/rollouts.py`, `~/.claude/docs/as-built/review-pool-probes.md`.
-
-### Frozen implementation and runtime binding
-
-The design read `~/.claude` at commit `fafa6eb22064c0fa8e429f4fae46dd69d8baac7c` on 2026-10-20. File hashes are authoritative if that tree has local edits.
-
-| File under `~/.claude/` | SHA-256 read for this design |
-| --- | --- |
-| `scripts/agents/codex_mesh.py` | `8e49239304d216193b4eecd3c4dce9664256de8bc6ebc342c93ac45a379b33f2` |
-| `scripts/usage/weights.py` | `c4257720ba2cbe0e57325d4cc2a3ee3e8c14e6526c30cf0d44bde25078d1f743` |
-| `scripts/usage/rollouts.py` | `8c15c7b6a089f3b4fd87ad36a6310a5ee4f0e4e94080e210469b9352f93e4bd7` |
-
-At registration, verify these hashes. If one differs, stop before any run. Review the new version and register a new protocol revision. Do not execute an old tool against new shared state merely to reproduce a hash.
-
-Bind the installed Codex version, app-server configuration hash, and approved workers account label at registration. Use that same account for both arms. Pin `gpt-6.1-sol`, effort `low`, and service tier `default`. If the server refuses that tier or reports different settings, do not substitute a value. Close as `not_proven` and revise the protocol.
-
-The experiment has one private app-server and one template. Its scratch directory is under the experiment's evidence directory. Normal agents continue to use their existing servers. The registered binding includes the exact directory and launcher identity.
-
-No build hold is needed. No compilation, test, install, or Mac job is part of this protocol. All model work runs from natedev with read-only tools.
-
-### Task eligibility and input selection
-
-Use the next eligible first review from each distinct unit-and-day group. The owning showrunner supplies tasks in ready-time order. Break equal times by unit ID and phase ID. Select at most one task per group. Do not select a task because it is known to favor either arm.
-
-An eligible task must meet all these conditions:
-
-- It is an actual read-only review needed by an existing phase.
-- It has one immutable patch or document revision and a fixed source snapshot.
-- Its complete review input has 2,000–12,000 UTF-8 words.
-- It needs no build, network read, user answer, or file mutation.
-- The director can state at least three required checks before either answer exists.
-- Its existing review time limit is at least 300 seconds.
-
-Exclude later repair reviews of the same phase. Exclude tasks whose required check depends on hidden external evidence. Record each exclusion and its reason before launch.
-
-The first eight eligible groups supply A/A pairs. The next twelve supply A/B pairs. Require at least three units and three dates in A/B. Keep unit and date labels in the report. Any unresolved dependence between those twelve groups makes the final result `not_proven`. Do not change the grouping after seeing the effect.
-
-For each selected task, seal `input.md`, source files, and `checks.json` before either arm runs. The checklist names required issues or behaviors, severity, and source evidence. The director signs its hash in the task manifest. The scorer cannot add a required check after seeing which arm missed it.
-
-Task source commits vary because these are live tasks. Each pair uses identical source bytes. The manifest records the full source commit and patch hash. A source change between paired runs invalidates the pair.
-
-### Standing instructions and task prompt
-
-Use this exact standing text in both paths:
+A uses the current invocation without `-S`. B adds only that option. Both arms use the same executable, source, input, environment, and query arguments.
 
 ```text
-Review the sealed input for this task.
-Read only files in the sealed source directory.
-Do not run builds, tests, network commands, or file writes.
-Report each confirmed defect with its source path and reason.
-Do not report a defect without evidence in the input.
-State which required checks pass and which fail.
-End the final reply with exactly REVIEW_COMPLETE.
+A: <python> <history.py> phases --skill plan-delegate --status all --format json
+B: <python> -S <history.py> phases --skill plan-delegate --status all --format json
 ```
 
-The task prompt is the following text plus the sealed input and required-check list:
+At registration, bind `<python>` to the absolute executable selected by the unit's current `python3` command. Bind `<history.py>` to the installed script path. Seal its source and local imports. Record exact argument arrays, source commit, local file hashes, executable hash, Python version, OS, architecture, and adapter version. A changed binding stops the study as `not_proven`.
 
-```text
-Review this task under the standing instructions.
-Use the attached input and required checks.
-Return the review in one final reply when the work is complete.
-```
+Set `SKILL_HISTORY_STATE_ROOT` to the same sealed input directory for both arms. Record `USER_ZONE`, locale, Python path settings, and site configuration. Keep credentials out of the record. The environment override and JSON output come from `~/.claude/scripts/history/history.py`, `_state_root`, `_events`, `_cmd_phases`, and `_emit`.
 
-The standing marker does not appear in the task prompt. Its presence tests whether the standing instructions remain available. A marker alone does not prove full instruction retention. Verify the other instructions and required checks as well.
+Primary measure: `command_wall_seconds`. Use monotonic elapsed seconds from interpreter launch through command exit and output capture. Include startup and input reads. Exclude input preparation, scheduling, scoring, and receipt publication. Keep those costs separately. Do not call this measure user waiting time. The report's `total` column sums stage durations; it is not this measure or phase elapsed time. Source: `~/.claude/scripts/history/history.py`, `_phase_rows`.
 
-### Preparation and commands
+### Input and selection
 
-The command forms below come from `~/.claude/scripts/agents/codex_mesh.py`. Values in angle brackets come from the sealed record. They are not open choices during a run.
+Before registration, seal one copy of the existing `~/.local/state/plan-delegate/runs/*.jsonl` input set. Record the complete file list, paths, sizes, and modification times before and after copying. Refuse registration if the list or metadata changes. Retain every input hash and the copy time. Use this one fixed input for the whole exercise. Do not select a smaller input after observing timing.
 
-Create the template once:
+Before each pair, copy that sealed input into the pair's private input directory. Verify its hashes before either arm. Both arms read the same directory. Use normal cache state after this copy, named `after_input_copy`. Do not add warmups or clear shared caches. Seal the collector and checker versions before launch. Refuse registration until the proposed pair adapter and score importer exist.
 
-```text
-~/.claude/scripts/lib/py ~/.claude/scripts/agents/codex_mesh.py prime --session-dir <dir> --name template --instructions-file <standing-file> --cwd <sealed-root> --model gpt-6.1-sol --service-tier default
-```
+The first eight selected dates supply A/A pairs. The next twelve supply A/B pairs. A selected date is the first UTC date with an owner-assigned quiet window after the required interval. Require at least 24 hours between selected pair starts. Select at most one pair per natedev UTC date. Neither pair may cross midnight. Record skipped dates and their preflight evidence before any output exists. Replacement pairs also require a new date.
 
-For each A task, create a fresh thread:
+Each arm starts a new interpreter process. The program reads sealed data and retains no interpreter or agent state across pairs. Source for the read path: `~/.claude/scripts/history/history.py`, `_events` and `_cmd_phases`.
 
-```text
-~/.claude/scripts/lib/py ~/.claude/scripts/agents/codex_mesh.py fork --session-dir <dir> --from template --name <a-task-name>
-```
+The dependency group is the natedev UTC date. The analysis assumes residual timing errors are independent across selected dates after these controls. A date alone does not prove independence. A new shared dependency, persistent competing timing job, or tool change stops the study as `not_proven`. Do not remove selected dates after reading their differences. The exercise cannot establish general workload coverage from one fixed input.
 
-Before the A/B stage, create B's retained thread once by the same fork command. Give it one warmup task: `Reply in one line: ready.` Record that reply and all its usage. Do not repeat the warmup.
+### Order, conditions, and budget limits
 
-Before every B task, remove its turns:
-
-```text
-~/.claude/scripts/lib/py ~/.claude/scripts/agents/codex_mesh.py reset --session-dir <dir> --to retained
-```
-
-Use the same follow command for every measured review:
-
-```text
-~/.claude/scripts/lib/py ~/.claude/scripts/agents/codex_mesh.py follow --session-dir <dir> --to <thread-name> --role review --model gpt-6.1-sol --effort low --service-tier default --cwd <sealed-task-root> --read-only --message-file <prompt-file> --summary-file <reply-file> --log-file <turn-log> --timeout 300
-```
-
-Use separate reply and log paths for every attempt. Keep the reset response and the active rollout path. The earlier probe found that reset can create a new rollout for the same thread. Source: `~/.claude/docs/as-built/review-pool-probes.md`.
-
-Collect requests by their recorded request keys and attempt boundaries. Do not subtract cumulative thread totals across reset. Keep each request once, even if a resumed rollout repeats it. Record missing usage as `collection_failed`; never substitute zero. Sources: `~/.claude/docs/as-built/usage-ledger.md`, `~/.claude/scripts/usage/rollouts.py`.
-
-The completion adapter must verify zero retained turns before B's task begins. It must read the serving thread state through the existing mesh client. It must also verify the standing-instruction hash on resume. Do not infer either condition from a short reply. This adapter is required future tooling, not code supplied by this design.
-
-Run each follow through the existing detached job route. Start the next operation from its completion notice. Do not poll. Never run both arms at once.
-
-### Order, conditions, and budgets
-
-Use eight A/A pairs of fresh forks. Keep preparation identical. Alternate which temporary thread name runs first. Record the signed first-minus-second difference to detect order effects.
-
-For A/B, use this fixed order by task number:
+For A/A, run A twice per pair. Measure signed first-minus-second differences. For A/B, use this fixed order:
 
 ```text
 AB BA BA AB AB BA AB BA BA AB BA AB
 ```
 
-Start the second arm within two minutes after the first finishes. A later start invalidates the pair. Record elapsed separation and account/server cache evidence. Do not flush a provider cache.
+Start one launcher job for the whole pair. Its adapter runs the arms sequentially. It measures the gap from the first exit to the second start. The limit is 60 seconds. No agent dispatch, completion delivery, or receipt import occurs between arms. The adapter checks conditions and direct stop rules before starting the second arm. It records prevention evidence if that arm cannot start. The runner may retain a notice for a later dispatch; pairing does not depend on delivery. Source: `~/.claude/scripts/agents/mesh_runs.py`, `deliver`.
 
-Start only when natedev one-minute load is at most 8. A pair is invalid if unrelated load exceeds 16 during either arm. Record load every five seconds. A changed account, model, tier, tool hash, or input invalidates the pair. A content error or timeout is a task outcome, not a condition exclusion.
+Start at natedev one-minute load at most 8 on 32 logical CPUs. The showrunner assigns the window. Refuse a start during another unit's timing work. Sample load before and after each arm. Sample every five seconds when an arm runs longer than ten seconds. Record unrelated work and source hashes.
 
-Allow at most two replacement pairs across the whole study. Use the next eligible task group for a replacement. Retain the invalid pair. Keep the same assigned order for its replacement.
+Use the framework section 6 failure table without exceptions:
 
-Stop after eight valid A/A pairs and twelve valid A/B pairs. The deadline is 14 calendar days after registration. The model budget is 1,000,000 weighted tokens, including warmup and invalid attempts. The active model wall-time budget is four hours. Stop at the first limit reached.
+- A refusal before the first arm starts launches nothing and consumes no replacement.
+- Complete evidence of unrelated load above 16, second-arm preflight load above 8, externally changed input, or a gap above 60 seconds invalidates the pair.
+- Missing required measurements stop as `not_proven`; they cannot be replaced.
+- Missing receipts block later work as `execution_unknown`; recover original evidence only.
+- A confirmed A or A/A correctness failure gives `not_proven`. A confirmed B failure gives `rejected`.
 
-Before a new review turn, reserve an allowance of 25,000 weighted tokens from the remaining budget. Refuse a start if that allowance is unavailable. Record actual use afterward. A turn can exceed the estimate; stop after that turn and report the overrun. Do not claim a hard billing limit that the launcher cannot enforce.
+Allow at most two environmental replacement pairs in all. Preserve every collected arm and any prevented arm. Use the same order on the next eligible date. A source or runtime change is terminal, not replaceable. If missing evidence prevents proof of an environmental cause, do not use the replacement allowance.
 
-### A/A analysis and final rule
+The target is eight valid A/A pairs and twelve valid A/B pairs. The deadline is 28 calendar days after registration. Each command has a 30-second timeout. Confirm that the timed-out process and its children ended before any later work. Reserve 60 command seconds before a pair launch. The total limit is 1,800 command wall seconds, including invalid attempts. Record active operator start and finish times for setup, import, scoring, recovery, and reporting. Count them against the 60 operator minutes. Exclude idle time. Stop at either exhausted budget or the deadline. Do not extend the study to obtain a preferred result.
 
-Use the framework's paired median and exact 95% order-statistic interval. For A/A, compute N from absolute pair differences. Stop as `not_proven` if N exceeds 2,000 tokens or the signed interval excludes zero.
+### Completion and score gate
 
-For A/B, use `d = weighted_A - weighted_B`, including allocated setup usage. Set `T = max(2000, N)`. The twelve-pair interval uses the third and tenth sorted differences.
+Reserve both arm slots and one launch association atomically. The adapter writes separate immutable arm receipts. It seals the pair result before returning to `mesh_runs`. Each executed arm needs its receipt. Each prevented arm needs its cause and proof that it did not start. The existing runner sends its notice before saving its finished state. The adapter's earlier receipts remove that race. Source: `~/.claude/scripts/agents/mesh_runs.py`, `command_supervise`.
 
-Accept the limited claim only if all these conditions hold:
+On the notice, import the pair result and arm receipts with `run record --pair`. Lost notices use the same result in an explicit recovery action. Missing or conflicting receipts give `execution_unknown`. Do not launch another job to recover them.
 
-- Twelve valid independent pairs exist.
-- The lower effect bound exceeds T.
-- Every B reply retains the standing instructions and passes every required check.
-- No B reply has a confirmed harmful instruction breach or fabricated defect.
-- B has no timeout and no missed required defect.
-- B's median paired wall-time increase is at most five seconds.
-- No B review takes more than thirty seconds longer than its A pair.
-- The measured weekly-use calculation below remains positive after setup and reset cost.
+The adapter checks exit, timeout, input hashes, and JSON structure between arms. A direct terminal failure prevents the second arm. For a completed pair, the automated checker seals a separate score file. Require exit zero, valid JSON with nonempty `rows`, and byte-identical stdout and stderr across arms. Retain `_meta` and warning text. No normalization may hide a difference. Record the checker hash and both output hashes.
 
-Reject B if it violates a correctness or cost limit. Reject the minimum-gain claim if the upper interval bound is below 2,000. Otherwise record `not_proven`.
+The operator imports that file with `run score`. This records a score event and a stop decision separately from the receipts. The next pair requires `continue_permitted`. Scores still in delivery leave `awaiting_scores`. Confirmed score loss gives `not_proven`. A B output difference under valid conditions rejects B. An unexplained A/A difference gives `not_proven`. Proven external input drift follows the environmental rule. Seal checks for collected outputs even when the second arm was prevented.
 
-Keep A's failures as evidence. A failure does not excuse a B failure. The experiment director scores both outputs and must not operate the arm launches. The scorer receives outputs as X and Y. X is A for odd task numbers and B for even task numbers. The scoring packet hides that task number and the thread metadata. The operator keeps the mapping outside the packet. The director records scoring reasons before the labels are revealed. Include scoring usage in the study budget, but exclude it from each arm's primary measure.
+Scorer labels are `not_applicable` because the checker compares exact outputs. Human review studies use the concealed-label procedure in framework sections 3 and 6. This exercise does not validate that separate human procedure.
 
-If a required defect was absent from the sealed checklist, record it as a secondary discovery. A confirmed harmful B instruction breach still stops the study. Do not turn a new discretionary preference into a required check after the run.
+### Analysis and result
 
-### Live effect and weekly value
+Use the framework's paired median and exact 95% order-statistic interval. Define `d = command_wall_A - command_wall_B`. N is the maximum absolute difference of the eight A/A pairs. Stop as `not_proven` if N exceeds 0.010 seconds or the signed A/A interval excludes zero.
 
-This is already a live-task study. It does not need a separate synthetic speed claim. Its accepted scope remains these eligible first reviews, with this model and account setup.
+For twelve A/B pairs, the interval uses the third and tenth sorted differences. Set `T = max(0.010, N)` seconds. Report whether the lower bound exceeds T. Require complete receipts, conditions, and score gates for that calculation. Report all pairs and losses. A secondary cost limit rejects B if any valid B command exceeds its paired A time by more than 0.050 seconds.
 
-At registration, freeze the preceding seven complete UTC days of eligible review dispatch records. Use phase and role records to identify dispatches. Read each candidate's recorded input size and task type to apply the same eligibility rule. Unknown eligibility stays unknown.
+The exercise succeeds as a procedure check when all registered steps produce complete, traceable records within budget. It need not show a faster B. Report that procedural outcome separately from the effect and interval. An incomplete exercise records which step failed and its evidence.
 
-Preserve the selection query and the accepted dispatch IDs. Use `~/.local/state/usage-model/usage.db` and the owning run histories. The usage ledger does not contain every eligibility field. The dispatch manifests supply the missing fields. Sources: `~/.claude/docs/as-built/usage-ledger.md`, `~/.claude/scripts/history/history.py`.
+The record's production-gain decision is `not_proven`, even if the narrow timing threshold passes. A confirmed B correctness or cost failure instead gives `rejected`. Set `live_check` to `not_claimed`, frequency coverage to `not_required`, and adoption plan to `not_permitted`. Do not compute weekly savings. No recurring report or usage count is established by this protocol.
 
-Compute mean savings per review from the twelve pairs. Multiply by the observed eligible weekly count. Deduct one B warmup per observed reviewer-server restart. Do not subtract the already allocated trial warmup twice: use unallocated per-task differences for this weekly calculation.
+### CLI, hooks, and closure
 
-Report a conservative case with one warmup for every eligible review. Report the observed-restart case separately. Use the minimum and maximum observed unallocated pair savings to show an empirical range around the mean projection. Label it an observed range, not a confidence interval for weekly savings. Require the conservative calculation to stay positive even at the minimum observed pair saving. If the store cannot establish eligible volume, record `not_proven` for weekly benefit.
-
-Report total experiment usage as its own cost. Both-arm review cost is study cost, not future operating cost. Do not count study dispatches in the weekly population. Do not claim user time saved from a token result.
-
-### Records, adoption, and later check
-
-Store protocol, task manifests, both outputs, scorer decisions, conditions, and raw request keys under the experiment record. Keep the warmup record. Do not delete rollouts until their required evidence has a verified durable copy.
-
-The proposed command sequence is:
+These proposed commands show one pair and the later analysis. Run every registered pair and score gate before final analysis.
 
 ```text
-cargo experiment find --subject process/review-pool
-cargo experiment register <sealed-protocol.json>
-cargo experiment run start <id> --slot aa-01-first
-cargo experiment run record <id> --attempt <attempt-id> --evidence <completion.json>
-cargo experiment run start <id> --slot aa-01-second
+cargo experiment find --subject process/history-command
+cargo experiment register <protocol.json>
+cargo experiment run start <id> --pair aa-01
+cargo experiment run record <id> --pair aa-01 --evidence <pair-result.json>
+cargo experiment run score <id> --pair aa-01 --evidence <sealed-scores.json>
 cargo experiment analyze <id> --stage aa
-cargo experiment run start <id> --slot ab-01-A
+cargo experiment run start <id> --pair ab-01
+cargo experiment run record <id> --pair ab-01 --evidence <pair-result.json>
+cargo experiment run score <id> --pair ab-01 --evidence <sealed-scores.json>
 cargo experiment analyze <id>
-cargo experiment decide <id> accepted --basis <decision.json>
-cargo experiment adopt <id> --evidence <adoption.json>
+cargo experiment decide <id> not_proven --basis <decision.json>
+cargo experiment find --subject process/history-command
 ```
 
-The listed slots illustrate the sequence. The runner executes every registered slot before final analysis. Completion records arrive from the adapter. The last two commands apply only after their evidence requirements pass.
+The subject hook shows prior results only with the framework's checked freshness state. It labels a stale index as stale. The start hook refuses the wrong host, changed binding, or excessive load. The CLI also checks the prior pair's score gate. The completion hook prints a newly recorded breach once. A valid start produces no routine success line.
 
-The subject hook shows the old instruction-loss finding. The start hook checks the pinned conditions. Completion checks detect changed inputs or load. No hook prints success for every review.
+After closure, retain the exercise report, input, receipts, analysis, and costs. Publish the decision through the journal-generation contract. The final lookup must return that decision with a matching current generation. It must not present the exercise as an adopted default.
 
-For an accepted result, the owner may enable reset only for eligible read-only reviews in that unit. The shared-default change belongs to its showrunner under the existing authority. Record the policy path and hash before `adopt`. Rollback selects fresh fork at the next task boundary. It must not interrupt active production reviews.
-
-The first follow-up is seven days after adoption, with at least twelve eligible completed reviews. Compare their usage and correctness with the registered limits. A retention failure triggers rollback. Insufficient volume gives `check_due`. A changed model, launcher, instruction file, or account setup gives `needs_recheck`.
-
-Stop the private app-server at closure. Verify that its processes have ended. Preserve evidence before removing scratch working files. Record any failed cleanup as an open finding.
-
-### What this protocol cannot establish
-
-It cannot establish a result for another model, provider cache policy, or Mac setup. It cannot prove the absence of rare review errors. It cannot establish an API-dollar saving from weighted tokens. It can support a reversible local policy with a defined follow-up.
-
-The runtime binding and completion adapter still need implementation. Their availability must be checked before registration. This document authorizes no launch.
+This protocol changes no report command or shared setting. There is no adoption or rollout to reverse. Stop the experiment-owned job on a registered stop condition. Confirm that it ended before releasing its execution slot. Preserve the record. Any later production study needs a real owner, recurring workload, useful-gain threshold, live check, and separate registration. The user can choose that study instead of this exercise.
