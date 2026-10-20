@@ -113,6 +113,10 @@ mod platform {
     use std::time::Duration;
     use std::time::Instant;
 
+    use libc::O_NONBLOCK;
+    use libc::O_RDONLY;
+    use libc::POLLIN;
+
     use crate::backdrop::constants::POSITION_REPLY_BYTES;
     use crate::backdrop::constants::POSITION_REPLY_END;
     use crate::backdrop::constants::POSITION_REPLY_WAIT;
@@ -186,7 +190,7 @@ mod platform {
             // SAFETY: `open` reads the path it is handed as a C string,
             // and this one is a literal with its own terminator. The
             // flags are the two this reads with.
-            let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+            let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), O_RDONLY | O_NONBLOCK) };
             (fd >= 0).then_some(Self(fd))
         }
 
@@ -198,7 +202,7 @@ mod platform {
         fn readable(&self, within: Duration) -> bool {
             let mut watched = libc::pollfd {
                 fd:      self.0,
-                events:  libc::POLLIN,
+                events:  POLLIN,
                 revents: 0,
             };
             let millis = i32::try_from(within.as_millis()).unwrap_or(i32::MAX);
@@ -208,7 +212,7 @@ mod platform {
             // only `revents`, which the wait below is the only reader
             // of.
             let ready = unsafe { libc::poll(&raw mut watched, 1, millis) };
-            ready > 0 && watched.revents & libc::POLLIN != 0
+            ready > 0 && watched.revents & POLLIN != 0
         }
 
         /// One byte of the terminal's answer, or [`None`] where there
