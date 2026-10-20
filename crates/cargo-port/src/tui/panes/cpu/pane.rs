@@ -190,6 +190,7 @@ mod tests {
     use tui_pane::CpuCoreUsage;
     use tui_pane::CpuMonitor;
     use tui_pane::CpuUsage;
+    use tui_pane::GpuUsage;
     use tui_pane::Hittable;
     use tui_pane::PaneFrameChrome;
 
@@ -206,10 +207,6 @@ mod tests {
         CpuPane::new(&CpuConfig::default(), StartupServices::quiet_unit_test())
     }
 
-    #[allow(
-        clippy::default_trait_access,
-        reason = "CpuUsage exposes its GPU field, but tui_pane does not export the GPU type"
-    )]
     fn sampled_usage() -> CpuUsage {
         CpuUsage {
             total_percent: 37,
@@ -224,7 +221,7 @@ mod tests {
                 user:   25,
                 idle:   63,
             },
-            gpu:           Default::default(),
+            gpu:           GpuUsage::default(),
         }
     }
 
