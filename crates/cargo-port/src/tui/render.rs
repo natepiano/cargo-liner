@@ -82,7 +82,7 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
+pub(super) fn ci_status_style(ci_status: Option<CiStatus>) -> Style {
     match ci_status {
         Some(CiStatus::Passed) => Style::default().fg(success_color()),
         Some(CiStatus::Failed) => Style::default().fg(error_color()),
@@ -117,7 +117,7 @@ fn sync_description_floor(
             .content()
             .and_then(|d| d.description.as_deref()),
         tiled.area(PaneId::Git),
-        EmptyDescriptionBehavior::RenderEmpty,
+        EmptyDescriptionBehavior::RenderNothing,
     );
     panes::sync_floor(&[&pkg_block, &git_block])
 }
@@ -168,7 +168,7 @@ fn resolve_tiled_layout(
     left_width: u16,
     bottom_row: panes::BottomRow,
 ) -> ResolvedPaneLayout<PaneId> {
-    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
+    let core_count = app.panes.cpu.core_count();
     let (package_width, git_width) = panes::top_pane_widths(top_area, left_width);
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {

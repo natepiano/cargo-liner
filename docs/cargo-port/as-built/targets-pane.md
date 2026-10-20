@@ -69,7 +69,7 @@ Watching or stopping targets that cargo-port did not launch is cargo-tile's job;
 ### Launch, Output pane, stop
 
 1. **Dispatch.** `dispatch_targets_action` sends `Activate` through `handle_detail_enter` to `handle_target_action(app, BuildMode::Debug)`, and `ReleaseBuild` to `handle_target_action(app, BuildMode::Release)`.
-2. **Queue.** `handle_target_action` takes the entry at `viewport.pos()` and builds a `PendingExampleRun` (`src/tui/panes/pane_data/pending.rs`) with these fields: `abs_path`, `target_name`, `display_path`, `cargo_package_invocation: CargoPackageInvocation::Package(package_name)`, `run_target_kind`, `build_mode` and `required_features`. It then calls `app.inflight.queue_owned_run`.
+2. **Queue.** `handle_target_action` takes the entry at `viewport.pos()` and builds a `PendingExampleRun` (`src/tui/panes/pane_data/pending.rs`) with these fields: `abs_path`, `target_name`, `display_path`, `cargo_package_invocation: CargoPackageInvocation::Named(package_name)`, `run_target_kind`, `build_mode` and `required_features`. It then calls `app.inflight.queue_owned_run`.
    - If the result is `OwnedRunLaunchAdmission::AlreadyActive` or `IdentitiesExhausted`, a `Run refused` toast appears.
    - `target_display_path` builds the run's label from the selected project-list row: root label, then checkout label, then source segments, then target name. A binary named after its package adds no target-name segment.
 3. **Spawn.** After the frame is drawn, `spawn_pending_background_tasks` (`event_loop.rs`) calls `begin_owned_run_launch()`. On `OwnedRunLaunchStart::Starting(id)` it calls `processes::spawn_owned_run_process(app, id)`.

@@ -311,11 +311,14 @@ fn finish_gate_decision(
         LedgerReconciliationOutcome::Appended {
             output: (report, decision),
             ..
-        } => Ok(Enrollment::Enrolled(GateResult {
-            target: target.clone(),
-            decision,
-            alerts: report.alerts,
-        })),
+        } => {
+            report.retention_maintenance.report();
+            Ok(Enrollment::Enrolled(GateResult {
+                target: target.clone(),
+                decision,
+                alerts: report.alerts,
+            }))
+        },
         LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
     }
 }

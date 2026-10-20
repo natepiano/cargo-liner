@@ -134,9 +134,9 @@ mod tests {
         );
         let next = ResolvedKeymap::defaults();
         keymap.replace_current(next);
-        // We can't easily compare ResolvedKeymap structurally — the
-        // contract is just that replace_current mutates in place
-        // without touching the stamp or diagnostics_id.
+        // `ResolvedKeymap` is difficult to compare structurally; the contract is that
+        // `replace_current` mutates `file.current` in place without altering the watched stamp or
+        // `diagnostics_id`.
         assert!(keymap.take_diagnostics_id().is_none());
         assert!(keymap.take_warnings_id().is_none());
         assert!(keymap.path().is_none());

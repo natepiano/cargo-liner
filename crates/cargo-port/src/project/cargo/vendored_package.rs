@@ -1,3 +1,4 @@
+use super::crates_io_release::CratesIoReleaseState;
 use super::rust_info::Cargo;
 use crate::project::fields::ProjectFields;
 use crate::project::git::CheckoutInfo;
@@ -19,14 +20,12 @@ use crate::project::paths::RootDirectoryName;
 /// relying on convention.
 #[derive(Clone, Default)]
 pub(crate) struct VendoredPackage {
-    pub path:              AbsolutePath,
-    pub name:              Option<String>,
-    pub worktree_status:   WorktreeStatus,
-    pub project_info:      ProjectInfo,
-    pub cargo:             Cargo,
-    pub crates_version:    Option<String>,
-    pub crates_prerelease: Option<String>,
-    pub crates_downloads:  Option<u64>,
+    pub path:            AbsolutePath,
+    pub name:            Option<String>,
+    pub worktree_status: WorktreeStatus,
+    pub project_info:    ProjectInfo,
+    pub cargo:           Cargo,
+    pub crates_io:       CratesIoReleaseState,
 }
 
 impl VendoredPackage {
@@ -35,23 +34,6 @@ impl VendoredPackage {
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,
         ))
-    }
-
-    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
-
-    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
-
-    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
-
-    pub(crate) fn set_crates_io(
-        &mut self,
-        version: String,
-        prerelease: Option<String>,
-        downloads: u64,
-    ) {
-        self.crates_version = Some(version);
-        self.crates_prerelease = prerelease;
-        self.crates_downloads = Some(downloads);
     }
 }
 

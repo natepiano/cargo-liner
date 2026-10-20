@@ -86,11 +86,11 @@ impl CiApplicability {
                     RepoBranchProbe::Awaiting | RepoBranchProbe::Probed(_),
                 )
                 | (
-                    TrackedRef::Ref(_) | TrackedRef::Untracked,
+                    TrackedRef::Named(_) | TrackedRef::Untracked,
                     RepoBranchProbe::Probed(ResolvedBranch::Unreadable),
                 ) => Self::UnreadableEvidence,
                 (
-                    TrackedRef::Ref(_),
+                    TrackedRef::Named(_),
                     RepoBranchProbe::Awaiting
                     | RepoBranchProbe::Probed(ResolvedBranch::Named(_) | ResolvedBranch::NotFound),
                 ) => Self::Applies,
@@ -171,9 +171,9 @@ impl Ci {
         }
     }
 
-    // ── viewport ────────────────────────────────────────────────
+    // `Ci::viewport` stores the pane viewport.
 
-    // ── content ─────────────────────────────────────────────────
+    // `content`, `set_content` and `clear_content` access cached `CiData`.
 
     pub(in crate::tui) const fn content(&self) -> Option<&CiData> { self.content.as_ref() }
 
@@ -189,9 +189,9 @@ impl Ci {
         }
     }
 
-    // ── fetch tracker ───────────────────────────────────────────
+    // `Ci::fetch_tracker` tracks paths with in-flight CI requests.
 
-    // ── fetch toast ─────────────────────────────────────────────
+    // `set_fetch_toast` and `take_fetch_toast` manage the fire-once toast slot.
 
     pub(in crate::tui) const fn set_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
         self.fetch_toast = task_id;
@@ -201,7 +201,8 @@ impl Ci {
         self.fetch_toast.take()
     }
 
-    // ── display modes ───────────────────────────────────────────
+    // `display_mode_for`, `set_display_mode` and `clear_display_modes` manage per-path
+    // `CiRunDisplayMode`.
 
     pub(in crate::tui) fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
         self.display_modes.get(path).copied().unwrap_or_default()

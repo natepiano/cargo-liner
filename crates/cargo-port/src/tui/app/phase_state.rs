@@ -65,31 +65,89 @@ impl<K: Eq + Hash> Denominator<K> {
     }
 }
 
+/// A startup phase has one outcome at a time. A timeout means slow work,
+/// so its late result may still complete; other failures are final until reset.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseLifecycle {
+    #[default]
+    Running,
+    Completed {
+        at: Instant,
+    },
+    Failed {
+        reason: FailureReason,
+    },
+}
+
+impl PhaseLifecycle {
+    const fn complete_once(&mut self, at: Instant) -> bool {
+        match self {
+            Self::Running
+            | Self::Failed {
+                reason: FailureReason::Timeout(_),
+            } => {
+                *self = Self::Completed { at };
+                true
+            },
+            Self::Completed { .. } | Self::Failed { .. } => false,
+        }
+    }
+
+    pub(super) const fn fail(&mut self, reason: FailureReason) {
+        match self {
+            Self::Running => *self = Self::Failed { reason },
+            Self::Completed { .. } | Self::Failed { .. } => {},
+        }
+    }
+
+    /// New obligations reopen a completed row, but never erase a failure.
+    pub(super) const fn reopen(&mut self) {
+        match self {
+            Self::Completed { .. } => *self = Self::Running,
+            Self::Running | Self::Failed { .. } => {},
+        }
+    }
+
+    fn time_out(
+        &mut self,
+        now: Instant,
+        first_seen: Option<Instant>,
+        timeout: Duration,
+    ) -> Option<Duration> {
+        match self {
+            Self::Running => {
+                let elapsed = now.duration_since(first_seen?);
+                if elapsed <= timeout {
+                    return None;
+                }
+                self.fail(FailureReason::Timeout(elapsed));
+                Some(elapsed)
+            },
+            Self::Completed { .. } | Self::Failed { .. } => None,
+        }
+    }
+}
+
 /// A phase that tracks a finite set of identities. The denominator is a
 /// [`Denominator`]: `Unknown` omits the row, `Stable` renders a bar.
 #[derive(Debug)]
 pub struct KeyedPhase<K: Eq + Hash> {
-    pub expected:    Denominator<K>,
-    pub seen:        HashSet<K>,
-    pub complete_at: Option<Instant>,
+    pub expected:   Denominator<K>,
+    pub seen:       HashSet<K>,
+    pub lifecycle:  PhaseLifecycle,
     /// Stamped when the row first becomes visible (first progress, or —
     /// for a lazily-populated phase — when `expected` first becomes
     /// known). Drives the minimum-visible floor.
-    pub first_seen:  Option<Instant>,
-    /// Set once the phase reaches a terminal failure (fetch error, metadata
-    /// error, or timeout). A failed row renders a stalled marker and no
-    /// longer holds the panel open; the reason drives a separate toast.
-    pub failure:     Option<FailureReason>,
+    pub first_seen: Option<Instant>,
 }
 
 impl<K: Eq + Hash> Default for KeyedPhase<K> {
     fn default() -> Self {
         Self {
-            expected:    Denominator::Unknown,
-            seen:        HashSet::new(),
-            complete_at: None,
-            first_seen:  None,
-            failure:     None,
+            expected:   Denominator::Unknown,
+            seen:       HashSet::new(),
+            lifecycle:  PhaseLifecycle::Running,
+            first_seen: None,
         }
     }
 }
@@ -117,24 +175,18 @@ impl<K: Eq + Hash> KeyedPhase<K> {
     /// `timeout` without completing or failing. Returns the elapsed time on
     /// the transition (so the caller can toast it once), `None` otherwise.
     pub(super) fn time_out(&mut self, now: Instant, timeout: Duration) -> Option<Duration> {
-        if self.failure.is_some() || self.complete_at.is_some() || self.expected.is_unknown() {
+        if self.expected.is_unknown() {
             return None;
         }
-        let elapsed = now.duration_since(self.first_seen?);
-        if elapsed <= timeout {
-            return None;
-        }
-        self.failure = Some(FailureReason::Timeout(elapsed));
-        Some(elapsed)
+        self.lifecycle.time_out(now, self.first_seen, timeout)
     }
 
     /// Reset all fields and install a fresh `Stable` expected set in one shot.
     pub(super) fn reset_with_expected(&mut self, expected: HashSet<K>) {
         self.expected = Denominator::Stable(expected);
         self.seen.clear();
-        self.complete_at = None;
+        self.lifecycle = PhaseLifecycle::Running;
         self.first_seen = None;
-        self.failure = None;
     }
 
     /// Reset all fields to the `Unknown` denominator — the row stays
@@ -142,9 +194,8 @@ impl<K: Eq + Hash> KeyedPhase<K> {
     pub(super) fn reset_unknown(&mut self) {
         self.expected = Denominator::Unknown;
         self.seen.clear();
-        self.complete_at = None;
+        self.lifecycle = PhaseLifecycle::Running;
         self.first_seen = None;
-        self.failure = None;
     }
 
     /// Reset all fields to a `Growing` (empty) denominator — the row renders
@@ -153,9 +204,8 @@ impl<K: Eq + Hash> KeyedPhase<K> {
     pub(super) fn reset_growing(&mut self) {
         self.expected = Denominator::Growing(HashSet::new());
         self.seen.clear();
-        self.complete_at = None;
+        self.lifecycle = PhaseLifecycle::Running;
         self.first_seen = None;
-        self.failure = None;
     }
 }
 
@@ -163,9 +213,9 @@ impl<K: Eq + Hash> KeyedPhase<K> {
 /// `KeyedPhase` but with `usize` counters instead of `HashSet`.
 #[derive(Debug, Default)]
 pub struct CountedPhase {
-    pub expected:    Option<usize>,
-    pub seen:        usize,
-    pub complete_at: Option<Instant>,
+    pub expected:  Option<usize>,
+    pub seen:      usize,
+    pub lifecycle: PhaseLifecycle,
 }
 
 /// Startup language scanning has two kinds of work:
@@ -180,9 +230,8 @@ pub struct LanguagePhase {
     pub seen:          HashSet<AbsolutePath>,
     pub work_expected: usize,
     pub work_seen:     usize,
-    pub complete_at:   Option<Instant>,
+    pub lifecycle:     PhaseLifecycle,
     pub first_seen:    Option<Instant>,
-    pub failure:       Option<FailureReason>,
 }
 
 impl Default for LanguagePhase {
@@ -192,9 +241,8 @@ impl Default for LanguagePhase {
             seen:          HashSet::new(),
             work_expected: 0,
             work_seen:     0,
-            complete_at:   None,
+            lifecycle:     PhaseLifecycle::Running,
             first_seen:    None,
-            failure:       None,
         }
     }
 }
@@ -209,9 +257,8 @@ impl LanguagePhase {
         self.seen.clear();
         self.work_expected = 0;
         self.work_seen = 0;
-        self.complete_at = None;
+        self.lifecycle = PhaseLifecycle::Running;
         self.first_seen = None;
-        self.failure = None;
     }
 
     pub(super) const fn add_work_expected(&mut self, units: usize) {
@@ -219,7 +266,7 @@ impl LanguagePhase {
             return;
         }
         self.work_expected = self.work_expected.saturating_add(units);
-        self.complete_at = None;
+        self.lifecycle.reopen();
     }
 
     pub(super) const fn add_work_seen(&mut self, units: usize) {
@@ -227,15 +274,10 @@ impl LanguagePhase {
     }
 
     pub(super) fn time_out(&mut self, now: Instant, timeout: Duration) -> Option<Duration> {
-        if self.failure.is_some() || self.complete_at.is_some() || self.expected.is_unknown() {
+        if self.expected.is_unknown() {
             return None;
         }
-        let elapsed = now.duration_since(self.first_seen?);
-        if elapsed <= timeout {
-            return None;
-        }
-        self.failure = Some(FailureReason::Timeout(elapsed));
-        Some(elapsed)
+        self.lifecycle.time_out(now, self.first_seen, timeout)
     }
 
     fn root_progress(&self) -> Option<(usize, usize)> {
@@ -274,7 +316,8 @@ impl Percentage {
     pub(super) const fn get(self) -> u8 { self.0 }
 }
 
-/// Why a phase reached a terminal failure. A failed row renders a stalled
+/// Why a phase failed. Timeouts can recover when work lands; other reasons
+/// remain final until reset. A failed row renders a stalled
 /// marker; the reason is carried for the accompanying warning toast and for
 /// logging. (`cargo metadata` errors are not represented here — that handler
 /// already toasts and counts the workspace as done, so the row never stalls.)
@@ -288,7 +331,7 @@ pub enum FailureReason {
 /// The render state of one startup row. `Active` carries a clamped
 /// percentage; `CompleteHeld` is 100% held open by the minimum-visible
 /// floor; `Waiting` is an indeterminate denominator; `Failed` is a
-/// terminal stall.
+/// stall (recoverable for timeouts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProgressState {
     Active(Percentage),
@@ -308,17 +351,22 @@ pub(super) struct ProgressRow {
     pub detail: Option<String>,
 }
 
-/// Shared completion behavior for keyed and counted phases. Two
-/// implementations — the minimum that justifies a trait under the style
-/// guide. Having the trait lets callers write `phase.complete_once(now)`
-/// without caring which kind of phase they hold.
+/// Shared completion and panel-gating behavior for keyed, counted and
+/// language phases. Callers can track each kind through the same lifecycle.
 pub(super) trait PhaseCompletion {
     /// `true` once `expected` is set and `seen` has caught up to it.
     fn is_complete(&self) -> bool;
 
-    fn complete_at(&self) -> Option<Instant>;
+    fn lifecycle(&self) -> PhaseLifecycle;
 
-    fn mark_complete_at(&mut self, now: Instant);
+    fn lifecycle_mut(&mut self) -> &mut PhaseLifecycle;
+
+    fn complete_at(&self) -> Option<Instant> {
+        match self.lifecycle() {
+            PhaseLifecycle::Completed { at } => Some(at),
+            PhaseLifecycle::Running | PhaseLifecycle::Failed { .. } => None,
+        }
+    }
 
     /// `true` when this phase renders no row (no denominator known yet),
     /// so it never holds the dismissal gate.
@@ -327,26 +375,30 @@ pub(super) trait PhaseCompletion {
     /// When the row first became visible — drives the minimum-visible floor.
     fn first_seen(&self) -> Option<Instant>;
 
-    /// `true` once the phase has reached a terminal failure.
-    fn is_failed(&self) -> bool;
+    /// `true` while the phase is failed, including a recoverable timeout.
+    fn is_failed(&self) -> bool { matches!(self.lifecycle(), PhaseLifecycle::Failed { .. }) }
 
     /// The row's render state, or `None` when the row is omitted.
     fn progress_state(&self, now: Instant, min_visible: Duration) -> Option<ProgressState>;
 
-    /// Mark complete exactly once. Returns `true` on the transition from
-    /// "in progress" to "complete", `false` otherwise (already complete, or
-    /// still unfinished). Idempotent.
+    /// Complete finished work once, including late work after a timeout.
+    /// Returns `false` for unfinished work, an existing completion, or a
+    /// final failure. The first completion timestamp is preserved.
     fn complete_once(&mut self, now: Instant) -> bool {
-        if self.complete_at().is_some() || !self.is_complete() {
+        if !self.is_complete() {
             return false;
         }
-        self.mark_complete_at(now);
-        true
+        self.lifecycle_mut().complete_once(now)
     }
 
     /// `true` once the phase has reached a terminal outcome — complete or
     /// failed. Used to release downstream phases (e.g. repo waits on git).
-    fn is_terminal(&self) -> bool { self.complete_at().is_some() || self.is_failed() }
+    fn is_terminal(&self) -> bool {
+        match self.lifecycle() {
+            PhaseLifecycle::Running => false,
+            PhaseLifecycle::Completed { .. } | PhaseLifecycle::Failed { .. } => true,
+        }
+    }
 
     /// `true` once the minimum-visible floor has elapsed: `now` is at or
     /// past `max(complete_at, first_seen + min_visible)`. A phase with no
@@ -366,9 +418,14 @@ pub(super) trait PhaseCompletion {
     /// omitted, failed (terminal), or complete and past its minimum-visible
     /// floor.
     fn gate_satisfied(&self, now: Instant, min_visible: Duration) -> bool {
-        self.is_omitted()
-            || self.is_failed()
-            || (self.complete_at().is_some() && self.min_visible_elapsed(now, min_visible))
+        if self.is_omitted() {
+            return true;
+        }
+        match self.lifecycle() {
+            PhaseLifecycle::Running => false,
+            PhaseLifecycle::Completed { .. } => self.min_visible_elapsed(now, min_visible),
+            PhaseLifecycle::Failed { .. } => true,
+        }
     }
 }
 
@@ -384,19 +441,25 @@ impl<K: Eq + Hash> PhaseCompletion for KeyedPhase<K> {
         matches!(self.expected.keys(), Some(expected) if expected.is_subset(&self.seen))
     }
 
-    fn complete_at(&self) -> Option<Instant> { self.complete_at }
+    fn lifecycle(&self) -> PhaseLifecycle { self.lifecycle }
 
-    fn mark_complete_at(&mut self, now: Instant) { self.complete_at = Some(now); }
+    fn lifecycle_mut(&mut self) -> &mut PhaseLifecycle { &mut self.lifecycle }
 
     fn is_omitted(&self) -> bool { self.expected.is_unknown() }
 
     fn first_seen(&self) -> Option<Instant> { self.first_seen }
 
-    fn is_failed(&self) -> bool { self.failure.is_some() }
-
     fn progress_state(&self, now: Instant, min_visible: Duration) -> Option<ProgressState> {
-        if self.failure.is_some() {
-            return Some(ProgressState::Failed);
+        match self.lifecycle {
+            PhaseLifecycle::Failed { .. } => return Some(ProgressState::Failed),
+            PhaseLifecycle::Completed { .. } => {
+                return Some(if self.min_visible_elapsed(now, min_visible) {
+                    ProgressState::Active(Percentage::full())
+                } else {
+                    ProgressState::CompleteHeld
+                });
+            },
+            PhaseLifecycle::Running => {},
         }
         if self.expected.is_unknown() {
             return None;
@@ -407,9 +470,6 @@ impl<K: Eq + Hash> PhaseCompletion for KeyedPhase<K> {
         let expected = self.expected.keys()?;
         let done = expected.iter().filter(|k| self.seen.contains(k)).count();
         let percentage = Percentage::from_fraction(done, expected.len());
-        if self.is_complete() && !self.min_visible_elapsed(now, min_visible) {
-            return Some(ProgressState::CompleteHeld);
-        }
         Some(ProgressState::Active(percentage))
     }
 }
@@ -419,17 +479,15 @@ impl PhaseCompletion for CountedPhase {
         matches!(self.expected, Some(expected) if self.seen >= expected)
     }
 
-    fn complete_at(&self) -> Option<Instant> { self.complete_at }
+    fn lifecycle(&self) -> PhaseLifecycle { self.lifecycle }
 
-    fn mark_complete_at(&mut self, now: Instant) { self.complete_at = Some(now); }
+    fn lifecycle_mut(&mut self) -> &mut PhaseLifecycle { &mut self.lifecycle }
 
     // `CountedPhase` tracks internal cardinality only — it never renders a
     // startup row, so it is always omitted and yields no progress state.
     fn is_omitted(&self) -> bool { true }
 
     fn first_seen(&self) -> Option<Instant> { None }
-
-    fn is_failed(&self) -> bool { false }
 
     fn progress_state(&self, _: Instant, _: Duration) -> Option<ProgressState> { None }
 }
@@ -441,19 +499,25 @@ impl PhaseCompletion for LanguagePhase {
         roots_complete && self.work_seen >= self.work_expected
     }
 
-    fn complete_at(&self) -> Option<Instant> { self.complete_at }
+    fn lifecycle(&self) -> PhaseLifecycle { self.lifecycle }
 
-    fn mark_complete_at(&mut self, now: Instant) { self.complete_at = Some(now); }
+    fn lifecycle_mut(&mut self) -> &mut PhaseLifecycle { &mut self.lifecycle }
 
     fn is_omitted(&self) -> bool { self.expected.is_unknown() && self.work_expected == 0 }
 
     fn first_seen(&self) -> Option<Instant> { self.first_seen }
 
-    fn is_failed(&self) -> bool { self.failure.is_some() }
-
     fn progress_state(&self, now: Instant, min_visible: Duration) -> Option<ProgressState> {
-        if self.failure.is_some() {
-            return Some(ProgressState::Failed);
+        match self.lifecycle {
+            PhaseLifecycle::Failed { .. } => return Some(ProgressState::Failed),
+            PhaseLifecycle::Completed { .. } => {
+                return Some(if self.min_visible_elapsed(now, min_visible) {
+                    ProgressState::Active(Percentage::full())
+                } else {
+                    ProgressState::CompleteHeld
+                });
+            },
+            PhaseLifecycle::Running => {},
         }
         if self.expected.is_unknown() && self.work_expected == 0 {
             return None;
@@ -465,9 +529,6 @@ impl PhaseCompletion for LanguagePhase {
         let (work_seen, work_expected) = self.work_progress();
         let percentage =
             Percentage::from_fraction(root_seen + work_seen, root_expected + work_expected);
-        if self.is_complete() && !self.min_visible_elapsed(now, min_visible) {
-            return Some(ProgressState::CompleteHeld);
-        }
         Some(ProgressState::Active(percentage))
     }
 }
@@ -580,14 +641,110 @@ mod tests {
     fn keyed_reset_clears_seen_and_timestamp() {
         let mut phase: KeyedPhase<i32> = KeyedPhase::default();
         phase.seen.insert(7);
-        phase.complete_at = Some(instant_at(0));
+        phase.lifecycle = PhaseLifecycle::Completed { at: instant_at(0) };
         phase.reset_with_expected(std::iter::once(1).collect());
         assert!(phase.seen.is_empty());
-        assert!(phase.complete_at.is_none());
+        assert!(phase.complete_at().is_none());
         assert_eq!(phase.expected_len(), 1);
     }
 
     const MIN_VISIBLE: Duration = Duration::from_millis(400);
+
+    #[test]
+    fn keyed_timeout_completes_when_late_work_lands() {
+        let mut phase = KeyedPhase::default();
+        phase.reset_with_expected(HashSet::from([1]));
+        let start = Instant::now();
+        phase.stamp_first_seen(start);
+        let late = start + Duration::from_secs(2);
+        assert!(phase.time_out(late, Duration::from_secs(1)).is_some());
+        phase.seen.insert(1);
+        assert!(phase.complete_once(late));
+        assert!(!phase.is_failed());
+        assert_eq!(phase.lifecycle, PhaseLifecycle::Completed { at: late });
+        assert_eq!(
+            phase.progress_state(late, MIN_VISIBLE),
+            Some(ProgressState::Active(Percentage::full()))
+        );
+    }
+
+    #[test]
+    fn language_timeout_completes_when_late_work_lands() {
+        let mut phase = LanguagePhase::default();
+        phase.reset_with_expected_roots(HashSet::new());
+        phase.add_work_expected(1);
+        let start = Instant::now();
+        phase.stamp_first_seen(start);
+        let late = start + Duration::from_secs(2);
+        assert!(phase.time_out(late, Duration::from_secs(1)).is_some());
+        phase.add_work_seen(1);
+        assert!(phase.complete_once(late));
+        assert!(!phase.is_failed());
+        assert_eq!(phase.lifecycle, PhaseLifecycle::Completed { at: late });
+        assert_eq!(
+            phase.progress_state(late, MIN_VISIBLE),
+            Some(ProgressState::Active(Percentage::full()))
+        );
+    }
+
+    #[test]
+    fn fetch_failure_stays_failed_when_late_work_lands() {
+        for reason in [FailureReason::FetchError, FailureReason::RateLimited] {
+            let mut phase = KeyedPhase::default();
+            phase.reset_with_expected(HashSet::from([1]));
+            phase.lifecycle.fail(reason);
+            phase.seen.insert(1);
+            let late = Instant::now();
+            assert!(!phase.complete_once(late));
+            assert_eq!(phase.lifecycle, PhaseLifecycle::Failed { reason });
+            assert_eq!(phase.complete_at(), None);
+            assert_eq!(
+                phase.progress_state(late, MIN_VISIBLE),
+                Some(ProgressState::Failed)
+            );
+        }
+    }
+
+    #[test]
+    fn reset_starts_a_fresh_lifecycle_after_failure() {
+        let mut keyed: KeyedPhase<i32> = KeyedPhase::default();
+        for reset in [
+            KeyedPhase::reset_unknown,
+            KeyedPhase::reset_growing,
+            |phase: &mut KeyedPhase<i32>| phase.reset_with_expected(HashSet::from([1])),
+        ] {
+            keyed.lifecycle.fail(FailureReason::FetchError);
+            reset(&mut keyed);
+            assert_eq!(keyed.lifecycle, PhaseLifecycle::Running);
+        }
+        let mut language = LanguagePhase::default();
+        language.lifecycle.fail(FailureReason::FetchError);
+        language.add_work_expected(1);
+        language.add_work_seen(1);
+        assert!(!language.complete_once(Instant::now()));
+        assert_eq!(
+            language.lifecycle,
+            PhaseLifecycle::Failed {
+                reason: FailureReason::FetchError,
+            }
+        );
+        language.reset_with_expected_roots(HashSet::new());
+        assert_eq!(language.lifecycle, PhaseLifecycle::Running);
+    }
+
+    #[test]
+    fn counted_completion_keeps_its_first_timestamp() {
+        let mut phase = CountedPhase {
+            expected: Some(1),
+            ..CountedPhase::default()
+        };
+        assert!(!phase.complete_once(Instant::now()));
+        phase.seen = 1;
+        let now = Instant::now();
+        assert!(phase.complete_once(now));
+        assert!(!phase.complete_once(now + Duration::from_secs(1)));
+        assert_eq!(phase.lifecycle, PhaseLifecycle::Completed { at: now });
+    }
 
     #[test]
     fn percentage_from_fraction_clamps_and_handles_empty() {

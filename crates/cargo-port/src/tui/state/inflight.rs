@@ -180,7 +180,7 @@ impl OwnedRun {
             },
             lifecycle => {
                 self.lifecycle = lifecycle;
-                OwnedRunLaunchStart::NoQueuedRun
+                OwnedRunLaunchStart::NotQueued
             },
         }
     }
@@ -190,9 +190,9 @@ impl OwnedRun {
             OwnedRunLifecycle::Starting(starting_owned_run)
                 if starting_owned_run.owned_run_id == owned_run_id =>
             {
-                OwnedRunStartingRequest::Starting(&starting_owned_run.pending_example_run)
+                OwnedRunStartingRequest::Matched(&starting_owned_run.pending_example_run)
             },
-            _ => OwnedRunStartingRequest::NoMatchingStartingRun,
+            _ => OwnedRunStartingRequest::NoMatch,
         }
     }
 
@@ -223,7 +223,7 @@ impl OwnedRun {
             },
             lifecycle => {
                 self.lifecycle = lifecycle;
-                OwnedRunActivation::NoMatchingStartingRun(owned_run_process_actor)
+                OwnedRunActivation::NoMatchingStart(owned_run_process_actor)
             },
         }
     }
@@ -398,7 +398,7 @@ impl OwnedRun {
                         .owned_run_id,
                 }
             },
-            _ => OwnedRunTermination::NoRunningRun,
+            _ => OwnedRunTermination::NotRunning,
         }
     }
 
@@ -478,9 +478,9 @@ impl OwnedRun {
             },
             OwnedRunTerminationOutcome::Honored {
                 signal:
-                    OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped
+                    OwnedProcessGroupSignalOutcome::AlreadyReaped
                     | OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent
-                    | OwnedProcessGroupSignalOutcome::SignalFailed,
+                    | OwnedProcessGroupSignalOutcome::Failed,
                 ..
             }
             | OwnedRunTerminationOutcome::Refused { .. } => {
@@ -566,9 +566,9 @@ impl OwnedRun {
 
     #[cfg(test)]
     fn output_mut_for_test(&mut self) -> &mut Vec<String> {
-        // Seeding lines onto a slot that never ran would leave output naming no
-        // producer, which presentation reads as absent. Promote the slot to a
-        // retained run first so the seeded output is attributable.
+        // `output_mut_for_test` promotes `OwnedRunLifecycle::Absent` through `set_output_for_test`
+        // before seeding lines: output without a producer is presented as absent, so the seeded
+        // output needs an attributable retaining run.
         if let OwnedRunLifecycle::Absent(retained_output) = &mut self.lifecycle {
             let lines = std::mem::take(&mut retained_output.lines);
             self.set_output_for_test(lines);
@@ -835,10 +835,10 @@ impl OwnedRunLifecycle {
     fn running_label(&self) -> OwnedRunRunningLabelRef<'_> {
         match self {
             Self::Running(running_owned_run) => {
-                OwnedRunRunningLabelRef::Running(&running_owned_run.running_label)
+                OwnedRunRunningLabelRef::Available(&running_owned_run.running_label)
             },
             Self::TerminationRequestPending(termination_request_pending_owned_run) => {
-                OwnedRunRunningLabelRef::Running(
+                OwnedRunRunningLabelRef::Available(
                     &termination_request_pending_owned_run
                         .running_owned_run
                         .running_label,
@@ -850,7 +850,7 @@ impl OwnedRunLifecycle {
             | Self::Stopping(_)
             | Self::RetainedSuccess(_)
             | Self::GoneAfterSignal(_)
-            | Self::Failed(_) => OwnedRunRunningLabelRef::NotRunning,
+            | Self::Failed(_) => OwnedRunRunningLabelRef::Unavailable,
         }
     }
 
@@ -1084,8 +1084,8 @@ pub(crate) enum OwnedRunOutputTitleRef<'a> {
 /// Borrowed live label availability for the current owned-run lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunRunningLabelRef<'a> {
-    Running(&'a str),
-    NotRunning,
+    Available(&'a str),
+    Unavailable,
 }
 
 /// Whether the sole owned-run slot accepted a launch request.
@@ -1103,19 +1103,19 @@ pub(crate) enum OwnedRunLaunchAdmission {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedRunLaunchStart {
     Starting(OwnedRunId),
-    NoQueuedRun,
+    NotQueued,
 }
 
 /// The launch request present for a matching `Starting` lifecycle.
 pub(crate) enum OwnedRunStartingRequest<'a> {
-    Starting(&'a PendingExampleRun),
-    NoMatchingStartingRun,
+    Matched(&'a PendingExampleRun),
+    NoMatch,
 }
 
 /// Whether activation accepted the actor that owns the newly spawned child.
 pub(crate) enum OwnedRunActivation {
     Activated,
-    NoMatchingStartingRun(OwnedRunProcessActor),
+    NoMatchingStart(OwnedRunProcessActor),
 }
 
 /// Whether one correlated background message changed the current lifecycle.
@@ -1137,7 +1137,7 @@ pub(crate) enum OwnedRunTermination {
     RequestPending {
         owned_run_id: OwnedRunId,
     },
-    NoRunningRun,
+    NotRunning,
 }
 
 /// How a correlated termination outcome changed the owned-run lifecycle.
@@ -1209,7 +1209,7 @@ impl Inflight {
         }
     }
 
-    // ── running clean tracker ───────────────────────────────────────
+    // `clean` and `clean_mut` expose the cargo-clean `RunningTracker`.
 
     pub(crate) const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
 
@@ -1223,7 +1223,7 @@ impl Inflight {
         !self.clean().is_empty() || self.owned_run.is_running()
     }
 
-    // ── pending queues ──────────────────────────────────────────────
+    // `pending_cleans_mut` and the pending-CI-fetch accessors manage queued work.
 
     pub(crate) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
         &mut self.pending_cleans
@@ -1246,7 +1246,7 @@ impl Inflight {
 
     pub(crate) fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
 
-    // ── owned run ───────────────────────────────────────────────────
+    // `owned_run` exposes the sole run; the following methods delegate its lifecycle operations.
 
     pub(crate) const fn owned_run(&self) -> &OwnedRun { &self.owned_run }
 
@@ -1352,18 +1352,18 @@ impl Inflight {
             return None;
         };
         match self.starting_owned_run_request(owned_run_id) {
-            OwnedRunStartingRequest::Starting(pending_example_run) => {
+            OwnedRunStartingRequest::Matched(pending_example_run) => {
                 Some(pending_example_run.clone())
             },
-            OwnedRunStartingRequest::NoMatchingStartingRun => None,
+            OwnedRunStartingRequest::NoMatch => None,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn example_running(&self) -> Option<&str> {
         match self.owned_run.running_label() {
-            OwnedRunRunningLabelRef::Running(running_label) => Some(running_label),
-            OwnedRunRunningLabelRef::NotRunning => None,
+            OwnedRunRunningLabelRef::Available(running_label) => Some(running_label),
+            OwnedRunRunningLabelRef::Unavailable => None,
         }
     }
 
@@ -1569,7 +1569,7 @@ mod tests {
         );
         assert!(matches!(
             inflight.owned_run().running_label(),
-            OwnedRunRunningLabelRef::Running(_)
+            OwnedRunRunningLabelRef::Available(_)
         ));
         assert!(
             !inflight
@@ -1627,7 +1627,7 @@ mod tests {
         assert_failed_termination_restores_retryable_running(|owned_run_id| {
             OwnedRunTerminationOutcome::Honored {
                 owned_run_id,
-                signal: OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped,
+                signal: OwnedProcessGroupSignalOutcome::AlreadyReaped,
             }
         });
     }
@@ -1637,7 +1637,7 @@ mod tests {
         assert_failed_termination_restores_retryable_running(|owned_run_id| {
             OwnedRunTerminationOutcome::Honored {
                 owned_run_id,
-                signal: OwnedProcessGroupSignalOutcome::SignalFailed,
+                signal: OwnedProcessGroupSignalOutcome::Failed,
             }
         });
     }
@@ -1694,7 +1694,7 @@ mod tests {
         ));
         assert!(matches!(
             inflight.owned_run_termination(),
-            OwnedRunTermination::NoRunningRun
+            OwnedRunTermination::NotRunning
         ));
 
         assert_eq!(
@@ -1707,7 +1707,7 @@ mod tests {
         ));
         assert!(matches!(
             inflight.owned_run_termination(),
-            OwnedRunTermination::NoRunningRun
+            OwnedRunTermination::NotRunning
         ));
     }
 
@@ -1727,7 +1727,7 @@ mod tests {
         ));
         assert!(matches!(
             inflight.owned_run_termination(),
-            OwnedRunTermination::NoRunningRun
+            OwnedRunTermination::NotRunning
         ));
     }
 

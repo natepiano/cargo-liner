@@ -54,7 +54,7 @@ impl Config {
     /// rescan / toast logic on the outcome.
     pub(crate) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
-    // ── flag accessors ──────────────────────────────────────────────
+    // `lint_enabled`, `invert_scroll` and related accessors expose values from `current()`.
 
     pub(crate) const fn lint_enabled(&self) -> bool { self.current().lint.enabled.is_enabled() }
 
@@ -97,9 +97,8 @@ impl Config {
     pub fn force_reload_from(&mut self, path: PathBuf) {
         let current = self.file.current.clone();
         self.file = WatchedFile::new(Some(path), current);
-        // Replace WatchedFile constructor sets stamp to whatever's
-        // on disk now; clear it so the next take_stamp_change sees
-        // a delta and triggers reload.
+        // `WatchedFile::new` reads the current disk stamp; `clear_stamp_for_test` clears it so the
+        // next `take_stamp_change` detects a delta and reloads.
         self.file.clear_stamp_for_test();
     }
 }

@@ -10,6 +10,8 @@ mod root_item;
 // `cargo` re-exports Cargo parsing results and Rust project model types.
 pub(crate) use cargo::Cargo;
 pub(crate) use cargo::CargoParseResult;
+pub(crate) use cargo::CratesIoRelease;
+pub(crate) use cargo::CratesIoReleaseState;
 pub(crate) use cargo::ExampleGroup;
 // `FileStamp`, `ManifestFingerprint` and `ManifestTargets` describe metadata cache
 // inputs and targets.

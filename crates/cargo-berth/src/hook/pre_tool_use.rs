@@ -525,13 +525,13 @@ struct PreToolUseAllowNoticeDetail<'detail> {
 /// Map one engine check answer onto the Claude `PreToolUse` hook protocol.
 fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
     match output_envelope.exit_code() {
-        BerthExit::Clear => render_authorized(output_envelope.presentation()),
+        BerthExit::Clear => render_authorized(&output_envelope.presentation()),
         BerthExit::LedgerUnreadable => render_fail_open(output_envelope),
         BerthExit::BlockedByOverlap
         | BerthExit::BlockedByOrdering
         | BerthExit::UsageError
         | BerthExit::BlockedByContention
-        | BerthExit::TerminalViewFailed => render_refusal(output_envelope.presentation()),
+        | BerthExit::TerminalViewFailed => render_refusal(&output_envelope.presentation()),
     }
 }
 

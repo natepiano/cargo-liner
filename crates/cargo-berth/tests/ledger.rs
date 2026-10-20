@@ -2090,3 +2090,694 @@ fn sequence_reported_enrollment_overlap(root: &Path, overlap: &serde_json::Value
     }
     run_printed_enrollment_sequence(root, commands[0].as_str().expect("printed command"));
 }
+
+/// Leave a real outstanding checkpoint with a packed retention reference.
+fn checkpoint_with_packed_retention() -> (IntegrationRepository, String) {
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    repo.git_without_hooks(repo.root(), &["switch", "--quiet", "-c", "retention-lock"]);
+    let claim = repo.run(
+        repo.root(),
+        &[
+            "claim",
+            "file:retained.txt",
+            "--run",
+            MAIN_COORDINATION_RUN_ID,
+            "--json",
+        ],
+    );
+    assert_success(&claim);
+    let id = json(&claim)["reservations"][0]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    fs::write(repo.root().join("retained.txt"), "outstanding work\n").expect("work writes");
+    repo.git_without_hooks(repo.root(), &["add", "retained.txt"]);
+    repo.git_without_hooks(
+        repo.root(),
+        &["commit", "--quiet", "-m", "outstanding work"],
+    );
+    assert_success(&repo.run(repo.root(), &["release", &id, "--json"]));
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
+    (repo, id)
+}
+
+/// Keep a released predecessor's packed reference until its last successor ends.
+fn successor_with_packed_predecessor() -> (IntegrationRepository, String) {
+    let (repo, predecessor) = checkpoint_with_packed_retention();
+    repo.git_without_hooks(repo.root(), &["config", "core.packedRefsTimeout", "20"]);
+    repo.git_without_hooks(repo.root(), &["config", "core.filesRefLockTimeout", "20"]);
+    let claim = repo.claim(
+        repo.root(),
+        "file:successor.txt",
+        MAIN_COORDINATION_RUN_ID,
+        None,
+    );
+    assert_success(&claim);
+    let successor = json(&claim)["reservations"][0]
+        .as_str()
+        .expect("successor id")
+        .to_owned();
+    assert_success(&repo.run(
+        repo.root(),
+        &[
+            "sequence",
+            &predecessor,
+            &successor,
+            "--why",
+            "retain predecessor until successor ends",
+            "--json",
+        ],
+    ));
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(repo.root(), &["branch", "--force", "main", &tip]);
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    let retained = format!("refs/cargo-berth/reservations/{predecessor}");
+    assert_eq!(repo.git_stdout(repo.root(), &["rev-parse", &retained]), tip);
+    repo.git_without_hooks(repo.root(), &["pack-refs", "--all"]);
+    (repo, successor)
+}
+
+fn pending_retention_bypass(repo: &IntegrationRepository) -> PathBuf {
+    let marker = repo
+        .root()
+        .join(".git/cargo-berth-pending-bypass-retention-lock.json");
+    fs::write(&marker, r#"{"cause":{"kind":"environment_override","bypassed_merge":"retention-lock-test"},"occurrence_time":{"status":"unavailable"}}"#).expect("pending bypass writes");
+    marker
+}
+
+fn assert_deferred_retention(output: &Output) {
+    assert_success(output);
+    let envelope = json(output);
+    let message = envelope["message"].as_str().expect("message");
+    assert_eq!(
+        message
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1,
+        "{envelope}"
+    );
+    assert!(message.contains("age:"), "{message}");
+    // Protected same-owner processes can make absence unprovable on this host.
+    assert!(
+        message.contains("no process holds it") || message.contains("process holders unavailable"),
+        "{message}"
+    );
+}
+
+#[test]
+fn board_defers_a_locked_retention_deletion_after_append_and_retries_only_the_maintenance() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(repo.root(), &["branch", "--force", "main", &tip]);
+    let marker = pending_retention_bypass(&repo);
+    let lock = repo.root().join(".git/packed-refs.lock");
+    fs::write(&lock, "").expect("stale packed refs lock writes");
+    let before = repo.journal().len();
+    let board = repo.run(repo.root(), &["board", "--json"]);
+    assert_deferred_retention(&board);
+    assert_eq!(json(&board)["status"], "board_ready");
+    assert!(
+        repo.journal().len() > before,
+        "read must durably append before maintenance"
+    );
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "bypass")
+            .count(),
+        1
+    );
+    assert!(
+        !marker.exists(),
+        "other marker maintenance must still complete"
+    );
+    assert_eq!(fs::read(&lock).expect("lock remains"), b"");
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    assert_eq!(repo.git_stdout(repo.root(), &["rev-parse", &retained]), tip);
+    let journal = fs::read(repo.root().join(JOURNAL_PATH)).expect("durable journal reads");
+    fs::remove_file(lock).expect("fixture removes its own lock");
+    let retried = repo.run(repo.root(), &["board", "--json"]);
+    assert_success(&retried);
+    assert!(
+        !json(&retried)["message"]
+            .as_str()
+            .expect("message")
+            .contains("maintenance deferred")
+    );
+    assert_eq!(
+        fs::read(repo.root().join(JOURNAL_PATH)).expect("journal reads"),
+        journal
+    );
+    assert!(!GIT.succeeds(repo.root(), &["show-ref", "--verify", &retained]));
+}
+
+#[test]
+fn board_defers_a_locked_retention_repair_and_finishes_other_marker_maintenance() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", &retained]);
+    repo.git_without_hooks(repo.root(), &["update-ref", "-d", &retained]);
+    let marker = pending_retention_bypass(&repo);
+    let lock = repo.root().join(format!(".git/{retained}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, "").expect("stale ref lock writes");
+    let board = repo.run(repo.root(), &["board", "--json"]);
+    assert_deferred_retention(&board);
+    assert!(!marker.exists());
+    assert!(lock.exists());
+    let journal = fs::read(repo.root().join(JOURNAL_PATH)).expect("journal reads");
+    fs::remove_file(lock).expect("fixture removes its own lock");
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    assert_eq!(repo.git_stdout(repo.root(), &["rev-parse", &retained]), tip);
+    assert_eq!(
+        fs::read(repo.root().join(JOURNAL_PATH)).expect("journal reads"),
+        journal
+    );
+}
+
+#[test]
+fn explicit_retention_deletion_reports_the_stale_lock_and_preserves_its_durable_release() {
+    let (repo, id) = successor_with_packed_predecessor();
+    let lock = repo.root().join(".git/packed-refs.lock");
+    fs::write(&lock, "").expect("stale packed refs lock writes");
+    fs::File::open(&lock)
+        .expect("lock opens for timestamp")
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+        .expect("fixture ages lock");
+    let output = repo.run(
+        repo.root(),
+        &[
+            "resolve",
+            &id,
+            "--abandon",
+            "--why",
+            "discard this checkpoint",
+            "--json",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "explicit deletion must fail: {}",
+        json(&output)
+    );
+    let message = json(&output)["message"]
+        .as_str()
+        .expect("message")
+        .to_owned();
+    assert!(
+        message.contains(lock.to_str().expect("lock path")),
+        "{message}"
+    );
+    let age = message
+        .split("age: ")
+        .nth(1)
+        .expect("age is reported")
+        .split_whitespace()
+        .next()
+        .expect("age value")
+        .parse::<f64>()
+        .expect("age is seconds");
+    assert!(
+        age >= 120.0,
+        "mtime-derived age must be reported: {message}"
+    );
+    // Protected same-owner processes can make absence unprovable on this host.
+    assert!(
+        message.contains("no process holds it") || message.contains("process holders unavailable"),
+        "{message}"
+    );
+    assert_eq!(fs::read(lock).expect("lock remains"), b"");
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn retention_maintenance_does_not_hide_a_non_lock_git_failure() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    repo.git_without_hooks(repo.root(), &["update-ref", "-d", &retained]);
+    let namespace = repo.root().join(".git/refs/cargo-berth");
+    fs::create_dir_all(&namespace).expect("namespace exists before obstruction");
+    fs::remove_dir_all(&namespace).expect("empty namespace removes");
+    fs::write(namespace, "not a directory\n").expect("namespace obstruction writes");
+    let marker = pending_retention_bypass(&repo);
+    let output = repo.run(repo.root(), &["board", "--json"]);
+    assert!(
+        !output.status.success(),
+        "non-lock failure must remain visible"
+    );
+    assert!(
+        json(&output)["message"]
+            .as_str()
+            .expect("message")
+            .contains("git update-ref failed")
+    );
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "bypass")
+            .count(),
+        1
+    );
+    assert!(
+        marker.exists(),
+        "failed non-lock maintenance does not claim completion"
+    );
+}
+
+#[test]
+fn committed_hook_defers_a_retention_repair_without_abandoning_rewrite_marker_maintenance() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let root = repo.root();
+    let old_tip = repo.git_stdout(root, &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(
+        root,
+        &[
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "rewritten outstanding work",
+        ],
+    );
+    let rewritten_tip = repo.git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(old_tip, rewritten_tip);
+    let base = repo.git_stdout(root, &["rev-parse", "main"]);
+    // Advance the actual target with unrelated work, leaving the checkpoint outstanding.
+    repo.git_without_hooks(root, &["switch", "--quiet", "main"]);
+    fs::write(root.join("unrelated.txt"), "target work\n").expect("target work writes");
+    repo.git_without_hooks(root, &["add", "unrelated.txt"]);
+    repo.git_without_hooks(root, &["commit", "--quiet", "-m", "advance target"]);
+    let target = repo.git_stdout(root, &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(root, &["switch", "--quiet", "retention-lock"]);
+    let marker = root.join(".git/cargo-berth-pending-bypass-retention-rewrite.json");
+    fs::write(
+        &marker,
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "branch_rewrite",
+            "pairs": [{"old": old_tip, "new": rewritten_tip}],
+            "worktree_administrative_directory": root.join(".git"),
+            "new_tips": [rewritten_tip],
+            "created_commits": [rewritten_tip]
+        }))
+        .expect("rewrite marker encodes"),
+    )
+    .expect("rewrite marker writes");
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    let lock = root.join(format!(".git/{retained}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, "").expect("stale ref lock writes");
+    let mut child = berth_command(BERTH_EXECUTABLE)
+        .args(["__reference-transaction", "committed", "refs/heads/main"])
+        .current_dir(root)
+        .env("CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY", root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("committed hook starts");
+    child
+        .stdin
+        .take()
+        .expect("hook input")
+        .write_all(format!("{base} {target} refs/heads/main\n").as_bytes())
+        .expect("hook input writes");
+    let output = child.wait_with_output().expect("committed hook finishes");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        diagnostic
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1,
+        "{diagnostic}"
+    );
+    assert!(
+        !marker.exists(),
+        "accepted rewrite marker maintenance must finish"
+    );
+    assert!(lock.exists());
+    assert_eq!(repo.git_stdout(root, &["rev-parse", &retained]), old_tip);
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "resnapshot" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+    fs::remove_file(lock).expect("fixture removes its own lock");
+    assert_success(&repo.run(root, &["board", "--json"]));
+    assert_eq!(
+        repo.git_stdout(root, &["rev-parse", &retained]),
+        rewritten_tip
+    );
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "resnapshot" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn explicit_retention_write_reports_its_lock_and_keeps_the_appended_checkpoint() {
+    let (repo, _) = checkpoint_with_packed_retention();
+    fs::write(repo.root().join("second.txt"), "second phase\n").expect("work writes");
+    repo.git_without_hooks(repo.root(), &["add", "second.txt"]);
+    repo.git_without_hooks(repo.root(), &["commit", "--quiet", "-m", "second phase"]);
+    let claim = repo.run(
+        repo.root(),
+        &[
+            "claim",
+            "file:second.txt",
+            "--run",
+            MAIN_COORDINATION_RUN_ID,
+            "--json",
+        ],
+    );
+    assert_success(&claim);
+    let id = json(&claim)["reservations"][0]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    repo.git_without_hooks(repo.root(), &["config", "core.packedRefsTimeout", "20"]);
+    repo.git_without_hooks(repo.root(), &["config", "core.filesRefLockTimeout", "20"]);
+    let lock = repo
+        .root()
+        .join(format!(".git/refs/cargo-berth/reservations/{id}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, "").expect("stale ref lock writes");
+    let output = repo.run(repo.root(), &["release", &id, "--json"]);
+    assert!(!output.status.success());
+    let message = json(&output)["message"]
+        .as_str()
+        .expect("message")
+        .to_owned();
+    assert!(
+        message.contains(lock.to_str().expect("lock path")),
+        "{message}"
+    );
+    assert!(message.contains("age:"), "{message}");
+    // Protected same-owner processes can make absence unprovable on this host.
+    assert!(
+        message.contains("no process holds it") || message.contains("process holders unavailable"),
+        "{message}"
+    );
+    assert!(lock.exists());
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+    fs::remove_file(lock).expect("fixture removes its own lock");
+    assert_success(&repo.run(repo.root(), &["board", "--json"]));
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+            .count(),
+        1
+    );
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    assert_eq!(
+        repo.git_stdout(repo.root(), &["rev-parse", &retained]),
+        repo.git_stdout(repo.root(), &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open() {
+    let (repo, id) = successor_with_packed_predecessor();
+    let lock = repo.root().join(".git/packed-refs.lock");
+    let held = fs::File::create(&lock).expect("held lock writes");
+    let output = repo.run(
+        repo.root(),
+        &[
+            "resolve",
+            &id,
+            "--abandon",
+            "--why",
+            "discard held checkpoint",
+            "--json",
+        ],
+    );
+    assert!(!output.status.success());
+    let message = json(&output)["message"]
+        .as_str()
+        .expect("message")
+        .to_owned();
+    assert!(message.contains("held open by processes"), "{message}");
+    assert!(
+        message.contains(&std::process::id().to_string()),
+        "{message}"
+    );
+    assert!(lock.exists());
+    drop(held);
+}
+
+#[test]
+fn check_keeps_its_answer_when_reconciliation_defers_a_packed_retention_deletion() {
+    let (repo, _) = checkpoint_with_packed_retention();
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(repo.root(), &["branch", "--force", "main", &tip]);
+    let reader = repo.lane("retention-reader", "main");
+    let lock = repo.root().join(".git/packed-refs.lock");
+    fs::write(&lock, "").expect("stale packed refs lock writes");
+    let checked = repo.run(&reader, &["check", "file:retained.txt", "--json"]);
+    assert_deferred_retention(&checked);
+    assert_ne!(json(&checked)["status"], "ledger_unreadable");
+    assert!(lock.exists());
+}
+
+#[test]
+fn drift_and_installed_hooks_report_deferred_maintenance_without_losing_their_answers() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let root = repo.root();
+    let tip = repo.git_stdout(root, &["rev-parse", "HEAD"]);
+    repo.git_without_hooks(root, &["branch", "--force", "main", &tip]);
+    assert_success(&repo.run(root, &["board", "--json"]));
+    assert_success(&repo.claim(root, "file:reader.txt", MAIN_COORDINATION_RUN_ID, None));
+    // Recreate an unfinished deletion from the durable released state.
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    repo.git_without_hooks(root, &["update-ref", &retained, &tip]);
+    repo.git_without_hooks(root, &["pack-refs", "--all"]);
+    let lock = root.join(".git/packed-refs.lock");
+    fs::write(&lock, "").expect("stale packed refs lock writes");
+    let drift = repo.run(root, &["drift", "--full", "--json"]);
+    assert_deferred_retention(&drift);
+
+    let committed = berth_command(BERTH_EXECUTABLE)
+        .args(["drift", "--full"])
+        .env("CARGO_BERTH_POST_COMMIT", "1")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .current_dir(root)
+        .output()
+        .expect("commit drift finishes");
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&committed.stderr)
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1
+    );
+
+    let mut hook = berth_command(BERTH_EXECUTABLE)
+        .args(["hook", "post-tool-use"])
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("tool hook starts");
+    hook.stdin
+        .take()
+        .expect("hook input")
+        .write_all(
+            serde_json::to_string(&serde_json::json!({
+                "tool_name": "Bash", "session_id": "retention-lock-reader", "cwd": root
+            }))
+            .expect("hook payload encodes")
+            .as_bytes(),
+        )
+        .expect("hook payload writes");
+    let output = hook.wait_with_output().expect("tool hook finishes");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload = json(&output);
+    let detail = payload["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("maintenance feedback");
+    assert_eq!(
+        detail
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1,
+        "{payload}"
+    );
+    assert!(lock.exists());
+}
+
+fn assert_mutation_reports_deferred_maintenance(arguments: &[&str]) {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    repo.git_without_hooks(repo.root(), &["update-ref", "-d", &retained]);
+    let lock = repo.root().join(format!(".git/{retained}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, b"").expect("stale lock");
+    let arguments = arguments
+        .iter()
+        .map(|argument| {
+            if *argument == "ID" {
+                id.as_str()
+            } else {
+                argument
+            }
+        })
+        .collect::<Vec<_>>();
+    let output = repo.run(repo.root(), &arguments);
+    if arguments[0] == "release" {
+        // The explicit write still fails; its preceding reconciliation notice survives.
+        assert!(!output.status.success(), "{output:?}");
+        let envelope = json(&output);
+        let message = envelope["message"].as_str().expect("message");
+        assert!(
+            message.contains("git ref write refused by lock"),
+            "{message}"
+        );
+        assert_eq!(
+            message
+                .matches("Retention-ref maintenance deferred:")
+                .count(),
+            1
+        );
+    } else {
+        assert_deferred_retention(&output);
+    }
+    assert!(lock.exists());
+    assert!(
+        output.stderr.is_empty(),
+        "envelope owns its notice: {output:?}"
+    );
+}
+
+#[test]
+fn claim_reports_a_deferred_reconciliation_repair_once() {
+    assert_mutation_reports_deferred_maintenance(&[
+        "claim",
+        "file:other.txt",
+        "--run",
+        MAIN_COORDINATION_RUN_ID,
+        "--json",
+    ]);
+}
+
+#[test]
+fn release_reports_a_deferred_reconciliation_repair_once() {
+    assert_mutation_reports_deferred_maintenance(&["release", "ID", "--json"]);
+}
+
+#[test]
+fn retarget_reports_a_deferred_reconciliation_repair_once() {
+    assert_mutation_reports_deferred_maintenance(&["retarget", "ID", "--target", "main", "--json"]);
+}
+
+#[test]
+fn sequence_reports_a_deferred_reconciliation_repair_once() {
+    // Rejection still follows a completed reconciliation and must retain its notice.
+    let (repo, id) = checkpoint_with_packed_retention();
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    repo.git_without_hooks(repo.root(), &["update-ref", "-d", &retained]);
+    let lock = repo.root().join(format!(".git/{retained}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, b"").expect("lock");
+    let output = repo.run(
+        repo.root(),
+        &["sequence", &id, &id, "--why", "order", "--json"],
+    );
+    let message = json(&output)["message"]
+        .as_str()
+        .expect("message")
+        .to_owned();
+    assert_eq!(
+        message
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1,
+        "{output:?}"
+    );
+    assert!(lock.exists());
+}
+
+#[test]
+fn gate_reports_a_deferred_reconciliation_repair_once() {
+    let (repo, id) = checkpoint_with_packed_retention();
+    let retained = format!("refs/cargo-berth/reservations/{id}");
+    repo.git_without_hooks(repo.root(), &["update-ref", "-d", &retained]);
+    let lock = repo.root().join(format!(".git/{retained}.lock"));
+    fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+    fs::write(&lock, b"").expect("lock");
+    let tip = repo.git_stdout(repo.root(), &["rev-parse", "main"]);
+    let proposed = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    assert_ne!(tip, proposed, "the gate must judge a real target movement");
+    let mut child = berth_command(BERTH_EXECUTABLE)
+        .args(["__reference-transaction", "prepared", "refs/heads/main"])
+        .current_dir(repo.root())
+        .env(
+            "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY",
+            repo.root(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("gate starts");
+    child
+        .stdin
+        .take()
+        .expect("input")
+        .write_all(format!("{tip} {proposed} refs/heads/main\n").as_bytes())
+        .expect("write");
+    let output = child.wait_with_output().expect("gate ends");
+    assert!(output.status.success(), "{output:?}");
+    let notice = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        notice
+            .matches("Retention-ref maintenance deferred:")
+            .count(),
+        1,
+        "{output:?}"
+    );
+    assert!(lock.exists());
+}

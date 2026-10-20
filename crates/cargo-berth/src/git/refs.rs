@@ -12,6 +12,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write as _;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Child;
 use std::process::Stdio;
 
@@ -31,7 +32,9 @@ use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_UPDATE_REF_COMMAND;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
+use super::error;
 use super::error::GitError;
+use super::error::GitLockRefusal;
 #[cfg(test)]
 use super::object;
 use super::object::CommitAvailability;
@@ -184,10 +187,7 @@ pub(crate) fn update_local_branch(
     if output.status.success() {
         Ok(())
     } else {
-        Err(GitError::CommandFailed {
-            command: GIT_UPDATE_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        })
+        Err(error::ref_write_failure(repository_root, &output.stderr))
     }
 }
 
@@ -324,6 +324,22 @@ impl Display for ReservationRetentionRef {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
+/// The ref maintenance following one durable reconciliation append.
+#[derive(Clone, Debug)]
+pub(crate) enum RetentionMaintenance {
+    Completed,
+    Deferred(Box<GitLockRefusal>),
+}
+
+impl RetentionMaintenance {
+    /// Report once at a boundary without an output envelope, after releasing the lock.
+    pub(crate) fn report(&self) {
+        if let Self::Deferred(lock) = self {
+            eprintln!("{}", lock.maintenance_notice());
+        }
+    }
+}
+
 /// Return the full private ref used to retain one reservation's protected tip.
 pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> String {
     ReservationRetentionRef::for_reservation(reservation_id).to_string()
@@ -350,10 +366,7 @@ pub(crate) fn write_reservation_retention_ref(
     if output.status.success() {
         Ok(())
     } else {
-        Err(GitError::CommandFailed {
-            command: GIT_UPDATE_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        })
+        Err(error::ref_write_failure(repository_root, &output.stderr))
     }
 }
 
@@ -365,7 +378,11 @@ pub(crate) struct PreparedRetentionRefTransaction {
 /// No ref locks or changes exist until the started transaction receives its writes and commit.
 enum RetentionRefWriter {
     NoWrites,
-    Started { child: Child, input: String },
+    Started {
+        child:           Child,
+        input:           String,
+        repository_root: PathBuf,
+    },
 }
 
 impl PreparedRetentionRefTransaction {
@@ -484,13 +501,17 @@ impl PreparedRetentionRefTransaction {
         let child = command::spawn_with_piped_output(
             command::git_command_with_hook_execution_policy(
                 repository_root,
-                GitHookExecutionPolicy::SuppressedForRetentionRef,
+                GitHookExecutionPolicy::DeferrableRetentionMaintenance,
             )?
             .args([GIT_UPDATE_REF_COMMAND, GIT_STDIN_ARG])
             .stdin(Stdio::piped()),
         )?;
         let mut transaction = Self {
-            writer: RetentionRefWriter::Started { child, input },
+            writer: RetentionRefWriter::Started {
+                child,
+                input,
+                repository_root: repository_root.to_path_buf(),
+            },
         };
         if let RetentionRefWriter::Started { child, .. } = &mut transaction.writer {
             let stdin = child
@@ -517,10 +538,22 @@ impl PreparedRetentionRefTransaction {
         Ok(transaction)
     }
 
+    /// Defer only a lock refusal after a reconciliation append has already committed.
+    pub(crate) fn commit_maintenance(self) -> Result<RetentionMaintenance, GitError> {
+        match self.commit() {
+            Ok(()) => Ok(RetentionMaintenance::Completed),
+            Err(GitError::LockRefused(lock)) => Ok(RetentionMaintenance::Deferred(lock)),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Apply only the ordered ref write using the process initialized before acquisition.
     pub(crate) fn commit(mut self) -> Result<(), GitError> {
-        let RetentionRefWriter::Started { child, input } =
-            std::mem::replace(&mut self.writer, RetentionRefWriter::NoWrites)
+        let RetentionRefWriter::Started {
+            child,
+            input,
+            repository_root,
+        } = std::mem::replace(&mut self.writer, RetentionRefWriter::NoWrites)
         else {
             return Ok(());
         };
@@ -528,10 +561,7 @@ impl PreparedRetentionRefTransaction {
         if output.status.success() {
             Ok(())
         } else {
-            Err(GitError::CommandFailed {
-                command: GIT_UPDATE_REF_COMMAND,
-                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            })
+            Err(error::ref_write_failure(&repository_root, &output.stderr))
         }
     }
 }
@@ -573,10 +603,7 @@ fn apply_transaction(repository_root: &Path, input: &str) -> Result<(), GitError
     if output.status.success() {
         Ok(())
     } else {
-        Err(GitError::CommandFailed {
-            command: GIT_UPDATE_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        })
+        Err(error::ref_write_failure(repository_root, &output.stderr))
     }
 }
 

@@ -197,7 +197,9 @@ pub(crate) fn execute(
     // A hook-driven drift answers one worktree's session, so it carries only that worktree's
     // alerts; a drift run by hand carries every alert.
     let alert_routing = reconciliation_report.alert_routing(EngineAnswerOccasion::current());
-    output_envelope.with_alerts(alert_routing.route(reconciliation_report.alerts))
+    output_envelope
+        .with_alerts(alert_routing.route(reconciliation_report.alerts))
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
 }
 
 fn prepare_drift_execution(
@@ -740,6 +742,7 @@ fn transact_classification(
                             classification::attribute_refused_run_entry(
                                 &reservations,
                                 &context.observation.changes,
+                                context.pre_lock_foreign_path_classification,
                                 IssuingWorktreeRun {
                                     coordination_run_id: actor_run,
                                     worktree_id:         journal_mutation_actor.worktree_id,

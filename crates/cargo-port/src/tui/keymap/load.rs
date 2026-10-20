@@ -292,7 +292,7 @@ fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
         toml_key: fn(A) -> &'static str,
         conflicts: &mut Vec<String>,
     ) {
-        for (bind, &action) in &scope.by_key {
+        for (bind, &action) in scope.bindings() {
             if bind.mods == KeyModifiers::NONE && vim_keys.contains(&bind.code) {
                 conflicts.push(format!("{scope_name}.{}", toml_key(action)));
             }
@@ -666,16 +666,18 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
                         Some(bind.display()),
                         KeymapErrorReason::ReservedForVimMode,
                     ));
-                } else if let Some(&existing) = target.by_key.get(&bind) {
-                    action_errors.push(keymap_error(
-                        scope_name,
-                        toml_key,
-                        Some(bind.display()),
-                        KeymapErrorReason::ConflictWithinScope(to_toml_key(existing).to_string()),
-                    ));
                 } else {
-                    target.insert(bind, action);
-                    inserted = true;
+                    match target.bind(bind, action) {
+                        Ok(()) => inserted = true,
+                        Err(conflict) => action_errors.push(keymap_error(
+                            scope_name,
+                            toml_key,
+                            Some(bind.display()),
+                            KeymapErrorReason::ConflictWithinScope(
+                                to_toml_key(conflict.existing_action).to_string(),
+                            ),
+                        )),
+                    }
                 }
             }
             if inserted {
@@ -691,11 +693,19 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
             false
         };
 
-        if !inserted {
-            // Fall back to default binding.
-            if let Some(default_bind) = defaults.key_for(action) {
-                target.insert(*default_bind, action);
-            }
+        // Fall back to a default only if its key is still free in this scope.
+        if !inserted
+            && let Some(default_bind) = defaults.key_for(action)
+            && let Err(conflict) = target.bind(*default_bind, action)
+        {
+            ctx.errors.push(keymap_error(
+                scope_name,
+                toml_key,
+                Some(default_bind.display()),
+                KeymapErrorReason::ConflictWithinScope(
+                    to_toml_key(conflict.existing_action).to_string(),
+                ),
+            ));
         }
     }
 }
@@ -851,6 +861,25 @@ clear_history = "d"
     }
 
     #[test]
+    fn action_with_secondary_binding_keeps_its_primary_key_hint() {
+        let result = load_keymap_from_str(APP_SIDE_ARRAY_TOML, NavigationKeys::ArrowsOnly);
+        assert!(result.errors.is_empty());
+        let primary = KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT);
+        let secondary = KeyBind::from(KeyCode::Char('l'));
+        let scope = &result.keymap.project_list;
+
+        assert_eq!(
+            scope.action_for(&primary),
+            Some(ProjectListAction::ExpandRow)
+        );
+        assert_eq!(
+            scope.action_for(&secondary),
+            Some(ProjectListAction::ExpandRow)
+        );
+        assert_eq!(scope.key_for(ProjectListAction::ExpandRow), Some(&primary));
+    }
+
+    #[test]
     fn pane_scope_conflict_detected() {
         let toml = r#"
 [project_list]
@@ -865,6 +894,44 @@ collapse_all = "c"
                 .any(|e| matches!(e.reason, KeymapErrorReason::ConflictWithinScope(_))),
             "expected intra-scope conflict for duplicate 'c'"
         );
+    }
+
+    #[test]
+    fn occupied_default_key_reports_a_conflict_without_overwriting_a_loaded_binding() {
+        let result = load_keymap_from_str(
+            r#"[project_list]
+expand_all = "-"
+"#,
+            NavigationKeys::ArrowsOnly,
+        );
+        let key = KeyBind::from(KeyCode::Char('-'));
+        assert_eq!(
+            result.keymap.project_list.action_for(&key),
+            Some(ProjectListAction::ExpandAll)
+        );
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .key_for(ProjectListAction::ExpandAll),
+            Some(&key)
+        );
+        assert_eq!(
+            result
+                .keymap
+                .project_list
+                .key_for(ProjectListAction::CollapseAll),
+            None
+        );
+        assert_eq!(result.errors.len(), 1);
+        let conflict = &result.errors[0];
+        assert_eq!(conflict.scope, "project_list");
+        assert_eq!(conflict.action, "collapse_all");
+        assert_eq!(conflict.key, "-");
+        assert!(matches!(
+            &conflict.reason,
+            KeymapErrorReason::ConflictWithinScope(existing) if existing == "expand_all"
+        ));
     }
 
     #[test]

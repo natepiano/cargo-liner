@@ -132,7 +132,7 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
             .map(|context| match &context.pinned_commit {
                 PinnedCommit::Sha(sha) => sha.clone(),
                 PinnedCommit::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
-                PinnedCommit::NotPinned => String::new(),
+                PinnedCommit::Absent => String::new(),
             })
             .unwrap_or_default(),
         _ => field.git_value(data),
@@ -196,14 +196,14 @@ fn strip_control_sequences(raw: &str) -> String { sanitize_ansi(raw, false) }
 
 fn sanitize_ansi(raw: &str, preserve_sgr: bool) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut state = EscapeStripState::Ground;
+    let mut state = AnsiScanState::Ground;
     for ch in raw.chars() {
         state = state.consume(ch, &mut out, preserve_sgr);
     }
     out
 }
 
-enum EscapeStripState {
+enum AnsiScanState {
     Ground,
     Escape,
     Csi(String),
@@ -211,7 +211,7 @@ enum EscapeStripState {
     ControlStringEscape,
 }
 
-impl EscapeStripState {
+impl AnsiScanState {
     fn consume(self, ch: char, out: &mut String, preserve_sgr: bool) -> Self {
         match self {
             Self::Ground => consume_ground(ch, out),
@@ -243,26 +243,26 @@ impl EscapeStripState {
     }
 }
 
-fn consume_ground(ch: char, out: &mut String) -> EscapeStripState {
+fn consume_ground(ch: char, out: &mut String) -> AnsiScanState {
     match ch {
-        '\x1b' => EscapeStripState::Escape,
+        '\x1b' => AnsiScanState::Escape,
         '\t' => {
             out.push(' ');
-            EscapeStripState::Ground
+            AnsiScanState::Ground
         },
-        _ if ch.is_control() => EscapeStripState::Ground,
+        _ if ch.is_control() => AnsiScanState::Ground,
         _ => {
             out.push(ch);
-            EscapeStripState::Ground
+            AnsiScanState::Ground
         },
     }
 }
 
-fn consume_escape(ch: char) -> EscapeStripState {
+fn consume_escape(ch: char) -> AnsiScanState {
     match ch {
-        '[' => EscapeStripState::Csi("\x1b[".to_string()),
-        ']' | 'P' | 'X' | '^' | '_' => EscapeStripState::ControlString,
-        _ => EscapeStripState::Ground,
+        '[' => AnsiScanState::Csi("\x1b[".to_string()),
+        ']' | 'P' | 'X' | '^' | '_' => AnsiScanState::ControlString,
+        _ => AnsiScanState::Ground,
     }
 }
 
@@ -453,7 +453,7 @@ mod tests {
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            tracked_ref:     crate::project::TrackedRef::Named("main".to_string()),
             status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
                 ahead:  0,
                 behind: 0,
@@ -512,7 +512,7 @@ mod tests {
             icon:            "",
             display_url:     "github.com/natepiano/cargo-port".to_string(),
             branch:          "main".to_string(),
-            tracked_ref:     crate::project::TrackedRef::Ref("main".to_string()),
+            tracked_ref:     crate::project::TrackedRef::Named("main".to_string()),
             status:          crate::project::Comparison::Counted(crate::project::AheadBehind {
                 ahead:  0,
                 behind: 0,

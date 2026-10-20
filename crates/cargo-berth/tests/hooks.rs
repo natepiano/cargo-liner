@@ -5097,3 +5097,456 @@ fn the_retired_post_tool_use_payload_flag_is_no_longer_a_command_line_argument()
     }
     Ok(())
 }
+
+/// A cover and an unrelated target session, observed before any settling board read.
+struct CoveredBranchHook {
+    repository: cargo_berth_test_support::IntegrationRepository,
+    cover:      String,
+    lane:       PathBuf,
+}
+
+impl CoveredBranchHook {
+    fn new() -> TestResult<Self> {
+        let repository =
+            cargo_berth_test_support::IntegrationRepository::from_template(RepositoryTemplate {
+                target_directory: env!("CARGO_TARGET_TMPDIR"),
+                executable:       BERTH_EXECUTABLE,
+                name:             "integration-main",
+                build:            |root| {
+                    cargo_berth_test_support::IntegrationRepository::build_main_template(
+                        root,
+                        BERTH_EXECUTABLE,
+                    );
+                },
+            });
+        let lane = repository.lane("cover-hook-lane", "integration");
+        require_success(
+            &repository.claim(&lane, "file:lane.txt", SECOND_RUN, None),
+            "lane claim establishing cover",
+        )?;
+        // Reconciliation creates the integration cover before the target merge.
+        // No board read runs after that merge, when it could settle the cover.
+        drop(repository.board());
+        let covers = repository.cover_claims();
+        let cover = required_string(
+            covers
+                .first()
+                .ok_or_else(|| failure("cover claim missing"))?,
+            "/reservation_id",
+            "cover",
+        )?
+        .to_owned();
+        // Date the newly entering contribution after every holder, without sleeping for
+        // Git's one-second committer timestamp resolution.
+        fs::write(
+            repository.integration.join("integration.txt"),
+            "covered contribution\n",
+        )?;
+        run_git(&repository.integration, &["add", "integration.txt"])?;
+        require_success(
+            &GIT.output_with_environment(
+                &repository.integration,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "covered contribution",
+                ],
+                "GIT_COMMITTER_DATE",
+                "2030-01-01T00:00:00Z",
+            ),
+            "covered contribution",
+        )?;
+        // The cover still protects ongoing work when its committed contribution lands.
+        fs::write(
+            repository.integration.join("integration.txt"),
+            "ongoing covered work\n",
+        )?;
+        Ok(Self {
+            repository,
+            cover,
+            lane,
+        })
+    }
+
+    fn claim_target_session(&self) -> TestResult {
+        require_success(
+            &run_berth_with_session(
+                self.repository.root(),
+                &["claim", "file:own.rs", "--json"],
+                INCURSION_SESSION,
+            )?,
+            "target session claim",
+        )?;
+        // The hook confirms incidents with a board read. Keep this session's work
+        // active so that read cannot release it and resolve its newly recorded incident.
+        fs::write(
+            self.repository.root().join("own.rs"),
+            "ongoing target work\n",
+        )?;
+        Ok(())
+    }
+
+    /// Keep the incumbent active without attributing an old dirty write to the second run.
+    fn claim_refused_target_session(&self) -> TestResult {
+        run_git(self.repository.root(), &["branch", "incumbent-target"])?;
+        require_success(
+            &run_berth(
+                self.repository.root(),
+                &[
+                    "claim",
+                    "file:own.rs",
+                    "--target",
+                    "incumbent-target",
+                    "--run",
+                    SECOND_RUN,
+                    "--json",
+                ],
+            )?,
+            "incumbent target session claim",
+        )?;
+        fs::write(self.repository.root().join("own.rs"), "incumbent work\n")?;
+        run_git(self.repository.root(), &["add", "own.rs"])?;
+        run_git(
+            self.repository.root(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "incumbent work awaiting integration",
+            ],
+        )?;
+        // A cached clean path fingerprint cannot see a merge's committed contribution.
+        // Exercise the real hook's full phase fallback rather than a no-change shortcut.
+        for entry in fs::read_dir(self.repository.root().join(".git/cargo-berth"))? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("drift-fingerprint-")
+            {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Land a covered tip whose own commit names the path the refused run observes.
+    fn fast_forward_covered_contribution(&self) -> TestResult {
+        // Carry the incumbent's pending work without changing its separate integration target.
+        run_git(
+            &self.repository.integration,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "main",
+            ],
+        )?;
+        fs::write(
+            self.repository.integration.join("integration.txt"),
+            "covered fast-forward contribution\n",
+        )?;
+        run_git(&self.repository.integration, &["add", "integration.txt"])?;
+        require_success(
+            &GIT.output_with_environment(
+                &self.repository.integration,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "covered fast-forward contribution",
+                ],
+                "GIT_COMMITTER_DATE",
+                "2030-01-01T00:00:01Z",
+            ),
+            "covered fast-forward contribution",
+        )?;
+        fs::write(
+            self.repository.integration.join("integration.txt"),
+            "ongoing covered work\n",
+        )?;
+        run_git(
+            self.repository.root(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--ff-only",
+                "integration",
+            ],
+        )
+    }
+
+    fn merge(&self) -> TestResult {
+        run_git(
+            self.repository.root(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "integration",
+            ],
+        )
+    }
+
+    fn hook(&self) -> TestResult<Output> {
+        run_post_tool_use(
+            self.repository.root(),
+            &bash_payload(self.repository.root(), INCURSION_SESSION),
+        )
+    }
+
+    /// Present a separate coordination run rather than joining the incumbent via its marker.
+    fn refused_hook(&self) -> TestResult<Output> {
+        let root = self.repository.root();
+        let mut child = berth_command(BERTH_EXECUTABLE)
+            .args(["hook", "post-tool-use"])
+            .current_dir(root)
+            .env("CARGO_BERTH_RUN", FIRST_RUN)
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut input = child.stdin.take().ok_or_else(|| failure("hook stdin"))?;
+        input.write_all(&serde_json::to_vec(&bash_payload(root, WIDENING_SESSION))?)?;
+        drop(input);
+        Ok(child.wait_with_output()?)
+    }
+
+    fn assert_no_incursion(&self, output: &Output) -> TestResult {
+        require_success(output, "covered integration post-write hook")?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !text.to_lowercase().contains("incursion") && !text.contains("STOP"),
+            "{output:?}"
+        );
+        let events = journal_events(self.repository.root())?;
+        assert!(
+            !events.iter().any(|event| event["op"] == "incursion"),
+            "{events:?}"
+        );
+        Ok(())
+    }
+
+    fn assert_incursion(&self, output: &Output, holder: &str) -> TestResult {
+        require_success(output, "foreign contribution post-write hook")?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let events = journal_events(self.repository.root())?;
+        assert!(
+            text.to_lowercase().contains("incursion") && text.contains(holder),
+            "{output:?}; journal: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| event["op"] == "incursion"
+                && event["blocked_paths"]
+                    .as_array()
+                    .is_some_and(|paths| paths.iter().any(|path| path["holders"]
+                        .as_array()
+                        .is_some_and(|holders| holders.iter().any(|id| id == holder))))),
+            "{events:?}"
+        );
+        Ok(())
+    }
+}
+
+#[test]
+fn merging_a_covered_branch_into_its_target_reports_no_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_target_session()?;
+    fixture.merge()?;
+    fixture.assert_no_incursion(&fixture.hook()?)
+}
+
+#[test]
+fn a_commit_outside_the_covered_branch_still_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_target_session()?;
+    fixture.merge()?;
+    fs::write(
+        fixture.repository.root().join("integration.txt"),
+        "outside contribution\n",
+    )?;
+    run_git(fixture.repository.root(), &["add", "integration.txt"])?;
+    require_success(
+        &GIT.output_with_environment(
+            fixture.repository.root(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "outside covered branch",
+            ],
+            "GIT_COMMITTER_DATE",
+            "2030-01-02T00:00:00Z",
+        ),
+        "outside contribution",
+    )?;
+    fixture.assert_incursion(&fixture.hook()?, &fixture.cover)
+}
+
+#[test]
+fn a_working_tree_write_after_a_covered_merge_still_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_target_session()?;
+    fixture.merge()?;
+    fs::write(
+        fixture.repository.root().join("integration.txt"),
+        "uncommitted contribution\n",
+    )?;
+    fixture.assert_incursion(&fixture.hook()?, &fixture.cover)
+}
+
+#[test]
+fn a_covered_merge_keeps_another_holders_incursion_visible() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    let holder = run_berth(
+        &fixture.lane,
+        &[
+            "claim",
+            "file:integration.txt",
+            "--run",
+            SECOND_RUN,
+            "--after",
+            &fixture.cover,
+            "--overlap-why",
+            "retain a separate holder while the covered contribution lands",
+            "--json",
+        ],
+    )?;
+    require_success(&holder, "additional lane holder")?;
+    let holder = claimed_reservation_id(&holder)?;
+    fs::write(fixture.lane.join("integration.txt"), "other holder work\n")?;
+    fixture.claim_target_session()?;
+    fixture.merge()?;
+    let output = fixture.hook()?;
+    fixture.assert_incursion(&output, &holder)?;
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(&fixture.cover),
+        "{output:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unavailable_covered_branch_evidence_still_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_target_session()?;
+    fixture.merge()?;
+    run_git(
+        fixture.repository.root(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "-d",
+            "refs/heads/integration",
+        ],
+    )?;
+    fixture.assert_incursion(&fixture.hook()?, &fixture.cover)
+}
+
+#[test]
+fn an_unmapped_target_session_merging_a_covered_branch_reports_no_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.merge()?;
+    fixture.assert_no_incursion(&fixture.hook()?)
+}
+
+#[test]
+fn a_refused_target_run_merging_a_covered_branch_reports_no_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_refused_target_session()?;
+    fixture.fast_forward_covered_contribution()?;
+    let output = fixture.refused_hook()?;
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("cannot take work here"),
+        "{output:?}"
+    );
+    fixture.assert_no_incursion(&output)
+}
+
+#[test]
+fn a_refused_target_runs_write_after_a_covered_merge_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_refused_target_session()?;
+    fixture.fast_forward_covered_contribution()?;
+    fs::write(
+        fixture.repository.root().join("integration.txt"),
+        "refused run's uncommitted contribution\n",
+    )?;
+    let output = fixture.refused_hook()?;
+    require_success(&output, "refused run post-write hook")?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("SCOPE ACQUISITION REFUSED"), "{output:?}");
+    fixture.assert_incursion(&output, &fixture.cover)
+}
+
+#[test]
+fn a_refused_target_runs_outside_commit_still_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_refused_target_session()?;
+    fixture.fast_forward_covered_contribution()?;
+    fs::write(
+        fixture.repository.root().join("integration.txt"),
+        "outside the covered branch\n",
+    )?;
+    run_git(fixture.repository.root(), &["add", "integration.txt"])?;
+    require_success(
+        &GIT.output_with_environment(
+            fixture.repository.root(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "refused run outside contribution",
+            ],
+            "GIT_COMMITTER_DATE",
+            "2030-01-02T00:00:00Z",
+        ),
+        "outside contribution",
+    )?;
+    let output = fixture.refused_hook()?;
+    require_success(&output, "refused run post-write hook")?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("SCOPE ACQUISITION REFUSED"), "{output:?}");
+    fixture.assert_incursion(&output, &fixture.cover)
+}
+
+#[test]
+fn a_refused_target_run_without_covered_evidence_reports_the_cover_incursion() -> TestResult {
+    let fixture = CoveredBranchHook::new()?;
+    fixture.claim_refused_target_session()?;
+    fixture.fast_forward_covered_contribution()?;
+    run_git(
+        fixture.repository.root(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "-d",
+            "refs/heads/integration",
+        ],
+    )?;
+    let output = fixture.refused_hook()?;
+    require_success(&output, "refused run post-write hook")?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("SCOPE ACQUISITION REFUSED"), "{output:?}");
+    fixture.assert_incursion(&output, &fixture.cover)
+}

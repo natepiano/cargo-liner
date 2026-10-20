@@ -31,7 +31,7 @@
 | berth-ceiling-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-ceiling` (deleted) | — | crates/cargo-berth/ |
 | handler-enh-unit | docs/cargo-handler/as-built/startup.md, docs/cargo-handler/as-built/hierarchy.md | /home/natepiano/rust/cargo-liner-handler-enh | remove-running-section-handler-enh | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
 | berth-parallel-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth-parallel | remove-running-section-berth-parallel | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
-| review-unit | docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
+| review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
 
 ## Hub files
 

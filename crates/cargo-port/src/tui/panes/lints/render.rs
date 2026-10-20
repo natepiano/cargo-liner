@@ -113,8 +113,8 @@ fn build_lint_rows(
             },
             LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(success_color())),
             LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(error_color())),
-            // "no env" rather than "failed": direnv could not build the
-            // environment, so no lint command in this run examined the code.
+            // `LintRunStatus::EnvUnavailable` renders "no env" instead of "failed": direnv could
+            // not build the environment, so no lint command examined the code.
             LintRunStatus::EnvUnavailable => {
                 (Cell::from("no env"), Style::default().fg(warning_color()))
             },

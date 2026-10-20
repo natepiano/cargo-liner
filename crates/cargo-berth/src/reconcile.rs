@@ -61,6 +61,7 @@ use crate::git::ProtectedTipSuccessorHeads;
 use crate::git::Reachability;
 use crate::git::ReservationRetentionRefRepair;
 use crate::git::ResolvedBatchCommitCandidates;
+use crate::git::RetentionMaintenance;
 use crate::git::ScopedPatchComparison;
 use crate::git::ScopedPatchTargetHistory;
 use crate::git::WorktreeOperation;
@@ -157,6 +158,7 @@ pub(crate) enum RecoveredBypassReporting {
 
 /// Alerts that remain after one complete reconciliation.
 pub(crate) struct ReconciliationReport {
+    pub(crate) retention_maintenance:         RetentionMaintenance,
     /// Durable alerts derived from retained journal state.
     pub(crate) alerts:                        Vec<Alert>,
     /// Integration conclusions appended by this reconciliation.
@@ -185,6 +187,13 @@ pub(crate) struct ReconciliationReport {
 }
 
 impl ReconciliationReport {
+    /// Carry both durable alerts and deferred maintenance across command boundaries.
+    pub(crate) fn into_output(self, output: OutputEnvelope) -> OutputEnvelope {
+        output
+            .with_alerts(self.alerts)
+            .with_retention_maintenance(&self.retention_maintenance)
+    }
+
     /// Route this report's alerts for a response that answers on `occasion`.
     ///
     /// Each retained reservation's holder is its journal actor's worktree, judged by the
@@ -1278,6 +1287,7 @@ struct ReconciliationAction {
     retention_repairs:             Vec<ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
     retention_transaction:         PreparedRetentionRefTransaction,
+    retention_maintenance:         RetentionMaintenance,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     /// Reservations whose lost-evidence directive has been derived by two consecutive passes.
@@ -2740,6 +2750,7 @@ fn build_plan(
             repository_root: worktree_context.repository_root().to_path_buf(),
             object_reader: reconciliation_evidence_context.repository.object_reader(),
             retention_transaction: git::PreparedRetentionRefTransaction::empty(),
+            retention_maintenance: RetentionMaintenance::Completed,
             retention_repairs: changes.retention_repairs,
             retention_deletions: changes.retention_deletions,
             alert_subjects,
@@ -3848,11 +3859,11 @@ impl CommittedHookReconciliationAction {
         self,
         _state: &ReplayedLedgerState<'_>,
         _recoverable_failures: &RecoverableReconciliationAppendFailures,
-    ) -> Result<(), ReconcileError> {
-        self.retention_transaction.commit()?;
+    ) -> Result<RetentionMaintenance, ReconcileError> {
+        let maintenance = self.retention_transaction.commit_maintenance()?;
         permit::update_branch_rewrite_markers(&self.updated_markers).map_err(LedgerError::Io)?;
         permit::delete_branch_rewrite_markers(&self.completed_markers).map_err(LedgerError::Io)?;
-        Ok(())
+        Ok(maintenance)
     }
 }
 
@@ -5383,11 +5394,11 @@ impl ReconciliationAction {
                     .push(pending_import.into_recovered_marker());
             }
         }
-        std::mem::replace(
+        self.retention_maintenance = std::mem::replace(
             &mut self.retention_transaction,
             PreparedRetentionRefTransaction::empty(),
         )
-        .commit()?;
+        .commit_maintenance()?;
         permit::update_branch_rewrite_markers(&self.updated_rewrite_markers)
             .map_err(LedgerError::Io)?;
         permit::delete_branch_rewrite_markers(&self.completed_rewrite_markers)
@@ -5457,6 +5468,7 @@ impl ReconciliationAction {
             RecoveredBypassReporting::Defer => Vec::new(),
         };
         Ok(ReconciliationReport {
+            retention_maintenance: self.retention_maintenance,
             alerts,
             evidence: self.evidence,
             settlements: self.settlements,

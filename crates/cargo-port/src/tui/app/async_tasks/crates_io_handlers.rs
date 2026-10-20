@@ -19,9 +19,9 @@ impl App {
         if self.startup.is_collecting() {
             self.startup.crates_io.expected.insert(name.clone());
             self.startup.crates_io.seen.remove(&name);
-            // Clearing `startup.crates_io.complete_at` invalidates any earlier completion because
+            // Reopening `startup.crates_io.lifecycle` invalidates any earlier completion because
             // `name` is now expected but unseen.
-            self.startup.crates_io.complete_at = None;
+            self.startup.crates_io.lifecycle.reopen();
         } else if let Some(scan_complete_at) = self.startup.scan_complete_at {
             // sync_running_crates_io_toast owns the standalone toast after startup;
             // since_scan_complete_ms distinguishes a recovery refetch leak just after handoff from

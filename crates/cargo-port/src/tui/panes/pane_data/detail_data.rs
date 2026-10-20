@@ -33,10 +33,11 @@ use super::package_data::PackageData;
 use super::package_data::PackagePresence;
 use super::package_data::PackageSection;
 use super::package_data::PackageVersion;
-use super::package_data::PublishStatus;
 use super::package_data::StructureCounts;
 use super::package_data::WorktreeGroupSummary;
 use super::project;
+use crate::project::CratesIoRelease;
+use crate::project::CratesIoReleaseState;
 use crate::project::ProjectFields;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::targets;
@@ -141,7 +142,7 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     let git_desc = description_natural_rows(
         data.git.description.as_deref(),
         git_width,
-        EmptyDescriptionBehavior::RenderEmpty,
+        EmptyDescriptionBehavior::RenderNothing,
     );
     // Both panes sync their description blocks to the taller of the two, so a
     // pane with the shorter description still reserves the shared height.
@@ -478,40 +479,51 @@ pub(super) struct PaneDataSource<'a> {
     title:            String,
 }
 
-/// Crates-io fields pulled from either a Rust info or vendored entry.
-pub(super) struct CratesIoFields {
-    version:    Option<String>,
-    prerelease: Option<String>,
-    downloads:  Option<u64>,
-    /// Whether this project would have fired a crates.io fetch — i.e.
-    /// whether it is a publishable package. Used to keep the crates.io section's
-    /// placeholder row visible during a crates.io outage even before any
-    /// version landed; non-publishable rows (where no fetch ever runs)
-    /// never show the section.
-    publish:    PublishStatus,
+/// The crates.io section has either a complete release or a reason none is shown.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CratesIoSection {
+    NotPublishable,
+    AwaitingRelease,
+    Unreachable,
+    Released(CratesIoRelease),
 }
 
-pub(super) fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
-    let rust_info = app.project_list.rust_info_at_path(abs_path);
-    let vendored = app.project_list.vendored_at_path(abs_path);
-    let publish = if rust_info.is_some_and(|r| r.cargo.publishable())
-        || vendored.is_some_and(|v| v.cargo.publishable() && v.name.is_some())
-    {
-        PublishStatus::Publishable
+fn resolve_crates_io_section(app: &App, abs_path: &Path) -> CratesIoSection {
+    let service = if app.net.crates_io.availability.toast_id().is_some() {
+        ServiceStatus::Unreachable
     } else {
-        PublishStatus::NotPublishable
+        ServiceStatus::Available
     };
-    CratesIoFields {
-        version: rust_info
-            .and_then(|r| r.crates_version().map(String::from))
-            .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from))),
-        prerelease: rust_info
-            .and_then(|r| r.crates_prerelease().map(String::from))
-            .or_else(|| vendored.and_then(|v| v.crates_prerelease().map(String::from))),
-        downloads: rust_info
-            .and_then(RustInfo::crates_downloads)
-            .or_else(|| vendored.and_then(VendoredPackage::crates_downloads)),
-        publish,
+    crates_io_section(
+        app.project_list.rust_info_at_path(abs_path),
+        app.project_list.vendored_at_path(abs_path),
+        service,
+    )
+}
+
+fn crates_io_section(
+    rust_info: Option<&RustInfo>,
+    vendored: Option<&VendoredPackage>,
+    service: ServiceStatus,
+) -> CratesIoSection {
+    if !rust_info.is_some_and(|r| r.cargo.publishable())
+        && !vendored.is_some_and(|v| v.cargo.publishable() && v.name.is_some())
+    {
+        return CratesIoSection::NotPublishable;
+    }
+    // Resolve the entire release from one source. In particular, a stable-only
+    // RustInfo release must never acquire the vendored source's prerelease.
+    match (
+        rust_info.map(|r| &r.crates_io),
+        vendored.map(|v| &v.crates_io),
+        service,
+    ) {
+        (Some(CratesIoReleaseState::Released(release)), _, _)
+        | (_, Some(CratesIoReleaseState::Released(release)), _) => {
+            CratesIoSection::Released(release.clone())
+        },
+        (_, _, ServiceStatus::Unreachable) => CratesIoSection::Unreachable,
+        (_, _, ServiceStatus::Available) => CratesIoSection::AwaitingRelease,
     }
 }
 
@@ -662,8 +674,8 @@ fn compute_package_displays(
 }
 
 /// Orchestrator for assembling a `DetailPaneData` from the inputs
-/// every pane builder shares. Reads divide into three phases (runtime
-/// state, metadata lookups, derived status), then the package /
+/// every pane builder shares. Runtime state includes the resolved crates.io
+/// section phase; metadata lookups follow, then the package /
 /// targets pieces are constructed and the final result is assembled.
 fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
     let abs_path = src.abs_path;
@@ -674,7 +686,6 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo, src.fallback_type);
     log_pane_common_breakdown(abs_path, &runtime, &metadata);
 
-    let crates_io_status = derive_crates_io_status(&runtime.crates_io, app);
     let (lint_display, ci_display) =
         compute_package_displays(app, &abs_path_owned, runtime.ci, &src.title);
 
@@ -688,7 +699,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         primary_section: src.primary_section,
         package_presence: src.package_presence,
         manifest: metadata.manifest,
-        crates_io_rows: build_crates_io_rows(&runtime.crates_io, &crates_io_status),
+        crates_io_rows: build_crates_io_rows(&runtime.crates_io),
         types: metadata.types,
         disk: runtime.disk,
         in_project_target: metadata.in_project_target,
@@ -709,7 +720,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 /// independently.
 pub(super) struct RuntimeFields {
     git_detail:             GitDetailFields,
-    crates_io:              CratesIoFields,
+    crates_io:              CratesIoSection,
     disk:                   Option<u64>,
     worktree_group_summary: Option<WorktreeGroupSummary>,
     ci:                     Option<CiStatus>,
@@ -732,15 +743,6 @@ pub(super) struct MetadataFields {
     out_of_tree_ms:           u64,
 }
 
-/// Phase 3 output — the two enum statuses derived from raw
-/// crates.io data plus the live service-availability snapshot. Kept
-/// together because both feed the same `PackageData` row gating
-/// logic.
-pub(super) struct CratesIoStatus {
-    publish: PublishStatus,
-    service: ServiceStatus,
-}
-
 /// Phase 1: collect every runtime-derived field (git state, disk
 /// usage, CI status, worktree list, crates.io version cache) along
 /// with the elapsed time for each block.
@@ -753,7 +755,7 @@ pub(super) fn collect_runtime_fields(
     let git_detail = git_data::build_git_detail_fields(app, abs_path);
     let git_detail_ms = tui_pane::perf_log_ms(t_git.elapsed().as_millis());
 
-    let crates_io = resolve_crates_io_fields(app, abs_path);
+    let crates_io = resolve_crates_io_section(app, abs_path);
 
     let t_disk = std::time::Instant::now();
     let disk = app
@@ -828,45 +830,20 @@ pub(super) fn collect_metadata_fields(
     }
 }
 
-/// Phase 3: collapse the raw `CratesIoFields` plus the live
-/// availability state into the two enums that gate the
-/// `PackageData` rendering.
-pub(super) const fn derive_crates_io_status(
-    crates_io: &CratesIoFields,
-    app: &App,
-) -> CratesIoStatus {
-    let service = if app.net.crates_io.availability.toast_id().is_some() {
-        ServiceStatus::Unreachable
-    } else {
-        ServiceStatus::Available
-    };
-    CratesIoStatus {
-        publish: crates_io.publish,
-        service,
+/// Render each crates.io phase deliberately; only a complete release owns metrics.
+pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static str, String)> {
+    match section {
+        CratesIoSection::NotPublishable | CratesIoSection::AwaitingRelease => Vec::new(),
+        CratesIoSection::Unreachable => vec![("version", CRATES_IO_UNREACHABLE.to_string())],
+        CratesIoSection::Released(release) => {
+            let mut rows = vec![("version", release.version.clone())];
+            if let Some(prerelease) = &release.prerelease {
+                rows.push((prerelease_label(prerelease), prerelease.clone()));
+            }
+            rows.push(("downloads", format_downloads(release.downloads)));
+            rows
+        },
     }
-}
-
-/// Build the crates.io stats-section rows from the resolved fields plus
-/// the live availability state. Empty for non-publishable projects.
-pub(super) fn build_crates_io_rows(
-    crates_io: &CratesIoFields,
-    status: &CratesIoStatus,
-) -> Vec<(&'static str, String)> {
-    let mut rows = Vec::new();
-    if let Some(version) = crates_io.version.as_deref() {
-        rows.push(("version", version.to_string()));
-        if let Some(prerelease) = crates_io.prerelease.as_deref() {
-            rows.push((prerelease_label(prerelease), prerelease.to_string()));
-        }
-        if let Some(downloads) = crates_io.downloads {
-            rows.push(("downloads", format_downloads(downloads)));
-        }
-    } else if status.publish.is_publishable()
-        && matches!(status.service, ServiceStatus::Unreachable)
-    {
-        rows.push(("version", CRATES_IO_UNREACHABLE.to_string()));
-    }
-    rows
 }
 
 /// Label for the prerelease row, derived from the leading alphabetic
@@ -938,30 +915,30 @@ pub(super) fn assemble_detail_pane_data(
 #[cfg(test)]
 mod tests {
     use super::CRATES_IO_UNREACHABLE;
-    use super::CratesIoFields;
-    use super::CratesIoStatus;
-    use super::PublishStatus;
+    use super::CratesIoSection;
     use super::ServiceStatus;
     use super::build_crates_io_rows;
+    use super::crates_io_section;
     use super::prerelease_label;
+    use crate::project::CratesIoRelease;
+    use crate::project::CratesIoReleaseState;
+    use crate::project::PublishStatus;
+    use crate::project::RustInfo;
+    use crate::project::VendoredPackage;
 
-    fn publishable_available() -> CratesIoStatus {
-        CratesIoStatus {
-            publish: PublishStatus::Publishable,
-            service: ServiceStatus::Available,
+    fn release(version: &str, prerelease: Option<&str>, downloads: u64) -> CratesIoRelease {
+        CratesIoRelease {
+            version: version.to_string(),
+            prerelease: prerelease.map(str::to_string),
+            downloads,
         }
     }
 
     #[test]
     fn crates_io_rows_show_stable_and_prerelease_when_both_present() {
-        let fields = CratesIoFields {
-            version:    Some("0.20.2".to_string()),
-            prerelease: Some("0.21.0-rc.2".to_string()),
-            downloads:  Some(663),
-            publish:    PublishStatus::Publishable,
-        };
+        let section = CratesIoSection::Released(release("0.20.2", Some("0.21.0-rc.2"), 663));
         assert_eq!(
-            build_crates_io_rows(&fields, &publishable_available()),
+            build_crates_io_rows(&section),
             vec![
                 ("version", "0.20.2".to_string()),
                 ("rc", "0.21.0-rc.2".to_string()),
@@ -972,14 +949,9 @@ mod tests {
 
     #[test]
     fn crates_io_rows_omit_prerelease_row_when_only_stable() {
-        let fields = CratesIoFields {
-            version:    Some("1.0.0".to_string()),
-            prerelease: None,
-            downloads:  Some(10),
-            publish:    PublishStatus::Publishable,
-        };
+        let section = CratesIoSection::Released(release("1.0.0", None, 10));
         assert_eq!(
-            build_crates_io_rows(&fields, &publishable_available()),
+            build_crates_io_rows(&section),
             vec![
                 ("version", "1.0.0".to_string()),
                 ("downloads", "10".to_string())
@@ -988,38 +960,73 @@ mod tests {
     }
 
     #[test]
-    fn crates_io_rows_empty_for_non_publishable() {
-        let fields = CratesIoFields {
-            version:    None,
-            prerelease: None,
-            downloads:  None,
-            publish:    PublishStatus::NotPublishable,
-        };
-        let status = CratesIoStatus {
-            publish: PublishStatus::NotPublishable,
-            service: ServiceStatus::Unreachable,
-        };
+    fn crates_io_without_release_has_explicit_section_phases() {
+        let mut rust = RustInfo::default();
         assert_eq!(
-            build_crates_io_rows(&fields, &status),
-            [] as [(&str, String); 0]
+            crates_io_section(Some(&rust), None, ServiceStatus::Available),
+            CratesIoSection::AwaitingRelease
+        );
+        assert_eq!(
+            crates_io_section(Some(&rust), None, ServiceStatus::Unreachable),
+            CratesIoSection::Unreachable
+        );
+        rust.cargo.publish_status = PublishStatus::NotPublishable;
+        assert_eq!(
+            crates_io_section(Some(&rust), None, ServiceStatus::Unreachable),
+            CratesIoSection::NotPublishable
+        );
+        for section in [
+            CratesIoSection::AwaitingRelease,
+            CratesIoSection::NotPublishable,
+        ] {
+            assert_eq!(build_crates_io_rows(&section), [] as [(&str, String); 0]);
+        }
+        assert_eq!(
+            build_crates_io_rows(&CratesIoSection::Unreachable),
+            vec![("version", CRATES_IO_UNREACHABLE.to_string())]
         );
     }
 
     #[test]
-    fn crates_io_rows_show_unreachable_placeholder_during_outage() {
-        let fields = CratesIoFields {
-            version:    None,
-            prerelease: None,
-            downloads:  None,
-            publish:    PublishStatus::Publishable,
+    fn crates_io_release_never_mixes_metadata_from_different_sources() {
+        // The preferred source has no newer prerelease. Field-by-field fallback
+        // would incorrectly attach the other source's prerelease to version 1.0.0.
+        let rust_release = release("1.0.0", None, 10);
+        let vendored_release = release("2.0.0", Some("3.0.0-beta.1"), 900);
+        let mut rust = RustInfo {
+            crates_io: CratesIoReleaseState::Released(rust_release.clone()),
+            ..RustInfo::default()
         };
-        let status = CratesIoStatus {
-            publish: PublishStatus::Publishable,
-            service: ServiceStatus::Unreachable,
+        let vendored = VendoredPackage {
+            name: Some("demo".to_string()),
+            crates_io: CratesIoReleaseState::Released(vendored_release.clone()),
+            ..VendoredPackage::default()
         };
+        for service in [ServiceStatus::Available, ServiceStatus::Unreachable] {
+            let section = crates_io_section(Some(&rust), Some(&vendored), service);
+            assert_eq!(section, CratesIoSection::Released(rust_release.clone()));
+            assert_eq!(
+                build_crates_io_rows(&section),
+                vec![
+                    ("version", "1.0.0".to_string()),
+                    ("downloads", "10".to_string())
+                ]
+            );
+        }
+        rust.crates_io = CratesIoReleaseState::AwaitingRelease;
         assert_eq!(
-            build_crates_io_rows(&fields, &status),
-            vec![("version", CRATES_IO_UNREACHABLE.to_string())],
+            crates_io_section(Some(&rust), Some(&vendored), ServiceStatus::Available),
+            CratesIoSection::Released(vendored_release)
+        );
+        assert_eq!(
+            crates_io_section(None, Some(&vendored), ServiceStatus::Available),
+            CratesIoSection::Released(release("2.0.0", Some("3.0.0-beta.1"), 900))
+        );
+        rust.crates_io = CratesIoReleaseState::Released(rust_release);
+        rust.cargo.publish_status = PublishStatus::NotPublishable;
+        assert_eq!(
+            crates_io_section(Some(&rust), None, ServiceStatus::Available),
+            CratesIoSection::NotPublishable
         );
     }
 

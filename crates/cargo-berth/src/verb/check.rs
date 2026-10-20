@@ -214,12 +214,14 @@ fn reconcile_and_retry(
             expected_configuration_path,
         }) => {
             return OutputEnvelope::unconfigured(CommandVerb::Check, &expected_configuration_path)
-                .with_alerts(reconciliation_report.alerts);
+                .with_alerts(reconciliation_report.alerts)
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
         },
         Err(error) => {
             return error
                 .into_output()
-                .with_alerts(reconciliation_report.alerts);
+                .with_alerts(reconciliation_report.alerts)
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
         },
     };
     // A configured default answer records itself under the lock before the edit is protected.
@@ -235,6 +237,7 @@ fn reconcile_and_retry(
             &retried_decision.worktree_context,
         )
         .with_alerts(reconciliation_report.alerts)
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
     } else {
         refusal::record(
             &retried_decision.worktree_context,
@@ -249,6 +252,7 @@ fn reconcile_and_retry(
             retried_decision.approver,
         )
         .with_alerts(reconciliation_report.alerts)
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
     }
 }
 

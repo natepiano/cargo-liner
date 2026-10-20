@@ -293,12 +293,11 @@ pub(crate) fn execute(
     } = &claim_request;
     let answer_recovery = answer_recovery.clone();
     let reservation_selection = *reservation_selection;
-    claim_acquisition_output(
+    reconciliation_report.into_output(claim_acquisition_output(
         acquire(claim_request, recovery_command_line),
         reservation_selection,
         &answer_recovery,
-    )
-    .with_alerts(reconciliation_report.alerts)
+    ))
 }
 
 /// Render one acquisition result while preserving its blocked envelope contract.

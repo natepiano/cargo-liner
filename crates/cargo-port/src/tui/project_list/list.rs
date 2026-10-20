@@ -26,6 +26,8 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
+use crate::project::CratesIoRelease;
+use crate::project::CratesIoReleaseState;
 use crate::project::DisplayPath;
 use crate::project::GitHubInfo;
 use crate::project::GitRepo;
@@ -90,12 +92,12 @@ pub(crate) enum ProjectListRowDisplayPathResolution {
     /// The row remains present and supplies its display path.
     Resolved(DisplayPath),
     /// The row no longer resolves through the current project list.
-    RowUnavailable,
+    Unavailable,
 }
 
 impl From<Option<DisplayPath>> for ProjectListRowDisplayPathResolution {
     fn from(display_path: Option<DisplayPath>) -> Self {
-        display_path.map_or(Self::RowUnavailable, Self::Resolved)
+        display_path.map_or(Self::Unavailable, Self::Resolved)
     }
 }
 
@@ -122,7 +124,7 @@ impl ProjectList {
         self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
-    // -- Slice-like read surface ------------------------------------------
+    // `len`, `is_empty`, `iter` and indexed access expose the `ProjectList::roots` collection.
 
     pub(in crate::tui) fn len(&self) -> usize { self.roots.len() }
 
@@ -280,7 +282,7 @@ impl ProjectList {
             .collect()
     }
 
-    // -- Leaf iteration ---------------------------------------------------
+    // `for_each_leaf` and `for_each_leaf_path` traverse projects beneath `roots`.
 
     /// Iterate all leaf-level projects from the hierarchy.
     ///
@@ -330,9 +332,9 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
-        // Split into two separate borrows to sidestep the NLL limitation on
-        // returning a reference borrowed inside an if-let: first check if the
-        // root key matches, then re-borrow mutably to return.
+        // `at_path_mut` first checks `roots.contains_key(target)`, then borrows
+        // `roots.get_mut(target)` separately to avoid the non-lexical-lifetime limitation on
+        // returning a reference borrowed within an if-let.
         if self.roots.contains_key(target) {
             return self
                 .roots
@@ -493,7 +495,8 @@ impl ProjectList {
         })
     }
 
-    // -- Git/Repo reads --------------------------------------------------
+    // `git_info_for`, `repo_info_for` and `git_repo_for` resolve checkout and repository data for
+    // project paths.
 
     pub(in crate::tui) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
         self.at_path(path)
@@ -761,7 +764,8 @@ impl ProjectList {
         panes::GitSyncLabels::of(self.git_info_for(path), self.repo_info_for(path)).main
     }
 
-    // -- Hierarchy mutations ----------------------------------------------
+    // `replace_leaf_by_path`, `promote_to_worktree_group` and `insert_into_hierarchy` mutate
+    // `ProjectList::roots`.
 
     /// Find a leaf item by absolute path and replace it, returning the old
     /// item. Descends into worktree groups to find matching leaves. The
@@ -867,9 +871,9 @@ impl ProjectList {
                 return true;
             }
         }
-        // No parent workspace found — add as top-level peer, keeping the
-        // `IndexMap` in `RootItem::list_order` (the same order the scan's
-        // tree build produces).
+        // When `grouping::try_insert_member` finds no parent workspace, use `shift_insert` to add a
+        // `ProjectEntry` to `ProjectList::roots` in `RootItem::list_order`, matching the scan tree
+        // builder's order.
         let insert_index = self
             .roots
             .values()
@@ -881,7 +885,8 @@ impl ProjectList {
         false
     }
 
-    // -- Config-driven regrouping -------------------------------------------
+    // `regroup_members` and `regroup_top_level_worktrees` rebuild workspace/member and worktree
+    // grouping.
 
     /// Regroup workspace members based on `inline_dirs` config. Walks all
     /// workspaces (including inside worktree groups) and re-sorts their
@@ -942,7 +947,7 @@ impl ProjectList {
         }
     }
 
-    // -- Vec-like operations -------------------------------------------------
+    // `clear` and test-only `push` mutate the `ProjectList::roots` collection.
 
     pub(in crate::tui) fn clear(&mut self) {
         if !self.roots.is_empty() {
@@ -983,16 +988,14 @@ impl<'a> IntoIterator for &'a mut ProjectList {
 
 // ── Selection-cluster surface ───────────────────────────────────────
 //
-// Project-list navigation state (cursor, expansion set, finder, sort and
-// width caches) lives directly on `ProjectList` because every field is
-// project-list scoped — none of it is shared with other panes. The
-// `SelectionMutation` guard at the bottom recomputes `cached_visible_rows`
-// on drop so visibility-changing mutations stay in sync with derived
-// rows. Mutation guard (RAII) — self-only flavor; see
-// `src/tui/app/mod.rs` § "Recurring patterns".
+// `ProjectList::cursor`, `expanded`, `finder`, `cached_root_sorted`, `cached_child_sorted` and
+// `cached_fit_widths` belong directly to `ProjectList` because all are project-list scoped and
+// shared with no other pane. `SelectionMutation::drop` recomputes `cached_visible_rows` so
+// visibility-changing mutations stay synchronized with derived rows. This is the self-only
+// mutation guard (RAII) pattern; see `src/tui/app/mod.rs` § "Recurring patterns".
 
 impl ProjectList {
-    // ── project-list cursor ─────────────────────────────────────────
+    // `cursor` and `set_cursor` access the `ProjectList` row position.
 
     pub(in crate::tui) const fn cursor(&self) -> usize { self.cursor }
 
@@ -1010,9 +1013,9 @@ impl ProjectList {
         }
     }
 
-    // ── path tracking ───────────────────────────────────────────────
+    // `SelectionPaths` tracks selected and last-selected project paths for `ProjectList`.
 
-    // ── sync flag ───────────────────────────────────────────────────
+    // `sync`, `mark_sync_changed` and `mark_sync_stable` expose and update `SelectionSync`.
 
     pub(in crate::tui) const fn sync(&self) -> SelectionSync { self.sync }
 
@@ -1020,15 +1023,15 @@ impl ProjectList {
 
     pub(in crate::tui) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
 
-    // ── expansion set ───────────────────────────────────────────────
+    // `ProjectList::expanded` stores the active `ExpandKey` set.
 
-    // ── cached visible rows ─────────────────────────────────────────
+    // `visible_rows` and `row_count` read `cached_visible_rows`.
 
     pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
     pub(in crate::tui) const fn row_count(&self) -> usize { self.cached_visible_rows.len() }
 
-    // ── cursor movement ─────────────────────────────────────────────
+    // `move_up`, `move_down`, their step variants and top/bottom helpers update `cursor`.
 
     pub(in crate::tui) const fn move_up(&mut self) {
         let count = self.row_count();
@@ -1094,7 +1097,7 @@ impl ProjectList {
         }
     }
 
-    // ── disk-sort caches ────────────────────────────────────────────
+    // `set_disk_caches` replaces `cached_root_sorted` and `cached_child_sorted`.
 
     pub(in crate::tui) fn set_disk_caches(
         &mut self,
@@ -1105,7 +1108,8 @@ impl ProjectList {
         self.cached_child_sorted = child_sorted;
     }
 
-    // ── fit widths ──────────────────────────────────────────────────
+    // `fit_widths_mut`, `set_fit_widths` and `reset_fit_widths` access or replace
+    // `cached_fit_widths`.
 
     /// Test-only — production paths replace the whole `ProjectListWidths`
     /// via [`Self::set_fit_widths`] and never observe individual columns
@@ -1121,7 +1125,7 @@ impl ProjectList {
         self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
-    // ── mutation guard entry point ──────────────────────────────────
+    // `mutate` lends `ProjectList` to a `SelectionMutation` guard.
 
     /// Borrow `self` for a visibility-changing mutation.
     ///
@@ -2319,18 +2323,16 @@ impl ProjectList {
         }
     }
 
-    /// Stamp crates.io version+downloads onto the matching project.
+    /// Store a complete crates.io release on the matching project.
     pub(in crate::tui) fn handle_crates_io_version_msg(
         &mut self,
         path: &Path,
-        version: String,
-        prerelease: Option<String>,
-        downloads: u64,
+        release: CratesIoRelease,
     ) {
         if let Some(rust_info) = self.rust_info_at_path_mut(path) {
-            rust_info.set_crates_io(version, prerelease, downloads);
+            rust_info.crates_io = CratesIoReleaseState::Released(release);
         } else if let Some(vendored) = self.vendored_at_path_mut(path) {
-            vendored.set_crates_io(version, prerelease, downloads);
+            vendored.crates_io = CratesIoReleaseState::Released(release);
         }
     }
 

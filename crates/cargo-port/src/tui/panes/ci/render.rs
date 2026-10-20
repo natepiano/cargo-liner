@@ -198,7 +198,7 @@ fn build_ci_data_row(
     for col in cols {
         let data = ci_column_data(ci_run, col);
         if let Some(data) = data {
-            let style = render::conclusion_style(Some(data.status));
+            let style = render::ci_status_style(Some(data.status));
             cells.push(ci_metric_cell(
                 data.duration.trim(),
                 data.status,
@@ -210,7 +210,7 @@ fn build_ci_data_row(
         }
     }
 
-    let total_style = render::conclusion_style(Some(ci_run.ci_status));
+    let total_style = render::ci_status_style(Some(ci_run.ci_status));
     cells.push(ci_metric_cell(
         total_dur.trim(),
         ci_run.ci_status,
@@ -308,9 +308,9 @@ fn build_ci_widths(
     show_durations: bool,
     inner_width: u16,
 ) -> Vec<Constraint> {
-    // Column layout: Commit, Branch, Timestamp, then one metric column per
-    // job, then Total. A metric cell contains the duration plus its status
-    // glyph, so headers can use the whole duration and status area.
+    // `build_ci_widths` builds `ColumnSpec` entries for Commit, Branch, Timestamp, each
+    // `CiDisplayColumn` and Total; `ci_metric_cell` combines duration and status glyph, so headers
+    // can use both areas.
     let (commit_width, branch_width) =
         ci_description_widths(ci_runs, cols, show_durations, inner_width);
     let mut specs = vec![

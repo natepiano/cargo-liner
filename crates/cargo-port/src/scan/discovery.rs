@@ -53,7 +53,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             )
         {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            items.push(tree::cargo_project_to_item(parsed));
+            items.push(tree::cargo_parse_result_to_item(parsed));
         }
     }
 
@@ -125,10 +125,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(sender, signal);
         if let Some(info) = info {
             let _ = sender.send(BackgroundMsg::CratesIoVersion {
-                path:       abs.clone(),
-                version:    info.version,
-                prerelease: info.prerelease,
-                downloads:  info.downloads,
+                path:    abs.clone(),
+                release: info,
             });
         }
         let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
@@ -324,7 +322,7 @@ pub(super) fn phase1_discover(
             {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {
+                let Ok(cargo_parse_result) = project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 tracing::trace!(
@@ -334,7 +332,7 @@ pub(super) fn phase1_discover(
                     "phase1_manifest_parse"
                 );
                 stats.projects += 1;
-                let item = tree::cargo_project_to_item(cargo_project);
+                let item = tree::cargo_parse_result_to_item(cargo_parse_result);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if project::git_repo_root(&abs_path).is_some() {

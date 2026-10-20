@@ -6,7 +6,6 @@
 //! to `IntegrationRepository::new`; the free functions here only read what those
 //! runs produced.
 
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -16,7 +15,6 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
-use std::sync::Mutex;
 
 use serde_json::Value;
 use tempfile::Builder;
@@ -29,7 +27,17 @@ use crate::RepositoryTemplate;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
+use crate::repository_template;
 use crate::repository_template::IdentityRenewal;
+
+/// The lock that gives one process ownership of a fixture build.
+const BUILD_LOCK_FILE_NAME: &str = "build.lock";
+/// The marker published only after every fixture directory is complete.
+const COMPLETE_FILE_NAME: &str = "complete";
+/// The main checkout within a completed fixture build.
+const REPOSITORY_DIRECTORY_NAME: &str = "repository";
+/// The linked checkouts within an integration pair build.
+const WORKTREES_DIRECTORY_NAME: &str = "worktrees";
 
 /// Variables cleared before git runs, so a hook cannot inherit this process's
 /// coordination run, session, or repository location.
@@ -39,10 +47,6 @@ const CLEARED_GIT_ENVIRONMENT: &[&str] = &[
     "GIT_DIR",
     "GIT_COMMON_DIR",
 ];
-
-/// One real initialized seed for each berth executable used by this builder process.
-/// Cold setup and its cold probe are separate processes, so each builds its own seed.
-static INITIALIZED_MAIN_SEEDS: Mutex<BTreeMap<&'static str, TempDir>> = Mutex::new(BTreeMap::new());
 
 /// What [`IntegrationRepository::capture`] took from one repository, for
 /// [`IntegrationRepository::restore`] to write back.
@@ -140,23 +144,12 @@ impl IntegrationRepository {
     ///
     /// Panics when a fixture file cannot be written or git or berth fails.
     pub fn build_main_template(root: &Path, executable: &'static str) {
-        let source = {
-            let mut seeds = INITIALIZED_MAIN_SEEDS
-                .lock()
-                .expect("initialized main seeds should lock");
-            let seed = seeds.entry(executable).or_insert_with(|| {
-                let seed = tempdir().expect("main seed directory should exist");
-                Self::build_main_seed(seed.path(), executable);
-                seed
-            });
-            let source = fs::canonicalize(seed.path()).expect("main seed should canonicalize");
-            drop(seeds);
-            source
-        };
+        let seed = InitializedMainSeed::prepare(executable);
+        let source = &seed.root;
         let destination = fs::canonicalize(root).expect("main template should canonicalize");
-        let mut snapshot = DirectorySnapshot::capture(&source);
+        let mut snapshot = DirectorySnapshot::capture(source);
         let _ = snapshot.replace_text(&source.to_string_lossy(), &destination.to_string_lossy());
-        IdentityRenewal::read(&source).apply(&mut snapshot);
+        IdentityRenewal::read(source).apply(&mut snapshot);
         snapshot.restore(&destination);
     }
 
@@ -942,6 +935,62 @@ pub fn write_file(checkout: &Path, path: &str, contents: &str) {
     fs::write(file, contents).expect("fixture file writes");
 }
 
+/// An immutable initialized checkout owned by the build cache, never by `/tmp`.
+struct InitializedMainSeed {
+    root: PathBuf,
+}
+
+impl InitializedMainSeed {
+    fn prepare(executable: &'static str) -> Self {
+        let builds = fixture_build_directory(executable, "initialized-main", "main");
+        let root = builds.join(REPOSITORY_DIRECTORY_NAME);
+        prepare_fixture_build(&builds, &[&root], || {
+            IntegrationRepository::build_main_seed(&root, executable);
+        });
+        Self { root }
+    }
+}
+
+/// Locate immutable fixtures under target, keyed by both executables that built them.
+fn fixture_build_directory(executable: &str, category: &str, name: &str) -> PathBuf {
+    let mut identity = DefaultHasher::new();
+    name.hash(&mut identity);
+    for binary in [
+        env::current_exe().expect("test binary should resolve"),
+        PathBuf::from(executable),
+    ] {
+        let metadata = fs::metadata(binary).expect("fixture executable should exist");
+        metadata.len().hash(&mut identity);
+        metadata
+            .modified()
+            .expect("executable modification should read")
+            .hash(&mut identity);
+    }
+    let builds = repository_template::fixture_cache_root(Path::new(executable))
+        .join(category)
+        .join(format!("{:016x}", identity.finish()));
+    fs::create_dir_all(&builds).expect("fixture build directory should exist");
+    fs::canonicalize(builds).expect("fixture build directory should resolve")
+}
+
+/// Publish one complete fixture, rebuilding any directories an interrupted build left.
+fn prepare_fixture_build(builds: &Path, directories: &[&Path], build: impl FnOnce()) {
+    let lock =
+        File::create(builds.join(BUILD_LOCK_FILE_NAME)).expect("fixture build lock should open");
+    lock.lock().expect("one fixture builder should run");
+    let ready = builds.join(COMPLETE_FILE_NAME);
+    if !ready.is_file() {
+        for directory in directories {
+            if directory.exists() {
+                fs::remove_dir_all(directory).expect("incomplete fixture should remove");
+            }
+            fs::create_dir(directory).expect("fixture directory should exist");
+        }
+        build();
+        File::create(ready).expect("fixture completion should record");
+    }
+}
+
 /// A main checkout and integration target whose hooked setup runs once per fixture.
 /// Every test copies both trees with one owner-renewal map and private mutable files.
 struct PreparedIntegrationPair {
@@ -996,42 +1045,10 @@ impl PreparedIntegrationPair {
     }
 
     fn prepare(executable: &'static str, name: &str, build_main: impl FnOnce(&Path)) -> Self {
-        let mut identity = DefaultHasher::new();
-        name.hash(&mut identity);
-        for binary in [
-            env::current_exe().expect("test binary should resolve"),
-            PathBuf::from(executable),
-        ] {
-            let metadata = fs::metadata(binary).expect("fixture executable should exist");
-            metadata.len().hash(&mut identity);
-            metadata
-                .modified()
-                .expect("executable modification should read")
-                .hash(&mut identity);
-        }
-        let target = Path::new(executable)
-            .parent()
-            .and_then(Path::parent)
-            .expect("berth executable should be in a target profile directory");
-        let builds = target
-            .join("tmp/cargo-berth-templates/integration-pair")
-            .join(format!("{:016x}", identity.finish()));
-        fs::create_dir_all(&builds).expect("integration pair builds should exist");
-        let builds = fs::canonicalize(builds).expect("integration pair should resolve");
-        let lock =
-            File::create(builds.join("build.lock")).expect("integration pair lock should open");
-        lock.lock()
-            .expect("one integration pair builder should run");
-        let root = builds.join("repository");
-        let worktrees = builds.join("worktrees");
-        let ready = builds.join("complete");
-        if !ready.is_file() {
-            for directory in [&root, &worktrees] {
-                if directory.exists() {
-                    fs::remove_dir_all(directory).expect("incomplete pair should remove");
-                }
-                fs::create_dir(directory).expect("integration pair directory should exist");
-            }
+        let builds = fixture_build_directory(executable, "integration-pair", name);
+        let root = builds.join(REPOSITORY_DIRECTORY_NAME);
+        let worktrees = builds.join(WORKTREES_DIRECTORY_NAME);
+        prepare_fixture_build(&builds, &[&root, &worktrees], || {
             build_main(&root);
             let integration = worktrees.join("integration");
             let git = GitDriver {
@@ -1046,8 +1063,7 @@ impl PreparedIntegrationPair {
                 &integration,
                 ["commit", "--quiet", "-m", "integration start"],
             );
-            File::create(ready).expect("integration pair completion should record");
-        }
+        });
         Self { root, worktrees }
     }
 }

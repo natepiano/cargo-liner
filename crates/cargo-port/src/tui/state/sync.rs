@@ -195,7 +195,8 @@ mod tests {
     #[test]
     fn no_remote_to_remote_is_a_transition() {
         let mut tracker = SyncTracker::default();
-        // A genuinely-resolved "no remote-tracking branch" baseline.
+        // `SyncTracker::seed_baseline(path("a"), None)` records a resolved missing
+        // remote-tracking branch.
         tracker.seed_baseline(path("a"), None);
         tracker.mark_eligible(path("a"));
         let transition = tracker
@@ -207,10 +208,9 @@ mod tests {
 
     #[test]
     fn eligible_without_baseline_seeds_silently_on_first_observation() {
-        // The startup race: the project becomes eligible (GitHub fetch
-        // completed) while git info is still loading, so no baseline is
-        // seeded. The first resolved observation must establish the
-        // baseline silently — not toast a spurious "no remote → in sync".
+        // The startup race makes `SyncTracker::mark_eligible` run after GitHub fetch completion
+        // while checkout Git information still loads, leaving `Baseline::Unseen`; the first
+        // resolved `observe` must seed silently rather than falsely toast no remote to in sync.
         let mut tracker = SyncTracker::default();
         tracker.mark_eligible(path("a"));
         assert!(
@@ -229,9 +229,10 @@ mod tests {
         let mut tracker = SyncTracker::default();
         tracker.seed_baseline(path("a"), Some((1, 0)));
         tracker.mark_eligible(path("a"));
-        // Observe a change so last_seen advances to (2, 0)
+        // `SyncTracker::observe` advances `last_seen` to (2, 0) before the second seed.
         let _ = tracker.observe(path("a"), Some((2, 0)));
-        // A second seed (shouldn't happen in practice but defensive):
+        // The second `seed_baseline` defensively tests reseeding even though this should not
+        // occur in practice.
         tracker.seed_baseline(path("a"), Some((9, 9)));
         let transition = tracker
             .observe(path("a"), Some((3, 0)))

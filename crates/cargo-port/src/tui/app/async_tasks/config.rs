@@ -404,7 +404,7 @@ impl App {
             }
         }
         if actions.refresh_cpu.should_apply() {
-            self.reset_cpu_placeholder();
+            self.reset_cpu_monitor();
         }
 
         if actions.refresh_lint_runtime.should_apply() {
