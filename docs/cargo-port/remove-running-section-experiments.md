@@ -57,26 +57,20 @@ I want you to create a new unit director in charge of creating a design, working
 
 ### Phase 2 — The design passes Astra review  · status: done
 
-#### Work Order
+#### As-built
 
-**Depends on:** phase 1 (it reviews and revises phase 1's documents).
-
-**Goal:** After at most three `/astra_review` rounds, each followed by a revision in the same designer thread, the design has no open correctness finding, and the showrunner has the design with any open findings listed.
-
-**Spec:**
-1. A round: run `/astra_review docs/experiments/framework.md` with the focus "an experiment framework for our agents on natedev and the Mac; check it against the Key files and the worked examples in docs/experiments/worked-examples.md; correctness first, then simplicity". Then resume the designer thread with the review in full. The designer revises both documents and says, for each finding, what it changed or why it does not agree.
-2. The unit director rules on each disagreement. A finding about correctness or about a fact in a Key file is settled from the file, not by the designer's view.
-3. Stop after a round with no correctness finding, or after the third round.
-4. Send the showrunner the paths of both documents, a short summary, the round count and each open finding with its ruling.
+- Both documents under `docs/experiments/` have had three `/astra_review` rounds, each followed by a revision in the same designer thread. No finding is open or in dispute.
+- The first tool version supports one study design: independent same-input pairs with a positive gain. Unpaired allocation, equal-quality claims and retained-thread policy studies are unsupported.
+- `framework.md` §6 holds one failure table: preflight refusal, measured environmental breach, missing measurement, missing receipt and workload failure. Only a measured, registered environmental breach permits a replacement pair.
+- Each pair runs as one launcher job with separate arm receipts. A durable workload receipt is sealed before the runner's notice. Mac timing and conditions come from the Mac through `mac_run.sh`, and the receipt is copied back once.
+- The shared index is published under one owner-store lock, tied to journal generations. An index from before an interrupted update answers `stale`.
+- Phase elapsed time comes from `phase_started` and `phase_finished` events, joined by `phase_instance_id`. It does not come from summed stage seconds.
+- The first live proposal in `worked-examples.md` §6 only exercises the framework: the history command with and without `python3 -S`, with a limit of 1,800 command seconds and 60 operator minutes in 28 days. It cannot authorize adoption.
 
 **Files:**
-- `docs/experiments/framework.md` — revised per each review
-- `docs/experiments/worked-examples.md` — revised per each review
+- `docs/experiments/framework.md` — the revised design, sections 1–13 and three open questions for the user
+- `docs/experiments/worked-examples.md` — five past experiments and the framework-exercise protocol
 
-**Workers:** 1 writer: the same Astra designer thread revises both documents; the reviewer only reads.
-- `impl` — the Astra designer thread from phase 1; `docs/experiments/framework.md`, `docs/experiments/worked-examples.md`
-- `test` — opens as impl; no test lane
+**Gotchas:** The round 3 fixes (failure table, index freshness, Mac receipt path, one job per pair, first-study purpose) had no further review, because of the 3-round cap. `mesh_runs.py` sends a completion notice before it saves its finished record. `buildlog/sample.py` is Linux only.
 
-**Constraints from prior phases:** The designer thread from phase 1 is the only designer session; resume it and never start a second one. Phase 1 wrote `docs/experiments/framework.md` (a one-page procedure, sections 1–13, and three open questions for the user: the first study, a showrunner spending limit, and evidence retention) and `docs/experiments/worked-examples.md` (five past experiments, and a first live protocol for review context after reset). The proposed tool is `cargo-experiment` (`crates/cargo-experiment`); SDLC owns the final name and the owner of the shared index. Spec 4's message to the showrunner also carries the three open questions.
-
-**Acceptance gate:** The last review has no open correctness finding, or three rounds are done and each open finding is listed with a ruling. The documents hold no forbidden words. The showrunner has the message of Spec 4.
+**Ruled out:** a reset-reviewer study as the first live study, because units keep their reviewer and never reset it, so its control arm is not current policy. Marking Mac measurements unsupported, because the design must fit natedev and the Mac.
