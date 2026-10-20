@@ -198,6 +198,7 @@ mod tests {
     use super::CpuSamplePhase;
     use crate::channel;
     use crate::config::CpuConfig;
+    use crate::tui::panes::constants::CPU_PANE_WIDTH;
     use crate::tui::panes::cpu::render;
     use crate::tui::startup_services::StartupServices;
 
@@ -266,7 +267,7 @@ mod tests {
         assert_eq!(pane.sample_phase(), &CpuSamplePhase::Suppressed);
         assert_eq!(pane.row_rects, [] as [(ratatui::prelude::Rect, usize); 0]);
         let screen = draw(&mut pane);
-        assert!(screen.contains("CPU suppressed"));
+        assert!(screen.contains("  Monitoring off"));
         assert!(!screen.contains('%'));
     }
 
@@ -276,10 +277,10 @@ mod tests {
         for (phase, message) in [
             (
                 CpuSamplePhase::AwaitingFirstSample { core_count: 8 },
-                "Awaiting CPU sample",
+                "  Sampling...",
             ),
-            (CpuSamplePhase::Suppressed, "CPU suppressed"),
-            (CpuSamplePhase::Unavailable, "CPU unavailable"),
+            (CpuSamplePhase::Suppressed, "  Monitoring off"),
+            (CpuSamplePhase::Unavailable, "  Unavailable"),
         ] {
             pane.sample_phase = phase;
             pane.set_row_rects(vec![(Rect::new(1, 1, 10, 1), 1)]);
@@ -294,6 +295,59 @@ mod tests {
             ) {
                 assert!(screen.contains("8 cores"));
                 assert_eq!(pane.core_count(), 8);
+            }
+        }
+    }
+
+    #[test]
+    fn every_sample_phase_renders_complete_lines_at_cpu_pane_width() {
+        let mut pane = quiet_pane();
+        for (phase, expected_lines) in [
+            (
+                CpuSamplePhase::AwaitingFirstSample { core_count: 16 },
+                &["16 cores", "Sampling..."][..],
+            ),
+            (
+                CpuSamplePhase::Sampled(sampled_usage()),
+                &["CPU Cores     1", "Device      37%"][..],
+            ),
+            (CpuSamplePhase::Suppressed, &["Monitoring off"][..]),
+            (CpuSamplePhase::Unavailable, &["Unavailable"][..]),
+        ] {
+            pane.sample_phase = phase;
+            let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 24)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render::render_cpu_sample_phase(
+                        frame,
+                        tui_pane::frame_inner(area),
+                        area,
+                        &mut pane,
+                        &CpuConfig::default(),
+                        &mut PaneFrameChrome::default(),
+                    );
+                })
+                .unwrap();
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content()
+                .chunks(usize::from(CPU_PANE_WIDTH))
+                .map(|row| {
+                    row.iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                        .trim()
+                        .to_string()
+                })
+                .collect();
+            for expected in expected_lines {
+                assert!(
+                    rows.iter().any(|row| row == expected),
+                    "missing complete line {expected:?} for {:?}: {rows:?}",
+                    pane.sample_phase(),
+                );
             }
         }
     }
@@ -319,7 +373,7 @@ mod tests {
         pane.tick();
         assert!(matches!(pane.sample_phase(), CpuSamplePhase::Sampled(_)));
         assert!(pane.core_count() > 0);
-        assert!(!draw(&mut pane).contains("Awaiting CPU sample"));
+        assert!(!draw(&mut pane).contains("Sampling..."));
 
         // Disconnect sampling so a later tick has nothing new to replace the last real sample.
         let (_, samples) = channel::unbounded();

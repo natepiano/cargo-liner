@@ -661,16 +661,16 @@ pub(super) fn render_cpu_sample_phase(
                 frame,
                 inner,
                 pane,
-                format!("{core_count} cores\nAwaiting CPU sample"),
+                format!("  {core_count} cores\n  Sampling..."),
             );
             return;
         },
         CpuSamplePhase::Suppressed => {
-            render_cpu_status(frame, inner, pane, "CPU suppressed");
+            render_cpu_status(frame, inner, pane, "  Monitoring off");
             return;
         },
         CpuSamplePhase::Unavailable => {
-            render_cpu_status(frame, inner, pane, "CPU unavailable");
+            render_cpu_status(frame, inner, pane, "  Unavailable");
             return;
         },
         CpuSamplePhase::Sampled(usage) => usage,
