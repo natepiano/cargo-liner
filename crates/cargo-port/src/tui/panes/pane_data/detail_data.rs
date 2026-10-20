@@ -142,7 +142,7 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     let git_desc = description_natural_rows(
         data.git.description.as_deref(),
         git_width,
-        EmptyDescriptionBehavior::RenderEmpty,
+        EmptyDescriptionBehavior::RenderNothing,
     );
     // Both panes sync their description blocks to the taller of the two, so a
     // pane with the shorter description still reserves the shared height.
