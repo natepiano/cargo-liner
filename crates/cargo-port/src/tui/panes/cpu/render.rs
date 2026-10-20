@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -19,7 +20,6 @@ use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::warning_color;
 
@@ -31,7 +31,6 @@ use crate::tui::panes::constants::CPU_BREAKDOWN_ROWS;
 use crate::tui::panes::constants::CPU_GPU_ROWS;
 use crate::tui::panes::constants::CPU_PINNED_HEAD_ROWS;
 use crate::tui::panes::constants::CPU_STATIC_INNER_HEIGHT;
-use crate::tui::panes::constants::GPU_UNAVAILABLE_TEXT;
 use crate::tui::render_context::PaneRenderCtx;
 
 /// The GPU section expands only when the platform has metrics to show.
@@ -189,36 +188,48 @@ fn cpu_bar_line(
     ])
 }
 
-/// Single-line GPU percent row. Falls back to compact unavailable text in
-/// warning color when the OS exposes no matching metric.
+/// Availability of one metric reported by the GPU monitor.
+enum GpuMetric<T> {
+    Available(T),
+    Missing,
+}
+
+impl<T> From<Option<T>> for GpuMetric<T> {
+    fn from(value: Option<T>) -> Self { value.map_or_else(|| Self::Missing, Self::Available) }
+}
+
+/// Single-line GPU percent row. Missing metrics keep their label and show
+/// a dim en dash in the value column.
 fn gpu_metric_line(
     label: &str,
     percent: Option<u8>,
     cpu_cfg: &CpuConfig,
     width: u16,
 ) -> Line<'static> {
-    let (value_text, value_color) = percent.map_or_else(
-        || (GPU_UNAVAILABLE_TEXT.to_string(), warning_color()),
-        |percent| {
+    let value = match GpuMetric::from(percent) {
+        GpuMetric::Missing => Span::styled("–", Style::default().add_modifier(Modifier::DIM)),
+        GpuMetric::Available(percent) => {
             let severity = tui_pane::cpu_severity(
                 percent,
                 cpu_cfg.low_utilization_max_percent,
                 cpu_cfg.medium_utilization_max_percent,
             )
             .color();
-            (format!("{percent:>3}%"), severity)
+            Span::styled(format!("{percent:>3}%"), Style::default().fg(severity))
         },
-    );
-    value_line(label, value_text, value_color, width)
+    };
+    value_span_line(label, value, width)
 }
 
 #[cfg(target_os = "macos")]
 fn gpu_core_count_line(core_count: Option<u16>, width: u16) -> Line<'static> {
-    let (value_text, value_color) = core_count.map_or_else(
-        || (GPU_UNAVAILABLE_TEXT.to_string(), warning_color()),
-        |core_count| (core_count.to_string(), text_default()),
-    );
-    value_line("GPU cores", value_text, value_color, width)
+    let value = match GpuMetric::from(core_count) {
+        GpuMetric::Missing => Span::styled("–", Style::default().add_modifier(Modifier::DIM)),
+        GpuMetric::Available(core_count) => {
+            Span::styled(core_count.to_string(), Style::default().fg(text_default()))
+        },
+    };
+    value_span_line("GPU cores", value, width)
 }
 
 /// Pinned `CPU cores` head row: the live CPU core count.
@@ -234,17 +245,21 @@ fn total_line(percent: u8, width: u16) -> Line<'static> {
 /// One `label  value` row: the label in label color on the left, the value
 /// right-aligned in `value_color`, padded to `width`. No trailing colon.
 fn value_line(label: &str, value_text: String, value_color: Color, width: u16) -> Line<'static> {
-    let space_count = usize::from(width).saturating_sub(
-        label
-            .len()
-            .saturating_add(value_text.len())
-            .saturating_add(2),
-    );
+    value_span_line(
+        label,
+        Span::styled(value_text, Style::default().fg(value_color)),
+        width,
+    )
+}
+
+fn value_span_line(label: &str, value: Span<'static>, width: u16) -> Line<'static> {
+    let space_count = usize::from(width)
+        .saturating_sub(label.len().saturating_add(value.width()).saturating_add(2));
     Line::from(vec![
         Span::raw(" "),
         Span::styled(label.to_string(), Style::default().fg(label_color())),
         Span::raw(" ".repeat(space_count)),
-        Span::styled(value_text, Style::default().fg(value_color)),
+        value,
         Span::raw(" "),
     ])
 }
@@ -513,7 +528,7 @@ fn render_gpu_rows(
             focus,
             Paragraph::new(value_line(
                 "GPU",
-                "n/a".to_string(),
+                "unavailable".to_string(),
                 warning_color(),
                 layout.gpu.width,
             )),
@@ -779,17 +794,18 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
         .checked_sub(CPU_PINNED_HEAD_ROWS)
         .filter(|local| *local < layout.core_count)
         .unwrap_or(layout.band_offset);
-    render_overflow_affordance(
-        frame,
-        layout.cores_footer,
-        ViewportOverflow::new(
-            layout.core_count,
-            layout.band_offset,
-            band_visible,
-            band_cursor,
-        ),
-        Style::default().fg(label_color()),
+    let overflow = ViewportOverflow::new(
+        layout.core_count,
+        layout.band_offset,
+        band_visible,
+        band_cursor,
     );
+    if let Some(label) = overflow.label() {
+        frame.render_widget(
+            Paragraph::new(format!(" {label}")).style(Style::default().fg(label_color())),
+            layout.cores_footer,
+        );
+    }
 }
 
 #[cfg(test)]

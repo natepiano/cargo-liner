@@ -184,6 +184,7 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use tui_pane::CpuBreakdown;
@@ -230,13 +231,32 @@ mod tests {
 |│ 3 ███████   88% │|
 |│ 4            0% │|
 |│ 5 ████████ 100% │|
-|│    1 of 2 ▼     │|
+|│ 1 of 2 ▼        │|
 |├─────────────────┤|
 |│ System      12% │|
 |│ User        25% │|
 |│ Idle        63% │|
 |├─────────────────┤|
-|│ GPU         n/a │|
+|│ GPU unavailable │|
+|└─────────────────┘|
+";
+
+    #[cfg(target_os = "macos")]
+    const CPU_PARTIAL_GPU_SHOT: &str = r"|┌ CPU / GPU ──────┐|
+|│ CPU cores     1 │|
+|│ Total       37% │|
+|│ 1 ███       42% │|
+|│                 │|
+|│                 │|
+|├─────────────────┤|
+|│ System      12% │|
+|│ User        25% │|
+|│ Idle        63% │|
+|├─────────────────┤|
+|│ GPU cores     – │|
+|│ Device      73% │|
+|│ Renderer      – │|
+|│ Tiler         – │|
 |└─────────────────┘|
 ";
 
@@ -322,7 +342,7 @@ mod tests {
             .collect()
     }
 
-    fn draw_rows(pane: &mut CpuPane, height: u16) -> Vec<String> {
+    fn draw_buffer(pane: &mut CpuPane, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -337,9 +357,11 @@ mod tests {
                 );
             })
             .unwrap();
-        terminal
-            .backend()
-            .buffer()
+        terminal.backend().buffer().clone()
+    }
+
+    fn draw_rows(pane: &mut CpuPane, height: u16) -> Vec<String> {
+        draw_buffer(pane, height)
             .content()
             .chunks(usize::from(CPU_PANE_WIDTH))
             .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
@@ -390,6 +412,106 @@ mod tests {
             if cursor == 17 {
                 assert!(rows.iter().any(|row| row.trim_start().starts_with("16 ")));
             }
+        }
+    }
+
+    #[test]
+    fn core_pager_starts_at_the_metric_labels_left_edge() {
+        let mut pane = quiet_pane();
+        for (cursor, label) in [(0, "1 of 2 ▼"), (9, "▲ 2 of 2")] {
+            pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(8, 42));
+            pane.viewport.set_pos(cursor);
+            let rows = draw_rows(&mut pane, 16);
+            let pagers: Vec<_> = rows.iter().filter(|row| row.contains(" of ")).collect();
+            assert_eq!(
+                pagers.len(),
+                1,
+                "overflowing cores draw one pager: {rows:?}"
+            );
+            let pager = pagers[0];
+            assert_eq!(pager.trim(), label, "{rows:?}");
+            assert_eq!(pager.find(label), rows[1].find("CPU cores"), "{rows:?}");
+            assert_eq!(pager.find(label), Some(2), "{rows:?}");
+        }
+    }
+
+    #[test]
+    fn missing_gpu_data_uses_the_complete_sentence_case_label() {
+        let mut pane = quiet_pane();
+        for core_count in [1, 16] {
+            pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(core_count, 42));
+            let rows = draw_rows(&mut pane, 16);
+            let gpu_rows: Vec<_> = rows.iter().filter(|row| row.contains("GPU")).collect();
+            assert_eq!(gpu_rows.len(), 1, "{rows:?}");
+            assert_eq!(gpu_rows[0].trim(), "GPU unavailable", "{rows:?}");
+            assert_eq!(gpu_rows[0].find("GPU"), Some(2), "{rows:?}");
+            assert!(!rows.iter().any(|row| row.contains("n/a")), "{rows:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn partial_gpu_data_draws_dim_dashes_in_missing_value_columns() {
+        let mut pane = quiet_pane();
+        for gpu in [
+            GpuUsage {
+                device_percent: Some(73),
+                ..GpuUsage::default()
+            },
+            GpuUsage {
+                core_count:       Some(38),
+                device_percent:   None,
+                renderer_percent: Some(12),
+                tiler_percent:    Some(7),
+            },
+        ] {
+            let mut usage = sampled_usage();
+            usage.gpu = gpu;
+            pane.sample_phase = CpuSamplePhase::Sampled(usage);
+            let buffer = draw_buffer(&mut pane, 16);
+            let rows: Vec<String> = buffer
+                .content()
+                .chunks(usize::from(CPU_PANE_WIDTH))
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+                .collect();
+            for (label, missing) in [
+                ("GPU cores", gpu.core_count.is_none()),
+                ("Device", gpu.device_percent.is_none()),
+                ("Renderer", gpu.renderer_percent.is_none()),
+                ("Tiler", gpu.tiler_percent.is_none()),
+            ] {
+                let metric_rows: Vec<_> = (0..16_u16)
+                    .filter(|row| rows[usize::from(*row)].contains(label))
+                    .collect();
+                assert_eq!(
+                    metric_rows.len(),
+                    1,
+                    "missing or repeated {label}: {rows:?}"
+                );
+                let row = metric_rows[0];
+                if missing {
+                    assert_eq!(
+                        rows[usize::from(row)].trim(),
+                        format!("{label:<14}–"),
+                        "{rows:?}"
+                    );
+                    let dash = &buffer[(16, row)];
+                    assert_eq!(dash.symbol(), "–");
+                    assert!(dash.modifier.contains(ratatui::style::Modifier::DIM));
+                    assert!(
+                        !buffer[(2, row)]
+                            .modifier
+                            .contains(ratatui::style::Modifier::DIM)
+                    );
+                } else {
+                    assert!(!rows[usize::from(row)].contains('–'), "{rows:?}");
+                }
+            }
+            assert!(!rows.iter().any(|row| row.contains("n/a")), "{rows:?}");
+            assert!(
+                !rows.iter().any(|row| row.contains("GPU unavailable")),
+                "{rows:?}"
+            );
         }
     }
 
@@ -467,12 +589,14 @@ mod tests {
         pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(16, 42));
         let rows = draw_rows(&mut pane, 16);
         assert_eq!(
-            rows.iter().filter(|row| row.contains("n/a")).count(),
+            rows.iter()
+                .filter(|row| row.contains("GPU unavailable"))
+                .count(),
             1,
             "{rows:?}"
         );
         assert!(
-            rows.iter().any(|row| row.trim() == "GPU         n/a"),
+            rows.iter().any(|row| row.trim() == "GPU unavailable"),
             "{rows:?}"
         );
         assert_eq!(pane.viewport.len(), 22);
@@ -543,6 +667,15 @@ mod tests {
             (CpuSamplePhase::Sampled(usage), CPU_SAMPLED_SHOT),
             (CpuSamplePhase::Suppressed, CPU_SUPPRESSED_SHOT),
             (CpuSamplePhase::Unavailable, CPU_UNAVAILABLE_SHOT),
+            #[cfg(target_os = "macos")]
+            (
+                CpuSamplePhase::Sampled({
+                    let mut usage = sampled_usage();
+                    usage.gpu.device_percent = Some(73);
+                    usage
+                }),
+                CPU_PARTIAL_GPU_SHOT,
+            ),
         ] {
             pane.sample_phase = phase;
             let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 16)).unwrap();
