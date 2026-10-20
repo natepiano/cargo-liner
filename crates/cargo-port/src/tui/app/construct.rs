@@ -87,13 +87,13 @@ pub(super) struct Inputs {
 /// `Inputs` plus the three internal channel pairs (example, CI
 /// fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
-    inputs:      Inputs,
-    example_tx:  Sender<OwnedRunEvent>,
-    example_rx:  Receiver<OwnedRunEvent>,
-    ci_fetch_tx: Sender<CiFetchMsg>,
-    ci_fetch_rx: Receiver<CiFetchMsg>,
-    clean_tx:    Sender<CleanMsg>,
-    clean_rx:    Receiver<CleanMsg>,
+    inputs:       Inputs,
+    owned_run_tx: Sender<OwnedRunEvent>,
+    owned_run_rx: Receiver<OwnedRunEvent>,
+    ci_fetch_tx:  Sender<CiFetchMsg>,
+    ci_fetch_rx:  Receiver<CiFetchMsg>,
+    clean_tx:     Sender<CleanMsg>,
+    clean_rx:     Receiver<CleanMsg>,
 }
 
 /// `Channeled` plus the products of applying the selected startup policy.
@@ -136,14 +136,14 @@ impl AppBuilder<Inputs> {
     }
 
     pub(super) fn open_channels(self) -> AppBuilder<Channeled> {
-        let (example_tx, example_rx) = channel::unbounded();
+        let (owned_run_tx, owned_run_rx) = channel::unbounded();
         let (ci_fetch_tx, ci_fetch_rx) = channel::unbounded();
         let (clean_tx, clean_rx) = channel::unbounded();
         AppBuilder {
             state: Channeled {
                 inputs: self.state,
-                example_tx,
-                example_rx,
+                owned_run_tx,
+                owned_run_rx,
                 ci_fetch_tx,
                 ci_fetch_rx,
                 clean_tx,
@@ -245,7 +245,7 @@ impl AppBuilder<Started> {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
             clean:      (channeled.clean_tx, channeled.clean_rx),
-            example:    (channeled.example_tx, channeled.example_rx),
+            owned_run:  (channeled.owned_run_tx, channeled.owned_run_rx),
             watcher:    started.watcher,
         });
         let lint = Lint::new(started.lint_runtime);

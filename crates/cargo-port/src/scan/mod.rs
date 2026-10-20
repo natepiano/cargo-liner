@@ -49,5 +49,5 @@ pub(crate) use exclude::ExcludeDirs;
 pub(crate) use language_stats::collect_language_stats_single;
 pub(crate) use test_counts::collect_test_counts_single;
 pub(crate) use tree::build_tree;
-pub(crate) use tree::cargo_project_to_item;
+pub(crate) use tree::cargo_parse_result_to_item;
 pub(crate) use tree::normalize_workspace_path;

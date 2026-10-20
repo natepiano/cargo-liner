@@ -36,22 +36,22 @@ pub struct BackgroundChannels {
     pub background: (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
     pub ci_fetch:   (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
     pub clean:      (Sender<CleanMsg>, Receiver<CleanMsg>),
-    pub example:    (Sender<OwnedRunEvent>, Receiver<OwnedRunEvent>),
+    pub owned_run:  (Sender<OwnedRunEvent>, Receiver<OwnedRunEvent>),
     pub watcher:    WatcherHandle,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
 /// `background: Background` field.
 pub(super) struct Background {
-    sender:      Sender<BackgroundMsg>,
-    receiver:    Receiver<BackgroundMsg>,
-    ci_fetch_tx: Sender<CiFetchMsg>,
-    ci_fetch_rx: Receiver<CiFetchMsg>,
-    clean_tx:    Sender<CleanMsg>,
-    clean_rx:    Receiver<CleanMsg>,
-    example_tx:  Sender<OwnedRunEvent>,
-    example_rx:  Receiver<OwnedRunEvent>,
-    watcher:     WatcherHandle,
+    sender:       Sender<BackgroundMsg>,
+    receiver:     Receiver<BackgroundMsg>,
+    ci_fetch_tx:  Sender<CiFetchMsg>,
+    ci_fetch_rx:  Receiver<CiFetchMsg>,
+    clean_tx:     Sender<CleanMsg>,
+    clean_rx:     Receiver<CleanMsg>,
+    owned_run_tx: Sender<OwnedRunEvent>,
+    owned_run_rx: Receiver<OwnedRunEvent>,
+    watcher:      WatcherHandle,
 }
 
 impl Background {
@@ -60,7 +60,7 @@ impl Background {
             background: (background_tx, background_rx),
             ci_fetch: (ci_fetch_tx, ci_fetch_rx),
             clean: (clean_tx, clean_rx),
-            example: (example_tx, example_rx),
+            owned_run: (owned_run_tx, owned_run_rx),
             watcher,
         } = channels;
         Self {
@@ -70,8 +70,8 @@ impl Background {
             ci_fetch_rx,
             clean_tx,
             clean_rx,
-            example_tx,
-            example_rx,
+            owned_run_tx,
+            owned_run_rx,
             watcher,
         }
     }
@@ -85,7 +85,7 @@ impl Background {
 
     pub(super) fn clean_sender(&self) -> Sender<CleanMsg> { self.clean_tx.clone() }
 
-    pub(super) fn example_sender(&self) -> Sender<OwnedRunEvent> { self.example_tx.clone() }
+    pub(super) fn owned_run_sender(&self) -> Sender<OwnedRunEvent> { self.owned_run_tx.clone() }
 
     // `background_receiver`, `ci_fetch_rx`, `clean_rx` and `example_rx`
     // borrow the subsystem's `Receiver` handles for event polling.
@@ -96,7 +96,7 @@ impl Background {
 
     pub(super) const fn clean_rx(&self) -> &Receiver<CleanMsg> { &self.clean_rx }
 
-    pub(super) const fn example_rx(&self) -> &Receiver<OwnedRunEvent> { &self.example_rx }
+    pub(super) const fn owned_run_receiver(&self) -> &Receiver<OwnedRunEvent> { &self.owned_run_rx }
 
     /// Send `msg` on the watcher channel. Convenience for the
     /// common watcher-registration pattern. Disabled watcher handles
@@ -168,7 +168,7 @@ mod tests {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
-            example:    channel::unbounded(),
+            owned_run:  channel::unbounded(),
             watcher:    WatcherHandle::active(watch_tx),
         })
     }
@@ -224,7 +224,7 @@ mod tests {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
-            example:    channel::unbounded(),
+            owned_run:  channel::unbounded(),
             watcher:    WatcherHandle::active(watch_tx),
         });
 
@@ -253,7 +253,7 @@ mod tests {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
-            example:    channel::unbounded(),
+            owned_run:  channel::unbounded(),
             watcher:    WatcherHandle::disabled(),
         });
 

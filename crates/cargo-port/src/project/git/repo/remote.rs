@@ -105,7 +105,7 @@ pub(super) fn build_remote_info(
         context.cargo_port_config,
     );
     let ahead_behind = match &tracked_ref {
-        TrackedRef::Ref(reference) => checkout::parse_ahead_behind(
+        TrackedRef::Named(reference) => checkout::parse_ahead_behind(
             context.repo_root,
             &format!("{GIT_HEAD_REVSPEC_PREFIX}{reference}"),
             &format!("tracked_{name}"),

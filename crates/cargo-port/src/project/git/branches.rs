@@ -70,7 +70,7 @@ pub(super) fn get_upstream_branch(repo_root: &Path, head: &HeadState) -> Tracked
                 ],
             ) {
                 Ok(output) if output.trimmed().is_empty() => TrackedRef::Untracked,
-                Ok(output) => TrackedRef::Ref(output.trimmed().to_string()),
+                Ok(output) => TrackedRef::Named(output.trimmed().to_string()),
                 Err(_) => TrackedRef::Unreadable,
             }
         },
@@ -136,10 +136,10 @@ fn try_resolve_tracked_ref(
     let prefix = format!("{remote_name}/");
     match current_upstream {
         TrackedRef::Unreadable => return Ok(TrackedRef::Unreadable),
-        TrackedRef::Ref(name) if name.starts_with(&prefix) => {
-            return Ok(TrackedRef::Ref(name.clone()));
+        TrackedRef::Named(name) if name.starts_with(&prefix) => {
+            return Ok(TrackedRef::Named(name.clone()));
         },
-        TrackedRef::Ref(_) | TrackedRef::Untracked => {},
+        TrackedRef::Named(_) | TrackedRef::Untracked => {},
     }
     let remote_head = format!("{GIT_REMOTE_REF_PREFIX}{remote_name}{GIT_REMOTE_HEAD_REF_SUFFIX}");
     match command::git_answer_logged(
@@ -153,7 +153,7 @@ fn try_resolve_tracked_ref(
         ],
     )? {
         GitAnswer::Yes(output) if output.trimmed().starts_with(&prefix) => {
-            return Ok(TrackedRef::Ref(output.trimmed().to_string()));
+            return Ok(TrackedRef::Named(output.trimmed().to_string()));
         },
         GitAnswer::Yes(_) | GitAnswer::No => {},
     }
@@ -161,7 +161,7 @@ fn try_resolve_tracked_ref(
         ResolvedBranch::Unreadable => return Ok(TrackedRef::Unreadable),
         ResolvedBranch::Named(name) => {
             if remote_ref_exists(repo_root, remote_name, name)? == RefPresence::Present {
-                return Ok(TrackedRef::Ref(format!("{prefix}{name}")));
+                return Ok(TrackedRef::Named(format!("{prefix}{name}")));
             }
         },
         ResolvedBranch::NotFound => {},
@@ -178,7 +178,7 @@ fn try_resolve_tracked_ref(
         )
     {
         if remote_ref_exists(repo_root, remote_name, name)? == RefPresence::Present {
-            return Ok(TrackedRef::Ref(format!("{prefix}{name}")));
+            return Ok(TrackedRef::Named(format!("{prefix}{name}")));
         }
     }
     Ok(TrackedRef::Untracked)
