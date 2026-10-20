@@ -63,7 +63,7 @@ pub(in crate::tui) fn signal_owned_run(inflight: &mut Inflight) -> OwnedRunStopS
             | OwnedRunTerminationSubmission::TokenRefused
             | OwnedRunTerminationSubmission::ActorUnavailable => OwnedRunStopSignal::NotSubmitted,
         },
-        OwnedRunTermination::RequestPending { .. } | OwnedRunTermination::NoRunningRun => {
+        OwnedRunTermination::RequestPending { .. } | OwnedRunTermination::NotRunning => {
             OwnedRunStopSignal::NotSubmitted
         },
     }
@@ -72,8 +72,8 @@ pub(in crate::tui) fn signal_owned_run(inflight: &mut Inflight) -> OwnedRunStopS
 /// Spawn the request owned by the current `Starting` lifecycle.
 pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
     let pending_example_run = match app.inflight.starting_owned_run_request(owned_run_id) {
-        OwnedRunStartingRequest::Starting(pending_example_run) => pending_example_run.clone(),
-        OwnedRunStartingRequest::NoMatchingStartingRun => return,
+        OwnedRunStartingRequest::Matched(pending_example_run) => pending_example_run.clone(),
+        OwnedRunStartingRequest::NoMatch => return,
     };
     let mut command = cargo_command_for_owned_run(&pending_example_run);
     isolate_owned_process(&mut command);
@@ -137,7 +137,7 @@ pub(super) fn spawn_owned_run_process(app: &mut App, owned_run_id: OwnedRunId) {
         .activate_owned_run(owned_run_id, owned_run_process_actor)
     {
         OwnedRunActivation::Activated => {},
-        OwnedRunActivation::NoMatchingStartingRun(owned_run_process_actor) => {
+        OwnedRunActivation::NoMatchingStart(owned_run_process_actor) => {
             owned_run_process_actor.discard_unactivated();
             return;
         },

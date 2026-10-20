@@ -137,14 +137,14 @@ fn output_title(pane: &OutputPane, ctx: &PaneRenderCtx<'_>) -> String {
     }
     let owned_output = ctx.output_presentation.owned_output();
     let owned_run_running_label = owned_output
-        .map_or(OwnedRunRunningLabelRef::NotRunning, |owned| {
+        .map_or(OwnedRunRunningLabelRef::Unavailable, |owned| {
             owned.running_label()
         });
     match owned_run_running_label {
-        OwnedRunRunningLabelRef::Running(name) => {
+        OwnedRunRunningLabelRef::Available(name) => {
             return format!(" Running: {name} (Esc to stop) ");
         },
-        OwnedRunRunningLabelRef::NotRunning => {},
+        OwnedRunRunningLabelRef::Unavailable => {},
     }
     let owned_run_output_title =
         owned_output.map_or(OwnedRunOutputTitleRef::Unavailable, |owned| owned.title());
