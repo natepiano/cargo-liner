@@ -99,7 +99,6 @@ pub use poller::CpuBreakdown;
 pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
 pub use poller::CpuUsage;
-#[cfg(not(target_os = "windows"))]
 pub use poller::GpuUsage;
 pub use rolling_mean::RollingMean;
 pub use severity::CpuSeverity;
