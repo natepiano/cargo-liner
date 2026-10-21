@@ -1,11 +1,13 @@
 //! Named values owned by flat top-level modules.
 
-// claim overlap arguments
+// `OVERLAP_WHY_ARGUMENT`, `OVERLAP_WHY_ARGUMENT_ID` and `OVERLAP_WHY_VALUE_NAME` name claim-overlap
+// arguments.
 pub(crate) const OVERLAP_WHY_ARGUMENT: &str = "overlap-why";
 pub(crate) const OVERLAP_WHY_ARGUMENT_ID: &str = "overlap_why";
 pub(crate) const OVERLAP_WHY_VALUE_NAME: &str = "REASON";
 
-// merge extent
+// `MERGE_EXTENT_TRUNK_UNAVAILABLE` and `MERGE_EXTENT_WORKTREE_UNAVAILABLE` explain merge-extent
+// failures.
 /// A missing integration target cannot prove that a branch's merge surface is empty.
 pub(crate) const MERGE_EXTENT_TRUNK_UNAVAILABLE: &str =
     "cannot derive merge extent: integration target is unavailable";
