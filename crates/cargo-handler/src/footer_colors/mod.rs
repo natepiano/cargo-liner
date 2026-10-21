@@ -170,8 +170,7 @@ struct ReadablePalette {
     management: BTreeMap<FooterColor, ReadableInk>,
     plain:      ReadableInk,
     grounds:    InkGrounds,
-    status:     Vec<(Color, Color)>,
-    sessions:   Vec<(Color, Color)>,
+    glyph_inks: Vec<(Color, Color)>,
 }
 
 thread_local! {
@@ -214,8 +213,7 @@ impl ReadablePalette {
             management,
             plain,
             grounds,
-            status: Vec::new(),
-            sessions: Vec::new(),
+            glyph_inks: Vec::new(),
         }
     }
 
@@ -336,18 +334,19 @@ impl InkPurpose {
     }
 }
 
+/// Foreground share of a covered glyph stem, out of 255.
+/// Live xterm stems measured about 216; 208 leaves a small rasterization margin.
+const ANTIALIASED_GLYPH_COVERAGE: u8 = 208;
+
 /// The minimum glyph coverage for which an ink must retain the contrast floor.
 #[derive(Clone, Copy)]
 enum InkCoverage {
     Opaque,
-    /// Ninety percent foreground leaves margin for the terminal's glyph rasterizer.
+    /// Measured stem coverage with a small margin for the terminal rasterizer.
     Antialiased,
 }
 
 impl InkCoverage {
-    /// Ten percent background at the edge of a mostly covered glyph pixel.
-    const GLYPH_BACKGROUND_SHARE: u8 = 26;
-
     fn contrast(self, grounds: InkGrounds, ink: Color) -> f64 {
         match self {
             Self::Opaque => grounds.contrast(ink),
@@ -355,7 +354,7 @@ impl InkCoverage {
                 .into_iter()
                 .map(|ground| {
                     contrast(
-                        tui_pane::blend_color(ink, ground, Self::GLYPH_BACKGROUND_SHARE),
+                        tui_pane::blend_color(ink, ground, 255 - ANTIALIASED_GLYPH_COVERAGE),
                         ground,
                     )
                 })
@@ -365,30 +364,23 @@ impl InkCoverage {
 }
 
 /// Status foregrounds share the footer's contrast policy and palette lifetime.
-pub(crate) fn readable_status_style(style: Style) -> Style {
-    readable_style(style, InkCoverage::Opaque)
-}
+pub(crate) fn readable_status_style(style: Style) -> Style { readable_style(style) }
 
 /// Session hues retain readable glyph coverage on every drawn pane ground.
-pub(crate) fn readable_session_style(style: Style) -> Style {
-    readable_style(style, InkCoverage::Antialiased)
-}
+pub(crate) fn readable_session_style(style: Style) -> Style { readable_style(style) }
 
 /// Solve each source ink once per theme and set of pane grounds.
-fn readable_style(style: Style, coverage: InkCoverage) -> Style {
+fn readable_style(style: Style) -> Style {
     let Some(color) = style.fg else { return style };
     let foreground = PALETTE.with(|palette| {
         let mut palette = palette.borrow_mut();
         palette.current();
         let grounds = palette.grounds;
-        let inks = match coverage {
-            InkCoverage::Opaque => &mut palette.status,
-            InkCoverage::Antialiased => &mut palette.sessions,
-        };
+        let inks = &mut palette.glyph_inks;
         if let Some((_, foreground)) = inks.iter().find(|(ink, _)| *ink == color) {
             return *foreground;
         }
-        let foreground = ReadableInk::new(color, grounds, coverage).foreground;
+        let foreground = ReadableInk::new(color, grounds, InkCoverage::Antialiased).foreground;
         inks.push((color, foreground));
         foreground
     });

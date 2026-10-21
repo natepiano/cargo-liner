@@ -127,11 +127,6 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
-/// The `runs` of a command, where the row is not an agent.
-pub(crate) const COMMAND_RUNS: &str = "command";
-/// The `runs` of a command that is only a timer, in place of
-/// [`COMMAND_RUNS`].
-pub(crate) const TIMER_RUNS: &str = "timer";
 /// The pie a timer row's name leads with while the timer runs, by the
 /// share of it gone: each glyph while the share is under its bound,
 /// from empty to three quarters filled.

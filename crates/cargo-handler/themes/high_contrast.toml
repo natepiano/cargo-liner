@@ -109,7 +109,7 @@ rainbow_cyan   = { color = { r = 0, g = 95, b = 115 }, bold = true }
 rainbow_green  = { color = { r = 0, g = 100, b = 0 }, bold = true }
 rainbow_orange = { color = { r = 150, g = 60, b = 0 }, bold = true }
 rainbow_red    = { color = { r = 180, g = 0, b = 0 }, bold = true }
-shell          = { color = { r = 0, g = 80, b = 120 }, bold = true }
+shell          = { color = { r = 0, g = 80, b = 65 }, bold = true }
 unreachable    = { color = { r = 180, g = 0, b = 0 }, bold = true }
 
 [variants.status]

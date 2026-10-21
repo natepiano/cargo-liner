@@ -476,7 +476,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a brown status bar in cargo-handler; only the `tui_pane` fallback theme changes.
 
-### Phase 22 — Shell rows name their kind once; session sort ignores case  · status: todo
+### Phase 22 — Shell rows name their kind once; session sort ignores case  · status: done
 
 **Depends on:** Phase 17
 
@@ -504,6 +504,39 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — separate rendered shell, timer, comparison and contrast regressions.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of a tile with a shell row and mixed-case session names. The checkpoint carries `Change-Review: a shell row says shell only in the type column, and sessions sort A to Z whatever the case | On natedev, in a terminal, run cargo-handler while a showrunner runs shells and subagents with capitalized titles | The status column of a shell row shows its state, never command, and names read in alphabetical order`.
+
+### Phase 23 — Timer at digit height; tiles drop empty columns; one Busy ink  · status: todo
+
+**Depends on:** Phase 22
+
+#### Work Order
+
+**Goal:** a shell timer reads at digit height on the digit center line, a tile draws no column that is empty in every row, and `thinking` and `running` draw in one Busy ink in every theme.
+
+**Source:** the phase 22 design check, 2026-10-21; both defects were there before phase 22. Showrunner ruling, 2026-10-21: both stay with this unit in a new phase 23, after 22 and before 16; order 22, 23, 16, 21, 18, 19, 20, 9. Column removal is approved. The phase 22 design check 4 found a third defect from before phase 22: in dark, `thinking` (#64dc64) and `running` (#61d661) are about ΔE00 1 apart, while light draws them apart (#117711 and #006d00). Showrunner ruling, 2026-10-21: both mean the agent works and the status word tells them apart, so draw both from one Busy ink in every theme and remove the separate light ink; it joins this phase.
+
+**Constraints from prior phases:**
+- Phase 22: `ShellState::{Running, Timed(Timer)}` in `agent_cell.rs` gives a shell row its status text and ink; the timer text is `timer_label` with the pie glyphs from `constants.rs` (the pie list beside `LAUNCHED_BY_LABEL`).
+- Phase 17: the `type` column is right of `session`; columns are measured after the shared screen-column fit (`App.tree_layouts`), and tiles in one screen column share column positions. Click mapping reads the drawn tree metrics, so a dropped column must also leave the click map.
+- Do not change the terminal font.
+
+**Spec:**
+1. Timer pie: find where the pie glyph's drawn size comes from. If a font fallback draws it, pick a glyph that the primary terminal font (DejaVu Sans Mono in the shots) draws at digit height on the digit center line. If no such glyph exists, remove the pie and keep the digits only.
+2. Empty columns: a tile leaves out each column that is empty in every one of its rows, `type` and `role` included. Each tile sets its columns from its own rows; headers, widths and click mapping follow the drawn columns.
+3. Tests, red first: a rendered unassigned tile whose rows have no type and no role draws neither header; a rendered tile with type and role values keeps both columns; the timer cell draws the chosen glyph (or the digits alone) in the rendered status cell; a header click in a tile with a dropped column still selects the clicked column.
+4. One Busy ink: `thinking` and `running` resolve to the same solved Busy ink in all four built-in themes, focused and unfocused grounds, tint off and on. Remove the path that gives light `running` an ink separate from `thinking`, and keep 4.5:1 at the antialiased coverage.
+5. Tests, red first, for item 4: a rendered status cell for `thinking` and one for `running` read back the same foreground in every built-in theme.
+6. Live: measure the timer cap height and vertical center against the digits in framed shots, dark and light.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/src/footer_colors/`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell/tests/`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — glyph choice or removal, per-tile column set, headers, widths, click map, one Busy ink; CHANGELOG.
+- `test` — the red rendered tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of a counting shell timer, of the unassigned tile beside a tile with type and role values, and of `thinking` beside `running` rows. The checkpoint carries `Change-Review: shell timers read at digit height, and tiles draw no empty columns | On natedev, run cargo-handler while a shell waits on a timer | The timer reads clearly beside its digits, and the unassigned tile shows no empty type or role column` and `Change-Review: thinking and running share one green | On natedev, run cargo-handler in the light and the dark theme while agents work | Every thinking and running word is the same green`.
 
 ### Phase 18 — The shortcuts overlay pages only when it must  · status: todo
 
@@ -672,9 +705,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Goal:** cargo-handler shows an Astra designer session and an Astra reviewer session (Codex on gpt-6-astra) under the unit director or showrunner that runs it, each with its own role word and color.
 
-**Source:** the user (via hana and the showrunner), 2026-10-20: cargo-handler shows the two new Codex roles of the in-game metrics production; a designer is a lasting role that can be resumed and runs under a unit director or a showrunner. Showrunner rulings: a phase after Phase 17; order 15, 17, 21, 18, 19, 16, 20, 9; role words `astra designer` and `astra reviewer`; colors pink and bright-green; if the hierarchy edge is not on `~/.claude` main when Phase 17 checkpoints, run Phase 18 and return here when the showrunner says it landed. The guild view waits for natedev's guild design and is not in this phase.
+**Source:** the user (via hana and the showrunner), 2026-10-20: cargo-handler shows the two new Codex roles of the in-game metrics production; a designer is a lasting role that can be resumed and runs under a unit director or a showrunner. Showrunner rulings: a phase after Phase 17; order 15, 17, 21, 18, 19, 16, 20, 9; role words `astra designer` and `astra reviewer`; colors pink and bright-green; if the hierarchy edge is not on `~/.claude` main when Phase 17 checkpoints, run Phase 18 and return here when the showrunner says it landed. Lasting roles read from `roles.py` are not in this phase (see the note below).
 
-**Showrunner note (2026-10-21):** the user changed the guild design. There are four guilds: designers, reviewers, showrunners and units. Each guild head is a unit director under a new top-level `guilds` showrunner. The goddess names are on hold, so this phase waits on no role-name pick and adds no new role words for the heads. `astra-designer` and `astra-reviewer` stay as they are, with the same colors. The guild view waits on the revised Guilds section, which guild-process-unit sends through the showrunner.
+**Showrunner note (2026-10-21, revised guild design):** there are four guilds: `designers`, `reviewers`, `showrunners` and `units`. Workers have no guild. Each head is a unit director whose unit name is its guild ID, under a new top-level production `guilds` (herdr space `guilds` on natedev: the guilds showrunner in tab 1, then the four heads). In the census the heads are ordinary unit edges under the guilds showrunner, and each member keeps its real manager: an Astra designer stays under the unit director or showrunner that holds it, never under the `designers` head. `astra-designer` and `astra-reviewer` edges and colors do not change. Lasting roles will come only from sdlc phase 6 `scripts/guilds/roles.py list --json`; parse no other file for them. That file is not on `~/.claude` main, and this phase does not need it: reading it is a later phase. Tips are files in `~/rust/nate_style/guilds/<guild>/`; there is no guild message group and no publication record, so cargo-handler draws nothing for them. Design doc: `docs/plans/sdlc-guilds-design.md` on `~/.claude` branch `sdlc-guild-process` (dadb482b), sections "Guilds and heads" and "Data for cargo-handler".
 
 **Constraints from prior phases:**
 - natedev adds to `production_tree.py --json` one edge per Astra session while it holds the role: `{"manager": <Claude session id of the unit director or showrunner>, "member": <Codex thread id>, "role": "astra-designer" | "astra-reviewer", "codex_home": <CODEX_HOME>, "state": "busy" | "idle"}`, and the `statusline.conf` keys `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
@@ -697,6 +730,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse and keep their words; each takes its configured color; an Astra row draws under a unit director and under a showrunner; a `codex_exec` thread named by an edge gets its name and activity; an unknown role is still dropped.
 6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role ink, read through the production role API, at CIEDE2000 >= 12 from every session hue and at 4.5:1 with glyph coverage in all four themes.
+7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 
 **Files:**
 - `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`

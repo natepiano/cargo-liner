@@ -196,7 +196,7 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     let work = work_buffer("ups");
     for (name, prefix) in [
         ("opened-session", "├─ opened-session session thinking"),
-        ("ups-shell", "└─ ups-shell shell command"),
+        ("ups-shell", "└─ ups-shell shell running"),
         ("ups-codex", "└─ ups-codex worker idle"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));

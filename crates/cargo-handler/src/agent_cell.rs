@@ -30,6 +30,7 @@ use tui_pane::text_default;
 
 use crate::census::Account;
 use crate::census::AccountColumn;
+use crate::census::Activity;
 use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
@@ -74,6 +75,7 @@ use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
+use crate::sort;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
 use crate::sort::SortDirection;
@@ -211,6 +213,33 @@ enum WorkKind<'a> {
     Thread,
 }
 
+/// A retained shell command is running, with or without a known deadline.
+#[derive(Clone, Copy, Debug)]
+enum ShellState {
+    Running,
+    Timed(Timer),
+}
+
+impl From<Option<Timer>> for ShellState {
+    fn from(timer: Option<Timer>) -> Self { timer.map_or(Self::Running, Self::Timed) }
+}
+
+impl ShellState {
+    const fn role(self) -> Role {
+        match self {
+            Self::Running => thread_status_role(AgentActivity::Active(Activity::Running)),
+            Self::Timed(_) => Role::Shell,
+        }
+    }
+
+    fn text(self, now: u64) -> String {
+        match self {
+            Self::Running => AgentActivity::Active(Activity::Running).text().to_owned(),
+            Self::Timed(timer) => timer_label(timer, now),
+        }
+    }
+}
+
 /// A work row paired with its classified role in the tree.
 #[derive(Clone, Copy, Debug)]
 struct Work<'a> {
@@ -228,10 +257,7 @@ impl<'a> Work<'a> {
 
     fn status(self, now: u64) -> String {
         match self.kind {
-            WorkKind::Shell => self.child.timer.map_or_else(
-                || self.child.runs_label().into_owned(),
-                |timer| timer_label(timer, now),
-            ),
+            WorkKind::Shell => ShellState::from(self.child.timer).text(now),
             WorkKind::Subagent(_) | WorkKind::Thread => self.child.activity.text().to_string(),
         }
     }
@@ -621,7 +647,7 @@ impl TreeLine<'_> {
         let primary = match sort.column {
             // A larger age is an earlier start.
             TreeColumn::Age => other.started().cmp(&self.started()),
-            TreeColumn::Session => self.name().cmp(&other.name()),
+            TreeColumn::Session => sort::compare_names(&self.name(), &other.name()),
             TreeColumn::Account => {
                 account_sort_text(self.account()).cmp(account_sort_text(other.account()))
             },
@@ -711,7 +737,7 @@ impl TreeLine<'_> {
     }
 
     /// The status color of the subject.
-    const fn status_role(&self) -> Role {
+    fn status_role(&self) -> Role {
         match self.subject {
             LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 summary::status_role(self.row)
@@ -722,9 +748,9 @@ impl TreeLine<'_> {
                 kind: WorkKind::Thread | WorkKind::Subagent(_),
             }) => thread_status_role(child.activity),
             LineSubject::Work(Work {
+                child,
                 kind: WorkKind::Shell,
-                ..
-            }) => Role::Shell,
+            }) => ShellState::from(child.timer).role(),
         }
     }
 }
@@ -2550,10 +2576,10 @@ mod tests {
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
                 "    session                                                                type      role    status   branch  directory    age ▼",
-                " ├─ Launch the Phase 1 implementation seat                                 shell             command  —       —          12m",
+                " ├─ Launch the Phase 1 implementation seat                                 shell             running  —       —          12m",
                 " │  └─ tool-based-ui-trunk-impl                                                      worker  idle     —       —          11m",
                 " └─ Review the permission queue                                            subagent          idle     —       —           5m  3s",
-                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  shell             command  —       —              45s",
+                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue  shell             running  —       —              45s",
             ]
         );
         let heading = " pid 3266367 · claude · thinking · 23h · natedev · berth_fix";
@@ -2575,7 +2601,7 @@ mod tests {
             ("claude", Role::Claude),
             ("thinking", Role::Busy),
             ("idle", Role::Idle),
-            ("command", Role::Shell),
+            ("running", Role::Busy),
         ] {
             let at = find(&buffer, text).expect("styled value");
             assert_eq!(Some(buffer[at].fg), role.style().fg);
@@ -2681,7 +2707,7 @@ mod tests {
     }
 
     /// A tree whose widest name cannot fit switches to compressed columns;
-    /// statuses retain their activity and command colors.
+    /// statuses retain their activity and shell colors.
     #[test]
     fn a_cell_compresses_where_its_tree_would_cut_a_name() {
         let arrange = AgentRow {
@@ -2723,8 +2749,8 @@ mod tests {
         );
         assert!(find(&cut, "directory").is_none());
         assert_eq!(
-            Some(cut[find(&cut, "command").expect("shell status")].fg),
-            Role::Shell.style().fg
+            Some(cut[find(&cut, "running").expect("shell status")].fg),
+            Role::Busy.style().fg
         );
         assert_eq!(
             Some(cut[find(&cut, "idle").expect("subagent status")].fg),
@@ -3096,8 +3122,8 @@ mod tests {
             Role::Idle.style().fg
         );
         assert_eq!(
-            Some(buffer[find(&buffer, "command").expect("shell status")].fg),
-            Role::Shell.style().fg
+            Some(buffer[find(&buffer, "running").expect("shell status")].fg),
+            Role::Busy.style().fg
         );
     }
 
@@ -3533,8 +3559,8 @@ mod tests {
             assert_eq!(Some(buffer[at].fg), Role::Shell.style().fg);
             assert!(find(&buffer, "Re-arm the progress timer").is_some());
             assert!(
-                runs_in(&buffer, Role::Shell.style().fg.expect("shell color"))
-                    .contains(&"command".to_string())
+                runs_in(&buffer, Role::Busy.style().fg.expect("running color"))
+                    .contains(&"running".to_string())
             );
         }
     }

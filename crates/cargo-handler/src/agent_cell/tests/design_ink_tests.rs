@@ -202,3 +202,157 @@ fn tree_role_and_account_words_meet_contrast_on_every_tile_ground() {
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
 }
+
+#[test]
+fn status_cells_keep_glyph_coverage_contrast_on_every_drawn_pane_ground() {
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let mut failures = Vec::new();
+    let mut root = agent(10, "status-owner", HOUR, None);
+    root.children = [
+        AgentActivity::Idle,
+        AgentActivity::Active(Activity::Waiting),
+        AgentActivity::Active(Activity::Thinking),
+        AgentActivity::Active(Activity::Verify {
+            step:     VerifyStep::Check,
+            location: RunLocation::Local,
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, activity)| ChildRow {
+        activity,
+        ..child(
+            0,
+            ChildKind::Subagent(SubagentRole::Unrecorded),
+            None,
+            &format!("activity-{index}"),
+            MINUTE,
+        )
+    })
+    .collect();
+    root.children.push(child(
+        0,
+        ChildKind::Shell,
+        Some(21),
+        "compile-project",
+        MINUTE,
+    ));
+    root.children.push(ChildRow {
+        timer: Some(Timer {
+            started:  NOW - 92,
+            deadline: NOW + 228,
+        }),
+        ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+    });
+    let entry = entry(&root, None);
+    let rect = area(180, 14);
+    // Reuse the cache across theme, focus and tint changes, as the app does.
+    let colors = FooterColors::default();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            for focused in [false, true] {
+                let ground = tui_pane::pane_background(focused);
+                let mut buffer = Buffer::empty(rect);
+                buffer.set_style(rect, Style::default().bg(ground));
+                draw(
+                    &mut buffer,
+                    rect,
+                    &entry,
+                    std::slice::from_ref(&entry),
+                    NOW,
+                    AccountColumn::Hidden,
+                    &colors,
+                );
+                let status_x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+                for row in &root.children {
+                    let y = find(&buffer, &row.name).expect("status row").1;
+                    let cell = &buffer[(status_x, y)];
+                    let ratio = tests::covered_role_contrast(cell.fg, cell.bg);
+                    eprintln!(
+                        "{name} tint={tint} focused={focused} {}: fg={:?} bg={:?} covered={ratio:.6}",
+                        row.name, cell.fg, cell.bg
+                    );
+                    if ratio < MINIMUM_CONTRAST {
+                        failures.push(format!(
+                            "{name} tint={tint} focused={focused} {}: {cell:?} covered={ratio:.6}",
+                            row.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_transparent_background(transparent);
+    tui_pane::set_focused_pane_tint(tinted);
+    assert!(
+        failures.is_empty(),
+        "drawn status coverage failures: {failures:#?}"
+    );
+}
+
+#[test]
+fn light_running_and_waiting_stems_keep_readable_contrast() {
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    tui_pane::set_transparent_background(false);
+    tui_pane::set_focused_pane_tint(false);
+    tui_pane::set_active_theme(Arc::new(
+        theme::builtins()
+            .into_iter()
+            .find(|variant| variant.id.as_str() == crate::constants::DEFAULT_LIGHT_THEME)
+            .expect("built-in light theme")
+            .theme,
+    ));
+    let mut root = agent(10, "status-owner", HOUR, None);
+    root.children = [Activity::Running, Activity::Waiting]
+        .into_iter()
+        .enumerate()
+        .map(|(index, activity)| ChildRow {
+            activity: AgentActivity::Active(activity),
+            ..child(
+                0,
+                ChildKind::Subagent(SubagentRole::Unrecorded),
+                None,
+                &format!("stem-{index}"),
+                MINUTE,
+            )
+        })
+        .collect();
+    let entry = entry(&root, None);
+    let rect = area(180, 10);
+    let mut buffer = Buffer::empty(rect);
+    buffer.set_style(rect, Style::default().bg(tui_pane::pane_background(false)));
+    draw(
+        &mut buffer,
+        rect,
+        &entry,
+        std::slice::from_ref(&entry),
+        NOW,
+        AccountColumn::Hidden,
+        &FooterColors::default(),
+    );
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_transparent_background(transparent);
+    tui_pane::set_focused_pane_tint(tinted);
+    for word in ["running", "waiting"] {
+        let (x, y) = find(&buffer, word).expect("drawn status word");
+        let cell = &buffer[(x, y)];
+        let ratio = tests::covered_role_contrast(cell.fg, cell.bg);
+        eprintln!(
+            "{word}: fg={:?} bg={:?} stem contrast={ratio:.6}",
+            cell.fg, cell.bg
+        );
+        assert!(
+            ratio >= MINIMUM_CONTRAST,
+            "{word}: {cell:?} stem contrast={ratio:.6}"
+        );
+    }
+}

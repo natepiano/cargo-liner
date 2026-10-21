@@ -585,3 +585,54 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
         }
     }
 }
+
+#[test]
+fn summary_name_sort_ignores_case_and_breaks_ties_by_original_name() {
+    let names = [
+        "Feature-log proposals",
+        "accounts",
+        "feature-log proposals",
+        "Accounts",
+    ];
+    let rows = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            sort_row(
+                u32::try_from(index + 20).expect("fixture pid"),
+                name,
+                "idle",
+                NOW - 3600,
+                "a-account",
+                "desktop",
+                "/fixture",
+            )
+        })
+        .collect();
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    for direction in [SortDirection::Ascending, SortDirection::Descending] {
+        let buffer = sorted_buffer(
+            &machines,
+            SummarySort {
+                column: SummaryColumn::Name,
+                direction,
+            },
+        );
+        let mut drawn = names;
+        drawn.sort_by_key(|name| find_label(&buffer, name).1);
+        let mut expected = [
+            "Accounts",
+            "accounts",
+            "Feature-log proposals",
+            "feature-log proposals",
+        ];
+        if direction == SortDirection::Descending {
+            expected.reverse();
+        }
+        assert_eq!(drawn, expected, "{direction:?}");
+    }
+}

@@ -262,7 +262,8 @@ const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
     claude:      StyleSpec::from_color(Color::Rgb(217, 119, 87)),
     codex:       StyleSpec::from_color(Color::Rgb(175, 140, 255)),
     busy:        StyleSpec::from_color(Color::Rgb(100, 220, 100)),
-    shell:       StyleSpec::from_color(Color::Rgb(90, 200, 220)),
+    // Pale cyan stays apart from the account teal after focused-ground solving.
+    shell:       StyleSpec::from_color(Color::Rgb(140, 230, 240)),
     idle:        StyleSpec::from_color(Color::Rgb(140, 140, 140)),
     unreachable: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
     rainbow:     RainbowPalette {
@@ -280,7 +281,8 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
     claude:      StyleSpec::from_color(Color::Rgb(190, 85, 50)),
     codex:       StyleSpec::from_color(Color::Rgb(110, 60, 200)),
     busy:        StyleSpec::from_color(Color::Rgb(0, 130, 0)),
-    shell:       StyleSpec::from_color(Color::Rgb(0, 120, 150)),
+    // Green teal keeps the covered timer ink distinct from the account teal.
+    shell:       StyleSpec::from_color(Color::Rgb(0, 120, 100)),
     idle:        StyleSpec::from_color(Color::Rgb(110, 110, 110)),
     unreachable: StyleSpec::from_color(Color::Rgb(190, 0, 0)),
     rainbow:     RainbowPalette {
@@ -316,7 +318,7 @@ const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
     claude:      StyleSpec::bold(Color::Rgb(160, 60, 0)),
     codex:       StyleSpec::bold(Color::Rgb(100, 0, 160)),
     busy:        StyleSpec::bold(Color::Rgb(0, 100, 0)),
-    shell:       StyleSpec::bold(Color::Rgb(0, 80, 120)),
+    shell:       StyleSpec::bold(Color::Rgb(0, 80, 65)),
     idle:        StyleSpec::from_color(Color::Rgb(80, 80, 80)),
     unreachable: StyleSpec::bold(Color::Rgb(180, 0, 0)),
     rainbow:     RainbowPalette {
