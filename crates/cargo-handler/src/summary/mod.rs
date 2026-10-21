@@ -362,7 +362,7 @@ fn compare_rows(
     let primary = match sort.column {
         SummaryColumn::Pid => left.pid.cmp(&right.pid),
         SummaryColumn::Agent => left.agent_label(accounts).cmp(&right.agent_label(accounts)),
-        SummaryColumn::Name => left.name.cmp(&right.name),
+        SummaryColumn::Name => sort::compare_names(&left.name, &right.name),
         SummaryColumn::Status => status_text(left).cmp(status_text(right)),
         SummaryColumn::Age => right.started.cmp(&left.started),
         SummaryColumn::Desktop => desktop_text(left).cmp(desktop_text(right)),
@@ -1221,7 +1221,10 @@ mod tests {
         assert_eq!(buffer[(10, 2)].fg, Color::Rgb(217, 119, 87));
         assert_eq!(buffer[(10, 5)].fg, Color::Rgb(175, 140, 255));
         assert_eq!(buffer[(57, 4)].fg, Color::Rgb(100, 220, 100));
-        assert_eq!(buffer[(57, 5)].fg, Color::Rgb(140, 140, 140));
+        assert_eq!(
+            buffer[(57, 5)].fg,
+            Role::Idle.style().fg.expect("idle status ink")
+        );
         assert_eq!(buffer[(10, 11)].fg, Color::Rgb(255, 100, 100));
         let names: Vec<Color> = [2, 3, 4, 5, 9]
             .into_iter()

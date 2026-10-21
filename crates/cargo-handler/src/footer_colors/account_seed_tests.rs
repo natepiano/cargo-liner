@@ -25,6 +25,65 @@ fn drawn_ink(style: Style, ground: Color) -> Color {
 }
 
 #[test]
+fn shell_timer_ink_stays_distinct_from_every_account_after_coverage_solving() {
+    let colors = FooterColors::parse(include_str!("fixtures/statusline.conf"));
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let mut measurements = Vec::new();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            for focused in [false, true] {
+                let ground = tui_pane::pane_background(focused);
+                let shell = drawn_ink(Role::Shell.style(), ground);
+                for account in [
+                    "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
+                ] {
+                    let ink = drawn_ink(colors.account(account).style(Style::default()), ground);
+                    measurements.push((
+                        name.clone(),
+                        tint,
+                        focused,
+                        account,
+                        shell,
+                        ink,
+                        tests::covered_role_contrast(shell, ground),
+                        tests::covered_role_contrast(ink, ground),
+                        tests::perceptual_distance(shell, ink),
+                    ));
+                }
+            }
+        }
+    }
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_transparent_background(transparent);
+    tui_pane::set_focused_pane_tint(tinted);
+    for (name, tint, focused, account, shell, ink, shell_ratio, account_ratio, distance) in
+        measurements
+    {
+        println!(
+            "{name} tint={tint} focused={focused} shell={shell:?} {account}={ink:?} contrast={shell_ratio:.6}/{account_ratio:.6} dE={distance:.6}"
+        );
+        assert!(
+            shell_ratio >= MINIMUM_CONTRAST,
+            "shell covered contrast: {shell_ratio}"
+        );
+        assert!(
+            account_ratio >= MINIMUM_CONTRAST,
+            "{account} covered contrast: {account_ratio}"
+        );
+        assert!(
+            distance >= 12.0,
+            "{name} tint={tint} focused={focused} shell/{account}: {distance}"
+        );
+    }
+}
+
+#[test]
 fn teal_account_ink_stays_distinct_from_other_accounts_roles_and_azure() {
     let colors = FooterColors::parse(include_str!("fixtures/statusline.conf"));
     let previous = tui_pane::theme();

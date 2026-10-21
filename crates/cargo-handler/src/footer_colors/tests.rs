@@ -404,16 +404,15 @@ fn measured_channels(color: Color) -> (u8, u8, u8) {
     )
 }
 
-/// The management ink policy reserves 26/255 of a glyph pixel for its ground.
-/// This models a 90% coverage pixel explicitly; it does not claim to measure
-/// arbitrary font fringes, whose coverage can approach zero.
+/// Model the production stem coverage independently of its channel blending.
+/// Arbitrary font fringes can have coverage approaching zero.
 pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64 {
-    const GROUND_SHARE: u32 = 26;
+    let ground_share = u32::from(255 - ANTIALIASED_GLYPH_COVERAGE);
     let foreground = <[u8; 3]>::from(measured_channels(foreground));
     let ground = <[u8; 3]>::from(measured_channels(background));
     let mixed: [u8; 3] = std::array::from_fn(|index| {
-        let channel = (u32::from(foreground[index]) * (255 - GROUND_SHARE)
-            + u32::from(ground[index]) * GROUND_SHARE)
+        let channel = (u32::from(foreground[index]) * (255 - ground_share)
+            + u32::from(ground[index]) * ground_share)
             / 255;
         u8::try_from(channel).expect("convex channel mixture fits a byte")
     });
