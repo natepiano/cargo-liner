@@ -374,8 +374,8 @@ pub(crate) fn pending_branch_rewrite_markers(
         if !is_pending_marker_name(&entry.file_name().to_string_lossy()) {
             continue;
         }
-        // A concurrent importer may have removed this file; other unreadable shared
-        // markers remain the bypass importer's responsibility to report.
+        // `fs::read(entry.path())` may fail because a concurrent importer removed this file;
+        // other unreadable shared markers remain the bypass importer's responsibility to report.
         let Ok(contents) = fs::read(entry.path()) else {
             continue;
         };
