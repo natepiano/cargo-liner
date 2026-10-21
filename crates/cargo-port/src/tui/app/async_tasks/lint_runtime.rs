@@ -5,7 +5,6 @@ use std::time::SystemTime;
 use tui_pane::PERF_LOG_TARGET;
 
 use crate::lint;
-use crate::lint::CachedLintStatus;
 use crate::lint::LintRun;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
@@ -248,8 +247,8 @@ impl App {
     /// linting is enabled. Deferred to here rather than run during sync so
     /// these lints never contend with startup work. The newest source mtime
     /// per project comes from the disk walk (`Startup::source_mtimes`); the
-    /// last run's start time comes from the loaded history. Surfaces the batch
-    /// in a one-shot toast naming the projects.
+    /// same-run start time is retained by `LintRuns::cached_status` at hydration.
+    /// Surfaces the batch in a one-shot toast naming the projects.
     pub(super) fn kick_off_startup_lints(&mut self) {
         let Some(runtime) = self.lint.runtime().cloned() else {
             return;
@@ -269,14 +268,13 @@ impl App {
             let Some(runs) = self.project_list.lint_at_path(request.abs_path.as_path()) else {
                 continue;
             };
-            // `CachedLintStatus::from_lint_status` returns `None` for `LintStatus::Running` or
-            // `Stale`; skip those states so projects already linting are not triggered again.
-            let Some(cached) = CachedLintStatus::from_lint_status(runs.status()) else {
+            // `LintRuns::cached_status` excludes live and pending lint states,
+            // so startup never triggers a second run for those projects.
+            let Some(cached) = runs.cached_status() else {
                 continue;
             };
-            let last_started_at = runs.last_started_at();
             let max_source_mtime = self.startup.source_mtimes.get(&request.abs_path).copied();
-            if cached.should_lint_on_startup(last_started_at, max_source_mtime, on_discovery) {
+            if cached.should_lint_on_startup(max_source_mtime, on_discovery) {
                 pending.push((request.abs_path, max_source_mtime));
             }
         }

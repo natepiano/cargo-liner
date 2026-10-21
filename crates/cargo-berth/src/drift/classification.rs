@@ -564,11 +564,11 @@ pub(super) fn classify_locked(
     let mut results = Vec::new();
     let mut unattributed_paths = Vec::new();
     let mut widening_attempt = WideningAttempt::NotNeeded;
-    // An incident this pass writes for an earlier reservation must cover the reservations
-    // reported after it, as a recorded one would: its same-run, same-worktree siblings, and
-    // a first-touch or cover reservation of another run. The ledger cannot hold it until the
-    // pass appends. Reporting runs in reservation id order, so the earliest claim carries
-    // the charge.
+    // `observed` retains pending incidents before they reach the ledger. An incident this pass
+    // writes for an earlier reservation must cover later subjects, as a recorded one would:
+    // its same-run, same-worktree siblings and another run's first-touch or cover reservation.
+    // The ledger cannot hold it until this pass appends. Reporting runs in reservation ID
+    // order, so the earliest claim carries the charge.
     let mut observed = reservations.clone();
     for reservation_id in subjects.reporting.as_slice() {
         if let ReservationPhaseHistory::PhaseStartObjectUnknown(phase_start) =
