@@ -15,7 +15,7 @@
 - **Review pool:** code
 - **User zone:** `America/New_York`. Every time the showrunner reports is in this zone only.
 - **Updates:** on demand. Each update reports every unit in full.
-- **Merge tests:** `bash /home/natepiano/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash /home/natepiano/.claude/scripts/delegate/verify.sh test cargo-handler`, `bash /home/natepiano/.claude/scripts/delegate/verify.sh test cargo-port` (they build on tui_pane)
+- **Merge tests:** `bash /home/natepiano/.claude/scripts/direct/verify.sh test cargo-tile`, `bash /home/natepiano/.claude/scripts/direct/verify.sh test cargo-handler`, `bash /home/natepiano/.claude/scripts/direct/verify.sh test cargo-port` (they build on tui_pane)
 - **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), three units.
 
 ## Units
@@ -26,12 +26,13 @@
 | cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
 | tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
-| tile-fixes-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile-fixes | remove-running-section-tile-fixes | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
+| tile-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile | remove-running-section-tile | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
 | berth-hook-hang-unit | `docs/cargo-berth/as-built/hook-cost.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-hook-hang` (deleted) | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | berth-ceiling-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-ceiling` (deleted) | — | crates/cargo-berth/ |
-| handler-enh-unit | docs/cargo-handler/as-built/startup.md, docs/cargo-handler/as-built/hierarchy.md | /home/natepiano/rust/cargo-liner-handler-enh | remove-running-section-handler-enh | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
-| berth-parallel-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth-parallel | remove-running-section-berth-parallel | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
+| handler-unit | docs/cargo-handler/as-built/startup.md, docs/cargo-handler/as-built/hierarchy.md | /home/natepiano/rust/cargo-liner-handler | remove-running-section-handler | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
+| berth-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth | remove-running-section-berth | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
+| experiments-unit | `docs/experiments/as-built/framework-design.md` (as-built; plan done) | /home/natepiano/rust/cargo-liner-experiments | remove-running-section-experiments | — | docs/experiments/ |
 
 ## Hub files
 

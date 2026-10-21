@@ -165,11 +165,10 @@ impl AppBuilder<Channeled> {
             crate::themes::builtins(),
         );
         theme_roles::apply_role_defaults_to_registry(&mut registry);
-        // Resolve the initial theme from the loaded `[appearance]`
-        // section against the just-built registry. Misses fall back to
-        // the app's own appearance-matched variant silently here —
-        // toast machinery is not yet wired this early in startup, and
-        // surface for the miss arrives through the settings UI badge.
+        // `registry.resolve_active` resolves `inputs.cargo_port_config.appearance` into `resolved`
+        // and `initial_theme`. A miss silently falls back to the app's appearance-matched variant
+        // because toasts are not yet available during startup; the settings UI badge later surfaces
+        // the miss.
         let resolved = registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,
             &inputs.cargo_port_config.appearance.light_theme,

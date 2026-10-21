@@ -31,7 +31,7 @@ use crate::project::RootItem;
 
 /// Build a normalized project item for a discovered root directory.
 ///
-/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// Unlike `cargo_parse_result_to_item(from_cargo_toml(...))`, this walks nested
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
@@ -88,9 +88,9 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
-    // Local git info — includes git status but skips first_commit,
-    // which is handled separately by
-    // `schedule_git_first_commit_refreshes` (batched by repo root).
+    // `emit_git_info` sends local Git metadata, including Git status, but skips
+    // `first_commit`, which `schedule_git_first_commit_refreshes` handles separately
+    // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
     }

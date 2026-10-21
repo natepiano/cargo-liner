@@ -274,10 +274,9 @@ impl BackgroundMsg {
             Self::ProjectDiscovered { item }
             | Self::ProjectRefreshed { item } => Some(item.path()),
 
-            // Workspace-wide metadata feeds package + targets fields for
-            // every member of the workspace, but the path we have is the
-            // workspace root — `detail_path_is_affected` will widen the
-            // match correctly.
+            // `BackgroundMsg::CargoMetadata` and `BackgroundMsg::OutOfTreeTargetSize`
+            // feed package and targets fields for every workspace member. They provide
+            // `workspace_root`, so `detail_path_is_affected` widens the match to those members.
             Self::CargoMetadata { workspace_root, .. }
             | Self::OutOfTreeTargetSize { workspace_root, .. } => Some(workspace_root.as_path()),
 
