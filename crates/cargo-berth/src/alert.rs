@@ -724,8 +724,8 @@ pub(crate) fn for_lost_integration_evidence(
     let action = LostEvidenceRecoveryCommand::ResolveIntegratedAs {
         reservation_id: reservation.id(),
     };
-    // The alert fires only when trunk does not prove the work, so the resolved trunk tip is
-    // never offered as the `--integrated-as` argument.
+    // `for_lost_integration_evidence` emits an alert only when `repository_trunk` does not prove
+    // the work, so its resolved tip is never offered as the `--integrated-as` argument.
     let recovery = match repository_trunk {
         JudgedTargetTip::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
             trunk_oid: trunk_oid.clone(),
