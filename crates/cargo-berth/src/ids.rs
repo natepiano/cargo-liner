@@ -401,7 +401,7 @@ impl<'de> Deserialize<'de> for WorkPlanPhase {
 }
 
 /// An RFC 3339 UTC timestamp with millisecond precision.
-// The representation is fixed-width and UTC, so its derived text order is its time order.
+// `RecordedAt` has a fixed-width UTC representation, so its derived text order is its time order.
 #[derive(Clone, Debug, Eq, JsonSchema, Ord, PartialEq, PartialOrd)]
 #[schemars(transparent)]
 pub(crate) struct RecordedAt(#[schemars(length(min = 1))] String);

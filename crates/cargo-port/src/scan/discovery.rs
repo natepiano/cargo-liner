@@ -95,13 +95,12 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_git_info(sender, &abs);
     }
 
-    // Submodules are read up front (local, fast — .gitmodules + one git
-    // ls-tree) so every crates.io fetch this task will issue — the
-    // project's own and each submodule's — registers via
-    // `CratesIoFetchQueued` before the first one completes. The startup
-    // panel's crates.io row can then never read done while a fetch from
-    // this task is still pending. (`enrich` re-sends Queued for its own
-    // fetch; registration is idempotent.)
+    // `project::get_submodules` reads `submodules` up front (local, fast: .gitmodules +
+    // one git ls-tree), so the project's own fetch and each submodule's fetch register
+    // through `BackgroundMsg::CratesIoFetchQueued` before the first one completes.
+    // The startup panel's crates.io row can then never read done while a fetch from
+    // this task is pending. (`enrichment::enrich` re-sends `CratesIoFetchQueued` for
+    // its own fetch; registration is idempotent.)
     let submodules = if repo_presence.is_in_repo() {
         project::get_submodules(abs_path)
     } else {
@@ -134,11 +133,10 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         });
     }
 
-    // Send the Submodules message first so `at_path_mut` can resolve each
-    // submodule before its per-entry enrichment messages arrive. Each
-    // submodule's `enrich` call emits its own disk-usage message — that
-    // path is *not* covered by the initial batch scan, so the per-submodule
-    // singular `BackgroundMsg::DiskUsage` is the only writer for it.
+    // Send `BackgroundMsg::Submodules` first so `at_path_mut` can resolve each
+    // submodule before its per-entry enrichment messages arrive. Each submodule's
+    // `enrichment::enrich` call emits its own disk-usage message: that path is not
+    // covered by the initial batch scan, so `BackgroundMsg::DiskUsage` is its only writer.
     if !submodules.is_empty() {
         let _ = sender.send(BackgroundMsg::Submodules {
             path:       abs.clone(),
@@ -151,15 +149,14 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     let _ = sender.send(BackgroundMsg::ProjectDetailsDeclared { path: abs });
 
-    // Disk usage for the top-level project itself is computed by the
-    // initial batch scan (`spawn_initial_disk_usage` →
-    // `BackgroundMsg::DiskUsageBatch`), which folds workspace members
-    // under their root and walks each tree exactly once. We deliberately
-    // don't emit a singular `BackgroundMsg::DiskUsage` here — doing so
-    // would re-walk the same tree (an expensive duplicate, especially
-    // for projects with large `target/` directories) and feed a second
-    // path into the startup-disk phase's `seen` set, where mismatched
-    // keys could silently fail to mark the toast item.
+    // Disk usage for the top-level project itself is computed by
+    // `spawn_initial_disk_usage` and sent in `BackgroundMsg::DiskUsageBatch`,
+    // which folds workspace members under their root and walks each tree once.
+    // Deliberately omit a singular `BackgroundMsg::DiskUsage` here: it would
+    // re-walk the same tree (an expensive duplicate, especially with large
+    // `target/` directories) and feed a second path into the `KeyedPhase::seen`
+    // set in `Startup::disk`, where mismatched keys could silently fail to
+    // mark the toast item.
 }
 
 #[derive(Clone)]
