@@ -174,9 +174,9 @@ impl IncursionCommitOriginMembership {
         recorded_target: &IntegrationTarget,
         anchors: &HashMap<GitObjectId, IncursionAnchorAttribution>,
     ) -> Self {
-        // Comparing a target checkout against its own new tip would call every write
-        // inherited. Its phase range is the entering work; only the per-holder cover
-        // ancestry decision can exempt a covered contribution from that range.
+        // `IncursionCommitOriginMembership::TargetCheckout` avoids comparing a target checkout
+        // against its own new tip, which would call every write inherited. Its phase range is
+        // entering work; only per-holder cover ancestry can exempt a covered contribution.
         let Ok(registry) = crate::worktree::WorktreeRegistry::read(repository) else {
             return Self::CannotClassifyOrigin;
         };
@@ -196,8 +196,9 @@ impl IncursionCommitOriginMembership {
             && let Some(anchor) = anchors.get(origin_basis)
             && anchor.state == IncursionAttributionAnchorState::UsableAncestor
         {
-            // The range graph already excludes this basis. Without an upstream,
-            // origin classification asks exactly the same membership question.
+            // `anchor.range_commits` already excludes `origin_basis`. With
+            // `LocalTargetUpstream::Unavailable`, origin classification asks exactly the same
+            // membership question.
             return Self::Classified(anchor.range_commits.clone());
         }
         git::commits_outside_origin_basis(
