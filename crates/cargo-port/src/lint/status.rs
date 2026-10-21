@@ -226,9 +226,10 @@ impl CachedLintStatus {
 
     /// Should this project be linted as the startup phase closes?
     ///
-    /// - `NoLog` is the discovery case, gated by `on_discovery`.
+    /// - `NoLog` is the discovery case, gated by `on_discovery` so turning discovery linting off
+    ///   does not lint every project on the first launch.
     /// - `Terminal` re-lints only when `max_source_mtime` is newer than its `started_at`,
-    ///   independently of `on_discovery`.
+    ///   independently of `on_discovery`: an edited project always re-lints.
     /// - `StartTimeUnavailable` cannot establish staleness and skips startup re-lint, preserving
     ///   the policy for an unparseable run start.
     pub fn should_lint_on_startup(
