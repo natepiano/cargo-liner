@@ -5,8 +5,6 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
-#[path = "support/linked_checkout.rs"]
-mod linked_checkout;
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
@@ -19,12 +17,17 @@ mod git_configuration;
 #[path = "support/timing.rs"]
 mod timing;
 
+#[path = "support/reanchoring_templates.rs"]
+mod reanchoring_templates;
+
 #[path = "support/reanchoring.rs"]
 mod reanchoring;
 
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
@@ -33,6 +36,30 @@ use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -59,7 +86,7 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
 const COMMITTED_POLICY_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "committed-policy",
     build: |root| {
-        build_initialized_repository(root, GitReferenceStorage::Loose);
+        INITIALIZED_REPOSITORY.restore_into(root);
         GIT.run(root, ["add", "--force", CONFIGURATION_PATH]);
         GIT.run_without_hooks(
             root,
@@ -288,20 +315,14 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
-        let lane = repo.lane("landing-lane", "integration");
-        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        assert_success(&claimed);
-        let _ = repo.board();
-        let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
-            .as_str()
-            .expect("lane ID")
-            .to_owned();
-        let cover_id = repo.cover_claims()[0]["reservation_id"]
-            .as_str()
-            .expect("cover ID")
-            .to_owned();
-        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let repo = IntegrationRepository::from_recorded_template(crate::COVER_LANDING);
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(repo.root().join(".git/cover-landing.json"))
+                .expect("landing state should read"),
+        )
+        .expect("landing state should decode");
+        let lane_id = state["lane_id"].as_str().expect("lane ID").to_owned();
+        let cover_id = state["cover_id"].as_str().expect("cover ID").to_owned();
         let lane_work = repo.capture();
         for merge_commit in [true, false] {
             repo.restore(&lane_work);
@@ -966,6 +987,11 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
+fn two_rebase_history_copies_keep_owners_and_drain_their_markers() {
+    reanchoring::two_rebase_history_copies_keep_owners_and_drain_their_markers();
+}
+
+#[test]
 fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
     reanchoring::checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward();
 }
@@ -1053,6 +1079,16 @@ fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
 #[test]
 fn split_checkpoint_survives_stacked_branches_rewritten_with_update_refs() {
     reanchoring::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_retention_checkpoint_outstanding();
+}
+
+#[test]
+fn dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding() {
+    reanchoring::dropping_a_split_hunk_keeps_the_updated_sibling_checkpoint_outstanding();
 }
 
 #[test]
@@ -2442,6 +2478,7 @@ fn json_output(output: &Output) -> serde_json::Value {
 mod merge_extent {
     #![allow(
         clippy::expect_used,
+        clippy::panic,
         reason = "integration fixtures should stop on invalid git histories or command output"
     )]
 
@@ -2654,7 +2691,9 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(
+            super::edges_templates::INITIAL_INTEGRATION_PAIR,
+        );
         let lane = repo.lane("partly-landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2922,6 +2961,93 @@ mod merge_extent {
         assert_eq!(
             scope_paths(&running["merge_extent"]["scopes"]),
             BTreeSet::from(["tracked.rs".to_owned()])
+        );
+    }
+
+    #[test]
+    fn reconciliation_reobserves_uncommitted_work_after_a_concurrent_widen() {
+        use std::io::Write as _;
+        let fixture = Repository::with_trunk_requester();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        board(fixture.trunk());
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        let directory = fixture.trunk().join(".git/cargo-berth");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.join("mutation.lock"))
+            .expect("mutation lock should open");
+        lock.lock().expect("writer should hold the ledger lock");
+        let ready = fixture.worktrees.path().join("reconcile-ready");
+        let mut child = berth_command(BERTH)
+            .args(["board", "--json"])
+            .current_dir(fixture.trunk())
+            .env("CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH", &ready)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("reconciliation should start");
+        while !ready.exists() {
+            if child
+                .try_wait()
+                .expect("child status should be readable")
+                .is_some()
+            {
+                let output = child
+                    .wait_with_output()
+                    .expect("child output should be readable");
+                panic!("reconciliation exited before signaling preparation: {output:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // This writer owns the descriptor. Its new file and widening fact land after the
+        // reconciler observed a clean, integrated holder but before it can acquire.
+        write(&fixture.holder, "new-uncommitted.rs", "new work\n");
+        let events = super::journal_events(fixture.trunk());
+        let claim = events
+            .iter()
+            .find(|event| event["op"] == "claim" && event["reservation_id"] == id)
+            .expect("holder claim should exist");
+        let generation = events
+            .iter()
+            .filter_map(|event| event["projection_generation"].as_u64())
+            .max()
+            .expect("journal generation")
+            + 1;
+        let event = serde_json::json!({
+            "schema_version": claim["schema_version"], "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
+            "actor": claim["actor"], "at": claim["at"], "projection_generation": generation,
+            "op": "widen", "reservation_id": id,
+            "added_scopes": [{"path": "new-uncommitted.rs", "kind": "file"}],
+            "cause": {"kind": "explicit", "reason": "work arrives during reconciliation"},
+            "authorization": {"kind": "no_conflict"}, "edit_blocking_status": "blocking",
+        });
+        let mut journal = fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join("journal.ndjson"))
+            .expect("held writer journal should open");
+        serde_json::to_writer(&mut journal, &event).expect("widen should encode");
+        journal.write_all(b"\n").expect("widen should append");
+        journal.sync_all().expect("widen should be durable");
+        lock.unlock().expect("writer should release the lock");
+        let output = child
+            .wait_with_output()
+            .expect("reconciliation should finish");
+        assert_success(&output);
+        let observed = json(&output);
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "active", "{observed}");
+        assert_eq!(
+            scope_paths(&reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["new-uncommitted.rs".to_owned()])
+        );
+        assert!(
+            !super::journal_events(fixture.trunk())
+                .iter()
+                .any(|event| event["reservation_id"] == id
+                    && matches!(event["op"].as_str(), Some("checkpoint" | "release"))),
+            "new uncommitted work must not be checkpointed or released"
         );
     }
 
@@ -4687,33 +4813,6 @@ mod merge_extent {
 
     fn real_git() -> String { super::git_binary() }
 
-    /// Committed source and berth policy, with hooks disabled so only explicit reads reconcile.
-    const MERGE_EXTENT_MAIN: super::RepositoryTemplate = super::RepositoryTemplate {
-        target_directory: env!("CARGO_TARGET_TMPDIR"),
-        executable:       BERTH,
-        name:             "merge-extent-main",
-        build:            build_merge_extent_main,
-    };
-
-    fn build_merge_extent_main(root: &Path) {
-        GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
-        super::git_configuration::append_git_configuration(root, "\n[user]\n name = Berth Test\n email = berth@example.invalid\n[maintenance]\n auto = false\n[gc]\n auto = 0\n").expect("fixture git config should write");
-        write(root, "tracked.rs", "base\n");
-        write(root, "staged.rs", "base\n");
-        GIT.run(root, ["add", "."]);
-        GIT.run(root, ["commit", "--quiet", "-m", "base"]);
-        succeed(&berth(root, &["init", "--json"], FIRST_RUN));
-        // No hook or lifecycle verb runs when these tests integrate a branch. Only the
-        // following board read may discover its now-empty merge surface.
-        super::git_configuration::append_git_configuration(
-            root,
-            "\n[core]\n hooksPath = /dev/null\n",
-        )
-        .expect("fixture hook policy should write");
-        GIT.run(root, ["add", "--force", ".claude/config/berth.toml"]);
-        GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
-    }
-
     /// The checkout issuing edit requests independently of the holder.
     #[derive(Clone, Copy)]
     enum EditRequester {
@@ -4736,40 +4835,31 @@ mod merge_extent {
         fn with_trunk_requester() -> Self { Self::with_requester(EditRequester::Trunk) }
 
         fn with_requester(requester: EditRequester) -> Self {
-            let repository = MERGE_EXTENT_MAIN.instantiate();
-            let root = repository.path();
             let worktrees = tempdir().expect("worktree parent should exist");
             let holder = worktrees.path().join("holder");
-            GIT.run(
-                root,
-                [
-                    "worktree",
-                    "add",
-                    "--quiet",
-                    "-b",
-                    "holder",
-                    holder.to_str().expect("worktree path should be UTF-8"),
-                    "main",
-                ],
-            );
-            let outsider = match requester {
-                EditRequester::Trunk => root.to_path_buf(),
-                EditRequester::SeparateBranch => {
-                    let path = worktrees.path().join("outsider");
+            let (repository, outsider) = match requester {
+                EditRequester::Trunk => {
+                    let repository = super::edges_templates::MERGE_EXTENT_MAIN.instantiate();
                     GIT.run(
-                        root,
+                        repository.path(),
                         [
                             "worktree",
                             "add",
                             "--quiet",
                             "-b",
-                            "outsider",
-                            path.to_str().expect("worktree path should be UTF-8"),
+                            "holder",
+                            holder.to_str().expect("worktree path should be UTF-8"),
                             "main",
                         ],
                     );
-                    path
+                    let outsider = repository.path().to_path_buf();
+                    (repository, outsider)
                 },
+                EditRequester::SeparateBranch => (
+                    super::edges_templates::MERGE_EXTENT_PAIR
+                        .instantiate_with_external_worktrees(worktrees.path()),
+                    worktrees.path().join("outsider"),
+                ),
             };
             Self {
                 trunk_directory: repository,

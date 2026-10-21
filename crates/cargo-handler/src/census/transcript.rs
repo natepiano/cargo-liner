@@ -14,6 +14,7 @@
 //! span of time, found by bisecting the file on its lines' timestamps,
 //! and a subagent's state is read from the end of its file.
 
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::BufRead;
@@ -30,6 +31,7 @@ use std::time::UNIX_EPOCH;
 use chrono::DateTime;
 use serde::Deserialize;
 
+use super::AgentActivity;
 use crate::constants::ASSISTANT_LINE;
 use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
@@ -43,9 +45,198 @@ use crate::constants::TRANSCRIPT_BEGIN_READ_LIMIT;
 use crate::constants::TRANSCRIPT_BISECT_GRAIN;
 use crate::constants::TRANSCRIPT_EXTENSION;
 use crate::constants::TRANSCRIPT_SPAN_READ_LIMIT;
-use crate::constants::TRANSCRIPT_TAIL_LIMIT;
+use crate::constants::TRANSCRIPT_TAIL_GROWTH;
 use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::USER_LINE;
+
+/// A cursor owns the bytes fetched in one path generation.
+/// In `Following`, `offset` is the next unread file position and `pending`
+/// holds the final record fragment. In `AfterHead`, `offset` is the end of
+/// the last head record and `buffered` holds bytes already fetched after it.
+/// Both buffers prevent a second read of those bytes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum JsonlCursor {
+    #[default]
+    NeverRead,
+    AfterHead {
+        offset:   u64,
+        buffered: Vec<u8>,
+    },
+    Following {
+        offset:  u64,
+        pending: Vec<u8>,
+    },
+}
+
+/// Whether a read starts on a whole record or inside a record.
+#[derive(Clone, Copy)]
+enum RecordBoundary {
+    Whole,
+    Fragment,
+}
+
+impl RecordBoundary {
+    const fn at(start: u64, floor: u64) -> Self {
+        if start == floor {
+            Self::Whole
+        } else {
+            Self::Fragment
+        }
+    }
+
+    fn complete(self, bytes: &[u8]) -> &[u8] {
+        let from = match self {
+            Self::Whole => 0,
+            Self::Fragment => bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1),
+        };
+        let to = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        &bytes[from.min(to)..to]
+    }
+}
+
+/// Record families that can supply conversation state.
+#[derive(Default, Deserialize)]
+pub(super) enum RecordKind {
+    #[serde(rename = "assistant", alias = "user")]
+    Claude,
+    #[serde(rename = "event_msg", alias = "response_item")]
+    Codex,
+    #[serde(rename = "session_meta")]
+    Session,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct RecordHeader {
+    #[serde(rename = "type", default)]
+    kind: RecordKind,
+}
+
+/// Read the record family without allocating its large content fields.
+pub(super) fn record_kind(line: &[u8]) -> RecordKind {
+    serde_json::from_slice::<RecordHeader>(line).map_or(RecordKind::Other, |header| header.kind)
+}
+
+/// Complete records fetched by one read, and its actual file traffic.
+#[derive(Debug, Default)]
+pub(super) struct ReadBatch {
+    pub(super) lines:      Vec<Vec<u8>>,
+    pub(super) bytes_read: u64,
+}
+
+impl JsonlCursor {
+    /// Start with a small tail, then expand through disjoint ranges until all
+    /// requested values are known or the head boundary is reached.
+    /// Later calls fetch only appended bytes.
+    pub(super) fn read_until(
+        &mut self,
+        path: &Path,
+        initial_tail_bytes: u64,
+        decisive: impl Fn(&[u8]) -> bool,
+    ) -> ReadBatch {
+        let Ok(mut file) = File::open(path) else {
+            return ReadBatch::default();
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            return ReadBatch::default();
+        };
+        if matches!(self, Self::Following { offset, .. } if *offset > length) {
+            *self = Self::NeverRead;
+        }
+        let floor = match self {
+            Self::AfterHead { offset, buffered } => *offset + buffered.len() as u64,
+            _ => 0,
+        };
+        let mut start = match self {
+            Self::Following { offset, .. } => *offset,
+            _ => length.saturating_sub(initial_tail_bytes).max(floor),
+        };
+        let mut boundary = match self {
+            Self::Following { .. } => RecordBoundary::Whole,
+            _ => RecordBoundary::at(start, floor),
+        };
+        let mut bytes = match self {
+            Self::Following { pending, .. } => pending.clone(),
+            Self::AfterHead { buffered, .. } if start == floor => buffered.clone(),
+            _ => Vec::new(),
+        };
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            return ReadBatch::default();
+        }
+        let previous = bytes.len();
+        if std::io::Read::by_ref(&mut file)
+            .take(length - start)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return ReadBatch::default();
+        }
+        let mut bytes_read = (bytes.len() - previous) as u64;
+        if !matches!(self, Self::Following { .. }) {
+            while start > floor && !decisive(boundary.complete(&bytes)) {
+                let span = (length - start).max(initial_tail_bytes);
+                let next = length
+                    .saturating_sub(span.saturating_mul(TRANSCRIPT_TAIL_GROWTH))
+                    .max(floor);
+                let mut prefix = Vec::new();
+                if file.seek(SeekFrom::Start(next)).is_err()
+                    || std::io::Read::by_ref(&mut file)
+                        .take(start - next)
+                        .read_to_end(&mut prefix)
+                        .is_err()
+                {
+                    return ReadBatch::default();
+                }
+                bytes_read += prefix.len() as u64;
+                if next == floor
+                    && let Self::AfterHead { buffered, .. } = self
+                {
+                    let mut head = buffered.clone();
+                    head.extend(prefix);
+                    prefix = head;
+                }
+                prefix.extend(bytes);
+                bytes = prefix;
+                start = next;
+                boundary = RecordBoundary::at(start, floor);
+            }
+        }
+        let mut batch = ReadBatch {
+            lines: Vec::new(),
+            bytes_read,
+        };
+        let mut remaining = bytes.as_slice();
+        let mut pending = Vec::new();
+        while !remaining.is_empty() {
+            let mut line = Vec::new();
+            if remaining.read_until(b'\n', &mut line).is_err() {
+                return ReadBatch::default();
+            }
+            if !line.ends_with(b"\n") {
+                pending = line;
+                break;
+            }
+            line.pop();
+            match boundary {
+                RecordBoundary::Whole => batch.lines.push(line),
+                RecordBoundary::Fragment => boundary = RecordBoundary::Whole,
+            }
+        }
+        *self = Self::Following {
+            offset: length,
+            pending,
+        };
+        batch
+    }
+}
 
 /// The transcript of the session `session_id` started in `cwd`, under
 /// Claude Code's `projects` directory.
@@ -316,6 +507,8 @@ pub(super) struct Subagent {
     pub(super) started:     u64,
     /// Its own transcript, where the shell commands it runs are written.
     pub(super) transcript:  PathBuf,
+    /// The current tool activity from this subagent's own transcript.
+    pub(super) activity:    super::AgentActivity,
 }
 
 /// What a subagent's `.meta.json` says.
@@ -338,7 +531,11 @@ struct SubagentMeta {
 /// end on a finished turn and was written within
 /// [`SUBAGENT_QUIET_LIMIT`]. One quiet longer than that was stopped
 /// before it could finish.
-pub(super) fn running_subagents(session_transcript: &Path, now: SystemTime) -> Vec<Subagent> {
+pub(super) fn running_subagents(
+    session_transcript: &Path,
+    now: SystemTime,
+    reads: &mut SubagentReads,
+) -> Vec<Subagent> {
     let directory = session_transcript
         .with_extension("")
         .join(SUBAGENTS_DIRNAME);
@@ -360,7 +557,9 @@ pub(super) fn running_subagents(session_transcript: &Path, now: SystemTime) -> V
             let quiet = now
                 .duration_since(metadata.modified().ok()?)
                 .unwrap_or_default();
-            if quiet > SUBAGENT_QUIET_LIMIT || has_finished(&transcript) {
+            if quiet > SUBAGENT_QUIET_LIMIT
+                || matches!(reads.has_finished(&transcript), SubagentTurn::Finished)
+            {
                 return None;
             }
             let meta: SubagentMeta =
@@ -382,6 +581,7 @@ pub(super) fn running_subagents(session_transcript: &Path, now: SystemTime) -> V
                 description,
                 started,
                 transcript,
+                activity: AgentActivity::Idle,
             })
         })
         .collect();
@@ -410,49 +610,58 @@ struct TurnMessage {
     stop_reason: Option<String>,
 }
 
-/// Whether the conversation in the transcript at `path` ends on the
-/// assistant finishing its turn, read from the end of the file:
-/// [`TRANSCRIPT_TAIL_START`] bytes of it, taken again at four times the
-/// size until a whole line is in hand or [`TRANSCRIPT_TAIL_LIMIT`] is
-/// reached.
-fn has_finished(path: &Path) -> bool {
-    let Ok(mut file) = File::open(path) else {
-        return false;
-    };
-    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-        return false;
-    };
-    let mut size = TRANSCRIPT_TAIL_START;
-    loop {
-        let start = length.saturating_sub(size);
-        let mut tail = Vec::new();
-        if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
-            return false;
+/// Tail positions and last turn outcomes retained for each subagent transcript.
+#[derive(Debug, Default)]
+pub(super) struct SubagentReads {
+    reads: HashMap<PathBuf, SubagentRead>,
+}
+
+#[derive(Debug, Default)]
+struct SubagentRead {
+    cursor: JsonlCursor,
+    turn:   SubagentTurn,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum SubagentTurn {
+    #[default]
+    Running,
+    Finished,
+}
+
+impl SubagentReads {
+    pub(super) fn has_finished(&mut self, path: &Path) -> SubagentTurn {
+        let read = self.reads.entry(path.to_path_buf()).or_default();
+        if matches!(&read.cursor, JsonlCursor::Following { offset, .. }
+            if fs::metadata(path).is_ok_and(|metadata| metadata.len() < *offset))
+        {
+            *read = SubagentRead::default();
         }
-        // Read from the middle of the file, the first piece is the end of
-        // a line whose start was not read.
-        let mut lines: Vec<&[u8]> = tail.split(|byte| *byte == b'\n').collect();
-        if start > 0 && !lines.is_empty() {
-            lines.remove(0);
-        }
-        for line in lines.iter().rev().filter(|line| !line.is_empty()) {
-            let Ok(turn) = serde_json::from_slice::<Turn>(line) else {
+        let batch = read.cursor.read_until(path, TRANSCRIPT_TAIL_START, |line| {
+            line.split(|byte| *byte == b'\n').any(|record| {
+                serde_json::from_slice::<Turn>(record)
+                    .is_ok_and(|turn| turn.kind == ASSISTANT_LINE || turn.kind == USER_LINE)
+            })
+        });
+        for line in batch.lines {
+            let Ok(turn) = serde_json::from_slice::<Turn>(&line) else {
                 continue;
             };
             if turn.kind == ASSISTANT_LINE {
-                return turn
+                read.turn = if turn
                     .message
                     .and_then(|message| message.stop_reason)
-                    .is_some_and(|reason| reason == END_TURN);
-            }
-            if turn.kind == USER_LINE {
-                return false;
+                    .is_some_and(|reason| reason == END_TURN)
+                {
+                    SubagentTurn::Finished
+                } else {
+                    SubagentTurn::Running
+                };
+            } else if turn.kind == USER_LINE {
+                read.turn = SubagentTurn::Running;
             }
         }
-        if start == 0 || size >= TRANSCRIPT_TAIL_LIMIT {
-            return false;
-        }
-        size = size.saturating_mul(4).min(TRANSCRIPT_TAIL_LIMIT);
+        read.turn
     }
 }
 
@@ -669,7 +878,7 @@ mod tests {
             finished,
         );
 
-        let running = running_subagents(&session, SystemTime::now());
+        let running = running_subagents(&session, SystemTime::now(), &mut SubagentReads::default());
 
         let described: Vec<_> = running
             .iter()
@@ -690,7 +899,10 @@ mod tests {
         assert!(described.contains(&("a2", "Explore", Some("a1"))));
 
         let later = SystemTime::now() + SUBAGENT_QUIET_LIMIT + Duration::from_secs(60);
-        assert_eq!(running_subagents(&session, later), [] as [Subagent; 0]);
+        assert_eq!(
+            running_subagents(&session, later, &mut SubagentReads::default()),
+            [] as [Subagent; 0]
+        );
     }
 
     /// The end of a transcript is read far enough back to find a whole
@@ -712,6 +924,9 @@ mod tests {
             ],
         );
 
-        assert!(has_finished(&path));
+        assert_eq!(
+            SubagentReads::default().has_finished(&path),
+            SubagentTurn::Finished
+        );
     }
 }

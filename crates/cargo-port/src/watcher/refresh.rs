@@ -20,6 +20,7 @@ use crate::lint;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::RepoInfo;
+use crate::project::ResolvedBranch;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -201,10 +202,9 @@ pub(super) fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> b
     let repo_root = entry.repo_root.as_deref();
     let git_dir = entry.git_dir.as_deref();
     let common_git_dir = entry.common_git_dir.as_deref();
-    // Match events under the resolved git dir (handles worktrees) or
-    // under repo_root/.git (handles normal repos where git_dir ==
-    // repo_root/.git, but also catches events like refs/heads updates
-    // that live in the common git dir rather than the worktree git dir).
+    // `is_internal_git_path` matches `git_dir` for worktrees, `common_git_dir` for shared
+    // refs/heads updates outside the worktree Git directory, and `repo_root.join(GIT_DIR)` for
+    // normal repositories where git_dir is repo_root/.git.
     git_dir.is_some_and(|d| event_path.starts_with(d))
         || common_git_dir.is_some_and(|d| event_path.starts_with(d))
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(GIT_DIR)))
@@ -293,7 +293,7 @@ pub(super) fn emit_root_git_info_refresh(
     let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
         return;
     };
-    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), repo.local_main_branch.as_deref());
+    let checkout = CheckoutInfo::get(entry.abs_path.as_path(), &repo.local_main_branch);
     tracing::trace!(
         target: PERF_LOG_TARGET,
         elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
@@ -329,10 +329,9 @@ pub(super) fn fire_git_updates(
         .collect();
 
     for refresh_key in ready {
-        // Affected = every entry whose refresh-key matches; for the
-        // common-git-dir case that's primary + all linked siblings of
-        // the same repo. Each entry needs its own `CheckoutInfo`
-        // probe because branch/HEAD/status differ per worktree.
+        // `affected` collects each `ProjectEntry` sharing `git_refresh_key`; `common_git_dir`
+        // combines primary and linked siblings in one repository. Each needs its own
+        // `CheckoutInfo` probe because branch, HEAD and status differ per worktree.
         let affected: Vec<AbsolutePath> = projects
             .values()
             .filter(|entry| git_refresh_key(entry).as_ref() == Some(&refresh_key))
@@ -344,10 +343,9 @@ pub(super) fn fire_git_updates(
             }
             continue;
         }
-        // Identify the primary checkout: the one whose own `.git` is
-        // the common git dir (i.e., its working tree is `<git_dir>/..`).
-        // Falls back to the first affected entry when no clear primary
-        // is visible (e.g., entry registered without `common_git_dir`).
+        // `primary_path` identifies the entry whose own .git is the shared `refresh_key` directory
+        // (the working tree is <git_dir>/..). Fall back to `affected[0]` when no clear primary is
+        // visible, for example when an entry was registered without `common_git_dir`.
         let primary_path = projects
             .values()
             .find(|entry| {
@@ -406,7 +404,9 @@ pub(super) fn spawn_git_refresh(
                 .await
                 .ok()
                 .flatten();
-        let local_main_branch = repo_info.as_ref().and_then(|r| r.local_main_branch.clone());
+        let local_main_branch = repo_info
+            .as_ref()
+            .map_or(ResolvedBranch::Unreadable, |r| r.local_main_branch.clone());
         if let Some(repo_info) = repo_info {
             let _ = background_tx.send(BackgroundMsg::RepoInfo {
                 path: primary_path.clone(),
@@ -414,18 +414,16 @@ pub(super) fn spawn_git_refresh(
             });
         }
 
-        // Probe the per-checkout half for each affected path. These are
-        // cheap (no per-remote loop); each yields the worktree's own
-        // branch/HEAD/status.
+        // Probe `CheckoutInfo` for every `checkout_path` in `affected`: no per-remote loop makes
+        // these probes cheap, and each reports its worktree's own branch, HEAD and status.
         for checkout_path in affected {
             let probe_path = checkout_path.clone();
             let lmb = local_main_branch.clone();
-            let checkout = tokio::task::spawn_blocking(move || {
-                CheckoutInfo::get(probe_path.as_path(), lmb.as_deref())
-            })
-            .await
-            .ok()
-            .flatten();
+            let checkout =
+                tokio::task::spawn_blocking(move || CheckoutInfo::get(probe_path.as_path(), &lmb))
+                    .await
+                    .ok()
+                    .flatten();
             if let Some(checkout) = checkout {
                 let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
                     path: checkout_path,

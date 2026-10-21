@@ -29,9 +29,9 @@ use crate::project::WorktreeHealth::Normal;
 use crate::tui::render;
 use crate::tui::theme_roles;
 
-// ── Column indices ──────────────────────────────────────────────────
+// Imported `COL_*` constants index the `ColumnDef` array returned by `column_defs`.
 
-// ── Column definition types ─────────────────────────────────────────
+// `ColumnWidth`, `Align` and `HeaderMode` describe each `ColumnDef` layout policy.
 
 #[derive(Clone, Copy)]
 pub(super) enum ColumnWidth {
@@ -104,7 +104,7 @@ impl ColumnDef {
 /// The canonical column layout — single source of truth.
 pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     [
-        // 0: Name
+        // `COL_NAME` uses this `ColumnDef` for the project name.
         ColumnDef {
             header_levels: &[""],
             width:         ColumnWidth::Fit { min: 10 },
@@ -112,7 +112,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           0,
             header_mode:   HeaderMode::Standard,
         },
-        // 1: Lint — borrows "Li" from Name padding
+        // `COL_LINT` uses `HeaderMode::BorrowLeft` to borrow "Li" from `COL_NAME` padding.
         ColumnDef {
             header_levels: if lint_enabled { &["Lint"] } else { &[""] },
             width:         ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
@@ -124,7 +124,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
                 HeaderMode::Hidden
             },
         },
-        // 2: CI
+        // `COL_CI` reserves two columns for the CI glyph.
         ColumnDef {
             header_levels: &["CI"],
             width:         ColumnWidth::Fixed(2),
@@ -132,7 +132,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // 3: Lang
+        // `COL_LANG` reserves two columns with `HeaderMode::Hidden`.
         ColumnDef {
             header_levels: &[""],
             width:         ColumnWidth::Fixed(2),
@@ -140,8 +140,8 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::Hidden,
         },
-        // 4: Git path status glyph, labeled as Git in the header.
-        // Right-align so "t" sits above the right edge of the 2-wide emoji.
+        // `COL_GIT_PATH` labels its status glyph "Git"; `Align::Right` places "t" above the right
+        // edge of the two-column emoji.
         ColumnDef {
             header_levels: &["Git"],
             width:         ColumnWidth::Fixed(2),
@@ -149,8 +149,8 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::BorrowLeft,
         },
-        // 5: Origin/upstream sync status — promotes Og → Orig → Origin
-        // as the column widens to fit cell content.
+        // `COL_SYNC` shows origin/upstream sync status, promoting "Og" to "Orig" to "Origin" from
+        // `header_levels` as `ColumnWidth::Fit` widens to fit cell content.
         ColumnDef {
             header_levels: &["Og", "Orig", "Origin"],
             width:         ColumnWidth::Fit { min: 0 },
@@ -158,7 +158,8 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // 6: Local main delta — promotes M → Mn → Main as the column widens.
+        // `COL_MAIN` shows local main delta, promoting "M" to "Mn" to "Main" from `header_levels`
+        // as `ColumnWidth::Fit` widens.
         ColumnDef {
             header_levels: &["M", "Mn", "Main"],
             width:         ColumnWidth::Fit { min: 0 },
@@ -166,8 +167,8 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // 7: Disk — leading gap keeps a space before the size even when the
-        // Main delta column is non-empty (e.g. "↑5" abutting "107.7 GiB").
+        // `COL_DISK` sets `gap: 1` so its size stays separated even when `COL_MAIN` is nonempty
+        // (for example "↑5" beside "107.7 GiB").
         ColumnDef {
             header_levels: &["Disk"],
             width:         ColumnWidth::Fit { min: 4 },
@@ -178,7 +179,7 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     ]
 }
 
-// ── Cell / row types ────────────────────────────────────────────────
+// `CellContent`, `StyledSegment`, `LintCell` and `ProjectRow` hold styled table output.
 
 #[derive(Default)]
 pub(in crate::tui) struct CellContent {
@@ -305,7 +306,7 @@ pub(in crate::tui) struct RowCells {
     pub worktree_health: WorktreeHealth,
 }
 
-// ── Resolved widths ─────────────────────────────────────────────────
+// `ProjectListWidths` wraps `ColumnWidths` with lint visibility and generation invalidation.
 
 /// Project-list column widths. Thin wrapper around the generic
 /// [`ColumnWidths`] primitive that adds the lint-enabled flag,
@@ -370,7 +371,7 @@ fn project_list_specs(lint_enabled: bool) -> Vec<ColumnSpec> {
         .collect()
 }
 
-// ── Display-width helpers ───────────────────────────────────────────
+// `display_width` and the `pad_*` helpers measure and align terminal text.
 
 /// Terminal display width of a string, accounting for multi-byte and wide
 /// characters. Use this for ALL layout calculations — never `.len()`.
@@ -399,14 +400,15 @@ fn pad_center(s: &str, target: usize) -> String {
     format!("{}{s}{}", " ".repeat(left), " ".repeat(right))
 }
 
-// ── Row rendering ───────────────────────────────────────────────────
+// `row_to_line` renders `RowCells`, and `header_line` renders the column headings.
 
 /// Render a `RowCells` into a styled `Line` using the column definitions and
 /// resolved widths. Replaces `project_row_spans`.
 pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let mut spans = Vec::with_capacity(NUM_COLS);
-    // Track which span indices are suffix spans (exempt from strikethrough).
+    // `suffix_indices` identifies `spans` that carry suffixes and are exempt from deleted-row
+    // strikethrough.
     let mut suffix_indices: Vec<usize> = Vec::new();
 
     for (i, cell) in row.cells.iter().enumerate() {
@@ -418,7 +420,8 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
             continue;
         }
 
-        // Suffix handling: split the column into text + suffix spans.
+        // Split `cell.text` and `cell.suffix` into separate `Span` values so the suffix retains its
+        // own style.
         if let Some(suffix) = &cell.suffix {
             let suffix_w = display_width(suffix);
             let text_w = col_width.saturating_sub(suffix_w);
@@ -506,8 +509,9 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
             continue;
         }
 
-        // Borrow overflow from the nearest columns on the left so headers can
-        // stretch without shifting unrelated columns further left.
+        // For `HeaderMode::BorrowLeft`, transfer `borrow_needed` columns from the nearest left
+        // `slot_widths` so the header stretches without shifting unrelated columns farther
+        // left.
         let mut borrow_needed = display_width(def.header_max()).saturating_sub(widths.get(i));
         let mut donor = i;
         while borrow_needed > 0 && donor > 0 {
@@ -555,15 +559,31 @@ pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -
     Line::from(spans)
 }
 
-// ── Row construction helpers ────────────────────────────────────────
+// `build_row_cells`, `build_summary_cells` and `build_group_header_cells` construct table cells.
 
 /// Build a `RowCells` for a project row. Single construction site replaces all
 /// scattered project row literals.
 pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
-    let ci_text = row
-        .ci
-        .map_or(String::new(), |conclusion| String::from(conclusion.icon()));
-    let git_path_icon = row.git_status.map_or("", GitStatus::icon);
+    let (git_path_icon, name_style, origin_sync, main_sync) =
+        match (row.worktree_health, row.git_status) {
+            (
+                WorktreeHealth::Broken,
+                Some(
+                    GitStatus::Unreadable
+                    | GitStatus::Clean
+                    | GitStatus::Modified
+                    | GitStatus::Untracked
+                    | GitStatus::Ignored,
+                )
+                | None,
+            ) => ("", Style::default(), "", ""),
+            (WorktreeHealth::Normal, status) => (
+                status.map_or("", GitStatus::icon),
+                project_name_style(status),
+                row.git_origin_sync,
+                row.git_main,
+            ),
+        };
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
@@ -581,13 +601,12 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         }
     };
 
-    let origin_sync_style = compact_status_style(row.git_origin_sync);
-    let main_style = compact_status_style(row.git_main);
-    let origin_sync_align = compact_status_align(row.git_origin_sync);
-    let main_align = compact_status_align(row.git_main);
+    let origin_sync_style = compact_status_style(origin_sync);
+    let main_style = compact_status_style(main_sync);
+    let origin_sync_align = compact_status_align(origin_sync);
+    let main_align = compact_status_align(main_sync);
 
-    let name_style = project_name_style(row.git_status);
-    let ci_style = render::conclusion_style(row.ci);
+    let ci_style = render::ci_status_style(row.ci);
     let git_path_style = Style::default();
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
@@ -605,7 +624,9 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_CI] = CellContent {
-        text: ci_text,
+        text: row
+            .ci
+            .map_or(String::new(), |ci_status| String::from(ci_status.icon())),
         style: ci_style,
         align_override: None,
         ..CellContent::default()
@@ -623,13 +644,13 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_SYNC] = CellContent {
-        text: String::from(row.git_origin_sync),
+        text: String::from(origin_sync),
         style: origin_sync_style,
         align_override: origin_sync_align,
         ..CellContent::default()
     };
     cells[COL_MAIN] = CellContent {
-        text: String::from(row.git_main),
+        text: String::from(main_sync),
         style: main_style,
         align_override: main_align,
         ..CellContent::default()
@@ -653,6 +674,7 @@ pub(in crate::tui) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
 pub(in crate::tui) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
+        Some(GitStatus::Unreadable) => Style::default().fg(error_color()),
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
         Some(GitStatus::Ignored) => Style::default().fg(theme_roles::git_ignored_color()),
@@ -662,6 +684,7 @@ pub(in crate::tui) fn project_name_style(git_status: Option<GitStatus>) -> Style
 
 pub(in crate::tui) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
+        Some(GitStatus::Unreadable) => Style::default().fg(error_color()),
         Some(GitStatus::Modified) => Style::default().fg(theme_roles::git_modified_color()),
         Some(GitStatus::Untracked) => Style::default().fg(theme_roles::git_untracked_color()),
         Some(GitStatus::Ignored) => Style::default().fg(secondary_text_color()),
@@ -854,12 +877,12 @@ mod tests {
     #[test]
     fn resolved_widths_seeds_from_defs() {
         let widths = ProjectListWidths::new(true);
-        // Fixed columns get their fixed width
+        // `ProjectListWidths::new` seeds `ColumnWidth::Fixed` columns at `seeded_width`.
         assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
         assert_eq!(widths.get(COL_LANG), seeded_width(COL_LANG));
         assert_eq!(widths.get(COL_CI), seeded_width(COL_CI));
         assert_eq!(widths.get(COL_GIT_PATH), seeded_width(COL_GIT_PATH));
-        // Fit columns get their min
+        // `ProjectListWidths::new` seeds `ColumnWidth::Fit` columns at their minimum widths.
         assert_eq!(widths.get(COL_NAME), seeded_width(COL_NAME));
         assert_eq!(widths.get(COL_DISK), seeded_width(COL_DISK));
         assert_eq!(widths.get(COL_SYNC), seeded_width(COL_SYNC));
@@ -871,7 +894,7 @@ mod tests {
         let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 25);
         assert_eq!(widths.get(COL_NAME), 25);
-        // Fixed column ignores observe
+        // `widths.observe(COL_LINT, 99)` cannot grow the `ColumnWidth::Fixed` lint column.
         widths.observe(COL_LINT, 99);
         assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
     }
@@ -935,7 +958,7 @@ mod tests {
         assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "M");
         assert_eq!(defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)), "Og");
 
-        // Mid widths promote to the 2nd level.
+        // The observed `COL_MAIN` and `COL_SYNC` widths select the second `header_levels` labels.
         let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_MAIN, 3);
         widths.observe(COL_SYNC, 5);
@@ -945,7 +968,8 @@ mod tests {
             "Orig"
         );
 
-        // Wide enough for the longest level.
+        // These `widths.observe` calls make the longest `COL_MAIN` and `COL_SYNC` header labels
+        // fit.
         let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_MAIN, 4);
         widths.observe(COL_SYNC, 6);

@@ -1,3 +1,14 @@
+nextest-version = { required = "0.9.138" }
+
+experimental = ["setup-scripts"]
+
+[scripts.setup.cargo-berth-templates]
+command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter = 'package(cargo-berth)'
+setup  = 'cargo-berth-templates'
+
 # The child-source-switch reader regression needs a 12-row command pane on a
 # reader that scans every cargo process on the host. Concurrent tests in the
 # same run open enough families to crowd that pane off the tile grid, so the

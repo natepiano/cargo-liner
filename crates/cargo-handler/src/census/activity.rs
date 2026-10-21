@@ -3,10 +3,6 @@
 use std::borrow::Borrow;
 use std::collections::HashSet;
 use std::fs;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -14,6 +10,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::classify::ProcessEntry;
+use super::transcript;
+use super::transcript::JsonlCursor;
+use super::transcript::RecordKind;
+use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::VERIFY_SCRIPT;
 use crate::theme::Role;
 
@@ -337,50 +337,58 @@ fn shell_words(command: &str) -> Vec<String> {
 /// A whole-line transcript cursor, retained across scans of the same path.
 #[derive(Debug)]
 pub(super) struct TranscriptRead {
-    read_to:  u64,
-    activity: ActivityRead,
+    cursor:     JsonlCursor,
+    bytes_read: u64,
+    activity:   ActivityRead,
 }
 
 impl TranscriptRead {
     pub(super) const fn new(reported: AgentActivity) -> Self {
         Self {
-            read_to:  0,
-            activity: ActivityRead::from_activity(reported),
+            cursor:     JsonlCursor::NeverRead,
+            bytes_read: 0,
+            activity:   ActivityRead::from_activity(reported),
         }
     }
 
     pub(super) const fn activity(&self) -> AgentActivity { self.activity.activity() }
 
+    /// File bytes fetched on the last advance, including unfinished records.
+    pub(super) const fn bytes_read(&self) -> u64 { self.bytes_read }
+
     /// Consume only newly completed lines. The count makes cursor reuse observable.
     pub(super) fn advance(&mut self, path: &Path, reported: AgentActivity) -> usize {
-        let Ok(mut file) = fs::File::open(path) else {
-            return 0;
-        };
-        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-            return 0;
-        };
-        if length < self.read_to {
+        if matches!(&self.cursor, JsonlCursor::Following { offset, .. }
+            if fs::metadata(path).is_ok_and(|metadata| metadata.len() < *offset))
+        {
             *self = Self::new(reported);
         }
-        if length == self.read_to || file.seek(SeekFrom::Start(self.read_to)).is_err() {
-            return 0;
-        }
-        let mut reader = BufReader::new(file);
-        let mut line = Vec::new();
-        let mut lines = 0;
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(bytes) if bytes > 0 && line.ends_with(b"\n") => {
-                    self.read_to += bytes as u64;
-                    lines += 1;
-                    if let Ok(value) = serde_json::from_slice(&line) {
-                        self.activity.take_claude(&value);
+        let batch = self.cursor.read_until(path, TRANSCRIPT_TAIL_START, |line| {
+            std::str::from_utf8(line)
+                .unwrap_or_default()
+                .lines()
+                .any(|record| {
+                    let record = record.as_bytes();
+                    if !matches!(transcript::record_kind(record), RecordKind::Claude) {
+                        return false;
                     }
-                },
-                _ => return lines,
+                    let mut activity = ActivityRead::from_activity(AgentActivity::Unreported);
+                    if let Ok(value) = serde_json::from_slice(record) {
+                        activity.take_claude(&value);
+                    }
+                    activity.activity() != AgentActivity::Unreported
+                })
+        });
+        self.bytes_read = batch.bytes_read;
+        for line in &batch.lines {
+            if !matches!(transcript::record_kind(line), RecordKind::Claude) {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_slice(line) {
+                self.activity.take_claude(&value);
             }
         }
+        batch.lines.len()
     }
 }
 

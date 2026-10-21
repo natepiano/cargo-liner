@@ -29,3 +29,7 @@ uuid          = { workspace = true }
 [dev-dependencies]
 cargo-berth-test-support = { workspace = true }
 tempfile                 = { workspace = true }
+
+[[test]]
+harness = false
+name    = "recorded_templates"

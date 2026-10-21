@@ -4,9 +4,9 @@ use std::time::Instant;
 use super::background_services::CratesIoRefreshTarget;
 use super::constants::CRATES_IO_REFRESH_INTERVAL_SECS;
 use super::constants::CRATES_IO_REFRESH_MIN_AGE_SECS;
+use crate::project::CratesIoRelease;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::scan::CratesIoInfo;
 use crate::tui::app::App;
 
 impl App {
@@ -29,9 +29,9 @@ impl App {
         if !crates_io_refresh_due(self.crates_io_refresh_at, now) {
             return;
         }
-        // An outage or a tripped rate limit already has a recovery path
-        // (`refetch_missing_crates_io_targets`); adding a request a
-        // minute on top of it would only deepen the limit.
+        // Return when `net.crates_io_status().is_available()` is false during an outage or rate
+        // limit: `refetch_missing_crates_io_targets` already handles recovery, and another request
+        // each minute would only deepen the limit.
         if !self.net.crates_io_status().is_available() {
             return;
         }
@@ -42,8 +42,9 @@ impl App {
         ) else {
             return;
         };
-        // Read the displayed version before the fetch so the worker can
-        // tell a genuine release from a first fill.
+        // Read `previous_version` through `displayed_crates_io_version` for `target.paths` before
+        // `spawn_crates_io_refresh`, so `crates_io_refresh_messages` can distinguish a new release
+        // from an initial fill.
         let previous_version = target
             .paths
             .first()
@@ -86,7 +87,7 @@ impl App {
 fn crates_io_refresh_messages(
     target: CratesIoRefreshTarget,
     previous_version: Option<String>,
-    info: CratesIoInfo,
+    info: CratesIoRelease,
 ) -> Vec<BackgroundMsg> {
     let CratesIoRefreshTarget {
         name,
@@ -97,9 +98,7 @@ fn crates_io_refresh_messages(
     for path in paths {
         messages.push(BackgroundMsg::CratesIoVersion {
             path,
-            version: info.version.clone(),
-            prerelease: info.prerelease.clone(),
-            downloads: info.downloads,
+            release: info.clone(),
         });
     }
     if let Some(previous_version) = previous_version
@@ -129,13 +128,13 @@ mod tests {
     use std::time::Instant;
 
     use super::CRATES_IO_REFRESH_INTERVAL_SECS;
-    use super::CratesIoInfo;
     use super::crates_io_refresh_due;
     use super::crates_io_refresh_messages;
     use crate::config::CargoPortConfig;
     use crate::config::CratesIoReleaseGroupConfig;
     use crate::config::WorkspaceMemberInclusion;
     use crate::project::AbsolutePath;
+    use crate::project::CratesIoRelease;
     use crate::project::Package;
     use crate::project::RootItem;
     use crate::project::RustProject;
@@ -160,6 +159,7 @@ mod tests {
     fn coordinated_workspace_refresh_updates_every_crate_and_emits_one_toast() {
         const PREVIOUS_VERSION: &str = "0.19.0";
         const RELEASE_VERSION: &str = "0.20.0";
+        const PRERELEASE_VERSION: &str = "0.21.0-rc.1";
 
         let root_path = AbsolutePath::from("/rust/bevy");
         let ecs_path = AbsolutePath::from("/rust/bevy/crates/bevy_ecs");
@@ -200,10 +200,12 @@ mod tests {
         let paths = [root_path, ecs_path, settings_path];
         for path in &paths {
             app.handle_bg_msg(BackgroundMsg::CratesIoVersion {
-                path:       path.clone(),
-                version:    PREVIOUS_VERSION.to_string(),
-                prerelease: None,
-                downloads:  1,
+                path:    path.clone(),
+                release: CratesIoRelease {
+                    version:    PREVIOUS_VERSION.to_string(),
+                    prerelease: None,
+                    downloads:  1,
+                },
             });
         }
 
@@ -220,15 +222,16 @@ mod tests {
             }
         }
         assert_eq!(targets.len(), paths.len());
+        let release = CratesIoRelease {
+            version:    RELEASE_VERSION.to_string(),
+            prerelease: Some(PRERELEASE_VERSION.to_string()),
+            downloads:  2,
+        };
         for target in targets {
             for message in crates_io_refresh_messages(
                 target,
                 Some(PREVIOUS_VERSION.to_string()),
-                CratesIoInfo {
-                    version:    RELEASE_VERSION.to_string(),
-                    prerelease: None,
-                    downloads:  2,
-                },
+                release.clone(),
             ) {
                 app.handle_bg_msg(message);
             }
@@ -236,10 +239,12 @@ mod tests {
 
         for path in &paths {
             assert_eq!(
-                app.displayed_crates_io_version(path),
-                Some(RELEASE_VERSION),
-                "release-group path {} receives the fetched version",
-                path.as_path().display()
+                app.project_list
+                    .rust_info_at_path(path.as_path())
+                    .map(|rust| &rust.crates_io),
+                Some(&crate::project::CratesIoReleaseState::Released(
+                    release.clone()
+                )),
             );
         }
         let release_toasts = app

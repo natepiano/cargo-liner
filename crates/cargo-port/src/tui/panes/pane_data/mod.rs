@@ -36,6 +36,8 @@ pub use detail_field::package_selectable_row_at_or_after;
 pub use detail_field::package_selectable_row_at_or_before;
 pub use detail_field::sanitize_ansi_for_output;
 pub use detail_field::strip_ansi;
+pub(in crate::tui) use formatting::GitReadHealth;
+pub(in crate::tui) use formatting::GitSyncLabels;
 pub use formatting::format_ahead_behind;
 pub use formatting::format_date;
 pub use formatting::format_duration;
@@ -43,13 +45,18 @@ pub use formatting::format_time;
 pub use formatting::format_timestamp;
 pub use git_data::GitCheckout;
 pub use git_data::GitData;
+pub(in crate::tui) use git_data::GitProbe;
 pub use git_data::GitRow;
+#[cfg(test)]
+pub use git_data::HeadRelation;
 #[cfg(test)]
 pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
 pub use git_data::PullRequestSectionState;
 pub use git_data::RemoteRow;
+#[cfg(test)]
+pub(in crate::tui) use git_data::RemoteRows;
 pub use git_data::WorktreeInfo;
 pub use git_data::git_fields_from_data;
 pub use git_data::git_has_description_row;
@@ -59,6 +66,7 @@ pub use package_data::PackageData;
 pub use package_data::PackagePresence;
 pub use package_data::PackageRow;
 pub use package_data::PackageSection;
+pub(in crate::tui) use package_data::PackageVersion;
 pub use pending::CargoPackageInvocation;
 pub use pending::CiFetchKind;
 pub use pending::PendingCiFetch;
@@ -69,6 +77,8 @@ use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
 pub(super) use self::constants::CRATES_IO_UNREACHABLE;
+#[cfg(test)]
+pub(in crate::tui) use self::constants::HEAD_UNREADABLE_LABEL;
 use self::constants::PROJECT_LIBS_LABEL;
 use self::constants::PROJECT_MEMBERS_LABEL;
 use self::constants::PROJECT_PROC_MACROS_LABEL;
@@ -100,7 +110,6 @@ use crate::ci::CiStatus;
 use crate::constants::GIT_CLONE;
 use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
-use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
 use crate::project;
 use crate::project::AbsolutePath;

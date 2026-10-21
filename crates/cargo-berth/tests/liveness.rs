@@ -608,17 +608,19 @@ const PAUSE_MODE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_PAUSE";
 const PAUSE_MODE_HEAD: &str = "head";
 const PAUSE_MODE_MERGE_BASE: &str = "merge-base";
 const PAUSED_GIT_WRAPPER: &str = r#"#!/bin/sh
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ]; then
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "merge-base" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "merge-base" ] && [ "$3" = "--is-ancestor" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+    IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
 fi
-if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "rev-parse" ] && [ "$3" = "HEAD" ]; then
-    : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" ] && [ "$2" = "cat-file" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
+    while IFS= read -r expression; do
+        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
+            : > "$CARGO_BERTH_TEST_GIT_READY"
+            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
+        fi
+        printf '%s\n' "$expression"
+    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    exit $?
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -647,6 +649,14 @@ impl PausedBerthProcess {
         fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
         let ready_path = wrapper_directory.path().join("ready");
         let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo")
+            .arg(&continue_path)
+            .output()
+            .expect("continuation FIFO command should run");
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
         let original_path = std::env::var_os("PATH").expect("test PATH should exist");
         let wrapped_path = std::env::join_paths(
             std::iter::once(wrapper_directory.path().to_path_buf())
@@ -1399,7 +1409,7 @@ fn assert_check_session_rejections(repository: &TempDir) {
 }
 
 #[test]
-fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
+fn rewritten_integration_reachability_leaves_the_mutation_lock_available() {
     let repository = initialized_repository();
     let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     advance_trunk_past(repository.path());
@@ -1426,6 +1436,14 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
         PAUSE_MODE_MERGE_BASE,
     );
     resolution.wait_until_paused();
+    let competing_lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(".git/cargo-berth/mutation.lock"))
+        .expect("ledger mutation lock should exist");
+    competing_lock
+        .try_lock()
+        .expect("recovery Git preparation must leave the mutation lock available");
 
     let contender = run_contended_berth(
         berth_command(BERTH_EXECUTABLE)
@@ -1437,6 +1455,9 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
 
     assert_eq!(contender.status.code(), Some(6));
     assert_eq!(json_output(&contender)["status"], "contention");
+    competing_lock
+        .unlock()
+        .expect("competing holder should unlock");
     let resolution = resolution.continue_and_wait();
     let resolution_envelope = json_output(&resolution);
     assert_eq!(resolution.status.code(), Some(5), "{resolution_envelope}");
@@ -1453,8 +1474,6 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
 #[test]
 fn identity_clear_session_reports_mutation_lock_contention() {
     let repository = initialized_repository();
-    let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    advance_trunk_past(repository.path());
     let session_id = "contended-clear-session";
     let claim = run_berth_with_session(
         repository.path(),
@@ -1467,19 +1486,13 @@ fn identity_clear_session_reports_mutation_lock_contention() {
         ],
         session_id,
     );
-    let reservation_id = reservation_id(&claim);
-    let mut resolution = PausedBerthProcess::spawn(
-        repository.path(),
-        &[
-            "resolve",
-            &reservation_id,
-            "--integrated-as",
-            &earlier_trunk,
-            "--json",
-        ],
-        PAUSE_MODE_MERGE_BASE,
-    );
-    resolution.wait_until_paused();
+    assert!(claim.status.success(), "{}", json_output(&claim));
+    let competing_lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(".git/cargo-berth/mutation.lock"))
+        .expect("ledger mutation lock should exist");
+    competing_lock.lock().expect("competing holder should lock");
 
     let clear_session = run_contended_berth(
         berth_command(BERTH_EXECUTABLE)
@@ -1491,7 +1504,9 @@ fn identity_clear_session_reports_mutation_lock_contention() {
 
     assert_eq!(clear_session.status.code(), Some(6));
     assert_eq!(json_output(&clear_session)["status"], "contention");
-    drop(resolution.continue_and_wait());
+    competing_lock
+        .unlock()
+        .expect("competing holder should unlock");
 }
 
 #[test]
@@ -1658,10 +1673,9 @@ fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() 
 }
 
 #[test]
-fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
+fn abandon_and_retire_dispositions_remain_distinct_after_replay() {
     let repository = RECOVERY_SOURCES.instantiate();
     let (abandoned_id, retired_id) = record_terminal_recovery_dispositions(repository.path());
-    validate_rewritten_integration_replacement(repository.path());
 
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
@@ -1941,7 +1955,10 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
     (abandoned_id, retired_id)
 }
 
-fn validate_rewritten_integration_replacement(repository: &Path) {
+#[test]
+fn rewritten_integration_replacement_validates_evidence() {
+    let sources = RECOVERY_SOURCES.instantiate();
+    let repository = sources.path();
     // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`.
     GIT.run_without_hooks(repository, ["switch", "--quiet", "rewritten"]);
     let unreachable_tip = loose_refs::read_loose_ref(repository, "refs/heads/rewritten");
@@ -1981,8 +1998,14 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
 
     // A trunk commit carrying identical scoped content proves the work, so reconciliation
     // settles the reservation on that commit before any resolution runs.
-    commit_file(repository, "rewritten", "work\n", "squashed integration");
+    commit_rewritten_trunk_without_hooks(repository, "squashed integration");
     let squashed_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
+    let settlement = json_output(&run_berth(
+        repository,
+        &["release", &rewritten_id, "--json"],
+    ));
+    assert_eq!(settlement["status"], "integrated", "{settlement:#}");
+    // Revalidate the disposition the release itself just recorded; no hook settled it first.
     let settled = json_output(&run_berth(
         repository,
         &["release", &rewritten_id, "--json"],
@@ -2002,15 +2025,15 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
         &unrelated_commit,
         &unreachable_tip,
     );
-    commit_file(repository, "rewritten", "work\n", "squashed again");
+    commit_rewritten_trunk_without_hooks(repository, "squashed again");
     let equivalent_commit = loose_refs::read_loose_ref(repository, "refs/heads/main");
     replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
 
     // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
     lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
-    git(
+    GIT.run_without_hooks(
         repository,
-        &[
+        [
             "merge",
             "--quiet",
             "--no-ff",
@@ -2036,9 +2059,16 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     );
 }
 
+/// Change trunk without allowing a hook to reconcile before the asserted release.
+fn commit_rewritten_trunk_without_hooks(repository: &Path, message: &str) {
+    fs::write(repository.join("rewritten"), "work\n").expect("trunk work should write");
+    GIT.run_without_hooks(repository, ["add", "rewritten"]);
+    GIT.run_without_hooks(repository, ["commit", "--quiet", "-m", message]);
+}
+
 /// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
 fn lose_the_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
-    git(repository, &["reset", "--hard", "--quiet", trunk]);
+    GIT.run_without_hooks(repository, ["reset", "--hard", "--quiet", trunk]);
     // The reset is the first thing this pass sees, so it records the loss and says nothing; the
     // next pass, reading back the row it left, is the one that reports. See
     // `ReconciliationAction::confirmed_lost_evidence`.

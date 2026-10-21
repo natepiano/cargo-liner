@@ -72,7 +72,7 @@ fn accounts_refresh_background_cadence_publishes_changed_readings_and_recovers_a
     );
     assert!(matches!(monitor.table, AccountsTable::AwaitingFirstReading));
     first.reply.send(Ok(reading(85))).expect("first answer");
-    // Starting a subsequent invocation proves the scheduler published the prior answer.
+    // Starting a subsequent `Invocation` proves the scheduler published the prior answer.
     let second = started
         .recv_timeout(DEADLINE)
         .expect("scheduler independently starts the next refresh");

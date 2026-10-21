@@ -31,7 +31,7 @@ use crate::project::RootItem;
 
 /// Build a normalized project item for a discovered root directory.
 ///
-/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// Unlike `cargo_parse_result_to_item(from_cargo_toml(...))`, this walks nested
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
@@ -53,7 +53,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             )
         {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            items.push(tree::cargo_project_to_item(parsed));
+            items.push(tree::cargo_parse_result_to_item(parsed));
         }
     }
 
@@ -88,9 +88,9 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
-    // Local git info — includes git status but skips first_commit,
-    // which is handled separately by
-    // `schedule_git_first_commit_refreshes` (batched by repo root).
+    // `emit_git_info` sends local Git metadata, including Git status, but skips
+    // `first_commit`, which `schedule_git_first_commit_refreshes` handles separately
+    // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
     }
@@ -115,7 +115,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         }
     }
 
-    // Crates.io version + downloads (network)
+    // `client.fetch_crates_io_info` returns version/download details over the
+    // network for `CratesIoVersion`; `emit_service_signal` forwards service observations.
     if let Some(name) = req.name {
         let _ = sender.send(BackgroundMsg::CratesIoFetchQueued {
             name: name.to_string(),
@@ -124,10 +125,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(sender, signal);
         if let Some(info) = info {
             let _ = sender.send(BackgroundMsg::CratesIoVersion {
-                path:       abs.clone(),
-                version:    info.version,
-                prerelease: info.prerelease,
-                downloads:  info.downloads,
+                path:    abs.clone(),
+                release: info,
             });
         }
         let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
@@ -323,7 +322,7 @@ pub(super) fn phase1_discover(
             {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {
+                let Ok(cargo_parse_result) = project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 tracing::trace!(
@@ -333,7 +332,7 @@ pub(super) fn phase1_discover(
                     "phase1_manifest_parse"
                 );
                 stats.projects += 1;
-                let item = tree::cargo_project_to_item(cargo_project);
+                let item = tree::cargo_parse_result_to_item(cargo_parse_result);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if project::git_repo_root(&abs_path).is_some() {

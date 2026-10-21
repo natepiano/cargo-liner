@@ -28,6 +28,7 @@ use crate::board::RecordedOverlapAnswer;
 use crate::board::ReservationOrderingEdge;
 use crate::config::DefaultAnswer;
 use crate::config::InitializationState;
+use crate::constants::RETENTION_MAINTENANCE_DEFERRED_SUMMARY;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::drift::DriftEffect;
@@ -51,6 +52,8 @@ use crate::gate::install::ActiveManagedHookInstallation;
 use crate::gate::install::ManagedHookActivationOutcome;
 use crate::gate::install::ManagedHookInstallation;
 use crate::gate::permit::ForcedIntegrationPermitReplayError;
+use crate::git::GitLockRefusal;
+use crate::git::RetentionMaintenance;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
@@ -101,6 +104,7 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::HarnessSessionIdentity;
 use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
+use crate::verb::claim::ClaimAnswerPolicy;
 use crate::verb::claim::PhaseReservationCandidate;
 use crate::verb::claim::ReservationAcquisition;
 use crate::verb::claim::ReservationAcquisitionKind;
@@ -109,8 +113,7 @@ use crate::worktree::WorktreeEnrollmentReport;
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
     "Rebuilt reservations.json from journal truth without changing the journal.";
-const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str =
-    "The journal holds no superseded merge extent observation; it is unchanged.";
+const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str = "The journal holds no superseded observation or expired, unreferenced history; it is unchanged.";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
@@ -364,9 +367,12 @@ fn closed_value_selector_object_schema(
 }
 
 /// One response from a `cargo-berth` verb.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq)]
 #[schemars(rename = "output_envelope")]
 pub(crate) struct OutputEnvelope {
+    /// Deferred read maintenance retained for installed-hook rendering.
+    #[serde(skip)]
+    maintenance_notice:      MaintenanceNotice,
     /// The generated output contract generation that produced this response.
     output_contract_version: u32,
     /// The verb that produced this response.
@@ -388,6 +394,39 @@ pub(crate) struct OutputEnvelope {
     presentation:            EnvelopePresentation,
     /// The verb-keyed facts consumers need without parsing prose.
     payload:                 OutputPayload,
+}
+
+// Keep the wire contract unchanged while deriving maintenance prose only at publication.
+impl Serialize for OutputEnvelope {
+    fn serialize<Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> Result<Serializer::Ok, Serializer::Error>
+    where
+        Serializer: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut output = serializer.serialize_struct("output_envelope", 9)?;
+        output.serialize_field("output_contract_version", &self.output_contract_version)?;
+        output.serialize_field("verb", &self.verb)?;
+        output.serialize_field("status", &self.status)?;
+        output.serialize_field("exit_code", &self.exit_code)?;
+        output.serialize_field("reservations", &self.reservations)?;
+        output.serialize_field("blocked_by", &self.blocked_by)?;
+        output.serialize_field("message", &self.published_message())?;
+        output.serialize_field("presentation", &self.published_presentation())?;
+        output.serialize_field("payload", &self.payload)?;
+        output.end()
+    }
+}
+
+/// Read maintenance feedback retained independently of rendered prose.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum MaintenanceNotice {
+    #[default]
+    None,
+    Deferred(Box<GitLockRefusal>),
 }
 
 /// Trusted rendering produced inside the installed `PostToolUse` engine process.
@@ -1710,14 +1749,15 @@ impl OutputEnvelope {
     /// Return the process exit status selected by the engine.
     pub(crate) const fn exit_code(&self) -> BerthExit { self.exit_code }
 
-    /// Borrow the render-ready output selected by the engine.
-    pub(crate) const fn presentation(&self) -> &EnvelopePresentation { &self.presentation }
+    /// Render the output selected by the engine, including deferred maintenance.
+    pub(crate) fn presentation(&self) -> EnvelopePresentation { self.published_presentation() }
 
     /// Build the response for a verb that has no engine behind it yet.
     #[cfg(test)]
     fn unimplemented(command_verb: CommandVerb) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    command_verb,
             status:                  OutputStatus::Unimplemented,
             exit_code:               BerthExit::Clear,
@@ -1739,6 +1779,7 @@ impl OutputEnvelope {
         let presentation = board.envelope_presentation(alert_routing, rendering);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Board,
             status: OutputStatus::BoardReady,
             exit_code: BerthExit::Clear,
@@ -1756,6 +1797,7 @@ impl OutputEnvelope {
         let presentation = board::reservation_lifecycle_presentation(&snapshot);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Board,
             status: OutputStatus::BoardReady,
             exit_code: BerthExit::Clear,
@@ -1776,6 +1818,7 @@ impl OutputEnvelope {
         let reservation_id = rejection.reservation_id();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Board,
             status:                  OutputStatus::InvalidInput,
             exit_code:               BerthExit::UsageError,
@@ -1811,6 +1854,7 @@ impl OutputEnvelope {
     pub(crate) fn terminal_view_failed_after_board_opened(diagnostic: &str) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Board,
             status:                  OutputStatus::TerminalViewFailed,
             exit_code:               BerthExit::TerminalViewFailed,
@@ -1838,6 +1882,7 @@ impl OutputEnvelope {
         let message = initialization_message(&hooks, &enrollment);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Init,
             status: OutputStatus::Initialized,
             exit_code: BerthExit::Clear,
@@ -1862,6 +1907,7 @@ impl OutputEnvelope {
     pub(crate) fn projection_repaired() -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Init,
             status:                  OutputStatus::ProjectionRepaired,
             exit_code:               BerthExit::Clear,
@@ -1887,7 +1933,7 @@ impl OutputEnvelope {
             ),
             JournalCompaction::Compacted { removed, remaining } => (
                 format!(
-                    "Compacted the journal: removed {} superseded merge extent observation(s) ({} bytes); {} record(s) ({} bytes) remain.",
+                    "Compacted the journal: removed {} superseded or expired record(s) ({} bytes); {} record(s) ({} bytes) remain.",
                     removed.records, removed.bytes, remaining.records, remaining.bytes
                 ),
                 JournalCompactionPayload::Compacted {
@@ -1904,6 +1950,7 @@ impl OutputEnvelope {
         };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Init,
             status: OutputStatus::JournalCompacted,
             exit_code: BerthExit::Clear,
@@ -1941,6 +1988,7 @@ impl OutputEnvelope {
                 let presentation = engine_result_presentation(&summary, &message);
                 return Self {
                     output_contract_version: OUTPUT_CONTRACT_VERSION,
+                    maintenance_notice: MaintenanceNotice::None,
                     verb: CommandVerb::Integrate,
                     status: OutputStatus::Integrated,
                     exit_code: BerthExit::Clear,
@@ -1957,6 +2005,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Integrate,
             status: OutputStatus::Integrated,
             exit_code: BerthExit::Clear,
@@ -1986,6 +2035,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Integrate,
             status: OutputStatus::BlockedByOrdering,
             exit_code: BerthExit::BlockedByOrdering,
@@ -2012,6 +2062,7 @@ impl OutputEnvelope {
     ) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Init,
             status:                  OutputStatus::Reinitialized,
             exit_code:               BerthExit::Clear,
@@ -2060,6 +2111,7 @@ impl OutputEnvelope {
         };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: command_verb,
             status: OutputStatus::LedgerUnreadable,
             exit_code: BerthExit::LedgerUnreadable,
@@ -2078,6 +2130,7 @@ impl OutputEnvelope {
     ) -> Self {
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    command_verb,
             status:                  OutputStatus::LedgerUnreadable,
             exit_code:               BerthExit::LedgerUnreadable,
@@ -2101,6 +2154,7 @@ impl OutputEnvelope {
     ) -> Self {
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Integrate,
             status:                  OutputStatus::LedgerUnreadable,
             exit_code:               BerthExit::LedgerUnreadable,
@@ -2128,6 +2182,7 @@ impl OutputEnvelope {
 
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: command_verb,
             status: OutputStatus::Unconfigured,
             exit_code: BerthExit::LedgerUnreadable,
@@ -2180,6 +2235,7 @@ impl OutputEnvelope {
         );
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: if answer_only {
                 OutputStatus::Answered
@@ -2274,6 +2330,7 @@ impl OutputEnvelope {
             claimed_presentation(reservation_id, &message, &session_mapping_publication);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::Claimed,
             exit_code: BerthExit::Clear,
@@ -2297,7 +2354,7 @@ impl OutputEnvelope {
         reservation_id: Option<ReservationId>,
         blockers: WireOrderedReservationIds,
         scopes: ReservationScopeSet,
-        default_answer: Option<DefaultAnswer>,
+        answer_policy: ClaimAnswerPolicy,
     ) -> Self {
         let scope_count = scopes.as_slice().len();
         let blocker_list = blockers
@@ -2306,8 +2363,8 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        let (message, summary) = default_answer.map_or_else(
-            || {
+        let (message, summary) = match answer_policy {
+            ClaimAnswerPolicy::CallerRequest(()) => {
                 let message = reservation_id.map_or_else(
                     || format!(
                         "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
@@ -2318,7 +2375,7 @@ impl OutputEnvelope {
                 );
                 (message, "cargo-berth recorded a deferred overlap answer.")
             },
-            |default_answer| {
+            ClaimAnswerPolicy::RepositoryDefault(default_answer) => {
                 let message = format!(
                     "{} Authorized editing against {blocker_list} on {scope_count} reservation scope(s) with no integration order. No reservation was acquired: this worktree may edit those paths, nothing is held at integration, and whichever checkpoint is ready first merges first; the other lane merges that work in.",
                     default_answer_preface(default_answer)
@@ -2328,9 +2385,10 @@ impl OutputEnvelope {
                     "cargo-berth recorded the repository's default overlap answer.",
                 )
             },
-        );
+        };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::Answered,
             exit_code: BerthExit::Clear,
@@ -2419,6 +2477,7 @@ impl OutputEnvelope {
         let message = drift_message(&report);
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Drift,
             status,
             exit_code,
@@ -2439,6 +2498,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&message, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::ReservationLimitReached,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2493,6 +2553,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&message, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::ContradictsLiveOrdering,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2514,6 +2575,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&message, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::OrderingEdgeLimitReached,
             exit_code: BerthExit::BlockedByOrdering,
@@ -2537,6 +2599,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Sequence,
             status: OutputStatus::Sequenced,
             exit_code: BerthExit::Clear,
@@ -2569,6 +2632,7 @@ impl OutputEnvelope {
         );
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Sequence,
             status,
             exit_code,
@@ -2594,6 +2658,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Integrate,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -2616,6 +2681,7 @@ impl OutputEnvelope {
         let message = reason.to_string();
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: command_verb,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -2650,6 +2716,7 @@ impl OutputEnvelope {
         };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Identity,
             status,
             exit_code,
@@ -2675,6 +2742,7 @@ impl OutputEnvelope {
         let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Claim,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2774,6 +2842,7 @@ impl OutputEnvelope {
         let reservation_id = acquisition.reservation_id;
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Check,
             status: OutputStatus::Clear,
             exit_code: BerthExit::Clear,
@@ -2812,6 +2881,7 @@ impl OutputEnvelope {
         let presentation = presentation::ambiguous_first_touch_block(&message, candidates).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: command_verb,
             status: OutputStatus::AmbiguousActiveRunReservations,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2842,6 +2912,7 @@ impl OutputEnvelope {
         let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Check,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2861,6 +2932,7 @@ impl OutputEnvelope {
     pub(crate) fn invalid_input(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    command_verb,
             status:                  OutputStatus::InvalidInput,
             exit_code:               BerthExit::UsageError,
@@ -2877,6 +2949,12 @@ impl OutputEnvelope {
 
     /// Convert a drift envelope into the commit hook's silent-or-warning behavior.
     pub(crate) fn post_commit_rendering(&self) -> PostCommitRendering {
+        let message = self.published_message();
+        if matches!(self.status, OutputStatus::Clear)
+            && matches!(self.maintenance_notice, MaintenanceNotice::Deferred(_))
+        {
+            return PostCommitRendering::Warning(message);
+        }
         match self.status {
             OutputStatus::Clear | OutputStatus::Unconfigured => PostCommitRendering::Silent,
             // The catch-all below is written for a run that aborted: it offers a by-hand
@@ -2884,19 +2962,16 @@ impl OutputEnvelope {
             // incomplete two clauses before the message says the check observed and recorded
             // everything it found.
             OutputStatus::ScopeAcquisitionRefused => PostCommitRendering::Warning(format!(
-                "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {} This commit remains in place.",
-                self.message
+                "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {message} This commit remains in place."
             )),
             OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
-                PostCommitRendering::Warning(self.message.clone())
+                PostCommitRendering::Warning(message)
             },
             OutputStatus::LedgerUnreadable => PostCommitRendering::Warning(format!(
-                "cargo-berth could not check this commit's drift because the ledger was unreadable. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
-                self.message
+                "cargo-berth could not check this commit's drift because the ledger was unreadable. {message} Run `cargo-berth drift --full` by hand; this commit remains in place."
             )),
             OutputStatus::Contention => PostCommitRendering::Warning(format!(
-                "cargo-berth could not check this commit's drift because the ledger lock deadline was exhausted. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
-                self.message
+                "cargo-berth could not check this commit's drift because the ledger lock deadline was exhausted. {message} Run `cargo-berth drift --full` by hand; this commit remains in place."
             )),
             OutputStatus::Unimplemented
             | OutputStatus::BoardReady
@@ -2929,8 +3004,7 @@ impl OutputEnvelope {
             | OutputStatus::SessionMappingCleared
             | OutputStatus::SessionMappingUnavailable
             | OutputStatus::IncursionResolved => PostCommitRendering::Warning(format!(
-                "cargo-berth could not complete the post-commit drift check. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
-                self.message
+                "cargo-berth could not complete the post-commit drift check. {message} Run `cargo-berth drift --full` by hand; this commit remains in place."
             )),
         }
     }
@@ -2939,6 +3013,7 @@ impl OutputEnvelope {
     pub(crate) fn contention(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    command_verb,
             status:                  OutputStatus::Contention,
             exit_code:               BerthExit::BlockedByContention,
@@ -2962,6 +3037,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Release,
             status,
             exit_code: BerthExit::Clear,
@@ -3051,6 +3127,7 @@ impl OutputEnvelope {
         let presentation = engine_result_presentation(&summary, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Resolve,
             status,
             exit_code: BerthExit::Clear,
@@ -3080,6 +3157,7 @@ impl OutputEnvelope {
         );
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
             verb: CommandVerb::Resolve,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -3104,6 +3182,7 @@ impl OutputEnvelope {
     pub(crate) fn renewed(reservation_id: ReservationId) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Renew,
             status:                  OutputStatus::Renewed,
             exit_code:               BerthExit::Clear,
@@ -3121,6 +3200,7 @@ impl OutputEnvelope {
     pub(crate) fn retargeted(reservation_id: ReservationId, target: TargetView) -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:      MaintenanceNotice::None,
             verb:                    CommandVerb::Retarget,
             status:                  OutputStatus::Retargeted,
             exit_code:               BerthExit::Clear,
@@ -3144,6 +3224,40 @@ impl OutputEnvelope {
     #[cfg(test)]
     pub(crate) const fn verb(&self) -> CommandVerb { self.verb }
 
+    /// Keep maintenance typed until the selected output boundary renders it.
+    pub(crate) fn with_retention_maintenance(mut self, maintenance: &RetentionMaintenance) -> Self {
+        if matches!(self.maintenance_notice, MaintenanceNotice::None)
+            && let RetentionMaintenance::Deferred(lock) = maintenance
+        {
+            self.maintenance_notice = MaintenanceNotice::Deferred(lock.clone());
+        }
+        self
+    }
+
+    fn published_message(&self) -> String {
+        match &self.maintenance_notice {
+            MaintenanceNotice::None => self.message.clone(),
+            MaintenanceNotice::Deferred(lock) => {
+                format!("{}\n{}", self.message, lock.maintenance_notice())
+            },
+        }
+    }
+
+    fn published_presentation(&self) -> EnvelopePresentation {
+        let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice else {
+            return self.presentation.clone();
+        };
+        let mut blocks = match &self.presentation {
+            EnvelopePresentation::RenderedBlocks { blocks } => blocks.as_slice().to_vec(),
+            EnvelopePresentation::NotProvided | EnvelopePresentation::NothingToShow => Vec::new(),
+        };
+        blocks.push(presentation::engine_message_block(
+            RETENTION_MAINTENANCE_DEFERRED_SUMMARY,
+            &lock.maintenance_notice(),
+        ));
+        rendered_blocks_presentation(blocks)
+    }
+
     /// Attach alerts derived by the reconciliation that preceded this command.
     pub(crate) fn with_alerts(mut self, alerts: Vec<Alert>) -> Self {
         self.payload.alerts = alerts;
@@ -3154,7 +3268,7 @@ impl OutputEnvelope {
     }
 
     fn refresh_post_tool_use_presentation(&mut self) {
-        match self.post_tool_use_rendering() {
+        match self.primary_post_tool_use_rendering() {
             PostToolUseRendering::NoFeedback => {
                 self.presentation = EnvelopePresentation::nothing_to_show();
             },
@@ -3196,7 +3310,7 @@ impl OutputEnvelope {
 
     /// Render the primary result followed by every durable alert as its own line.
     pub(crate) fn render_text(&self) -> String {
-        let mut rendered = self.message.clone();
+        let mut rendered = self.published_message();
         if let OutputFacts::Board(board) = &self.payload.facts {
             for marker_name in board.recovered_bypass_marker_names() {
                 let _ = write!(
@@ -3240,6 +3354,10 @@ impl OutputEnvelope {
 
     /// Render an installed-engine `PostToolUse` result without reparsing its serialized envelope.
     pub(crate) fn post_tool_use_rendering(&self) -> PostToolUseRendering {
+        self.with_maintenance_rendering(self.primary_post_tool_use_rendering())
+    }
+
+    fn primary_post_tool_use_rendering(&self) -> PostToolUseRendering {
         match &self.payload.facts {
             OutputFacts::Drift(report) => self.post_tool_use_drift_rendering(report),
             OutputFacts::ReplayFailure(failure) => {
@@ -3313,6 +3431,26 @@ impl OutputEnvelope {
             | OutputFacts::Identity(_) => PostToolUseRendering::Feedback {
                 summary: "cargo-berth rejected an unexpected PostToolUse response.".to_owned(),
                 detail:  self.message.clone(),
+            },
+        }
+    }
+
+    fn with_maintenance_rendering(&self, rendering: PostToolUseRendering) -> PostToolUseRendering {
+        let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice else {
+            return rendering;
+        };
+        let notice = lock.maintenance_notice();
+        match rendering {
+            PostToolUseRendering::NoFeedback => PostToolUseRendering::Feedback {
+                summary: RETENTION_MAINTENANCE_DEFERRED_SUMMARY.to_owned(),
+                detail:  notice,
+            },
+            PostToolUseRendering::Feedback { summary, detail } => PostToolUseRendering::Feedback {
+                summary,
+                detail: format!("{detail}\n{notice}"),
+            },
+            PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
+                PostToolUseRendering::FeedbackDecidedByLiveIncursionState
             },
         }
     }
@@ -3427,11 +3565,15 @@ impl OutputEnvelope {
                 }
             }
         }
-        post_tool_use_feedback(
+        let rendering = post_tool_use_feedback(
             immediate_stop_messages,
             notice_messages,
             &self.payload.alerts,
-        )
+        );
+        match self.maintenance_notice {
+            MaintenanceNotice::None => live_board.with_maintenance_rendering(rendering),
+            MaintenanceNotice::Deferred(_) => self.with_maintenance_rendering(rendering),
+        }
     }
 
     fn post_tool_use_drift_rendering(&self, report: &DriftReport) -> PostToolUseRendering {

@@ -5,6 +5,8 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/edges_templates.rs"]
+mod edges_templates;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -17,6 +19,30 @@ use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::observes_merge_extent_of;
 use cargo_berth_test_support::reservation_row;
+pub use edges_templates::COVER_LANDING;
+pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
+pub use edges_templates::CROSS_TARGET_PAIR;
+pub use edges_templates::DIFFERENT_SUCCESSOR;
+pub use edges_templates::EQUIVALENT_SUCCESSOR;
+pub use edges_templates::HISTORICAL_PROOF;
+pub use edges_templates::INITIAL_INTEGRATION_PAIR;
+pub use edges_templates::LEFT_RIGHT_TREES;
+pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
+pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
+pub use edges_templates::MERGE_EXTENT_MAIN;
+pub use edges_templates::MERGE_EXTENT_PAIR;
+pub use edges_templates::ONE_PREDECESSOR;
+pub use edges_templates::RECORDED_PROJECTION;
+pub use edges_templates::RewrittenSuccessorState;
+pub use edges_templates::SuccessorGap;
+pub use edges_templates::TWO_PREDECESSORS;
+pub use edges_templates::append_edge_fixture_event;
+pub use edges_templates::build_rewritten_successor;
+pub use edges_templates::commit_successor_fixture_file;
+pub use edges_templates::legacy_negative_state;
+pub use edges_templates::legacy_negative_template;
+pub use edges_templates::retain_release;
+pub use edges_templates::successor_history_state;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -50,6 +76,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -282,9 +309,9 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const BLOCKING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "worktree" ] && [ "$3" = "list" ]; then
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "worktree" ] && [ "$3" = "list" ] && [ ! -e "$CARGO_BERTH_TEST_BOARD_SIGNAL" ]; then
     : > "$CARGO_BERTH_TEST_BOARD_SIGNAL"
-    while [ ! -e "$CARGO_BERTH_TEST_BOARD_RELEASE" ]; do sleep 0.01; done
+    IFS= read -r release < "$CARGO_BERTH_TEST_BOARD_RELEASE"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -863,9 +890,9 @@ fn waiting_ordering_edge(entry: &serde_json::Value) -> serde_json::Value {
 fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
     let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
@@ -983,9 +1010,9 @@ fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavaila
 fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "empty-holder");
     let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
@@ -1031,9 +1058,9 @@ fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadabl
 fn outstanding_reservation_report_retains_protected_evidence_when_trunk_is_unreadable() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "protected-holder");
     let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
@@ -1174,9 +1201,9 @@ fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
 fn released_abandoned_reservation_reports_its_merge_extent_at_release_while_active_stays_live() {
     let repository = initialized_repository();
     git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "abandoned-holder");
     let id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
@@ -1596,12 +1623,17 @@ fn replaced_deferral_ordering_remains_readable_on_full_and_reservation_boards() 
 }
 
 #[test]
-fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
+fn board_sections_share_one_committed_generation_when_a_claim_arrives_during_preparation() {
     let repository = initialized_repository();
     let wrapper_directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
-    let signal_path = wrapper_directory.path().join("board-has-lock");
+    let signal_path = wrapper_directory.path().join("board-preparation-paused");
     let release_path = wrapper_directory.path().join("release-board");
+    let fifo = Command::new("mkfifo")
+        .arg(&release_path)
+        .output()
+        .expect("board release FIFO should create");
+    assert_success(&fifo);
     fs::write(&wrapper_path, BLOCKING_GIT_WRAPPER).expect("blocking wrapper should write");
     let mut permissions = fs::metadata(&wrapper_path)
         .expect("blocking wrapper metadata should read")
@@ -1632,7 +1664,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     }
     assert!(
         signal_path.exists(),
-        "board should reach its locked repository read"
+        "board should pause its repository preparation"
     );
 
     let claim = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
@@ -1650,15 +1682,15 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("concurrent claim should spawn");
+    let claim_output = claim
+        .wait_with_output()
+        .expect("claim should complete while board preparation is paused");
+    assert_success(&claim_output);
     fs::write(&release_path, b"release\n").expect("board release signal should write");
     let board_output = board
         .wait_with_output()
         .expect("board should complete after release");
-    let claim_output = claim
-        .wait_with_output()
-        .expect("claim should complete after board releases the lock");
-    assert!(board_output.status.success());
-    assert!(claim_output.status.success());
+    assert_success(&board_output);
 
     let board = json_output(&board_output);
     let data = &board["payload"]["data"];
@@ -1673,19 +1705,20 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     ] {
         assert_eq!(&data[section]["journal_position"], position);
     }
-    assert_eq!(
-        data["unconstrained_reservations"]["entries"],
-        serde_json::json!([])
-    );
     let concurrent_id = reservation_id(&claim_output);
-    assert!(!data.to_string().contains(&concurrent_id));
-    assert!(
+    let entries = data["unconstrained_reservations"]["entries"]
+        .as_array()
+        .expect("unconstrained reservations should be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["reservation_id"], concurrent_id);
+    assert!(data.to_string().contains(&concurrent_id));
+    assert_eq!(
         fs::metadata(repository.path().join(JOURNAL_PATH))
             .expect("journal metadata should read")
-            .len()
-            > position["journal_byte_offset"]
-                .as_u64()
-                .expect("board offset should be numeric")
+            .len(),
+        position["journal_byte_offset"]
+            .as_u64()
+            .expect("board offset should be numeric")
     );
 }
 
@@ -2158,9 +2191,9 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let fresh_root = add_worktree(repository.path(), worktrees.path(), "fresh-holder");
@@ -3089,9 +3122,9 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
@@ -3359,9 +3392,9 @@ fn board_git_cost_separates_each_scaling_dimension() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
@@ -3733,67 +3766,30 @@ struct HistoricalIntegrationFixture {
 
 /// Keep the holder at its checkpoint so later trunk work is not mistaken for holder work.
 fn historical_integration_fixture() -> HistoricalIntegrationFixture {
-    let repository = initialized_repository();
-    let root = repository.path();
-    git(root, &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "configuration",
-        ],
-    );
-    git(root, &["config", "core.hooksPath", "/dev/null"]);
-    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
     let worktrees = tempdir().expect("holder parent should exist");
-    let holder_root = add_worktree(root, worktrees.path(), "historical-holder");
-    let reservation_id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
-    commit_historical_source(&holder_root, "pub fn protected() {}\n", "protected phase");
-    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
-    append_journal_operation(
-        root,
-        &serde_json::json!({
-            "op": "checkpoint", "reservation_id": reservation_id,
-            "protected_tip": protected_tip, "trunk_snapshot": phase_start_head,
-        }),
-    );
-    commit_historical_source(root, "pub fn protected() {}\n", "uncaptured cherry-pick");
-    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(witness, protected_tip);
-    commit_historical_source(
-        root,
-        "pub fn later_trunk_revision() {}\n",
-        "later protected-hunk rewrite",
-    );
-    let target = git_stdout(root, &["rev-parse", "HEAD"]);
-    let replay = GIT.output(
-        root,
-        [
-            "merge-tree",
-            "--write-tree",
-            &format!("--merge-base={phase_start_head}"),
-            &target,
-            &protected_tip,
-        ],
-    );
-    assert_eq!(
-        replay.status.code(),
-        Some(1),
-        "current-trunk replay must conflict"
-    );
-    assert!(
-        fs::read_dir(root.join(".git"))
-            .expect("Git directory should read")
-            .all(|entry| !entry
-                .expect("entry should read")
-                .file_name()
-                .to_string_lossy()
-                .starts_with("cargo-berth-pending-bypass-"))
-    );
+    let repository =
+        edges_templates::HISTORICAL_PROOF.instantiate_with_external_worktrees(worktrees.path());
+    let holder_root = fs::canonicalize(worktrees.path().join("historical-holder"))
+        .expect("holder should resolve");
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository.path().join(".git/historical-proof.json"))
+            .expect("historical proof should read"),
+    )
+    .expect("historical proof should decode");
+    let reservation_id = state["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    let phase_start_head = state["phase_start_head"]
+        .as_str()
+        .expect("phase start")
+        .to_owned();
+    let protected_tip = state["protected_tip"]
+        .as_str()
+        .expect("protected tip")
+        .to_owned();
+    let witness = state["witness"].as_str().expect("witness").to_owned();
+    let target = state["target"].as_str().expect("target").to_owned();
     HistoricalIntegrationFixture {
         reservation: RewrittenReservationFixture {
             repository,
@@ -6062,9 +6058,9 @@ fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
         repository.path(),
         &["add", "--force", ".claude/config/berth.toml"],
     );
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let orphan_root = add_worktree(repository.path(), worktrees.path(), "orphan-recovery");
@@ -6159,7 +6155,8 @@ fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservatio
             .lines()
             .filter(|line| *line == protected_object_query)
             .count(),
-        1
+        0,
+        "orphan object availability must reuse the operation's batch reader"
     );
     assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(trace.lines().filter(|line| *line == retention).count(), 1);
@@ -7772,12 +7769,7 @@ fn run_berth_with_git_wrapper(
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, wrapper).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    DirectorySnapshot::write_shared_shell_script(&wrapper_path, wrapper);
     let original_path = std::env::var_os("PATH").expect("PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf())

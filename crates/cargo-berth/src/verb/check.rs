@@ -214,12 +214,14 @@ fn reconcile_and_retry(
             expected_configuration_path,
         }) => {
             return OutputEnvelope::unconfigured(CommandVerb::Check, &expected_configuration_path)
-                .with_alerts(reconciliation_report.alerts);
+                .with_alerts(reconciliation_report.alerts)
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
         },
         Err(error) => {
             return error
                 .into_output()
-                .with_alerts(reconciliation_report.alerts);
+                .with_alerts(reconciliation_report.alerts)
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
         },
     };
     // A configured default answer records itself under the lock before the edit is protected.
@@ -235,6 +237,7 @@ fn reconcile_and_retry(
             &retried_decision.worktree_context,
         )
         .with_alerts(reconciliation_report.alerts)
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
     } else {
         refusal::record(
             &retried_decision.worktree_context,
@@ -249,6 +252,7 @@ fn reconcile_and_retry(
             retried_decision.approver,
         )
         .with_alerts(reconciliation_report.alerts)
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
     }
 }
 
@@ -337,9 +341,10 @@ fn decide(
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
+    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
     let acting_head_containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        &worktree_context,
+        &repository,
         resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);

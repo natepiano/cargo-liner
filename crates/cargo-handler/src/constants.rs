@@ -140,8 +140,8 @@ pub(crate) const TIMER_PIE_FULL: char = '●';
 /// The summary's column labels, in column order.
 pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
     "pid",
-    "agent",
-    "name",
+    "account",
+    "session",
     "status",
     "age",
     "desktop",
@@ -270,10 +270,14 @@ pub(crate) const CODEX_SERVICE_TIER_KEY: &str = "service_tier";
 /// The `type` of a rollout's first line, whose `payload.timestamp` is
 /// when its thread began.
 pub(crate) const CODEX_SESSION_META_LINE: &str = "session_meta";
+/// Marker for a rollout record that can contain the first task.
+pub(crate) const CODEX_USER_MARKER: &[u8] = b"\"user\"";
 /// The `type` of a rollout line carrying an event.
 pub(crate) const CODEX_EVENT_LINE: &str = "event_msg";
-/// The `payload.type` of the event recording a thread's settings, its
-/// requested tier among them. Lines without it are not parsed.
+/// A rollout response record can change activity or supply the first task.
+pub(crate) const CODEX_RESPONSE_LINE: &str = "response_item";
+/// The `payload.type` of the event that records a thread's settings,
+/// including its requested tier.
 pub(crate) const CODEX_THREAD_SETTINGS_EVENT: &str = "thread_settings_applied";
 /// The codex-pacer's state under the home directory, whose `history`
 /// lists each change of the tier it launches threads at.
@@ -341,9 +345,8 @@ pub(crate) const TRANSCRIPT_SPAN_READ_LIMIT: u64 = 32 * 1024 * 1024;
 /// Bytes of a transcript's end read first when looking for its last
 /// turn.
 pub(crate) const TRANSCRIPT_TAIL_START: u64 = 64 * 1024;
-/// Bytes of a transcript's end read at most when looking for its last
-/// turn.
-pub(crate) const TRANSCRIPT_TAIL_LIMIT: u64 = 16 * 1024 * 1024;
+/// Growth factor for disjoint backward transcript reads.
+pub(crate) const TRANSCRIPT_TAIL_GROWTH: u64 = 4;
 /// The flag Claude Code's shell tool runs its script under.
 pub(crate) const SHELL_SCRIPT_FLAG: &str = "-c";
 /// Text the script of every Claude Code shell tool call holds: it
@@ -391,6 +394,12 @@ pub(crate) const SLEEP_UNITS: [(char, f64); 4] =
 pub(crate) const TREE_DEPTH_LIMIT: u8 = 16;
 /// Codex's directory under the home directory.
 pub(crate) const CODEX_DIRNAME: &str = ".codex";
+/// The append-only index of names assigned to Codex sessions.
+pub(crate) const CODEX_SESSION_INDEX_FILENAME: &str = "session_index.jsonl";
+/// The Codex subcommand that resumes an existing thread.
+pub(crate) const CODEX_RESUME_SUBCOMMAND: &str = "resume";
+/// Resume the newest thread in the current directory.
+pub(crate) const CODEX_RESUME_LAST_ARGUMENT: &str = "--last";
 /// How the name of Codex's thread database starts. The whole name is
 /// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
 /// the highest `<n>` present is the one Codex writes.
@@ -406,6 +415,8 @@ pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200)
 /// ends in unix milliseconds.
 pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
      rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
+/// The newest thread in one directory, including threads older than process startup.
+pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 /// The `originator` Codex records on a thread the interactive `codex`
 /// started, as against `codex exec`, an app server's client, or the
 /// desktop app.
@@ -521,6 +532,8 @@ pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
 pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// Allow the measured 0.62-second hierarchy command to finish inside the two-second scan budget.
+pub(crate) const HIERARCHY_FIRST_PUBLISH_BUDGET: Duration = Duration::from_secs(1);
 
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,
@@ -587,3 +600,21 @@ pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 /// Columns in the source-ordered account usage table.
 pub(crate) const ACCOUNTS_HEADERS: [&str; 5] =
     ["account", "role", "weekly left", "resets", "credits"];
+
+// reviewer discovery
+/// Review pool directory below the user's home.
+pub(crate) const REVIEW_POOL_DIRECTORY: &str = ".local/state/review-pool";
+/// One production's reviewer lease document.
+pub(crate) const REVIEW_POOL_FILE: &str = "pool.json";
+/// Claude print-mode arguments.
+pub(crate) const CLAUDE_PRINT_ARGUMENTS: [&str; 2] = ["--print", "-p"];
+/// Claude permission selector.
+pub(crate) const CLAUDE_PERMISSION_ARGUMENT: &str = "--permission-mode";
+/// Claude plan permission mode.
+pub(crate) const CLAUDE_PLAN_MODE: &str = "plan";
+/// Claude plan permission selector in assignment form.
+pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan";
+/// Extension of launcher identity documents.
+pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
+/// Markdown heading opening for a pooled review job.
+pub(crate) const REVIEW_JOB_HEADING: &str = "# ";

@@ -703,6 +703,7 @@ mod tests {
     use super::PendingEnvironmentBypassOccurrenceTime;
     use super::write_pending_marker;
     use crate::gate::install;
+    use crate::gate::install::EXECUTABLE_ENVIRONMENT;
     use crate::ledger::BypassCause;
     use crate::ledger::BypassOccurrenceTime;
     use crate::ledger::BypassedAction;
@@ -995,7 +996,7 @@ mod tests {
             .arg("prepared")
             .current_dir(policy_worktree)
             .env(BYPASS_ENVIRONMENT, BYPASS_ENVIRONMENT_ENABLED_VALUE)
-            .env(install::EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
+            .env(EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
             .env("PATH", path)
             .output()
             .expect("managed hook should run");

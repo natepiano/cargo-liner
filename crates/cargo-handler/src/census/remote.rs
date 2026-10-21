@@ -169,8 +169,8 @@ impl RemoteRunner for SshRunner {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            // A read that fails partway keeps what arrived before it,
-            // and the parse says whether that is a report.
+            // If `stdout.read_to_end` fails partway, `bytes` keeps the earlier output;
+            // `probe::parse_report` decides whether that output is a report.
             let _ = stdout.read_to_end(&mut bytes);
             let _ = sender.send(bytes);
         });
@@ -238,6 +238,7 @@ mod tests {
             machine_state(finished(Some(0), report)),
             MachineState::Answered(
                 vec![AgentRow {
+                    role_fallback:   crate::census::RoleFallback::None,
                     session_id:      crate::census::SessionIdentity::Unrecorded,
                     agent:           Agent::Claude,
                     service_tier:    ServiceTier::Unrecorded,

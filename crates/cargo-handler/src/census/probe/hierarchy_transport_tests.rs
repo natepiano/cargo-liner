@@ -15,6 +15,7 @@ use crate::census::Machine;
 use crate::census::RemoteHierarchyAnswers;
 use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
@@ -37,9 +38,10 @@ fn rows() -> Vec<AgentRow> {
 #[test]
 fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_links() {
     let links = HierarchyEdges(vec![HierarchyEdge {
-        manager: "boss".into(),
-        member:  "unit".into(),
-        role:    HierarchyRole::Unit,
+        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+        manager:  "boss".into(),
+        member:   "unit".into(),
+        role:     HierarchyRole::Unit,
     }]);
     let mut retained = RemoteHierarchyAnswers::default();
     for (notice, wire_edges, expected) in [
@@ -77,6 +79,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
         let accounts = AccountsTable::NotConfigured;
         let colors = FooterColors::default();
         let frame = SummaryFrame {
+            accounts_sort:  AccountsSort::SourceOrder,
             machines:       &machines,
             placement:      &placement,
             cells:          &cells,
@@ -96,6 +99,7 @@ fn hierarchy_probe_failure_reason_reaches_the_rendered_remote_note_and_keeps_lin
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &accounts,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(summary::height(&machines, &placement, &accounts))
                 .expect("small remote summary"),
@@ -131,9 +135,10 @@ fn failed_probe_preserves_links_in_a_receiver_that_only_knows_the_failure_flag()
     }
 
     let links = HierarchyEdges(vec![HierarchyEdge {
-        manager: "boss".into(),
-        member:  "unit".into(),
-        role:    HierarchyRole::Unit,
+        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+        manager:  "boss".into(),
+        member:   "unit".into(),
+        role:     HierarchyRole::Unit,
     }]);
     let successful = ProbeReport::from_answer("remote".into(), rows(), links.clone());
     let mut failed = ProbeReport::from_answer("remote".into(), rows(), HierarchyEdges::default());
@@ -156,7 +161,10 @@ fn failed_probe_preserves_links_in_a_receiver_that_only_knows_the_failure_flag()
             assert_eq!(previous.rows[0].name, "fresh remote showrunner");
             assert_eq!(
                 parse_answer(&wire).expect("new receiver").1,
-                HierarchyAnswer::Failed(HierarchyError::TimedOut)
+                HierarchyAnswer::Failed {
+                    reason:    HierarchyError::TimedOut,
+                    reviewers: Vec::new(),
+                }
             );
         }
     }

@@ -11,6 +11,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 use std::num::TryFromIntError;
+use std::os::unix::fs::MetadataExt;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
+use super::history::FinishedHistory;
 use super::replay_checkpoint::ReplayCheckpoint;
 use super::target::ClaimTarget;
 use super::target::IntegrationTarget;
@@ -1544,6 +1546,14 @@ pub(crate) enum EnteringWriteProgress {
 }
 
 impl EnteringCommitSet {
+    /// Combine non-empty entering evidence in the journal's object-id wire order.
+    pub(crate) fn union(mut self, other: Self) -> Self {
+        self.0.extend(other.0);
+        self.0.sort_by_cached_key(ToString::to_string);
+        self.0.dedup();
+        self
+    }
+
     /// A working-tree answer also accounts for the commit recording that initial write.
     pub(crate) fn write_progress(&self) -> EnteringWriteProgress {
         let first = &self.0[0];
@@ -2171,6 +2181,8 @@ pub(super) struct JournalReplay {
     pub(super) generation:          ProjectionGeneration,
     /// The merge extent observations that later observations supersede.
     pub(super) superseded:          SupersededExtents,
+    /// Terminal-state entry times, independent of subsequent evidence refreshes.
+    pub(super) finished_history:    FinishedHistory,
 }
 
 /// A deterministic fingerprint over a journal's bytes.
@@ -2178,9 +2190,47 @@ pub(super) struct JournalReplay {
 #[serde(transparent)]
 pub(super) struct JournalFingerprint(pub(super) u64);
 
+/// The file identity whose prefix produced a prepared journal replay.
+#[derive(Clone, Copy)]
+pub(super) struct JournalReplaySource {
+    device: u64,
+    inode:  u64,
+}
+
+impl JournalReplaySource {
+    pub(super) const fn new(device: u64, inode: u64) -> Self { Self { device, inode } }
+}
+
 /// The journal file opened at its fixed ledger path.
 pub(super) struct Journal {
     path: PathBuf,
+}
+
+/// Validated newline-terminated journal records, encoded before acquisition.
+pub(super) struct PreparedJournalAppend {
+    records: Vec<u8>,
+}
+
+impl PreparedJournalAppend {
+    pub(super) fn encode(events: &[JournalEvent]) -> Result<Self, JournalAppendError> {
+        let mut records = Vec::new();
+        for event in events {
+            let mut record =
+                serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
+            record.push(b'\n');
+            let ceiling = event.operation.record_ceiling();
+            if record.len() > ceiling.maximum_bytes() {
+                return Err(JournalAppendError::RecordTooLarge {
+                    bytes: record.len(),
+                    ceiling,
+                });
+            }
+            records.extend(record);
+        }
+        Ok(Self { records })
+    }
+
+    pub(super) fn records(&self) -> &[u8] { &self.records }
 }
 
 impl Journal {
@@ -2251,25 +2301,40 @@ impl Journal {
         Ok(())
     }
 
+    /// Advance an unlocked preparation over complete appended records. An unfinished write
+    /// belongs to its writer and must remain available for a later read, never be truncated.
+    /// Replay a replaced or shortened journal from the start of the opened file: an earlier
+    /// path identity check cannot guarantee that this descriptor still names the replay's source.
+    pub(super) fn advance_read_only_tail(
+        path: &Path,
+        replay: &mut JournalReplay,
+        expected_source: JournalReplaySource,
+    ) -> Result<(), JournalError> {
+        let mut journal_file = fs::File::open(path)?;
+        let metadata = journal_file.metadata()?;
+        let replayed_length = u64::from(replay.end_offset);
+        if metadata.dev() != expected_source.device
+            || metadata.ino() != expected_source.inode
+            || metadata.len() < replayed_length
+        {
+            let mut bytes = Vec::new();
+            journal_file.read_to_end(&mut bytes)?;
+            *replay = replay_complete_records(&bytes)?.0;
+            return Ok(());
+        }
+        journal_file.seek(SeekFrom::Start(replayed_length))?;
+        let mut appended = Vec::new();
+        journal_file.read_to_end(&mut appended)?;
+        replay.advance_over(&appended)?;
+        Ok(())
+    }
+
     /// Cut the journal to `length` bytes, discarding an incomplete final record.
     fn truncate_to(&self, length: JournalByteOffset) -> Result<(), JournalError> {
         let journal_file = OpenOptions::new().write(true).open(&self.path)?;
         journal_file.set_len(u64::from(length))?;
         journal_file.sync_all()?;
         Ok(())
-    }
-
-    /// Replay every complete record, resuming after `checkpoint` when it still describes this
-    /// journal, and repair one incomplete final record.
-    pub(super) fn replay_repairing_tail_from_checkpoint(
-        &self,
-        checkpoint: &ReplayCheckpoint<'_>,
-    ) -> Result<JournalReplay, JournalError> {
-        let (replay, read_end) = checkpoint.replay_journal(&self.path)?;
-        if read_end != replay.end_offset {
-            self.truncate_to(replay.end_offset)?;
-        }
-        Ok(replay)
     }
 
     /// Replay complete records without opening the journal for mutation.
@@ -2294,36 +2359,20 @@ impl Journal {
 
     /// Append one validated reconciliation set with one durable write barrier.
     pub(super) fn append_events(&self, events: &[JournalEvent]) -> Result<(), JournalAppendError> {
-        let mut records = Vec::new();
-        for event in events {
-            let mut record =
-                serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
-            record.push(b'\n');
-            let ceiling = event.operation.record_ceiling();
-            if record.len() > ceiling.maximum_bytes() {
-                return Err(JournalAppendError::RecordTooLarge {
-                    bytes: record.len(),
-                    ceiling,
-                });
-            }
-            records.extend(record);
-        }
-        if records.is_empty() {
+        self.append_prepared(&PreparedJournalAppend::encode(events)?)
+    }
+
+    /// Persist exactly the validated records prepared before acquisition.
+    pub(super) fn append_prepared(
+        &self,
+        prepared: &PreparedJournalAppend,
+    ) -> Result<(), JournalAppendError> {
+        if prepared.records.is_empty() {
             return Ok(());
         }
 
         let mut journal_file = OpenOptions::new().append(true).open(&self.path)?;
-        journal_file.write_all(&records)?;
-        journal_file.sync_all()?;
-        Ok(())
-    }
-
-    /// Discard every journal byte after explicit reinitialization confirmation.
-    pub(super) fn truncate(&self) -> Result<(), JournalError> {
-        let journal_file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.path)?;
+        journal_file.write_all(&prepared.records)?;
         journal_file.sync_all()?;
         Ok(())
     }
@@ -2341,6 +2390,7 @@ impl JournalReplay {
             fingerprint:         JournalFingerprint::EMPTY,
             generation:          ProjectionGeneration::from(0),
             superseded:          SupersededExtents::default(),
+            finished_history:    FinishedHistory::default(),
         }
     }
 
@@ -2349,9 +2399,18 @@ impl JournalReplay {
     /// Updates every field except the byte range, which [`Self::cover`] extends.
     fn apply_record(&mut self, event: JournalEvent, record_bytes: u64) {
         fold_reservations(&mut self.reservations, &event);
+        let history_changes = match &self.reservations {
+            Ok(reservations) => self.finished_history.observe(&event, reservations),
+            Err(_) => Vec::new(),
+        };
         self.repositories.insert(event.actor.repository);
         self.superseded
             .observe(self.record_count, record_bytes, &event.operation);
+        self.superseded.observe_history(
+            history_changes,
+            self.record_count,
+            event.operation.is_merge_extent_observation(),
+        );
         self.record_count += 1;
         self.generation = event.projection_generation;
         if event.operation.is_coordination_record() {
@@ -2625,6 +2684,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
 
     use serde_json::Value;
     use tempfile::tempdir;
@@ -2654,6 +2714,7 @@ mod tests {
     use super::JournalMutationIdentityInputs;
     use super::JournalOperation;
     use super::JournalReplay;
+    use super::JournalReplaySource;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
     use super::NonEmptyReservationPurpose;
@@ -2697,6 +2758,22 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    #[test]
+    fn entering_commit_union_preserves_all_evidence_in_unique_wire_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let earlier: GitObjectId = "1111111111111111111111111111111111111111".parse()?;
+        let shared: GitObjectId = "2222222222222222222222222222222222222222".parse()?;
+        let later: GitObjectId = "3333333333333333333333333333333333333333".parse()?;
+        let left = super::EnteringCommitSet::try_from(vec![later.clone(), shared.clone()])?;
+        let right = super::EnteringCommitSet::try_from(vec![shared.clone(), earlier.clone()])?;
+        let combined = left.union(right);
+        assert_eq!(combined.as_slice(), &[earlier, shared, later]);
+        let serialized = serde_json::to_string(&combined)?;
+        let replayed: super::EnteringCommitSet = serde_json::from_str(&serialized)?;
+        assert_eq!(replayed, combined);
+        Ok(())
+    }
 
     /// A refusal naming an existing holder without acquiring any reservation of its own.
     fn overlap_refused_event(
@@ -3513,6 +3590,77 @@ mod tests {
     }
 
     #[test]
+    fn unlocked_tail_advancement_preserves_and_later_finishes_an_in_progress_append()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let temporary_directory = tempdir()?;
+        let journal_path = temporary_directory.path().join("journal.ndjson");
+        let (journal, _) = Journal::open_or_create(&journal_path)?;
+        journal.append(&events[0])?;
+        let mut replay = Journal::replay_read_only(&journal_path)?;
+        let source = fs::metadata(&journal_path)?;
+        let source = JournalReplaySource::new(source.dev(), source.ino());
+        journal.append(&events[1])?;
+        let mut record = serde_json::to_vec(&events[2])?;
+        record.push(b'\n');
+        let split = record.len() / 2;
+        let mut writer = fs::OpenOptions::new().append(true).open(&journal_path)?;
+        writer.write_all(&record[..split])?;
+        let in_progress_length = fs::metadata(&journal_path)?.len();
+
+        Journal::advance_read_only_tail(&journal_path, &mut replay, source)?;
+        assert_eq!(replay.record_count, 2);
+        assert_eq!(fs::metadata(&journal_path)?.len(), in_progress_length);
+
+        writer.write_all(&record[split..])?;
+        Journal::advance_read_only_tail(&journal_path, &mut replay, source)?;
+        assert_eq!(replay.record_count, 3);
+        assert_eq!(replay, Journal::replay_read_only(&journal_path)?);
+        Ok(())
+    }
+
+    #[test]
+    fn unlocked_tail_advancement_replays_a_longer_compacted_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (events, failing_record_index) = round_trip_sequence_events()?;
+        let temporary_directory = tempdir()?;
+        let journal_path = temporary_directory.path().join("journal.ndjson");
+        let (journal, _) = Journal::open_or_create(&journal_path)?;
+        // The first observation of the second reservation is superseded by the later
+        // holder observation. A preparation has read through that first observation.
+        journal.append_events(&events[..11])?;
+        let mut replay = Journal::replay_read_only(&journal_path)?;
+        let original_file = fs::metadata(&journal_path)?;
+        journal.append_events(&events[11..failing_record_index])?;
+
+        let replacement_path = temporary_directory.path().join("compacted.ndjson");
+        let (replacement, _) = Journal::open_or_create(&replacement_path)?;
+        replacement.append_events(&events[..10])?;
+        replacement.append_events(&events[11..failing_record_index])?;
+        let expected = Journal::replay_read_only(&replacement_path)?;
+        assert!(expected.reservations.is_ok());
+        let replacement_bytes = fs::read(&replacement_path)?;
+        let old_offset = usize::try_from(u64::from(replay.end_offset))?;
+        assert!(replacement_bytes.len() > old_offset);
+        assert_ne!(
+            replacement_bytes[old_offset - 1],
+            b'\n',
+            "the old replay offset must land inside a replacement record"
+        );
+        assert_eq!(fs::metadata(&journal_path)?.ino(), original_file.ino());
+        fs::rename(&replacement_path, &journal_path)?;
+
+        Journal::advance_read_only_tail(
+            &journal_path,
+            &mut replay,
+            JournalReplaySource::new(original_file.dev(), original_file.ino()),
+        )?;
+        assert_eq!(replay, expected);
+        assert_eq!(fs::read(&journal_path)?, replacement_bytes);
+        Ok(())
+    }
+
+    #[test]
     fn advancing_over_an_incomplete_final_record_repairs_it()
     -> Result<(), Box<dyn std::error::Error>> {
         let events = fold_sequence_events()?;
@@ -3594,7 +3742,7 @@ mod tests {
         journal.append_events(&events[..3])?;
         let mut replay = journal.replay_repairing_tail()?;
 
-        journal.truncate()?;
+        fs::write(&journal.path, [])?;
         journal.append(&events[0])?;
         advance_and_compare_with_whole_replay(&journal, &mut replay)?;
 

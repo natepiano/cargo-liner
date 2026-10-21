@@ -1,0 +1,17 @@
+{
+  "agent": "codex",
+  "name": "Codex desktop owner",
+  "pid": 50,
+  "started": 100,
+  "directory": "/work/fixture",
+  "children": [
+    {
+      "kind": "thread",
+      "depth": 0,
+      "pid": null,
+      "thread_id": "unit-worker-thread",
+      "name": "compile crates",
+      "started": 100
+    }
+  ]
+}

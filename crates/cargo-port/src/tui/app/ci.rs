@@ -63,10 +63,9 @@ impl App {
         let prev_pagination = prev_info.map_or(CiPagination::HasMore, |info| info.ci_pagination);
         let prev_github_total = prev_info.map_or(0, |info| info.github_total);
 
-        // Only `CiFetchKind::Sync` returns an unfiltered total_count from
-        // GitHub. `CiFetchKind::Older` uses created=<{date} which returns
-        // a filtered count, and CacheOnly means the network failed. In
-        // both cases, keep the previous total.
+        // Only `CiFetchKind::Sync` returns GitHub's unfiltered total_count. `CiFetchKind::Older`
+        // uses created=<{date} and gets a filtered count; `CiFetchResult::CacheOnly` means the
+        // network failed. Preserve the previous `github_total` in either case.
         let github_total = match (&result, kind) {
             (CiFetchResult::Loaded { github_total, .. }, CiFetchKind::Sync) => *github_total,
             _ => prev_github_total,
@@ -118,7 +117,8 @@ impl App {
                             std::time::Instant::now(),
                         );
                     }
-                    // Preserve current exhaustion state.
+                    // Keep `prev_pagination` so a sync with no new runs preserves the current
+                    // `CiPagination`.
                     prev_pagination
                 }
             },
@@ -179,8 +179,8 @@ impl App {
     }
 
     pub(super) fn set_ci_display_mode_for_inner(&mut self, path: &Path, mode: CiRunDisplayMode) {
-        // Members share the all/branch mode with their checkout root, so
-        // store and read it under the resolved owner path.
+        // Workspace members share `CiRunDisplayMode` with their checkout root, so
+        // `ci_branch_owner_path` supplies the `owner` path under which it is stored and read.
         let owner = self.project_list.ci_branch_owner_path(path);
         if !self
             .project_list

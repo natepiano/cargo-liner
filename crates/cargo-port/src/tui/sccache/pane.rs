@@ -13,6 +13,13 @@ pub(super) struct SccacheTarget {
     pub(super) value: String,
 }
 
+/// A copyable value and the rendered line that owns it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SccacheSelectableLine {
+    pub(super) line_index: usize,
+    pub(super) target:     SccacheTarget,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum SccacheStatus {
     Loading,
@@ -21,21 +28,19 @@ pub(super) enum SccacheStatus {
 }
 
 pub(in crate::tui) struct SccachePane {
-    status:            SccacheStatus,
-    request_id:        u64,
-    line_targets:      Vec<Option<usize>>,
-    selectable_values: Vec<SccacheTarget>,
-    pub viewport:      Viewport,
+    status:           SccacheStatus,
+    request_id:       u64,
+    selectable_lines: Vec<SccacheSelectableLine>,
+    pub viewport:     Viewport,
 }
 
 impl SccachePane {
     pub(in crate::tui) const fn new() -> Self {
         Self {
-            status:            SccacheStatus::Loading,
-            request_id:        0,
-            line_targets:      Vec::new(),
-            selectable_values: Vec::new(),
-            viewport:          Viewport::new(),
+            status:           SccacheStatus::Loading,
+            request_id:       0,
+            selectable_lines: Vec::new(),
+            viewport:         Viewport::new(),
         }
     }
 
@@ -43,13 +48,9 @@ impl SccachePane {
 
     pub(in crate::tui) const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
-    pub(super) fn set_line_targets(
-        &mut self,
-        line_targets: Vec<Option<usize>>,
-        selectable_values: Vec<SccacheTarget>,
-    ) {
-        self.line_targets = line_targets;
-        self.selectable_values = selectable_values;
+    pub(super) fn set_selectable_lines(&mut self, lines: Vec<SccacheSelectableLine>) {
+        self.viewport.set_len(lines.len());
+        self.selectable_lines = lines;
     }
 
     pub(in crate::tui) fn row_at(&self, pos: Position) -> Option<usize> {
@@ -58,17 +59,17 @@ impl SccachePane {
             return None;
         }
         let line_index = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
-        self.line_targets.get(line_index).copied().flatten()
+        self.selectable_lines
+            .iter()
+            .position(|line| line.line_index == line_index)
     }
 
-    pub(super) fn line_for_selection(&self, selection: usize) -> Option<usize> {
-        self.line_targets
-            .iter()
-            .position(|target| target.is_some_and(|target| target == selection))
+    pub(super) fn selected_line(&self) -> Option<&SccacheSelectableLine> {
+        self.selectable_lines.get(self.viewport.pos())
     }
 
     pub(super) fn selected_copy_value(&self) -> Option<&SccacheTarget> {
-        self.selectable_values.get(self.viewport.pos())
+        self.selected_line().map(|line| &line.target)
     }
 
     pub(in crate::tui) fn start_loading(&mut self) -> u64 {

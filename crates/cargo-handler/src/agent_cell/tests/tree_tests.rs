@@ -8,7 +8,9 @@ use summary::SummaryFrame;
 use super::*;
 use crate::census::AccountColumn;
 use crate::census::AgentActivity;
+use crate::census::RoleFallback;
 use crate::census::accounts::AccountsTable;
+use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -17,6 +19,7 @@ use crate::constants::TREE_DIRECTORY_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::TREE_STATUS_HEADER;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 
 /// A remote probe's account value, independent of the runner's home directory.
@@ -54,6 +57,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
         )
     };
     let carrier = AgentRow {
+        role_fallback: RoleFallback::None,
         agent: Agent::CodexThreadHost,
         account: home("codex1"),
         directory: "~/rust/dashboard".to_string(),
@@ -68,6 +72,7 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     ]
     .into_iter()
     .map(|(manager, member, role)| HierarchyEdge {
+        reviewer: ReviewerState::NotPool,
         manager: manager.to_string(),
         member: member.to_string(),
         role,
@@ -307,6 +312,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
     let local = mockup(["claude2"; 3]);
     let remote = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             agent: Agent::Codex,
             account: home("codex2"),
             ..agent(50, "isolated", HOUR, None)
@@ -326,7 +332,7 @@ fn a_thread_account_and_another_cells_root_share_the_frame_decision() {
     assert_eq!(cells.len(), 2);
     let frame_account_column = account_column(&cells);
     assert_eq!(frame_account_column, AccountColumn::Shown);
-    // Draw only the first cell, as a grid with no room for the second would.
+    // Call `rendered` only for `cells[0]`, as a grid with no room for `cells[1]` would.
     let buffer = rendered(&cells[0], &cells, 220, frame_account_column);
     assert!(find(&buffer, "isolated").is_none());
     assert!(find(&buffer, "account").is_some());
@@ -390,6 +396,7 @@ fn working_group() -> MachineState {
         ),
     ];
     let root = AgentRow {
+        role_fallback: RoleFallback::None,
         account: home("claude2"),
         children: vec![child(0, ChildKind::Shell, Some(107), "root command", HOUR)],
         ..agent(10, "production", 3 * HOUR, None)
@@ -414,11 +421,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", MISSING_VALUE, "◑ 1:00", "—", "10m"),
+        ("clock job", MISSING_VALUE, "◑ 1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
-        ("review worker", "subagent", "claude", "—", "8m"),
-        ("nested command", MISSING_VALUE, "command", "—", "7m"),
-        ("root command", MISSING_VALUE, "command", "—", "1h"),
+        ("review worker", "subagent", "idle", "claude1", "8m"),
+        ("nested command", MISSING_VALUE, "command", "claude1", "7m"),
+        ("root command", MISSING_VALUE, "command", "claude2", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -465,7 +472,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     for (name, role) in [
         ("clock job", Role::Shell),
         ("unheld worker", Role::Idle),
-        ("review worker", Role::Claude),
+        ("review worker", Role::Idle),
     ] {
         assert_eq!(
             Some(buffer[(status_x, row_of(&buffer, name))].fg),
@@ -500,6 +507,7 @@ fn no_tile_restores_the_removed_children_table_headers() {
 #[test]
 fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
     let row = AgentRow {
+        role_fallback: RoleFallback::None,
         children: vec![
             child(
                 0,
@@ -708,32 +716,52 @@ fn tree_heights_with_nested_work_match_drawn_rows_at_layout_widths() {
     assert_heights_at_widths(&boss_group());
 }
 
+fn summary_account_state(frame_account_column: AccountColumn) -> MachineState {
+    let second_account = match frame_account_column {
+        AccountColumn::Shown => "claude3",
+        AccountColumn::Hidden => "claude2",
+    };
+    MachineState::Answered(
+        vec![
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                account: home("claude2"),
+                ..agent(10, "alpha", 3 * HOUR, None)
+            },
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                account: home(second_account),
+                ..agent(20, "beta", 2 * HOUR, None)
+            },
+            AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
+                agent: Agent::Codex,
+                account: home("codex1"),
+                service_tier: ServiceTier::Fast,
+                ..agent(30, "gamma", HOUR, None)
+            },
+            AgentRow {
+                account: home("claude2"),
+                ..agent(11, "alpha child", MINUTE, Some(10))
+            },
+            AgentRow {
+                account: home(second_account),
+                ..agent(21, "beta child", MINUTE, Some(20))
+            },
+            AgentRow {
+                agent: Agent::Codex,
+                account: home("codex1"),
+                ..agent(31, "gamma child", MINUTE, Some(30))
+            },
+        ],
+        HierarchyEdges::default().into(),
+    )
+}
+
 #[test]
 fn summary_agent_values_follow_the_same_frame_account_decision() {
     for frame_account_column in [AccountColumn::Shown, AccountColumn::Hidden] {
-        let second_account = match frame_account_column {
-            AccountColumn::Shown => "claude3",
-            AccountColumn::Hidden => "claude2",
-        };
-        let state = MachineState::Answered(
-            vec![
-                AgentRow {
-                    account: home("claude2"),
-                    ..agent(10, "alpha", 3 * HOUR, None)
-                },
-                AgentRow {
-                    account: home(second_account),
-                    ..agent(20, "beta", 2 * HOUR, None)
-                },
-                AgentRow {
-                    agent: Agent::Codex,
-                    account: home("codex1"),
-                    service_tier: ServiceTier::Fast,
-                    ..agent(30, "gamma", HOUR, None)
-                },
-            ],
-            HierarchyEdges::default().into(),
-        );
+        let state = summary_account_state(frame_account_column);
         let machines = [Machine {
             name:  "natedev",
             state: &state,
@@ -748,6 +776,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             frame_account_column,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let rect = area(
             width,
@@ -758,6 +787,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             &mut buffer,
             rect,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -780,7 +810,7 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
             assert_eq!(
                 column_value(
                     &buffer,
-                    "agent",
+                    "account",
                     row_of(&buffer, name),
                     &crate::constants::SUMMARY_HEADERS
                 ),

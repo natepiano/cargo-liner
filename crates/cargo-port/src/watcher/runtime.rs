@@ -101,23 +101,17 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     let handler = move |res| {
         let _ = notify_tx.send(res);
     };
-    // `CORE` excludes access events (file opens/reads/closes). On Linux the
-    // inotify backend reports reads as watch events; without this, merely
-    // reading a watched `.rs`/`Cargo.toml` — a build, or our own lint run
-    // reading sources — would trigger a lint, which then reads those files
-    // again: a self-perpetuating loop. macOS (`FSEvents`) and Windows never
-    // emit access events, so this is a no-op there.
+    // `Config::with_event_kinds(EventKindMask::CORE)` excludes access events. Linux inotify reports
+    // file opens/reads/closes, so a build or lint reading watched .rs/Cargo.toml files would
+    // trigger another lint and perpetually repeat. macOS FSEvents and Windows emit no access
+    // events, so this is a no-op there.
     //
-    // Symlink following is off to match discovery: `scan::discovery` and
-    // `scan::disk_usage` walk with `WalkDir`'s default `follow_links(false)`,
-    // so a tree reachable only through a symlink is never a project cargo-port
-    // shows, and watching it is pure cost. `notify` defaults the other way, and
-    // on Linux that cost is paid twice over — its inotify backend hands the
-    // flag to `WalkDir`, so one symlink into a large store (a NixOS
-    // `/etc/nixos/result` system closure, say) turns a few hundred directories
-    // into tens of thousands, and a single `Permission denied` anywhere in the
-    // walk aborts the whole root, so the tree is charged for and then dropped
-    // unwatched. `FSEvents` and the Windows backend never read the flag.
+    // `Config::with_follow_symlinks(false)` matches discovery and disk-usage walkers, which default
+    // to not following links. Symlink-only trees never become displayed projects, so watches add
+    // only cost. notify defaults to following links; Linux passes this to its directory walker,
+    // so a NixOS /etc/nixos/result closure can expand hundreds of directories into tens of
+    // thousands. One Permission denied aborts the whole root after paying the traversal cost,
+    // leaving it unwatched. FSEvents and Windows never read this flag.
     let config = Config::default()
         .with_event_kinds(EventKindMask::CORE)
         .with_follow_symlinks(false);
@@ -365,7 +359,8 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.pending_git,
         );
 
-        // Fire git refreshes whose debounce has expired.
+        // `refresh::fire_git_updates` launches `state.pending_git` entries whose debounce has
+        // expired.
         refresh::fire_git_updates(
             &client.handle,
             &git_limit,
@@ -375,7 +370,8 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.pending_git,
         );
 
-        // Fire disk recalculations whose debounce has expired.
+        // `refresh::fire_disk_updates` recalculates `state.pending_disk` entries whose debounce has
+        // expired.
         refresh::fire_disk_updates(
             &client.handle,
             &disk_limit,
@@ -385,7 +381,8 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.pending_disk,
         );
 
-        // Probe new-project candidates whose debounce has expired.
+        // `probe::probe_new_projects` probes `state.pending_new` candidates whose debounce has
+        // expired.
         probe::probe_new_projects(
             background_tx,
             &mut state.pending_new,
@@ -760,19 +757,21 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cargo_home = tmp.path().join(".cargo");
         std::fs::create_dir_all(&cargo_home).expect("mkdir cargo_home");
-        // Recursive root that contains the cargo home (the parent dir).
+        // `registered_roots` contains `cargo_home`'s parent as a recursive root, covering Cargo
+        // home.
         let registered_roots = RegisteredRoots::from_dirs(vec![AbsolutePath::from(tmp.path())]);
 
         let mut watcher = RecordingWatcher::new_for_test();
         let watched_handle = Arc::clone(&watcher.watched);
 
-        // SAFETY: tests run serially within the watcher::tests module,
-        // so the env-var mutation cannot race with another test.
+        // SAFETY: watcher::runtime::tests run serially, so std::env::set_var("CARGO_HOME", …)
+        // cannot race with another test.
         unsafe {
             std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
         }
         roots::register_cargo_home_watch(&mut watcher, &registered_roots);
-        // SAFETY: same serial-test reasoning as the `set_var` above.
+        // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
+        // set_var above.
         unsafe { std::env::remove_var("CARGO_HOME") };
 
         let recorded: Vec<(PathBuf, RecursiveMode)> = watched_handle
@@ -901,13 +900,14 @@ mod tests {
     fn guarded_watcher_rejects_overlap_with_recursive_root() {
         let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
 
-        // First, a recursive root succeeds.
+        // `guard.watch(&root, RecursiveMode::Recursive)` accepts the first recursive root.
         let root = PathBuf::from("/tmp/cargo_port_test_root");
         guard
             .watch(&root, RecursiveMode::Recursive)
             .expect("recursive root accepted");
 
-        // Same path again — refused (would be a redundant double-register).
+        // `guard.watch(&root, …)` refuses the same path again because registration would duplicate
+        // it.
         let dup_err = guard
             .watch(&root, RecursiveMode::Recursive)
             .expect_err("duplicate watch must be rejected");
@@ -916,7 +916,7 @@ mod tests {
             "duplicate-watch error should be self-explanatory, got: {dup_err}"
         );
 
-        // Path covered by the recursive root — refused, regardless of mode.
+        // `guard.watch` refuses `nested` beneath recursive `root`, regardless of `RecursiveMode`.
         let nested = root.join("project");
         let nested_err = guard
             .watch(&nested, RecursiveMode::NonRecursive)
@@ -928,7 +928,7 @@ mod tests {
             "shadowed-watch error should call out the recursive root, got: {nested_err}"
         );
 
-        // After unwatch, the path can be re-registered.
+        // `guard.unwatch(&root)` allows `nested` to be registered afterward.
         guard.unwatch(&root).expect("unwatch root");
         guard
             .watch(&nested, RecursiveMode::NonRecursive)
@@ -977,19 +977,18 @@ mod tests {
         );
         assert_eq!(registered_roots.dirs().len(), watch_roots.len());
 
-        // SAFETY: tests serialise within the watcher::tests module so
-        // the env-var write cannot race with another test reading it.
+        // SAFETY: watcher::runtime::tests run serially, so std::env::set_var("CARGO_HOME", …)
+        // cannot race with another test reading the environment.
         unsafe {
             std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
         }
         roots::register_cargo_home_watch(&mut guard, &registered_roots);
-        // SAFETY: same serial-test reasoning as the `set_var` above.
+        // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
+        // set_var above.
         unsafe { std::env::remove_var("CARGO_HOME") };
 
-        // Expected registered set: the two recursive roots plus the
-        // cargo home (which sits outside both). Anything more or less
-        // means a code path in the startup sequence either dropped a
-        // watch or registered an overlapping one.
+        // `guard.registered` must contain two recursive `watch_roots` plus external `cargo_home`.
+        // Any other count means startup registration dropped a watch or added an overlapping one.
         let expected_count = watch_roots.len() + 1;
         assert_eq!(
             guard.registered.len(),
@@ -1298,8 +1297,12 @@ mod tests {
         let (watch_tx, watch_rx) = channel::unbounded();
         let (notify_tx, notify_rx) = mpsc::channel();
         let (background_tx, _) = channel::unbounded();
-        let client =
-            HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
+        // `HttpClient::new_without_github_auth_for_test` makes the guard-lifetime test depend on
+        // `registration_rx`, avoiding GitHub credentials and the external gh auth token subprocess.
+        let client = HttpClient::new_without_github_auth_for_test(
+            test_support::test_runtime().handle().clone(),
+        )
+        .expect("http client");
 
         watch_tx
             .send(WatcherMsg::Register(WatchRequest {
@@ -1325,7 +1328,7 @@ mod tests {
             watcher_guard,
         );
 
-        // The signal comes from dynamic registration inside watcher_loop.
+        // `registration_rx` receives the signal from dynamic registration inside `watcher_loop`.
         wait_for_completion(&registration_rx);
         assert!(
             !dropped.load(std::sync::atomic::Ordering::SeqCst),
@@ -1828,9 +1831,9 @@ mod tests {
                     &projects,
                     pending_git,
                 );
-                // Generous timeout: this drives a real `git status` subprocess through
-                // the runtime, and process spawning is slow on Windows under the
-                // parallel full-suite load — the 1s default flakes there.
+                // `collect_messages_until_with_timeout` allows 30 seconds for the real git status
+                // subprocess: Windows process spawning under parallel suite load makes the
+                // one-second default flaky.
                 let messages = collect_messages_until_with_timeout(
                     &background_rx,
                     Duration::from_secs(30),
@@ -2058,8 +2061,8 @@ mod tests {
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        // Simulate the index write that happens during a commit.
-        // The event fires under the real git dir, not under wt_root/.git.
+        // `events::handle_event` receives a commit's index write under `wt_git_dir`, the real
+        // directory rather than the worktree root's .git file.
         events::handle_event(
             &wt_git_dir.join("index"),
             &event_context,
@@ -2133,8 +2136,8 @@ mod tests {
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        // An event for objects/pack.tmp under the worktree git dir
-        // should not enqueue a git refresh or disk refresh.
+        // `events::handle_event` must leave `pending_git` and `pending_disk` empty for
+        // objects/pack.tmp beneath `wt_git_dir`.
         events::handle_event(
             &wt_git_dir.join("objects").join("pack.tmp"),
             &event_context,
@@ -2688,11 +2691,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let base = tmp.path().canonicalize().expect("canonicalize tmpdir");
 
-        // Create the new project directory (handle_event checks is_dir)
+        // Create `new_project` because `events::handle_event` checks that the directory exists.
         let new_project = base.join("new_project");
         std::fs::create_dir_all(&new_project).expect("failed to create new_project dir");
 
-        // Register an existing sibling so project_parents is populated
+        // Insert an existing sibling into `projects` and populate `project_parents` for
+        // `events::handle_event`.
         let existing = base.join("existing_project");
         let mut projects = HashMap::new();
         let (key, entry) = make_project_entry("~/existing_project", &existing);
@@ -2817,14 +2821,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("failed to create tempdir");
         let base = tmp.path().canonicalize().expect("canonicalize tmpdir");
 
-        // ~/rust/new_wt — two levels below scan root, no siblings registered
+        // `new_wt` is two levels below `watch_roots`, with no registered sibling projects.
         let new_wt = base.join("rust").join("new_wt");
         std::fs::create_dir_all(&new_wt).expect("create dirs");
         std::fs::write(new_wt.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
 
         let projects = HashMap::new();
         let watch_roots = vec![AbsolutePath::from(base)];
-        let project_parents = HashSet::new(); // empty — early scan
+        let project_parents = HashSet::new(); // `project_parents` is empty during early scanning.
         let discovered = HashSet::new();
         let event_context = EventContext {
             watch_roots:     &watch_roots,
@@ -2846,7 +2850,7 @@ mod tests {
             &mut pending_new,
         );
 
-        // Must enqueue the project dir, not its grandparent
+        // `pending_new` must contain `new_wt`, rather than its grandparent scan root.
         assert!(
             pending_new.contains_key(new_wt.as_path()),
             "expected pending_new to contain {}, got: {:?}",
@@ -3355,7 +3359,7 @@ mod tests {
 
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
-        // Mark the real (canonical) path as already discovered.
+        // Insert `real_dir`'s canonical path into `discovered` to mark the real project as known.
         let canonical = real_dir.canonicalize().expect("canonicalize");
         let discovered = HashSet::from([AbsolutePath::from(canonical)]);
         let projects = HashMap::new();
@@ -3370,7 +3374,7 @@ mod tests {
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
 
-        // Fire an event through the symlink path.
+        // Call `events::handle_event` through `link_parent`'s symlink path.
         events::handle_event(
             &link_parent
                 .join("linked_project")

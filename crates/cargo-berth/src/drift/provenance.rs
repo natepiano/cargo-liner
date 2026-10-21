@@ -28,11 +28,13 @@ use crate::edge::JudgedTargetTip;
 use crate::edge::RepositorySnapshot;
 use crate::git;
 use crate::git::IncursionPathLogInvocation;
+use crate::git::LocalTargetUpstream;
 use crate::ids::CommitterTime;
 use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ledger::ClaimSource;
 use crate::ledger::EnteringCommitSet;
 use crate::ledger::IncursionPathSet;
 use crate::ledger::IntegrationTarget;
@@ -47,6 +49,7 @@ struct IncursionAttributionSubjects {
     target:  GitObjectId,
     anchors: Vec<IncursionAttributionSubjectAnchor>,
     paths:   Vec<ReservationScopePath>,
+    covers:  CoveredIntegrationAnchors,
 }
 
 struct IncursionAnchorAttribution {
@@ -61,10 +64,11 @@ struct IncursionAnchorAttribution {
 /// named from it afterwards. Path and range history are batched once per invocation;
 /// origin membership is read once for each distinct recorded target.
 pub(super) struct IncursionAttributionBatch {
-    anchors:           HashMap<GitObjectId, IncursionAnchorAttribution>,
-    commits:           Vec<IncursionPathCommit>,
-    origin_targets:    HashMap<ReservationId, IntegrationTarget>,
-    origin_membership: BTreeMap<IntegrationTarget, IncursionCommitOriginMembership>,
+    anchors:             HashMap<GitObjectId, IncursionAnchorAttribution>,
+    commits:             Vec<IncursionPathCommit>,
+    origin_targets:      HashMap<ReservationId, IntegrationTarget>,
+    origin_membership:   BTreeMap<IntegrationTarget, IncursionCommitOriginMembership>,
+    covered_integration: CoveredIntegrationHistory,
 }
 
 /// Whether the pre-lock pass could read committed foreign-path history.
@@ -85,28 +89,164 @@ pub(super) enum PathCommitAuthorship {
     HistoryUnavailable,
 }
 
+/// Whether committed work is affirmatively carried by this particular cover.
+pub(super) enum CoveredPathContribution {
+    CoveredIntegration,
+    EnteringWork,
+    EvidenceUnavailable,
+}
+
+/// Cover tips resolved through the operation's existing object reader.
+#[derive(Default)]
+struct CoveredIntegrationAnchors {
+    holders: HashMap<ReservationId, CoveredBranchAnchor>,
+}
+
+enum CoveredBranchAnchor {
+    Resolved(GitObjectId),
+    Unavailable,
+}
+
+/// For covers targeting this checkout, commits the covered branch does not contain.
+#[derive(Default)]
+struct CoveredIntegrationHistory {
+    holders: HashMap<ReservationId, CoveredBranchContribution>,
+}
+
+enum CoveredBranchContribution {
+    Known {
+        outside_branch: HashSet<GitObjectId>,
+    },
+    Unavailable,
+}
+
+impl CoveredIntegrationAnchors {
+    fn observe(
+        repository: &git::RepositorySnapshot,
+        reservations: &RetainedReservationSet,
+        snapshot: &RepositorySnapshot,
+    ) -> Self {
+        let Ok(registry) = crate::worktree::WorktreeRegistry::read(repository) else {
+            return Self::default();
+        };
+        let mut tips = BTreeMap::new();
+        let mut holders = HashMap::new();
+        for holder in reservations.iter() {
+            let ClaimSource::Cover { covered_branch } = holder.source() else {
+                continue;
+            };
+            let target = snapshot.recorded_target(holder.id());
+            if registry
+                .context_for_branch(target.reference())
+                .is_none_or(|context| context.repository_root() != repository.repository_root())
+            {
+                continue;
+            }
+            let tip = tips.entry(covered_branch).or_insert_with(|| {
+                repository
+                    .object_reader()
+                    .commit(covered_branch.reference().as_str())
+            });
+            holders.insert(
+                holder.id(),
+                tip.as_ref()
+                    .map_or(CoveredBranchAnchor::Unavailable, |tip| {
+                        CoveredBranchAnchor::Resolved(tip.clone())
+                    }),
+            );
+        }
+        Self { holders }
+    }
+}
+
 enum IncursionCommitOriginMembership {
+    /// The comparison range was written directly on the recorded integration target.
+    TargetCheckout,
     Classified(HashSet<GitObjectId>),
     CannotClassifyOrigin,
 }
 
 impl IncursionCommitOriginMembership {
     fn observe(
-        repository_root: &Path,
+        repository: &git::RepositorySnapshot,
         origin_basis: &JudgedTargetTip,
         target: &GitObjectId,
         recorded_target: &IntegrationTarget,
+        anchors: &HashMap<GitObjectId, IncursionAnchorAttribution>,
     ) -> Self {
+        // Comparing a target checkout against its own new tip would call every write
+        // inherited. Its phase range is the entering work; only the per-holder cover
+        // ancestry decision can exempt a covered contribution from that range.
+        let Ok(registry) = crate::worktree::WorktreeRegistry::read(repository) else {
+            return Self::CannotClassifyOrigin;
+        };
+        if registry
+            .context_for_branch(recorded_target.reference())
+            .is_some_and(|context| context.repository_root() == repository.repository_root())
+        {
+            return Self::TargetCheckout;
+        }
         let JudgedTargetTip::Resolved(origin_basis) = origin_basis else {
             return Self::CannotClassifyOrigin;
         };
+        let Ok(upstream) = recorded_target.local_upstream(&repository.object_reader()) else {
+            return Self::CannotClassifyOrigin;
+        };
+        if matches!(upstream, LocalTargetUpstream::Unavailable)
+            && let Some(anchor) = anchors.get(origin_basis)
+            && anchor.state == IncursionAttributionAnchorState::UsableAncestor
+        {
+            // The range graph already excludes this basis. Without an upstream,
+            // origin classification asks exactly the same membership question.
+            return Self::Classified(anchor.range_commits.clone());
+        }
         git::commits_outside_origin_basis(
-            repository_root,
+            repository.repository_root(),
             origin_basis,
             target,
-            &recorded_target.local_upstream(repository_root),
+            &upstream,
         )
         .map_or(Self::CannotClassifyOrigin, Self::Classified)
+    }
+}
+
+/// Judge a cover independently of every other holder on the path. Missing branch
+/// evidence never proves integration, even when Git returned an empty missing range.
+pub(super) fn covered_path_contribution(
+    history: &CommittedForeignPathHistory,
+    phase_start: &GitObjectId,
+    path: &ReservationScopePath,
+    holder: ReservationId,
+) -> CoveredPathContribution {
+    let CommittedForeignPathHistory::Read(batch) = history else {
+        return CoveredPathContribution::EvidenceUnavailable;
+    };
+    let Some(contribution) = batch.covered_integration.holders.get(&holder) else {
+        return CoveredPathContribution::EnteringWork;
+    };
+    let CoveredBranchContribution::Known { outside_branch } = contribution else {
+        return CoveredPathContribution::EvidenceUnavailable;
+    };
+    let Some(anchor) = batch.anchors.get(phase_start) else {
+        return CoveredPathContribution::EvidenceUnavailable;
+    };
+    if anchor.state != IncursionAttributionAnchorState::UsableAncestor {
+        return CoveredPathContribution::EvidenceUnavailable;
+    }
+    let mut commits = batch
+        .commits
+        .iter()
+        .filter(|commit| {
+            anchor.range_commits.contains(&commit.commit) && commit.paths.contains(path)
+        })
+        .peekable();
+    if commits.peek().is_none() {
+        return CoveredPathContribution::EvidenceUnavailable;
+    }
+    if commits.all(|commit| !outside_branch.contains(&commit.commit)) {
+        CoveredPathContribution::CoveredIntegration
+    } else {
+        CoveredPathContribution::EnteringWork
     }
 }
 
@@ -116,13 +256,14 @@ impl IncursionCommitOriginMembership {
 /// carried it. Nothing is read when there are none, or when the observation is not a full
 /// comparison with an anchored target — a cheap comparison reads no committed history.
 pub(super) fn read_committed_foreign_paths(
-    repository_root: &Path,
+    repository: &git::RepositorySnapshot,
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
     acting_identity: DriftActingIdentity,
     repository_snapshot: &RepositorySnapshot,
     committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
 ) -> Result<CommittedForeignPathHistory, DriftFingerprintError> {
+    let repository_root = repository.repository_root();
     let mut anchors = Vec::new();
     let mut paths = Vec::new();
     let mut origin_targets = HashMap::new();
@@ -175,6 +316,11 @@ pub(super) fn read_committed_foreign_paths(
             target: observed_tip.clone(),
             anchors,
             paths,
+            covers: CoveredIntegrationAnchors::observe(
+                repository,
+                reservations,
+                repository_snapshot,
+            ),
         },
     )?;
     if batch
@@ -186,10 +332,11 @@ pub(super) fn read_committed_foreign_paths(
             .into_iter()
             .map(|(target, observation)| {
                 let membership = IncursionCommitOriginMembership::observe(
-                    repository_root,
+                    repository,
                     &observation,
                     observed_tip,
                     &target,
+                    &batch.anchors,
                 );
                 (target, membership)
             })
@@ -407,13 +554,21 @@ fn attribution_batch(
             commits: Vec::new(),
             origin_targets: HashMap::new(),
             origin_membership: BTreeMap::new(),
+            covered_integration: CoveredIntegrationHistory::default(),
         });
     }
-    let subject_anchor_ids = subjects
+    let mut subject_anchor_ids = subjects
         .anchors
         .iter()
         .map(|anchor| anchor.object_id.clone())
         .collect::<Vec<_>>();
+    for anchor in subjects.covers.holders.values() {
+        if let CoveredBranchAnchor::Resolved(tip) = anchor
+            && !subject_anchor_ids.contains(tip)
+        {
+            subject_anchor_ids.push(tip.clone());
+        }
+    }
     let (commits, range_commits_by_anchor) = thread::scope(|scope| {
         let path_log_worker = scope.spawn(|| {
             let path_log_invocation: IncursionPathLogInvocation =
@@ -439,8 +594,31 @@ fn attribution_batch(
         })??;
         Ok::<_, DriftFingerprintError>((commits, range_commits_by_anchor))
     })?;
-    for (anchor, range_commits) in subject_anchor_ids.iter().zip(range_commits_by_anchor) {
-        if let Some(attribution) = anchors.get_mut(anchor) {
+    let ranges = subject_anchor_ids
+        .into_iter()
+        .zip(range_commits_by_anchor)
+        .collect::<HashMap<_, _>>();
+    let covered_integration = CoveredIntegrationHistory {
+        holders: subjects
+            .covers
+            .holders
+            .iter()
+            .map(|(holder, anchor)| {
+                let contribution = match anchor {
+                    CoveredBranchAnchor::Resolved(tip) => ranges.get(tip).map_or(
+                        CoveredBranchContribution::Unavailable,
+                        |outside_branch| CoveredBranchContribution::Known {
+                            outside_branch: outside_branch.clone(),
+                        },
+                    ),
+                    CoveredBranchAnchor::Unavailable => CoveredBranchContribution::Unavailable,
+                };
+                (*holder, contribution)
+            })
+            .collect(),
+    };
+    for (anchor, range_commits) in ranges {
+        if let Some(attribution) = anchors.get_mut(&anchor) {
             attribution.range_commits = range_commits;
         }
     }
@@ -449,6 +627,7 @@ fn attribution_batch(
         commits,
         origin_targets: HashMap::new(),
         origin_membership: BTreeMap::new(),
+        covered_integration,
     })
 }
 
@@ -512,6 +691,7 @@ fn commit_origin(
     commit: &GitObjectId,
 ) -> IncursionCommitOrigin {
     match origin_membership {
+        IncursionCommitOriginMembership::TargetCheckout => IncursionCommitOrigin::PhaseAuthored,
         IncursionCommitOriginMembership::Classified(commits_outside_origin_basis)
             if commits_outside_origin_basis.contains(commit) =>
         {

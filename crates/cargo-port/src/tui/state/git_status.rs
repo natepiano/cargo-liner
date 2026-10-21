@@ -138,9 +138,10 @@ mod tests {
         let mut tracker = GitStatusTracker::default();
         let _ = tracker.observe(path("a"), GitStatus::Clean);
         let _ = tracker.observe(path("b"), GitStatus::Modified);
-        // Same value as b's seed — no toast for b.
+        // `GitStatusTracker::observe` sees b's unchanged `GitStatus::Modified` baseline, so no
+        // toast.
         assert!(tracker.observe(path("b"), GitStatus::Modified).is_none());
-        // Different value from a's seed — toast for a.
+        // `GitStatusTracker::observe` sees a change to `GitStatus::Untracked`, so a toasts.
         let transition = tracker
             .observe(path("a"), GitStatus::Untracked)
             .expect("a flipped");

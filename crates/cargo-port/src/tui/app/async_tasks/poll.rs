@@ -40,7 +40,7 @@ impl App {
         stats.bg_msgs = msg_count;
         log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
-        stats.example_msgs = self.poll_example_msgs();
+        stats.owned_run_events = self.poll_owned_run_events();
         self.poll_clean_msgs();
         let now = Instant::now();
         self.refresh_project_storage_if_due(now);
@@ -64,7 +64,7 @@ impl App {
                 elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
                 bg_msgs = stats.bg_msgs,
                 ci_msgs = stats.ci_msgs,
-                example_msgs = stats.example_msgs,
+                example_msgs = stats.owned_run_events,
                 tree_results = stats.tree_results,
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
@@ -91,11 +91,9 @@ impl App {
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
                     if chain_older {
-                        // Sync turned up nothing; schedule the follow-up
-                        // Schedule `CiFetchKind::Older` using the
-                        // (unchanged) cached tail as the cursor. Preserve
-                        // the existing toast so the user sees one
-                        // continuous "Fetching CI" task.
+                        // handle_ci_fetch_complete returned chain_older with no new runs; schedule
+                        // PendingCiFetch with CiFetchKind::Older using the unchanged cached tail
+                        // cursor and retain ci.fetch_toast for one continuous Fetching CI task.
                         let oldest_created_at = self
                             .project_list
                             .ci_info_for(Path::new(&path))
@@ -141,9 +139,9 @@ impl App {
         }
         count
     }
-    pub(super) fn poll_example_msgs(&mut self) -> usize {
+    pub(super) fn poll_owned_run_events(&mut self) -> usize {
         let mut count = 0;
-        while let Ok(msg) = self.background.example_rx().try_recv() {
+        while let Ok(msg) = self.background.owned_run_receiver().try_recv() {
             match msg {
                 OwnedRunEvent::Started { owned_run_id } => {
                     let _ = self.inflight.acknowledge_owned_run_started(owned_run_id);
@@ -163,8 +161,9 @@ impl App {
                     if self.inflight.finish_owned_run(owned_run_id)
                         == OwnedRunMessageUpdate::Applied
                     {
-                        // Process exit resumes following the tail so the final output is
-                        // visible — unless a selection is holding the view.
+                        // `panes.output.on_process_exit` resumes tail-follow after
+                        // `OwnedRunEvent::Finished`, so final output is visible unless output
+                        // selection holds the view.
                         self.panes.output.on_process_exit();
                     }
                 },
@@ -178,9 +177,9 @@ impl App {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
-                    // The process exit is the completion signal. Disk
-                    // usage updates may arrive earlier while `cargo
-                    // clean` is still deleting files.
+                    // `CleanMsg::Finished` signals completion for removal through
+                    // `inflight.clean_mut()` and `sync_running_clean_toast`; disk-usage messages
+                    // can arrive while cargo clean is still deleting files.
                     if self
                         .inflight
                         .clean_mut()

@@ -16,7 +16,7 @@ use crate::tui::state::OwnedRunRunningLabelRef;
 fn output_with_no_producer_or_no_lines_is_not_drawn() {
     let absent = OutputPresentation::derive(
         OwnedRunOutputStateRef::Absent,
-        OwnedRunRunningLabelRef::NotRunning,
+        OwnedRunRunningLabelRef::Unavailable,
     );
     assert_eq!(absent, OutputPresentation::Hidden);
     assert_eq!(absent.pane_visibility(), OutputPaneVisibility::Hidden);
@@ -27,7 +27,7 @@ fn output_with_no_producer_or_no_lines_is_not_drawn() {
             title:    OwnedRunOutputTitleRef::Unavailable,
             lines:    &[],
         },
-        OwnedRunRunningLabelRef::NotRunning,
+        OwnedRunRunningLabelRef::Unavailable,
     );
     assert_eq!(lineless, OutputPresentation::Hidden);
     assert_eq!(

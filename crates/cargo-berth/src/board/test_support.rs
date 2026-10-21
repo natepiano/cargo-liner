@@ -232,8 +232,8 @@ impl BoardFixture {
     ) -> FixtureResult<()> {
         let outcome: LedgerTransactionOutcome<Infallible> =
             self.ledger
-                .transact(actor.worktree_id, actor.coordination_run_id, |_| {
-                    TransactionValidation::Append(Box::new(operation))
+                .transact(actor.worktree_id, actor.coordination_run_id, move |_| {
+                    TransactionValidation::Append(Box::new(operation.clone()))
                 })?;
         match outcome {
             LedgerTransactionOutcome::Appended { .. } => Ok(()),

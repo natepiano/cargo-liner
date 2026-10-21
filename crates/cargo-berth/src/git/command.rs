@@ -5,15 +5,46 @@ use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
+use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::thread;
 
 use super::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 use super::constants::GIT_BINARY;
+use super::constants::GIT_CONFIG_COUNT_ENVIRONMENT;
+use super::constants::GIT_CONFIG_KEY_PREFIX;
+use super::constants::GIT_CONFIG_VALUE_PREFIX;
+use super::constants::GIT_DIAGNOSTIC_LOCALE;
+use super::constants::GIT_LOCALE_ENVIRONMENT;
 use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
 use super::constants::GIT_REPOSITORY_ENVIRONMENT;
+use super::constants::RETENTION_MAINTENANCE_CONFIG;
+use super::constants::RETENTION_REF_CONFIG;
+
+// Pipe creation and child spawn form one critical section. A persistent child
+// must never inherit another concurrent command's not-yet-sealed pipe ends.
+static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
+
+/// Seal every piped stream before another child can inherit file descriptors.
+pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<Child> {
+    let spawn = PROCESS_SPAWN
+        .lock()
+        .map_err(|_| io::Error::other("Git spawn lock was poisoned"))?;
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    drop(spawn);
+    child
+}
+
+/// Capture output without holding the spawn lock while the child runs.
+pub(super) fn command_output(command: &mut Command) -> io::Result<Output> {
+    spawn_with_piped_output(command.stdin(Stdio::null()))?.wait_with_output()
+}
 
 /// Whether a git invocation may execute repository hooks.
 #[derive(Clone, Copy)]
@@ -22,6 +53,8 @@ pub(super) enum GitHookExecutionPolicy {
     Enabled,
     /// Suppress hooks because the invocation only maintains berth's private retention refs.
     SuppressedForRetentionRef,
+    /// Deferrable maintenance suppresses hooks and yields immediately to ref locks.
+    DeferrableRetentionMaintenance,
 }
 
 /// Whether a git invocation left a complete process output available.
@@ -44,12 +77,14 @@ pub(super) fn git_command(repository_root: &Path) -> io::Result<Command> {
 }
 
 /// Build a git subprocess with an explicit repository-hook execution policy.
-fn git_command_with_hook_execution_policy(
+pub(super) fn git_command_with_hook_execution_policy(
     repository_root: &Path,
     hook_execution_policy: GitHookExecutionPolicy,
 ) -> io::Result<Command> {
     let mut command = Command::new(GIT_BINARY);
     command.arg(GIT_NO_OPTIONAL_LOCKS_ARG);
+    // Refusal classification and the query grammars use Git's stable English diagnostics.
+    command.env(GIT_LOCALE_ENVIRONMENT, GIT_DIAGNOSTIC_LOCALE);
     // A hook inherits its invoking checkout's selectors, while reconciliation also reads
     // other checkouts. Every subprocess must discover its repository from current_dir.
     for variable in GIT_REPOSITORY_ENVIRONMENT {
@@ -66,23 +101,34 @@ fn git_command_with_hook_execution_policy(
             command.env(BERTH_EXECUTABLE_ENVIRONMENT, executable);
         },
         GitHookExecutionPolicy::SuppressedForRetentionRef => {
-            // A count already at the integer ceiling leaves no slot to append to, so it is
-            // treated as absent and the suppression entry lands at slot zero.
-            let inherited_config_count = std::env::var("GIT_CONFIG_COUNT")
-                .ok()
-                .and_then(|count| count.parse::<usize>().ok())
-                .filter(|&count| count < usize::MAX)
-                .unwrap_or_default();
-            let suppression_key = format!("GIT_CONFIG_KEY_{inherited_config_count}");
-            let suppression_value = format!("GIT_CONFIG_VALUE_{inherited_config_count}");
-            command
-                .env("GIT_CONFIG_COUNT", (inherited_config_count + 1).to_string())
-                .env(suppression_key, "core.hooksPath")
-                .env(suppression_value, "/dev/null");
+            append_config_overlay(&mut command, RETENTION_REF_CONFIG);
+        },
+        GitHookExecutionPolicy::DeferrableRetentionMaintenance => {
+            append_config_overlay(&mut command, RETENTION_MAINTENANCE_CONFIG);
         },
     }
+
     command.current_dir(repository_root);
     Ok(command)
+}
+
+/// Append only this invocation's settings, preserving a valid inherited overlay.
+fn append_config_overlay(command: &mut Command, entries: &[(&str, &str)]) {
+    let inherited_config_count = std::env::var(GIT_CONFIG_COUNT_ENVIRONMENT)
+        .ok()
+        .and_then(|count| count.parse::<usize>().ok())
+        .filter(|&count| count.checked_add(entries.len()).is_some())
+        .unwrap_or_default();
+    for (offset, (key, value)) in entries.iter().enumerate() {
+        let index = inherited_config_count + offset;
+        command
+            .env(format!("{GIT_CONFIG_KEY_PREFIX}{index}"), key)
+            .env(format!("{GIT_CONFIG_VALUE_PREFIX}{index}"), value);
+    }
+    command.env(
+        GIT_CONFIG_COUNT_ENVIRONMENT,
+        (inherited_config_count + entries.len()).to_string(),
+    );
 }
 
 /// Run one git operation and return its complete output.
@@ -90,7 +136,7 @@ pub(super) fn git_output<const ARGUMENT_COUNT: usize>(
     repository_root: &Path,
     arguments: [&str; ARGUMENT_COUNT],
 ) -> io::Result<Output> {
-    git_command(repository_root)?.args(arguments).output()
+    command_output(git_command(repository_root)?.args(arguments))
 }
 
 /// Run one read-only git operation through the typed process-execution boundary.
@@ -99,7 +145,7 @@ pub(crate) fn git_execution(
     arguments: &[&str],
 ) -> GitCommandOutputAvailability {
     git_command(repository_root)
-        .and_then(|mut command| command.args(arguments).output())
+        .and_then(|mut command| command_output(command.args(arguments)))
         .into()
 }
 
@@ -108,7 +154,7 @@ pub(super) fn git_output_dynamic(
     repository_root: &Path,
     arguments: &[String],
 ) -> io::Result<Output> {
-    git_command(repository_root)?.args(arguments).output()
+    command_output(git_command(repository_root)?.args(arguments))
 }
 
 /// Run one dynamically assembled git operation with complete standard input.
@@ -128,9 +174,10 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy(
     arguments: &[String],
     hook_execution_policy: GitHookExecutionPolicy,
 ) -> io::Result<Output> {
-    git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?
-        .args(arguments)
-        .output()
+    command_output(
+        git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?
+            .args(arguments),
+    )
 }
 
 /// Run one dynamically assembled git operation with a repository-hook execution policy.
@@ -148,11 +195,14 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy_and_input(
 
 /// Run a configured git command while writing its complete standard input concurrently.
 fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<Output> {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    child_output_with_input(
+        spawn_with_piped_output(command.stdin(Stdio::piped()))?,
+        input,
+    )
+}
+
+/// Finish an already started command while draining its output and supplying its input.
+pub(super) fn child_output_with_input(mut child: Child, input: &[u8]) -> io::Result<Output> {
     let mut stdin = child
         .stdin
         .take()
@@ -258,9 +308,22 @@ mod tests {
             );
         }
 
+        let repository = tempfile::tempdir()?;
+        let initialized = git_command_with_hook_execution_policy(
+            repository.path(),
+            GitHookExecutionPolicy::DeferrableRetentionMaintenance,
+        )?
+        .args(["init", "--quiet"])
+        .output()?;
+        assert!(
+            initialized.status.success(),
+            "test repository did not initialize: {}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
+
         let mut command = git_command_with_hook_execution_policy(
-            Path::new("."),
-            GitHookExecutionPolicy::SuppressedForRetentionRef,
+            repository.path(),
+            GitHookExecutionPolicy::DeferrableRetentionMaintenance,
         )?;
         assert_eq!(
             explicit_environment_value(&command, BERTH_EXECUTABLE_ENVIRONMENT),
@@ -268,7 +331,7 @@ mod tests {
         );
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_COUNT"),
-            Some(OsStr::new("2"))
+            Some(OsStr::new("4"))
         );
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_KEY_1"),
@@ -278,6 +341,20 @@ mod tests {
             explicit_environment_value(&command, "GIT_CONFIG_VALUE_1"),
             Some(OsStr::new("/dev/null"))
         );
+
+        for (index, key) in [
+            (2, "core.packedRefsTimeout"),
+            (3, "core.filesRefLockTimeout"),
+        ] {
+            assert_eq!(
+                explicit_environment_value(&command, &format!("GIT_CONFIG_KEY_{index}")),
+                Some(OsStr::new(key))
+            );
+            assert_eq!(
+                explicit_environment_value(&command, &format!("GIT_CONFIG_VALUE_{index}")),
+                Some(OsStr::new("0"))
+            );
+        }
 
         let output = command.args(["config", "--get", "user.name"]).output()?;
         assert!(
@@ -306,11 +383,11 @@ mod tests {
 
         let command = git_command_with_hook_execution_policy(
             Path::new("."),
-            GitHookExecutionPolicy::SuppressedForRetentionRef,
+            GitHookExecutionPolicy::DeferrableRetentionMaintenance,
         )?;
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_COUNT"),
-            Some(OsStr::new("1"))
+            Some(OsStr::new("3"))
         );
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_KEY_0"),
@@ -320,6 +397,51 @@ mod tests {
             explicit_environment_value(&command, "GIT_CONFIG_VALUE_0"),
             Some(OsStr::new("/dev/null"))
         );
+        for (index, key) in [
+            (1, "core.packedRefsTimeout"),
+            (2, "core.filesRefLockTimeout"),
+        ] {
+            assert_eq!(
+                explicit_environment_value(&command, &format!("GIT_CONFIG_KEY_{index}")),
+                Some(OsStr::new(key))
+            );
+            assert_eq!(
+                explicit_environment_value(&command, &format!("GIT_CONFIG_VALUE_{index}")),
+                Some(OsStr::new("0"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_retention_writes_preserve_inherited_lock_waits() -> Result<(), Box<dyn Error>> {
+        const TEST_FILTER: &str = "explicit_retention_writes_preserve_inherited_lock_waits";
+        if std::env::var_os(CHILD_PROCESS_ENVIRONMENT).as_deref() != Some(OsStr::new(TEST_FILTER)) {
+            return rerun_current_test_with_environment(
+                TEST_FILTER,
+                &[
+                    ("GIT_CONFIG_COUNT", "2"),
+                    ("GIT_CONFIG_KEY_0", "core.packedRefsTimeout"),
+                    ("GIT_CONFIG_VALUE_0", "47"),
+                    ("GIT_CONFIG_KEY_1", "core.filesRefLockTimeout"),
+                    ("GIT_CONFIG_VALUE_1", "53"),
+                ],
+            );
+        }
+        for (key, expected) in [
+            ("core.packedRefsTimeout", "47"),
+            ("core.filesRefLockTimeout", "53"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            let output = git_command_with_hook_execution_policy(
+                Path::new("."),
+                GitHookExecutionPolicy::SuppressedForRetentionRef,
+            )?
+            .args(["config", "--get", key])
+            .output()?;
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+        }
         Ok(())
     }
 

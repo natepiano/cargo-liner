@@ -8,6 +8,7 @@ use std::fmt::Formatter;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -85,7 +86,6 @@ use crate::output::OutputEnvelope;
 use crate::output::TargetView;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
-use crate::reservation;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
@@ -113,6 +113,9 @@ pub(crate) use recovery_command::ClaimRecoveryCommand;
 pub(crate) use recovery_command::ClaimRecoverySelector;
 
 use super::refusal;
+use crate::git::RepositorySnapshot;
+use crate::ledger::JournalEvent;
+use crate::session::PreparedSessionMappingPublication;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
@@ -188,6 +191,7 @@ impl PhaseStartSelection {
 }
 
 struct ClaimRepositoryFacts {
+    repository:    Arc<RepositorySnapshot>,
     head_snapshot: ClaimHeadSnapshot,
     current_head:  GitObjectId,
     worktree_root: CanonicalWorktreeRoot,
@@ -233,14 +237,15 @@ struct PreparedClaim {
     coordination_identity_provenance: CoordinationIdentityProvenance,
 }
 
+#[derive(Clone)]
 struct ClaimValidationContext {
+    repository:             Arc<RepositorySnapshot>,
     run_validation:         ClaimRunValidation,
     worktree_context:       WorktreeContext,
     recovery_command_line:  RecoveryCommandLine,
     worktree_id:            WorktreeId,
     path_case:              PathCase,
-    overlap_authorization:  OverlapAuthorizationRequest,
-    default_answer:         Option<DefaultAnswer>,
+    answer_policy:          ClaimAnswerPolicy<OverlapAuthorizationRequest>,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
     repository_trunk:       IntegrationTarget,
@@ -275,14 +280,24 @@ pub(crate) fn execute(
             },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
-    let answer_recovery = claim_request.answer_recovery.clone();
-    let reservation_selection = claim_request.reservation_selection;
-    claim_acquisition_output(
+    let ClaimRequest {
+        reservation_selection,
+        target: _,
+        declared_scopes: _,
+        source: _,
+        purpose: _,
+        coordination_run_selection: _,
+        phase_start: _,
+        overlap_authorization: _,
+        answer_recovery,
+    } = &claim_request;
+    let answer_recovery = answer_recovery.clone();
+    let reservation_selection = *reservation_selection;
+    reconciliation_report.into_output(claim_acquisition_output(
         acquire(claim_request, recovery_command_line),
         reservation_selection,
         &answer_recovery,
-    )
-    .with_alerts(reconciliation_report.alerts)
+    ))
 }
 
 /// Render one acquisition result while preserving its blocked envelope contract.
@@ -315,8 +330,8 @@ fn claim_acquisition_output(
             reservation_id,
             blockers,
             scopes,
-            default_answer,
-        })) => OutputEnvelope::answered(reservation_id, blockers, scopes, default_answer),
+            answer_policy,
+        })) => OutputEnvelope::answered(reservation_id, blockers, scopes, answer_policy),
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
             conflicts,
             approver,
@@ -406,8 +421,8 @@ enum ClaimExecution {
         reservation_id: Option<ReservationId>,
         blockers:       WireOrderedReservationIds,
         scopes:         ReservationScopeSet,
-        /// The repository default that recorded the answers; absent for an explicit `--defer`.
-        default_answer: Option<DefaultAnswer>,
+        /// Whether the repository default or the caller's explicit `--defer` recorded answers.
+        answer_policy:  ClaimAnswerPolicy,
     },
     Blocked {
         conflicts: Vec<ReservationConflict>,
@@ -661,10 +676,10 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
             )
     }
 
-    /// Choose the reservation named by the harness-session mapping read under the ledger lock.
+    /// Choose the reservation named by the prepared harness-session mapping.
     ///
-    /// The mapping is read inside the transaction, so it cannot move between that read and this
-    /// decision. The acting coordination run is not: it is the invoking process's own identity,
+    /// The transaction checks the mapping publication identity under the lock and prepares again
+    /// if it moved. The acting coordination run is the invoking process's own identity,
     /// resolved before the lock. A mapping naming a different run is therefore treated as no
     /// usable mapping and falls through to the unmapped selection, which admits only reservations
     /// belonging to the acting run — so a mapping written by another run can never redirect this
@@ -753,6 +768,7 @@ struct CommittedReservationAcquisition {
 
 #[derive(Clone)]
 struct FirstTouchValidationContext {
+    repository:            Arc<RepositorySnapshot>,
     run_validation:        ClaimRunValidation,
     worktree_context:      WorktreeContext,
     recovery_command_line: RecoveryCommandLine,
@@ -808,7 +824,18 @@ fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
-    match claim_request.reservation_selection {
+    let ClaimRequest {
+        reservation_selection,
+        target: _,
+        declared_scopes: _,
+        source: _,
+        purpose: _,
+        coordination_run_selection: _,
+        phase_start: _,
+        overlap_authorization: _,
+        answer_recovery: _,
+    } = &claim_request;
+    match *reservation_selection {
         ClaimReservationSelection::Existing(reservation_id) => {
             named::acquire(claim_request, reservation_id, recovery_command_line)
         },
@@ -822,26 +849,29 @@ fn acquire_new(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+    let ClaimRequest {
+        reservation_selection: _,
+        target,
+        declared_scopes,
+        source,
+        purpose,
+        coordination_run_selection,
+        phase_start,
+        overlap_authorization,
+        answer_recovery: _,
+    } = claim_request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
-    let claim_run_validation = claim_request
-        .coordination_run_selection
-        .resolve(resolved_edit_authorization);
+    let claim_run_validation = coordination_run_selection.resolve(resolved_edit_authorization);
     let actor_run_id = claim_run_validation.actor_run_id();
     let journal_mutation_actor =
         resolved_edit_authorization.journal_mutation_actor_for(actor_run_id);
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let scopes = normalized_claim_scopes(
-        claim_request.declared_scopes,
-        &claim_request.source,
-        path_case,
-    );
+    let scopes = normalized_claim_scopes(declared_scopes, &source, path_case);
     let claim_repository_facts =
         ClaimRepositoryFacts::read(&worktree_context, claim_run_validation)?;
-    let phase_start_head = claim_request
-        .phase_start
-        .protected_head(&claim_repository_facts.current_head);
+    let phase_start_head = phase_start.protected_head(&claim_repository_facts.current_head);
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -855,7 +885,7 @@ fn acquire_new(
     let (target, trunk_at_claim) = selected_target_and_tip(
         &worktree_context,
         &claim_repository_facts.head_snapshot,
-        claim_request.target.as_deref().map_or(
+        target.as_deref().map_or(
             TargetSelectionRequest::ExplicitClaimFromBranch,
             TargetSelectionRequest::ExplicitClaimWithArgument,
         ),
@@ -866,8 +896,8 @@ fn acquire_new(
     let prepared_claim = PreparedClaim {
         reservation_id,
         scopes: scopes.clone(),
-        source: claim_request.source,
-        purpose: claim_request.purpose,
+        source,
+        purpose,
         trunk_at_claim,
         target,
         head_snapshot: claim_repository_facts.head_snapshot,
@@ -877,11 +907,9 @@ fn acquire_new(
         coordination_identity_provenance: claim_run_validation.coordination_identity_provenance(),
     };
     let approver = berth_config.overlap_approver(worktree_context.repository_root());
-    // Only a claim that names no answer can record the repository's default one.
-    let default_answer = match claim_request.overlap_authorization {
-        OverlapAuthorizationRequest::Absent => berth_config.default_answer,
-        OverlapAuthorizationRequest::Permissive(_) | OverlapAuthorizationRequest::Defer(_) => None,
-    };
+    let answer_policy =
+        ClaimAnswerPolicy::resolve(overlap_authorization, berth_config.default_answer);
+    let answer_source = answer_policy.source();
     let target_view =
         TargetView::from_claim(&prepared_claim.target, &prepared_claim.trunk_at_claim);
     let repository_trunk = berth_config
@@ -890,36 +918,100 @@ fn acquire_new(
     let outcome = prepared_claim.transact(
         &ledger,
         journal_mutation_actor,
-        ClaimValidationContext {
+        &ClaimValidationContext {
+            repository: claim_repository_facts.repository,
             run_validation: claim_run_validation,
             worktree_context: worktree_context.clone(),
             recovery_command_line: recovery_command_line.clone(),
             worktree_id: journal_mutation_actor.worktree_id,
             path_case,
-            overlap_authorization: claim_request.overlap_authorization,
-            default_answer,
+            answer_policy,
             maximum_reservations: berth_config.maximum_reservations,
             maximum_ordering_edges: berth_config.maximum_ordering_edges,
             repository_trunk,
         },
     )?;
+    finish_new_claim(
+        outcome,
+        &worktree_context,
+        journal_mutation_actor,
+        approver,
+        NewClaimPublication {
+            reservation_id,
+            target: target_view,
+            scopes,
+            answer_policy: answer_source,
+        },
+    )
+}
+
+/// The overlap policy selected for a claim, retaining its request until validation.
+///
+/// Once an answer is recorded, the caller request is consumed and only its source remains.
+#[derive(Clone, Copy)]
+pub(crate) enum ClaimAnswerPolicy<CallerRequest = ()> {
+    /// Honor the caller's request. An answer-only result comes from explicit `--defer`.
+    CallerRequest(CallerRequest),
+    /// An unanswered claim uses the repository default to record its overlap answers.
+    RepositoryDefault(DefaultAnswer),
+}
+
+impl ClaimAnswerPolicy<OverlapAuthorizationRequest> {
+    /// Resolve the configuration boundary without pairing an explicit answer with a default.
+    fn resolve(
+        request: OverlapAuthorizationRequest,
+        configured_default: Option<DefaultAnswer>,
+    ) -> Self {
+        match request {
+            OverlapAuthorizationRequest::Absent => configured_default.map_or(
+                Self::CallerRequest(OverlapAuthorizationRequest::Absent),
+                Self::RepositoryDefault,
+            ),
+            request => Self::CallerRequest(request),
+        }
+    }
+
+    /// Retain the selected policy without copying the request consumed by validation.
+    const fn source(&self) -> ClaimAnswerPolicy {
+        match self {
+            Self::CallerRequest(_) => ClaimAnswerPolicy::CallerRequest(()),
+            Self::RepositoryDefault(answer) => ClaimAnswerPolicy::RepositoryDefault(*answer),
+        }
+    }
+}
+
+/// Facts to publish after the acquisition transaction appends successfully.
+struct NewClaimPublication {
+    reservation_id: ReservationId,
+    target:         TargetView,
+    scopes:         ReservationScopeSet,
+    answer_policy:  ClaimAnswerPolicy,
+}
+
+fn finish_new_claim(
+    outcome: LedgerTransactionOutcome<ClaimRejection>,
+    worktree_context: &WorktreeContext,
+    requester: ResolvedJournalMutationActor,
+    approver: Option<OverlapApprover>,
+    publication: NewClaimPublication,
+) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let execution = match outcome {
         LedgerTransactionOutcome::Rejected(rejection) => audited_claim_rejection_execution(
             rejection,
             approver,
-            &worktree_context,
-            journal_mutation_actor,
-            &scopes,
+            worktree_context,
+            requester,
+            &publication.scopes,
         )?,
-        outcome @ LedgerTransactionOutcome::Appended { .. } => claim_execution_from_outcome(
-            outcome,
-            reservation_id,
-            target_view,
-            scopes,
-            &worktree_context,
-            approver,
-            default_answer,
-        )?,
+        LedgerTransactionOutcome::Appended {
+            event,
+            session_mapping_publication,
+        } => claim_execution_from_outcome(
+            &event,
+            session_mapping_publication,
+            publication,
+            worktree_context,
+        ),
     };
     Ok(Enrollment::Enrolled(execution))
 }
@@ -1062,6 +1154,7 @@ fn acquire_first_touch_with_reservation_selection(
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
     let validation_context = FirstTouchValidationContext {
+        repository: repository_facts.repository,
         run_validation,
         worktree_context,
         recovery_command_line: recovery_command_line.clone(),
@@ -1074,8 +1167,7 @@ fn acquire_first_touch_with_reservation_selection(
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
     };
-    let execution =
-        transact_first_touch(&ledger, prepared_claim.clone(), validation_context.clone())?;
+    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
     // Only a refusal of the whole request stops the caller, so only it records the default.
     let (
         FirstTouchClaimExecution::Blocked { .. },
@@ -1091,25 +1183,44 @@ fn acquire_first_touch_with_reservation_selection(
         &prepared_claim.target.target,
         &validation_context,
     )?;
-    let execution = transact_first_touch(&ledger, prepared_claim, validation_context)?;
+    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
     Ok(Enrollment::Enrolled(
         execution.answered_by_default(answered),
     ))
 }
 
-/// Run one locked first-touch transaction and publish what it committed.
+/// Prepare a first-touch decision, validate its generation, and publish its committed result.
 fn transact_first_touch(
     ledger: &Ledger,
-    prepared_claim: PreparedClaim,
-    validation_context: FirstTouchValidationContext,
+    prepared_claim: &PreparedClaim,
+    validation_context: &FirstTouchValidationContext,
 ) -> Result<FirstTouchClaimExecution, ClaimError> {
     let coordination_run_id = validation_context.coordination_run_id;
     let reservation_selection = validation_context.reservation_selection;
     let worktree_context = validation_context.worktree_context.clone();
+    let selection = std::cell::RefCell::new(PreparedSessionMappingPublication::Unchanged);
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
         validation_context.worktree_id,
         coordination_run_id,
-        |state| validate_first_touch_transaction(&state, prepared_claim, validation_context),
+        |state| {
+            let validation = validate_first_touch_transaction(
+                &state,
+                prepared_claim.clone(),
+                validation_context.clone(),
+            );
+            *selection.borrow_mut() = match &validation {
+                CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
+                    acquisition,
+                    session_mapping: AlreadyHeldSessionMapping::PublishSelectedReservation,
+                }) => session::PreparedSessionMappingPublication::prepare_selection(
+                    &worktree_context.ledger_directory(),
+                    coordination_run_id,
+                    acquisition.reservation_id,
+                ),
+                _ => PreparedSessionMappingPublication::Unchanged,
+            };
+            validation
+        },
         Ok::<_, Infallible>,
         |outcome| {
             first_touch_execution_from_outcome(
@@ -1117,6 +1228,7 @@ fn transact_first_touch(
                 coordination_run_id,
                 reservation_selection,
                 &worktree_context,
+                selection.replace(PreparedSessionMappingPublication::Unchanged),
             )
         },
     );
@@ -1129,7 +1241,7 @@ fn transact_first_touch(
 
 /// Record the repository's default answer to every foreign holder of a refused first touch.
 ///
-/// The conflicts are recomputed under the ledger lock. Any refusal here appends nothing and
+/// Conflicts are prepared before acquisition and checked against intervening events. A refusal
 /// answers no holder; the first touch retried after it reports whatever still stops the edit.
 fn record_first_touch_default_answer(
     ledger: &Ledger,
@@ -1144,7 +1256,7 @@ fn record_first_touch_default_answer(
             let reservations = match locked_claim_reservations(
                 &state,
                 validation_context.run_validation,
-                &validation_context.worktree_context,
+                &validation_context.repository,
                 validation_context.worktree_id,
                 &validation_context.recovery_command_line,
                 target,
@@ -1191,6 +1303,7 @@ fn first_touch_execution_from_outcome(
     coordination_run_id: CoordinationRunId,
     reservation_selection: CheckReservationSelection,
     worktree_context: &WorktreeContext,
+    selection: PreparedSessionMappingPublication,
 ) -> Result<FirstTouchClaimExecution, ClaimError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
@@ -1215,11 +1328,7 @@ fn first_touch_execution_from_outcome(
                     SessionIdentityMappingPublication::LeftUnmapped
                 },
                 AlreadyHeldSessionMapping::PublishSelectedReservation => {
-                    session::publish_reservation_identity(
-                        &worktree_context.ledger_directory(),
-                        coordination_run_id,
-                        output.reservation_id,
-                    )
+                    selection.publish(&worktree_context.ledger_directory())
                 },
             };
             let session_mapping_publication =
@@ -1357,48 +1466,40 @@ fn publish_coordination_run_marker(
 }
 
 fn claim_execution_from_outcome(
-    outcome: LedgerTransactionOutcome<ClaimRejection>,
-    reservation_id: ReservationId,
-    target: TargetView,
-    scopes: ReservationScopeSet,
+    event: &JournalEvent,
+    session_mapping_publication: SessionIdentityMappingPublication,
+    publication: NewClaimPublication,
     worktree_context: &WorktreeContext,
-    approver: Option<OverlapApprover>,
-    default_answer: Option<DefaultAnswer>,
-) -> Result<ClaimExecution, ClaimError> {
-    match outcome {
-        LedgerTransactionOutcome::Appended {
-            event,
-            session_mapping_publication,
-        } => {
-            // An answer acquired no reservation, so there is no run marker to publish for it.
-            if let JournalOperation::Answer {
-                reservation_id,
-                scopes,
-                authorizations,
-            } = &event.operation
-            {
-                return Ok(ClaimExecution::Answered {
-                    reservation_id: *reservation_id,
-                    blockers: answered_blockers(authorizations),
-                    scopes: scopes.clone(),
-                    default_answer,
-                });
-            }
-            let coordination_run_id = event.actor.run;
-            let marker_publication =
-                publish_coordination_run_marker(worktree_context, coordination_run_id);
-            Ok(ClaimExecution::Claimed {
-                reservation_id,
-                target,
-                coordination_run_id,
-                scopes,
-                marker_publication,
-                session_mapping_publication,
-            })
-        },
-        LedgerTransactionOutcome::Rejected(rejection) => {
-            claim_rejection_execution(rejection, approver)
-        },
+) -> ClaimExecution {
+    let NewClaimPublication {
+        reservation_id,
+        target,
+        scopes,
+        answer_policy,
+    } = publication;
+    // An answer acquired no reservation, so there is no run marker to publish for it.
+    if let JournalOperation::Answer {
+        reservation_id,
+        scopes,
+        authorizations,
+    } = &event.operation
+    {
+        return ClaimExecution::Answered {
+            reservation_id: *reservation_id,
+            blockers: answered_blockers(authorizations),
+            scopes: scopes.clone(),
+            answer_policy,
+        };
+    }
+    let coordination_run_id = event.actor.run;
+    let marker_publication = publish_coordination_run_marker(worktree_context, coordination_run_id);
+    ClaimExecution::Claimed {
+        reservation_id,
+        target,
+        coordination_run_id,
+        scopes,
+        marker_publication,
+        session_mapping_publication,
     }
 }
 
@@ -1450,13 +1551,13 @@ fn validate_claim_transaction(
     context: ClaimValidationContext,
 ) -> TransactionValidation<ClaimRejection> {
     let ClaimValidationContext {
+        repository,
         run_validation,
-        worktree_context,
+        worktree_context: _,
         recovery_command_line,
         worktree_id,
         path_case,
-        overlap_authorization,
-        default_answer,
+        answer_policy,
         maximum_reservations,
         maximum_ordering_edges,
         repository_trunk,
@@ -1464,7 +1565,7 @@ fn validate_claim_transaction(
     let reservations = match locked_claim_reservations(
         state,
         run_validation,
-        &worktree_context,
+        &repository,
         worktree_id,
         &recovery_command_line,
         &prepared_claim.target.target,
@@ -1480,8 +1581,8 @@ fn validate_claim_transaction(
         worktree_id,
     };
     // An answer reserves nothing, so the reservation limit does not apply to it.
-    let permissive_request = match (overlap_authorization, default_answer) {
-        (OverlapAuthorizationRequest::Defer(request), _) => {
+    let permissive_request = match answer_policy {
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Defer(request)) => {
             return validate_answer(
                 AnswerKind::Defer,
                 *request,
@@ -1491,7 +1592,7 @@ fn validate_claim_transaction(
                 prepared_claim.scopes,
             );
         },
-        (OverlapAuthorizationRequest::Absent, Some(default_answer)) if !conflicts.is_empty() => {
+        ClaimAnswerPolicy::RepositoryDefault(default_answer) if !conflicts.is_empty() => {
             return validate_answer(
                 AnswerKind::Override,
                 default_answer_request(default_answer, &conflicts),
@@ -1501,8 +1602,11 @@ fn validate_claim_transaction(
                 prepared_claim.scopes,
             );
         },
-        (OverlapAuthorizationRequest::Absent, _) => None,
-        (OverlapAuthorizationRequest::Permissive(request), _) => Some(*request),
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent)
+        | ClaimAnswerPolicy::RepositoryDefault(_) => None,
+        ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Permissive(request)) => {
+            Some(*request)
+        },
     };
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
         return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
@@ -1535,23 +1639,24 @@ fn validate_claim_transaction(
     }
 }
 
-/// Replay the locked reservations, observe the acting head, and validate the acting run.
+/// Read the prepared reservations, observe the acting head, and validate the acting run.
 fn locked_claim_reservations(
     state: &ReplayedLedgerState<'_>,
     run_validation: ClaimRunValidation,
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
     target: &IntegrationTarget,
     repository_trunk: &IntegrationTarget,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
+    let worktree_context = repository.context();
     let reservations = state
         .reservations()
         .map_err(ClaimRejection::Replay)?
         .clone();
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        worktree_context,
+        repository,
         worktree_id,
         target,
         repository_trunk,
@@ -1707,6 +1812,7 @@ fn validate_first_touch_transaction(
     context: FirstTouchValidationContext,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     let FirstTouchValidationContext {
+        repository,
         run_validation,
         worktree_context,
         recovery_command_line,
@@ -1727,7 +1833,7 @@ fn validate_first_touch_transaction(
     };
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        &worktree_context,
+        &repository,
         worktree_id,
         &prepared_claim.target.target,
         &repository_trunk,
@@ -2506,17 +2612,17 @@ fn count_reaches_limit(count: usize, maximum: u32) -> bool {
 }
 
 impl PreparedClaim {
-    /// Validate and publish the prepared claim while holding the mutation lock.
+    /// Validate the claim before acquisition, then publish it after checking its generation.
     fn transact(
         self,
         ledger: &Ledger,
         requester: ResolvedJournalMutationActor,
-        context: ClaimValidationContext,
+        context: &ClaimValidationContext,
     ) -> Result<LedgerTransactionOutcome<ClaimRejection>, ClaimError> {
         Ok(ledger.transact(
             requester.worktree_id,
             requester.coordination_run_id,
-            |state| validate_claim_transaction(&state, self, context),
+            |state| validate_claim_transaction(&state, self.clone(), context.clone()),
         )?)
     }
 
@@ -2675,10 +2781,11 @@ impl ClaimRepositoryFacts {
         worktree_context: &WorktreeContext,
         run_validation: ClaimRunValidation,
     ) -> Result<Self, ClaimError> {
+        let repository = Arc::new(git::RepositorySnapshot::new(worktree_context.clone()));
         let (current_head, head_snapshot) = if run_validation.requires_live_head_revalidation() {
-            read_live_head_snapshot(worktree_context)?
+            read_live_head_snapshot(&repository)?
         } else {
-            read_head_snapshot_from_files(worktree_context)?
+            read_head_snapshot_from_files(&repository)?
         };
         let worktree_root = worktree_context
             .repository_root()
@@ -2687,6 +2794,7 @@ impl ClaimRepositoryFacts {
             .parse()
             .map_err(|_| ClaimError::InvalidCanonicalWorktreeRoot)?;
         Ok(Self {
+            repository,
             head_snapshot,
             current_head,
             worktree_root,
@@ -2695,10 +2803,10 @@ impl ClaimRepositoryFacts {
 }
 
 fn read_live_head_snapshot(
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
 ) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
-    let current_head = reservation::current_head(worktree_context.repository_root())?;
-    let head_snapshot = match git::head_attachment(worktree_context.repository_root())? {
+    let current_head = repository.head_object_id()?.clone();
+    let head_snapshot = match repository.head_attachment()?.clone() {
         HeadAttachment::Branch { full_ref } => ClaimHeadSnapshot::Branch {
             full_ref,
             head: ClaimHeadCommit::from(current_head.clone()),
@@ -2760,15 +2868,18 @@ fn select_target(
 }
 
 fn read_head_snapshot_from_files(
-    worktree_context: &WorktreeContext,
+    repository: &RepositorySnapshot,
 ) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
+    let worktree_context = repository.context();
     let head = fs::read_to_string(worktree_context.administrative_directory().join("HEAD"))?;
     let head = head.trim();
     if let Some(reference) = head.strip_prefix("ref: ") {
-        let full_ref = reference.parse().or_else(|_| {
-            git::symbolic_head_reference(worktree_context.repository_root())
-                .map_err(|_| ClaimError::InvalidHeadReference)
-        })?;
+        let full_ref = reference
+            .parse()
+            .or_else(|_| match repository.head_attachment() {
+                Ok(HeadAttachment::Branch { full_ref }) => Ok(full_ref.clone()),
+                Ok(HeadAttachment::Detached) | Err(_) => Err(ClaimError::InvalidHeadReference),
+            })?;
         let current_head = read_reference(worktree_context, &full_ref.to_string())?;
         return Ok((
             current_head.clone(),

@@ -1,0 +1,45 @@
+[
+  {
+    "agent": "claude",
+    "session_id": "manager-session",
+    "name": "production manager",
+    "pid": 10,
+    "started": 100,
+    "directory": "/work/production",
+    "children": []
+  },
+  {
+    "agent": "claude",
+    "session_id": "unit-session",
+    "name": "new unit",
+    "pid": 20,
+    "started": 110,
+    "directory": "/work/unit",
+    "children": []
+  },
+  {
+    "agent": "claude",
+    "session_id": "ordinary-session",
+    "name": "ordinary home session",
+    "pid": 30,
+    "started": 120,
+    "directory": "~",
+    "children": []
+  },
+  {
+    "agent": "codex",
+    "name": "independent codex",
+    "pid": 40,
+    "started": 130,
+    "directory": "/work/independent",
+    "children": [
+      {
+        "depth": 0,
+        "kind": "shell",
+        "pid": 41,
+        "name": "independent work",
+        "started": 100
+      }
+    ]
+  }
+]

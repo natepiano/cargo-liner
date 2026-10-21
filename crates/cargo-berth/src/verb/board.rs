@@ -14,6 +14,7 @@ use crate::board::tui::BoardTerminalViewRunFailure;
 use crate::board::tui::TerminalAttachment;
 use crate::cli::CliOutputFormat;
 use crate::config::Enrollment;
+use crate::git::RetentionMaintenance;
 use crate::ids::ReservationId;
 use crate::ledger::JournalPosition;
 use crate::ledger::Ledger;
@@ -30,6 +31,24 @@ use crate::reservation::ReservationReplayError;
 struct ReconciledBoardSource {
     invocation_directory: PathBuf,
     ledger:               Ledger,
+    maintenance:          TerminalMaintenance,
+}
+
+/// Refreshes remember a deferral silently; restoration consumes its single notice.
+struct TerminalMaintenance {
+    pending: RetentionMaintenance,
+}
+
+impl TerminalMaintenance {
+    fn remember(&mut self, maintenance: &RetentionMaintenance) {
+        if let RetentionMaintenance::Deferred(_) = maintenance {
+            self.pending = maintenance.clone();
+        }
+    }
+
+    fn report_after_restore(&mut self) {
+        std::mem::replace(&mut self.pending, RetentionMaintenance::Completed).report();
+    }
 }
 
 impl BoardModelSource for ReconciledBoardSource {
@@ -55,6 +74,7 @@ impl BoardModelSource for ReconciledBoardSource {
                 ));
             },
         };
+        self.maintenance.remember(&report.retention_maintenance);
         BoardModel::build(&self.invocation_directory, &report).map_err(BoardRefreshFailure::Model)
     }
 }
@@ -111,13 +131,30 @@ pub(crate) fn execute(
             return BoardDisplayOutcome::FactsUnavailable(error.into_output(CommandVerb::Board));
         },
     };
-    match output_selection {
+    let outcome = match output_selection {
         BoardOutputSelection::CompleteBoard => {
             execute_complete_board(&invocation_directory, &report, output_format)
         },
         BoardOutputSelection::ReservationLifecycleFor(reservation_id) => {
             execute_reservation_lifecycle(&report, reservation_id)
         },
+    };
+    match outcome {
+        BoardDisplayOutcome::HeadlessResponse(output) => BoardDisplayOutcome::HeadlessResponse(
+            output.with_retention_maintenance(&report.retention_maintenance),
+        ),
+        BoardDisplayOutcome::TerminalDidNotOpen(output) => BoardDisplayOutcome::TerminalDidNotOpen(
+            output.with_retention_maintenance(&report.retention_maintenance),
+        ),
+        BoardDisplayOutcome::TerminalFailedAfterOpening(output) => {
+            BoardDisplayOutcome::TerminalFailedAfterOpening(
+                output.with_retention_maintenance(&report.retention_maintenance),
+            )
+        },
+        BoardDisplayOutcome::TerminalRestored => BoardDisplayOutcome::TerminalRestored,
+        BoardDisplayOutcome::FactsUnavailable(output) => BoardDisplayOutcome::FactsUnavailable(
+            output.with_retention_maintenance(&report.retention_maintenance),
+        ),
     }
 }
 
@@ -158,14 +195,18 @@ fn execute_complete_board(
                         );
                     },
                 };
-                match tui::run(
-                    &mut ReconciledBoardSource {
-                        invocation_directory: invocation_directory.to_path_buf(),
-                        ledger,
+                let mut source = ReconciledBoardSource {
+                    invocation_directory: invocation_directory.to_path_buf(),
+                    ledger,
+                    maintenance: TerminalMaintenance {
+                        pending: report.retention_maintenance.clone(),
                     },
-                    &board,
-                ) {
-                    Ok(()) => BoardDisplayOutcome::TerminalRestored,
+                };
+                match tui::run(&mut source, &board) {
+                    Ok(()) => {
+                        source.maintenance.report_after_restore();
+                        BoardDisplayOutcome::TerminalRestored
+                    },
                     Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
                         BoardDisplayOutcome::TerminalDidNotOpen(
                             OutputEnvelope::board_with_terminal_view_opening_failure(
@@ -180,7 +221,8 @@ fn execute_complete_board(
                         BoardDisplayOutcome::TerminalFailedAfterOpening(
                             OutputEnvelope::terminal_view_failed_after_board_opened(
                                 &failure.to_string(),
-                            ),
+                            )
+                            .with_retention_maintenance(&source.maintenance.pending),
                         )
                     },
                 }
@@ -208,5 +250,94 @@ fn execute_reservation_lifecycle(
             CommandVerb::Board,
             &error.to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalMaintenance;
+    use crate::git::GitError;
+    use crate::git::RetentionMaintenance;
+    use crate::ids::ReservationId;
+
+    #[test]
+    fn terminal_refresh_deferrals_are_silent_until_one_notice_after_restore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "CARGO_BERTH_TEST_TERMINAL_MAINTENANCE";
+        const TEST: &str = "verb::board::tests::terminal_refresh_deferrals_are_silent_until_one_notice_after_restore";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, "1")
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.starts_with("terminal restored\n"),
+                "no notice while drawing: {diagnostic}"
+            );
+            assert_eq!(
+                diagnostic
+                    .matches("Retention-ref maintenance deferred:")
+                    .count(),
+                1,
+                "{diagnostic}"
+            );
+            return Ok(());
+        }
+        let repository = tempfile::tempdir()?;
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        ] {
+            let output = cargo_berth_test_support::fixture_git_command()
+                .current_dir(repository.path())
+                .args(args)
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+        }
+        let tip = cargo_berth_test_support::fixture_git_command()
+            .current_dir(repository.path())
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+        let tip = String::from_utf8(tip.stdout)?.trim().parse()?;
+        let id = ReservationId::new();
+        let lock = repository.path().join(format!(
+            ".git/{}.lock",
+            crate::git::reservation_retention_ref_name(id)
+        ));
+        std::fs::create_dir_all(lock.parent().ok_or("lock directory")?)?;
+        std::fs::write(&lock, b"")?;
+        let output = cargo_berth_test_support::fixture_git_command()
+            .current_dir(repository.path())
+            .args(["config", "core.filesRefLockTimeout", "1"])
+            .output()?;
+        assert!(output.status.success(), "{output:?}");
+        let Err(GitError::LockRefused(lock)) =
+            crate::git::write_reservation_retention_ref(repository.path(), id, &tip)
+        else {
+            return Err("expected refusal".into());
+        };
+        let deferred = RetentionMaintenance::Deferred(lock);
+        let mut terminal = TerminalMaintenance {
+            pending: RetentionMaintenance::Completed,
+        };
+        terminal.remember(&deferred);
+        terminal.remember(&deferred);
+        terminal.remember(&RetentionMaintenance::Completed);
+        eprintln!("terminal restored");
+        terminal.report_after_restore();
+        terminal.report_after_restore();
+        Ok(())
     }
 }

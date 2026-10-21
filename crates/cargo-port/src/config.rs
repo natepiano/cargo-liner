@@ -1171,6 +1171,7 @@ pub(crate) fn set_active_config(cargo_port_config: &CargoPortConfig) {
 )]
 mod tests {
     use super::*;
+    use crate::constants::KEYMAP_FILE;
     use crate::test_support;
 
     #[test]
@@ -1227,7 +1228,7 @@ mod tests {
             None,
             explicit_root.clone(),
             platform_root.clone(),
-            crate::constants::KEYMAP_FILE,
+            KEYMAP_FILE,
         );
         let themes = resolve_configuration_child_path(None, explicit_root, platform_root, "themes");
         assert_eq!(
@@ -1249,7 +1250,7 @@ mod tests {
             ))
         );
 
-        for child_name in [CONFIG_FILE, crate::constants::KEYMAP_FILE, "themes"] {
+        for child_name in [CONFIG_FILE, KEYMAP_FILE, "themes"] {
             assert_eq!(
                 resolve_configuration_child_path(
                     None,
@@ -1352,8 +1353,9 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, &template).expect("write template");
 
-        // Template has all fields commented out, so loading it should
-        // succeed with defaults filling every field.
+        // `template` comments out every setting, so
+        // `CargoPortConfig::builder().file(&path).load()` must succeed using defaults for all
+        // fields.
         let cargo_port_config = CargoPortConfig::builder()
             .file(&path)
             .load()

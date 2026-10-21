@@ -48,7 +48,6 @@ use super::constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
 use super::constants::GIT_SYMMETRIC_RANGE_INFIX;
 use super::constants::GIT_WRITE_TREE_ARG;
 use super::error::GitError;
-use super::object;
 use super::reachability::PhaseStartTargetFirstParentHistories;
 use crate::ids::GitObjectId;
 use crate::ledger::ReservationScopeSet;
@@ -292,11 +291,12 @@ impl ScopedSymmetricDifference {
 /// a bare equivalence test read a dropped commit exactly like a replayed one. Position
 /// separates them: only the replayed commits are contiguous at the tip.
 pub(crate) fn rewritten_phase_anchor(
-    repository_root: &Path,
+    repository: &super::RepositorySnapshot,
     phase_start: &GitObjectId,
     previous_tip: &GitObjectId,
     proposed_tip: &GitObjectId,
 ) -> Result<GitObjectId, GitError> {
+    let repository_root = repository.repository_root();
     let phase_commit_count = commit_count(
         repository_root,
         &format!("{phase_start}{GIT_ANCESTOR_RANGE_INFIX}{previous_tip}"),
@@ -315,10 +315,9 @@ pub(crate) fn rewritten_phase_anchor(
         .iter()
         .take_while(|commit| equivalents.contains(commit))
         .count();
-    object::object_id(
-        repository_root,
-        &format!("{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"),
-    )
+    repository.object_reader().commit(&format!(
+        "{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"
+    ))
 }
 
 /// Count the commits selected by one revision range.
@@ -1214,7 +1213,7 @@ mod tests {
             &crate::git::PhaseStartTargetFirstParentHistories::default(),
         );
         let observation = super::super::reachability::branch_commit_reachability(
-            fixture.root(),
+            &crate::git::RepositorySnapshot::discover(fixture.root())?,
             "main",
             std::slice::from_ref(&fixture.phase_start_head),
         )?;
@@ -1363,16 +1362,27 @@ mod tests {
 
     #[test]
     fn rewrite_mapping_stops_at_onto_independently_of_other_refs() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let old_tip = fixture.commit("old protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
+        let other_base = fixture.commit("other reservation")?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let target = fixture.commit("rewritten protected edit")?;
+        let baseline = cargo_berth_test_support::DirectorySnapshot::capture(fixture.root());
         for reference_kind in ["branch", "tag", "remote", "detached_worktree", "no_ref"] {
-            let fixture = mapped_fixture()?;
-            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
-            let old_tip = fixture.commit("old protected edit")?;
-            fixture.reset_to_phase_start()?;
-            fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
-            let other_base = fixture.commit("other reservation")?;
+            baseline.restore(fixture.root());
             match reference_kind {
                 "branch" => fixture.git(&["branch", "other", &other_base.to_string()])?,
-                "tag" => fixture.git(&["tag", "-a", "other", "-m", "other base"])?,
+                "tag" => fixture.git(&[
+                    "tag",
+                    "-a",
+                    "other",
+                    "-m",
+                    "other base",
+                    &other_base.to_string(),
+                ])?,
                 "remote" => fixture.git(&[
                     "update-ref",
                     "refs/remotes/origin/other",
@@ -1387,11 +1397,6 @@ mod tests {
                 ])?,
                 _ => {},
             }
-            // Stage only the protected path when an untracked linked checkout exists.
-            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
-            fixture.git(&["add", PRIMARY_PATH])?;
-            fixture.git(&["commit", "--quiet", "-m", "rewritten protected edit"])?;
-            let target = refs::head_object_id(fixture.root())?;
             let pairs = [RewriteMapPair {
                 old: old_tip.clone(),
                 new: target.clone(),
@@ -1406,11 +1411,16 @@ mod tests {
                 &other_base,
             )?;
             assert_eq!(
-                gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+                gate::map_phase_interval(
+                    &pairs,
+                    std::slice::from_ref(&old_tip),
+                    &history,
+                    &created
+                ),
                 PhaseRewriteMapping::Mapped(MappedPhaseInterval {
-                    phase_start_head: other_base,
+                    phase_start_head: other_base.clone(),
                     protected_tip:    target.clone(),
-                    destinations:     vec![target],
+                    destinations:     vec![target.clone()],
                 }),
                 "onto must establish the phase base with {reference_kind}",
             );

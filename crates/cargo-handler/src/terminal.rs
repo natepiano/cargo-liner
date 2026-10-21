@@ -222,6 +222,7 @@ mod tests {
     use crate::census::AgentActivity;
     use crate::census::HierarchyEdges;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsFailure;
@@ -432,6 +433,7 @@ mod tests {
         let now = Instant::now();
         let row = AgentRow {
             agent:           Agent::Claude,
+            role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
             service_tier:    ServiceTier::Unrecorded,
             account:         Account::Unrecorded,
@@ -469,6 +471,7 @@ mod tests {
         sender
             .send(CensusUpdate::Local {
                 rows:      vec![census::AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     activity: crate::census::AgentActivity::Unreported,
                     ..row
                 }],

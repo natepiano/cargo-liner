@@ -49,7 +49,8 @@ fn the_last_turn_event_determines_whether_a_thread_is_busy_or_idle() {
         for event in events {
             append(&path, event);
         }
-        // A later non-event mentioning task_started must not change activity.
+        // A later non-event mentioning `task_started` must not change the activity returned by
+        // `Rollouts::read`.
         append(
             &path,
             r#"{"type":"response_item","payload":{"type":"task_started"}}"#,
@@ -93,7 +94,7 @@ fn an_incremental_completion_changes_busy_to_idle_only_after_its_line_is_complet
         rollouts.read(&path).activity(),
         AgentActivity::Active(crate::census::Activity::Thinking)
     );
-    // A truncated/replaced rollout must discard the old busy event.
+    // A truncated/replaced rollout must make `rollouts.read` discard the old busy event.
     fs::write(&path, format!("{META}\n")).expect("rollout resets");
     assert_eq!(rollouts.read(&path).activity(), AgentActivity::Idle);
 }

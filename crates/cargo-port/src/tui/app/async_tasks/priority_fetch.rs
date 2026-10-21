@@ -27,9 +27,9 @@ impl App {
         if self.selected_worktree_group_contains(path) {
             return true;
         }
-        // Check if both paths resolve to the same lint-owning node.
-        // This covers shared owner rows such as workspace members
-        // without widening unrelated watcher invalidations.
+        // `project_list.lint_at_path` resolves `selected_path` and `path` to `LintRuns`;
+        // `std::ptr::eq` includes shared workspace-owner rows without widening unrelated watcher
+        // invalidations.
         self.project_list
             .lint_at_path(selected_path)
             .zip(self.project_list.lint_at_path(path))

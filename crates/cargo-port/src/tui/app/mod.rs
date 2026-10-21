@@ -1082,9 +1082,7 @@ impl App {
         self.set_ci_display_mode_for_inner(path, mode);
     }
 
-    pub(super) fn reset_cpu_placeholder(&mut self) {
-        self.panes.reset_cpu(&self.config.current().cpu);
-    }
+    pub(super) fn reset_cpu_monitor(&mut self) { self.panes.reset_cpu(&self.config.current().cpu); }
 
     // ── Group 3 cross-subsystem orchestrators (post-Phase-9) ────────
     //
@@ -1261,7 +1259,7 @@ impl App {
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
-            PaneBehavior::ProjectList => true,
+            PaneBehavior::ProjectList | PaneBehavior::Cpu => true,
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.project_list.selected_project_path().is_some(),
                 PaneId::Lang => self
@@ -1275,12 +1273,11 @@ impl App {
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
                     !matches!(g.checkout, panes::GitCheckout::AwaitingProbe)
-                        || !g.remotes.is_empty()
+                        || !g.remotes.listed().is_empty()
                         || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.panes.cpu.content().is_some(),
             PaneBehavior::DetailTargets => self
                 .panes
                 .targets
@@ -1427,6 +1424,7 @@ mod tests {
     use super::CiRunDisplayMode;
     use super::DiscoveryRowKind;
     use super::DiscoveryShimmer;
+    use super::phase_state::PhaseCompletion;
     use super::scan_state::ScanPhase;
     use crate::ci::CiRun;
     use crate::ci::CiStatus;
@@ -1442,6 +1440,9 @@ mod tests {
     use crate::project::AbsolutePath;
     use crate::project::CheckoutInfo;
     use crate::project::CiPagination;
+    use crate::project::CommitDate;
+    use crate::project::Comparison;
+    use crate::project::FirstCommit;
     use crate::project::GitStatus;
     use crate::project::HeadState;
     use crate::project::MemberGroup;
@@ -1452,10 +1453,13 @@ mod tests {
     use crate::project::ProjectFields;
     use crate::project::RemoteInfo;
     use crate::project::RemoteKind;
+    use crate::project::RemoteList;
     use crate::project::RepoInfo;
+    use crate::project::ResolvedBranch;
     use crate::project::RootItem;
     use crate::project::RustInfo;
     use crate::project::RustProject;
+    use crate::project::TrackedRef;
     use crate::project::VendoredPackage;
     use crate::project::Visibility::Deleted;
     use crate::project::Visibility::Dismissed;
@@ -1636,7 +1640,7 @@ mod tests {
                 "quiet ScanResult must not wait for project-detail declarations"
             );
             assert!(
-                app.startup.details_declared.complete_at.is_some(),
+                app.startup.details_declared.complete_at().is_some(),
                 "empty declaration phase should complete immediately"
             );
         }
@@ -2712,10 +2716,12 @@ mod tests {
         use crate::config::NavigationKeys;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
-        use crate::project::HeadState;
+        use crate::project::Comparison;
+        use crate::project::PinnedCommit;
         use crate::project::ProjectType;
         use crate::project::RootItem;
         use crate::project::Submodule;
+        use crate::project::TrackedRef;
         use crate::test_support;
         use crate::tui::app::App;
         use crate::tui::app::CargoPortToastAction;
@@ -2737,12 +2743,15 @@ mod tests {
         use crate::tui::panes::CiEmptyState;
         use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
+        use crate::tui::panes::HeadRelation;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::PackageData;
         use crate::tui::panes::PackagePresence;
+        use crate::tui::panes::PackageVersion;
         use crate::tui::panes::PaneId;
         use crate::tui::panes::RemoteRow;
+        use crate::tui::panes::RemoteRows;
         use crate::tui::panes::TargetsData;
         use crate::tui::render;
         use crate::tui::settings::SettingOption;
@@ -2913,9 +2922,9 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
             app.panes.git.set_content(GitData {
-                checkout: GitCheckout::Readable {
-                    head:     HeadState::Branch("main".to_string()),
-                    relation: None,
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
                 },
                 ..GitData::default()
             });
@@ -2929,7 +2938,7 @@ mod tests {
                 worktree_group_summary:   None,
                 primary_section:          None,
                 path:                     "~/demo".to_string(),
-                version:                  Some("0.1.0".to_string()),
+                version:                  PackageVersion::Manifest("0.1.0".to_string()),
                 description:              None,
                 crates_io_rows:           Vec::new(),
                 types:                    Some(vec![ProjectType::Library]),
@@ -3004,7 +3013,7 @@ mod tests {
         #[test]
         fn package_activate_state_disabled_when_no_crates_version() {
             // `package_fields_from_data` omits the CratesIo row when
-            // `crates_version` is `None`, so no cursor position lands on a
+            // the crates.io release is still awaited, so no cursor position lands on a
             // row whose Activate dispatch does anything — the state must be
             // Disabled regardless of where the cursor sits.
             let project = super::make_project(Some("demo"), "~/demo");
@@ -3051,8 +3060,8 @@ mod tests {
                 icon:            "",
                 display_url:     url.to_string(),
                 branch:          "main".to_string(),
-                tracked_ref:     String::new(),
-                status:          String::new(),
+                tracked_ref:     TrackedRef::Untracked,
+                status:          Comparison::NotCompared,
                 full_url:        Some(url.to_string()),
                 push_annotation: None,
             }
@@ -3081,9 +3090,12 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
 
-            let mut data = GitData::default();
-            data.remotes
-                .push(git_remote_with_url("https://github.com/natepiano/demo"));
+            let data = GitData {
+                remotes: RemoteRows::Listed(vec![git_remote_with_url(
+                    "https://github.com/natepiano/demo",
+                )]),
+                ..GitData::default()
+            };
             // Default GitData carries two flat rate-limit rows, so the first
             // remote row sits at index 2.
             let remote_pos = 2;
@@ -3692,7 +3704,7 @@ mod tests {
                 relative_path: "submod".to_string(),
                 url:           None,
                 branch:        None,
-                commit:        None,
+                commit:        PinnedCommit::Absent,
                 project_info:  crate::project::ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -4341,9 +4353,9 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
             app.panes.git.set_content(GitData {
-                checkout: GitCheckout::Readable {
-                    head:     HeadState::Branch("main".to_string()),
-                    relation: None,
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
                 },
                 ..GitData::default()
             });
@@ -4579,7 +4591,10 @@ mod tests {
         }
     }
     mod interaction {
+        use std::fmt::Write;
         use std::path::Path;
+        use std::path::PathBuf;
+        use std::process::Command;
         use std::rc::Rc;
         use std::sync::Arc;
         use std::time::Duration;
@@ -4600,6 +4615,8 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Position;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
         use tempfile::TempDir;
         use tui_pane::AppContext;
         use tui_pane::Appearance;
@@ -4608,6 +4625,7 @@ mod tests {
         use tui_pane::FocusedPane;
         use tui_pane::FrameworkFocusId;
         use tui_pane::GlobalAction as FrameworkGlobalAction;
+        use tui_pane::PaneBorders;
         use tui_pane::PaneFocusState;
         use tui_pane::PaneSelectionState;
         use tui_pane::RenderFocus;
@@ -4627,6 +4645,8 @@ mod tests {
         use crate::config::CargoPortConfig;
         use crate::config::EdgeScroll;
         use crate::config::NavigationKeys;
+        use crate::constants::GIT_STATUS_UNREADABLE;
+        use crate::constants::GIT_UNREADABLE_LABEL;
         use crate::lint::LintCommand;
         use crate::lint::LintCommandStatus;
         use crate::lint::LintRun;
@@ -4634,28 +4654,36 @@ mod tests {
         use crate::lint::LintRunStatus;
         use crate::project;
         use crate::project::AbsolutePath;
+        use crate::project::AheadBehind;
         use crate::project::Cargo;
         use crate::project::CargoParseResult;
         use crate::project::CheckoutInfo;
+        use crate::project::CommitDate;
+        use crate::project::Comparison;
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
+        use crate::project::FirstCommit;
         use crate::project::GitStatus;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
         use crate::project::MemberGroup;
         use crate::project::Package;
         use crate::project::PackageRecord;
+        use crate::project::PinnedCommit;
         use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
         use crate::project::RemoteInfo;
         use crate::project::RemoteKind;
+        use crate::project::RemoteList;
         use crate::project::RepoInfo;
+        use crate::project::ResolvedBranch;
         use crate::project::RootItem;
         use crate::project::RustInfo;
         use crate::project::RustProject;
         use crate::project::Submodule;
         use crate::project::TargetRecord;
+        use crate::project::TrackedRef;
         use crate::project::Visibility;
         use crate::project::WorkflowPresence;
         use crate::project::Workspace;
@@ -4669,6 +4697,7 @@ mod tests {
         use crate::tui::app::ConfirmAction;
         use crate::tui::app::HoveredPaneRow;
         use crate::tui::app_render_state::OverlayRenderInputs;
+        use crate::tui::columns::COL_NAME;
         use crate::tui::dismiss_target::DismissTarget;
         use crate::tui::finder;
         use crate::tui::hit_test::HoverTarget;
@@ -4677,8 +4706,11 @@ mod tests {
         use crate::tui::integration::NavAction;
         use crate::tui::interaction;
         use crate::tui::panes;
+        use crate::tui::panes::BROKEN_WORKTREE_DISK_SUFFIX;
+        use crate::tui::panes::DISMISS_SUFFIX;
         use crate::tui::panes::DetailField;
         use crate::tui::panes::GitData;
+        use crate::tui::panes::HEAD_UNREADABLE_LABEL;
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
@@ -4766,29 +4798,39 @@ mod tests {
             let checkout = CheckoutInfo {
                 status:              GitStatus::Clean,
                 head:                HeadState::Branch("main".to_string()),
-                last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
-                ahead_behind_local:  Some((0, 0)),
-                primary_tracked_ref: Some("origin/main".to_string()),
+                last_commit:         CommitDate::At("2024-01-02T00:00:00Z".to_string()),
+                ahead_behind_local:  Comparison::Counted(AheadBehind {
+                    ahead:  0,
+                    behind: 0,
+                }),
+                primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                 bisect:              None,
             };
             let repo = RepoInfo {
-                remotes:           vec![RemoteInfo {
+                remotes:           RemoteList::Listed(vec![RemoteInfo {
                     name:         "origin".to_string(),
                     url:          url.map(str::to_string),
                     owner:        Some("natepiano".to_string()),
                     repo:         Some("demo".to_string()),
-                    tracked_ref:  Some("origin/main".to_string()),
-                    ahead_behind: Some((0, 0)),
+                    tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
+                    ahead_behind: crate::project::Comparison::Counted(
+                        crate::project::AheadBehind {
+                            ahead:  0,
+                            behind: 0,
+                        },
+                    ),
                     kind:         RemoteKind::Clone,
                     push:         crate::project::PushState::Enabled {
                         push_url: String::new(),
                     },
-                }],
+                }]),
                 workflows:         WorkflowPresence::Present,
-                first_commit:      Some("2024-01-01T00:00:00Z".to_string()),
+                first_commit:      FirstCommit::Probed(CommitDate::At(
+                    "2024-01-01T00:00:00Z".to_string(),
+                )),
                 last_fetched:      None,
-                default_branch:    Some("main".to_string()),
-                local_main_branch: Some("main".to_string()),
+                default_branch:    ResolvedBranch::Named("main".to_string()),
+                local_main_branch: ResolvedBranch::Named("main".to_string()),
             };
             (checkout, repo)
         }
@@ -5305,7 +5347,7 @@ mod tests {
                     relative_path: "vendor/dep".to_string(),
                     url:           None,
                     branch:        None,
-                    commit:        None,
+                    commit:        PinnedCommit::Absent,
                     project_info:  crate::project::ProjectInfo::default(),
                     git_repo:      None,
                 });
@@ -5345,7 +5387,7 @@ mod tests {
                     relative_path: "vendor/dep".to_string(),
                     url:           None,
                     branch:        None,
-                    commit:        None,
+                    commit:        PinnedCommit::Absent,
                     project_info:  crate::project::ProjectInfo::default(),
                     git_repo:      None,
                 });
@@ -6216,10 +6258,10 @@ mod tests {
             assert_eq!(app.panes.targets.viewport.pos(), 1);
         }
 
-        fn render_selected_git(app: &mut App) -> Buffer {
+        fn render_selected_git(app: &mut App, rows: u16) -> Buffer {
             app.ensure_detail_cached();
             let mut terminal =
-                Terminal::new(TestBackend::new(80, 8)).expect("create Git pane terminal");
+                Terminal::new(TestBackend::new(80, rows)).expect("create Git pane terminal");
             let animation_elapsed = app.animation_started.elapsed();
             let selected_path = app
                 .selected_project_path_for_render()
@@ -6264,25 +6306,30 @@ mod tests {
             fn drop(&mut self) { tui_pane::set_active_theme(self.saved.clone()); }
         }
 
+        fn find_text_cell(buffer: &Buffer, text: &str) -> Option<(u16, u16)> {
+            (buffer.area.y..buffer.area.bottom())
+                .find_map(|y| find_text_cell_in_row(buffer, y, text))
+        }
+
+        fn find_text_cell_in_row(buffer: &Buffer, y: u16, text: &str) -> Option<(u16, u16)> {
+            let mut row = String::new();
+            let mut starts = Vec::new();
+            for x in buffer.area.x..buffer.area.right() {
+                starts.push((row.len(), x));
+                row.push_str(buffer[(x, y)].symbol());
+            }
+            let byte = row.find(text)?;
+            starts
+                .into_iter()
+                .find_map(|(start, x)| (start == byte).then_some((x, y)))
+        }
+
         fn assert_git_error_colors(app: &mut App, error_value: &str) {
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
-                let buffer = render_selected_git(app);
-                let area = buffer.area;
-                let value_position = (0..area.height)
-                    .find_map(|y| {
-                        let row = (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>();
-                        row.find(error_value).map(|byte| {
-                            (
-                                u16::try_from(row[..byte].chars().count())
-                                    .expect("Error value position fits in the buffer"),
-                                y,
-                            )
-                        })
-                    })
-                    .expect("Error value should be rendered");
+                let buffer = render_selected_git(app, 8);
+                let value_position =
+                    find_text_cell(&buffer, error_value).expect("Error value should be rendered");
                 let cell = &buffer[value_position];
                 assert_eq!(cell.fg, tui_pane::on_error_color());
                 assert_eq!(cell.bg, tui_pane::error_color());
@@ -6290,20 +6337,459 @@ mod tests {
         }
 
         #[test]
+        fn selecting_checkout_with_unreadable_head_renders_head_unreadable() {
+            let tmp = tempfile::tempdir().expect("create unreadable checkout");
+            let path = tmp.path();
+            std::fs::write(
+                path.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write project manifest");
+            crate::test_support::init_git_repo(path);
+            std::fs::write(path.join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
+            let Ok(CargoParseResult::Package(package)) =
+                project::from_cargo_toml(&path.join("Cargo.toml"))
+            else {
+                panic!("project manifest should load as a package");
+            };
+            let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
+            app.project_list.select_project_in_tree(path, false);
+            app.sync_selected_project();
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::CheckoutInfo {
+                    path: path.to_path_buf().into(),
+                    info: CheckoutInfo::get(path, &ResolvedBranch::NotFound)
+                        .expect("probe unreadable checkout"),
+                },
+            );
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let buffer = render_selected_git(&mut app, 8);
+                let data = app.panes.git.content().expect("selected Git pane content");
+                assert!(matches!(data.checkout, panes::GitCheckout::UnreadableHead));
+                assert!(app.is_pane_tabbable(PaneId::Git));
+                let (x, y) = find_text_cell(&buffer, HEAD_UNREADABLE_LABEL)
+                    .expect("unreadable HEAD should render");
+                let (_, label_y) = find_text_cell(&buffer, DetailField::Head.label())
+                    .expect("unreadable HEAD should have a Branch label");
+                assert_eq!(label_y, y);
+                assert!(find_text_cell(&buffer, "local").is_none());
+                assert!(find_text_cell(&buffer, "unborn").is_none());
+                for column in x..x + u16::try_from(HEAD_UNREADABLE_LABEL.len()).expect("value fits")
+                {
+                    assert_eq!(
+                        buffer[(column, y)].fg,
+                        tui_pane::error_color(),
+                        "{appearance:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn unreadable_submodule_version_renders_in_error_color() {
+            let temp = tempfile::tempdir().expect("fixture");
+            let root = temp.path();
+            let child = root.join("dependency");
+            std::fs::create_dir(&child).expect("submodule directory");
+            let mut app = make_app(&[make_package("demo", root)]);
+            app.project_list
+                .at_path_mut(root)
+                .expect("root project")
+                .submodules
+                .push(Submodule {
+                    name:          "dependency".to_string(),
+                    path:          AbsolutePath::from(child),
+                    relative_path: "dependency".to_string(),
+                    url:           None,
+                    branch:        None,
+                    commit:        PinnedCommit::Unreadable,
+                    project_info:  crate::project::ProjectInfo::default(),
+                    git_repo:      None,
+                });
+            app.project_list.set_cursor(0);
+            assert!(app.expand());
+            app.ensure_visible_rows_cached();
+            app.project_list.set_cursor(1);
+            app.sync_selected_project();
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                app.ensure_detail_cached();
+                let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("terminal");
+                let selected_path = app
+                    .selected_project_path_for_render()
+                    .map(Path::to_path_buf);
+                let lookup = app.ci.status_lookup();
+                let elapsed = app.animation_started.elapsed();
+                terminal
+                    .draw(|frame| {
+                        let area = frame.area();
+                        let split = app.split_for_render(
+                            selected_path.as_deref(),
+                            elapsed,
+                            &lookup,
+                            OverlayRenderInputs::none(),
+                            SyncedDescriptionHeight::default(),
+                        );
+                        tui_pane::Renderable::render(
+                            split.registry.package,
+                            frame,
+                            area,
+                            &split.pane_render_ctx,
+                        );
+                    })
+                    .expect("render submodule Package pane");
+                let buffer = terminal.backend().buffer();
+                let (_, y) = find_text_cell(buffer, DetailField::Version.label())
+                    .expect("submodule Version row");
+                let (x, _) = find_text_cell_in_row(buffer, y, GIT_UNREADABLE_LABEL)
+                    .expect("unreadable submodule pin");
+                for column in x..x + u16::try_from(GIT_UNREADABLE_LABEL.len()).expect("value fits")
+                {
+                    assert_eq!(
+                        buffer[(column, y)].fg,
+                        tui_pane::error_color(),
+                        "{appearance:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn unreadable_remote_listing_renders_unreadable_ci_instead_of_missing_remote() {
+            let temp = tempfile::tempdir().expect("fixture");
+            let path = temp.path();
+            crate::test_support::init_git_repo(path);
+            let config_path = path.join(".git/config");
+            let mut config = std::fs::read_to_string(&config_path).expect("config");
+            config.push_str("\n[remote \"-x\"]\nurl = https://github.com/natepiano/demo\n");
+            std::fs::write(config_path, config).expect("remote config");
+            let mut app = make_app(&[make_package("demo", path)]);
+            app.project_list.set_cursor(0);
+            let repo = RepoInfo::get(path).expect("repo");
+            assert!(matches!(repo.remotes, RemoteList::Unreadable));
+            let checkout = CheckoutInfo::get(path, &repo.local_main_branch).expect("checkout");
+            super::apply_git_info(&mut app, path, (checkout, repo));
+            app.sync_selected_project();
+            let buffer = render_selected_ci(&mut app);
+            assert!(find_text_cell(&buffer, GIT_UNREADABLE_LABEL).is_some());
+            assert!(find_text_cell(&buffer, "requires a GitHub").is_none());
+        }
+
+        #[test]
+        fn unreadable_branch_evidence_hides_cached_runs_in_ci_pane() {
+            for corrupt_head in [false, true] {
+                let temp = tempfile::tempdir().expect("fixture");
+                let path = temp.path();
+                crate::test_support::init_git_repo(path);
+                let head = std::fs::read_to_string(path.join(".git/HEAD")).expect("HEAD");
+                let sha = std::fs::read_to_string(
+                    path.join(".git")
+                        .join(head.trim().strip_prefix("ref: ").expect("branch")),
+                )
+                .expect("ref");
+                std::fs::write(path.join(".git/refs/heads/feature-x"), sha).expect("branch");
+                std::fs::write(
+                    path.join(".git/HEAD"),
+                    if corrupt_head {
+                        "garbage\n"
+                    } else {
+                        "ref: refs/heads/feature-x\n"
+                    },
+                )
+                .expect("HEAD");
+                std::fs::create_dir_all(path.join(".git/refs/remotes/origin")).expect("refs");
+                std::fs::write(path.join(".git/refs/remotes/origin/HEAD"), "garbage\n")
+                    .expect("remote HEAD");
+                let config_path = path.join(".git/config");
+                let mut config = std::fs::read_to_string(&config_path).expect("config");
+                config.push_str("\n[remote \"origin\"]\nurl = https://github.com/natepiano/demo\n");
+                std::fs::write(config_path, config).expect("remote config");
+                let mut app = make_app(&[make_package("demo", path)]);
+                app.project_list.set_cursor(0);
+                let mut repo = RepoInfo::get(path).expect("repo");
+                repo.workflows = WorkflowPresence::Present;
+                let checkout = CheckoutInfo::get(path, &repo.local_main_branch).expect("checkout");
+                super::apply_git_info(&mut app, path, (checkout, repo));
+                super::set_loaded_ci(
+                    &mut app,
+                    path,
+                    vec![make_ci_run(81, CiStatus::Passed)],
+                    false,
+                    1,
+                );
+                app.sync_selected_project();
+                let buffer = render_selected_ci(&mut app);
+                assert!(
+                    find_text_cell(&buffer, GIT_UNREADABLE_LABEL).is_some(),
+                    "corrupt HEAD: {corrupt_head}"
+                );
+                assert!(app.ci.content().expect("CI content").runs.is_empty());
+            }
+        }
+
+        #[test]
+        fn unreadable_remote_metadata_marks_both_list_sync_columns() {
+            for unreadable_listing in [false, true] {
+                let project = super::make_project(Some("demo"), "~/demo");
+                let mut app = make_app(std::slice::from_ref(&project));
+                let (mut checkout, mut repo) =
+                    make_git_info(Some("https://github.com/natepiano/demo"));
+                checkout.primary_tracked_ref = TrackedRef::Untracked;
+                checkout.ahead_behind_local = Comparison::NotCompared;
+                if unreadable_listing {
+                    repo.remotes = RemoteList::Unreadable;
+                } else if let RemoteList::Listed(remotes) = &mut repo.remotes {
+                    remotes[0].ahead_behind = Comparison::Unreadable;
+                }
+                super::apply_git_info(&mut app, project.path(), (checkout, repo));
+                let (buffer, widths) = super::render_tree_buffer(&mut app);
+                let (_, y) = find_text_cell(&buffer, "demo").expect("project row");
+                let mut header = Buffer::empty(Rect::new(0, 0, buffer.area.width, 1));
+                crate::tui::columns::header_line(&widths, "Name").render(header.area, &mut header);
+                for label in ["Og", "Mn"] {
+                    let (x, _) = find_text_cell(&header, label).expect("sync column header");
+                    assert_eq!(
+                        buffer[(x, y)].symbol(),
+                        GIT_STATUS_UNREADABLE,
+                        "{label} marks unreadable input"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn unreadable_inception_marks_an_otherwise_clean_project_row() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app(std::slice::from_ref(&project));
+            let (checkout, mut repo) = make_git_info(None);
+            repo.first_commit = FirstCommit::Probed(CommitDate::Unreadable);
+            super::apply_git_info(&mut app, project.path(), (checkout, repo));
+            let (buffer, _) = super::render_tree_buffer(&mut app);
+            let (_, y) = find_text_cell(&buffer, "demo").expect("project row");
+            assert!(find_text_cell_in_row(&buffer, y, GIT_STATUS_UNREADABLE).is_some());
+        }
+
+        #[test]
+        fn repository_without_workflows_keeps_no_workflow_when_head_is_unreadable() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app(std::slice::from_ref(&project));
+            let (mut checkout, mut repo) = make_git_info(None);
+            checkout.head = HeadState::Unreadable;
+            repo.workflows = WorkflowPresence::Missing;
+            super::apply_git_info(&mut app, project.path(), (checkout, repo));
+            let display = app.ci.package_display(
+                project.path(),
+                app.project_list.repo_info_for(project.path()),
+                app.project_list.git_info_for(project.path()),
+                None,
+                None,
+                false,
+            );
+            assert_eq!(display, crate::tui::state::CiDisplay::NoWorkflow);
+        }
+
+        #[test]
+        fn awaiting_repository_probe_does_not_label_checkout_local() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app(std::slice::from_ref(&project));
+            app.project_list.set_cursor(0);
+            app.sync_selected_project();
+            let (checkout, _) = make_git_info(None);
+            apply_bg_msg(
+                &mut app,
+                BackgroundMsg::CheckoutInfo {
+                    path: project.path().clone(),
+                    info: checkout,
+                },
+            );
+            let buffer = render_selected_git(&mut app, 8);
+            assert!(find_text_cell(&buffer, "local").is_none());
+            assert!(find_text_cell(&buffer, "feature").is_none());
+        }
+
+        fn render_selected_ci(app: &mut App) -> Buffer {
+            app.ensure_detail_cached();
+            let backend = TestBackend::new(120, 20);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            let selected_path = app
+                .selected_project_path_for_render()
+                .map(Path::to_path_buf);
+            let ci_status_lookup = app.ci.status_lookup();
+            let elapsed = app.animation_started.elapsed();
+            terminal
+                .draw(|frame| {
+                    let split = app.split_for_render(
+                        selected_path.as_deref(),
+                        elapsed,
+                        &ci_status_lookup,
+                        OverlayRenderInputs::none(),
+                        SyncedDescriptionHeight::default(),
+                    );
+                    let area = frame.area();
+                    let chrome = tui_pane::Renderable::render(
+                        split.registry.ci,
+                        frame,
+                        area,
+                        &split.pane_render_ctx,
+                    )
+                    .expect("CI frame");
+                    let pane_frame = tui_pane::PaneFrame::new(area).with_focus(chrome.focused);
+                    let mut grid = tui_pane::GridLines::new(area);
+                    grid.add_titled(pane_frame, chrome.title);
+                    grid.render(
+                        frame.buffer_mut(),
+                        tui_pane::default_pane_chrome(),
+                        PaneBorders::Separate,
+                    );
+                })
+                .expect("draw CI pane");
+            terminal.backend().buffer().clone()
+        }
+
+        fn probe_corrupt_remote_head_fixtures(
+            directory: &Path,
+        ) -> Vec<(&'static str, PathBuf, CheckoutInfo, RepoInfo)> {
+            let bare = directory.join("origin.git");
+            let git = |path: &Path, args: &[&str]| {
+                let output = Command::new(crate::test_support::git_binary())
+                    .current_dir(path)
+                    .args(args)
+                    .output()
+                    .expect("fixture git");
+                assert!(output.status.success(), "{args:?}: {output:?}");
+                String::from_utf8(output.stdout).expect("git output")
+            };
+            let probe = |name, url| {
+                let path = directory.join(name);
+                std::fs::create_dir(&path).expect("package directory");
+                std::fs::write(
+                    path.join("Cargo.toml"),
+                    "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+                )
+                .expect("manifest");
+                crate::test_support::init_git_repo_on_branch(&path, "main");
+                let sha = git(&path, &["rev-parse", "HEAD"]);
+                std::fs::create_dir_all(path.join(".git/refs/remotes/origin"))
+                    .expect("remote refs");
+                std::fs::write(path.join(".git/refs/remotes/origin/main"), sha)
+                    .expect("remote branch");
+                let config_path = path.join(".git/config");
+                let mut config = std::fs::read_to_string(&config_path).expect("fixture config");
+                write!(
+                    config,
+                    "\n[remote \"origin\"]\nurl = {url}\nfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\nremote = origin\nmerge = refs/heads/main\n"
+                ).expect("append remote configuration");
+                std::fs::write(config_path, config).expect("remote config");
+                std::fs::write(path.join(".git/refs/remotes/origin/HEAD"), "garbage\n")
+                    .expect("corrupt remote HEAD");
+                let repo = RepoInfo::get(&path).expect("repository probe");
+                let checkout =
+                    CheckoutInfo::get(&path, &repo.local_main_branch).expect("checkout probe");
+                (name, path, checkout, repo)
+            };
+            // The URL cases have separate repositories; their real Git probes
+            // can run together without duplicating the fixture's critical path.
+            std::thread::scope(|scope| {
+                let local = scope.spawn(|| probe("p14sync", bare.to_str().expect("origin path")));
+                let github = scope
+                    .spawn(|| probe("p14ci", "https://github.com/natepiano/p14ci-fixture.git"));
+                vec![
+                    local.join().expect("local remote fixture"),
+                    github.join().expect("GitHub remote fixture"),
+                ]
+            })
+        }
+
+        #[test]
+        fn corrupt_remote_head_renders_unreadable_branch_and_marks_project() {
+            let tmp = tempfile::tempdir().expect("fixture");
+            let fixtures = probe_corrupt_remote_head_fixtures(tmp.path());
+            for (name, path, checkout, repo) in fixtures {
+                let mut app = make_app(&[make_package("demo", &path)]);
+                app.project_list.select_project_in_tree(&path, false);
+                app.sync_selected_project();
+                super::apply_git_info(&mut app, &path, (checkout, repo));
+                for appearance in [Appearance::Dark, Appearance::Light] {
+                    let _theme = ActiveThemeOverride::set(appearance);
+                    let buffer = render_selected_git(&mut app, 16);
+                    let (_, y) =
+                        find_text_cell(&buffer, DetailField::Head.label()).expect("Branch row");
+                    let (x, _) = find_text_cell_in_row(&buffer, y, GIT_UNREADABLE_LABEL)
+                        .expect("failed branch lookup is drawn on Branch row");
+                    for column in
+                        x..x + u16::try_from(GIT_UNREADABLE_LABEL.len()).expect("label width")
+                    {
+                        assert_eq!(
+                            buffer[(column, y)].fg,
+                            tui_pane::error_color(),
+                            "{name}: {appearance:?}"
+                        );
+                    }
+                    let (tree, _) = super::render_tree_buffer(&mut app);
+                    assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
+                }
+            }
+        }
+
+        #[test]
+        fn selecting_an_unreadable_checkout_renders_unreadable_rows() {
+            let tmp = tempfile::tempdir().expect("fixture");
+            let path = tmp.path();
+            std::fs::write(
+                path.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("manifest");
+            crate::test_support::init_git_repo(path);
+            std::fs::write(path.join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
+            let mut app = make_app(&[make_package("demo", path)]);
+            app.project_list.select_project_in_tree(path, false);
+            app.sync_selected_project();
+            let repo = RepoInfo::get(path).expect("repository");
+            let checkout = CheckoutInfo::get(path, &repo.local_main_branch).expect("checkout");
+            super::apply_git_info(&mut app, path, (checkout, repo));
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let buffer = render_selected_git(&mut app, 12);
+                let data = app.panes.git.content().expect("Git pane content");
+                let fields = panes::git_fields_from_data(data);
+                let remotes = fields
+                    .iter()
+                    .position(|field| *field == DetailField::RemotesUnreadable)
+                    .expect("remotes row");
+                if let Some(last_fetched) = fields
+                    .iter()
+                    .position(|field| *field == DetailField::LastFetched)
+                {
+                    assert!(last_fetched < remotes);
+                }
+                for field in [
+                    DetailField::GitStatus,
+                    DetailField::VsLocal,
+                    DetailField::LastCommit,
+                    DetailField::RemotesUnreadable,
+                ] {
+                    let (_, y) = find_text_cell(&buffer, field.label()).expect("field label");
+                    let (x, _) = find_text_cell_in_row(&buffer, y, GIT_UNREADABLE_LABEL)
+                        .expect("unreadable value");
+                    assert_eq!(
+                        buffer[(x, y)].fg,
+                        tui_pane::error_color(),
+                        "{appearance:?}: {field:?}"
+                    );
+                }
+                assert!(find_text_cell(&buffer, GitStatus::Clean.label()).is_none());
+                let (tree, _) = super::render_tree_buffer(&mut app);
+                assert!(find_text_cell(&tree, GIT_STATUS_UNREADABLE).is_some());
+            }
+        }
+
+        #[test]
         fn selecting_worktree_with_missing_gitdir_renders_git_error() {
             let error_label = DetailField::WorktreeError.label();
             let error_value = DetailField::WorktreeError.git_value(&GitData::default());
-            let buffer_text = |buffer: &Buffer| {
-                let area = buffer.area;
-                (0..area.height)
-                    .map(|y| {
-                        (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>()
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
             let tmp = tempfile::tempdir().expect("create test directory");
             let primary_path = tmp.path().join("primary");
             let linked_path = tmp.path().join("linked");
@@ -6334,7 +6820,7 @@ mod tests {
             app.project_list
                 .select_project_in_tree(&primary_path, false);
             app.sync_selected_project();
-            assert!(!buffer_text(&render_selected_git(&mut app)).contains(&error_value));
+            assert!(find_text_cell(&render_selected_git(&mut app, 8), &error_value).is_none());
 
             app.project_list.select_project_in_tree(&linked_path, false);
             app.sync_selected_project();
@@ -6342,7 +6828,7 @@ mod tests {
                 app.project_list.selected_project_path(),
                 Some(linked_path.as_path())
             );
-            let info = CheckoutInfo::get(&linked_path, None)
+            let info = CheckoutInfo::get(&linked_path, &ResolvedBranch::NotFound)
                 .expect("the live checkout probe accepts the broken gitfile");
             apply_bg_msg(
                 &mut app,
@@ -6351,25 +6837,189 @@ mod tests {
                     info,
                 },
             );
-            let rendered = buffer_text(&render_selected_git(&mut app));
+            let buffer = render_selected_git(&mut app, 8);
             assert!(app.is_pane_tabbable(PaneId::Git));
             let data = app.panes.git.content().expect("selected Git pane content");
             assert!(
                 matches!(data.checkout, crate::tui::panes::GitCheckout::Broken),
                 "an unreadable gitdir supplies no HEAD row"
             );
+            let (_, error_y) = find_text_cell(&buffer, &error_value)
+                .expect("Git pane should render the broken worktree error");
+            let (_, label_y) = find_text_cell(&buffer, error_label)
+                .expect("Git pane should label the broken worktree error");
+            assert_eq!(error_y, label_y);
             assert!(
-                rendered
-                    .lines()
-                    .any(|line| line.contains(error_label) && line.contains(&error_value)),
-                "Git pane should render the broken worktree error: {rendered}"
-            );
-            assert!(
-                !rendered.contains(DetailField::Head.label()),
-                "a failed HEAD probe must not produce a Branch row: {rendered}"
+                find_text_cell(&buffer, DetailField::Head.label()).is_none(),
+                "a failed HEAD probe must not produce a Branch row",
             );
 
             assert_git_error_colors(&mut app, &error_value);
+        }
+
+        #[test]
+        fn vendored_name_fit_matches_rendered_label() {
+            let name = "vendored-package-with-long-name";
+            let package = super::make_package_with_vendored(
+                Some("app"),
+                "~/app",
+                vec![super::make_vendored(Some(name), "~/app/vendor/helper")],
+            );
+            let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            assert_name_fit_matches_frame(&mut app, &format!("{name} (v)"));
+        }
+
+        #[test]
+        fn flattened_worktree_member_name_fit_matches_rendered_prefix() {
+            let name = "member-with-long-name";
+            let workspace = Workspace {
+                path: AbsolutePath::from(Path::new("/ws")),
+                groups: vec![inline_group(vec![make_member(
+                    name,
+                    Path::new("/ws/member"),
+                )])],
+                ..Workspace::default()
+            };
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Workspace(workspace),
+                Vec::new(),
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            assert_name_fit_matches_frame(&mut app, name);
+        }
+
+        fn assert_name_fit_matches_frame(app: &mut App, label: &str) {
+            app.ensure_visible_rows_cached();
+            app.ensure_disk_cache();
+            app.ensure_fit_widths_cached();
+            app.ensure_detail_cached();
+            let mut terminal =
+                Terminal::new(TestBackend::new(160, 40)).expect("create project list terminal");
+            terminal
+                .draw(|frame| render::ui(frame, app))
+                .expect("render project list frame");
+            let buffer = terminal.backend().buffer();
+            let (column, _) =
+                find_text_cell(buffer, label).expect("project list row should render");
+            let drawn_width = usize::from(column) + crate::tui::columns::display_width(label) - 1;
+            assert_eq!(
+                app.project_list.cached_fit_widths.get(COL_NAME),
+                panes::name_width_with_gutter(drawn_width),
+                "fitted Name width must equal the drawn prefix and label plus its gutter"
+            );
+        }
+
+        #[test]
+        fn linked_package_worktree_name_fit_matches_rendered_prefix() {
+            let linked_name = "linked-package-with-long-name";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let primary = make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            let linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            let (buffer, widths) = super::render_tree_buffer(&mut app);
+            let (column, _) = find_text_cell(&buffer, linked_name)
+                .expect("linked package worktree should render");
+            let drawn_width = usize::from(column) + crate::tui::columns::display_width(linked_name);
+            assert_eq!(
+                widths.get(COL_NAME),
+                panes::name_width_with_gutter(drawn_width),
+                "fitted Name width must reserve the drawn prefix and label plus its gutter"
+            );
+        }
+
+        #[test]
+        fn delete_marked_root_and_member_draw_whole_disk_suffix_at_160_columns() {
+            for delete_member in [false, true] {
+                let tmp = tempfile::tempdir().expect("create deleted row fixture");
+                let root = tmp.path().join("root");
+                let member = root.join("member");
+                std::fs::create_dir_all(&member).expect("create workspace member directory");
+                let workspace = Workspace {
+                    path: AbsolutePath::from(root.clone()),
+                    groups: vec![inline_group(vec![make_member("member", &member)])],
+                    ..Workspace::default()
+                };
+                let items = [RootItem::Rust(RustProject::Workspace(workspace))];
+                let mut app = make_app(&items);
+                super::apply_items(&mut app, &items);
+                let deleted_path = if delete_member { &member } else { &root };
+                mark_deleted(&mut app, deleted_path);
+                app.project_list.expanded.insert(ExpandKey::Node(0));
+                app.ensure_visible_rows_cached();
+                app.ensure_disk_cache();
+                app.ensure_fit_widths_cached();
+                app.ensure_detail_cached();
+                let mut terminal =
+                    Terminal::new(TestBackend::new(160, 40)).expect("create project list terminal");
+                terminal
+                    .draw(|frame| render::ui(frame, &mut app))
+                    .expect("render deleted row frame");
+                let buffer = terminal.backend().buffer();
+                let label = if delete_member { "member" } else { "root" };
+                let (_, suffix_y) = find_text_cell(buffer, DISMISS_SUFFIX)
+                    .unwrap_or_else(|| panic!("{label}: delete-marked Disk suffix is clipped"));
+                assert!(
+                    find_text_cell_in_row(buffer, suffix_y, label).is_some(),
+                    "deleted row draws its whole suffix"
+                );
+            }
+        }
+
+        #[test]
+        fn broken_worktree_disk_suffix_is_drawn_whole_at_160_columns() {
+            let linked_name = "broken-linked";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let mut primary =
+                make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            primary.rust.project_info.disk_usage_bytes = Some(39_000_000_000);
+            let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
+            linked.rust.project_info.disk_usage_bytes = Some(304);
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                app.ensure_visible_rows_cached();
+                app.ensure_disk_cache();
+                app.ensure_fit_widths_cached();
+                app.ensure_detail_cached();
+                let mut terminal =
+                    Terminal::new(TestBackend::new(160, 40)).expect("create project list terminal");
+                terminal
+                    .draw(|frame| render::ui(frame, &mut app))
+                    .expect("render project list frame");
+                let buffer = terminal.backend().buffer();
+                let (_, name_y) = find_text_cell(buffer, linked_name)
+                    .expect("broken worktree name should render");
+                let disk = format!("304 B{BROKEN_WORKTREE_DISK_SUFFIX}");
+                let (_, disk_y) = find_text_cell(buffer, &disk)
+                    .expect("broken worktree disk suffix should render whole");
+                assert_eq!(name_y, disk_y, "{appearance:?}");
+                let (column, y) = find_text_cell(buffer, BROKEN_WORKTREE_DISK_SUFFIX)
+                    .expect("whole suffix should render");
+                for x in column
+                    ..column
+                        + u16::try_from(BROKEN_WORKTREE_DISK_SUFFIX.len())
+                            .expect("suffix fits buffer")
+                {
+                    let cell = &buffer[(x, y)];
+                    assert_eq!(cell.fg, tui_pane::on_error_color(), "{appearance:?}");
+                    assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}");
+                }
+            }
         }
 
         #[test]
@@ -6380,8 +7030,8 @@ mod tests {
             let linked_path = tmp.path().join(linked_name);
             let mut primary =
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
-            // A larger primary disk value leaves part of the linked suffix visible
-            // within the real column widths, while still clipping its tail.
+            // The fitted Disk width includes the linked row's whole suffix,
+            // even alongside a primary with a larger size value.
             primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
@@ -6393,24 +7043,58 @@ mod tests {
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
-                let area = buffer.area;
-                let (y, row, name_start) = (0..area.height)
-                    .find_map(|y| {
-                        let row = (0..area.width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>();
-                        row.find(linked_name).map(|start| (y, row, start))
-                    })
-                    .expect("broken worktree name should render");
-                let suffix_start = row
-                    .find(" [")
-                    .expect("at least one suffix cell should render");
-                for (start, text) in [(name_start, linked_name), (suffix_start, " [broken]")] {
-                    let column = row[..start].chars().count();
-                    let visible_len = text.len().min(row.len() - start);
-                    assert_eq!(&row[start..start + visible_len], &text[..visible_len]);
-                    for x in column..column + visible_len {
-                        let cell = &buffer[(u16::try_from(x).expect("ASCII text fits buffer"), y)];
+                for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
+                    let (column, y) =
+                        find_text_cell(&buffer, text).expect("whole broken row text should render");
+                    for x in
+                        column..column + u16::try_from(text.len()).expect("ASCII text fits buffer")
+                    {
+                        let cell = &buffer[(x, y)];
+                        assert_eq!(
+                            cell.fg,
+                            tui_pane::on_error_color(),
+                            "{appearance:?}: {text}"
+                        );
+                        assert_eq!(cell.bg, tui_pane::error_color(), "{appearance:?}: {text}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn broken_worktree_row_with_unreadable_status_draws_no_unreadable_icon() {
+            let linked_name = "broken-linked";
+            let tmp = tempfile::tempdir().expect("create worktree row directory");
+            let primary_path = tmp.path().join("primary");
+            let linked_path = tmp.path().join(linked_name);
+            let mut primary =
+                make_package_worktree("demo", &primary_path, false, Some(&primary_path));
+            // The fitted Disk width includes the linked row's whole suffix,
+            // even alongside a primary with a larger size value.
+            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
+            linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
+            let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+                RustProject::Package(primary),
+                vec![RustProject::Package(linked)],
+            ))]);
+            let (mut checkout, repo) = make_git_info(None);
+            checkout.status = GitStatus::Unreadable;
+            super::apply_git_info(&mut app, &linked_path, (checkout, repo));
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            for appearance in [Appearance::Dark, Appearance::Light] {
+                let _theme = ActiveThemeOverride::set(appearance);
+                let (buffer, _) = super::render_tree_buffer(&mut app);
+                let (_, row) = find_text_cell(&buffer, linked_name)
+                    .expect("broken worktree row should render");
+                assert!(find_text_cell_in_row(&buffer, row, GIT_STATUS_UNREADABLE).is_none());
+                for text in [linked_name, BROKEN_WORKTREE_DISK_SUFFIX] {
+                    let (column, y) =
+                        find_text_cell(&buffer, text).expect("whole broken row text should render");
+                    for x in
+                        column..column + u16::try_from(text.len()).expect("ASCII text fits buffer")
+                    {
+                        let cell = &buffer[(x, y)];
                         assert_eq!(
                             cell.fg,
                             tui_pane::on_error_color(),
@@ -7534,20 +8218,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, &mut app))
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
-            let area = buffer.area;
-
             // Find the tail row ("gamma") — the one-line selection while following.
-            let mut cursor_row = None;
-            for y in 0..area.height {
-                let row: String = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect();
-                if let Some(col) = row.find("gamma") {
-                    cursor_row = Some((u16::try_from(col).unwrap_or(0), y));
-                    break;
-                }
-            }
-            let (text_col, y) = cursor_row.expect("the tail row is rendered");
+            let (text_col, y) = find_text_cell(&buffer, "gamma").expect("the tail row is rendered");
 
             // A cell well past the 5-char text must carry the selection
             // background — the cursor row is a one-line selection, drawn in the
@@ -7577,19 +8249,8 @@ mod tests {
                 .draw(|frame| render::ui(frame, &mut app))
                 .expect("draw test frame");
             let buffer = terminal.backend().buffer().clone();
-            let area = buffer.area;
-
-            let mut info_cell = None;
-            for y in 0..area.height {
-                let row: String = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect();
-                if let Some(col) = row.find("INFO") {
-                    info_cell = Some((u16::try_from(col).unwrap_or(0), y));
-                    break;
-                }
-            }
-            let (col, y) = info_cell.expect("the colored log line is rendered");
+            let (col, y) =
+                find_text_cell(&buffer, "INFO").expect("the colored log line is rendered");
 
             // The 'I' of the green "INFO" must carry the selection-row background
             // (the cursor row is a one-line selection), not the bare default
@@ -7721,16 +8382,23 @@ mod tests {
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::Cargo;
+        use crate::project::CommitDate;
+        use crate::project::Comparison;
         use crate::project::ExampleGroup;
         use crate::project::FileStamp;
+        use crate::project::FirstCommit;
         use crate::project::ManifestFingerprint;
         use crate::project::PackageRecord;
+        use crate::project::PinnedCommit;
         use crate::project::ProjectInfo;
         use crate::project::ProjectType;
         use crate::project::PublishPolicy;
         use crate::project::PublishStatus;
+        use crate::project::RemoteList;
+        use crate::project::ResolvedBranch;
         use crate::project::Submodule;
         use crate::project::TargetRecord;
+        use crate::project::TrackedRef;
         use crate::project::WorkspaceMetadata;
         use crate::project::WorktreeHealth::Normal;
         use crate::tui::app::startup;
@@ -7745,7 +8413,7 @@ mod tests {
                 relative_path: name.to_string(),
                 url:           None,
                 branch:        None,
-                commit:        None,
+                commit:        PinnedCommit::Absent,
                 project_info:  ProjectInfo::default(),
                 git_repo:      None,
             }
@@ -7994,29 +8662,29 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Unborn,
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: None,
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Untracked,
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        None,
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  None,
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Untracked,
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    None,
-                        local_main_branch: None,
+                        default_branch:    ResolvedBranch::NotFound,
+                        local_main_branch: ResolvedBranch::NotFound,
                     },
                 ),
             );
@@ -8559,6 +9227,7 @@ mod tests {
         use crate::config::LintIndicator;
         use crate::constants::CI_PASSED;
         use crate::lint::LintRunPhase;
+        use crate::project::PinnedCommit;
         use crate::project::Submodule;
         use crate::tui::columns;
         use crate::tui::panes;
@@ -8586,7 +9255,7 @@ mod tests {
                 relative_path: "lib/linux_x64".to_string(),
                 url:           None,
                 branch:        None,
-                commit:        None,
+                commit:        PinnedCommit::Absent,
                 project_info:  crate::project::ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -10064,7 +10733,12 @@ mod tests {
         use crate::lint::LintRunPhase;
         use crate::lint::LintRunStatus;
         use crate::project::AbsolutePath;
+        use crate::project::AheadBehind;
+        use crate::project::CommitDate;
+        use crate::project::Comparison;
+        use crate::project::CratesIoRelease;
         use crate::project::FileStamp;
+        use crate::project::FirstCommit;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
         use crate::project::Package;
@@ -10076,8 +10750,11 @@ mod tests {
         use crate::project::PullRequestGoneReason;
         use crate::project::PullRequestInfo;
         use crate::project::PullRequestState;
+        use crate::project::RemoteList;
+        use crate::project::ResolvedBranch;
         use crate::project::RootItem;
         use crate::project::RustProject;
+        use crate::project::TrackedRef;
         use crate::project::WorkspaceMetadata;
         use crate::project::WorktreeGroup;
         use crate::project::WorktreeStatus;
@@ -10086,12 +10763,16 @@ mod tests {
         use crate::tui::app::ConfirmationModalState;
         use crate::tui::app::ConfirmationReadiness;
         use crate::tui::app::phase_state::Denominator;
+        use crate::tui::app::phase_state::FailureReason;
+        use crate::tui::app::phase_state::PhaseLifecycle;
         use crate::tui::app::target_index::CleanSelection;
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::LintsAction;
         use crate::tui::messages::CleanMsg;
         use crate::tui::panes;
+        use crate::tui::state::CiApplicability;
+        use crate::tui::state::CiDisplay;
         use crate::tui::state::StartupNetworkReadiness;
         fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
             test_pull_request_info_with_state(number, title, PullRequestState::Ready)
@@ -10623,29 +11304,31 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -10684,29 +11367,31 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("main".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -10753,29 +11438,31 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -10847,7 +11534,7 @@ mod tests {
             assert_eq!(expected.len(), 2);
             assert!(expected.contains(project_a.path().as_path()));
             assert!(expected.contains(project_b.path().as_path()));
-            assert!(app.startup.lint_phase.complete_at.is_none());
+            assert!(app.startup.lint_phase.complete_at().is_none());
 
             // The single off-thread history-load batch marks every project seen and
             // completes the row.
@@ -10858,7 +11545,7 @@ mod tests {
                 ],
             });
 
-            assert!(app.startup.lint_phase.complete_at.is_some());
+            assert!(app.startup.lint_phase.complete_at().is_some());
             app.prune_toasts();
         }
 
@@ -11359,9 +12046,11 @@ mod tests {
             )]);
             app.project_list.handle_crates_io_version_msg(
                 vendored_path.as_path(),
-                "0.4.0".to_string(),
-                None,
-                3_208,
+                CratesIoRelease {
+                    version:    "0.4.0".to_string(),
+                    prerelease: None,
+                    downloads:  3_208,
+                },
             );
 
             let vendored = app
@@ -11377,8 +12066,14 @@ mod tests {
                     .map(|s| s.entries.len()),
                 Some(1)
             );
-            assert_eq!(vendored.crates_version(), Some("0.4.0"));
-            assert_eq!(vendored.crates_downloads(), Some(3_208));
+            assert_eq!(
+                vendored.crates_io,
+                crate::project::CratesIoReleaseState::Released(crate::project::CratesIoRelease {
+                    version:    "0.4.0".to_string(),
+                    prerelease: None,
+                    downloads:  3_208,
+                })
+            );
         }
 
         #[test]
@@ -11388,9 +12083,11 @@ mod tests {
 
             app.project_list.handle_crates_io_version_msg(
                 path.as_path(),
-                "0.20.2".to_string(),
-                Some("0.21.0-rc.2".to_string()),
-                663,
+                CratesIoRelease {
+                    version:    "0.20.2".to_string(),
+                    prerelease: Some("0.21.0-rc.2".to_string()),
+                    downloads:  663,
+                },
             );
 
             // A filesystem-triggered refresh re-scans the project. The fresh item has
@@ -11407,9 +12104,14 @@ mod tests {
                 .project_list
                 .rust_info_at_path(path.as_path())
                 .expect("package should remain addressable after refresh");
-            assert_eq!(rust_info.crates_version(), Some("0.20.2"));
-            assert_eq!(rust_info.crates_prerelease(), Some("0.21.0-rc.2"));
-            assert_eq!(rust_info.crates_downloads(), Some(663));
+            assert_eq!(
+                rust_info.crates_io,
+                crate::project::CratesIoReleaseState::Released(crate::project::CratesIoRelease {
+                    version:    "0.20.2".to_string(),
+                    prerelease: Some("0.21.0-rc.2".to_string()),
+                    downloads:  663,
+                })
+            );
         }
 
         #[test]
@@ -11488,29 +12190,36 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        None,
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: Some((2, 0)),
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::Counted(
+                                crate::project::AheadBehind {
+                                    ahead:  2,
+                                    behind: 0,
+                                },
+                            ),
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 )
             };
@@ -11532,6 +12241,33 @@ mod tests {
             assert_eq!(app.project_list.git_sync(project.path()), "");
         }
 
+        fn repo_with_published_main() -> RepoInfo {
+            RepoInfo {
+                remotes:           RemoteList::Listed(vec![RemoteInfo {
+                    name:         "origin".to_string(),
+                    url:          Some("https://github.com/acme/demo".to_string()),
+                    owner:        None,
+                    repo:         Some("demo".to_string()),
+                    tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
+                    ahead_behind: crate::project::Comparison::Counted(
+                        crate::project::AheadBehind {
+                            ahead:  1,
+                            behind: 0,
+                        },
+                    ),
+                    kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
+                }]),
+                workflows:         WorkflowPresence::Present,
+                first_commit:      FirstCommit::AwaitingProbe,
+                last_fetched:      None,
+                default_branch:    ResolvedBranch::Named("main".to_string()),
+                local_main_branch: ResolvedBranch::Named("main".to_string()),
+            }
+        }
+
         #[test]
         fn background_git_info_updates_rendered_git_status() {
             let project = make_project(Some("demo"), "~/demo");
@@ -11542,25 +12278,7 @@ mod tests {
                 &mut app,
                 BackgroundMsg::RepoInfo {
                     path: project.path().to_path_buf().into(),
-                    info: RepoInfo {
-                        remotes:           vec![RemoteInfo {
-                            name:         "origin".to_string(),
-                            url:          Some("https://github.com/acme/demo".to_string()),
-                            owner:        None,
-                            repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: Some((1, 0)),
-                            kind:         RemoteKind::Clone,
-                            push:         crate::project::PushState::Enabled {
-                                push_url: String::new(),
-                            },
-                        }],
-                        workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
-                        last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
-                    },
+                    info: repo_with_published_main(),
                 },
             );
             apply_bg_msg(
@@ -11570,9 +12288,9 @@ mod tests {
                     info: CheckoutInfo {
                         status:              GitStatus::Modified,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                 },
@@ -11586,25 +12304,7 @@ mod tests {
                 &mut app,
                 BackgroundMsg::RepoInfo {
                     path: project.path().to_path_buf().into(),
-                    info: RepoInfo {
-                        remotes:           vec![RemoteInfo {
-                            name:         "origin".to_string(),
-                            url:          Some("https://github.com/acme/demo".to_string()),
-                            owner:        None,
-                            repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: Some((1, 0)),
-                            kind:         RemoteKind::Clone,
-                            push:         crate::project::PushState::Enabled {
-                                push_url: String::new(),
-                            },
-                        }],
-                        workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
-                        last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
-                    },
+                    info: repo_with_published_main(),
                 },
             );
             apply_bg_msg(
@@ -11614,9 +12314,9 @@ mod tests {
                     info: CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                 },
@@ -11639,29 +12339,32 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  Some((3, 0)),
-                        primary_tracked_ref: None,
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                            ahead:  3,
+                            behind: 0,
+                        }),
+                        primary_tracked_ref: TrackedRef::Untracked,
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          None,
                             owner:        None,
                             repo:         None,
-                            tracked_ref:  None,
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Untracked,
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    None,
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::NotFound,
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -11681,29 +12384,32 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feature/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  Some((2, 1)),
-                        primary_tracked_ref: None,
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                            ahead:  2,
+                            behind: 1,
+                        }),
+                        primary_tracked_ref: TrackedRef::Untracked,
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/natepiano/demo".to_string()),
                             owner:        Some("natepiano".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  None,
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Untracked,
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -11725,29 +12431,29 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("enh/various".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: None,
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Untracked,
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/natepiano/demo".to_string()),
                             owner:        Some("natepiano".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  None,
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Untracked,
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -11780,6 +12486,89 @@ mod tests {
         }
 
         #[test]
+        fn unreadable_upstream_or_default_branch_hides_parent_ci() {
+            let cases = [
+                (
+                    HeadState::Branch("feature-x".into()),
+                    TrackedRef::Unreadable,
+                    ResolvedBranch::Named("main".into()),
+                    CiApplicability::UnreadableEvidence,
+                ),
+                (
+                    HeadState::Branch("feature-x".into()),
+                    TrackedRef::Untracked,
+                    ResolvedBranch::Unreadable,
+                    CiApplicability::UnreadableEvidence,
+                ),
+                (
+                    HeadState::Unreadable,
+                    TrackedRef::Untracked,
+                    ResolvedBranch::Named("main".into()),
+                    CiApplicability::UnreadableEvidence,
+                ),
+                (
+                    HeadState::Detached {
+                        short_sha: "12345678".into(),
+                    },
+                    TrackedRef::Untracked,
+                    ResolvedBranch::Named("main".into()),
+                    CiApplicability::Applies,
+                ),
+            ];
+            for (head, upstream, default_branch, expected) in cases {
+                let project = make_project(Some("demo"), "~/demo");
+                let mut app = make_app(std::slice::from_ref(&project));
+                app.scan.state.phase = ScanPhase::Complete;
+                app.project_list.set_cursor(0);
+                app.sync_selected_project();
+                let (mut checkout, mut repo) =
+                    make_git_info(Some("https://github.com/natepiano/demo"));
+                checkout.head = head;
+                checkout.primary_tracked_ref = upstream;
+                repo.default_branch = default_branch;
+                apply_git_info(&mut app, project.path(), (checkout, repo));
+                set_loaded_ci(
+                    &mut app,
+                    project.path(),
+                    vec![CiRun {
+                        branch: "feature-x".into(),
+                        ..make_ci_run(57, CiStatus::Passed)
+                    }],
+                    false,
+                    1,
+                );
+                assert_eq!(app.project_list.ci_applicability(project.path()), expected);
+                let status = app
+                    .project_list
+                    .ci_status_using_lookup(project.path(), &app.ci.status_lookup());
+                app.ensure_detail_cached();
+                let display = app
+                    .panes
+                    .package
+                    .content()
+                    .expect("package content")
+                    .ci_display;
+                match expected {
+                    CiApplicability::UnreadableEvidence => {
+                        assert!(status.is_none());
+                        assert!(
+                            !app.project_list
+                                .ci_toggle_available_for_inner(project.path())
+                        );
+                        assert_eq!(display, CiDisplay::Unreadable);
+                    },
+                    CiApplicability::Applies => {
+                        assert!(status.is_some());
+                        assert!(matches!(display, CiDisplay::Runs { .. }));
+                    },
+                    CiApplicability::Unpublished => {
+                        panic!("fixture expects confirmed or unreadable evidence")
+                    },
+                }
+            }
+        }
+
+        #[test]
         fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() {
             let project = make_project(Some("demo"), "~/demo");
             let mut app = make_app(std::slice::from_ref(&project));
@@ -11794,29 +12583,29 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("enh/various".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: None,
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Untracked,
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/natepiano/demo".to_string()),
                             owner:        Some("natepiano".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  None,
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Untracked,
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -11854,29 +12643,39 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("feat/demo".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  Some((0, 0)),
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::Counted(AheadBehind {
+                            ahead:  0,
+                            behind: 0,
+                        }),
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        None,
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: Some((0, 0)),
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::Counted(
+                                crate::project::AheadBehind {
+                                    ahead:  0,
+                                    behind: 0,
+                                },
+                            ),
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -11895,7 +12694,7 @@ mod tests {
                 &mut app,
                 BackgroundMsg::GitFirstCommit {
                     path:         test_path("~/demo"),
-                    first_commit: Some("2026-03-12T21:18:54-04:00".to_string()),
+                    first_commit: CommitDate::At("2026-03-12T21:18:54-04:00".to_string()),
                 },
             );
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -11919,15 +12718,16 @@ mod tests {
             assert_eq!(
                 app.project_list
                     .repo_info_for(test_path("~/demo").as_path())
-                    .and_then(|repo| repo.first_commit.as_deref()),
-                Some("2026-03-12T21:18:54-04:00")
+                    .map(|repo| &repo.first_commit),
+                Some(&crate::project::FirstCommit::Probed(
+                    crate::project::CommitDate::At("2026-03-12T21:18:54-04:00".into())
+                ))
             );
             assert!(
-                app.panes
-                    .git
-                    .content()
-                    .and_then(|g| g.inception.as_ref())
-                    .is_some(),
+                app.panes.git.content().is_some_and(|g| matches!(
+                    g.inception,
+                    crate::project::FirstCommit::Probed(crate::project::CommitDate::At(_))
+                )),
                 "detail panel should show Incept once git info arrives"
             );
         }
@@ -11944,7 +12744,7 @@ mod tests {
                 app.panes
                     .git
                     .content()
-                    .and_then(|data| data.remotes.first())
+                    .and_then(|data| data.remotes.listed().first())
                     .and_then(|row| row.full_url.as_deref()),
                 None
             );
@@ -11960,7 +12760,7 @@ mod tests {
                 app.panes
                     .git
                     .content()
-                    .and_then(|data| data.remotes.first())
+                    .and_then(|data| data.remotes.listed().first())
                     .and_then(|row| row.full_url.as_deref()),
                 Some("https://github.com/natepiano/demo")
             );
@@ -12515,29 +13315,31 @@ mod tests {
                     CheckoutInfo {
                         status:              GitStatus::Clean,
                         head:                HeadState::Branch("main".to_string()),
-                        last_commit:         None,
-                        ahead_behind_local:  None,
-                        primary_tracked_ref: Some("origin/main".to_string()),
+                        last_commit:         CommitDate::NoCommits,
+                        ahead_behind_local:  Comparison::NotCompared,
+                        primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
                         bisect:              None,
                     },
                     RepoInfo {
-                        remotes:           vec![RemoteInfo {
+                        remotes:           RemoteList::Listed(vec![RemoteInfo {
                             name:         "origin".to_string(),
                             url:          Some("https://github.com/acme/demo".to_string()),
                             owner:        Some("acme".to_string()),
                             repo:         Some("demo".to_string()),
-                            tracked_ref:  Some("origin/main".to_string()),
-                            ahead_behind: None,
+                            tracked_ref:  crate::project::TrackedRef::Named(
+                                "origin/main".to_string(),
+                            ),
+                            ahead_behind: crate::project::Comparison::NotCompared,
                             kind:         RemoteKind::Clone,
                             push:         crate::project::PushState::Enabled {
                                 push_url: String::new(),
                             },
-                        }],
+                        }]),
                         workflows:         WorkflowPresence::Present,
-                        first_commit:      None,
+                        first_commit:      FirstCommit::AwaitingProbe,
                         last_fetched:      None,
-                        default_branch:    Some("main".to_string()),
-                        local_main_branch: Some("main".to_string()),
+                        default_branch:    ResolvedBranch::Named("main".to_string()),
+                        local_main_branch: ResolvedBranch::Named("main".to_string()),
                     },
                 ),
             );
@@ -12925,7 +13727,7 @@ mod tests {
                 "successful metadata was upserted into the store"
             );
             assert!(
-                app.startup.metadata.complete_at.is_some(),
+                app.startup.metadata.complete_at().is_some(),
                 "with only one expected root, the phase completes on arrival"
             );
         }
@@ -13383,13 +14185,13 @@ mod tests {
             app.maybe_complete_startup_repo(now, scan_started);
 
             assert!(
-                app.startup.disk.complete_at.is_some()
-                    && app.startup.git.complete_at.is_some()
-                    && app.startup.repo.complete_at.is_some(),
+                app.startup.disk.complete_at().is_some()
+                    && app.startup.git.complete_at().is_some()
+                    && app.startup.repo.complete_at().is_some(),
                 "disk/git/repo phases are now complete"
             );
             assert!(
-                app.startup.metadata.complete_at.is_none(),
+                app.startup.metadata.complete_at().is_none(),
                 "metadata still pending"
             );
             app.maybe_complete_startup_ready(now, scan_started);
@@ -13414,7 +14216,7 @@ mod tests {
             });
 
             assert!(
-                app.startup.metadata.complete_at.is_some(),
+                app.startup.metadata.complete_at().is_some(),
                 "metadata phase completes after the arrival"
             );
             // Every phase has resolved, but the panel holds each row visible until
@@ -13604,7 +14406,7 @@ mod tests {
             app.startup.lint_phase.expected = Denominator::Stable(HashSet::new());
             app.startup.details_declared.expected =
                 Denominator::Stable(HashSet::from([detail_path.clone()]));
-            app.startup.details_declared.complete_at = None;
+            app.startup.details_declared.lifecycle.reopen();
             app.maybe_log_startup_phase_completions();
             app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
 
@@ -13638,7 +14440,7 @@ mod tests {
             app.maybe_complete_startup_git(now, scan_started);
             app.maybe_complete_startup_repo(now, scan_started);
             assert!(
-                app.startup.repo.complete_at.is_some(),
+                app.startup.repo.complete_at().is_some(),
                 "GitHub row completes when git is terminal and no repos are queued"
             );
 
@@ -13646,7 +14448,7 @@ mod tests {
             let repo = crate::ci::OwnerRepo::new("natepiano", "cargo-port");
             app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
             assert!(
-                app.startup.repo.complete_at.is_none(),
+                app.startup.repo.complete_at().is_none(),
                 "a late repo fetch reopens the completed GitHub row"
             );
             assert!(
@@ -13661,7 +14463,7 @@ mod tests {
             // Completing it marks it seen and re-completes the row.
             app.handle_bg_msg(BackgroundMsg::RepoFetchComplete { repo: repo.clone() });
             assert!(
-                app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at.is_some(),
+                app.startup.repo.seen.contains(&repo) && app.startup.repo.complete_at().is_some(),
                 "completing the late fetch marks it seen and re-completes the row"
             );
         }
@@ -13685,7 +14487,7 @@ mod tests {
             app.startup.repo.seen.insert(repo.clone());
             app.maybe_complete_startup_repo(now, scan_started);
             assert!(
-                app.startup.repo.complete_at.is_some(),
+                app.startup.repo.complete_at().is_some(),
                 "the seeded repo row starts complete"
             );
 
@@ -13695,7 +14497,7 @@ mod tests {
                 "a queued re-fetch un-marks the repo"
             );
             assert!(
-                app.startup.repo.complete_at.is_none(),
+                app.startup.repo.complete_at().is_none(),
                 "a queued re-fetch reopens the completed GitHub row"
             );
         }
@@ -13720,7 +14522,7 @@ mod tests {
                 name: "serde".to_string(),
             });
             assert!(
-                app.startup.crates_io.complete_at.is_some(),
+                app.startup.crates_io.complete_at().is_some(),
                 "row completes once the seeded fetch reports"
             );
 
@@ -13733,7 +14535,7 @@ mod tests {
                 "a queued re-fetch un-marks the name"
             );
             assert!(
-                app.startup.crates_io.complete_at.is_none(),
+                app.startup.crates_io.complete_at().is_none(),
                 "a queued re-fetch reopens the completed row"
             );
 
@@ -13758,7 +14560,7 @@ mod tests {
                 name: "tokio".to_string(),
             });
             assert!(
-                app.startup.crates_io.complete_at.is_some(),
+                app.startup.crates_io.complete_at().is_some(),
                 "completing the late fetches re-completes the row"
             );
         }
@@ -13917,7 +14719,7 @@ mod tests {
             // marks git terminal, so the row never completes first; clear the row's
             // init-time completion to model that ordering.
             app.net.github.repo_fetch_in_flight_mut().insert(repo);
-            app.startup.repo.complete_at = None;
+            app.startup.repo.lifecycle.reopen();
             app.maybe_log_startup_phase_completions();
 
             app.maybe_complete_startup_ready(now + STARTUP_ROW_MIN_VISIBLE * 2, scan_started);
@@ -14095,6 +14897,60 @@ mod tests {
                     .network_toasts()
                     .is_some_and(|toasts| toasts.github.is_some()),
                 "a steady-state repo fetch creates the standalone GitHub toast"
+            );
+        }
+
+        #[test]
+        fn late_crates_io_work_completes_timed_out_phase_after_startup_closes() {
+            let mut app = make_app(&[]);
+            app.scan.state.phase = ScanPhase::Complete;
+            app.initialize_startup_phase_tracker();
+            app.handle_bg_msg(BackgroundMsg::CratesIoFetchQueued {
+                name: "serde".into(),
+            });
+            let scan_started = app.startup.scan_complete_at.expect("scan complete at");
+            let late = std::time::Instant::now()
+                + crate::tui::constants::STARTUP_ROW_TIMEOUT
+                + std::time::Duration::from_secs(1);
+            assert!(
+                app.startup
+                    .crates_io
+                    .time_out(late, crate::tui::constants::STARTUP_ROW_TIMEOUT)
+                    .is_some()
+            );
+            assert!(app.startup.crates_io.is_failed());
+            app.maybe_complete_startup_ready(late, scan_started);
+            assert!(!app.startup.is_collecting());
+
+            app.handle_bg_msg(BackgroundMsg::CratesIoFetchComplete {
+                name: "serde".into(),
+            });
+            assert!(matches!(
+                app.startup.crates_io.lifecycle,
+                PhaseLifecycle::Completed { .. }
+            ));
+            assert!(
+                !app.startup.is_collecting(),
+                "late work must not reopen startup"
+            );
+        }
+
+        #[test]
+        fn late_repo_work_does_not_erase_fetch_failure() {
+            let mut app = make_app(&[]);
+            app.scan.state.phase = ScanPhase::Complete;
+            app.initialize_startup_phase_tracker();
+            let repo = crate::ci::OwnerRepo::new("acme", "example");
+            app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+            app.startup.repo.lifecycle.fail(FailureReason::FetchError);
+            // A retry queued while startup owns the row must not clear the failure.
+            app.handle_bg_msg(BackgroundMsg::RepoFetchQueued { repo: repo.clone() });
+            app.handle_bg_msg(BackgroundMsg::RepoFetchComplete { repo });
+            assert_eq!(
+                app.startup.repo.lifecycle,
+                PhaseLifecycle::Failed {
+                    reason: FailureReason::FetchError,
+                }
             );
         }
 
@@ -14449,7 +15305,6 @@ mod tests {
     mod worktrees {
         use std::collections::BTreeMap;
         use std::collections::HashMap;
-        use std::time::Duration;
 
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
@@ -14857,7 +15712,7 @@ mod tests {
             assert_eq!(pending.abs_path, linked_path.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("hana".to_string())
+                panes::CargoPackageInvocation::Named("hana".to_string())
             );
             assert!(pending.build_mode.is_release());
         }
@@ -14913,7 +15768,7 @@ mod tests {
             assert_eq!(pending.abs_path, workspace_root.display().to_string());
             assert_eq!(
                 pending.cargo_package_invocation,
-                panes::CargoPackageInvocation::Package("wasm_node_demo".to_string())
+                panes::CargoPackageInvocation::Named("wasm_node_demo".to_string())
             );
         }
 
@@ -15721,48 +16576,67 @@ mod tests {
 
         #[test]
         fn handle_project_discovered_does_not_allocate_per_comparison() {
-            const DISCOVERY_PROJECTS: usize = 200;
-            const MAX_DISCOVERY_ELAPSED: Duration = std::time::Duration::from_millis(500);
+            const VISIBLE_PROJECTS: usize = 8;
+
+            fn allocations_for_discovery(app: &mut App, project_count: usize) -> usize {
+                app.project_list = ProjectList::default();
+                for index in 0..project_count {
+                    let path = format!("/abs/project_{index:04}");
+                    let mut package = make_package_raw(None, &path, None);
+                    // Keep the visible-row buffer the same size in both fixtures.
+                    // Dismissed roots still participate in insertion comparisons.
+                    if index >= VISIBLE_PROJECTS {
+                        package.visibility = Dismissed;
+                    }
+                    app.project_list
+                        .push(RootItem::Rust(RustProject::Package(package)));
+                }
+                let path = format!("/abs/project_{project_count:04}");
+                let newcomer =
+                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
+                // The new leaf sorts last, so insertion compares it with every root.
+                let (inserted, allocations) =
+                    test_support::count_allocations(|| app.handle_project_discovered(newcomer));
+                assert!(inserted);
+                assert_eq!(app.project_list.len(), project_count + 1);
+                assert_eq!(app.project_list[project_count].path(), &test_path(&path));
+                allocations
+            }
 
             let mut app = make_app(&[]);
-            let start = std::time::Instant::now();
-            for i in 0..DISCOVERY_PROJECTS {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.handle_project_discovered(item);
-            }
-            let elapsed = start.elapsed();
-            assert_eq!(app.project_list.len(), DISCOVERY_PROJECTS);
-            assert!(
-                elapsed < MAX_DISCOVERY_ELAPSED,
-                "discovery of {DISCOVERY_PROJECTS} projects took {elapsed:?}; expected less than {MAX_DISCOVERY_ELAPSED:?}"
+            let small = allocations_for_discovery(&mut app, VISIBLE_PROJECTS);
+            let large = allocations_for_discovery(&mut app, 200);
+            assert_eq!(
+                large, small,
+                "discovery allocations must not grow with comparisons"
             );
         }
 
         #[test]
         fn is_deleted_does_not_allocate_display_paths() {
-            let mut app = make_app(&[]);
-            for i in 0..200 {
-                let path = format!("/abs/project_{i}");
-                let item =
-                    RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-                app.project_list.push(item);
+            let mut project_list = ProjectList::default();
+            for index in 0..200 {
+                let path = format!("/abs/project_{index}");
+                project_list.push(RootItem::Rust(RustProject::Package(make_package_raw(
+                    None, &path, None,
+                ))));
             }
-            let target = app.project_list[100].path().to_path_buf();
-            app.project_list
+            let target = project_list[199].path().to_path_buf();
+            let visible = project_list[0].path().to_path_buf();
+            let missing = Path::new("/abs/missing_project");
+            project_list
                 .at_path_mut(&target)
                 .expect("target project should exist")
                 .visibility = Deleted;
-            let start = std::time::Instant::now();
-            for _ in 0..1000 {
-                let _ = app.project_list.is_deleted(&target);
-            }
-            let elapsed = start.elapsed();
-            assert!(
-                elapsed.as_millis() < 100,
-                "1000 is_deleted calls took {elapsed:?} -- possible display_path allocation regression"
-            );
+            let (deleted, allocations) = test_support::count_allocations(|| {
+                (
+                    project_list.is_deleted(&target),
+                    project_list.is_deleted(&visible),
+                    project_list.is_deleted(missing),
+                )
+            });
+            assert_eq!(deleted, (true, false, false));
+            assert_eq!(allocations, 0, "deletion lookups must borrow paths");
         }
     }
 
@@ -16175,7 +17049,7 @@ mod tests {
         let cargo_toml = dir.join("Cargo.toml");
         let parsed = project::from_cargo_toml(&cargo_toml)
             .unwrap_or_else(|_| panic!("parse test Cargo.toml"));
-        scan::cargo_project_to_item(parsed)
+        scan::cargo_parse_result_to_item(parsed)
     }
 
     fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
@@ -16213,29 +17087,29 @@ mod tests {
         let checkout = CheckoutInfo {
             status:              GitStatus::Clean,
             head:                HeadState::Branch("main".to_string()),
-            last_commit:         None,
-            ahead_behind_local:  None,
-            primary_tracked_ref: Some("origin/main".to_string()),
+            last_commit:         CommitDate::NoCommits,
+            ahead_behind_local:  Comparison::NotCompared,
+            primary_tracked_ref: TrackedRef::Named("origin/main".to_string()),
             bisect:              None,
         };
         let repo = RepoInfo {
-            remotes:           vec![RemoteInfo {
+            remotes:           RemoteList::Listed(vec![RemoteInfo {
                 name:         "origin".to_string(),
                 url:          url.map(String::from),
                 owner:        Some("natepiano".to_string()),
                 repo:         None,
-                tracked_ref:  Some("origin/main".to_string()),
-                ahead_behind: None,
+                tracked_ref:  crate::project::TrackedRef::Named("origin/main".to_string()),
+                ahead_behind: crate::project::Comparison::NotCompared,
                 kind:         RemoteKind::Clone,
                 push:         crate::project::PushState::Enabled {
                     push_url: String::new(),
                 },
-            }],
+            }]),
             workflows:         WorkflowPresence::Present,
-            first_commit:      None,
+            first_commit:      FirstCommit::AwaitingProbe,
             last_fetched:      None,
-            default_branch:    Some("main".to_string()),
-            local_main_branch: Some("main".to_string()),
+            default_branch:    ResolvedBranch::Named("main".to_string()),
+            local_main_branch: ResolvedBranch::Named("main".to_string()),
         };
         (checkout, repo)
     }
@@ -16622,7 +17496,7 @@ mod tests {
         assert_eq!(group.linked[0].path(), linked_dir.as_path());
     }
 
-    fn create_refresh_worktree(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
+    fn write_linked_worktree_layout(primary: &Path, linked: &Path, kind: WorktreeProjectKind) {
         kind.write_manifest(linked);
         let gitdir = primary.join(".git/worktrees").join(
             linked
@@ -16645,13 +17519,13 @@ mod tests {
         let linked_two_dir = tmp.path().join(kind.linked_name());
         kind.write_manifest(&primary_dir);
         std::fs::create_dir(primary_dir.join(".git")).expect("create primary git directory");
-        create_refresh_worktree(&primary_dir, &linked_one_dir, kind);
+        write_linked_worktree_layout(&primary_dir, &linked_one_dir, kind);
 
         let primary_item = WorktreeProjectKind::root_item(&primary_dir);
         let linked_one_item = WorktreeProjectKind::root_item(&linked_one_dir);
         let mut app = make_app(&[primary_item, linked_one_item]);
 
-        create_refresh_worktree(&primary_dir, &linked_two_dir, kind);
+        write_linked_worktree_layout(&primary_dir, &linked_two_dir, kind);
         let stale_discovery = match kind {
             WorktreeProjectKind::Package => RootItem::Rust(RustProject::Package(make_package_raw(
                 Some(kind.primary_name()),

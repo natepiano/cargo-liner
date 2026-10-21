@@ -5,12 +5,10 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::path::Path;
 use std::process::Output;
 use std::str::FromStr;
 
 use super::ordering;
-use crate::git;
 use crate::git::GitCommandOutputAvailability;
 use crate::git::GitError;
 use crate::git::INCURSION_ATTRIBUTION_RECORD_MARKER;
@@ -188,16 +186,6 @@ impl From<GitError> for DriftFingerprintError {
             error => Self::GitOperation(error),
         }
     }
-}
-
-pub(super) fn run_git(
-    repository_root: &Path,
-    arguments: &[&str],
-) -> Result<Output, DriftFingerprintError> {
-    completed_git_output(
-        git::execute_read_only_git(repository_root, arguments),
-        arguments,
-    )
 }
 
 pub(super) fn completed_git_output(

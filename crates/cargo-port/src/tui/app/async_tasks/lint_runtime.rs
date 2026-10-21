@@ -196,7 +196,8 @@ impl App {
             );
             return;
         };
-        // Skip workspace members — the workspace root's watcher covers them.
+        // Skip paths inside another `RootItem::Rust(RustProject::Workspace(_))`, because the
+        // workspace root's watcher already covers its members.
         let mut is_member = false;
         self.project_list.for_each_leaf(|existing| {
             if matches!(
@@ -268,8 +269,8 @@ impl App {
             let Some(runs) = self.project_list.lint_at_path(request.abs_path.as_path()) else {
                 continue;
             };
-            // `from_lint_status` is `None` for a live `Running`/`Stale` status:
-            // never re-trigger a project that is already linting.
+            // `CachedLintStatus::from_lint_status` returns `None` for `LintStatus::Running` or
+            // `Stale`; skip those states so projects already linting are not triggered again.
             let Some(cached) = CachedLintStatus::from_lint_status(runs.status()) else {
                 continue;
             };

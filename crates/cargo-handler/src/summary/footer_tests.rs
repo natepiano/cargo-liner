@@ -11,10 +11,12 @@ use super::*;
 use crate::census::Account;
 use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
+use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::accounts::AccountsTable;
 use crate::footer_colors::FooterColors;
+use crate::sort::AccountsSort;
 
 /// Fixed census time for deterministic age labels.
 const NOW: u64 = 1_000_000;
@@ -23,7 +25,7 @@ const HOUR: u64 = 3_600;
 /// Seconds in a minute.
 const MINUTE: u64 = 60;
 
-/// A listed process with no hierarchy, account, or retained work.
+/// A listed process with real work and no recorded account.
 fn row(
     pid: u32,
     agent: Agent,
@@ -33,6 +35,7 @@ fn row(
     directory: &str,
 ) -> AgentRow {
     AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
         agent,
         service_tier: ServiceTier::Unrecorded,
@@ -46,13 +49,20 @@ fn row(
         directory: directory.to_string(),
         branch: None,
         launched_by: None,
-        children: Vec::new(),
+        children: vec![
+            serde_json::from_value(serde_json::json!({
+                "depth":0,"kind":"shell","pid":pid + 10_000_000,
+                "name":"fixture command","started":NOW - age
+            }))
+            .expect("summary owner work"),
+        ],
     }
 }
 
 /// A Claude session with a stable identity for hierarchy placement.
 fn session(pid: u32, id: &str) -> AgentRow {
     AgentRow {
+        role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Claude(id.to_string()),
         ..row(pid, Agent::Claude, id, None, HOUR, "~")
     }
@@ -100,6 +110,7 @@ fn rendered_with_colors(
             account_column,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         ),
         u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
             .expect("fixture height"),
@@ -109,6 +120,7 @@ fn rendered_with_colors(
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts_sort: AccountsSort::SourceOrder,
             accounts: &AccountsTable::NotConfigured,
             machines: &machines,
             placement: &placement,
@@ -150,6 +162,7 @@ fn machine_headings_count_top_level_agents_instead_of_all_sessions() {
             .collect();
         if roots > 0 {
             rows.push(AgentRow {
+                role_fallback: RoleFallback::None,
                 launched_by: Some(10),
                 ..session(20, "nested-session")
             });
@@ -165,10 +178,12 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
     let state = MachineState::Answered(
         vec![
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 account: account("claude1"),
                 ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
             },
             AgentRow {
+                role_fallback: crate::census::RoleFallback::None,
                 account: account("codex1"),
                 service_tier: ServiceTier::Fast,
                 ..row(20, Agent::Codex, "worker", None, MINUTE, "~")
@@ -216,6 +231,7 @@ fn summary_account_labels_take_footer_colors_but_tiers_keep_the_program_color() 
 fn summary_accounts_without_a_footer_entry_keep_the_program_style() {
     let state = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             account: account("claude1"),
             ..row(10, Agent::Claude, "manager", Some("busy"), HOUR, "~")
         }],

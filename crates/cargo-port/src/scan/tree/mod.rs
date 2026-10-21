@@ -29,7 +29,7 @@ mod workspace;
 mod worktrees;
 
 pub(crate) use build::build_tree;
-pub(crate) use build::cargo_project_to_item;
+pub(crate) use build::cargo_parse_result_to_item;
 use dependencies::package_path_dependencies;
 use dependencies::workspace_path_dependencies;
 use vendored::extract_vendored_new;

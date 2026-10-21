@@ -82,7 +82,7 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
+pub(super) fn ci_status_style(ci_status: Option<CiStatus>) -> Style {
     match ci_status {
         Some(CiStatus::Passed) => Style::default().fg(success_color()),
         Some(CiStatus::Failed) => Style::default().fg(error_color()),
@@ -117,7 +117,7 @@ fn sync_description_floor(
             .content()
             .and_then(|d| d.description.as_deref()),
         tiled.area(PaneId::Git),
-        EmptyDescriptionBehavior::RenderEmpty,
+        EmptyDescriptionBehavior::RenderNothing,
     );
     panes::sync_floor(&[&pkg_block, &git_block])
 }
@@ -155,10 +155,9 @@ fn render_tiled_panes(
         layout,
         &split.pane_render_ctx,
         tui_pane::default_pane_chrome(),
-        // Cargo Port's panes are four separate things to look at rather
-        // than one grid, so each closes its own box and the focused one
-        // lights its border. cargo-tile shares its border cells and takes
-        // `Shared` instead.
+        // Cargo Port's panes are separate visual units, so `PaneBorders::Separate`
+        // closes each box and highlights its focused border independently.
+        // cargo-tile uses `PaneBorders::Shared` for shared border cells.
         PaneBorders::Separate,
     );
 }
@@ -169,7 +168,7 @@ fn resolve_tiled_layout(
     left_width: u16,
     bottom_row: panes::BottomRow,
 ) -> ResolvedPaneLayout<PaneId> {
-    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
+    let core_count = app.panes.cpu.core_count();
     let (package_width, git_width) = panes::top_pane_widths(top_area, left_width);
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
@@ -192,20 +191,18 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     sync_hovered_pane_row(app);
     app.panes.tiled_layout = ResolvedPaneLayout::default();
     app.panes.project_list.body_rect = Rect::ZERO;
-    // The bottom row shows either the diagnostics panes (Lints + CiRuns)
-    // or Output, never both. The layout omits the hidden set entirely, so
-    // those panes never re-render and their content area would otherwise
-    // stay at last frame's rect. Reset all three here so a hidden pane
-    // reports no hittable area and a click can't land on a stale rect.
+    // `OutputPaneVisibility` selects diagnostics or Output, never both. Reset
+    // `app.lint.viewport`, `app.ci.viewport` and `app.panes.output.viewport` content
+    // areas to `Rect::ZERO` because hidden panes do not render and must not retain
+    // clickable rectangles from the last frame.
     app.lint.viewport.set_content_area(Rect::ZERO);
     app.ci.viewport.set_content_area(Rect::ZERO);
     app.panes.output.viewport.set_content_area(Rect::ZERO);
     app.prune_toasts();
 
-    // Paint the backdrop when the active theme's appearance disagrees with
-    // the terminal background (e.g. a forced dark theme on a light
-    // terminal); otherwise leave the terminal showing through so
-    // transparency is preserved. Panes draw on top of this fill.
+    // `app.themes.frame_background()` supplies a background only when active-theme
+    // appearance differs from the terminal (such as forced dark on light). Render
+    // its `Block` before panes, leaving terminal transparency otherwise.
     if let Some(color) = app.themes.frame_background() {
         frame.render_widget(
             Block::default().style(Style::default().bg(color)),
@@ -218,9 +215,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    // The fitted columns plus two columns of chrome: its own left border and
-    // one column of right gutter. The right border is the neighbouring pane's
-    // left one -- shared in the grid pass -- so this column never pays for it.
+    // `left_width` combines `cached_fit_widths.total_width()` with `BLOCK_BORDER_WIDTH`
+    // for the project column's left border and right gutter. The neighboring pane
+    // supplies the right border in the grid pass, so it is not charged again.
     let left_width =
         u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH)
             .unwrap_or(u16::MAX);
@@ -231,14 +228,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     };
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 
-    // Keep focus off the bottom-row pane this layout hides before
-    // stamping focus snapshots, so the status bar reflects the visible
-    // pane.
+    // Call `app.reconcile_bottom_row_focus()` before `sync_pane_focus` so the
+    // status bar reflects a visible bottom-row pane.
     app.reconcile_bottom_row_focus();
 
-    // Stamp every renderable pane's focus snapshot before splitting
-    // App so each pane can read its own focus state from `&mut self`
-    // inside the trait-dispatched render loop.
+    // `sync_pane_focus` records each pane's focus before `App::split_for_render`,
+    // allowing the trait-dispatched render loop to read focus from each pane's `&mut self`.
     sync_pane_focus(app);
 
     // Build the CI lookup snapshot now, while we still hold `&app.ci`;
@@ -246,8 +241,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // would alias an `&Ci` ref carried in the ctx.
     let ci_status_lookup = app.ci.status_lookup();
 
-    // `selected_project_path` needs both `&Selection` and `&Scan`;
-    // resolve and own it before the split releases those borrows.
+    // `selected_project_path_for_render` reads project selection and scan state;
+    // own `selected_path` before `split_for_render` needs mutable access to those owners.
     let selected_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
@@ -329,12 +324,10 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join(TARGET_DIR)));
             let mut lines = vec![project::home_relative_path(target.as_path())];
 
-            // Report affected siblings (step 6d): projects that share
-            // this target dir but are not the selection. The
-            // TargetDirIndex is populated incrementally from
-            // handle_cargo_metadata_msg, so early in startup it may
-            // be empty — then these lists stay empty and the dialog
-            // reverts to the Step 2 single-line layout.
+            // `app.scan.target_dir_index.siblings` finds projects sharing this target
+            // directory outside the current selection. `handle_cargo_metadata_msg`
+            // populates the index incrementally, so early startup can yield no affected
+            // siblings; then the clean dialog retains only its resolved-target body line.
             let selection = [project_path.clone()];
             append_sibling_lines(app, &target, &selection, &mut lines);
 
@@ -342,9 +335,9 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
         },
         ConfirmAction::CleanGroup { primary, linked } => {
             let mut lines = vec!["Checkouts:".to_string()];
-            // Render every checkout the fan-out will hit, capped so
-            // large groups don't overflow the popup. Collapse the tail
-            // behind `+N more` using the same cap as sibling lines.
+            // Render `all_paths` up to `AFFECTED_EXTRAS_VISIBLE_CAP` so a group clean
+            // cannot overflow the popup; collapse remaining checkouts into `+N more`
+            // using the same cap as sibling lines.
             let all_paths: Vec<&AbsolutePath> = std::iter::once(primary).chain(linked).collect();
             for path in all_paths.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
                 lines.push(format!("  {}", project::home_relative_path(path.as_path())));
@@ -354,9 +347,9 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 lines.push(format!("  +{extra} more"));
             }
 
-            // Union of all siblings across every resolved target dir —
-            // a group clean can affect sibling projects outside the
-            // selection just like a single-project clean can.
+            // `seen_targets` deduplicates resolved target directories before
+            // `append_sibling_lines` unions their siblings: `ConfirmAction::CleanGroup`
+            // can affect projects outside `selection`, just like a single clean.
             let selection: Vec<AbsolutePath> = all_paths.iter().copied().cloned().collect();
             let mut seen_targets: HashSet<AbsolutePath> = std::collections::HashSet::new();
             for path in &all_paths {
@@ -433,7 +426,7 @@ fn render_confirm_popup(
     };
     let prompt_width = prompt_text.len();
     let body_max = body.iter().map(String::len).max().unwrap_or(0);
-    // leading " " + trailing " " around the widest body line.
+    // `body_width` adds one leading and one trailing space around the widest `body` line.
     let body_width = if body_max == 0 { 0 } else { body_max + 2 };
     let width = u16::try_from(prompt_width.max(body_width) + 4).unwrap_or(u16::MAX);
     let body_height = u16::try_from(body.len()).unwrap_or(u16::MAX);
@@ -478,7 +471,8 @@ fn render_confirm_popup(
 /// [`tui_pane::KeymapPane::render_overlay`] path. Inputs are built
 /// while `&App` is still available, then `&mut keymap_pane` draws.
 fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
-    // Overlay focus is always `Active` while the popup is open.
+    // `app.framework.keymap_pane.focus` uses `PaneFocusState::Active` whenever the Keymap popup is
+    // open.
     app.framework.keymap_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
@@ -551,7 +545,8 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         synced_description_height: panes::SyncedDescriptionHeight::default(),
         output_presentation: split.output_presentation,
     };
-    // Finder body sizes the popup itself; area arg is unused.
+    // `split.finder_pane` computes its popup size in `Renderable::render`,
+    // so the passed `frame.area()` is unused.
     Renderable::render(split.finder_pane, frame, frame.area(), &pane_render_context);
 }
 
@@ -765,8 +760,9 @@ mod tests {
 
     #[test]
     fn middle_row_expands_to_fit_all_cpu_rows_when_height_allows() {
-        // A short cross-project top row leaves the middle row taller than the
-        // CPU floor, so every CPU row fits and the Targets pane shows more.
+        // `panes::resolve_layout` with top-row inner height 4 gives `PaneId::Cpu`
+        // more than `panes::cpu_required_pane_height(12)`, fitting every CPU row and
+        // leaving more height for Targets.
         let layout =
             panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
 

@@ -240,10 +240,6 @@ pub(super) fn remove(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::error::Error;
     use std::fs;
@@ -624,9 +620,9 @@ mod tests {
                 Journal::replay_read_only_from_checkpoint(&self.journal_path, checkpoint)?,
                 whole
             );
-            let repaired = self
-                .journal
-                .replay_repairing_tail_from_checkpoint(checkpoint)?;
+            let mut repaired =
+                Journal::replay_read_only_from_checkpoint(&self.journal_path, checkpoint)?;
+            self.journal.advance_repairing_tail(&mut repaired)?;
             assert_eq!(repaired, whole);
             assert_eq!(repaired, self.journal.replay_repairing_tail()?);
             assert_eq!(

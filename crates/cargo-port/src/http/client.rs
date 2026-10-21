@@ -90,7 +90,7 @@ impl HttpClient {
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
     pub(crate) fn new(handle: Handle) -> Option<Self> {
-        let client = build_client().ok()?;
+        let client = build_client(ProxyPolicy::System).ok()?;
         let github_auth = GithubAuth::classify(Command::new("gh").args(["auth", "token"]).output());
         Some(Self {
             client,
@@ -105,7 +105,7 @@ impl HttpClient {
 
     #[cfg(test)]
     pub(crate) fn new_without_github_auth_for_test(handle: Handle) -> Option<Self> {
-        let client = build_client().ok()?;
+        let client = build_client(ProxyPolicy::Disabled).ok()?;
         Some(Self {
             client,
             github_auth: GithubAuth::Unauthenticated,
@@ -375,9 +375,9 @@ impl HttpClient {
     async fn probe_github_rate_limit_async(&self) -> bool {
         let (github_rate_limit, _signal) = self.fetch_rate_limit_async().await;
         if self.github_rate_limit_forced() {
-            // Forced mode: display keeps updating via /rate_limit above,
-            // but never report recovery — the error toast must persist
-            // for testing.
+            // `fetch_rate_limit_async` keeps the quota display current, but
+            // `github_rate_limit_forced()` prevents reporting recovery so
+            // the error toast persists for testing.
             return false;
         }
         match github_rate_limit {
@@ -407,11 +407,22 @@ impl HttpClient {
     }
 }
 
-fn build_client() -> Result<Client, Error> {
-    reqwest::Client::builder()
-        .timeout(GH_TIMEOUT)
-        .user_agent(APP_NAME)
-        .build()
+/// Whether this client discovers system proxies or connects directly.
+#[derive(Clone, Copy)]
+enum ProxyPolicy {
+    System,
+    #[cfg(test)]
+    Disabled,
+}
+
+fn build_client(proxy_policy: ProxyPolicy) -> Result<Client, Error> {
+    let builder = Client::builder().timeout(GH_TIMEOUT).user_agent(APP_NAME);
+    let builder = match proxy_policy {
+        ProxyPolicy::System => builder,
+        #[cfg(test)]
+        ProxyPolicy::Disabled => builder.no_proxy(),
+    };
+    builder.build()
 }
 
 #[cfg(test)]
@@ -571,7 +582,8 @@ mod tests {
 
     fn test_client(handle: &Handle) -> HttpClient {
         HttpClient {
-            client:                  build_client().expect("build http client"),
+            client:                  build_client(ProxyPolicy::Disabled)
+                .expect("build http client"),
             github_auth:             GithubAuth::Unauthenticated,
             github_viewer_login:     Arc::new(Mutex::new(None)),
             rate_limit:              Arc::new(Mutex::new(GitHubRateLimit::default())),
@@ -606,13 +618,14 @@ mod tests {
         assert!(reset_at >= before + SYNTHETIC_RATE_LIMIT_SECS);
         assert!(reset_at <= after + SYNTHETIC_RATE_LIMIT_SECS);
 
-        // `graphql` stays real so the live-refresh path is still
-        // observable during debug.
+        // `github_rate_limit.graphql` retains `real_graphql` so quota
+        // refresh remains observable while forced rate limiting is on.
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
 
         client.set_force_github_rate_limit(false);
         let github_rate_limit = client.rate_limit();
-        // Real core was never populated, so clearing force leaves it
+        // Only the GraphQL bucket was set with `update_rate_limit_bucket`,
+        // so disabling `force_github_rate_limit` leaves `github_rate_limit.core`
         // at `None`.
         assert!(github_rate_limit.core.is_none());
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
@@ -649,6 +662,44 @@ mod tests {
     }
 
     #[test]
+    fn disabled_proxy_policy_ignores_proxy_environment() {
+        const CHILD_MARKER: &str = "CARGO_PORT_PROXY_POLICY_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            client_sends_app_user_agent_header();
+            return;
+        }
+        // Only the child sees these settings; parallel tests keep their environment.
+        let mut child = Command::new(std::env::current_exe().expect("test executable"));
+        child
+            .args([
+                "--exact",
+                "http::client::tests::disabled_proxy_policy_ignores_proxy_environment",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1");
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            child.env(key, "http://127.0.0.1:9");
+        }
+        for key in ["NO_PROXY", "no_proxy"] {
+            child.env(key, "");
+        }
+        let output = child.output().expect("run isolated proxy fixture");
+        assert!(
+            output.status.success(),
+            "direct request failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn client_sends_app_user_agent_header() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("read listener address");
@@ -663,7 +714,7 @@ mod tests {
         });
 
         let runtime = test_support::test_runtime();
-        let client = build_client().expect("build http client");
+        let client = build_client(ProxyPolicy::Disabled).expect("build http client");
         let url = format!("http://{addr}/");
         let response = runtime
             .block_on(async { client.get(url).send().await })

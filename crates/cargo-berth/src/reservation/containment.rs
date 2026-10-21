@@ -18,7 +18,7 @@ use super::record::Reservation;
 use super::retention::RetainedReservationSet;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
-use crate::git;
+use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
@@ -68,9 +68,10 @@ impl ActingHeadContainment {
     /// Select the current checkout's recorded target, or its automatic branch target.
     pub(crate) fn observe_for_actor(
         reservations: &RetainedReservationSet,
-        context: &WorktreeContext,
+        repository: &RepositorySnapshot,
         authorization: ResolvedEditAuthorization,
     ) -> Self {
+        let context = repository.context();
         let acting_worktree = authorization.worktree_id;
         let Ok(Enrollment::Enrolled(config)) = BerthConfig::read(&context.configuration_lookup())
         else {
@@ -111,7 +112,7 @@ impl ActingHeadContainment {
         };
         Self::observe(
             reservations,
-            context,
+            repository,
             acting_worktree,
             &target,
             &repository_trunk,
@@ -132,7 +133,7 @@ impl ActingHeadContainment {
     /// and any failed read leaves that holder's complete protection in force.
     pub(crate) fn observe(
         reservations: &RetainedReservationSet,
-        context: &WorktreeContext,
+        repository: &RepositorySnapshot,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
         repository_trunk: &IntegrationTarget,
@@ -162,7 +163,7 @@ impl ActingHeadContainment {
                 holder_heads,
             };
         }
-        let Ok(acting_head) = git::head_object_id(context.repository_root()) else {
+        let Ok(acting_head) = repository.head_object_id() else {
             return Self {
                 acting_worktree,
                 target: ContainmentTarget::Known {
@@ -174,17 +175,19 @@ impl ActingHeadContainment {
         };
         Self::observe_at_head(
             reservations,
-            context,
+            repository,
+            repository.context(),
             acting_worktree,
             acting_target,
             repository_trunk,
-            &acting_head,
+            acting_head,
         )
     }
 
     /// Reuse a caller's resolved HEAD when observing foreign committed protection.
     pub(crate) fn observe_at_head(
         reservations: &RetainedReservationSet,
+        repository: &RepositorySnapshot,
         context: &WorktreeContext,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
@@ -230,21 +233,26 @@ impl ActingHeadContainment {
             if holder_heads.iter().any(|observed| observed.head == *head) {
                 continue;
             }
-            let committed_paths =
-                match git::unmerged_branch_paths(context.repository_root(), acting_head, head) {
-                    Ok(paths) => paths.into_iter().collect(),
-                    Err(_) => continue,
-                };
+            let committed_paths = match repository.unmerged_branch_paths(
+                context.repository_root(),
+                acting_head,
+                head,
+            ) {
+                Ok((paths, _)) => paths.into_iter().collect(),
+                Err(_) => continue,
+            };
             let outside_target = match effective_target.as_ref() {
                 Some((target, tip))
                     if keys.iter().any(|(candidate_head, holder_target)| {
                         *candidate_head == head && *holder_target != target
                     }) =>
                 {
-                    git::unmerged_branch_paths(context.repository_root(), tip, head).map_or_else(
-                        |_| CrossTargetRemainder::Unavailable,
-                        |paths| CrossTargetRemainder::Paths(paths.into_iter().collect()),
-                    )
+                    repository
+                        .unmerged_branch_paths(context.repository_root(), tip, head)
+                        .map_or_else(
+                            |_| CrossTargetRemainder::Unavailable,
+                            |(paths, _)| CrossTargetRemainder::Paths(paths.into_iter().collect()),
+                        )
                 },
                 Some(_) | None => CrossTargetRemainder::NotApplicable,
             };

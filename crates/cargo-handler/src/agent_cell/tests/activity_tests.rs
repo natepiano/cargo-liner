@@ -11,6 +11,7 @@ use ratatui::buffer::Cell;
 use super::*;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::RoleFallback;
 use crate::census::RunLocation;
 use crate::census::VerifyStep;
 use crate::census::worker_dispatch::WorkerTask;
@@ -31,6 +32,7 @@ fn activity_forest() -> MachineState {
         (50, "waiting-root", AgentActivity::Active(Activity::Waiting)),
     ]
     .map(|(pid, name, activity)| AgentRow {
+        role_fallback: RoleFallback::None,
         activity,
         children: vec![ChildRow {
             activity: AgentActivity::Active(Activity::Verify {
@@ -45,7 +47,12 @@ fn activity_forest() -> MachineState {
 }
 
 fn activity_pool(sort: TreeSort) -> Buffer {
-    let state = activity_forest();
+    let mut state = activity_forest();
+    if let MachineState::Answered(rows, _) = &mut state {
+        for row in rows {
+            row.children.clear();
+        }
+    }
     let machines = [Machine {
         name:  "fixture",
         state: &state,
@@ -89,7 +96,6 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         ("reader-root", "reading"),
         ("gate-root", "clippy"),
         ("waiting-root", "waiting"),
-        ("nested-20", "nextest (mac)"),
     ] {
         let y = find(&buffer, name).expect("row").1;
         let text: String = (status_x..status_x + u16::try_from(word.len()).expect("short word"))
@@ -109,9 +115,26 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         status_at(&buffer, "waiting-root").fg,
         Role::Idle.style().fg.expect("idle color")
     );
+    let state = activity_forest();
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = cell_order_placed(&placement);
+    let owner = cells
+        .iter()
+        .find(|entry| entry.row.pid == 20)
+        .expect("writer owns work");
+    let nested = drawn_into(owner, &cells, 240, 12);
+    assert!(
+        lines(&nested)
+            .iter()
+            .any(|line| line.contains("nextest (mac)"))
+    );
     assert_eq!(
         status_at(&buffer, "gate-root").fg,
-        status_at(&buffer, "nested-20").fg,
+        status_at(&nested, "nested-20").fg,
         "verify steps share an accent"
     );
     assert_ne!(
@@ -145,9 +168,22 @@ fn activity_pool_status_sort_uses_drawn_words_and_keeps_workers_under_their_root
             (40, "gate-root"),
             (50, "waiting-root"),
         ] {
+            let state = activity_forest();
+            let machines = [Machine {
+                name:  "fixture",
+                state: &state,
+            }];
+            let placement = AgentPlacement::from_machines(&machines);
+            let cells = cell_order_placed(&placement);
+            let owner = cells
+                .iter()
+                .find(|entry| entry.row.name == root)
+                .expect("worker owner");
+            let nested = drawn_into(owner, &cells, 240, 12);
+            assert!(lines(&nested)[0].contains(&format!("pid {pid}")));
             assert_eq!(
-                find(&buffer, &format!("nested-{pid}")).expect("worker").1,
-                find(&buffer, root).expect("root").1 + 1
+                find(&nested, &format!("nested-{pid}")).expect("worker").1,
+                find(&nested, TREE_STATUS_HEADER).expect("tree header").1 + 1
             );
         }
     }
@@ -160,6 +196,7 @@ fn activity_tree_account_cells_hide_standard_tier_and_show_only_fast() {
             .expect("account");
     let state = MachineState::Answered(
         vec![AgentRow {
+            role_fallback: crate::census::RoleFallback::None,
             children: vec![
                 ChildRow {
                     account: account.clone(),
@@ -229,14 +266,16 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         vec![root, writer, reader],
         HierarchyEdges(vec![
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "reader-id".into(),
-                role:    HierarchyRole::Test,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "reader-id".into(),
+                role:     HierarchyRole::Test,
             },
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  "writer-id".into(),
-                role:    HierarchyRole::Impl,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   "writer-id".into(),
+                role:     HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -299,14 +338,16 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         vec![root],
         HierarchyEdges(vec![
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  task_id.into(),
-                role:    HierarchyRole::Fix,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   task_id.into(),
+                role:     HierarchyRole::Fix,
             },
             HierarchyEdge {
-                manager: "root-id".into(),
-                member:  unreadable_id.into(),
-                role:    HierarchyRole::Test,
+                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+                manager:  "root-id".into(),
+                member:   unreadable_id.into(),
+                role:     HierarchyRole::Test,
             },
         ])
         .into(),

@@ -15,6 +15,7 @@ use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
@@ -22,6 +23,14 @@ use cargo_berth_test_support::json;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// Committed berth policy and an empty ledger, copied with fresh checkout owners.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
+};
 
 /// How this file drives git: no optional locks, clearing what its fixtures set for themselves.
 const GIT: GitDriver = GitDriver {
@@ -35,7 +44,6 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::fs;
 use std::fs::File;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -276,12 +284,10 @@ fn assert_drift_revalidates_marker_after_observation(marker_repository: &TempDir
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
     let release_output_path = wrapper_directory.path().join("release.json");
     let release_trigger_path = wrapper_directory.path().join("release-triggered");
-    fs::write(&wrapper_path, MARKER_RELEASE_GIT_WRAPPER).expect("marker wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("marker wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("marker wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        MARKER_RELEASE_GIT_WRAPPER,
+    );
     let real_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(wrapper_directory.path().to_path_buf())
@@ -1018,12 +1024,10 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
 
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
-    fs::write(&wrapper_path, COLLISION_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        COLLISION_GIT_WRAPPER,
+    );
     let real_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf()).chain(std::env::split_paths(&real_path)),
@@ -3731,20 +3735,20 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"],
-        "a status observation accompanies the batched phase history and drift status; HEAD is trunk, so no branch merge query starts"
+        vec!["diff-tree", "status"],
+        "reconciliation and drift share one status observation; HEAD is trunk, so no branch merge query starts"
     );
     assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
-    assert_eq!(cheap.fingerprint_commands(), vec!["status", "status"]);
+    assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
     let mut cheap_commands = cheap.commands();
     cheap_commands.sort_unstable();
     assert_eq!(
         cheap_commands,
-        vec!["cat-file", "status", "status", "worktree"],
+        vec!["cat-file", "status", "worktree"],
         "the cheap PostToolUse engine path must reuse its discovered ledger and administrative directory",
     );
 
@@ -3753,7 +3757,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(missing_cache.output.status.success());
     assert_eq!(
         missing_cache.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"]
+        vec!["diff-tree", "status"]
     );
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
@@ -3767,7 +3771,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(corrupt_cache.output.status.success());
     assert_eq!(
         corrupt_cache.fingerprint_commands(),
-        vec!["diff-tree", "status", "status"]
+        vec!["diff-tree", "status"]
     );
     assert_batched_full_attribution_commands(&corrupt_cache.commands());
 }
@@ -3901,8 +3905,11 @@ fn unmanaged_post_commit_is_preserved_while_the_trunk_gate_stays_active() {
     let repository = scratch_repository();
     fs::create_dir_all(repository.path().join(".git/hooks")).expect("hooks directory should exist");
     let unmanaged = "#!/bin/sh\nprintf 'unmanaged\\n'\n";
-    fs::write(repository.path().join(POST_COMMIT_HOOK_PATH), unmanaged)
-        .expect("unmanaged hook should write");
+    let hook_path = repository.path().join(POST_COMMIT_HOOK_PATH);
+    if hook_path.exists() {
+        fs::remove_file(&hook_path).expect("shared post-commit hook should detach");
+    }
+    fs::write(&hook_path, unmanaged).expect("unmanaged hook should write");
     let initialized = run_berth(repository.path(), &["init", "--json"]);
     assert!(initialized.status.success());
     let initialized_envelope = json_output(&initialized);
@@ -4693,12 +4700,10 @@ fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, TRACING_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        TRACING_GIT_WRAPPER,
+    );
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = std::env::join_paths(
         std::iter::once(directory.path().to_path_buf())
@@ -4768,19 +4773,21 @@ fn dirty_source(repository_root: &Path, path: &str) {
     fs::write(target, "uncommitted holder work\n").expect("held path should write");
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = scratch_repository();
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(repository_root: &Path) {
+    build_scratch_repository(repository_root);
     assert!(
-        run_berth(repository.path(), &["init", "--json"])
+        run_berth(repository_root, &["init", "--json"])
             .status
             .success()
     );
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+    git(repository_root, &["add", "--force", CONFIGURATION_PATH]);
+    // This unreserved trunk commit has no hook effect; gate.rs proves that contract.
+    GIT.run_without_hooks(
+        repository_root,
+        ["commit", "--quiet", "-m", "configure berth"],
     );
-    repository
 }
 
 /// Initialize berth while leaving its repository configuration as an untracked path.
@@ -4809,19 +4816,23 @@ fn repository_with_uncommitted_berth_configuration() -> TempDir {
 
 fn scratch_repository() -> TempDir {
     let repository = tempdir().expect("temporary repository should exist");
+    build_scratch_repository(repository.path());
+    repository
+}
+
+fn build_scratch_repository(repository_root: &Path) {
     git(
-        repository.path(),
+        repository_root,
         &["init", "--quiet", "--initial-branch", "main"],
     );
     git(
-        repository.path(),
+        repository_root,
         &["config", "user.email", "test@example.invalid"],
     );
-    git(repository.path(), &["config", "user.name", "Berth Test"]);
-    fs::write(repository.path().join("README.md"), "scratch\n").expect("base file should write");
-    git(repository.path(), &["add", "README.md"]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    repository
+    git(repository_root, &["config", "user.name", "Berth Test"]);
+    fs::write(repository_root.join("README.md"), "scratch\n").expect("base file should write");
+    git(repository_root, &["add", "README.md"]);
+    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
 }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {

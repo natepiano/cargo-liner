@@ -8,7 +8,7 @@ pub enum CargoPackageInvocation {
     #[default]
     WorkspaceDefault,
     /// Run the named package within a workspace.
-    Package(String),
+    Named(String),
 }
 
 /// A launch request waiting for the one Cargo Port-owned run slot.

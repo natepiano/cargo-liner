@@ -15,8 +15,9 @@ use crate::lint::LintStatusKind;
 /// crosses into `tui_pane` types.
 pub(in crate::tui) const fn icon_for(kind: LintStatusKind) -> Icon {
     match kind {
-        // Both phases spin the same glyph; only the spinner's color separates a
-        // blocked run from a progressing one.
+        // `LintStatusKind::Running` uses `Icon::Animated(ACTIVITY_SPINNER)` for both
+        // `crate::lint::LintRunPhase` values; spinner color distinguishes blocked from executing
+        // runs.
         LintStatusKind::Running(_) => Icon::Animated(ACTIVITY_SPINNER),
         LintStatusKind::Passed => Icon::Static(LINT_PASSED),
         LintStatusKind::Failed => Icon::Static(LINT_FAILED),

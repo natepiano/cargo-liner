@@ -7,17 +7,19 @@ mod non_rust;
 mod paths;
 mod root_item;
 
-// ── Cargo parsing ────────────────────────────────────────────────────
-// ── Rust info ────────────────────────────────────────────────────────
+// `cargo` re-exports Cargo parsing results and Rust project model types.
 pub(crate) use cargo::Cargo;
 pub(crate) use cargo::CargoParseResult;
+pub(crate) use cargo::CratesIoRelease;
+pub(crate) use cargo::CratesIoReleaseState;
 pub(crate) use cargo::ExampleGroup;
-// ── Cargo metadata cache ─────────────────────────────────────────────
+// `FileStamp`, `ManifestFingerprint` and `ManifestTargets` describe metadata cache
+// inputs and targets.
 pub(crate) use cargo::FileStamp;
 pub(crate) use cargo::ManifestFingerprint;
 pub(crate) use cargo::ManifestTargets;
 pub(crate) use cargo::MemberGroup;
-// ── Project types ────────────────────────────────────────────────────
+// `Package`, `RustProject`, `Workspace` and related cargo types represent project-list nodes.
 pub(crate) use cargo::Package;
 pub(crate) use cargo::PackageRecord;
 pub(crate) use cargo::ProjectType;
@@ -38,22 +40,31 @@ pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
 pub(crate) use entry::entry_contains;
 pub(crate) use fields::ProjectFields;
-// ── Git types and functions ──────────────────────────────────────────
+pub(crate) use git::AheadBehind;
+// `git` re-exports repository, checkout and discovery APIs used by project consumers.
 pub(crate) use git::BisectProgress;
 pub(crate) use git::CheckoutInfo;
+pub(crate) use git::CommitDate;
+pub(crate) use git::Comparison;
+pub(crate) use git::FirstCommit;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
 pub(crate) use git::HeadState;
 pub(crate) use git::LocalGitState;
+pub(crate) use git::PinnedCommit;
 pub(crate) use git::PushDisabledReason;
 pub(crate) use git::PushState;
 #[cfg(test)]
 pub(crate) use git::RemoteInfo;
 pub(crate) use git::RemoteKind;
+pub(crate) use git::RemoteList;
 pub(crate) use git::RepoInfo;
-// ── Submodule types ─────────────────────────────────────────────────
+pub(crate) use git::ResolvedBranch;
+// `Submodule` and the following `git` exports describe nested repositories and
+// checkout identity.
 pub(crate) use git::Submodule;
+pub(crate) use git::TrackedRef;
 #[cfg(test)]
 pub(crate) use git::WorkflowPresence;
 pub(crate) use git::WorktreeGroup;
@@ -65,7 +76,7 @@ pub(crate) use git::resolve_common_git_dir;
 pub(crate) use git::resolve_git_dir;
 pub(crate) use git::worktree_ahead_behind_primary;
 pub(crate) use info::CiPagination;
-// ── Info types ───────────────────────────────────────────────────────
+// `info` re-exports shared project enrichment and display state types.
 pub(crate) use info::GitHubInfo;
 pub(crate) use info::LangEntry;
 pub(crate) use info::LanguageStats;
@@ -84,7 +95,7 @@ pub(crate) use info::TestCounts;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;
 pub(crate) use non_rust::NonRustProject;
-// ── Path types ───────────────────────────────────────────────────────
+// `paths` re-exports path wrappers and path-rendering helpers.
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;

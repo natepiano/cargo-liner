@@ -73,10 +73,6 @@ impl CpuMonitor {
     #[must_use]
     pub const fn receiver(&self) -> &Receiver<CpuUsage> { &self.samples }
 
-    /// Zero-filled [`CpuUsage`] sized to the current core count.
-    #[must_use]
-    pub fn placeholder_cpu_usage(&self) -> CpuUsage { CpuUsage::placeholder(self.core_count) }
-
     /// Drain the channel, returning the most recent sample if any
     /// arrived since the last call. Never blocks.
     #[must_use]

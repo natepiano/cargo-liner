@@ -59,10 +59,9 @@ const AFTER_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
-const GIT_HEAD_REVISION: &str = "HEAD";
 const GIT_LOOKUP_COMMAND: &str = "command -v git";
 const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
-const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
+const GIT_CAT_FILE_COMMAND: &str = "cat-file";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds on this claim";
@@ -105,6 +104,14 @@ impl PausedBerthProcess {
         fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
         let ready_path = wrapper_directory.path().join("ready");
         let continue_path = wrapper_directory.path().join("continue");
+        let fifo = Command::new("mkfifo")
+            .arg(&continue_path)
+            .output()
+            .expect("continuation FIFO command should run");
+        assert!(
+            fifo.status.success(),
+            "continuation FIFO should be created: {fifo:?}"
+        );
         let original_path = std::env::var_os("PATH").expect("test PATH should exist");
         let wrapped_path = std::env::join_paths(
             std::iter::once(wrapper_directory.path().to_path_buf())
@@ -3011,11 +3018,15 @@ where
 fn paused_git_wrapper() -> String {
     format!(
         r#"#!/bin/sh
-if [ "$1" = "{GIT_NO_OPTIONAL_LOCKS_ARG}" ] && [ "$2" = "{GIT_REV_PARSE_COMMAND}" ] && [ "$3" = "{GIT_HEAD_REVISION}" ]; then
-    : > "$CARGO_BERTH_TEST_GIT_READY"
-    while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
-        sleep 0.01
-    done
+if [ "$1" = "{GIT_NO_OPTIONAL_LOCKS_ARG}" ] && [ "$2" = "{GIT_CAT_FILE_COMMAND}" ] && [ "$3" = "--batch-check=%(objectname) %(objecttype)" ]; then
+    while IFS= read -r expression; do
+        if [ "$expression" = "HEAD" ] && [ ! -e "$CARGO_BERTH_TEST_GIT_READY" ]; then
+            : > "$CARGO_BERTH_TEST_GIT_READY"
+            IFS= read -r continuation < "$CARGO_BERTH_TEST_GIT_CONTINUE"
+        fi
+        printf '%s\n' "$expression"
+    done | "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    exit $?
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#

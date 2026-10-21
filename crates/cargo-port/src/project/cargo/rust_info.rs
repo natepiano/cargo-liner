@@ -7,6 +7,7 @@ use std::path::Path;
 
 use cargo_metadata::TargetKind;
 
+use super::crates_io_release::CratesIoReleaseState;
 use super::metadata_store::PackageRecord;
 use super::metadata_store::PublishPolicy;
 use super::parse::ExampleGroup;
@@ -19,36 +20,17 @@ use crate::project::info::ProjectInfo;
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone, Default)]
 pub(crate) struct RustInfo {
-    pub project_info:      ProjectInfo,
-    pub cargo:             Cargo,
-    pub vendored:          Vec<VendoredPackage>,
-    pub lint_runs:         LintRuns,
-    pub crates_version:    Option<String>,
-    pub crates_prerelease: Option<String>,
-    pub crates_downloads:  Option<u64>,
+    pub project_info: ProjectInfo,
+    pub cargo:        Cargo,
+    pub vendored:     Vec<VendoredPackage>,
+    pub lint_runs:    LintRuns,
+    pub crates_io:    CratesIoReleaseState,
 }
 
 impl RustInfo {
     pub(crate) fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
 
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
-
-    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
-
-    pub(crate) fn crates_prerelease(&self) -> Option<&str> { self.crates_prerelease.as_deref() }
-
-    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
-
-    pub(crate) fn set_crates_io(
-        &mut self,
-        version: String,
-        prerelease: Option<String>,
-        downloads: u64,
-    ) {
-        self.crates_version = Some(version);
-        self.crates_prerelease = prerelease;
-        self.crates_downloads = Some(downloads);
-    }
 }
 
 impl Deref for RustInfo {
@@ -181,8 +163,8 @@ impl From<&PackageRecord> for Cargo {
                 ExampleGroup { category, names }
             })
             .collect();
-        // Root-level category first, then alphabetical — matches the
-        // ordering `collect_examples` produced before the retirement.
+        // `examples.sort_by` puts the empty `ExampleGroup::category` first, then
+        // sorts categories alphabetically, preserving the pre-retirement ordering.
         examples.sort_by(|a, b| {
             let a_root = a.category.is_empty();
             let b_root = b.category.is_empty();

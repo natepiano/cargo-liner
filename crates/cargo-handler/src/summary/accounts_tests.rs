@@ -20,8 +20,10 @@ use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::footer_colors::FooterTint;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
+use crate::sort::AccountsSort;
 use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
@@ -65,7 +67,7 @@ fn agents() -> Vec<AgentRow> {
         .map(|(pid, name, started)| {
             serde_json::from_value(serde_json::json!({
                 "agent":"claude","name":name,"started":started,"pid":pid,
-                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[]
+                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
             }))
             .expect("agent fixture")
         })
@@ -88,6 +90,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
     let placement = AgentPlacement::from_machines(&machines);
     let cells = agent_cell::cell_order_placed(&placement);
     let frame = SummaryFrame {
+        accounts_sort:  AccountsSort::SourceOrder,
         machines:       &machines,
         placement:      &placement,
         cells:          &cells,
@@ -107,6 +110,7 @@ fn drawn_with_colors(table: &AccountsTable, colors: &FooterColors) -> Buffer {
             frame.account_column,
             frame.sort,
             frame.accounts,
+            AccountsSort::SourceOrder,
         ),
         u16::try_from(height(&machines, &placement, table)).expect("small summary"),
     );
@@ -273,8 +277,20 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
     let stale_y = at(&buffer, "codex1").1;
     let stale_line = &text(&buffer)[usize::from(stale_y - buffer.area.y)];
     assert!(stale_line.contains("2h"), "{stale_line}");
+    let spare_x = at(&buffer, "spare").0;
+    let spare_end = spare_x + cell_width("spare");
+    let subdued = FooterTint::Plain.subdued_style(Style::default().fg(text_default()));
     for x in buffer.area.x..buffer.area.right() {
         if x >= at(&buffer, "role").0 && !buffer[(x, stale_y)].symbol().trim().is_empty() {
+            if (spare_x..spare_end).contains(&x) {
+                assert_eq!(
+                    Some(buffer[(x, stale_y)].fg),
+                    subdued.fg,
+                    "stale plain role at {x}"
+                );
+                assert_eq!(buffer[(x, stale_y)].modifier, subdued.add_modifier);
+                continue;
+            }
             assert!(
                 buffer[(x, stale_y)].modifier.contains(Modifier::DIM),
                 "stale cell at {x}"
@@ -469,6 +485,7 @@ fn accounts_only_summary_demand_includes_rows_and_all_notes() {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &table,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(height(&machines, &placement, &table)).expect("summary height"),
         );
@@ -477,6 +494,7 @@ fn accounts_only_summary_demand_includes_rows_and_all_notes() {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &table,
                 machines:       &machines,
                 placement:      &placement,

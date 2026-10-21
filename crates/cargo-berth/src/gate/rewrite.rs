@@ -20,6 +20,7 @@ use crate::git;
 use crate::git::GitCommandOutputAvailability;
 use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::RepositorySnapshot;
 use crate::git::ScopedPatchComparison;
 use crate::git::ScopedPatchTargetHistory;
 use crate::ids::CoordinationRunId;
@@ -470,7 +471,7 @@ pub(super) fn reanchor_rewritten_phases(
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
-    let repository_root = worktree_context.repository_root();
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
     let outcome = ledger
         .transact_reconciliation(
             journal_mutation_actor.worktree_id,
@@ -489,7 +490,7 @@ pub(super) fn reanchor_rewritten_phases(
                 ReconciliationValidation::Apply {
                     cover_actors:           std::collections::HashMap::default(),
                     operations:             resnapshot_operations(
-                        repository_root,
+                        &repository,
                         reservations,
                         events,
                     ),
@@ -515,7 +516,7 @@ pub(super) fn reanchor_rewritten_phases(
 /// already moved by the time this runs, so refusing the whole transaction would neither
 /// undo the rewrite nor leave the ledger in a better state than a stale anchor does.
 fn resnapshot_operations(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     reservations: &RetainedReservationSet,
     events: &[BranchRewriteEvent],
 ) -> Vec<JournalOperation> {
@@ -536,7 +537,7 @@ fn resnapshot_operations(
         let phase_start = reservation.phase_start_head();
         let created = RewriteCreatedCommits::from_commits(event.created_commits.iter().cloned());
         let ActivePhaseAnchor::Replace(claim_snapshot) = active_phase_anchor(
-            repository_root,
+            repository,
             reservation,
             &event.branch,
             &event.pairs,
@@ -565,12 +566,13 @@ enum ActivePhaseAnchor {
 
 /// Keep conflict-resolved active work inside the interval a later checkpoint protects.
 fn active_phase_anchor(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     reservation: &Reservation,
     rewrite: &BranchRewrite,
     pairs: &[RewriteMapPair],
     created: &RewriteCreatedCommits,
 ) -> ActivePhaseAnchor {
+    let repository_root = repository.repository_root();
     let phase_start = reservation.phase_start_head().as_ref();
     let Ok(old_phase) = rewrite_phase_commits(repository_root, phase_start, &rewrite.previous)
     else {
@@ -578,7 +580,7 @@ fn active_phase_anchor(
     };
     if !pairs.iter().any(|pair| old_phase.contains(&pair.old)) {
         return git::rewritten_phase_anchor(
-            repository_root,
+            repository,
             phase_start,
             &rewrite.previous,
             &rewrite.proposed,

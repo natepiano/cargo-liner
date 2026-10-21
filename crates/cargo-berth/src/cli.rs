@@ -63,6 +63,7 @@ use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::git::LocalBranchRenameTargetResolution;
 use crate::git::ReferenceLookup;
+use crate::git::RepositorySnapshot;
 use crate::hook;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -182,7 +183,7 @@ const WHY_VALUE_NAME: &str = "WHY";
 
 const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
 const BOARD_LONG_ABOUT: &str = "Inspect current reservations and integration constraints. With both standard input and standard output attached to terminals, bare board opens the full-screen view; otherwise it prints a pointer to board --json. Use --json to emit board facts.";
-const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
+const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. When the paths are clear, this command acquires them for this session; use cargo-berth board to read who holds a path without acquiring it. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
 const CLAIM_LONG_ABOUT: &str = "Reserve repository paths for a reservation. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants. This is the spelling check reports against, so a path that reads clear from check reserves the same extent here.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached its integration target through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied integration target commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
@@ -1710,101 +1711,114 @@ fn pin_unrecorded_targets(
 
 fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnvelope {
     match env::current_dir() {
-        Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
-            Ok(repository_root) => match initialization_request {
-                InitializationRequest::Initialize => match Ledger::initialize(&repository_root) {
-                    Ok(initialization) => {
-                        let worktree_context =
-                            match crate::ledger::WorktreeContext::discover(&repository_root) {
-                                Ok(worktree_context) => worktree_context,
-                                Err(error) => return initialization_error(error),
-                            };
-                        if let Err(error) =
-                            BerthConfig::exclude_from_git(worktree_context.common_git_directory())
-                        {
-                            return initialization_error(LedgerError::Config(error));
-                        }
-                        let berth_config =
-                            match BerthConfig::read(&worktree_context.configuration_lookup()) {
-                                Ok(Enrollment::Enrolled(berth_config)) => berth_config,
-                                Ok(Enrollment::Unconfigured {
-                                    expected_configuration_path,
-                                }) => {
-                                    return OutputEnvelope::unconfigured(
-                                        CommandVerb::Init,
-                                        &expected_configuration_path,
-                                    );
-                                },
-                                Err(error) => {
-                                    return OutputEnvelope::ledger_error(
-                                        CommandVerb::Init,
-                                        &LedgerError::Config(error),
-                                    );
-                                },
-                            };
-                        let targets_pinned =
-                            match pin_unrecorded_targets(&worktree_context, &berth_config) {
-                                Ok(targets_pinned) => targets_pinned,
-                                Err(error) => return error.into_output(),
-                            };
-                        let trunk_reference = format!("refs/heads/{}", berth_config.trunk);
-                        let hook_installations = gate::install::install_managed_hooks(
-                            worktree_context.common_git_directory(),
-                            worktree_context.repository_root(),
-                            &trunk_reference,
-                        );
-                        let enrollment =
-                            match worktree::enroll_worktrees(&worktree_context, &berth_config) {
-                                Ok(enrollment) => enrollment,
-                                Err(error) => return initialization_error(error),
-                            };
-                        OutputEnvelope::initialized(
-                            initialization,
-                            &hook_installations,
-                            enrollment,
-                            targets_pinned.into_output_payload(),
-                        )
-                    },
-                    Err(error) => initialization_error(error),
-                },
-                InitializationRequest::RepairProjection => {
-                    match Ledger::repair_projection(&repository_root) {
-                        Ok(()) => OutputEnvelope::projection_repaired(),
-                        Err(error) => initialization_error(error),
+        Ok(invocation_directory) => {
+            match git::RepositorySnapshot::discover(&invocation_directory) {
+                Ok(repository) => {
+                    let repository_root = repository.repository_root().to_path_buf();
+                    match initialization_request {
+                        InitializationRequest::Initialize => initialize_new_ledger(&repository),
+                        InitializationRequest::RepairProjection => {
+                            match Ledger::repair_projection(&repository_root) {
+                                Ok(()) => OutputEnvelope::projection_repaired(),
+                                Err(error) => initialization_error(error),
+                            }
+                        },
+                        InitializationRequest::CompactJournal => compact_journal(&repository_root),
+                        InitializationRequest::ReinitializeAfterReview => {
+                            let worktree_context =
+                                match crate::ledger::WorktreeContext::discover(&repository_root) {
+                                    Ok(worktree_context) => worktree_context,
+                                    Err(error) => return initialization_error(error),
+                                };
+                            let pending_environment_bypasses =
+                                match gate::permit::pending_environment_bypass_count(
+                                    worktree_context.common_git_directory(),
+                                ) {
+                                    Ok(count) => count,
+                                    Err(error) => {
+                                        return OutputEnvelope::ledger_unreadable(
+                                            CommandVerb::Init,
+                                            &error.to_string(),
+                                        );
+                                    },
+                                };
+                            match Ledger::reinitialize_after_review(&repository_root) {
+                                Ok(reinitialization) => OutputEnvelope::reinitialized(
+                                    reinitialization.discarded_bytes,
+                                    reinitialization.discarded_complete_records,
+                                    pending_environment_bypasses,
+                                ),
+                                Err(error) => initialization_error(error),
+                            }
+                        },
                     }
                 },
-                InitializationRequest::CompactJournal => compact_journal(&repository_root),
-                InitializationRequest::ReinitializeAfterReview => {
-                    let worktree_context =
-                        match crate::ledger::WorktreeContext::discover(&repository_root) {
-                            Ok(worktree_context) => worktree_context,
-                            Err(error) => return initialization_error(error),
-                        };
-                    let pending_environment_bypasses =
-                        match gate::permit::pending_environment_bypass_count(
-                            worktree_context.common_git_directory(),
-                        ) {
-                            Ok(count) => count,
-                            Err(error) => {
-                                return OutputEnvelope::ledger_unreadable(
-                                    CommandVerb::Init,
-                                    &error.to_string(),
-                                );
-                            },
-                        };
-                    match Ledger::reinitialize_after_review(&repository_root) {
-                        Ok(reinitialization) => OutputEnvelope::reinitialized(
-                            reinitialization.discarded_bytes,
-                            reinitialization.discarded_complete_records,
-                            pending_environment_bypasses,
-                        ),
-                        Err(error) => initialization_error(error),
-                    }
+                Err(error) => {
+                    OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
                 },
-            },
-            Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+            }
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+    }
+}
+
+fn initialize_new_ledger(repository: &RepositorySnapshot) -> OutputEnvelope {
+    // Initialization requires a readable Git registry. Enrollment below
+    // consumes this same observation instead of starting Git again.
+    if let Err(error) = repository.worktree_list_porcelain() {
+        return OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string());
+    }
+    match Ledger::initialize(repository.repository_root()) {
+        Ok(initialization) => {
+            let worktree_context =
+                match crate::ledger::WorktreeContext::discover(repository.repository_root()) {
+                    Ok(worktree_context) => worktree_context,
+                    Err(error) => return initialization_error(error),
+                };
+            if let Err(error) =
+                BerthConfig::exclude_from_git(worktree_context.common_git_directory())
+            {
+                return initialization_error(LedgerError::Config(error));
+            }
+            let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup()) {
+                Ok(Enrollment::Enrolled(berth_config)) => berth_config,
+                Ok(Enrollment::Unconfigured {
+                    expected_configuration_path,
+                }) => {
+                    return OutputEnvelope::unconfigured(
+                        CommandVerb::Init,
+                        &expected_configuration_path,
+                    );
+                },
+                Err(error) => {
+                    return OutputEnvelope::ledger_error(
+                        CommandVerb::Init,
+                        &LedgerError::Config(error),
+                    );
+                },
+            };
+            let targets_pinned = match pin_unrecorded_targets(&worktree_context, &berth_config) {
+                Ok(targets_pinned) => targets_pinned,
+                Err(error) => return error.into_output(),
+            };
+            let trunk_reference = format!("refs/heads/{}", berth_config.trunk);
+            let hook_installations = gate::install::install_managed_hooks(
+                worktree_context.common_git_directory(),
+                worktree_context.repository_root(),
+                &trunk_reference,
+            );
+            let enrollment = match worktree::enroll_worktrees(repository, &berth_config) {
+                Ok(enrollment) => enrollment,
+                Err(error) => return initialization_error(error),
+            };
+            OutputEnvelope::initialized(
+                initialization,
+                &hook_installations,
+                enrollment,
+                targets_pinned.into_output_payload(),
+            )
+        },
+        Err(error) => initialization_error(error),
     }
 }
 
@@ -2988,7 +3002,7 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
@@ -3021,7 +3035,7 @@ mod tests {
         ];
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
@@ -3072,7 +3086,7 @@ mod tests {
         )?];
 
         assert_eq!(
-            claim_request.overlap_authorization,
+            claim_overlap_authorization(claim_request),
             sequence_request(blockers, OrderingReplacement::Replace, overlap_reason)?
         );
         Ok(())
@@ -3470,6 +3484,21 @@ mod tests {
                 reason,
             },
         )))
+    }
+
+    fn claim_overlap_authorization(claim_request: ClaimRequest) -> OverlapAuthorizationRequest {
+        let ClaimRequest {
+            reservation_selection: _,
+            target: _,
+            declared_scopes: _,
+            source: _,
+            purpose: _,
+            coordination_run_selection: _,
+            phase_start: _,
+            overlap_authorization,
+            answer_recovery: _,
+        } = claim_request;
+        overlap_authorization
     }
 
     fn claim_request(arguments: &[&str]) -> Result<ClaimRequest, String> {

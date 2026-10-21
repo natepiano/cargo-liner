@@ -8,7 +8,6 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -74,7 +73,10 @@ fn explicit_dispatch_seat_resolves_from_the_fixture_roster() {
         panic!("an explicit seat resolves independently of the launcher pid");
     };
     assert_eq!(dispatch.seat, SEAT);
-    assert_eq!(dispatch.thread_id, "worker-thread");
+    assert_eq!(
+        dispatch.identity,
+        WorkerIdentity::CodexThread("worker-thread".into())
+    );
     assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
 }
 
@@ -159,7 +161,10 @@ fn dispatch_without_to_selects_the_seat_by_its_launcher_pid() {
         panic!("the matching launcher pid resolves its worker");
     };
     assert_eq!(dispatch.seat, SEAT);
-    assert_eq!(dispatch.thread_id, "worker-thread");
+    assert_eq!(
+        dispatch.identity,
+        WorkerIdentity::CodexThread("worker-thread".into())
+    );
     assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
     assert_eq!(parsed.resolve(&roster, 999), WorkerDispatch::Plain);
 }
@@ -264,7 +269,7 @@ fn leading_literal_assignments_fold_the_shell_into_its_worker() {
         arguments.splice(2..2, ["--to".to_string(), SEAT.to_string()]);
         let launcher = process(701, 600, "bash", arguments);
         let dispatches = scan::find_worker_dispatches(&[wrapper.clone(), launcher]);
-        // An explicit seat still resolves while the shell is the only process observed.
+        // Explicit seats resolve via `scan::find_worker_dispatches` with only the shell observed.
         assert_eq!(
             scan::find_worker_dispatches(&[wrapper]).get(&600),
             dispatches.get(&600),
@@ -637,9 +642,10 @@ fn a_dispatch_folds_into_a_managed_thread_moved_from_another_host_row() {
     let mut host = agent(20, &[thread]);
     host.agent = Agent::CodexThreadHost;
     let edges = HierarchyEdges(vec![HierarchyEdge {
-        manager: "manager-id".to_string(),
-        member:  "worker-thread".to_string(),
-        role:    HierarchyRole::Impl,
+        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+        manager:  "manager-id".to_string(),
+        member:   "worker-thread".to_string(),
+        role:     HierarchyRole::Impl,
     }]);
     let tiles = drawn_tiles_with_edges(vec![root, host], edges);
     assert_eq!(
@@ -718,7 +724,10 @@ fn the_launcher_pid_resolves_the_owning_shell_wrapper_without_to() {
         panic!("the wrapper must resolve using its launcher's pid");
     };
     assert_eq!(dispatch.seat, SEAT);
-    assert_eq!(dispatch.thread_id, "worker-thread");
+    assert_eq!(
+        dispatch.identity,
+        WorkerIdentity::CodexThread("worker-thread".into())
+    );
     assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
 }
 
@@ -746,7 +755,10 @@ fn probe_rows_round_trip_dispatch_identity_and_accept_older_rows_without_it() {
     let WorkerDispatch::Worker(dispatch) = &decoded.children[0].dispatch else {
         panic!("the remote probe retains a resolved worker identity");
     };
-    assert_eq!(dispatch.thread_id, "worker-thread");
+    assert_eq!(
+        dispatch.identity,
+        WorkerIdentity::CodexThread("worker-thread".into())
+    );
     assert_eq!(dispatch.label(), format!("impl7 · {JOB}"));
 }
 
@@ -894,7 +906,10 @@ fn typed_roster_fields_ignore_malformed_neighbours_and_optional_metadata() {
     let WorkerDispatch::Worker(worker) = parsed.resolve(&roster, 701) else {
         panic!("invalid optional metadata must not discard its valid thread");
     };
-    assert_eq!(worker.thread_id, "worker-thread");
+    assert_eq!(
+        worker.identity,
+        WorkerIdentity::CodexThread("worker-thread".into())
+    );
     assert_eq!(worker.role, DispatchRole::Worker(WorkerRole::Impl));
     let implicit = ParsedDispatch::parse(&command(Path::new("/fixture/session"), ""))
         .expect("implicit dispatch");
@@ -903,7 +918,10 @@ fn typed_roster_fields_ignore_malformed_neighbours_and_optional_metadata() {
         panic!("the valid neighbour still resolves by pid");
     };
     assert_eq!(worker.role, DispatchRole::Worker(WorkerRole::Review));
-    assert_eq!(worker.thread_id, "fix-thread");
+    assert_eq!(
+        worker.identity,
+        WorkerIdentity::CodexThread("fix-thread".into())
+    );
 }
 
 #[test]
@@ -967,9 +985,10 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
     root.session_id = SessionIdentity::Claude("manager-id".into());
     let edges = if managed {
         HierarchyEdges(vec![HierarchyEdge {
-            manager: "manager-id".into(),
-            member:  "worker-thread".into(),
-            role:    HierarchyRole::Test,
+            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
+            manager:  "manager-id".into(),
+            member:   "worker-thread".into(),
+            role:     HierarchyRole::Test,
         }])
     } else {
         HierarchyEdges::default()
@@ -1034,7 +1053,7 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
                 expected_role,
                 "{short} managed={managed}"
             );
-            assert_eq!(buffer[(role_x, y)].fg, Color::LightCyan);
+            assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
             let name_color = Role::Rainbow(RainbowHue::Red)
                 .style()
                 .fg

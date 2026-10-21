@@ -1,3 +1,8 @@
+// git
+
+/// Branch-row value when git cannot read the checkout's HEAD.
+pub(in crate::tui) const HEAD_UNREADABLE_LABEL: &str = "HEAD unreadable";
+
 // project counts
 
 pub(super) const PROJECT_LIBS_LABEL: &str = "lib";

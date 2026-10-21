@@ -12,7 +12,7 @@ use crate::tui::panes::PaneId;
 use crate::tui::panes::TargetsData;
 use crate::tui::render_context::PaneRenderCtx;
 
-// ── Targets ─────────────────────────────────────────────────────
+// `TargetsPane` owns target content, viewport, focus and rendered-row hit-test geometry.
 pub struct TargetsPane {
     pub viewport: Viewport,
     pub focus:    RenderFocus,

@@ -33,7 +33,8 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
     let mut result: Vec<RootItem> = Vec::new();
     let mut consumed: HashSet<usize> = HashSet::new();
 
-    // Identify top-level workspaces (not nested inside another workspace).
+    // `top_level_workspaces` records indices of `RootItem::Rust(RustProject::Workspace(_))`
+    // whose paths are not inside another `workspace_paths` entry.
     let top_level_workspaces: HashSet<usize> = items
         .iter()
         .enumerate()
@@ -69,7 +70,9 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                 if let RootItem::Rust(RustProject::Package(pkg)) = candidate {
                     Some(pkg.clone())
                 } else if let RootItem::Rust(RustProject::Workspace(nested_ws)) = candidate {
-                    // Nested workspace treated as a package member
+                    // Convert `nested_ws` into a `Package` using its path, name,
+                    // worktree status and Cargo metadata so it joins the parent workspace's
+                    // members.
                     Some(Package {
                         path:            nested_ws.path().clone(),
                         name:            nested_ws.name().map(str::to_string),
@@ -154,9 +157,9 @@ fn group_members_new(
     groups
 }
 
-/// Convert a `CargoProject` (from `from_cargo_toml()`) into a `RootItem`.
-pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> RootItem {
-    match cp {
+/// Convert a `CargoParseResult` (from `from_cargo_toml()`) into a `RootItem`.
+pub(crate) fn cargo_parse_result_to_item(cargo_parse_result: CargoParseResult) -> RootItem {
+    match cargo_parse_result {
         CargoParseResult::Workspace(ws) => RootItem::Rust(RustProject::Workspace(ws)),
         CargoParseResult::Package(pkg) => RootItem::Rust(RustProject::Package(pkg)),
     }

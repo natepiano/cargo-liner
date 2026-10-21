@@ -134,13 +134,8 @@ pub(crate) fn execute(
     };
     let reconciled_drift_preflight = match reconcile::reconcile_for_drift(
         &invocation_directory,
-        |worktree_context, _, reservations| {
-            prepare_drift_execution(
-                request,
-                worktree_context,
-                reservations,
-                recovery_command_line,
-            )
+        |repository, _, reservations| {
+            prepare_drift_execution(request, repository, reservations, recovery_command_line)
         },
     ) {
         Ok(Enrollment::Enrolled(reconciled_drift_preflight)) => reconciled_drift_preflight,
@@ -152,15 +147,15 @@ pub(crate) fn execute(
         Err(error) => return error.into_output(CommandVerb::Drift),
     };
     let ReconciledDriftPreflight {
+        repository,
         report: reconciliation_report,
-        worktree_context,
         ledger,
         observation,
     } = reconciled_drift_preflight;
     let output_envelope = match observation.and_then(|prepared| {
         execute_inner(
             request,
-            &worktree_context,
+            &repository,
             &ledger,
             prepared,
             &reconciliation_report.repository_snapshot,
@@ -202,15 +197,18 @@ pub(crate) fn execute(
     // A hook-driven drift answers one worktree's session, so it carries only that worktree's
     // alerts; a drift run by hand carries every alert.
     let alert_routing = reconciliation_report.alert_routing(EngineAnswerOccasion::current());
-    output_envelope.with_alerts(alert_routing.route(reconciliation_report.alerts))
+    output_envelope
+        .with_alerts(alert_routing.route(reconciliation_report.alerts))
+        .with_retention_maintenance(&reconciliation_report.retention_maintenance)
 }
 
 fn prepare_drift_execution(
     request: DriftRequest,
-    worktree_context: &WorktreeContext,
+    repository: &crate::git::RepositorySnapshot,
     initial_reservations: RetainedReservationSet,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<PreparedDriftExecution, DriftExecutionError> {
+    let worktree_context = repository.context();
     let (resolved_edit_authorization, worktree_id) = match request.reservation {
         DriftReservationSelection::EveryActiveForPostCommit { .. } => {
             let worktree_id = match prepare_worktree_comparison(
@@ -253,7 +251,7 @@ fn prepare_drift_execution(
         fingerprint::fingerprint_cache_path(worktree_context.common_git_directory(), worktree_id);
     let observation = observation::observe(
         request.comparison,
-        worktree_context.repository_root(),
+        repository,
         &initial_reservations,
         initial_subjects.reporting.as_slice(),
         &cache_path,
@@ -273,12 +271,13 @@ fn prepare_drift_execution(
 
 fn execute_inner(
     request: DriftRequest,
-    worktree_context: &WorktreeContext,
+    repository: &crate::git::RepositorySnapshot,
     ledger: &Ledger,
     prepared: PreparedDriftExecution,
     repository_snapshot: &RepositorySnapshot,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
+    let worktree_context = repository.context();
     let ObservedDriftExecution {
         initial_reservations,
         initial_subjects,
@@ -345,11 +344,11 @@ fn execute_inner(
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let (initial_reservations, acting_head_containment) = prepared_acting_head_containment(
         initial_reservations,
-        worktree_context,
+        repository,
         resolved_edit_authorization,
     );
     let pre_lock_foreign_path_classification = classify_foreign_paths_before_lock(
-        worktree_context,
+        repository,
         &initial_reservations,
         initial_subjects.reporting.as_slice(),
         &observation,
@@ -410,12 +409,12 @@ fn execute_inner(
 /// Read acting-head containment before the lock and carry it into the replay.
 fn prepared_acting_head_containment(
     reservations: RetainedReservationSet,
-    worktree_context: &WorktreeContext,
+    repository: &crate::git::RepositorySnapshot,
     resolved_edit_authorization: ResolvedEditAuthorization,
 ) -> (RetainedReservationSet, ActingHeadContainment) {
     let containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        worktree_context,
+        repository,
         resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(containment.clone());
@@ -438,7 +437,7 @@ fn prepared_acting_head_containment(
 /// reuses the same batch. The lock holds no git, and nothing is read when there is
 /// no such path.
 fn classify_foreign_paths_before_lock(
-    worktree_context: &WorktreeContext,
+    repository: &crate::git::RepositorySnapshot,
     reservations: &RetainedReservationSet,
     reporting: &[ReservationId],
     observation: &FingerprintObservation,
@@ -453,7 +452,7 @@ fn classify_foreign_paths_before_lock(
         path_case,
     )?;
     let committed_history = provenance::read_committed_foreign_paths(
-        worktree_context.repository_root(),
+        repository,
         reservations,
         &observation.changes,
         acting_identity,
@@ -673,7 +672,7 @@ fn paths_from_scopes(
     })
 }
 
-/// Classify the observation under the ledger lock, refusing acquisition but not observation.
+/// Prepare classification before acquisition, then commit only against its journal generation.
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {
@@ -743,6 +742,7 @@ fn transact_classification(
                             classification::attribute_refused_run_entry(
                                 &reservations,
                                 &context.observation.changes,
+                                context.pre_lock_foreign_path_classification,
                                 IssuingWorktreeRun {
                                     coordination_run_id: actor_run,
                                     worktree_id:         journal_mutation_actor.worktree_id,
@@ -973,7 +973,7 @@ mod tests {
         fixture.assert_worktree_identity_absent();
         let prepared = prepare_drift_execution(
             request,
-            &fixture.worktree_context,
+            &crate::git::RepositorySnapshot::new(fixture.worktree_context.clone()),
             RetainedReservationSet::default(),
             &RecoveryCommandLine::current_process(),
         )
@@ -1005,7 +1005,7 @@ mod tests {
 
             let prepared = prepare_drift_execution(
                 post_commit_request(),
-                &fixture.worktree_context,
+                &crate::git::RepositorySnapshot::new(fixture.worktree_context.clone()),
                 RetainedReservationSet::default(),
                 &RecoveryCommandLine::current_process(),
             )

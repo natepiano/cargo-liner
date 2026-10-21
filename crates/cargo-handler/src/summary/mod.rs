@@ -45,6 +45,8 @@ use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::Machine;
 use crate::census::MachineState;
+use crate::census::RootPresentation;
+use crate::census::RowIdentity;
 use crate::census::accounts::AccountsTable;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
@@ -61,6 +63,8 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::sort;
+use crate::sort::AccountsColumn;
+use crate::sort::AccountsSort;
 use crate::sort::HeaderSpan;
 use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
@@ -94,6 +98,7 @@ pub(crate) fn width(
     account_column: AccountColumn,
     sort: SummarySort,
     accounts: &AccountsTable,
+    accounts_sort: AccountsSort,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -108,7 +113,7 @@ pub(crate) fn width(
         .iter()
         .all(|machine| root_rows(*machine, placement).next().is_none())
     {
-        return headings.max(accounts::width(accounts, now));
+        return headings.max(accounts::sorted_width(accounts, now, accounts_sort));
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
     let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
@@ -116,7 +121,9 @@ pub(crate) fn width(
         .map(|column| widths.get(column))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
-    headings.max(table).max(accounts::width(accounts, now))
+    headings
+        .max(table)
+        .max(accounts::sorted_width(accounts, now, accounts_sort))
 }
 
 /// Both stacked sections, with the same gap used between machine groups.
@@ -151,11 +158,13 @@ fn root_rows<'a>(
     machine: Machine<'a>,
     placement: &AgentPlacement<'_>,
 ) -> impl Iterator<Item = &'a AgentRow> {
-    machine
-        .state
-        .rows()
-        .iter()
-        .filter(move |row| placement.is_root(machine.name, row.pid))
+    machine.state.rows().iter().filter(move |row| {
+        placement.is_root(machine.name, row.pid)
+            && placement.root_presentation(RowIdentity {
+                machine: machine.name,
+                pid:     row.pid,
+            }) == RootPresentation::Hierarchy
+    })
 }
 
 /// Shared column widths, account visibility and the footer palette.
@@ -169,6 +178,7 @@ struct SummaryColumns<'a> {
 /// The census, palette and ordering shared throughout one summary draw.
 pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) accounts:       &'a AccountsTable,
+    pub(crate) accounts_sort:  AccountsSort,
     pub(crate) machines:       &'a [Machine<'data>],
     pub(crate) placement:      &'a AgentPlacement<'data>,
     pub(crate) cells:          &'a [AgentEntry<'data>],
@@ -178,7 +188,7 @@ pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) sort:           SummarySort,
 }
 
-/// Draw machine groups with the palette and ordering shared by this frame.
+/// Draw machine groups and accounts with the independent ordering in this frame.
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
     let SummaryHeader {
         constraints,
@@ -194,6 +204,18 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     for machine in machines {
         draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
+    accounts::draw_sorted(
+        buffer,
+        accounts_area(area, frame),
+        frame.accounts,
+        frame.now,
+        frame.footer_colors,
+        frame.accounts_sort,
+    );
+}
+
+/// Accounts begin after the machine groups and their section gap, clipped to the cell.
+fn accounts_area(area: Rect, frame: &SummaryFrame<'_, '_>) -> Rect {
     let agent_height = machine_height(frame.machines, frame.placement);
     let offset = agent_height
         + if agent_height > 0 {
@@ -202,17 +224,24 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
             0
         };
     let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
-    accounts::draw(
-        buffer,
-        Rect {
-            y: area.y.saturating_add(offset),
-            height: area.height.saturating_sub(offset),
-            ..area
-        },
+    Rect {
+        y: area.y.saturating_add(offset),
+        height: area.height.saturating_sub(offset),
+        ..area
+    }
+}
+
+/// Account headers use the same section offset and measured lines as drawing.
+pub(crate) fn accounts_header_spans(
+    area: Rect,
+    frame: &SummaryFrame<'_, '_>,
+) -> Vec<HeaderSpan<AccountsColumn>> {
+    accounts::header_spans(
+        accounts_area(area, frame),
         frame.accounts,
         frame.now,
-        frame.footer_colors,
-    );
+        frame.accounts_sort,
+    )
 }
 
 /// A visible machine group with its heading, table and rows resolved together.
@@ -509,10 +538,13 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
-    name.chars()
-        .take(max.saturating_sub(1))
-        .chain(std::iter::once(TRUNCATION_MARK).take(max.min(1)))
-        .collect()
+    if max == 0 {
+        return String::new();
+    }
+    let prefix: String = name.chars().take(max - 1).collect();
+    let mut cut = prefix.trim_end().to_owned();
+    cut.push(TRUNCATION_MARK);
+    cut
 }
 
 /// Column widths fitted to the widest cell across every machine's rows.
@@ -620,9 +652,12 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyRole;
+    use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsTable;
+    use crate::census::hierarchy::ReviewerState;
+    use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -634,7 +669,7 @@ mod tests {
     /// directory is cut.
     const WIDTH: u16 = 120;
     /// The column each name starts at in these tests.
-    const NAME_X: u16 = 18;
+    const NAME_X: u16 = 20;
 
     /// Process `pid`, an `agent` named `name`, started `age` seconds
     /// before [`NOW`].
@@ -647,6 +682,7 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent,
             service_tier: ServiceTier::Unrecorded,
@@ -660,13 +696,20 @@ mod tests {
             directory: directory.to_string(),
             branch: None,
             launched_by: None,
-            children: Vec::new(),
+            children: vec![
+                serde_json::from_value(serde_json::json!({
+                    "depth":0,"kind":"shell","pid":pid + 10_000_000,
+                    "name":"fixture command","started":NOW - age
+                }))
+                .expect("summary owner work"),
+            ],
         }
     }
 
     /// `row` with its window on the desktop named `desktop`.
     fn on(desktop: &str, row: AgentRow) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             desktop: Some(desktop.to_string()),
             ..row
         }
@@ -688,6 +731,7 @@ mod tests {
     /// session boss launched, and a Codex agent with no window.
     fn natedev() -> MachineState {
         let launched = AgentRow {
+            role_fallback: RoleFallback::None,
             launched_by: Some(1_579_022),
             ..row(3_266_367, Agent::Claude, "trunk", None, HOUR, "~")
         };
@@ -743,6 +787,7 @@ mod tests {
     /// A named Claude session with a stable hierarchy identity.
     fn session(pid: u32, id: &str) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
             ..row(pid, Agent::Claude, id, None, HOUR, "~")
         }
@@ -754,9 +799,10 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    manager: (*manager).to_string(),
-                    member:  (*member).to_string(),
-                    role:    HierarchyRole::Unit,
+                    reviewer: ReviewerState::NotPool,
+                    manager:  (*manager).to_string(),
+                    member:   (*member).to_string(),
+                    role:     HierarchyRole::Unit,
                 })
                 .collect(),
         )
@@ -777,6 +823,7 @@ mod tests {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &AccountsTable::NotConfigured,
+                AccountsSort::SourceOrder,
             ),
             u16::try_from(height(machines, &placement, &AccountsTable::NotConfigured))
                 .expect("the summary height should fit"),
@@ -786,6 +833,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort: AccountsSort::SourceOrder,
                 accounts: &AccountsTable::NotConfigured,
                 machines,
                 placement: &placement,
@@ -835,6 +883,7 @@ mod tests {
                 session(20, "nested-showrunner"),
                 session(30, "unit"),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(999),
                     ..session(40, "orphan")
                 },
@@ -893,10 +942,12 @@ mod tests {
             vec![
                 session(1, "launcher"),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(1),
                     ..session(2, "launched")
                 },
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     launched_by: Some(999),
                     ..session(3, "orphan")
                 },
@@ -918,6 +969,7 @@ mod tests {
     fn completed_and_cleared_links_update_summary_membership_counts_and_width() {
         let manager = session(1, "showrunner");
         let member = AgentRow {
+            role_fallback: RoleFallback::None,
             directory: format!("~/{}", "long/".repeat(30)),
             ..session(2, "unit")
         };
@@ -934,6 +986,7 @@ mod tests {
             AccountColumn::Hidden,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let mut census = Census::new("natedev".to_string());
 
@@ -969,6 +1022,7 @@ mod tests {
                 AccountColumn::Hidden,
                 SummarySort::default(),
                 &AccountsTable::NotConfigured,
+                AccountsSort::SourceOrder,
             );
             if expected.len() == 1 {
                 assert_eq!(
@@ -1058,6 +1112,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1073,15 +1128,15 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 top-level agents",
-                " pid      agent   name                                  status    age ▼   desktop        directory",
-                " 1579022  claude  boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude  tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
-                " 428044   claude  enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
-                " 4039085  codex   --model gpt-5                         —         12m     —              ~/rust/handler",
+                " pid      account  session                               status    age ▼   desktop        directory",
+                " 1579022  claude   boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude   tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
+                " 428044   claude   enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
+                " 4039085  codex    --model gpt-5                         —         12m     —              ~/rust/handler",
                 "",
                 " mac · 1 top-level agent",
-                " pid      agent   name                                  status    age ▼   desktop        directory",
-                " 12055    claude  natemccoy-30                          idle      23h     —              ~",
+                " pid      account  session                               status    age ▼   desktop        directory",
+                " 12055    claude   natemccoy-30                          idle      23h     —              ~",
                 "",
                 " studio · unreachable",
                 "",
@@ -1111,8 +1166,8 @@ mod tests {
         }
         assert_eq!(buffer[(10, 2)].fg, Color::Rgb(217, 119, 87));
         assert_eq!(buffer[(10, 5)].fg, Color::Rgb(175, 140, 255));
-        assert_eq!(buffer[(56, 4)].fg, Color::Rgb(100, 220, 100));
-        assert_eq!(buffer[(56, 5)].fg, Color::Rgb(140, 140, 140));
+        assert_eq!(buffer[(57, 4)].fg, Color::Rgb(100, 220, 100));
+        assert_eq!(buffer[(57, 5)].fg, Color::Rgb(140, 140, 140));
         assert_eq!(buffer[(10, 11)].fg, Color::Rgb(255, 100, 100));
         let names: Vec<Color> = [2, 3, 4, 5, 9]
             .into_iter()
@@ -1146,6 +1201,7 @@ mod tests {
                     "~/rust/handler",
                 ),
                 AgentRow {
+                    role_fallback: crate::census::RoleFallback::None,
                     service_tier: ServiceTier::Fast,
                     account: Account::Unrecorded,
                     ..row(
@@ -1174,6 +1230,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1189,7 +1246,7 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                " pid      agent       name           status    age ▼  desktop  directory",
+                " pid      account     session        status    age ▼  desktop  directory",
                 " 428044   claude      enh/handler    thinking  1h     —        ~/rust/handler",
                 " 4039085  codex fast  --model gpt-5  —         12m    —        ~/rust/handler",
             ]
@@ -1224,6 +1281,7 @@ mod tests {
             AccountColumn::Hidden,
             SummarySort::default(),
             &AccountsTable::NotConfigured,
+            AccountsSort::SourceOrder,
         );
         let height = u16::try_from(height(&machines, &placement, &AccountsTable::NotConfigured))
             .expect("the height should fit a u16");
@@ -1233,6 +1291,7 @@ mod tests {
             &mut buffer,
             area,
             &SummaryFrame {
+                accounts_sort:  AccountsSort::SourceOrder,
                 accounts:       &AccountsTable::NotConfigured,
                 machines:       &machines,
                 placement:      &placement,
@@ -1276,7 +1335,8 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured
+                &AccountsTable::NotConfigured,
+                crate::sort::AccountsSort::SourceOrder
             )),
             usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
             "the table widens by what the long directory adds"
@@ -1302,7 +1362,8 @@ mod tests {
                 NOW,
                 AccountColumn::Hidden,
                 SummarySort::default(),
-                &AccountsTable::NotConfigured
+                &AccountsTable::NotConfigured,
+                crate::sort::AccountsSort::SourceOrder
             )),
             " studio · unreachable".chars().count(),
             "the wider of the two headings"
@@ -1334,3 +1395,15 @@ mod accounts_refresh_tests;
 
 #[cfg(test)]
 mod hierarchy_note_tests;
+
+#[cfg(test)]
+mod accounts_gradient_tests;
+
+#[cfg(test)]
+mod accounts_header_sort_tests;
+
+#[cfg(test)]
+mod role_span_tests;
+
+#[cfg(test)]
+mod session_membership_tests;

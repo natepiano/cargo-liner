@@ -145,6 +145,11 @@ impl Reservation {
     /// Return the reservation's durable identity.
     pub(crate) const fn id(&self) -> ReservationId { self.id }
 
+    /// The retained checkpoint stays through Outstanding and Released.
+    pub(crate) const fn protected_checkpoint(&self) -> &RetainedProtectedTip {
+        &self.retained_protected_tip
+    }
+
     pub(super) fn advance_revision(&mut self) -> Result<(), ReservationReplayError> {
         let revision: u64 = self.revision.into();
         self.revision = revision

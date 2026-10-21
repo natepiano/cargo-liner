@@ -40,7 +40,7 @@ pub(in crate::tui) enum EmptyDescriptionBehavior {
     /// renders nothing when empty) doesn't get padded to match.
     ShowPlaceholder,
     /// Render nothing (the Git pane's behavior).
-    RenderEmpty,
+    RenderNothing,
 }
 
 /// Synced description height carried in `PaneRenderCtx`. Constructed only
@@ -108,7 +108,7 @@ impl DescriptionBlock {
                 Some(NO_DESCRIPTION_AVAILABLE),
                 Style::default().fg(label_color()),
             ),
-            (None, EmptyDescriptionBehavior::RenderEmpty) => (None, Style::default()),
+            (None, EmptyDescriptionBehavior::RenderNothing) => (None, Style::default()),
         };
 
         let rows = match body {
@@ -283,7 +283,7 @@ mod tests {
         let block = DescriptionBlock::for_pane(
             None,
             description_area(80, 3),
-            EmptyDescriptionBehavior::RenderEmpty,
+            EmptyDescriptionBehavior::RenderNothing,
         );
 
         assert_eq!(block.rows(), [] as [String; 0]);
@@ -310,9 +310,9 @@ mod tests {
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
 
-        // Pre-truncation rows - the render path's ellipsis is applied
-        // when `max_height` clamps below `rows.len()`. natural_sync_height
-        // reflects what feeds the inter-pane sync.
+        // `DescriptionBlock::rows()` exposes pre-truncation rows; `render_with_selection` applies
+        // the ellipsis when `max_height` clamps below the row count, while `natural_sync_height`
+        // supplies the inter-pane sync height.
         assert!(block.rows().len() > 2);
         assert_eq!(block.rows()[0], "one two three");
     }

@@ -12,26 +12,20 @@ impl App {
     /// the GitHub repo-fetch lifecycle.
     pub(super) fn handle_crates_io_fetch_queued(&mut self, name: String) {
         let now = Instant::now();
-        // Grow the crates.io denominator for as long as the startup panel
-        // is open — mirrors `handle_repo_fetch_queued`. A fetch queued
-        // outside the upfront plan (a submodule, the priority fetch, a
-        // recovery refetch) joins the row, and a re-fetch of an
-        // already-seen name un-marks it, so the row cannot read done
-        // while this fetch is in flight. Once the panel has closed, the
-        // fetch only drives the steady-state toast.
+        // While startup.is_collecting, startup.crates_io.expected gains name and seen loses it,
+        // including submodule/priority/recovery requests outside the initial plan. This prevents
+        // done while a refetch is active; after panel closure sync_running_crates_io_toast owns the
+        // standalone toast. This matches handle_repo_fetch_queued.
         if self.startup.is_collecting() {
             self.startup.crates_io.expected.insert(name.clone());
             self.startup.crates_io.seen.remove(&name);
-            // The name is now expected-but-unseen, so any earlier row
-            // completion no longer holds.
-            self.startup.crates_io.complete_at = None;
+            // Reopening `startup.crates_io.lifecycle` invalidates any earlier completion because
+            // `name` is now expected but unseen.
+            self.startup.crates_io.lifecycle.reopen();
         } else if let Some(scan_complete_at) = self.startup.scan_complete_at {
-            // Steady state owns the standalone "Fetching crates.io info"
-            // toast, so this queue creates it. A cluster of these at a small
-            // `since_scan_complete_ms` is the post-startup refetch leak — a
-            // recovery refetch that landed after the panel handed off. A
-            // genuine steady-state fetch (user refresh, file change) logs a
-            // large elapsed and is easy to tell apart.
+            // sync_running_crates_io_toast owns the standalone toast after startup;
+            // since_scan_complete_ms distinguishes a recovery refetch leak just after handoff from
+            // later user/file-change fetches.
             tracing::trace!(
                 target: PERF_LOG_TARGET,
                 crate_name = %name,
@@ -50,11 +44,9 @@ impl App {
     pub(super) fn handle_crates_io_fetch_complete(&mut self, name: &str) {
         self.net.crates_io_running_mut().remove(name);
         self.startup.crates_io.seen.insert(name.to_string());
-        // Every toast-bearing fetch path — startup, watcher discovery,
-        // priority fetch — lands here, so this is where the periodic
-        // refresh learns a name is already fresh. Without the stamp the
-        // first refresh would fire a minute after startup instead of an
-        // hour after the name was last queried.
+        // `handle_crates_io_fetch_complete` stamps `crates_io_checked_at` for startup, watcher
+        // discovery and priority fetches. Otherwise `refresh_crates_io_if_due` would query a minute
+        // after startup rather than an hour after the name's last query.
         self.crates_io_checked_at
             .insert(name.to_string(), Instant::now());
         self.maybe_log_startup_phase_completions();

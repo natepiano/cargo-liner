@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+
+- Test HTTP clients skip host proxy discovery, so fixture setup does not wait for the Mac network configuration service.
+- Independent Git metadata reads run concurrently on scoped threads, so repository and checkout probes do not wait for unrelated commands or network work in the shared thread pool.
+- Git fixtures reuse an empty commit seed, omit unused hook templates and automatic maintenance, and prepare tracking refs without a local push when no transport behavior is tested.
+- Project-list ordering no longer allocates for each comparison. Discovery comparison and deletion lookup tests count allocations directly, so machine load no longer causes timing failures.
+- A git command that fails is shown as `unreadable` in the Git pane and as `⛔` in the project list, instead of reading as a clean status, an existing branch or remote ref, or a missing value.
+- The vs-local comparison no longer assumes the configured main branch exists; it is hidden when no configured main branch exists locally.
+- A checkout whose HEAD git cannot read shows `HEAD unreadable` in the Git pane's Branch row instead of reporting the checkout as unborn.
+- A broken worktree's `[broken]` suffix in the project list is no longer cut off; the Disk column's width now counts it.
 - Broken worktree names and their `[broken]` suffixes use the theme's on-error foreground on the error background, keeping project-list rows readable in both themes. Shipped theme templates now expose `on_error`.
 - Broken worktrees no longer show a misleading unborn Branch row, and the Git pane Error row uses a readable foreground in both themes.
 - Show the Git pane’s Error row when the selected worktree’s `.git` file points to a missing gitdir, even when no other Git details are available.

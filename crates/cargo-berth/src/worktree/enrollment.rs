@@ -23,6 +23,7 @@ use crate::git;
 use crate::git::GitCommandOutputAvailability;
 use crate::git::GitError;
 use crate::git::HeadAttachment;
+use crate::git::RepositorySnapshot;
 use crate::git::WorktreeOperation;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -202,13 +203,14 @@ enum EnrollmentOutcome {
 
 /// Enroll never-reserved registered worktrees after configuration and hook installation.
 pub(crate) fn enroll_worktrees(
-    context: &WorktreeContext,
+    snapshot: &RepositorySnapshot,
     config: &BerthConfig,
 ) -> Result<WorktreeEnrollmentReport, LedgerError> {
+    let context = snapshot.context();
     let ledger = Ledger::open_from_discovered_worktree(context)?;
     let events = ledger.read_validated_journal()?.into_coordination_events();
     let mut report = WorktreeEnrollmentReport::default();
-    let registry = match WorktreeRegistry::read(context) {
+    let registry = match WorktreeRegistry::read(snapshot) {
         Ok(registry) => registry,
         Err(error) => {
             report.failures.push(failure(
@@ -270,6 +272,7 @@ pub(crate) fn enroll_worktrees(
         }
         match enroll_candidate(
             &ledger,
+            snapshot,
             candidate,
             &footprints,
             path_case,
@@ -303,18 +306,22 @@ fn observe_footprint(
     config: &BerthConfig,
     path_case: PathCase,
 ) -> Result<FootprintObservation, WorktreeEnrollmentFailure> {
-    let root = context.repository_root();
-    let head =
-        git::head_object_id(root).map_err(|error| resolution_failure(root, "HEAD", &error))?;
-    let attachment = git::head_attachment(root).map_err(|error| {
+    let snapshot = git::RepositorySnapshot::new(context.clone());
+    let root = snapshot.repository_root();
+    let head = snapshot
+        .head_object_id()
+        .cloned()
+        .map_err(|error| resolution_failure(root, "HEAD", &error))?;
+    let attachment = snapshot.head_attachment().cloned().map_err(|error| {
         failure(
             root,
             WorktreeEnrollmentFailureReason::GitFailure,
             format!("git symbolic-ref HEAD: {error}"),
         )
     })?;
-    let (target, trunk) = read_enrollment_target(&context, &attachment, config)?;
+    let (target, trunk) = read_enrollment_target(&snapshot, &attachment, config)?;
     observe_target_footprint(
+        &snapshot,
         context,
         worktree_id,
         head,
@@ -344,6 +351,7 @@ fn check_enrollment_operation(context: &WorktreeContext) -> Result<(), WorktreeE
 }
 
 fn observe_target_footprint(
+    repository: &RepositorySnapshot,
     context: WorktreeContext,
     worktree_id: WorktreeId,
     head: GitObjectId,
@@ -365,7 +373,7 @@ fn observe_target_footprint(
             format!("git merge-tree {trunk} {head}: {error}"),
         )
     })?;
-    let working_tree = drift::observe_merge_working_tree(root).map_err(|error| {
+    let working_tree = drift::observe_merge_working_tree(repository, root).map_err(|error| {
         failure(
             root,
             WorktreeEnrollmentFailureReason::GitFailure,
@@ -422,10 +430,13 @@ pub(crate) fn cover_claim(
     target_commit: GitObjectId,
     path_case: PathCase,
 ) -> Result<Option<JournalOperation>, WorktreeEnrollmentFailure> {
-    let root = context.repository_root().to_path_buf();
-    let head =
-        git::head_object_id(&root).map_err(|error| resolution_failure(&root, "HEAD", &error))?;
-    let attachment = git::head_attachment(&root).map_err(|error| {
+    let snapshot = git::RepositorySnapshot::new(context.clone());
+    let root = snapshot.repository_root().to_path_buf();
+    let head = snapshot
+        .head_object_id()
+        .cloned()
+        .map_err(|error| resolution_failure(&root, "HEAD", &error))?;
+    let attachment = snapshot.head_attachment().cloned().map_err(|error| {
         failure(
             &root,
             WorktreeEnrollmentFailureReason::GitFailure,
@@ -433,6 +444,7 @@ pub(crate) fn cover_claim(
         )
     })?;
     let FootprintObservation::Work(footprint) = observe_target_footprint(
+        &snapshot,
         context,
         worktree_id,
         head,
@@ -493,11 +505,13 @@ pub(crate) fn cover_claim(
 }
 
 fn read_enrollment_target(
-    context: &WorktreeContext,
+    repository: &RepositorySnapshot,
     attachment: &HeadAttachment,
     config: &BerthConfig,
 ) -> Result<(ClaimTarget, GitObjectId), WorktreeEnrollmentFailure> {
-    let root = context.repository_root();
+    let context = repository.context();
+    let root = repository.repository_root();
+    let objects = repository.object_reader();
     let claimant_branch = match attachment {
         HeadAttachment::Branch { full_ref } => Some(full_ref),
         HeadAttachment::Detached => None,
@@ -521,10 +535,10 @@ fn read_enrollment_target(
         claimant_branch,
         TargetSelectionRequest::AutomaticAcquisition,
         &repository_trunk,
-        |target| git::branch_object_id(root, target.short_name()).is_ok(),
+        |target| git::branch_object_id(&objects, target.short_name()).is_ok(),
     )
     .map_err(|error| git_failure(error.message()))?;
-    let commit = git::branch_object_id(root, target.target.short_name())
+    let commit = git::branch_object_id(&objects, target.target.short_name())
         .map_err(|error| resolution_failure(root, target.target.short_name(), &error))?;
     Ok((target, commit))
 }
@@ -643,6 +657,7 @@ fn remaining_work(
 
 fn enroll_candidate(
     ledger: &Ledger,
+    repository: &RepositorySnapshot,
     candidate: &EnrollmentFootprint,
     footprints: &[EnrollmentFootprint],
     path_case: PathCase,
@@ -663,6 +678,7 @@ fn enroll_candidate(
         .map_err(|error| git_failure(error.to_string()))?;
     let containment = ActingHeadContainment::observe_at_head(
         &reservations,
+        repository,
         &candidate.context,
         candidate.worktree_id,
         &candidate.target.target,
@@ -693,7 +709,7 @@ fn enroll_candidate(
             let reservations = match state.reservations() {
                 Ok(reservations) => reservations
                     .clone()
-                    .with_acting_head_containment(containment),
+                    .with_acting_head_containment(containment.clone()),
                 Err(error) => {
                     return TransactionValidation::Reject(EnrollmentRejection::InvalidReplay(
                         error.to_string(),
@@ -706,12 +722,12 @@ fn enroll_candidate(
                 reservation_id,
                 scopes: candidate.scopes.clone(),
                 source: ClaimSource::Enrolled,
-                purpose,
+                purpose: purpose.clone(),
                 trunk_at_claim: candidate.trunk.clone().into(),
                 target: Some(Box::new(candidate.target.clone())),
                 head_snapshot: candidate.head_snapshot.clone(),
                 phase_start_head: candidate.merge_base.clone().into(),
-                worktree_root,
+                worktree_root: worktree_root.clone(),
                 worktree_administrative_locator: candidate.context.administrative_locator().clone(),
                 authorization: Box::new(authorization),
                 coordination_identity_provenance: CoordinationIdentityProvenance::NotPresented,

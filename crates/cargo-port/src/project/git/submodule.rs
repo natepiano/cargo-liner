@@ -1,14 +1,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use serde::Serialize;
+
 use super::checkout::CheckoutInfo;
 use super::command;
+use super::command::GitAnswer;
 use super::constants::GIT_HEAD;
 use super::constants::GIT_LS_TREE_COMMAND;
+use super::constants::GIT_QUIET_SHORT_ARG;
+use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_SUBMODULE_BRANCH_KEY;
 use super::constants::GIT_SUBMODULE_PATH_KEY;
 use super::constants::GIT_SUBMODULE_URL_KEY;
 use super::constants::GIT_TREE_SUBMODULE_MODE;
+use super::constants::GIT_VERIFY_ARG;
 use super::discovery::WorktreeStatus;
 use crate::project::GitRepo;
 use crate::project::fields::ProjectFields;
@@ -19,6 +25,34 @@ use crate::project::paths;
 use crate::project::paths::AbsolutePath;
 use crate::project::paths::DisplayPath;
 use crate::project::paths::RootDirectoryName;
+
+/// The commit the parent recorded for a submodule path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) enum PinnedCommit {
+    Sha(String),
+    #[default]
+    Absent,
+    Unreadable,
+}
+
+/// A parent tree listing, or the reason no pins can be read from it.
+enum SubmodulePins {
+    Listed(HashMap<String, String>),
+    NoCommits,
+    Unreadable,
+}
+
+impl SubmodulePins {
+    fn for_path(&self, path: &str) -> PinnedCommit {
+        match self {
+            Self::Listed(pins) => pins
+                .get(path)
+                .map_or(PinnedCommit::Absent, |sha| PinnedCommit::Sha(sha.clone())),
+            Self::NoCommits => PinnedCommit::Absent,
+            Self::Unreadable => PinnedCommit::Unreadable,
+        }
+    }
+}
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
@@ -34,7 +68,7 @@ pub(crate) struct Submodule {
     /// Tracking branch from `.gitmodules` (if specified).
     pub branch:        Option<String>,
     /// Pinned commit SHA from `git ls-tree HEAD`.
-    pub commit:        Option<String>,
+    pub commit:        PinnedCommit,
     /// Shared metadata (git info, disk usage, etc.) — populated by
     /// background messages through the standard `at_path_mut` lookup.
     pub project_info:  ProjectInfo,
@@ -84,13 +118,12 @@ pub(crate) fn get_submodules(project_root: &Path) -> Vec<Submodule> {
         return Vec::new();
     }
 
-    // Resolve absolute paths and pinned commits.
+    // Set `entry.path` from `project_root` plus `entry.relative_path`, then set
+    // `entry.commit` from `SubmodulePins::for_path`.
     let commits = ls_tree_submodule_commits(project_root);
     for entry in &mut entries {
         entry.path = AbsolutePath::from(project_root.join(&entry.relative_path));
-        if let Some(sha) = commits.get(&entry.relative_path) {
-            entry.commit = Some(sha.clone());
-        }
+        entry.commit = commits.for_path(&entry.relative_path);
     }
 
     entries
@@ -116,7 +149,7 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
                 relative_path: String::new(),
                 url:           None,
                 branch:        None,
-                commit:        None,
+                commit:        PinnedCommit::Absent,
                 project_info:  ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -146,28 +179,41 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 
 /// Run `git ls-tree HEAD` to get pinned commit SHAs for submodule paths.
 ///
-/// Returns a map of `relative_path` → short SHA.
-fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
+/// Returns readable path-to-SHA pins, no pins for an unborn parent, or
+/// unreadable pins when the parent's tree cannot be read.
+fn ls_tree_submodule_commits(project_root: &Path) -> SubmodulePins {
     let mut map = std::collections::HashMap::new();
-    let output = command::git_command(project_root)
-        .args([GIT_LS_TREE_COMMAND, GIT_HEAD])
-        .output();
-    let Ok(output) = output else {
-        return map;
+    let output = command::git_output_logged(
+        project_root,
+        "ls_tree_submodule_commits",
+        &[GIT_LS_TREE_COMMAND, GIT_HEAD],
+    );
+    let Ok(stdout) = output else {
+        return match command::git_answer_logged(
+            project_root,
+            "submodule_parent_head",
+            &[
+                GIT_REV_PARSE_COMMAND,
+                GIT_QUIET_SHORT_ARG,
+                GIT_VERIFY_ARG,
+                GIT_HEAD,
+            ],
+        ) {
+            Ok(GitAnswer::No) => SubmodulePins::NoCommits,
+            Ok(GitAnswer::Yes(_)) | Err(_) => SubmodulePins::Unreadable,
+        };
     };
-    if !output.status.success() {
-        return map;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        // Format: "160000 commit <sha>\t<path>"
+        // `GIT_TREE_SUBMODULE_MODE` identifies `stdout` entries formatted as
+        // `160000 commit <sha>\t<path>`.
         if !line.starts_with(GIT_TREE_SUBMODULE_MODE) {
             continue;
         }
         let Some((meta, path)) = line.split_once('\t') else {
             continue;
         };
-        // meta = "160000 commit <sha>"
+        // `meta` contains the mode, object kind and SHA; `rsplit_once` extracts
+        // the SHA, and the following slice keeps at most eight characters.
         let sha = meta
             .rsplit_once(' ')
             .map(|(_, sha)| &sha[..sha.len().min(8)]);
@@ -175,10 +221,14 @@ fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
             map.insert(path.to_string(), sha.to_string());
         }
     }
-    map
+    SubmodulePins::Listed(map)
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -222,5 +272,28 @@ mod tests {
     fn parse_empty_returns_empty() {
         let entries = parse_gitmodules("");
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn submodule_pins_distinguish_unreadable_from_unborn_parent() {
+        let repo = tempfile::tempdir().expect("fixture");
+        assert!(
+            std::process::Command::new(crate::test_support::git_binary())
+                .arg("init")
+                .current_dir(repo.path())
+                .output()
+                .expect("init")
+                .status
+                .success()
+        );
+        assert_eq!(
+            ls_tree_submodule_commits(repo.path()).for_path("vendor/lib"),
+            PinnedCommit::Absent
+        );
+        std::fs::write(repo.path().join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
+        assert_eq!(
+            ls_tree_submodule_commits(repo.path()).for_path("vendor/lib"),
+            PinnedCommit::Unreadable
+        );
     }
 }

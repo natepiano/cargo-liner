@@ -14,6 +14,7 @@ use crate::edge::RepositoryReservationEvidence;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::RepositorySnapshot;
 use crate::git::ReservationCheckpointCommits;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -30,13 +31,11 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
-use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
-use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerRetirement;
@@ -70,7 +69,7 @@ pub(crate) struct ReleaseRequest {
 
 #[derive(Clone, Copy)]
 struct ReleaseTransactionContext<'context> {
-    repository_root:      &'context Path,
+    repository:           &'context RepositorySnapshot,
     repository_trunk:     &'context IntegrationTarget,
     reservation_id:       ReservationId,
     invoking_worktree_id: WorktreeId,
@@ -104,7 +103,9 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Release),
         };
+    let maintenance = reconciliation_report.retention_maintenance.clone();
     release_reconciled_request(release_request, reconciliation_report)
+        .with_retention_maintenance(&maintenance)
 }
 
 /// Complete a release request using the settlements and evidence just revalidated.
@@ -275,6 +276,7 @@ fn execute_release(
         )?;
     }
     let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
+    let repository = git::RepositorySnapshot::new(worktree_context.clone());
     let outcome = ledger
         .transact_with_committed_action(
             journal_mutation_actor.worktree_id,
@@ -283,7 +285,7 @@ fn execute_release(
                 validate_release_transaction(
                     &state,
                     ReleaseTransactionContext {
-                        repository_root: worktree_context.repository_root(),
+                        repository: &repository,
                         repository_trunk: &repository_trunk,
                         reservation_id: release_request.reservation_id,
                         invoking_worktree_id: journal_mutation_actor.worktree_id,
@@ -340,29 +342,41 @@ fn sweep_current_marker_against_active_reservations(
     worktree_id: WorktreeId,
     coordination_run_id: CoordinationRunId,
 ) -> Result<(), ReleaseError> {
-    let outcome = ledger.transact(worktree_id, coordination_run_id, |state| {
-        let result = state
-            .reservations()
-            .map_err(ReleaseError::ReservationReplay)
-            .and_then(|reservations| {
-                worktree_context
-                    .sweep_coordination_run_marker(|marker_run_id| {
-                        reservations.iter().any(|reservation| {
+    let outcome = ledger
+        .transact_with_committed_action(
+            worktree_id,
+            coordination_run_id,
+            |state| match state.reservations() {
+                Ok(reservations) => CommittedActionValidation::AlreadySatisfied(
+                    reservations
+                        .iter()
+                        .filter(|reservation| {
                             reservation.is_active_for_coordination_run_and_worktree(
-                                marker_run_id,
+                                reservation.actor().run,
                                 worktree_id,
                             )
                         })
-                    })
+                        .map(|reservation| reservation.actor().run)
+                        .collect::<Vec<_>>(),
+                ),
+                Err(error) => {
+                    CommittedActionValidation::Reject(ReleaseError::ReservationReplay(error))
+                },
+            },
+            |active_runs| {
+                worktree_context
+                    .sweep_coordination_run_marker(|run| active_runs.contains(&run))
                     .map_err(ReleaseError::Ledger)
-            });
-        TransactionValidation::Reject(result)
-    })?;
+            },
+        )
+        .map_err(|error| match error {
+            LedgerCommittedActionError::Transaction(error) => ReleaseError::Transaction(error),
+            LedgerCommittedActionError::Action(error) => error,
+        })?;
     match outcome {
-        LedgerTransactionOutcome::Rejected(result) => result,
-        LedgerTransactionOutcome::Appended { .. } => {
-            Err(ReleaseError::UnexpectedMarkerSweepMutation)
-        },
+        LedgerCommittedActionOutcome::AlreadySatisfied { output, .. }
+        | LedgerCommittedActionOutcome::Appended { output, .. } => Ok(output),
+        LedgerCommittedActionOutcome::Rejected(error) => Err(error),
     }
 }
 
@@ -391,11 +405,13 @@ fn validate_release_transaction(
     else {
         return CommittedActionValidation::Reject(ReleaseRejection::UnknownReservation);
     };
-    let judging_branch =
-        match target.judging_branch(context.repository_root, context.repository_trunk) {
-            Ok(judging_branch) => judging_branch,
-            Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Git(error)),
-        };
+    let judging_branch = match target.judging_branch(
+        context.repository.repository_root(),
+        context.repository_trunk,
+    ) {
+        Ok(judging_branch) => judging_branch,
+        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Git(error)),
+    };
     let marker_plan = marker_plan_for(
         reservations,
         reservation.actor().run,
@@ -413,7 +429,7 @@ fn validate_release_transaction(
         return CommittedActionValidation::Reject(ReleaseRejection::RequiresReconcileFirst);
     }
     let release_append = match operation_for_state(
-        context.repository_root,
+        context.repository,
         judging_branch.target().short_name(),
         context.invoking_worktree_id,
         reservation,
@@ -458,7 +474,7 @@ fn release_retention_deletions(
 }
 
 fn operation_for_state(
-    repository_root: &Path,
+    repository: &RepositorySnapshot,
     target_branch: &str,
     invoking_worktree_id: WorktreeId,
     reservation: &Reservation,
@@ -466,7 +482,7 @@ fn operation_for_state(
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     let reservation_id = reservation.id();
     let release_repository_context = ReleaseRepositoryContext {
-        repository_root,
+        repository,
         target_branch,
         holder_worktree: HolderWorktree::classify(
             invoking_worktree_id,
@@ -517,7 +533,7 @@ fn checkpoint_operation(
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
     let checkpoint_commits: ReservationCheckpointCommits = git::reservation_checkpoint_commits(
-        release_repository_context.repository_root,
+        release_repository_context.repository,
         release_repository_context.target_branch,
     )
     .map_err(ReleaseRejection::Git)?;
@@ -549,7 +565,7 @@ fn outstanding_operation(
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     let reservation_id = reservation.id();
     let Ok(current_trunk) = reservation::current_trunk(
-        release_repository_context.repository_root,
+        &release_repository_context.repository.object_reader(),
         release_repository_context.target_branch,
     ) else {
         return Ok(judged_evidence_operation(
@@ -573,7 +589,7 @@ fn outstanding_operation(
         )
     } else {
         reservation::outstanding_integration_status(
-            release_repository_context.repository_root,
+            release_repository_context.repository.repository_root(),
             release_repository_context.phase_start_head,
             release_repository_context.scopes,
             protected_tip,
@@ -600,7 +616,10 @@ fn outstanding_operation(
             // Advance a stale checkpoint when the holder has committed new pending work.
             if !matches!(evidence, IntegrationEvidenceStatus::ObjectUnknown)
                 && release_repository_context.holder_worktree == HolderWorktree::Invoking
-                && reservation::current_head(release_repository_context.repository_root)
+                && release_repository_context
+                    .repository
+                    .head_object_id()
+                    .cloned()
                     .is_ok_and(|head| head != *protected_tip.as_ref())
             {
                 return resnapshot_operation(
@@ -629,7 +648,10 @@ fn outstanding_operation(
             evidence,
             IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
         )
-        && reservation::current_head(release_repository_context.repository_root)
+        && release_repository_context
+            .repository
+            .head_object_id()
+            .cloned()
             .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
     {
         return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
@@ -690,7 +712,7 @@ fn revalidate_proven_integration(
         current_trunk,
         |witness| {
             git::reachability(
-                release_repository_context.repository_root,
+                release_repository_context.repository.repository_root(),
                 witness,
                 current_trunk,
             )
@@ -698,7 +720,7 @@ fn revalidate_proven_integration(
         },
         || {
             reservation::integration_status(
-                release_repository_context.repository_root,
+                release_repository_context.repository.repository_root(),
                 release_repository_context.phase_start_head,
                 release_repository_context.scopes,
                 protected_tip,
@@ -736,7 +758,10 @@ fn resnapshot_operation(
     current_trunk: &GitObjectId,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     let replacement_tip = ProtectedReservationTip::from(
-        reservation::current_head(release_repository_context.repository_root)
+        release_repository_context
+            .repository
+            .head_object_id()
+            .cloned()
             .map_err(ReleaseRejection::Git)?,
     );
     Ok(ReleaseAppend::new(
@@ -773,7 +798,7 @@ fn released_evidence_operation(
         return Err(ReleaseRejection::AlreadyReleased);
     }
     let Ok(current_trunk) = reservation::current_trunk(
-        release_repository_context.repository_root,
+        &release_repository_context.repository.object_reader(),
         release_repository_context.target_branch,
     ) else {
         return Ok(already_settled_operation(
@@ -793,7 +818,7 @@ fn released_evidence_operation(
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => trunk_commit
             .revalidate_ancestry(&current_trunk, |witness| {
                 git::reachability(
-                    release_repository_context.repository_root,
+                    release_repository_context.repository.repository_root(),
                     witness,
                     &current_trunk,
                 )
@@ -865,7 +890,7 @@ fn already_settled_operation(
 }
 
 struct ReleaseRepositoryContext<'repository> {
-    repository_root:  &'repository Path,
+    repository:       &'repository RepositorySnapshot,
     target_branch:    &'repository str,
     holder_worktree:  HolderWorktree,
     phase_start_head: &'repository ProtectedPhaseStartHead,
@@ -1022,7 +1047,7 @@ impl ReleaseCommittedAction {
         repository_root: &Path,
         worktree_context: &WorktreeContext,
     ) -> Result<ReleasePayloadPreparation, ReleaseError> {
-        git::update_reservation_retention_refs(repository_root, &[], &self.retention_deletions)?;
+        git::delete_reservation_retention_refs(repository_root, &self.retention_deletions)?;
         self.retention_plan.commit(repository_root)?;
         let marker = self.marker_plan.finish(worktree_context);
         Ok(ReleasePayloadPreparation {
@@ -1254,7 +1279,6 @@ enum ReleaseError {
     AlreadyReleased(ReservationId),
     ForeignActiveReservation(ReservationId),
     RequiresReconcileFirst,
-    UnexpectedMarkerSweepMutation,
     EdgeReplay(EdgeReplayError),
 }
 
@@ -1284,9 +1308,6 @@ impl Display for ReleaseError {
             ),
             Self::RequiresReconcileFirst => {
                 formatter.write_str("reservation lifecycle requires reconciliation")
-            },
-            Self::UnexpectedMarkerSweepMutation => {
-                formatter.write_str("marker sweep unexpectedly appended a journal event")
             },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
         }

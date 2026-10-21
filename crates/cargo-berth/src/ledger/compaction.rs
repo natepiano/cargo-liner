@@ -5,7 +5,7 @@
 //! it names, and no replay step reads a merge extent. So once every reservation an observation
 //! names is named again by a later observation, the record leaves no trace in the fold, and
 //! compacting the journal may drop it. An observation superseded for only some of its reservations
-//! is kept whole. Every other record is kept.
+//! is kept whole. Expired finished history is removed only after checking its dependencies.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -13,20 +13,31 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
+use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::Serialize;
+use uuid::Uuid;
 
+use super::constants::HISTORY_COMPACTION_CHECK_FILE_NAME;
+use super::constants::HISTORY_COMPACTION_CHECK_INTERVAL;
 use super::constants::JOURNAL_COMPACTION_TEMPORARY_FILE_NAME;
 use super::constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use super::error::LedgerError;
 use super::handle::Ledger;
+use super::history::ExpiredHistory;
+use super::history::HistoryWindowChange;
 use super::identity;
 use super::journal::Journal;
 use super::journal::JournalError;
@@ -37,6 +48,7 @@ use super::lock::MutationLockError;
 use super::projection::Projection;
 use super::projection::ProjectionError;
 use super::replay_checkpoint::ReplayCheckpoint;
+use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::reservation::ReservationReplayError;
@@ -53,6 +65,8 @@ pub(super) struct SupersededExtents {
     live:                       BTreeMap<u64, LiveExtent>,
     /// The total byte length of the observations no reservation names as its latest.
     pub(super) droppable_bytes: u64,
+    /// Observations that also establish a retained terminal-state clock.
+    history_roots:              BTreeMap<ReservationId, u64>,
 }
 
 /// An observation that is the latest for at least one reservation.
@@ -91,6 +105,35 @@ impl SupersededExtents {
         }
     }
 
+    /// Retain the first terminal observation until a later disposition replaces its clock.
+    pub(super) fn observe_history(
+        &mut self,
+        changes: Vec<HistoryWindowChange>,
+        ordinal: u64,
+        is_extent: bool,
+    ) {
+        for change in changes {
+            let (id, starts) = match change {
+                HistoryWindowChange::Started(id) => (id, true),
+                HistoryWindowChange::Ended(id) => (id, false),
+            };
+            if let Some(previous) = self.history_roots.remove(&id)
+                && let Entry::Occupied(mut entry) = self.live.entry(previous)
+            {
+                entry.get_mut().names -= 1;
+                if entry.get().names == 0 {
+                    self.droppable_bytes += entry.remove().bytes;
+                }
+            }
+            if starts && is_extent {
+                self.history_roots.insert(id, ordinal);
+                if let Some(entry) = self.live.get_mut(&ordinal) {
+                    entry.names += 1;
+                }
+            }
+        }
+    }
+
     /// Whether compaction keeps the record at `ordinal`, a merge extent observation when
     /// `merge_extent_observation` holds: every record except an observation that no reservation
     /// names as its latest.
@@ -102,9 +145,9 @@ impl SupersededExtents {
 /// What one journal compaction did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JournalCompaction {
-    /// No merge extent observation is superseded, so the journal is untouched.
+    /// No superseded observation or expired, unreferenced history can be removed.
     NothingToCompact,
-    /// The journal was rewritten without its superseded merge extent observations.
+    /// The journal was rewritten without superseded observations and expired, unreferenced history.
     Compacted {
         /// The records dropped.
         removed:   JournalRecords,
@@ -176,14 +219,112 @@ struct CompactionRefusalMarker {
 /// A journal's replay and the records its compaction keeps.
 struct CompactionPlan {
     /// The replay of the whole journal.
-    replay: JournalReplay,
+    replay:         JournalReplay,
     /// The kept records, byte for byte, in append order.
-    kept:   Vec<u8>,
+    kept:           Vec<u8>,
+    /// The original byte and record counts, before pruning its expected fold.
+    original:       JournalRecords,
+    /// Whether new records can follow this verified prefix without changing its pruning plan.
+    source_changes: CompactionSourceChanges,
+}
+
+/// Which source changes preserve a verified compaction prefix.
+#[derive(Clone, Copy)]
+enum CompactionSourceChanges {
+    /// Superseded observations leave no replay state; later records can follow either prefix.
+    AppendedRecords,
+    /// New references can make expired history necessary again, requiring a new pruning plan.
+    ExactJournal,
+}
+
+/// A verified rewrite bound to the exact journal file it replaces.
+struct PreparedJournalCompaction {
+    source:          Metadata,
+    /// Byte length actually read and verified, including appends racing the source metadata read.
+    source_end:      u64,
+    source_changes:  CompactionSourceChanges,
+    journal_path:    PathBuf,
+    checkpoint_path: PathBuf,
+    replay:          JournalReplay,
+    result:          JournalCompaction,
+}
+
+/// Whether the journal has a verified rewrite ready for publication.
+enum CompactionPreparation {
+    /// No observation or expired history can be removed.
+    Unchanged,
+    /// A verified replacement bound to its source journal.
+    Ready(Box<PreparedJournalCompaction>),
+}
+
+impl PreparedJournalCompaction {
+    /// Include only the newly committed tail while holding the mutation lock. A rewrite that
+    /// prunes expired history needs a new dependency plan outside the lock instead.
+    fn include_committed_tail(&mut self, path: &Path) -> Result<bool, JournalCompactionError> {
+        if self.still_current(path)? {
+            return Ok(true);
+        }
+        if matches!(self.source_changes, CompactionSourceChanges::ExactJournal) {
+            return Ok(false);
+        }
+        let mut source = fs::File::open(path)?;
+        let current = source.metadata()?;
+        if current.dev() != self.source.dev()
+            || current.ino() != self.source.ino()
+            || current.len() < self.source_end
+        {
+            return Ok(false);
+        }
+        source.seek(SeekFrom::Start(self.source_end))?;
+        let mut appended = Vec::new();
+        source.read_to_end(&mut appended)?;
+        let (replay, complete_end) =
+            std::mem::replace(&mut self.replay, JournalReplay::empty()).extended_over(&appended)?;
+        if complete_end != appended.len() {
+            return Err(CompactionRefusal::IncompleteFinalRecord.into());
+        }
+        if let Err(error) = &replay.reservations {
+            return Err(CompactionRefusal::ReservationReplay(error.clone()).into());
+        }
+        let mut replacement = OpenOptions::new().append(true).open(&self.journal_path)?;
+        replacement.write_all(&appended)?;
+        replacement.sync_all()?;
+        if let JournalCompaction::Compacted { remaining, .. } = &mut self.result {
+            remaining.records = replay.record_count;
+            remaining.bytes = u64::from(replay.end_offset);
+        }
+        self.replay = replay;
+        // The checkpoint still certifies its unchanged prefix. Its reader advances this tail.
+        self.source_end = current.len();
+        self.source = current;
+        Ok(true)
+    }
+
+    fn still_current(&self, path: &Path) -> std::io::Result<bool> {
+        let current = fs::metadata(path)?;
+        let stamp = |metadata: &Metadata| {
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+            )
+        };
+        Ok(self.source_end == current.len() && stamp(&self.source) == stamp(&current))
+    }
+}
+
+impl Drop for PreparedJournalCompaction {
+    fn drop(&mut self) {
+        std::mem::drop(fs::remove_file(&self.journal_path));
+        std::mem::drop(fs::remove_file(&self.checkpoint_path));
+    }
 }
 
 impl Ledger {
-    /// Rewrite the journal without the merge extent observations that later observations
-    /// supersede, holding the mutation lock throughout.
+    /// Rewrite the journal without superseded observations and expired, unreferenced history,
+    /// preparing the rewrite before taking the mutation lock for publication.
     ///
     /// Replays the whole journal, writes the kept records to a temporary file, replays that file,
     /// and refuses unless both replays agree. Then stores the replay checkpoint for the temporary
@@ -203,9 +344,23 @@ impl Ledger {
         mut at_boundary: impl FnMut(PublicationBoundary),
     ) -> Result<JournalCompaction, JournalCompactionError> {
         self.require_existing()?;
-        let _lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
-        self.compact_locked_journal(repo_instance_id, replays_agree, &mut at_boundary)
+        for _ in 0..8 {
+            let CompactionPreparation::Ready(mut prepared) =
+                self.prepare_compaction(repo_instance_id, replays_agree)?
+            else {
+                return Ok(JournalCompaction::NothingToCompact);
+            };
+            let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+            if !prepared.include_committed_tail(&self.paths.journal)? {
+                std::mem::drop(lock);
+                continue;
+            }
+            let result = self.publish_compacted(&prepared, repo_instance_id, &mut at_boundary);
+            std::mem::drop(lock);
+            return result.map(|()| prepared.result);
+        }
+        Err(LedgerError::PreparationInvalidated.into())
     }
 
     /// Compact the journal after a transaction whose replay held `droppable_bytes` of superseded
@@ -218,6 +373,30 @@ impl Ledger {
         std::mem::drop(self.attempt_due_compaction(droppable_bytes, replays_agree));
     }
 
+    /// Expired audit history triggers compaction independently of superseded byte volume.
+    pub(super) fn compact_expired_history(&self) {
+        let checked = self
+            .paths
+            .directory
+            .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
+        if fs::metadata(&checked)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|elapsed| elapsed < HISTORY_COMPACTION_CHECK_INTERVAL)
+        {
+            return;
+        }
+        if self
+            .attempt_due_compaction(self.compaction_threshold_bytes, replays_agree)
+            .is_ok_and(|attempt| attempt.is_some())
+        {
+            // Live dependencies can retain expired history. Reconsider them at most once
+            // per minute rather than replaying the entire journal after every hook.
+            std::mem::drop(fs::write(checked, b"checked"));
+        }
+    }
+
     /// [`Self::compact_if_due`], keeping a compacted journal only when `agree` holds of the
     /// original and compacted replays. Returns `None` when it skips the compaction.
     fn attempt_due_compaction(
@@ -228,35 +407,44 @@ impl Ledger {
         if droppable_bytes < self.compaction_threshold_bytes || self.compaction_held_back() {
             return Ok(None);
         }
-        let _lock = match MutationLock::acquire(&self.paths.lock, Duration::ZERO) {
-            Ok(lock) => lock,
-            Err(MutationLockError::AcquisitionTimedOut) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let compaction = self.compact_locked_journal_if_due(agree);
+        let compaction = self.prepare_due_compaction(agree);
         if let Err(error) = &compaction {
-            // Without a marker, the next transaction past the threshold attempts again.
             std::mem::drop(self.record_refusal(error));
         }
         compaction
     }
 
-    /// Replay the journal again under the mutation lock the caller holds, and compact it when its
-    /// superseded records still reach the threshold after any concurrent compaction.
-    fn compact_locked_journal_if_due(
+    /// Build and verify the rewrite before trying the automatic, non-waiting lock.
+    fn prepare_due_compaction(
         &self,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
     ) -> Result<Option<JournalCompaction>, JournalCompactionError> {
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
-        let replay =
-            Journal::open_existing(&self.paths.journal)?.replay_repairing_tail_from_checkpoint(
-                &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
-            )?;
-        if replay.superseded.droppable_bytes < self.compaction_threshold_bytes {
+        let replay = Journal::replay_read_only_from_checkpoint(
+            &self.paths.journal,
+            &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
+        )?;
+        if replay.superseded.droppable_bytes < self.compaction_threshold_bytes
+            && !replay.finished_history.is_due(&RecordedAt::now())
+        {
             return Ok(None);
         }
-        self.compact_locked_journal(repo_instance_id, agree, &mut |_| {})
-            .map(Some)
+        let CompactionPreparation::Ready(prepared) =
+            self.prepare_compaction(repo_instance_id, agree)?
+        else {
+            return Ok(Some(JournalCompaction::NothingToCompact));
+        };
+        let lock = match MutationLock::acquire(&self.paths.lock, Duration::ZERO) {
+            Ok(lock) => lock,
+            Err(MutationLockError::AcquisitionTimedOut) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !prepared.still_current(&self.paths.journal)? {
+            return Ok(None);
+        }
+        let result = self.publish_compacted(&prepared, repo_instance_id, &mut |_| {});
+        std::mem::drop(lock);
+        result.map(|()| Some(prepared.result))
     }
 
     /// Whether a failed automatic compaction of the current journal file holds the next one back:
@@ -291,92 +479,85 @@ impl Ledger {
         fs::write(&self.paths.compaction_refusal, serde_json::to_vec(&marker)?)
     }
 
-    /// Compact the journal of the ledger of `repo_instance_id` under the mutation lock the caller
-    /// holds, keeping the compacted journal only when `agree` holds of the original and compacted
-    /// replays, and calling `at_boundary` at each [`PublicationBoundary`] it reaches.
-    fn compact_locked_journal(
+    /// Read, prune, write and verify a rewrite without owning the mutation lock.
+    fn prepare_compaction(
         &self,
         repo_instance_id: RepoInstanceId,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
-        at_boundary: &mut impl FnMut(PublicationBoundary),
-    ) -> Result<JournalCompaction, JournalCompactionError> {
-        let temporary_path = self
-            .paths
-            .directory
-            .join(JOURNAL_COMPACTION_TEMPORARY_FILE_NAME);
-        match fs::remove_file(&temporary_path) {
-            Ok(()) => {},
-            Err(error) if error.kind() == ErrorKind::NotFound => {},
-            Err(error) => return Err(error.into()),
-        }
+    ) -> Result<CompactionPreparation, JournalCompactionError> {
+        let source = fs::metadata(&self.paths.journal)?;
         let Some(plan) = CompactionPlan::of(&fs::read(&self.paths.journal)?, repo_instance_id)?
         else {
-            return Ok(JournalCompaction::NothingToCompact);
+            return Ok(CompactionPreparation::Unchanged);
         };
-        let publication =
-            self.publish_compacted(&temporary_path, &plan, repo_instance_id, agree, at_boundary);
-        if publication.is_err() {
-            // Before the rename the journal is untouched, and the next compaction would remove
-            // the temporary file anyway.
-            std::mem::drop(fs::remove_file(&temporary_path));
+        let journal_path = self.paths.directory.join(format!(
+            "{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.{}",
+            Uuid::now_v7()
+        ));
+        let checkpoint_path = journal_path.with_added_extension("checkpoint");
+        let mut prepared = PreparedJournalCompaction {
+            source,
+            source_end: plan.original.bytes,
+            source_changes: plan.source_changes,
+            journal_path,
+            checkpoint_path,
+            replay: JournalReplay::empty(),
+            result: JournalCompaction::NothingToCompact,
+        };
+        let mut temporary_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&prepared.journal_path)?;
+        temporary_file.write_all(&plan.kept)?;
+        temporary_file.sync_all()?;
+        let compacted = Journal::replay_read_only(&prepared.journal_path)?;
+        if !agree(&plan.replay, &compacted) {
+            return Err(CompactionRefusal::ReplayMismatch.into());
         }
-        let compacted = publication?;
-        // A marker left behind names the replaced journal file, so it holds nothing back.
-        std::mem::drop(remove_refusal(&self.paths.compaction_refusal));
-        Ok(JournalCompaction::Compacted {
+        std::mem::drop(
+            ReplayCheckpoint::new(&prepared.checkpoint_path, repo_instance_id)
+                .store_for_journal_file(&compacted, &temporary_file.metadata()?, &plan.kept),
+        );
+        prepared.result = JournalCompaction::Compacted {
             removed:   JournalRecords {
-                records: plan.replay.record_count - compacted.record_count,
-                bytes:   u64::from(plan.replay.end_offset) - u64::from(compacted.end_offset),
+                records: plan.original.records - compacted.record_count,
+                bytes:   plan.original.bytes - u64::from(compacted.end_offset),
             },
             remaining: JournalRecords {
                 records: compacted.record_count,
                 bytes:   u64::from(compacted.end_offset),
             },
-        })
+        };
+        prepared.replay = compacted;
+        Ok(CompactionPreparation::Ready(Box::new(prepared)))
     }
 
-    /// Write `plan`'s kept records to `temporary_path`, verify with `agree` that their replay
-    /// matches the plan's, and publish them as the journal. Returns the compacted journal's replay.
+    /// Publish an already verified rewrite while its source file is still current.
     fn publish_compacted(
         &self,
-        temporary_path: &Path,
-        plan: &CompactionPlan,
+        prepared: &PreparedJournalCompaction,
         repo_instance_id: RepoInstanceId,
-        agree: fn(&JournalReplay, &JournalReplay) -> bool,
         at_boundary: &mut impl FnMut(PublicationBoundary),
-    ) -> Result<JournalReplay, JournalCompactionError> {
-        let mut temporary_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary_path)?;
-        temporary_file.write_all(&plan.kept)?;
-        temporary_file.sync_all()?;
-        let compacted = Journal::replay_read_only(temporary_path)?;
-        if !agree(&plan.replay, &compacted) {
-            return Err(CompactionRefusal::ReplayMismatch.into());
+    ) -> Result<(), JournalCompactionError> {
+        if prepared.checkpoint_path.is_file() {
+            fs::rename(&prepared.checkpoint_path, &self.paths.replay_checkpoint)?;
         }
-        // A checkpoint that cannot be written leaves the next replay to start from byte 0.
-        std::mem::drop(
-            ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id)
-                .store_for_journal_file(&compacted, &temporary_file.metadata()?, &plan.kept),
-        );
         at_boundary(PublicationBoundary::BeforeProjection);
-        Projection::from_replay(repo_instance_id, &compacted)
+        Projection::from_replay(repo_instance_id, &prepared.replay)
             .publish(&self.paths.directory, &self.paths.projection)?;
-        // The projection's rename must be durable before the shorter journal replaces the old
-        // one; otherwise a crash could leave the old projection ahead of the compacted journal.
         fs::File::open(&self.paths.directory)?.sync_all()?;
         at_boundary(PublicationBoundary::BeforeRename);
-        fs::rename(temporary_path, &self.paths.journal)?;
+        fs::rename(&prepared.journal_path, &self.paths.journal)?;
         fs::File::open(&self.paths.directory)?.sync_all()?;
         at_boundary(PublicationBoundary::AfterRename);
-        Ok(compacted)
+        std::mem::drop(remove_refusal(&self.paths.compaction_refusal));
+        Ok(())
     }
 }
 
 impl CompactionPlan {
     /// The plan for compacting `journal`, the whole journal of the ledger of `repo_instance_id`,
-    /// or `None` when no record is superseded.
+    /// or `None` when no observation or finished history can be removed.
     fn of(
         journal: &[u8],
         repo_instance_id: RepoInstanceId,
@@ -394,18 +575,46 @@ impl CompactionPlan {
         if complete_end != journal.len() {
             return Err(CompactionRefusal::IncompleteFinalRecord.into());
         }
-        if replay.superseded.droppable_bytes == 0 {
+        let events = journal
+            .split_inclusive(|byte| *byte == b'\n')
+            .map(serde_json::from_slice)
+            .collect::<Result<Vec<super::journal::JournalEvent>, _>>()
+            .map_err(LedgerError::JournalEncoding)?;
+        let kept_extents = merge_extent_observations
+            .into_iter()
+            .zip(0_u64..)
+            .map(|(observation, ordinal)| replay.superseded.keeps(ordinal, observation))
+            .collect::<Vec<_>>();
+        let expired = ExpiredHistory::of(&replay, &events, &kept_extents, &RecordedAt::now())
+            .map_err(LedgerError::JournalEncoding)?;
+        if replay.superseded.droppable_bytes == 0 && expired.is_empty() {
             return Ok(None);
         }
+        let original = JournalRecords {
+            records: replay.record_count,
+            bytes:   u64::from(replay.end_offset),
+        };
         let mut kept = Vec::with_capacity(journal.len());
-        let records = (0_u64..).zip(journal.split_inclusive(|byte| *byte == b'\n'));
-        for ((ordinal, record), merge_extent_observation) in records.zip(merge_extent_observations)
-        {
-            if replay.superseded.keeps(ordinal, merge_extent_observation) {
+        for (ordinal, record) in journal.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if kept_extents[ordinal] && expired.keeps(ordinal) {
                 kept.extend_from_slice(record);
             }
         }
-        Ok(Some(Self { replay, kept }))
+        let source_changes = if expired.is_empty() {
+            CompactionSourceChanges::AppendedRecords
+        } else {
+            CompactionSourceChanges::ExactJournal
+        };
+        let mut replay = replay;
+        expired
+            .prune(&mut replay)
+            .map_err(LedgerError::JournalEncoding)?;
+        Ok(Some(Self {
+            replay,
+            kept,
+            original,
+            source_changes,
+        }))
     }
 }
 
@@ -423,6 +632,7 @@ pub(super) fn remove_refusal(path: &Path) -> std::io::Result<()> {
 /// records, repositories, and generation.
 fn replays_agree(original: &JournalReplay, compacted: &JournalReplay) -> bool {
     original.reservations == compacted.reservations
+        && original.finished_history == compacted.finished_history
         && original.coordination_events == compacted.coordination_events
         && original.repositories == compacted.repositories
         && original.generation == compacted.generation
@@ -508,9 +718,11 @@ mod tests {
     use super::PublicationBoundary;
     use super::SupersededExtents;
     use super::replays_agree;
+    use crate::answer::ConflictAuthorization;
     use crate::ids::CoordinationRunId;
     use crate::ids::EventId;
     use crate::ids::ProjectionGeneration;
+    use crate::ids::RecordedAt;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
@@ -536,6 +748,274 @@ mod tests {
     const RACING_RENEWALS: usize = 10;
     /// The compactions that run while renewals append, each after one superseding observation.
     const RACING_COMPACTIONS: usize = 5;
+
+    #[test]
+    fn expired_finished_history_compacts_without_superseded_extents() -> Result<(), Box<dyn Error>>
+    {
+        let old = "2020-01-01T00:00:00.000Z".parse::<RecordedAt>()?;
+        let mut claim = journal::fold_sequence_events()?
+            .into_iter()
+            .find(|event| matches!(event.operation, JournalOperation::Claim { .. }))
+            .ok_or("claim fixture")?;
+        claim.at = old;
+        let expired = ReservationId::new();
+        if let JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        } = &mut claim.operation
+        {
+            *reservation_id = expired;
+            **authorization = ConflictAuthorization::NoConflict;
+        }
+        let mut release = claim.clone();
+        release.event_id = EventId::new();
+        release.operation = operation(
+            &serde_json::json!({"op":"release", "reservation_id":expired, "disposition":{"kind":"retired_orphan", "evidence":"finished audit fixture"}}),
+        )?;
+        let mut live_claim = claim.clone();
+        let live = ReservationId::new();
+        live_claim.event_id = EventId::new();
+        live_claim.at = crate::ids::RecordedAt::now();
+        if let JournalOperation::Claim { reservation_id, .. } = &mut live_claim.operation {
+            *reservation_id = live;
+        }
+        let mut events = vec![claim, release, live_claim];
+        for (index, event) in events.iter_mut().enumerate() {
+            event.projection_generation = ProjectionGeneration::from(u64::try_from(index)? + 1);
+        }
+        let fixture = CompactionFixture::holding(events)?;
+        assert_eq!(superseded_bytes(&fixture.ledger)?, 0);
+        let before = fixture.journal()?.len();
+        append(
+            &fixture.ledger,
+            &JournalOperation::Renew {
+                reservation_id: live,
+            },
+        )?;
+        let replay = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        let retained = replay.reservations?;
+        assert!(
+            retained.reservation(expired).is_err(),
+            "expired finished reservation leaves the fold"
+        );
+        assert!(
+            retained.reservation(live).is_ok(),
+            "live reservation survives"
+        );
+        assert!(
+            fixture.journal()?.len() < before,
+            "the journal shrinks independently of the extent threshold"
+        );
+        let checkpoint = Journal::replay_read_only_from_checkpoint(
+            &fixture.ledger.paths.journal,
+            &ReplayCheckpoint::new(
+                &fixture.ledger.paths.replay_checkpoint,
+                fixture.repo_instance_id,
+            ),
+        )?;
+        assert!(checkpoint.reservations?.reservation(expired).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn history_pruning_keeps_live_edge_proofs_open_alerts_and_recent_dispositions()
+    -> Result<(), Box<dyn Error>> {
+        let template = journal::fold_sequence_events()?
+            .into_iter()
+            .find(|event| matches!(event.operation, JournalOperation::Claim { .. }))
+            .ok_or("claim fixture")?;
+        let predecessor = ReservationId::new();
+        let alert = ReservationId::new();
+        let recent = ReservationId::new();
+        let live = ReservationId::new();
+        let expired = ReservationId::new();
+        let old = "2020-01-01T00:00:00.000Z".parse::<RecordedAt>()?;
+        let mut events = Vec::new();
+        for id in [predecessor, alert, recent, live, expired] {
+            let mut claim = template.clone();
+            claim.at = if id == recent {
+                crate::ids::RecordedAt::now()
+            } else {
+                old.clone()
+            };
+            claim.event_id = EventId::new();
+            if let JournalOperation::Claim {
+                reservation_id,
+                authorization,
+                ..
+            } = &mut claim.operation
+            {
+                *reservation_id = id;
+                **authorization = ConflictAuthorization::NoConflict;
+            }
+            events.push(claim);
+            if id == live {
+                continue;
+            }
+            if id == predecessor || id == alert {
+                for value in [
+                    serde_json::json!({"op":"checkpoint","reservation_id":id,"protected_tip":"2222222222222222222222222222222222222222","trunk_snapshot":"1111111111111111111111111111111111111111"}),
+                    serde_json::json!({"op":"evidence_revalidated","reservation_id":id,"status":serde_json::json!({"status":"integrated","trunk_oid":"1111111111111111111111111111111111111111"}),"edit_blocking_status":"clear"}),
+                ] {
+                    let mut event = template.clone();
+                    event.at = old.clone();
+                    event.event_id = EventId::new();
+                    event.operation = operation(&value)?;
+                    events.push(event);
+                }
+            }
+            let mut release = template.clone();
+            release.at = if id == recent {
+                crate::ids::RecordedAt::now()
+            } else {
+                old.clone()
+            };
+            release.event_id = EventId::new();
+            release.operation = operation(
+                &serde_json::json!({"op":"release","reservation_id":id,"disposition":if id == predecessor || id == alert { serde_json::json!({"kind":"integrated"}) } else { serde_json::json!({"kind":"retired_orphan","evidence":"finished audit fixture"}) }}),
+            )?;
+            events.push(release);
+            if id == alert {
+                let mut lost = events.last().ok_or("release fixture")?.clone();
+                lost.event_id = EventId::new();
+                lost.operation = operation(
+                    &serde_json::json!({"op":"evidence_revalidated","reservation_id":id,"status":{"status":"not_integrated"},"edit_blocking_status":"clear"}),
+                )?;
+                events.push(lost);
+            }
+        }
+        let mut sequence = template;
+        sequence.operation = operation(
+            &serde_json::json!({"op":"sequence","predecessor":predecessor,"successor":live,"edge_id":crate::ids::EdgeId::new(),"scopes":[{"path":"src","kind":"tree"}],"reason":"preserve predecessor proof"}),
+        )?;
+        events.push(sequence);
+        for (index, event) in events.iter_mut().enumerate() {
+            event.projection_generation = ProjectionGeneration::from(u64::try_from(index)? + 1);
+        }
+        let fixture = CompactionFixture::holding(events)?;
+        let before = Journal::replay_read_only(&fixture.ledger.paths.journal)?.reservations?;
+        fixture.ledger.compact_journal()?;
+        let after = Journal::replay_read_only(&fixture.ledger.paths.journal)?.reservations?;
+        assert!(after.reservation(expired).is_err());
+        for id in [predecessor, alert, recent, live] {
+            assert_eq!(
+                after.reservation(id)?,
+                before.reservation(id)?,
+                "retained dependency keeps all historical integration witnesses and scoped-patch evidence"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn expired_empty_outstanding_checkpoint_keeps_its_recovery_evidence()
+    -> Result<(), Box<dyn Error>> {
+        let mut claim = journal::fold_sequence_events()?
+            .into_iter()
+            .find(|event| matches!(event.operation, JournalOperation::Claim { .. }))
+            .ok_or("claim fixture")?;
+        claim.at = "2020-01-01T00:00:00.000Z".parse()?;
+        let outstanding = ReservationId::new();
+        if let JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        } = &mut claim.operation
+        {
+            *reservation_id = outstanding;
+            **authorization = ConflictAuthorization::NoConflict;
+        }
+        let mut checkpoint = claim.clone();
+        checkpoint.event_id = EventId::new();
+        checkpoint.operation = operation(
+            &serde_json::json!({"op":"checkpoint", "reservation_id":outstanding, "protected_tip":"2222222222222222222222222222222222222222", "trunk_snapshot":"1111111111111111111111111111111111111111"}),
+        )?;
+        let mut observed = claim.clone();
+        observed.event_id = EventId::new();
+        observed.operation = operation(
+            &serde_json::json!({"op":"merge_extent_observed", "reservation_id":outstanding, "extent":empty_extent(), "run_status":"ended"}),
+        )?;
+        let mut anchor = claim.clone();
+        anchor.at = RecordedAt::now();
+        anchor.event_id = EventId::new();
+        if let JournalOperation::Claim { reservation_id, .. } = &mut anchor.operation {
+            *reservation_id = ReservationId::new();
+        }
+        let mut events = vec![claim, checkpoint, observed, anchor];
+        for (index, event) in events.iter_mut().enumerate() {
+            event.projection_generation = ProjectionGeneration::from(u64::try_from(index)? + 1);
+        }
+        let fixture = CompactionFixture::holding(events)?;
+        let before = Journal::replay_read_only(&fixture.ledger.paths.journal)?.reservations?;
+        assert!(before.reservation(outstanding)?.is_terminal());
+        fixture.ledger.compact_journal()?;
+        let after = Journal::replay_read_only(&fixture.ledger.paths.journal)?.reservations?;
+        assert_eq!(
+            after.reservation(outstanding)?,
+            before.reservation(outstanding)?,
+            "an orphan alert can still need an outstanding checkpoint's protected tip"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_preserves_the_first_terminal_observation_clock() -> Result<(), Box<dyn Error>> {
+        let mut claim = journal::fold_sequence_events()?
+            .into_iter()
+            .find(|event| matches!(event.operation, JournalOperation::Claim { .. }))
+            .ok_or("claim fixture")?;
+        let id = ReservationId::new();
+        if let JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        } = &mut claim.operation
+        {
+            *reservation_id = id;
+            **authorization = ConflictAuthorization::NoConflict;
+        }
+        let mut events = vec![claim.clone()];
+        let mut checkpoint = claim.clone();
+        checkpoint.event_id = EventId::new();
+        checkpoint.operation = operation(
+            &serde_json::json!({"op":"checkpoint", "reservation_id":id, "protected_tip":"2222222222222222222222222222222222222222", "trunk_snapshot":"1111111111111111111111111111111111111111"}),
+        )?;
+        events.push(checkpoint);
+        for at in [
+            "2020-01-01T00:00:00.000Z".parse()?,
+            crate::ids::RecordedAt::now(),
+            crate::ids::RecordedAt::now(),
+        ] {
+            let mut observed = claim.clone();
+            observed.at = at;
+            observed.event_id = EventId::new();
+            observed.operation = operation(
+                &serde_json::json!({"op":"merge_extent_observed", "reservation_id":id, "extent":empty_extent(), "run_status":"ended"}),
+            )?;
+            events.push(observed);
+        }
+        // The final record keeps this endpoint as the generation anchor, despite its age.
+        for (index, event) in events.iter_mut().enumerate() {
+            event.projection_generation = ProjectionGeneration::from(u64::try_from(index)? + 1);
+        }
+        let fixture = CompactionFixture::holding(events)?;
+        let before = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        assert!(
+            before
+                .finished_history
+                .is_due(&crate::ids::RecordedAt::now())
+        );
+        assert!(matches!(
+            fixture.ledger.compact_journal()?,
+            JournalCompaction::Compacted { .. }
+        ));
+        let after = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        assert_eq!(before.finished_history, after.finished_history);
+        assert_eq!(after.superseded.droppable_bytes, 0);
+        assert!(after.record_count < before.record_count);
+        Ok(())
+    }
 
     #[test]
     fn only_fully_superseded_extent_observations_drop() -> Result<(), Box<dyn Error>> {
@@ -581,7 +1061,7 @@ mod tests {
 
     #[test]
     fn the_final_record_and_generation_survive() -> Result<(), Box<dyn Error>> {
-        let (events, _) = journal::round_trip_sequence_events()?;
+        let (events, _) = recent_round_trip_events()?;
         let (bytes, record_ends) = journal_bytes(&events)?;
 
         for (prefix_length, record_end) in record_ends.into_iter().enumerate().skip(1) {
@@ -612,7 +1092,7 @@ mod tests {
 
     #[test]
     fn droppable_bytes_equal_across_a_checkpoint_resume() -> Result<(), Box<dyn Error>> {
-        let (events, _) = journal::round_trip_sequence_events()?;
+        let (events, _) = recent_round_trip_events()?;
         let (bytes, record_ends) = journal_bytes(&events)?;
         let (whole, _) = JournalReplay::empty().extended_over(&bytes)?;
 
@@ -635,7 +1115,7 @@ mod tests {
     fn compaction_preserves_every_replay_output() -> Result<(), Box<dyn Error>> {
         let repository = RepoInstanceId::new();
         let fold = journal::fold_sequence_events()?;
-        let (round_trip, rejected) = journal::round_trip_sequence_events()?;
+        let (round_trip, rejected) = recent_round_trip_events()?;
         let base = &round_trip[..rejected];
         let mut journals = vec![accepted_prefix(&fold).to_vec(), base.to_vec()];
         for seed in GENERATED_SEEDS {
@@ -670,6 +1150,45 @@ mod tests {
     }
 
     #[test]
+    fn an_event_after_compaction_preparation_invalidates_the_rewrite() -> Result<(), Box<dyn Error>>
+    {
+        let fixture = CompactionFixture::round_trip()?;
+        let super::CompactionPreparation::Ready(prepared) = fixture
+            .ledger
+            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        else {
+            return Err("round-trip fixture must supersede observations".into());
+        };
+        let super::CompactionPreparation::Ready(overlapping) = fixture
+            .ledger
+            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        else {
+            return Err("round-trip fixture must still supersede observations".into());
+        };
+        let events = journal::complete_record_events(&fixture.journal()?)?;
+        let (renewal, _) = renewal_and_observation(&events)?;
+        let appended = append(&fixture.ledger, &renewal)?;
+        assert!(
+            !prepared.still_current(&fixture.ledger.paths.journal)?,
+            "a rewrite prepared before the append must not replace its journal"
+        );
+        drop(prepared);
+        assert!(
+            overlapping.checkpoint_path.is_file(),
+            "discarding one preparation must leave the other's checkpoint intact"
+        );
+        drop(overlapping);
+        fixture.ledger.compact_journal()?;
+        assert!(
+            journal::complete_record_events(&fixture.journal()?)?
+                .iter()
+                .any(|event| event.event_id == appended),
+            "re-preparation must retain the intervening event"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_second_compaction_drops_nothing() -> Result<(), Box<dyn Error>> {
         let fixture = CompactionFixture::round_trip()?;
         let original = fixture.journal()?;
@@ -698,7 +1217,7 @@ mod tests {
 
     #[test]
     fn a_journal_whose_replay_fails_is_never_compacted() -> Result<(), Box<dyn Error>> {
-        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (events, rejected) = recent_round_trip_events()?;
         assert!(superseded_record_bytes(&events)? > 0);
         let fixture = CompactionFixture::holding(events.clone())?;
         let original = fixture.journal()?;
@@ -745,7 +1264,7 @@ mod tests {
 
     #[test]
     fn superseded_bytes_equal_the_bytes_compaction_removes() -> Result<(), Box<dyn Error>> {
-        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (events, rejected) = recent_round_trip_events()?;
         let mut events = events[..rejected].to_vec();
         let repository = RepoInstanceId::new();
         name_repository(&mut events, repository);
@@ -777,8 +1296,52 @@ mod tests {
     }
 
     #[test]
+    fn compaction_keeps_appends_that_arrive_after_its_prefix_was_verified()
+    -> Result<(), Box<dyn Error>> {
+        let (events, rejected) = recent_round_trip_events()?;
+        let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
+        let fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        append(&fixture.ledger, &observation)?;
+        append(&fixture.ledger, &observation)?;
+        let super::CompactionPreparation::Ready(mut prepared) = fixture
+            .ledger
+            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        else {
+            return Err("superseded observations must prepare a rewrite".into());
+        };
+        let appended = (0..RACING_RENEWALS)
+            .map(|_| append(&fixture.ledger, &renewal))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let lock = MutationLock::acquire(
+            &fixture.ledger.paths.lock,
+            MUTATING_VERB_CONTENTION_TOLERANCE,
+        )?;
+        assert!(prepared.include_committed_tail(&fixture.ledger.paths.journal)?);
+        fixture
+            .ledger
+            .publish_compacted(&prepared, fixture.repo_instance_id, &mut |_| {})?;
+        drop(lock);
+        let survivors = journal::complete_record_events(&fixture.journal()?)?
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect::<BTreeSet<_>>();
+        assert!(appended.is_subset(&survivors));
+        fixture.ledger.read_validated_journal()?;
+        let checkpoint = ReplayCheckpoint::new(
+            &fixture.ledger.paths.replay_checkpoint,
+            fixture.repo_instance_id,
+        );
+        let resumed =
+            Journal::replay_read_only_from_checkpoint(&fixture.ledger.paths.journal, &checkpoint)?;
+        let whole = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        assert!(replays_agree(&whole, &resumed));
+        assert_eq!(whole.end_offset, resumed.end_offset);
+        Ok(())
+    }
+
+    #[test]
     fn appends_racing_compaction_all_survive() -> Result<(), Box<dyn Error>> {
-        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (events, rejected) = recent_round_trip_events()?;
         let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
         let fixture = Arc::new(CompactionFixture::holding(events[..rejected].to_vec())?);
         let start = Arc::new(Barrier::new(2));
@@ -788,14 +1351,14 @@ mod tests {
             thread::spawn(move || {
                 start.wait();
                 (0..RACING_RENEWALS)
-                    .map(|_| append(&fixture.ledger, renewal.clone()))
+                    .map(|_| append(&fixture.ledger, &renewal))
                     .collect::<Result<Vec<_>, _>>()
             })
         };
         start.wait();
         let mut observations = Vec::new();
         for _ in 0..RACING_COMPACTIONS {
-            observations.push(append(&fixture.ledger, observation.clone())?);
+            observations.push(append(&fixture.ledger, &observation)?);
             let compaction = fixture.ledger.compact_journal()?;
             assert!(
                 matches!(compaction, JournalCompaction::Compacted { .. }),
@@ -918,18 +1481,18 @@ mod tests {
     #[test]
     fn a_transaction_compacts_the_journal_once_superseded_records_reach_the_threshold()
     -> Result<(), Box<dyn Error>> {
-        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (events, rejected) = recent_round_trip_events()?;
         let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
         let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
         let droppable = superseded_bytes(&fixture.ledger)?;
         fixture.ledger.compaction_threshold_bytes = droppable + 1;
         let inode = fs::metadata(&fixture.ledger.paths.journal)?.ino();
 
-        let renewed = append(&fixture.ledger, renewal)?;
+        let renewed = append(&fixture.ledger, &renewal)?;
         assert_eq!(fs::metadata(&fixture.ledger.paths.journal)?.ino(), inode);
         assert_eq!(superseded_bytes(&fixture.ledger)?, droppable);
 
-        let observed = append(&fixture.ledger, observation)?;
+        let observed = append(&fixture.ledger, &observation)?;
         let survivors = journal::complete_record_events(&fixture.journal()?)?
             .into_iter()
             .map(|event| event.event_id)
@@ -966,7 +1529,7 @@ mod tests {
 
     #[test]
     fn a_refused_compaction_waits_for_a_threshold_of_growth() -> Result<(), Box<dyn Error>> {
-        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (events, rejected) = recent_round_trip_events()?;
         let (renewal, _) = renewal_and_observation(&events[..rejected])?;
         let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
         let droppable = superseded_bytes(&fixture.ledger)?;
@@ -1011,7 +1574,7 @@ mod tests {
         let limit = refused.len() + droppable;
         let mut appends = 0;
         loop {
-            append(ledger, renewal.clone())?;
+            append(ledger, &renewal)?;
             appends += 1;
             let journal = fs::metadata(&ledger.paths.journal)?;
             if journal.ino() != refused.ino() {
@@ -1100,6 +1663,14 @@ mod tests {
         })
     }
 
+    fn recent_round_trip_events() -> Result<(Vec<JournalEvent>, usize), Box<dyn Error>> {
+        let (mut events, rejected) = journal::round_trip_sequence_events()?;
+        for event in &mut events {
+            event.at = crate::ids::RecordedAt::now();
+        }
+        Ok((events, rejected))
+    }
+
     fn operation(operation: &Value) -> Result<JournalOperation, serde_json::Error> {
         serde_json::from_value(operation.clone())
     }
@@ -1132,7 +1703,7 @@ mod tests {
         /// A ledger whose journal holds the round-trip sequence before its rejected record,
         /// which supersedes two observations.
         fn round_trip() -> Result<Self, Box<dyn Error>> {
-            let (events, rejected) = journal::round_trip_sequence_events()?;
+            let (events, rejected) = recent_round_trip_events()?;
             Self::holding(events[..rejected].to_vec())
         }
 
@@ -1166,9 +1737,9 @@ mod tests {
     }
 
     /// Append `operation` through a ledger transaction and return its event id.
-    fn append(ledger: &Ledger, operation: JournalOperation) -> Result<EventId, String> {
+    fn append(ledger: &Ledger, operation: &JournalOperation) -> Result<EventId, String> {
         match ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-            TransactionValidation::<()>::Append(Box::new(operation))
+            TransactionValidation::<()>::Append(Box::new(operation.clone()))
         }) {
             Ok(LedgerTransactionOutcome::Appended { event, .. }) => Ok(event.event_id),
             Ok(LedgerTransactionOutcome::Rejected(())) => Err("the append was rejected".to_owned()),

@@ -2,6 +2,9 @@
 
 use std::process::ExitCode;
 
+#[cfg(test)]
+use test_support::ThreadCountingAllocator;
+
 mod cache_paths;
 mod channel;
 mod ci;
@@ -20,5 +23,9 @@ mod test_support;
 mod themes;
 mod tui;
 mod watcher;
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: ThreadCountingAllocator = ThreadCountingAllocator;
 
 fn main() -> ExitCode { tui::run() }

@@ -7,6 +7,7 @@ use super::observation::ReservationPhaseHistory;
 use super::ordering;
 use super::provenance;
 use super::provenance::CommittedForeignPathHistory;
+use super::provenance::CoveredPathContribution;
 use super::provenance::PathCommitAuthorship;
 use super::report::DriftComparisonMode;
 use super::report::DriftEffect;
@@ -18,6 +19,9 @@ use super::report::ReservationDriftResult;
 use super::report::UnattributedDriftPathSet;
 use super::selection::DriftWideningSelection;
 use super::selection::ResolvedDriftSubjects;
+use super::widening::UnheldWideningPath;
+use super::widening::WideningAdmission;
+use super::widening::WideningPathAdmission;
 use crate::coordination_identity::IssuingWorktreeRun;
 use crate::ids::CommitterTime;
 use crate::ids::ReservationId;
@@ -39,7 +43,6 @@ use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::DriftCoverageProbe;
 use crate::reservation::IncursionObservation;
 use crate::reservation::Reservation;
-use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
@@ -200,7 +203,7 @@ impl PreLockForeignPathClassification {
         subject: &Reservation,
         path: &ReservationScopePath,
         reservations: &RetainedReservationSet,
-        holders: &[ReservationId],
+        holder: ReservationId,
     ) -> ForeignPathAuthorship {
         let Some(candidate) = self
             .candidates
@@ -212,13 +215,34 @@ impl PreLockForeignPathClassification {
         if matches!(candidate.write_origin, ForeignPathWriteOrigin::WorkingTree) {
             return ForeignPathAuthorship::Entered(IncursionCoverageEvidence::WorkingTreeWrites);
         }
+        if matches!(
+            candidate.write_origin,
+            ForeignPathWriteOrigin::CommittedOnly
+        ) {
+            match provenance::covered_path_contribution(
+                &self.committed_history,
+                subject.phase_start_head().as_ref(),
+                path,
+                holder,
+            ) {
+                CoveredPathContribution::CoveredIntegration => {
+                    return ForeignPathAuthorship::CoveredIntegration;
+                },
+                CoveredPathContribution::EvidenceUnavailable => {
+                    return ForeignPathAuthorship::Entered(
+                        IncursionCoverageEvidence::HistoryUnavailable,
+                    );
+                },
+                CoveredPathContribution::EnteringWork => {},
+            }
+        }
         match provenance::path_commit_authorship(
             &self.committed_history,
             subject.id(),
             subject.phase_start_head().as_ref(),
             path,
             reservations,
-            holders,
+            &[holder],
         ) {
             PathCommitAuthorship::NoEnteringCommits
                 if matches!(
@@ -242,6 +266,34 @@ impl PreLockForeignPathClassification {
         }
     }
 
+    /// The covered contribution of a refused run's committed path, using prepared history.
+    /// A working-tree write or a missing reporting anchor cannot prove covered integration.
+    fn refused_path_contribution(
+        &self,
+        reservations: &RetainedReservationSet,
+        path: &ReservationScopePath,
+        holder: ReservationId,
+    ) -> CoveredPathContribution {
+        let Some(candidate) = self.candidates.iter().find(|candidate| {
+            candidate.path == *path
+                && matches!(
+                    candidate.write_origin,
+                    ForeignPathWriteOrigin::CommittedOnly
+                )
+        }) else {
+            return CoveredPathContribution::EvidenceUnavailable;
+        };
+        let Ok(subject) = reservations.reservation(candidate.reservation_id) else {
+            return CoveredPathContribution::EvidenceUnavailable;
+        };
+        provenance::covered_path_contribution(
+            &self.committed_history,
+            subject.phase_start_head().as_ref(),
+            path,
+            holder,
+        )
+    }
+
     /// Whether a present foreign holder stood on the path when the invocation began.
     fn was_foreign(&self, reservation_id: ReservationId, path: &ReservationScopePath) -> bool {
         self.candidates
@@ -251,6 +303,7 @@ impl PreLockForeignPathClassification {
 }
 
 enum ForeignPathAuthorship {
+    CoveredIntegration,
     Inherited,
     Entered(IncursionCoverageEvidence),
 }
@@ -264,7 +317,7 @@ struct IncursionPathObservation {
 
 #[derive(Default)]
 struct DriftEffectBuilder {
-    widened_paths:          Vec<ReservationScopePath>,
+    widened_paths:          Vec<UnheldWideningPath>,
     incursions:             Vec<IncursionPathObservation>,
     collision_paths:        Vec<ReservationScopePath>,
     collision_reservations: Vec<ReservationId>,
@@ -340,14 +393,24 @@ impl DriftEffectBuilder {
         blockers: Vec<ReservationId>,
     ) {
         if prior.was_foreign(reservation.id(), path) {
-            let ForeignPathAuthorship::Entered(coverage) =
-                prior.coverage_evidence(reservation, path, reservations, &blockers)
-            else {
+            let mut entered_holders = Vec::new();
+            let mut evidence = Vec::new();
+            for holder in blockers {
+                match prior.coverage_evidence(reservation, path, reservations, holder) {
+                    ForeignPathAuthorship::CoveredIntegration
+                    | ForeignPathAuthorship::Inherited => {},
+                    ForeignPathAuthorship::Entered(coverage) => {
+                        entered_holders.push(holder);
+                        evidence.push(coverage);
+                    },
+                }
+            }
+            let Some(coverage) = evidence.into_iter().reduce(combine_entering_evidence) else {
                 return;
             };
             self.incursions.push(IncursionPathObservation {
                 path: path.clone(),
-                holders: blockers,
+                holders: entered_holders,
                 coverage,
             });
         } else {
@@ -380,7 +443,7 @@ impl DriftEffectBuilder {
             self.widened_paths
                 .into_iter()
                 .map(|path| ReservationScope {
-                    path,
+                    path: path.into_path(),
                     kind: ScopeKind::File,
                 })
                 .collect::<Vec<_>>(),
@@ -467,6 +530,27 @@ pub(super) struct DriftTransactionDecision {
     pub(super) report:     DriftReport,
 }
 
+/// Preserve [`IncursionCoverageEvidence::KnownEnteringCommits`] when the per-holder
+/// loop in [`DriftEffectBuilder::observe_foreign_path`] regroups decisions for one path.
+/// The regrouped incident must retain every entering commit its holders account for.
+fn combine_entering_evidence(
+    left: IncursionCoverageEvidence,
+    right: IncursionCoverageEvidence,
+) -> IncursionCoverageEvidence {
+    if left == right {
+        return left;
+    }
+    match (left, right) {
+        (
+            IncursionCoverageEvidence::KnownEnteringCommits { commits: left },
+            IncursionCoverageEvidence::KnownEnteringCommits { commits: right },
+        ) => IncursionCoverageEvidence::KnownEnteringCommits {
+            commits: left.union(right),
+        },
+        _ => IncursionCoverageEvidence::HistoryUnavailable,
+    }
+}
+
 pub(super) fn classify_locked(
     reservations: &RetainedReservationSet,
     subjects: &ResolvedDriftSubjects,
@@ -499,29 +583,27 @@ pub(super) fn classify_locked(
         let reservation = reservations.reservation(*reservation_id)?;
         let mut builder = DriftEffectBuilder::default();
         let drift_coverage_probe = subject_coverage_probe(reservations, reservation, path_case);
+        let widening_admission = WideningAdmission::new(reservations, reservation, changes);
         changes.visit_paths(*reservation_id, |path| {
             if reservation_covers_path(reservation, path, path_case) {
                 return;
             }
-            match prior.blocking_coverage(&drift_coverage_probe, reservation, path) {
+            let coverage = prior.blocking_coverage(&drift_coverage_probe, reservation, path);
+            match &coverage {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
-                    if !unclaimed_path_can_widen(
-                        reservations,
-                        reservation,
-                        changes,
-                        path,
-                        path_case,
-                    ) {
+                    let WideningPathAdmission::Admitted(admitted_path) =
+                        widening_admission.admit(path, &coverage)
+                    else {
                         return;
-                    }
+                    };
                     match widening_authorization {
                         DriftWideningAuthorization::WithheldFromRefusedRun => {},
                         DriftWideningAuthorization::Permitted => match &subjects.widening {
                             DriftWideningSelection::Selected(selected)
                                 if selected == reservation_id =>
                             {
-                                builder.widened_paths.push(path.clone());
+                                builder.widened_paths.push(admitted_path);
                             },
                             DriftWideningSelection::Ambiguous(_) => {
                                 unattributed_paths.push(path.clone());
@@ -578,44 +660,6 @@ pub(super) fn classify_locked(
     })
 }
 
-/// Unclaimed work can widen unless it is only inherited committed history.
-fn unclaimed_path_can_widen(
-    reservations: &RetainedReservationSet,
-    subject: &Reservation,
-    changes: &ObservedDriftChanges,
-    path: &ReservationScopePath,
-    path_case: PathCase,
-) -> bool {
-    changes.carries_work(path)
-        && (!changes.committed_only(subject.id(), path)
-            || changes.head_commit_introduced(path)
-                && !released_sibling_checkpoint_covers(
-                    reservations,
-                    subject,
-                    changes,
-                    path,
-                    path_case,
-                ))
-}
-
-/// A sibling's completed checkpoint remains its work, even inside this phase's range.
-/// Dirty paths and later commits are classified normally, so editing the path again can
-/// still widen the current phase.
-fn released_sibling_checkpoint_covers(
-    reservations: &RetainedReservationSet,
-    subject: &Reservation,
-    changes: &ObservedDriftChanges,
-    path: &ReservationScopePath,
-    path_case: PathCase,
-) -> bool {
-    reservations.iter().any(|sibling| {
-        sibling.actor().has_coordination_identity(subject.actor().worktree, subject.actor().run)
-            && reservation_covers_path(sibling, path, path_case)
-            && matches!(sibling.evidence_state(), Ok(ReservationEvidenceState::Released { protected_tip, .. })
-                if changes.compares_to_checkpoint(protected_tip.as_ref()))
-    })
-}
-
 /// Conflicting reservations that block `reservation_id`, excluding the acting widening
 /// reservation unless it is the subject itself.
 fn blocking_reservations(
@@ -663,6 +707,7 @@ pub(super) enum RefusedRunPathEntry {
 pub(super) fn attribute_refused_run_entry(
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
+    prior: &PreLockForeignPathClassification,
     refused: IssuingWorktreeRun,
     path_case: PathCase,
 ) -> RefusedRunPathEntry {
@@ -682,12 +727,42 @@ pub(super) fn attribute_refused_run_entry(
     ) else {
         return RefusedRunPathEntry::NoHolderEntered;
     };
-    let conflicts = reservations.conflicts_for_first_touch(
-        &candidate,
-        refused.coordination_run_id,
-        refused.worktree_id,
-        path_case,
-    );
+    let conflicts = reservations
+        .conflicts_for_first_touch(
+            &candidate,
+            refused.coordination_run_id,
+            refused.worktree_id,
+            path_case,
+        )
+        .into_iter()
+        .filter_map(|mut conflict| {
+            let entered_scopes = conflict
+                .overlapping_scopes
+                .as_slice()
+                .iter()
+                .filter(|held| {
+                    observed_paths.iter().any(|path| {
+                        let entered_scope = ReservationScope {
+                            path: path.clone(),
+                            kind: ScopeKind::File,
+                        };
+                        held.overlaps(&entered_scope, path_case)
+                            && !matches!(
+                                prior.refused_path_contribution(
+                                    reservations,
+                                    path,
+                                    conflict.reservation_id
+                                ),
+                                CoveredPathContribution::CoveredIntegration
+                            )
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            conflict.overlapping_scopes = ReservationScopeSet::try_from(entered_scopes).ok()?;
+            Some(conflict)
+        })
+        .collect::<Vec<_>>();
     let entered = observed_paths
         .into_iter()
         .filter(|path| {
@@ -696,7 +771,10 @@ pub(super) fn attribute_refused_run_entry(
                 kind: ScopeKind::File,
             };
             conflicts.iter().any(|conflict| {
-                conflict
+                !matches!(
+                    prior.refused_path_contribution(reservations, path, conflict.reservation_id),
+                    CoveredPathContribution::CoveredIntegration
+                ) && conflict
                     .overlapping_scopes
                     .as_slice()
                     .iter()

@@ -168,26 +168,6 @@ pub struct CpuUsage {
     pub gpu:           GpuUsage,
 }
 
-impl CpuUsage {
-    /// Build a zero-filled snapshot with `core_count` placeholder cores.
-    #[must_use]
-    pub fn placeholder(core_count: usize) -> Self {
-        Self {
-            total_percent: 0,
-            cores:         (0..core_count)
-                .map(|index| CpuCoreUsage {
-                    label:                               format!("CPU {}", index + 1),
-                    percent:                             0,
-                    #[cfg(target_os = "macos")]
-                    cluster:                             None,
-                })
-                .collect(),
-            breakdown:     CpuBreakdown::default(),
-            gpu:           GpuUsage::default(),
-        }
-    }
-}
-
 /// GPU metrics sampled by the platform-specific backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuUsage {

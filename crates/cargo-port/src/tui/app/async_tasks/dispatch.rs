@@ -57,8 +57,8 @@ impl App {
             "scan_result_applied"
         );
 
-        // Apply tree (same as apply_tree_build but inlined to avoid redundant
-        // rebuild scheduling).
+        // `mutate_tree().replace_all(ProjectList::new(projects))` applies the scan result inline
+        // rather than calling `apply_tree_build`, avoiding redundant rebuild scheduling.
         let selected_path = self
             .project_list
             .selected_project_path()
@@ -70,15 +70,16 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // Restore expansion before selecting, so the cursor lands on the right
-        // row in the expanded layout. The pending set is seeded from disk at
-        // startup and from the live tree on rescan, then drained here.
+        // Drain `project_list.paths.pending_expanded` into `apply_expanded` before
+        // `select_project_in_tree`, so the cursor lands on the correct expanded row. Startup seeds
+        // the set from disk and rescans from the live tree.
         let pending = std::mem::take(&mut self.project_list.paths.pending_expanded);
         self.project_list.apply_expanded(&pending);
         self.rebuild_visible_rows_now();
         self.refresh_project_storage();
 
-        // Restore selection.
+        // `project_list.select_project_in_tree` restores `selected_path`, falling back to
+        // `set_cursor(0)` when no prior selection exists and the list is nonempty.
         if let Some(path) = selected_path {
             self.project_list.select_project_in_tree(
                 path.as_path(),
@@ -89,11 +90,14 @@ impl App {
         }
         self.sync_selected_project();
 
-        // Register watcher for each item (same as register_item_background_services).
+        // `register_background_services_for_tree` registers each project watcher, as
+        // `register_item_background_services` does per item; `finish_watcher_registration_batch`
+        // closes the batch.
         self.register_background_services_for_tree();
         self.finish_watcher_registration_batch();
 
-        // Mark scan complete and initialize startup tracking.
+        // Set `scan.state.phase` to `ScanPhase::Complete` before `begin_startup_phase` initializes
+        // startup detail tracking.
         self.scan.state.phase = ScanPhase::Complete;
         self.begin_startup_phase(lint_registered);
     }
@@ -152,7 +156,7 @@ impl App {
                 self.handle_repo_info(path.as_path(), info);
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
-                self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
+                self.handle_git_first_commit(path.as_path(), first_commit);
             },
             BackgroundMsg::ProjectDetailsDeclared { path } => {
                 self.mark_startup_project_details_declared(path);
@@ -160,17 +164,10 @@ impl App {
             BackgroundMsg::Submodules { path, submodules } => {
                 self.handle_submodules_msg(path.as_path(), submodules);
             },
-            BackgroundMsg::CratesIoVersion {
-                path,
-                version,
-                prerelease,
-                downloads,
-            } => self.project_list.handle_crates_io_version_msg(
-                path.as_path(),
-                version,
-                prerelease,
-                downloads,
-            ),
+            BackgroundMsg::CratesIoVersion { path, release } => {
+                self.project_list
+                    .handle_crates_io_version_msg(path.as_path(), release);
+            },
             BackgroundMsg::CratesIoNewRelease {
                 display_name,
                 previous_version,
@@ -298,6 +295,7 @@ mod tests {
 
     use super::*;
     use crate::project::Package;
+    use crate::project::PinnedCommit;
     use crate::project::ProjectInfo;
     use crate::project::RustProject;
     use crate::tui::project_list::ExpandKey;
@@ -309,7 +307,7 @@ mod tests {
             relative_path: name.to_string(),
             url:           None,
             branch:        None,
-            commit:        None,
+            commit:        PinnedCommit::Absent,
             project_info:  ProjectInfo::default(),
             git_repo:      None,
         }

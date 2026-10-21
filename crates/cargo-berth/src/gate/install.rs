@@ -21,6 +21,7 @@ use crate::git::GitError;
 use crate::ledger::GATE_TARGETS_FILE_NAME;
 
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
+const REFERENCE_TRANSACTION_CONTEXT_FILE_NAME: &str = "cargo-berth-hook-context";
 const POST_COMMIT_HOOK_NAME: &str = "post-commit";
 const POST_COMMIT_MARKER: &str = "# cargo-berth managed hook: post-commit";
 const REFERENCE_TRANSACTION_HOOK_NAME: &str = "reference-transaction";
@@ -212,7 +213,15 @@ fn install_managed_hook(
         });
     }
     let was_present = existing.is_some();
-    let script = hook.script(common_git_directory, policy_worktree, trunk_reference);
+    if matches!(hook.dispatch, ManagedHookDispatch::ReferenceTransaction) {
+        RepositoryHookContext::for_repository(
+            common_git_directory,
+            policy_worktree,
+            trunk_reference,
+        )
+        .install(hooks_directory)?;
+    }
+    let script = hook.shared_script();
     if existing.as_deref() == Some(script.as_bytes()) {
         let mut permissions = fs::metadata(&hook_path)?.permissions();
         permissions.set_mode(EXECUTABLE_PERMISSIONS);
@@ -239,8 +248,9 @@ pub(crate) fn issuing_hook_is_current() -> bool {
 
 /// Replace a managed `reference-transaction` hook rendered from an earlier template.
 ///
-/// The hook is rewritten only when it carries the managed marker, names `policy_worktree`, and
-/// differs from the current script, through the same atomic replacement installation uses. A
+/// The hook is rewritten only when it carries the managed marker, its script or private
+/// context names `policy_worktree`, and its body differs from the current script. Context
+/// is refreshed through the same atomic replacement installation uses. A
 /// missing hook stays missing, an unmanaged one stays byte-identical, and one naming another
 /// policy worktree keeps it; each is left to `cargo berth init`. A hook that cannot be located or
 /// read is not identified as outdated, so only a failed rewrite is an error.
@@ -258,11 +268,22 @@ pub(crate) fn replace_outdated_reference_transaction_hook(
         return Ok(());
     };
     let quoted_policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
-    let script = hook.script(common_git_directory, policy_worktree, trunk_reference);
-    if !hook.is_marked_in(&existing)
-        || !contains(&existing, quoted_policy_worktree.as_bytes())
-        || existing == script.as_bytes()
-    {
+    let context_path = hooks_directory.join(REFERENCE_TRANSACTION_CONTEXT_FILE_NAME);
+    let context = read_hook(&context_path)?;
+    let owns_policy = contains(&existing, quoted_policy_worktree.as_bytes())
+        || context.as_deref().is_some_and(|contents| {
+            contains(
+                contents,
+                format!("cargo_berth_policy_worktree={quoted_policy_worktree}\n").as_bytes(),
+            )
+        });
+    if !hook.is_marked_in(&existing) || !owns_policy {
+        return Ok(());
+    }
+    RepositoryHookContext::for_repository(common_git_directory, policy_worktree, trunk_reference)
+        .install(&hooks_directory)?;
+    let script = hook.shared_script();
+    if existing == script.as_bytes() {
         return Ok(());
     }
     PendingManagedHookReplacement::create(&hooks_directory, hook.name)?
@@ -287,8 +308,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// A fully written replacement that is not visible at the managed hook path yet.
 struct PendingManagedHookReplacement {
-    path: PathBuf,
-    file: File,
+    path:        PathBuf,
+    file:        File,
+    permissions: u32,
 }
 
 impl PendingManagedHookReplacement {
@@ -301,7 +323,13 @@ impl PendingManagedHookReplacement {
                 std::process::id()
             ));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => return Ok(Self { path, file }),
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file,
+                        permissions: EXECUTABLE_PERMISSIONS,
+                    });
+                },
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
                 Err(error) => return Err(error),
             }
@@ -315,7 +343,7 @@ impl PendingManagedHookReplacement {
     fn activate(mut self, hook_path: &Path, script: &[u8]) -> std::io::Result<()> {
         self.file.write_all(script)?;
         let mut permissions = self.file.metadata()?.permissions();
-        permissions.set_mode(EXECUTABLE_PERMISSIONS);
+        permissions.set_mode(self.permissions);
         self.file.set_permissions(permissions)?;
         self.file.sync_all()?;
         fs::rename(&self.path, hook_path)
@@ -327,6 +355,16 @@ impl Drop for PendingManagedHookReplacement {
 }
 
 impl ManagedHook {
+    /// The executable body is identical across repositories; only context is private.
+    fn shared_script(&self) -> String {
+        match self.dispatch {
+            ManagedHookDispatch::PostCommit => self.script(Path::new(""), Path::new(""), ""),
+            ManagedHookDispatch::ReferenceTransaction => {
+                shared_reference_transaction_script(&reference_transaction_template_fingerprint())
+            },
+        }
+    }
+
     /// Whether `contents` carries this hook's marker, which makes the file ours to rewrite.
     fn is_marked_in(&self, contents: &[u8]) -> bool { contains(contents, self.marker.as_bytes()) }
 
@@ -403,12 +441,7 @@ __ISSUING_DIRECTORY_ENVIRONMENT__=$PWD
 export __ISSUING_DIRECTORY_ENVIRONMENT__
 __TEMPLATE_ENVIRONMENT__=__TEMPLATE_FINGERPRINT__
 export __TEMPLATE_ENVIRONMENT__
-if [ -d __POLICY_WORKTREE__ ]; then
-    cd __POLICY_WORKTREE__
-fi
-cargo_berth_trunk_reference=__TRUNK_REFERENCE__
-cargo_berth_gate_targets=__GATE_TARGETS__
-cargo_berth_trunk_loose_reference=__TRUNK_LOOSE_REFERENCE__
+__REPOSITORY_CONTEXT__
 case "${1:-}" in
     preparing|aborted) exit 0 ;;
     prepared|committed) ;;
@@ -581,7 +614,11 @@ fn reference_transaction_script(
     gate_targets: &str,
     template_fingerprint: &str,
 ) -> String {
+    let context = format!(
+        "if [ -d {policy_worktree} ]; then\n    cd {policy_worktree}\nfi\ncargo_berth_trunk_reference={trunk_reference}\ncargo_berth_gate_targets={gate_targets}\ncargo_berth_trunk_loose_reference={trunk_loose_reference}"
+    );
     render_reference_transaction_template(&[
+        ("__REPOSITORY_CONTEXT__", &context),
         (
             "__REFERENCE_TRANSACTION_MARKER__",
             REFERENCE_TRANSACTION_MARKER,
@@ -602,10 +639,85 @@ fn reference_transaction_script(
     ])
 }
 
-/// FNV-1a over the script this build renders for empty repository paths and an empty
-/// fingerprint, so any change to the template or to a constant it embeds changes it.
+/// Read repository data with shell builtins, before changing the issuing directory.
+const SHARED_REFERENCE_TRANSACTION_CONTEXT: &str = r#"case "${1:-}" in
+    preparing|aborted) exit 0 ;;
+esac
+cargo_berth_context="${0%/*}/cargo-berth-hook-context"
+if [ ! -r "$cargo_berth_context" ]; then
+    printf '%s\n' 'cargo-berth hook context is unavailable; permitting this ref transaction. Rerun cargo berth init.' >&2
+    exit 0
+fi
+. "$cargo_berth_context"
+if [ -d "$cargo_berth_policy_worktree" ]; then
+    cd "$cargo_berth_policy_worktree"
+fi"#;
+
+fn shared_reference_transaction_script(template_fingerprint: &str) -> String {
+    render_reference_transaction_template(&[
+        (
+            "__REFERENCE_TRANSACTION_MARKER__",
+            REFERENCE_TRANSACTION_MARKER,
+        ),
+        (
+            "__ISSUING_DIRECTORY_ENVIRONMENT__",
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+        ),
+        ("__TEMPLATE_ENVIRONMENT__", TEMPLATE_ENVIRONMENT),
+        ("__TEMPLATE_FINGERPRINT__", template_fingerprint),
+        (
+            "__REPOSITORY_CONTEXT__",
+            SHARED_REFERENCE_TRANSACTION_CONTEXT,
+        ),
+        ("__EXECUTABLE_RESOLUTION__", EXECUTABLE_RESOLUTION),
+        (
+            "__PENDING_MARKER_PREFIX__",
+            "\"$cargo_berth_pending_marker_prefix\"",
+        ),
+        (
+            "__PENDING_MARKER_SUFFIX__",
+            "\"$cargo_berth_pending_marker_suffix\"",
+        ),
+    ])
+}
+
+/// Private repository data sourced by the immutable managed reference hook.
+struct RepositoryHookContext {
+    contents: String,
+}
+
+impl RepositoryHookContext {
+    fn for_repository(common: &Path, policy: &Path, trunk: &str) -> Self {
+        let quoted = |path: &Path| shell_single_quoted(&path.to_string_lossy());
+        Self {
+            contents: format!(
+                "cargo_berth_policy_worktree={}\ncargo_berth_trunk_reference={}\ncargo_berth_gate_targets={}\ncargo_berth_trunk_loose_reference={}\ncargo_berth_pending_marker_prefix={}\ncargo_berth_pending_marker_suffix={}\n",
+                quoted(policy),
+                shell_single_quoted(trunk),
+                quoted(&common.join("cargo-berth").join(GATE_TARGETS_FILE_NAME)),
+                quoted(&common.join(trunk)),
+                quoted(&common.join(PENDING_BYPASS_FILE_PREFIX)),
+                shell_single_quoted(PENDING_BYPASS_FILE_SUFFIX),
+            ),
+        }
+    }
+
+    fn install(&self, hooks: &Path) -> std::io::Result<()> {
+        let path = hooks.join(REFERENCE_TRANSACTION_CONTEXT_FILE_NAME);
+        if read_hook(&path)?.as_deref() == Some(self.contents.as_bytes()) {
+            return Ok(());
+        }
+        let mut replacement =
+            PendingManagedHookReplacement::create(hooks, REFERENCE_TRANSACTION_CONTEXT_FILE_NAME)?;
+        replacement.permissions = 0o644;
+        replacement.activate(&path, self.contents.as_bytes())
+    }
+}
+
+/// FNV-1a over the shared script with an empty fingerprint, so any change to
+/// the executable body or its context loader changes the issuing-build stamp.
 fn reference_transaction_template_fingerprint() -> String {
-    let fingerprint = repository_reference_transaction_script(Path::new(""), Path::new(""), "", "")
+    let fingerprint = shared_reference_transaction_script("")
         .bytes()
         .fold(FINGERPRINT_OFFSET_BASIS, |fingerprint, byte| {
             (fingerprint ^ u64::from(byte)).wrapping_mul(FINGERPRINT_PRIME)
@@ -674,10 +786,91 @@ impl From<GitError> for HookInstallationError {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::process::Stdio;
+
     use super::EXECUTABLE_ENVIRONMENT;
     use super::EXECUTABLE_RESOLUTION;
+    use super::REFERENCE_TRANSACTION_CONTEXT_FILE_NAME;
+    use super::REFERENCE_TRANSACTION_HOOK;
+    use super::install_managed_hook;
     use super::reference_transaction_script;
+
+    /// The body can share an inode while execution still uses each repository's policy.
+    #[test]
+    fn shared_reference_body_dispatches_with_each_private_repository_context() {
+        let parent = tempfile::tempdir().expect("context test parent should exist");
+        let spy = parent.path().join("cargo-berth-spy");
+        fs::write(&spy, "#!/bin/sh\nprintf '%s' \"$PWD\"\n")
+            .expect("dispatch observer should write");
+        fs::set_permissions(&spy, fs::Permissions::from_mode(0o755))
+            .expect("dispatch observer should execute");
+        let mut scripts = Vec::new();
+        for name in ["first", "second"] {
+            let policy = parent.path().join(name);
+            let common = policy.join(".git");
+            let hooks = common.join("hooks");
+            fs::create_dir_all(&hooks).expect("repository hooks should exist");
+            install_managed_hook(
+                &hooks,
+                &REFERENCE_TRANSACTION_HOOK,
+                &common,
+                &policy,
+                "refs/heads/main",
+            )
+            .expect("managed hook should install");
+            let hook = hooks.join("reference-transaction");
+            scripts.push(fs::read(&hook).expect("shared body should read"));
+            assert_eq!(
+                fs::metadata(hooks.join(REFERENCE_TRANSACTION_CONTEXT_FILE_NAME))
+                    .expect("private context should exist")
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+            let mut child = Command::new(&hook)
+                .arg("prepared")
+                .current_dir(parent.path())
+                .env("CARGO_BERTH_EXECUTABLE", &spy)
+                .env_remove("CARGO_BERTH_BYPASS")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("shared hook should execute");
+            child
+                .stdin
+                .take()
+                .expect("transaction input should exist")
+                .write_all(
+                    format!("{} {} refs/heads/main\n", "0".repeat(40), "1".repeat(40)).as_bytes(),
+                )
+                .expect("transaction should write");
+            let output = child.wait_with_output().expect("shared hook should finish");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).expect("policy should be UTF-8"),
+                policy.to_string_lossy()
+            );
+        }
+        assert_eq!(
+            scripts[0], scripts[1],
+            "repository data must not enter the executable body"
+        );
+    }
 
     #[test]
     fn executable_resolution_reads_the_override_it_documents() {

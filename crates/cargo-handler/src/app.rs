@@ -55,6 +55,7 @@ use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::render;
 use crate::settings;
+use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::startup_log;
@@ -115,6 +116,8 @@ pub(crate) struct App {
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:      SummarySort,
+    /// Account ordering is independent of the machine-group agent ordering.
+    pub(crate) accounts_sort:     AccountsSort,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:                 Option<String>,
@@ -196,6 +199,7 @@ impl App {
             tiles: TileGrid::new(),
             tree_sorts: HashMap::new(),
             summary_sort: SummarySort::default(),
+            accounts_sort: AccountsSort::SourceOrder,
             inline_error: None,
             started: Instant::now(),
             attract: Attract::new(),
@@ -383,6 +387,7 @@ mod tests {
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
+    use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
     use crate::sort::SummaryColumn;
@@ -408,6 +413,7 @@ mod tests {
                 let mut child = row(root.pid + 1000, root.started + 1);
                 child.session_id = SessionIdentity::Claude(member.clone());
                 edges.push(HierarchyEdge {
+                    reviewer: ReviewerState::NotPool,
                     manager,
                     member,
                     role: HierarchyRole::Impl,

@@ -16,6 +16,7 @@ use crate::census::HierarchyEdges;
 use crate::census::ServiceTier;
 use crate::census::accounts::AccountsTable;
 use crate::sort;
+use crate::sort::AccountsSort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
@@ -44,7 +45,7 @@ fn sort_row(
 ) -> AgentRow {
     serde_json::from_value(serde_json::json!({
         "agent":"claude","name":name,"status":status,"started":started,"process_started":started,
-        "pid":pid,"desktop":desktop,"directory":directory,"branch":null,"launched_by":null,"children":[],
+        "pid":pid,"desktop":desktop,"directory":directory,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}],
         "account":{"home":format!("~/.{account}"),"label":account}
     })).expect("summary row fixture")
 }
@@ -112,6 +113,7 @@ fn sorted_buffer(machines: &[Machine<'_>], sort: SummarySort) -> Buffer {
         &mut buffer,
         area,
         &SummaryFrame {
+            accounts_sort: AccountsSort::SourceOrder,
             accounts: &AccountsTable::NotConfigured,
             machines,
             placement: &placement,
@@ -242,6 +244,7 @@ fn summary_header_clicks_work_for_every_machine_and_ignore_gaps_and_rows() {
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
+        accounts_sort: AccountsSort::SourceOrder,
         accounts: &AccountsTable::NotConfigured,
         machines: &machines,
         placement: &placement,
@@ -486,6 +489,7 @@ fn agent_sort_uses_displayed_labels_and_default_ties_in_both_account_modes() {
                 &mut buffer,
                 area,
                 &SummaryFrame {
+                    accounts_sort:  AccountsSort::SourceOrder,
                     accounts:       &AccountsTable::NotConfigured,
                     machines:       &machines,
                     placement:      &placement,
@@ -541,6 +545,7 @@ fn summary_header_click_rows_follow_empty_failed_and_clipped_machine_groups() {
     let cells = agent_cell::cell_order_placed(&placement);
     let colors = FooterColors::default();
     let frame = SummaryFrame {
+        accounts_sort:  AccountsSort::SourceOrder,
         accounts:       &AccountsTable::NotConfigured,
         machines:       &machines,
         placement:      &placement,

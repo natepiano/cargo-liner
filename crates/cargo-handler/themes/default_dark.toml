@@ -23,7 +23,7 @@ appearance = "dark"
 name       = "Default Dark"
 
 [variants.pane_chrome]
-active_title    = { color = "Yellow", bold = true }
+active_title    = { color = { r = 255, g = 210, b = 160 }, bold = true }
 inactive_border = "DarkGray"
 inactive_title  = "White"
 
@@ -64,7 +64,7 @@ shell          = { r = 90, g = 200, b = 220 }
 unreachable    = { r = 255, g = 100, b = 100 }
 
 [variants.status]
-bar = "DarkGray"
+bar = { r = 60, g = 60, b = 60 }
 
 [variants.finder]
 match_bg = { r = 0, g = 90, b = 100 }

@@ -123,7 +123,7 @@ pub(super) fn find_matching_worktree_container(
 }
 
 pub(super) fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
-    // Collect all members from all existing groups.
+    // Drain every `ws.groups_mut()` group into `members` using `MemberGroup::into_members`.
     let members: Vec<Package> = ws
         .groups_mut()
         .drain(..)
@@ -140,7 +140,8 @@ pub(super) fn replace_workspace_members(
 ) {
     members.sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
 
-    // Re-sort into groups based on subdirectory and inline_dirs.
+    // Build `group_map` by each member's first relative subdirectory and `inline_dirs`, then
+    // replace `ws.groups_mut()` with sorted `MemberGroup` values.
     let mut group_map: HashMap<String, Vec<Package>> = std::collections::HashMap::new();
     for member in members {
         let relative = member
@@ -188,7 +189,8 @@ pub(super) fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &Roo
     let RootItem::Rust(RustProject::Package(pkg)) = item else {
         return false;
     };
-    // Add to the first inline group, or create one.
+    // Push `pkg` into the first inline `MemberGroup`, or create `MemberGroup::Inline` when none
+    // exists.
     let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
     if let Some(group) = inline {
         group.members_mut().push(pkg.clone());

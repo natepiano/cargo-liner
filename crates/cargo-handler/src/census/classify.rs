@@ -39,20 +39,28 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::RoleFallback;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::codex;
 use super::codex::CodexThread;
+use super::codex::ResumeRequest;
 use super::tmux;
 use super::transcript::BashCall;
+use super::tree;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CLAUDE_DESKTOP_APP;
 use crate::constants::CLAUDE_DESKTOP_CLI_DIRNAME;
 use crate::constants::CLAUDE_DESKTOP_ENTRYPOINT;
+use crate::constants::CLAUDE_PERMISSION_ARGUMENT;
+use crate::constants::CLAUDE_PLAN_MODE;
+use crate::constants::CLAUDE_PLAN_PERMISSION_ARGUMENT;
+use crate::constants::CLAUDE_PRINT_ARGUMENTS;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_DESKTOP_APP;
@@ -134,6 +142,25 @@ impl ProcessEntry {
     }
 }
 
+impl ProcessEntry {
+    /// Plan-mode print processes are visible reviewers even without a session record.
+    pub(super) fn is_plan_reviewer(&self) -> bool {
+        self.is_claude()
+            && self
+                .arguments
+                .iter()
+                .any(|arg| CLAUDE_PRINT_ARGUMENTS.contains(&arg.as_str()))
+            && (self
+                .arguments
+                .windows(2)
+                .any(|pair| pair[0] == CLAUDE_PERMISSION_ARGUMENT && pair[1] == CLAUDE_PLAN_MODE)
+                || self
+                    .arguments
+                    .iter()
+                    .any(|arg| arg == CLAUDE_PLAN_PERMISSION_ARGUMENT))
+    }
+}
+
 /// The part of a Claude Code session record the summary reads. The
 /// records hold more, which is ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -193,7 +220,7 @@ pub(super) fn agent_rows(
     account_labels: &AccountLabels,
 ) -> Vec<AgentRow> {
     let table = pid_table(processes);
-    let threads = codex_startup_threads(processes, codex_threads);
+    let threads = codex_startup_threads(processes, codex_threads, home);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
         .filter_map(|session| claude_row(&table, session, home, account_labels))
@@ -207,9 +234,57 @@ pub(super) fn agent_rows(
             )
         }))
         .collect();
-    // Only a session the desktop app started has a launcher yet: the
-    // process holding it, which takes the row standing for the app.
-    let apps: HashSet<u32> = rows.iter().filter_map(|row| row.launched_by).collect();
+    for process in processes
+        .iter()
+        .filter(|process| process.is_plan_reviewer())
+    {
+        if !rows.iter().any(|row| row.pid == process.pid) {
+            let session = SessionRecord {
+                pid:        process.pid,
+                session_id: String::new(),
+                cwd:        process.directory.clone(),
+                name:       Some(format!("pid {}", process.pid)),
+                status:     None,
+                entrypoint: None,
+            };
+            if let Some(mut row) = claude_row(&table, &session, home, account_labels) {
+                row.launched_by = processes
+                    .iter()
+                    .filter(|parent| parent.is_agent() && parent.pid != process.pid)
+                    .find(|parent| process.parent == Some(parent.pid))
+                    .map(|parent| parent.pid);
+                rows.push(row);
+            }
+        }
+    }
+    for row in &mut rows {
+        if table
+            .get(&row.pid)
+            .is_some_and(|process| process.is_plan_reviewer())
+        {
+            row.role_fallback = RoleFallback::Review;
+        }
+    }
+    let listed: HashSet<_> = rows.iter().map(|row| row.pid).collect();
+    for row in &mut rows {
+        if row.launched_by.is_none()
+            && let Some(process) = table.get(&row.pid)
+        {
+            row.launched_by = ancestors(&table, process)
+                .find(|ancestor| listed.contains(&ancestor.pid))
+                .map(|ancestor| ancestor.pid);
+        }
+    }
+    // Desktop sessions add a visible row for their app launcher.
+    let apps: HashSet<u32> = sessions
+        .iter()
+        .filter(|session| session.is_from_desktop_app())
+        .filter_map(|session| {
+            rows.iter()
+                .find(|row| row.pid == session.pid)
+                .and_then(|row| row.launched_by)
+        })
+        .collect();
     rows.extend(
         apps.iter()
             .filter_map(|pid| table.get(pid))
@@ -224,11 +299,28 @@ pub(super) fn agent_rows(
 pub(super) fn codex_startup_threads<'a>(
     processes: &[ProcessEntry],
     codex_threads: &'a [CodexThread],
+    home: Option<&Path>,
 ) -> HashMap<u32, &'a CodexThread> {
-    startup_threads(
-        &interactive_codex(&pid_table(processes), processes),
-        codex_threads,
-    )
+    let interactive = interactive_codex(&pid_table(processes), processes);
+    let mut matched = startup_threads(&interactive, codex_threads, home);
+    for process in interactive {
+        let mut candidates = codex_threads
+            .iter()
+            .filter(|thread| thread_matches_home(process, thread, home));
+        let resumed = match codex::resume_request(process) {
+            ResumeRequest::NewSession => None,
+            ResumeRequest::NamedId(id) => {
+                candidates.find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
+            },
+            ResumeRequest::LastThread => candidates
+                .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
+                .max_by_key(|thread| (thread.created_ms, &thread.rollout)),
+        };
+        if let Some(thread) = resumed {
+            matched.insert(process.pid, thread);
+        }
+    }
+    matched
 }
 
 /// The creation times, in unix milliseconds, that a thread must fall in
@@ -286,6 +378,7 @@ fn thread_window(process: &ProcessEntry) -> RangeInclusive<u64> {
 fn startup_threads<'a>(
     codex: &[&ProcessEntry],
     threads: &'a [CodexThread],
+    home: Option<&Path>,
 ) -> HashMap<u32, &'a CodexThread> {
     let mut first: HashMap<u32, &CodexThread> = HashMap::new();
     for thread in threads {
@@ -294,6 +387,7 @@ fn startup_threads<'a>(
             .filter(|process| {
                 process.directory.as_deref() == Some(thread.cwd.as_path())
                     && thread_window(process).contains(&thread.created_ms)
+                    && thread_matches_home(process, thread, home)
             })
             .max_by_key(|process| (process.started, process.pid));
         if let Some(owner) = owner {
@@ -306,6 +400,11 @@ fn startup_threads<'a>(
     first
 }
 
+/// Match the lexical account home; shared sessions symlinks must not merge accounts.
+fn thread_matches_home(process: &ProcessEntry, thread: &CodexThread, home: Option<&Path>) -> bool {
+    codex::session_home(process, home).is_some_and(|home| thread.rollout.starts_with(home))
+}
+
 /// The row for `session`, when its process is alive, is Claude Code,
 /// and is under no other agent. A session the Claude desktop app started
 /// is launched by the process above it, which holds it for the app.
@@ -316,12 +415,19 @@ fn claude_row(
     account_labels: &AccountLabels,
 ) -> Option<AgentRow> {
     let process = table.get(&session.pid)?;
-    if !process.is_claude() || under_an_agent(table, process) {
+    if !process.is_claude()
+        || (under_an_agent(table, process)
+            && !process.is_plan_reviewer()
+            && !ancestors(table, process).any(|ancestor| {
+                super::worker_dispatch::ParsedDispatch::from_arguments(&ancestor.arguments).is_ok()
+            }))
+    {
         return None;
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
         agent:           Agent::Claude,
+        role_fallback:   crate::census::RoleFallback::None,
         session_id:      session.session_id.clone().into(),
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
@@ -349,6 +455,7 @@ fn desktop_app_row(
 ) -> AgentRow {
     AgentRow {
         agent:           Agent::Claude,
+        role_fallback:   crate::census::RoleFallback::None,
         session_id:      SessionIdentity::Unrecorded,
         service_tier:    ServiceTier::Unrecorded,
         account:         account::account_of(process, home, account_labels),
@@ -411,6 +518,7 @@ fn codex_row(
     };
     Some(AgentRow {
         agent,
+        role_fallback: crate::census::RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
         service_tier: ServiceTier::Unrecorded,
         account: account::account_of(process, home, account_labels),
@@ -575,6 +683,7 @@ pub(super) fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> 
 
 #[cfg(test)]
 mod tests {
+    use super::account::Program;
     use super::*;
     use crate::census::Machine;
     use crate::census::MachineState;
@@ -912,7 +1021,7 @@ mod tests {
     #[test]
     fn an_interactive_codex_is_named_for_the_thread_it_started() {
         let work = "/home/natepiano/rust/handler";
-        let processes = [
+        let mut processes = [
             process(1, 0, "systemd", 0),
             detailed(10, 1, "codex", 100, &["codex", "resume"], work),
             detailed(20, 1, "codex", 110, &["codex"], work),
@@ -921,12 +1030,17 @@ mod tests {
             detailed(50, 1, "claude", 90, &["claude"], HOME),
             detailed(60, 50, "codex", 125, &["codex"], HOME),
         ];
+        for process in &mut processes {
+            if process.is_codex() {
+                process.config_home = ConfigHome::Default(Program::Codex);
+            }
+        }
         let thread = |cwd: &str, created_ms, name: Option<&str>, prompt: &str| CodexThread {
             cwd: PathBuf::from(cwd),
             created_ms,
             name: name.map(str::to_string),
             first_prompt: prompt.to_string(),
-            rollout: PathBuf::from(format!("/rollouts/{created_ms}.jsonl")),
+            rollout: PathBuf::from(format!("{HOME}/.codex/sessions/{created_ms}.jsonl")),
         };
         let threads = [
             thread(work, 111_800, Some("codex test"), ""),

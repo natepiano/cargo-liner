@@ -1,6 +1,10 @@
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::UNIX_EPOCH;
 
+use super::DetailField;
+use crate::constants::GIT_STATUS_UNREADABLE;
+use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::IN_SYNC;
 use crate::constants::MINUTES_PER_DAY;
 use crate::constants::MINUTES_PER_HOUR;
@@ -11,7 +15,188 @@ use crate::constants::SECONDS_PER_MINUTE;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::http::RateLimitQuota;
+use crate::project::AheadBehind;
 use crate::project::BisectProgress;
+use crate::project::CheckoutInfo;
+use crate::project::CommitDate;
+use crate::project::Comparison;
+use crate::project::FirstCommit;
+use crate::project::GitStatus;
+use crate::project::HeadState;
+use crate::project::RemoteList;
+use crate::project::RepoInfo;
+use crate::project::ResolvedBranch;
+use crate::project::TrackedRef;
+
+/// Whether any completed git read failed, independently of path status.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) enum GitReadHealth {
+    Readable,
+    Unreadable,
+}
+
+impl GitReadHealth {
+    pub(in crate::tui) fn of(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> Self {
+        if GitReadFailures::of(checkout, repo).rows.is_empty() {
+            Self::Readable
+        } else {
+            Self::Unreadable
+        }
+    }
+}
+
+/// The pane row or remote cell that owns a failed git read.
+#[derive(Clone, PartialEq, Eq)]
+enum UnreadableGitRow {
+    Field(DetailField),
+    RemoteTracked(usize),
+    RemoteSync(usize),
+}
+
+/// Failed reads and their owning rows, shared by the pane and list markers.
+#[derive(Clone, Default)]
+pub(in crate::tui) struct GitReadFailures {
+    rows: Vec<UnreadableGitRow>,
+}
+
+impl GitReadFailures {
+    pub(super) fn of(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> Self {
+        let mut failures = Self::default();
+        if let Some(info) = checkout {
+            failures.observe_checkout(info);
+        }
+        if let Some(info) = repo {
+            failures.observe_repo(info);
+        }
+        failures
+    }
+
+    fn observe_checkout(&mut self, info: &CheckoutInfo) {
+        for (failed, field) in [
+            (
+                matches!(info.status, GitStatus::Unreadable),
+                DetailField::GitStatus,
+            ),
+            (
+                matches!(info.head, HeadState::Unreadable),
+                DetailField::Head,
+            ),
+            (
+                matches!(info.last_commit, CommitDate::Unreadable),
+                DetailField::LastCommit,
+            ),
+            (
+                matches!(info.primary_tracked_ref, TrackedRef::Unreadable),
+                DetailField::Head,
+            ),
+            (
+                matches!(info.ahead_behind_local, Comparison::Unreadable),
+                DetailField::VsLocal,
+            ),
+            (
+                matches!(info.bisect, Some(BisectProgress::Unreadable)),
+                DetailField::Bisect,
+            ),
+        ] {
+            if failed {
+                self.rows.push(UnreadableGitRow::Field(field));
+            }
+        }
+    }
+
+    fn observe_repo(&mut self, info: &RepoInfo) {
+        for (failed, field) in [
+            (
+                matches!(
+                    info.first_commit,
+                    FirstCommit::Probed(CommitDate::Unreadable)
+                ),
+                DetailField::Inception,
+            ),
+            (
+                matches!(info.default_branch, ResolvedBranch::Unreadable),
+                DetailField::Head,
+            ),
+            (
+                matches!(info.local_main_branch, ResolvedBranch::Unreadable),
+                DetailField::Head,
+            ),
+        ] {
+            if failed {
+                self.rows.push(UnreadableGitRow::Field(field));
+            }
+        }
+        match &info.remotes {
+            RemoteList::Unreadable => self
+                .rows
+                .push(UnreadableGitRow::Field(DetailField::RemotesUnreadable)),
+            RemoteList::Listed(remotes) => {
+                for (index, remote) in remotes.iter().enumerate() {
+                    if matches!(remote.tracked_ref, TrackedRef::Unreadable) {
+                        self.rows.push(UnreadableGitRow::RemoteTracked(index));
+                    }
+                    if matches!(remote.ahead_behind, Comparison::Unreadable) {
+                        self.rows.push(UnreadableGitRow::RemoteSync(index));
+                    }
+                }
+            },
+        }
+    }
+
+    pub(super) fn fields(&self) -> impl Iterator<Item = DetailField> + '_ {
+        self.rows.iter().filter_map(|row| match row {
+            UnreadableGitRow::Field(field) => Some(*field),
+            UnreadableGitRow::RemoteTracked(_) | UnreadableGitRow::RemoteSync(_) => None,
+        })
+    }
+
+    pub(in crate::tui::panes) fn field_failed(&self, field: DetailField) -> bool {
+        self.rows.contains(&UnreadableGitRow::Field(field))
+    }
+
+    pub(super) fn remote_tracked_failed(&self, index: usize) -> bool {
+        self.rows.contains(&UnreadableGitRow::RemoteTracked(index))
+    }
+
+    pub(super) fn remote_sync_failed(&self, index: usize) -> bool {
+        self.rows.contains(&UnreadableGitRow::RemoteSync(index))
+    }
+}
+
+/// The two compact sync cells share all of their unreadable evidence.
+pub(in crate::tui) struct GitSyncLabels {
+    pub(in crate::tui) origin: String,
+    pub(in crate::tui) main:   String,
+}
+
+impl GitSyncLabels {
+    pub(in crate::tui) fn of(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> Self {
+        match GitReadHealth::of(checkout, repo) {
+            GitReadHealth::Unreadable => Self {
+                origin: GIT_STATUS_UNREADABLE.into(),
+                main:   GIT_STATUS_UNREADABLE.into(),
+            },
+            GitReadHealth::Readable => checkout.map_or_else(
+                || Self {
+                    origin: String::new(),
+                    main:   String::new(),
+                },
+                |info| match info.status {
+                    GitStatus::Untracked | GitStatus::Ignored => Self {
+                        origin: String::new(),
+                        main:   String::new(),
+                    },
+                    GitStatus::Clean | GitStatus::Modified | GitStatus::Unreadable => Self {
+                        origin: format_sync(repo.map_or(Comparison::NotCompared, |repo| {
+                            info.primary_ahead_behind(repo)
+                        })),
+                        main:   format_sync(info.ahead_behind_local),
+                    },
+                },
+            ),
+        }
+    }
+}
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
@@ -225,13 +410,18 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         return base;
     };
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
     format!("{base} resets {}", tui_pane::format_progressive(secs))
 }
 
-pub(super) fn format_ahead_behind_against((ahead, behind): (usize, usize), branch: &str) -> String {
+pub(super) fn format_ahead_behind_against(comparison: Comparison, branch: &str) -> String {
+    let (ahead, behind) = match comparison {
+        Comparison::Counted(AheadBehind { ahead, behind }) => (ahead, behind),
+        Comparison::NotCompared => return String::new(),
+        Comparison::Unreadable => return GIT_UNREADABLE_LABEL.to_string(),
+    };
     match (ahead, behind) {
         (0, 0) => format!("{IN_SYNC} up to date with {branch}"),
         (ahead, 0) => format!("{SYNC_UP}{ahead} ahead of {branch}"),
@@ -244,6 +434,7 @@ pub(super) fn format_ahead_behind_against((ahead, behind): (usize, usize), branc
 /// "N revisions left to test (roughly M steps)" phrasing.
 pub(super) fn format_bisect_progress(progress: &BisectProgress) -> String {
     match progress {
+        BisectProgress::Unreadable => format!("bisecting — progress {GIT_UNREADABLE_LABEL}"),
         BisectProgress::Awaiting => "bisecting — mark a known-good & known-bad commit".to_string(),
         BisectProgress::Narrowing { revisions, steps } => {
             format!(
@@ -267,13 +458,54 @@ fn pluralize(count: usize, noun: &str) -> String {
 /// Worktrees "vs primary" columns. Both columns share this phrasing; the
 /// reference each is measured against is named by its column header (the
 /// Remotes "Tracked" ref, the primary worktree) rather than inline.
-pub fn format_ahead_behind(ahead_behind: Option<(usize, usize)>) -> String {
-    match ahead_behind {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((ahead, 0)) => format!("{SYNC_UP}{ahead} ahead"),
-        Some((0, behind)) => format!("{SYNC_DOWN}{behind} behind"),
-        Some((ahead, behind)) => format!("{SYNC_UP}{ahead} ahead {SYNC_DOWN}{behind} behind"),
-        None => NO_REMOTE_SYNC.to_string(),
+pub fn format_ahead_behind(comparison: Comparison) -> String {
+    match comparison {
+        Comparison::Counted(AheadBehind {
+            ahead: 0,
+            behind: 0,
+        }) => IN_SYNC.to_string(),
+        Comparison::Counted(AheadBehind { ahead, behind: 0 }) => format!("{SYNC_UP}{ahead} ahead"),
+        Comparison::Counted(AheadBehind { ahead: 0, behind }) => {
+            format!("{SYNC_DOWN}{behind} behind")
+        },
+        Comparison::Counted(AheadBehind { ahead, behind }) => {
+            format!("{SYNC_UP}{ahead} ahead {SYNC_DOWN}{behind} behind")
+        },
+        Comparison::NotCompared => NO_REMOTE_SYNC.to_string(),
+        Comparison::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+    }
+}
+
+/// Compact sync text shared by the project rows and their fitted widths.
+fn format_sync(comparison: Comparison) -> String {
+    match comparison {
+        Comparison::Counted(AheadBehind {
+            ahead: 0,
+            behind: 0,
+        }) => IN_SYNC.to_string(),
+        Comparison::Counted(AheadBehind { ahead, behind: 0 }) => format!("{SYNC_UP}{ahead}"),
+        Comparison::Counted(AheadBehind { ahead: 0, behind }) => format!("{SYNC_DOWN}{behind}"),
+        Comparison::Counted(AheadBehind { ahead, behind }) => {
+            format!("{SYNC_UP}{ahead}{SYNC_DOWN}{behind}")
+        },
+        Comparison::NotCompared => NO_REMOTE_SYNC.to_string(),
+        Comparison::Unreadable => GIT_STATUS_UNREADABLE.to_string(),
+    }
+}
+
+pub(super) fn format_commit_date(date: &CommitDate) -> String {
+    match date {
+        CommitDate::At(timestamp) => format_timestamp(timestamp),
+        CommitDate::NoCommits => String::new(),
+        CommitDate::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+    }
+}
+
+pub(super) fn format_tracked_ref(reference: &TrackedRef) -> String {
+    match reference {
+        TrackedRef::Named(name) => name.clone(),
+        TrackedRef::Untracked => NO_REMOTE_SYNC.to_string(),
+        TrackedRef::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
     }
 }
 
@@ -283,7 +515,13 @@ mod tests {
 
     #[test]
     fn sync_value_uses_synced_label_when_in_sync() {
-        assert_eq!(format_ahead_behind(Some((0, 0))), "☑️");
+        assert_eq!(
+            format_ahead_behind(Comparison::Counted(AheadBehind {
+                ahead:  0,
+                behind: 0,
+            })),
+            "☑️"
+        );
     }
 
     #[test]
@@ -296,7 +534,16 @@ mod tests {
         ];
 
         for (ahead_behind, expected) in cases {
-            assert_eq!(format_ahead_behind_against(ahead_behind, "main"), expected);
+            assert_eq!(
+                format_ahead_behind_against(
+                    Comparison::Counted(AheadBehind {
+                        ahead:  ahead_behind.0,
+                        behind: ahead_behind.1,
+                    }),
+                    "main"
+                ),
+                expected
+            );
         }
     }
 }

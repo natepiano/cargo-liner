@@ -37,6 +37,7 @@ use super::transcript::BashCall;
 use super::transcript::Subagent;
 use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerTask;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CLAUDE_AGENT;
@@ -84,19 +85,21 @@ pub(super) struct ThreadEntry {
 #[derive(Debug, Default)]
 pub(super) struct TreeSources<'a> {
     /// The worker launchers found in process commands and mesh rosters.
-    pub(super) dispatches:    HashMap<u32, WorkerDispatch>,
+    pub(super) dispatches:        HashMap<u32, WorkerDispatch>,
+    /// Exact thread identities backed by their own dispatch roster.
+    pub(super) thread_dispatches: HashMap<String, ResolvedWorkerDispatch>,
     /// Every session record, for naming a Claude Code process found
     /// under a shell.
-    pub(super) sessions:      &'a [SessionRecord],
+    pub(super) sessions:          &'a [SessionRecord],
     /// The running subagents of each Claude Code process, by pid.
-    pub(super) subagents:     HashMap<u32, Vec<Subagent>>,
+    pub(super) subagents:         HashMap<u32, Vec<Subagent>>,
     /// The call that started each shell wrapper, by the wrapper's pid.
-    pub(super) shell_calls:   HashMap<u32, ShellCall>,
+    pub(super) shell_calls:       HashMap<u32, ShellCall>,
     /// The threads each Codex app server holds open, by its pid.
-    pub(super) threads:       HashMap<u32, Vec<ThreadEntry>>,
+    pub(super) threads:           HashMap<u32, Vec<ThreadEntry>>,
     /// The tier each Codex process that is not an app server asked for,
     /// by its pid.
-    pub(super) service_tiers: HashMap<u32, ServiceTier>,
+    pub(super) service_tiers:     HashMap<u32, ServiceTier>,
 }
 
 /// The command a Claude Code shell wrapper runs, when `process` is one:
@@ -230,9 +233,9 @@ pub(super) fn attach_children(
                     other.agent != Agent::CodexThreadHost && other.launched_by == Some(row.pid)
                 })
                 .collect();
-            // A session the Claude desktop app holds is also a process
-            // under the app's row; the walk skips it, so it shows once,
-            // as a session.
+            // A `sessions` entry held by the Claude desktop app is also under the app's
+            // `AgentRow`; including its pid in `visited` makes `Walker::agent_nodes` skip the
+            // process so it appears once as a session.
             let mut visited: HashSet<u32> = iter::once(row.pid)
                 .chain(sessions.iter().map(|session| session.pid))
                 .collect();
@@ -274,6 +277,9 @@ pub(super) fn attach_children(
                     nodes.push(walker.process_node(server, ChildKind::Detached, 1, &mut visited));
                 }
             }
+            if row.agent == Agent::Codex {
+                retain_dispatched_threads(&mut nodes, sources);
+            }
             let mut laid_out = Vec::new();
             flatten(nodes, 0, &mut laid_out);
             laid_out
@@ -282,6 +288,43 @@ pub(super) fn attach_children(
     for (row, tree) in rows.iter_mut().zip(trees) {
         row.children = tree;
     }
+}
+
+/// Open conversations are not workers: only an exact dispatch authorizes a child.
+fn retain_dispatched_threads(nodes: &mut Vec<Node>, sources: &TreeSources<'_>) {
+    nodes.retain_mut(|node| {
+        retain_dispatched_threads(&mut node.children, sources);
+        match node.kind {
+            ChildKind::Thread => {
+                let CodexThreadId::Recorded(id) = &node.thread_id else {
+                    return false;
+                };
+                let dispatch = sources.thread_dispatches.get(id).or_else(|| {
+                    sources
+                        .dispatches
+                        .values()
+                        .find_map(|dispatch| match dispatch {
+                            WorkerDispatch::Worker(worker)
+                                if worker.identity == WorkerIdentity::CodexThread(id.clone()) =>
+                            {
+                                Some(worker)
+                            },
+                            WorkerDispatch::Plain | WorkerDispatch::Worker(_) => None,
+                        })
+                });
+                if let Some(dispatch) = dispatch {
+                    node.dispatch = WorkerDispatch::Worker(dispatch.clone());
+                    true
+                } else {
+                    false
+                }
+            },
+            ChildKind::Direct(_) | ChildKind::Detached(_) | ChildKind::UnderShell(_) => {
+                !node.children.is_empty()
+            },
+            ChildKind::Shell | ChildKind::Subagent | ChildKind::Session(_) => true,
+        }
+    });
 }
 
 /// One shell and thread that occupy the same final tile.
@@ -304,7 +347,7 @@ pub(super) fn join_dispatches<'a>(
         if shell.kind != ChildKind::Shell { return None; }
         let (_, thread) = children.iter().find(|(thread_tile, child)| {
             thread_tile == tile && child.kind == ChildKind::Thread
-                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if id == &dispatch.thread_id)
+                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if dispatch.identity == super::worker_dispatch::WorkerIdentity::CodexThread(id.clone()))
         })?;
         Some(DispatchFold { shell, thread, dispatch })
     }).collect()
@@ -364,7 +407,12 @@ impl Walker<'_> {
                 let call = self.sources.shell_calls.get(&child.pid);
                 let name = call
                     .and_then(|call| call.description.clone())
-                    .unwrap_or_else(|| command.split_whitespace().collect::<Vec<_>>().join(" "));
+                    .unwrap_or_else(|| {
+                        strip_leading_assignments(&command)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    });
                 let shell = Node {
                     activity: AgentActivity::Idle,
                     thread_id: CodexThreadId::Unrecorded,
@@ -412,7 +460,8 @@ impl Walker<'_> {
                     nodes.push(subagent_node(agent, subagents, &mut shells_by_subagent, 0));
                 }
             }
-            // A shell whose subagent has since finished stays under the agent.
+            // A shell in `shells_by_subagent` whose subagent has finished stays in the agent's
+            // `nodes`.
             nodes.extend(shells_by_subagent.into_values().flatten());
         }
         nodes
@@ -531,6 +580,69 @@ impl Walker<'_> {
     }
 }
 
+/// Quoting state while finding the end of one shell assignment word.
+#[derive(Clone, Copy)]
+enum AssignmentQuote {
+    Unquoted,
+    Single,
+    Double,
+    Command,
+    Backtick,
+}
+
+/// Skip environment words while retaining the command's original spelling.
+/// Assignment-only and malformed command lines retain their original text.
+pub(super) fn strip_leading_assignments(command: &str) -> &str {
+    let mut rest = command.trim_start();
+    while let Some(end) = assignment_end(rest) {
+        rest = rest[end..].trim_start();
+    }
+    if rest.is_empty() { command } else { rest }
+}
+
+/// A valid shell name followed by a value ends only at unquoted whitespace.
+fn assignment_end(word: &str) -> Option<usize> {
+    let (name, _) = word.split_once('=')?;
+    let mut letters = name.bytes();
+    if !letters
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        || !letters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    let mut quotes = vec![AssignmentQuote::Unquoted];
+    let mut characters = word.char_indices().skip(name.len() + 1).peekable();
+    while let Some((offset, character)) = characters.next() {
+        match (quotes.last()?, character) {
+            (AssignmentQuote::Unquoted, character) if character.is_whitespace() => {
+                return Some(offset);
+            },
+            (AssignmentQuote::Single, '\'')
+            | (AssignmentQuote::Double, '"')
+            | (AssignmentQuote::Backtick, '`')
+            | (AssignmentQuote::Command, ')') => {
+                quotes.pop();
+            },
+            (AssignmentQuote::Single, _) => {},
+            (_, '\\') => {
+                characters.next();
+            },
+            (_, '$') if characters.peek().is_some_and(|&(_, next)| next == '(') => {
+                characters.next();
+                quotes.push(AssignmentQuote::Command);
+            },
+            (AssignmentQuote::Command, '(') => quotes.push(AssignmentQuote::Command),
+            (_, '`') => quotes.push(AssignmentQuote::Backtick),
+            (AssignmentQuote::Double | AssignmentQuote::Backtick, _) => {},
+            (_, '\'') => quotes.push(AssignmentQuote::Single),
+            (_, '"') => quotes.push(AssignmentQuote::Double),
+            _ => {},
+        }
+    }
+    matches!(quotes.as_slice(), [AssignmentQuote::Unquoted]).then_some(word.len())
+}
+
 /// The row for the subagent `agent`, with the shells found in its
 /// transcript and the running subagents it started under it.
 fn subagent_node(
@@ -549,7 +661,7 @@ fn subagent_node(
         );
     }
     Node {
-        activity: AgentActivity::Idle,
+        activity: agent.activity,
         thread_id: CodexThreadId::Unrecorded,
         dispatch: WorkerDispatch::Plain,
         kind: ChildKind::Subagent,
@@ -646,6 +758,7 @@ mod tests {
     use crate::census::Account;
     use crate::census::Machine;
     use crate::census::MachineState;
+    use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
@@ -752,6 +865,7 @@ mod tests {
     /// A running subagent.
     fn subagent(id: &str, parent: Option<&str>, description: &str, started: u64) -> Subagent {
         Subagent {
+            activity: AgentActivity::Idle,
             id: id.to_string(),
             parent: parent.map(str::to_string),
             description: description.to_string(),
@@ -869,6 +983,7 @@ mod tests {
     fn natedev_sources(sessions: &[SessionRecord]) -> TreeSources<'_> {
         TreeSources {
             dispatches: HashMap::new(),
+            thread_dispatches: HashMap::new(),
             sessions,
             subagents: HashMap::from([(
                 GEOMETRY,
@@ -898,6 +1013,7 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,
             service_tier: ServiceTier::Unrecorded,
@@ -1257,6 +1373,7 @@ mod tests {
         let mut rows = [
             agent_row(500, 100),
             AgentRow {
+                role_fallback: RoleFallback::None,
                 launched_by: Some(500),
                 ..agent_row(510, 110)
             },

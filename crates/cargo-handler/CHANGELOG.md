@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Footer role and account ink and status words remain readable on focused and unfocused tile backgrounds. Worker job labels skip worktree and director context; shortened labels omit whitespace before the ellipsis.
+- Summary headers use `account` and `session`, and only sessions heading a hierarchy appear in that table; sessions without a hierarchy appear only in `unassigned`. Codex sessions use their own recorded names, activity and fast tier, and an open rollout alone no longer creates a worker row. Codex thread rows retain a missing account when none was recorded.
+- Role words use the configured footer colors in tile titles and each accounts-table role. Subagents show their current transcript activity; nested work inherits its session account. Command names omit leading shell assignments.
+- Account resets shade from the theme’s success color for the nearest reset to its error color for the furthest. Click any accounts header to sort that table; click again to reverse it.
+- Plan-mode Claude reviewers show `review`. Live pool reviewers show their current review under their unit; idle reviewers and templates stay hidden. Claude-seat dispatches fold into their live session rows.
+- Session detail readers start with small transcript tails and expand only to find the required values. Rollout head reads stop when the session metadata and first task are found. Later scans read only appended bytes and retain unfinished records.
 - Production roles arrive before slow session detail reads. Hierarchy failures and unmatched sessions show a summary note; footer text colors meet 4.5:1 contrast on the active theme, including stale account labels.
 - The summary can show stored account roles, weekly usage, resets and credits from a configured accounts command, refreshed in the background. Worker job names skip dispatch role preambles.
 - Worker rows use their seat or role and first task instead of raw thread ids. Status shows the current tool activity or live verification step, including detached gates and Mac offloads; standard-tier accounts carry no mark. Fresh-seat and follow-up dispatches fold through their live launcher identity.
@@ -20,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 
 ### Fixed
+- Hierarchy refresh commands run on their own workers. Remote probes and settled local rows continue while a follow-up answer is pending; linked rows wait together, and checked session ids stay checked across catch-up answers.
+- The first hierarchy wait is bounded to one second; Claude sessions and Codex thread carriers stay held when the answer is late, so a unit or worker cannot flash under the wrong owner. A late answer publishes during detail reads. Each new session missing from a hierarchy answer gets one extra check. Known links survive a PID change or a failed command.
 - On startup, agents appear before their details are read. A refresh never drops details, a resumed session keeps its cell, and remote probes no longer wait for the local scan.
 - A widened agents summary draws unbroken rows across column bands, including long directories.
 - `appearance.mode = "auto"` selects the light or dark theme from the system before the first frame and follows changes while cargo-handler runs.

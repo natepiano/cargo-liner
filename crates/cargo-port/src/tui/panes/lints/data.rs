@@ -70,9 +70,9 @@ pub fn build_lints_data(app: &App) -> LintsData {
         .selected_project_path()
         .is_some_and(|path| app.project_list.is_rust_at_path(path));
 
-    // Worktree-group parent row: merge every visible checkout's history so
-    // the list isn't limited to the primary's path. Each checkout's runs
-    // are read through the same `lint_at_path` a single project uses.
+    // `selected_worktree_group_checkout_paths` selects `aggregate_group_lints` for a group parent,
+    // merging visible checkout histories so the list is not limited to the primary path; each
+    // checkout uses the same `lint_at_path` as a single project.
     if let Some(paths) = app.project_list.selected_worktree_group_checkout_paths() {
         return aggregate_group_lints(app, paths, is_rust);
     }
@@ -140,8 +140,8 @@ const fn run_phase(run: &LintRun, live_phase: LintRunPhase) -> LintRunPhase {
 /// checkouts) into one list, newest-first, tagging each run with the
 /// index of the checkout it came from so its logs stay resolvable.
 fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> LintsData {
-    // For each checkout, for each of its runs, emit (run, archive size,
-    // checkout index) — `flat_map` flattens the two levels into one stream.
+    // `paths.iter().enumerate().flat_map` emits each checkout's `(LintRun, archive size, owner
+    // index)` into `merged`, flattening checkout and run levels into one stream.
     let mut merged: Vec<(LintRun, Option<u64>, usize)> = paths
         .iter()
         .enumerate()
@@ -155,13 +155,14 @@ fn aggregate_group_lints(app: &App, paths: Vec<AbsolutePath>, is_rust: bool) -> 
                 })
         })
         .collect();
-    // Newest-first by actual instant (RFC3339 offsets can differ across a
-    // DST boundary, so compare parsed timestamps, not the raw strings).
+    // Sort `merged` newest-first using `lint::parse_timestamp` on `started_at`: RFC3339 offsets can
+    // differ across DST, so raw timestamp strings cannot establish instant order.
     merged.sort_by(|a, b| {
         lint::parse_timestamp(&b.0.started_at).cmp(&lint::parse_timestamp(&a.0.started_at))
     });
 
-    // Fan the merged stream into the three index-aligned vectors in one pass.
+    // `merged.into_iter().multiunzip()` builds index-aligned `runs`, `sizes` and `owner_of` vectors
+    // in one pass.
     let (runs, sizes, owner_of): (Vec<LintRun>, Vec<Option<u64>>, Vec<usize>) =
         merged.into_iter().multiunzip();
     let owner_phases: Vec<LintRunPhase> = paths

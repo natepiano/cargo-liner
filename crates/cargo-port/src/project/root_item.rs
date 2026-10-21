@@ -15,6 +15,7 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::non_rust::NonRustProject;
+use super::paths;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
@@ -83,15 +84,14 @@ impl RootItem {
     /// path alone grouped roots by include directory, which put every
     /// `~/.claude` root ahead of every `~/rust` root.
     pub(crate) fn list_order(&self, other: &Self) -> Ordering {
-        let leaf = |item: &Self| {
-            item.root_directory_name()
-                .into_string()
-                .chars()
-                .flat_map(char::to_lowercase)
-                .collect::<Vec<char>>()
-        };
-        leaf(self)
-            .cmp(&leaf(other))
+        paths::directory_leaf_str(self.path())
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(
+                paths::directory_leaf_str(other.path())
+                    .chars()
+                    .flat_map(char::to_lowercase),
+            )
             .then_with(|| self.path().cmp(other.path()))
     }
 
@@ -254,8 +254,9 @@ impl RootItem {
     }
 
     pub(crate) fn at_path_mut(&mut self, path: &Path) -> Option<&mut ProjectInfo> {
-        // Check submodules first to avoid double-borrowing through the main
-        // hierarchy and then falling back to submodules on the same `&mut self`.
+        // `submodules` and `submodule_info_mut` run before the main `RootItem` match
+        // to avoid borrowing the hierarchy and then reborrowing submodules through
+        // the same `&mut self`.
         if self.submodules().iter().any(|s| s.path.as_path() == path) {
             return submodule_info_mut(self, path);
         }
@@ -527,7 +528,8 @@ pub(crate) fn strip_worktree_badge_suffix(label: &str) -> &str {
     prefix
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// `submodule_info_mut` and `find_in_group_mut` provide mutable hierarchy access;
+// `sum_disk` aggregates known measurements.
 
 /// Mutable access to a submodule's `ProjectInfo` by path.
 ///
