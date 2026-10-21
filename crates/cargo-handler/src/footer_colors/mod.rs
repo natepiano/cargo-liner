@@ -171,6 +171,7 @@ struct ReadablePalette {
     plain:      ReadableInk,
     grounds:    InkGrounds,
     status:     Vec<(Color, Color)>,
+    sessions:   Vec<(Color, Color)>,
 }
 
 thread_local! {
@@ -185,7 +186,11 @@ impl ReadablePalette {
             .map(|color| {
                 (
                     color,
-                    ReadableInk::new(color.into(), grounds, InkCoverage::Opaque),
+                    ReadableInk::new(
+                        InkPurpose::Account.source(color),
+                        grounds,
+                        InkCoverage::Antialiased,
+                    ),
                 )
             })
             .collect();
@@ -194,7 +199,11 @@ impl ReadablePalette {
             .map(|color| {
                 (
                     color,
-                    ReadableInk::new(color.into(), grounds, InkCoverage::Antialiased),
+                    ReadableInk::new(
+                        InkPurpose::Management.source(color),
+                        grounds,
+                        InkCoverage::Antialiased,
+                    ),
                 )
             })
             .collect();
@@ -206,6 +215,7 @@ impl ReadablePalette {
             plain,
             grounds,
             status: Vec::new(),
+            sessions: Vec::new(),
         }
     }
 
@@ -307,6 +317,25 @@ impl InkGrounds {
     }
 }
 
+/// Accounts reserve azure blue, keeping it apart from management purple after tinting.
+#[derive(Clone, Copy)]
+enum InkPurpose {
+    Account,
+    Management,
+}
+
+impl InkPurpose {
+    fn source(self, color: FooterColor) -> Color {
+        match (self, color) {
+            (Self::Account, FooterColor::Blue | FooterColor::BrightBlue) => {
+                constants::ACCOUNT_BLUE_SEED
+            },
+            (Self::Account, FooterColor::Teal) => constants::ACCOUNT_TEAL_SEED,
+            (Self::Account | Self::Management, _) => color.into(),
+        }
+    }
+}
+
 /// The minimum glyph coverage for which an ink must retain the contrast floor.
 #[derive(Clone, Copy)]
 enum InkCoverage {
@@ -337,15 +366,30 @@ impl InkCoverage {
 
 /// Status foregrounds share the footer's contrast policy and palette lifetime.
 pub(crate) fn readable_status_style(style: Style) -> Style {
+    readable_style(style, InkCoverage::Opaque)
+}
+
+/// Session hues retain readable glyph coverage on every drawn pane ground.
+pub(crate) fn readable_session_style(style: Style) -> Style {
+    readable_style(style, InkCoverage::Antialiased)
+}
+
+/// Solve each source ink once per theme and set of pane grounds.
+fn readable_style(style: Style, coverage: InkCoverage) -> Style {
     let Some(color) = style.fg else { return style };
     let foreground = PALETTE.with(|palette| {
         let mut palette = palette.borrow_mut();
         palette.current();
-        if let Some((_, foreground)) = palette.status.iter().find(|(ink, _)| *ink == color) {
+        let grounds = palette.grounds;
+        let inks = match coverage {
+            InkCoverage::Opaque => &mut palette.status,
+            InkCoverage::Antialiased => &mut palette.sessions,
+        };
+        if let Some((_, foreground)) = inks.iter().find(|(ink, _)| *ink == color) {
             return *foreground;
         }
-        let foreground = ReadableInk::new(color, palette.grounds, InkCoverage::Opaque).foreground;
-        palette.status.push((color, foreground));
+        let foreground = ReadableInk::new(color, grounds, coverage).foreground;
+        inks.push((color, foreground));
         foreground
     });
     style.fg(foreground)
@@ -491,6 +535,15 @@ impl FooterColors {
             .map_or(FooterTint::Plain, FooterTint::Management)
     }
 
+    /// A specialist can name the same management responsibilities as a session.
+    pub(crate) fn named_role(&self, word: &str) -> FooterTint {
+        match word {
+            "showrunner" => self.role(FooterRole::Showrunner),
+            "unit-director" | "unit" => self.role(FooterRole::UnitDirector),
+            _ => FooterTint::Plain,
+        }
+    }
+
     /// Management responsibilities use configured ink; worker roles remain plain.
     pub(crate) fn hierarchy_role(&self, role: HierarchyRole) -> FooterTint {
         match role {
@@ -602,3 +655,6 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 mod ground_tests;
+
+#[cfg(test)]
+mod account_seed_tests;

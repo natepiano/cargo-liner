@@ -19,7 +19,7 @@ appearance = "light"
 name       = "Default Light"
 
 [variants.pane_chrome]
-active_title    = { color = { r = 160, g = 100, b = 0 }, bold = true }
+active_title    = { color = { r = 54, g = 58, b = 61 }, bold = true }
 inactive_border = { r = 140, g = 140, b = 140 }
 inactive_title  = "Black"
 
@@ -54,8 +54,6 @@ rainbow_cyan   = { r = 0, g = 120, b = 140 }
 rainbow_green  = { r = 0, g = 135, b = 0 }
 rainbow_orange = { r = 180, g = 85, b = 0 }
 rainbow_red    = { r = 200, g = 30, b = 30 }
-rainbow_violet = { r = 130, g = 50, b = 200 }
-rainbow_yellow = { r = 135, g = 105, b = 0 }
 shell          = { r = 0, g = 120, b = 150 }
 unreachable    = { r = 190, g = 0, b = 0 }
 

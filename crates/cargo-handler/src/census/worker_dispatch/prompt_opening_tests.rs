@@ -249,3 +249,47 @@ fn prompt_opening_missing_board_job_and_empty_heading_remain_role_only() {
         }
     }
 }
+
+#[test]
+fn pooled_review_titles_come_from_the_opening_and_never_from_diff_code() {
+    // Exact opening of phase 17's review_prompt_2_closure.md; its following body is a diff.
+    let opening = "You are a pooled reviewer for handler-enh-unit, phase 17. Edit nothing. Your first command is git -C /home/natepiano/rust/cargo-liner-handler rev-parse HEAD; if it is not a540eb5d2fe13096e3ba380e03c2d05716fb03bd, report error. Re-read the tree; trust nothing from memory about its state. The phase's change is uncommitted: review `git diff HEAD` in the worktree.";
+    let diff = "\n\n## Diff\n```diff\ndiff --git a/module.rs b/module.rs\n--- a/module.rs\n+++ b/module.rs\n@@ -1,2 +1,3 @@\n# ; /// The launcher interprets this code\n+fn launch() {}\n```";
+    for prompt in [
+        format!("{opening}{diff}"),
+        format!("{diff}\n# misleading code heading"),
+        "```rust\n# ; /// The launcher interprets this code\nfn launch() {}\n```".to_owned(),
+    ] {
+        let text = drawn_worker(&prompt, HierarchyRole::Review, NamingPath::RoleFallback);
+        assert!(!text.contains("The launcher interprets"), "{text}");
+        assert!(!text.contains("misleading code heading"), "{text}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("└─"))
+            .expect("review row");
+        assert!(row.contains("review"), "{text}");
+    }
+    let role_only = drawn_worker(
+        &format!("{opening}{diff}"),
+        HierarchyRole::Review,
+        NamingPath::RoleFallback,
+    );
+    let row = role_only
+        .lines()
+        .find(|line| line.contains("└─"))
+        .expect("review row");
+    assert!(
+        !row.contains('·'),
+        "the pool preamble names no task: {role_only}"
+    );
+    assert_opening(
+        &format!("# Check dispatch folding\n{opening}{diff}"),
+        HierarchyRole::Review,
+        "review · Check dispatch folding",
+    );
+    assert_opening(
+        &format!("Review dispatch folding.\n{diff}"),
+        HierarchyRole::Review,
+        "review · Review dispatch folding.",
+    );
+}

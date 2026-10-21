@@ -34,6 +34,7 @@ use tui_pane::TileGridHost;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
+use crate::agent_cell::TreeMetrics;
 use crate::census;
 use crate::census::AgentPlacement;
 use crate::census::Census;
@@ -114,6 +115,7 @@ pub(crate) struct App {
     pub(crate) tiles:             TileGrid,
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
+    pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:      SummarySort,
     /// Account ordering is independent of the machine-group agent ordering.
@@ -198,6 +200,7 @@ impl App {
             startup_note,
             tiles: TileGrid::new(),
             tree_sorts: HashMap::new(),
+            tree_layouts: HashMap::new(),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
             inline_error: None,

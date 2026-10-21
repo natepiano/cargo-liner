@@ -322,7 +322,7 @@ fn retain_dispatched_threads(nodes: &mut Vec<Node>, sources: &TreeSources<'_>) {
             ChildKind::Direct(_) | ChildKind::Detached(_) | ChildKind::UnderShell(_) => {
                 !node.children.is_empty()
             },
-            ChildKind::Shell | ChildKind::Subagent | ChildKind::Session(_) => true,
+            ChildKind::Shell | ChildKind::Subagent(_) | ChildKind::Session(_) => true,
         }
     });
 }
@@ -664,7 +664,7 @@ fn subagent_node(
         activity: agent.activity,
         thread_id: CodexThreadId::Unrecorded,
         dispatch: WorkerDispatch::Plain,
-        kind: ChildKind::Subagent,
+        kind: ChildKind::Subagent(agent.role.clone()),
         service_tier: ServiceTier::Unrecorded,
         account: Account::Unrecorded,
         pid: None,
@@ -865,6 +865,8 @@ mod tests {
     /// A running subagent.
     fn subagent(id: &str, parent: Option<&str>, description: &str, started: u64) -> Subagent {
         Subagent {
+            agent_type: String::new(),
+            role: crate::census::transcript::SubagentRole::from_record("", description),
             activity: AgentActivity::Idle,
             id: id.to_string(),
             parent: parent.map(str::to_string),
@@ -1042,7 +1044,7 @@ mod tests {
             .map(|child| {
                 (
                     child.depth,
-                    child.kind,
+                    child.kind.clone(),
                     child.pid,
                     child.name.as_str(),
                     child.started,
@@ -1209,10 +1211,10 @@ mod tests {
         assert_eq!(
             cell(&rows, BOSS),
             [
-                (0, session, Some(TRUNK), "tool-based-ui-trunk", 611),
+                (0, session.clone(), Some(TRUNK), "tool-based-ui-trunk", 611),
                 (
                     0,
-                    session,
+                    session.clone(),
                     Some(GEOMETRY),
                     "tool-based-ui-geometry-material",
                     700
@@ -1224,7 +1226,7 @@ mod tests {
                     "Ask for a summary",
                     705
                 ),
-                (1, claude, Some(3_800_010), "plan summary", 706),
+                (1, claude.clone(), Some(3_800_010), "plan summary", 706),
                 (
                     2,
                     ChildKind::Shell,
@@ -1250,8 +1252,20 @@ mod tests {
                 (2, ChildKind::Thread, None, "phase 1 impl", 803),
                 (2, ChildKind::Thread, None, "phase 1 review", 804),
                 (1, claude, Some(3_900_050), "--print review", 805),
-                (0, ChildKind::Subagent, None, "Review phase 1", 900),
-                (1, ChildKind::Subagent, None, "Explore the tests", 950),
+                (
+                    0,
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Review),
+                    None,
+                    "Review phase 1",
+                    900
+                ),
+                (
+                    1,
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                    None,
+                    "Explore the tests",
+                    950
+                ),
                 (2, ChildKind::Shell, Some(3_950_000), "List the tests", 960),
                 (0, ChildKind::Shell, Some(3_960_000), "Build it", 970),
             ]
@@ -1308,7 +1322,7 @@ mod tests {
                 .children
                 .iter()
                 .filter(|child| child.service_tier != ServiceTier::Unrecorded)
-                .map(|child| (child.kind, child.service_tier))
+                .map(|child| (child.kind.clone(), child.service_tier))
                 .collect()
         };
         assert_eq!(

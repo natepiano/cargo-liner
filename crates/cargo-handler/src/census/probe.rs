@@ -36,6 +36,7 @@ use super::hierarchy::ReviewerOutcome;
 use super::idle_activity;
 use super::local_machine_name;
 use super::scan::LocalScanner;
+use super::transcript::SubagentRole;
 use super::worker_dispatch::JobText;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerTask;
@@ -76,6 +77,67 @@ impl ReviewerTaskWire {
     const fn is_absent(&self) -> bool { matches!(self, Self::Absent) }
 }
 
+/// The schema-3 child kinds understood by older receivers.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProbeChildKind {
+    Shell,
+    Subagent,
+    Session(Agent),
+    UnderShell(Agent),
+    Direct(Agent),
+    Detached(Agent),
+    Thread,
+}
+
+/// A role extension alongside the unchanged schema-3 kind vocabulary.
+#[derive(Debug, Deserialize, Serialize)]
+struct ProbeChildWork {
+    kind:          ProbeChildKind,
+    #[serde(default, skip_serializing_if = "ProbeChildWork::role_is_unrecorded")]
+    subagent_role: SubagentRole,
+}
+
+impl ProbeChildWork {
+    const fn role_is_unrecorded(role: &SubagentRole) -> bool {
+        matches!(role, SubagentRole::Unrecorded)
+    }
+
+    fn into_kind(self) -> ChildKind {
+        match self.kind {
+            ProbeChildKind::Shell => ChildKind::Shell,
+            ProbeChildKind::Subagent => ChildKind::Subagent(self.subagent_role),
+            ProbeChildKind::Session(agent) => ChildKind::Session(agent),
+            ProbeChildKind::UnderShell(agent) => ChildKind::UnderShell(agent),
+            ProbeChildKind::Direct(agent) => ChildKind::Direct(agent),
+            ProbeChildKind::Detached(agent) => ChildKind::Detached(agent),
+            ProbeChildKind::Thread => ChildKind::Thread,
+        }
+    }
+}
+
+impl From<ChildKind> for ProbeChildWork {
+    fn from(kind: ChildKind) -> Self {
+        let (kind, subagent_role) = match kind {
+            ChildKind::Shell => (ProbeChildKind::Shell, SubagentRole::Unrecorded),
+            ChildKind::Subagent(role) => (ProbeChildKind::Subagent, role),
+            ChildKind::Session(agent) => (ProbeChildKind::Session(agent), SubagentRole::Unrecorded),
+            ChildKind::UnderShell(agent) => {
+                (ProbeChildKind::UnderShell(agent), SubagentRole::Unrecorded)
+            },
+            ChildKind::Direct(agent) => (ProbeChildKind::Direct(agent), SubagentRole::Unrecorded),
+            ChildKind::Detached(agent) => {
+                (ProbeChildKind::Detached(agent), SubagentRole::Unrecorded)
+            },
+            ChildKind::Thread => (ProbeChildKind::Thread, SubagentRole::Unrecorded),
+        };
+        Self {
+            kind,
+            subagent_role,
+        }
+    }
+}
+
 /// Child rows keep the schema-3 task vocabulary at the wire boundary.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct ProbeChildRow {
@@ -101,8 +163,9 @@ pub(super) struct ProbeChildRow {
     /// How many levels below the agent the row sits; the rows directly
     /// under the agent are at 0.
     depth:         u8,
-    /// What the row is.
-    kind:          ChildKind,
+    /// What the row is, with roles carried as an optional wire extension.
+    #[serde(flatten)]
+    work:          ProbeChildWork,
     /// The tier a Codex thread or process asked for;
     /// [`ServiceTier::Unrecorded`] for any other row. Missing from a
     /// probe printed before it existed.
@@ -147,7 +210,7 @@ impl From<ChildRow> for ProbeChildRow {
             dispatch: row.dispatch,
             thread_id: row.thread_id,
             depth: row.depth,
-            kind: row.kind,
+            work: row.kind.into(),
             service_tier: row.service_tier,
             account: row.account,
             pid: row.pid,
@@ -170,11 +233,12 @@ impl From<ProbeChildRow> for ChildRow {
         };
         Self {
             worker_task,
+
             activity: row.activity,
             dispatch: row.dispatch,
             thread_id: row.thread_id,
             depth: row.depth,
-            kind: row.kind,
+            kind: row.work.into_kind(),
             service_tier: row.service_tier,
             account: row.account,
             pid: row.pid,
@@ -512,7 +576,13 @@ mod tests {
                             account: Account::Unrecorded,
                             ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                         },
-                        child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
+                        child(
+                            0,
+                            ChildKind::Subagent(SubagentRole::Unrecorded),
+                            None,
+                            "Review",
+                            1_790_000_120,
+                        ),
                         ChildRow {
                             worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
                             timer: Some(Timer {
@@ -795,3 +865,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "probe_role_tests.rs"]
+mod role_tests;

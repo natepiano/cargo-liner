@@ -379,13 +379,13 @@ For custom colors, copy [`themes/starter.toml`](themes/starter.toml) into
 `themes/` under the config directory and point `dark_theme` at
 `Cargo Handler Dark`.
 
-The summary reads thirteen keys from each variant's `[variants.roles]`:
+The summary reads eleven keys from each variant's `[variants.roles]`:
 `claude` and `codex` color the agent column, `busy`, `shell` and `idle` the
 status column (a missing or unknown status uses `idle`), `unreachable` a
 remote's failure reason, and `rainbow_red`, `rainbow_orange`,
-`rainbow_yellow`, `rainbow_green`, `rainbow_cyan`, `rainbow_blue` and
-`rainbow_violet` the colors the agent cells take in turn, for the name column
-and each cell's title. A custom variant that leaves one out takes it from the built-in
+`rainbow_green`, `rainbow_cyan` and `rainbow_blue` the five session colors
+the agent cells take in that order, returning to red after blue, for the name
+column and each cell's title. A custom variant that leaves one out takes it from the built-in
 it replaces, or, under a new name, from `Default Dark` or `Default Light` to
 match its appearance.
 

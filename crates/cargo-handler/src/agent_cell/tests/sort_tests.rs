@@ -149,7 +149,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "alpha",
             "└─ alpha impl thinking a-account a-branch /a-directory 4h",
         ),
-        ("a-shell", "└─ a-shell — command a-account — — 2h"),
+        ("a-shell", "└─ a-shell shell command a-account — — 2h"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -160,8 +160,8 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
 
     for (name, hue) in [
         ("zeta", RainbowHue::Orange),
-        ("nested", RainbowHue::Yellow),
-        ("alpha", RainbowHue::Green),
+        ("nested", RainbowHue::Green),
+        ("alpha", RainbowHue::Cyan),
     ] {
         assert_eq!(
             name_color(&buffer, name),
@@ -400,7 +400,13 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
     let root = AgentRow {
         role_fallback: RoleFallback::None,
         children: vec![
-            child(0, ChildKind::Subagent, None, "work-parent", 2 * HOUR),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "work-parent",
+                2 * HOUR,
+            ),
             older,
             child(2, ChildKind::Shell, Some(51), "z-descendant", 45 * MINUTE),
             younger,
@@ -421,7 +427,10 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
                 TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
                     direction == SortDirection::Ascending
                 },
-                TreeColumn::Role | TreeColumn::Branch | TreeColumn::Directory => false,
+                TreeColumn::Type
+                | TreeColumn::Role
+                | TreeColumn::Branch
+                | TreeColumn::Directory => false,
             };
             let expected = if alpha_first {
                 vec![
