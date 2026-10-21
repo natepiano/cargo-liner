@@ -78,6 +78,7 @@ use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
+use transcript::SubagentRole;
 use worker_dispatch::WorkerDispatch;
 use worker_dispatch::WorkerTask;
 
@@ -374,13 +375,13 @@ impl AgentRow {
 }
 
 /// How an agent holds a child, including the work kinds shown in tree role columns.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
     /// A command the agent's shell tool is running.
     Shell,
     /// A subagent running inside the agent's own process.
-    Subagent,
+    Subagent(SubagentRole),
     /// An agent this one opened, in a tmux session or as a session of
     /// the Claude desktop app, which has a row of its own.
     Session(Agent),
@@ -398,21 +399,21 @@ pub(crate) enum ChildKind {
 
 impl ChildKind {
     /// The agent the row runs: none for a shell, which runs a command.
-    const fn agent(self) -> Option<Agent> {
+    const fn agent(&self) -> Option<Agent> {
         match self {
             Self::Shell => None,
-            Self::Subagent => Some(Agent::Claude),
+            Self::Subagent(_) => Some(Agent::Claude),
             Self::Session(agent)
             | Self::UnderShell(agent)
             | Self::Direct(agent)
-            | Self::Detached(agent) => Some(agent),
+            | Self::Detached(agent) => Some(*agent),
             Self::Thread => Some(Agent::Codex),
         }
     }
 
     /// The row's `runs` cell: its agent's program, or `command` for a
     /// shell.
-    const fn runs(self) -> &'static str {
+    const fn runs(&self) -> &'static str {
         match self.agent() {
             Some(agent) => agent.label(),
             None => COMMAND_RUNS,

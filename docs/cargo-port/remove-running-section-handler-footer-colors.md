@@ -450,7 +450,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** red, green and account hues as role colors (they are footer level colors or read as accounts).
 
-### Phase 17 — Seat dispatch rows, the type column and aligned ages  · status: todo
+### Phase 17 — Seat dispatch rows, the type column and aligned ages  · status: done
 
 **Depends on:** Phase 15
 
@@ -494,6 +494,28 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — separate census, tree and summary (age included) regression modules and the fixture migrations they need.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of a showrunner tile with seats sent work by commands, a command row and a subagent row, in a dark and a light theme. The checkpoint carries `Change-Review: seat dispatch commands draw no row, a type column says shell or subagent, the role column names the work's role, never subagent, age units line up in every row of the summary and the tiles, and showrunner and unassigned tiles sort by session ascending at start | open cargo-handler on a showrunner whose units send work to seats and run subagents and shells`.
+
+### Phase 22 — Shell rows name their kind once; session sort ignores case  · status: todo
+
+**Depends on:** Phase 17
+
+#### Work Order
+
+**Goal:** a shell row names its kind only in the type column, and the session sort reads A to Z whatever the case.
+
+**Source:** the phase 17 final design check, 2026-10-21, moved here under the three-round landing rule. (1) say-it-once, one-vocabulary: a shell row says `shell` in the type column and `command` in the status column, two names for one fact. (2) The session sort compares bytes (`agent_cell.rs` `self.name().cmp(&other.name())`), so capitalized subagent and shell titles sort above lowercase names ("Feature-log proposals …" before "accounts"; "Run the phase 77 …" before "code90").
+
+**Spec:**
+1. The status column of a shell row shows the command's state as a subagent row does: `running`, or the timer pie when it has one. The word `command` leaves the status column; `shell` in the type column is the only place that names the kind. The status ink keeps 4.5:1 with glyph coverage in all four themes.
+2. The session sort compares names without regard to case, with a stable tie-break on the original name. Showrunner and unassigned tiles and the summary use the one comparison.
+3. Tests, red first: a rendered shell row shows no `command` in its status cell; a tile with "Feature-log …" and "accounts" sorts "accounts" first; equal names that differ only in case keep a stable order.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of a tile with a shell row and mixed-case session names. The checkpoint carries `Change-Review: a shell row says shell only in the type column, and sessions sort A to Z whatever the case | On natedev, in a terminal, run cargo-handler while a showrunner runs shells and subagents with capitalized titles | The status column of a shell row shows its state, never command, and names read in alphabetical order`.
 
 ### Phase 18 — The shortcuts overlay pages only when it must  · status: todo
 
@@ -562,9 +584,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 12. Tests, each red before its fix: a rendered table has the nine columns in order with lower-case headers; the account cell holds only the name, and the read column holds the reading age; the dot is green for `read_ok` true and red for false and for a missing field; left is red at 9 %, yellow at 24 %, plain at 25 %, `—` with no reading; resets formats a same-day, a this-week and a later time; credits shows `13,446` for 13446.4 and `unlimited`; enabled and in use show `yes` or blank from their fields; the `%` signs and the last digit of each number column stand in one screen column in every row.
 13. Dark low-left red #890000 on black is 2.06:1: use the theme bright red; every numeric column ink reaches 4.5:1 (showrunner, 2026-10-20).
 14. Tests cover every new header click toggle, blank-last order and the per-role spans.
+15. Session-name hues (`theme.rs` `RainbowHue`) stay clear of the status, account and role palettes. The phase 17 design check measured near matches: dark session green #6edc6e vs `running` #61d661 and session cyan #50d2e6 vs `command` #57c2d6; light session green #008700 vs `thinking`/`running` #008200, session teal #047a8e vs `command` #0e7f9c and codex2 #007389, session red #c81e1e vs codex1 #e3004c. Pick session hues outside those palettes. Tests, red first: every session hue against every status ink, account ink and role ink by CIEDE2000 >= 12, and each session hue at 4.5:1 on its drawn ground with glyph coverage (`InkCoverage::Antialiased`), in all four themes (showrunner, 2026-10-21, phase 17 design check D2).
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs` (session hues, Spec 15), `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`
 
 **Workers:** 1 writer + 1 tester.
@@ -657,6 +680,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Goal:** cargo-handler shows an Astra designer session and an Astra reviewer session (Codex on gpt-6-astra) under the unit director or showrunner that runs it, each with its own role word and color.
 
 **Source:** the user (via hana and the showrunner), 2026-10-20: cargo-handler shows the two new Codex roles of the in-game metrics production; a designer is a lasting role that can be resumed and runs under a unit director or a showrunner. Showrunner rulings: a phase after Phase 17; order 15, 17, 21, 18, 19, 16, 20, 9; role words `astra designer` and `astra reviewer`; colors pink and bright-green; if the hierarchy edge is not on `~/.claude` main when Phase 17 checkpoints, run Phase 18 and return here when the showrunner says it landed. The guild view waits for natedev's guild design and is not in this phase.
+
+**Showrunner note (2026-10-21):** the user changed the guild design. There are four guilds: designers, reviewers, showrunners and units. Each guild head is a unit director under a new top-level `guilds` showrunner. The goddess names are on hold, so this phase waits on no role-name pick and adds no new role words for the heads. `astra-designer` and `astra-reviewer` stay as they are, with the same colors. The guild view waits on the revised Guilds section, which guild-process-unit sends through the showrunner.
 
 **Constraints from prior phases:**
 - natedev adds to `production_tree.py --json` one edge per Astra session while it holds the role: `{"manager": <Claude session id of the unit director or showrunner>, "member": <Codex thread id>, "role": "astra-designer" | "astra-reviewer", "codex_home": <CODEX_HOME>, "state": "busy" | "idle"}`, and the `statusline.conf` keys `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.

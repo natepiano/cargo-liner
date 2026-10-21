@@ -595,7 +595,7 @@ impl<'a> AgentPlacement<'a> {
                 row.row.children.iter().any(|child| {
                     matches!(
                         child.kind,
-                        ChildKind::Shell | ChildKind::Subagent | ChildKind::Thread
+                        ChildKind::Shell | ChildKind::Subagent(_) | ChildKind::Thread
                     ) && !self.hides_thread(child)
                         && !self.folds_dispatch(child)
                         && !self.threads.iter().any(|thread| {

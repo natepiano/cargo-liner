@@ -60,7 +60,13 @@ fn subagent_rows_show_reading_and_idle_in_the_status_column() {
             account: account("claude1"),
             children: vec![ChildRow {
                 activity,
-                ..child(0, ChildKind::Subagent, None, "Inspect source files", MINUTE)
+                ..child(
+                    0,
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                    None,
+                    "Inspect source files",
+                    MINUTE,
+                )
             }],
             ..agent(10, "director", HOUR, None)
         };
@@ -81,7 +87,13 @@ fn subagent_and_shell_rows_inherit_the_session_account_and_threads_keep_their_ow
     let root = AgentRow {
         account: account("claude1"),
         children: vec![
-            child(0, ChildKind::Subagent, None, "Inspect source files", MINUTE),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "Inspect source files",
+                MINUTE,
+            ),
             child(1, ChildKind::Shell, Some(21), "subagent command", MINUTE),
             child(0, ChildKind::Shell, Some(22), "session command", MINUTE),
             ChildRow {
@@ -112,7 +124,13 @@ fn subagent_account_width_and_sort_use_the_shown_session_account() {
     let root = AgentRow {
         account: account(label),
         children: vec![
-            child(0, ChildKind::Subagent, None, "Inspect source files", MINUTE),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "Inspect source files",
+                MINUTE,
+            ),
             ChildRow {
                 account: account("a-codex"),
                 ..child(0, ChildKind::Thread, None, "Codex task", MINUTE)
@@ -219,7 +237,13 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
 
     rows[0].children = vec![
         child(0, ChildKind::Shell, Some(21), "session command", MINUTE),
-        child(0, ChildKind::Subagent, None, "Inspect source files", MINUTE),
+        child(
+            0,
+            ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+            None,
+            "Inspect source files",
+            MINUTE,
+        ),
         child(1, ChildKind::Shell, Some(22), "subagent command", MINUTE),
     ];
     let after = MachineState::Answered(rows, HierarchyEdges::default().into());
@@ -322,9 +346,16 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         &colors,
     );
     let role_x = find(&buffer, "role").expect("role header").0;
+    let standalone_y = find(&buffer, "standalone session")
+        .expect("standalone row")
+        .1;
+    for offset in 0..summary::cell_width(TREE_ROLE_HEADER) {
+        let cell = &buffer[(role_x + offset, standalone_y)];
+        assert_eq!(cell.symbol(), " ", "standalone role stays blank");
+        assert_eq!(cell.fg, Color::Reset, "blank role has no footer ink");
+    }
     let plain = FooterTint::Plain.style(Style::default().fg(text_default()));
     for (name, role) in [
-        ("standalone session", MISSING_VALUE),
         ("unlabeled session", "session"),
         ("hierarchy worker", "impl"),
         ("fallback reviewer", "review"),
@@ -340,5 +371,161 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
             assert_eq!(Some(drawn.fg), plain.fg, "{name}");
             assert_eq!(drawn.modifier, plain.add_modifier, "{name}");
         }
+    }
+}
+
+#[test]
+fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
+    let root = AgentRow {
+        children: vec![
+            child(0, ChildKind::Shell, Some(21), "cargo test", MINUTE),
+            ChildRow {
+                kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::from_record(
+                    "general-purpose",
+                    "Review source changes",
+                )),
+                ..child(
+                    0,
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                    None,
+                    "Review source changes",
+                    MINUTE,
+                )
+            },
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "Do the requested work",
+                MINUTE,
+            ),
+            child(0, ChildKind::Thread, None, "seat task", MINUTE),
+        ],
+        ..agent(10, "director", HOUR, None)
+    };
+    let buffer = rendered(&root);
+    let header = (0..buffer.area.height)
+        .find(|&y| {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            line.split_whitespace().next() == Some("session") && line.contains("status")
+        })
+        .expect("tree header");
+    let headers: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, header)].symbol())
+        .collect();
+    let words: Vec<_> = headers
+        .split_whitespace()
+        .filter(|word| !matches!(*word, "▲" | "▼"))
+        .collect();
+    assert_eq!(&words[..3], &["session", "type", "role"], "{headers}");
+    for (name, expected_type, expected_role) in [
+        ("cargo test", "shell", ""),
+        ("Review source changes", "subagent", "review"),
+        ("Do the requested work", "subagent", ""),
+        ("seat task", "", "worker"),
+        ("director", "", ""),
+    ] {
+        assert_eq!(
+            column(&buffer, "type", "role", name),
+            expected_type,
+            "{name}"
+        );
+        assert_eq!(
+            column(&buffer, "role", "status", name),
+            expected_role,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
+    let roots = [
+        AgentRow {
+            children: vec![child(0, ChildKind::Shell, Some(11), "short", MINUTE)],
+            ..agent(10, "first", HOUR, None)
+        },
+        AgentRow {
+            children: vec![child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "Review a substantially longer session name",
+                MINUTE,
+            )],
+            ..agent(20, "second", HOUR, None)
+        },
+    ];
+    let state = MachineState::Answered(roots.into(), HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let cells = cell_order(&machines);
+    let buffers: Vec<_> = cells
+        .iter()
+        .map(|cell| {
+            let rect = area(160, 12);
+            let mut buffer = Buffer::empty(rect);
+            draw(
+                &mut buffer,
+                rect,
+                cell,
+                &cells,
+                NOW,
+                AccountColumn::Shown,
+                &FooterColors::default(),
+            );
+            buffer
+        })
+        .collect();
+    for header in [
+        "type",
+        "role",
+        "status",
+        "account",
+        "branch",
+        "directory",
+        "age",
+    ] {
+        let positions: Vec<_> = buffers
+            .iter()
+            .map(|buffer| find(buffer, header).expect("drawn column").0)
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] == pair[1]),
+            "{header}: {positions:?}"
+        );
+    }
+    let widest = buffers
+        .iter()
+        .map(|buffer| {
+            let (type_x, y) = find(buffer, "type").expect("type header");
+            let role_x = find(buffer, "role").expect("role header").0;
+            (y + 1..buffer.area.height)
+                .map(|row| {
+                    (type_x..role_x)
+                        .map(|x| buffer[(x, row)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .chars()
+                        .count()
+                })
+                .max()
+                .expect("data rows")
+                .max("type".len())
+        })
+        .max()
+        .expect("tile fixtures");
+    for buffer in &buffers {
+        let type_x = find(buffer, "type").expect("type header").0;
+        let role_x = find(buffer, "role").expect("role header").0;
+        assert_eq!(
+            usize::from(role_x - type_x),
+            widest + 2,
+            "two-space gap after the widest type in the shared screen column"
+        );
     }
 }

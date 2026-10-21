@@ -323,14 +323,6 @@ fn footer_role_colors_stay_distinct_from_accounts_headers_and_other_roles() {
     assert_role_measurements(&measurements, &contrasts);
 }
 
-/// The showrunner's ruling of 2026-10-21 permits only purple showrunner ink
-/// against account claude3 with pane tint on. The management coverage policy
-/// measures 8.223475 in dark themes and 8.464654 in light themes. All other role/account,
-/// plain-text and role pairs keep 12.
-fn showrunner_claude3_tinted_exception(appearance: &str, role: &str, other: &str) -> bool {
-    role == "role.showrunner" && other == "claude3" && appearance.ends_with(" tint=true")
-}
-
 /// Report every measured pair before checking the complete palette.
 fn assert_role_measurements(
     measurements: &[(String, &str, &str, f64)],
@@ -344,10 +336,7 @@ fn assert_role_measurements(
     }
     let failures: Vec<_> = measurements
         .iter()
-        .filter(|(appearance, role, other, distance)| {
-            *distance < MINIMUM_LABEL_DISTANCE
-                && !showrunner_claude3_tinted_exception(appearance, role, other)
-        })
+        .filter(|(_, _, _, distance)| *distance < MINIMUM_LABEL_DISTANCE)
         .collect();
     let unreadable: Vec<_> = contrasts
         .iter()
@@ -510,7 +499,12 @@ fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors(
                 .style(Style::default())
                 .fg
                 .expect("role ink");
-            for (foreground, management) in [(account, false), (role, true)] {
+            let account_source = match original {
+                Color::Blue | Color::LightBlue => Color::Rgb(0, 100, 255),
+                Color::Indexed(30) => Color::Rgb(0, 135, 160),
+                color => color,
+            };
+            for (foreground, original) in [(account, account_source), (role, original)] {
                 let ratio = contrast_ratio(foreground, background);
                 assert!(
                     ratio >= MINIMUM_CONTRAST,
@@ -520,8 +514,7 @@ fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors(
                 if [false, true].into_iter().all(|focused| {
                     let ground = tui_pane::pane_background(focused);
                     contrast_ratio(original, ground) >= MINIMUM_CONTRAST
-                        && (!management
-                            || covered_role_contrast(original, ground) >= MINIMUM_CONTRAST)
+                        && covered_role_contrast(original, ground) >= MINIMUM_CONTRAST
                 }) {
                     assert_eq!(
                         foreground,

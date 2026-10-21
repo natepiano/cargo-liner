@@ -323,18 +323,27 @@ fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
 /// Pad with display widths so account labels and notes determine the same demand drawn.
 fn columns(values: [Line<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
     let mut spans = vec![Span::raw(SECTION_ITEM_INDENT)];
-    for (index, value) in values.into_iter().enumerate() {
+    for ((column, mut value), &column_width) in
+        AccountsColumn::ALL.into_iter().zip(values).zip(widths)
+    {
         let width = value.spans.iter().fold(0u16, |width, span| {
             width.saturating_add(cell_width(&span.content))
         });
-        spans.extend(value.spans);
-        if index + 1 < widths.len() {
+        let padding = column_width.saturating_sub(width);
+        let trailing_padding = match column {
+            AccountsColumn::WeeklyLeft | AccountsColumn::Resets | AccountsColumn::Credits => {
+                if let Some(first) = value.spans.first_mut() {
+                    first.content =
+                        format!("{}{}", " ".repeat(usize::from(padding)), first.content).into();
+                }
+                0
+            },
+            AccountsColumn::Account | AccountsColumn::Roles => padding,
+        };
+        spans.append(&mut value.spans);
+        if column != AccountsColumn::Credits {
             spans.push(Span::raw(
-                " ".repeat(usize::from(
-                    widths[index]
-                        .saturating_sub(width)
-                        .saturating_add(TABLE_COLUMN_SPACING),
-                )),
+                " ".repeat(usize::from(TABLE_COLUMN_SPACING + trailing_padding)),
             ));
         }
     }

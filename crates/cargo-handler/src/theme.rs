@@ -47,8 +47,6 @@ use crate::constants::RAINBOW_CYAN_ROLE;
 use crate::constants::RAINBOW_GREEN_ROLE;
 use crate::constants::RAINBOW_ORANGE_ROLE;
 use crate::constants::RAINBOW_RED_ROLE;
-use crate::constants::RAINBOW_VIOLET_ROLE;
-use crate::constants::RAINBOW_YELLOW_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 use crate::footer_colors;
@@ -110,7 +108,7 @@ pub(crate) enum Role {
 
 impl Role {
     /// Every role, in the order [`RolePalette`] lists them.
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 11] = [
         Self::Claude,
         Self::Codex,
         Self::Busy,
@@ -119,11 +117,9 @@ impl Role {
         Self::Unreachable,
         Self::Rainbow(RainbowHue::Red),
         Self::Rainbow(RainbowHue::Orange),
-        Self::Rainbow(RainbowHue::Yellow),
         Self::Rainbow(RainbowHue::Green),
         Self::Rainbow(RainbowHue::Cyan),
         Self::Rainbow(RainbowHue::Blue),
-        Self::Rainbow(RainbowHue::Violet),
     ];
 
     /// The role's key in `[variants.roles]`.
@@ -144,7 +140,7 @@ impl Role {
     pub(crate) fn style(self) -> Style {
         let style = tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self));
         match self {
-            Self::Rainbow(_) => style,
+            Self::Rainbow(_) => footer_colors::readable_session_style(style),
             Self::Claude
             | Self::Codex
             | Self::Busy
@@ -165,31 +161,19 @@ pub(crate) enum RainbowHue {
     /// The second cell's hue.
     Orange,
     /// The third cell's hue.
-    Yellow,
-    /// The fourth cell's hue.
     Green,
-    /// The fifth cell's hue.
+    /// The fourth cell's hue.
     Cyan,
-    /// The sixth cell's hue.
+    /// The fifth cell's hue.
     Blue,
-    /// The seventh cell's hue; the eighth starts over at [`Self::Red`].
-    Violet,
 }
 
 impl RainbowHue {
     /// Every hue, in the order the cells take them.
-    const ALL: [Self; 7] = [
-        Self::Red,
-        Self::Orange,
-        Self::Yellow,
-        Self::Green,
-        Self::Cyan,
-        Self::Blue,
-        Self::Violet,
-    ];
+    const ALL: [Self; 5] = [Self::Red, Self::Orange, Self::Green, Self::Cyan, Self::Blue];
 
     /// The hue of the agent at `position` in cell order, counted from
-    /// zero and starting over at red past violet.
+    /// zero and starting over after blue.
     pub(crate) const fn of_agent(position: usize) -> Self { Self::ALL[position % Self::ALL.len()] }
 
     /// The hue's key in `[variants.roles]`.
@@ -197,11 +181,9 @@ impl RainbowHue {
         match self {
             Self::Red => RAINBOW_RED_ROLE,
             Self::Orange => RAINBOW_ORANGE_ROLE,
-            Self::Yellow => RAINBOW_YELLOW_ROLE,
             Self::Green => RAINBOW_GREEN_ROLE,
             Self::Cyan => RAINBOW_CYAN_ROLE,
             Self::Blue => RAINBOW_BLUE_ROLE,
-            Self::Violet => RAINBOW_VIOLET_ROLE,
         }
     }
 }
@@ -212,16 +194,12 @@ struct RainbowPalette {
     red:    StyleSpec,
     /// [`RainbowHue::Orange`].
     orange: StyleSpec,
-    /// [`RainbowHue::Yellow`].
-    yellow: StyleSpec,
     /// [`RainbowHue::Green`].
     green:  StyleSpec,
     /// [`RainbowHue::Cyan`].
     cyan:   StyleSpec,
     /// [`RainbowHue::Blue`].
     blue:   StyleSpec,
-    /// [`RainbowHue::Violet`].
-    violet: StyleSpec,
 }
 
 impl RainbowPalette {
@@ -230,11 +208,9 @@ impl RainbowPalette {
         match hue {
             RainbowHue::Red => self.red,
             RainbowHue::Orange => self.orange,
-            RainbowHue::Yellow => self.yellow,
             RainbowHue::Green => self.green,
             RainbowHue::Cyan => self.cyan,
             RainbowHue::Blue => self.blue,
-            RainbowHue::Violet => self.violet,
         }
     }
 }
@@ -292,11 +268,9 @@ const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
     rainbow:     RainbowPalette {
         red:    StyleSpec::from_color(Color::Rgb(255, 95, 95)),
         orange: StyleSpec::from_color(Color::Rgb(255, 165, 70)),
-        yellow: StyleSpec::from_color(Color::Rgb(240, 220, 80)),
         green:  StyleSpec::from_color(Color::Rgb(110, 220, 110)),
         cyan:   StyleSpec::from_color(Color::Rgb(80, 210, 230)),
         blue:   StyleSpec::from_color(Color::Rgb(100, 150, 255)),
-        violet: StyleSpec::from_color(Color::Rgb(190, 130, 255)),
     },
 };
 
@@ -312,11 +286,9 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
     rainbow:     RainbowPalette {
         red:    StyleSpec::from_color(Color::Rgb(200, 30, 30)),
         orange: StyleSpec::from_color(Color::Rgb(180, 85, 0)),
-        yellow: StyleSpec::from_color(Color::Rgb(135, 105, 0)),
         green:  StyleSpec::from_color(Color::Rgb(0, 135, 0)),
         cyan:   StyleSpec::from_color(Color::Rgb(0, 120, 140)),
         blue:   StyleSpec::from_color(Color::Rgb(30, 80, 210)),
-        violet: StyleSpec::from_color(Color::Rgb(130, 50, 200)),
     },
 };
 
@@ -332,11 +304,9 @@ const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
     rainbow:     RainbowPalette {
         red:    StyleSpec::bold(Color::LightRed),
         orange: StyleSpec::bold(Color::Rgb(255, 170, 60)),
-        yellow: StyleSpec::bold(Color::LightYellow),
         green:  StyleSpec::bold(Color::LightGreen),
         cyan:   StyleSpec::bold(Color::LightCyan),
-        blue:   StyleSpec::bold(Color::LightBlue),
-        violet: StyleSpec::bold(Color::LightMagenta),
+        blue:   StyleSpec::bold(Color::Rgb(100, 150, 255)),
     },
 };
 
@@ -352,11 +322,9 @@ const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
     rainbow:     RainbowPalette {
         red:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
         orange: StyleSpec::bold(Color::Rgb(150, 60, 0)),
-        yellow: StyleSpec::bold(Color::Rgb(110, 85, 0)),
         green:  StyleSpec::bold(Color::Rgb(0, 100, 0)),
         cyan:   StyleSpec::bold(Color::Rgb(0, 95, 115)),
         blue:   StyleSpec::bold(Color::Rgb(0, 0, 170)),
-        violet: StyleSpec::bold(Color::Rgb(100, 0, 160)),
     },
 };
 
@@ -450,7 +418,7 @@ fn default_light() -> Theme {
             // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-            active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(54, 58, 61)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -555,7 +523,7 @@ fn high_contrast_light() -> Theme {
             // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Black),
-            active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(54, 58, 61)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -682,24 +650,22 @@ mod tests {
         );
     }
 
-    /// The agents take the rainbow red to violet, and the eighth starts
-    /// over at red.
+    /// The five session hues repeat after blue without using role hues.
     #[test]
-    fn agents_take_the_rainbow_in_order_and_start_over_past_violet() {
+    fn agents_take_the_rainbow_in_order_and_start_over_past_blue() {
         let hues: Vec<RainbowHue> = (0..9).map(RainbowHue::of_agent).collect();
-
         assert_eq!(
             hues,
             [
                 RainbowHue::Red,
                 RainbowHue::Orange,
-                RainbowHue::Yellow,
                 RainbowHue::Green,
                 RainbowHue::Cyan,
                 RainbowHue::Blue,
-                RainbowHue::Violet,
                 RainbowHue::Red,
                 RainbowHue::Orange,
+                RainbowHue::Green,
+                RainbowHue::Cyan,
             ]
         );
     }

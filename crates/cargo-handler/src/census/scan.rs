@@ -97,6 +97,9 @@ use crate::constants::VERIFY_SCRIPT;
 use crate::constants::WINDOW_LIST_EXPRESSION;
 use crate::constants::WORKER_LABEL;
 
+/// Shell argv flag whose next argument contains the command text.
+const SHELL_COMMAND_FLAG: &str = "-c";
+
 /// A process as a cache knows it: its pid and start, so a pid handed
 /// out again is a new key.
 type ProcessKey = (u32, u64);
@@ -816,6 +819,14 @@ pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32,
     worker_dispatches(processes, &mut WorkerNames::default())
 }
 
+/// Snapshot decoding belongs to shell calls; seat identity can also come from raw argv.
+fn seat_sender_command(process: &ProcessEntry) -> Option<String> {
+    tree::shell_command(process).or_else(|| match process.arguments.as_slice() {
+        [_, flag, command, ..] if flag == SHELL_COMMAND_FLAG => Some(command.clone()),
+        _ => None,
+    })
+}
+
 /// Share the mtime roster cache with launcher-free naming.
 fn worker_dispatches(
     processes: &[ProcessEntry],
@@ -825,8 +836,12 @@ fn worker_dispatches(
     let wrappers: HashMap<_, _> = processes
         .iter()
         .filter_map(|process| {
-            let command = tree::shell_command(process)?;
-            Some((process.pid, ParsedDispatch::parse(&command).ok()?))
+            let command = seat_sender_command(process)?;
+            let dispatch = process.directory.as_ref().map_or_else(
+                || ParsedDispatch::parse(&command),
+                |directory| ParsedDispatch::parse_at(&command, directory),
+            );
+            Some((process.pid, dispatch.ok()?))
         })
         .collect();
     let mut found = HashMap::new();
@@ -865,9 +880,15 @@ fn worker_dispatches(
         let mut parent = process;
         let mut seen = HashSet::new();
         while seen.insert(parent.pid) {
-            if tree::shell_command(parent)
-                .is_some_and(|command| launcher.is_final_command_of(&command))
-            {
+            if seat_sender_command(parent).is_some_and(|command| {
+                parent.directory.as_ref().map_or_else(
+                    || launcher.is_final_command_of(&command),
+                    |directory| {
+                        ParsedDispatch::parse_at(&command, directory)
+                            .is_ok_and(|parsed| parsed == launcher)
+                    },
+                )
+            }) {
                 found.insert(parent.pid, worker.clone());
             }
             let Some(ancestor) = parent.parent.and_then(|pid| table.get(&pid)) else {
@@ -1638,6 +1659,8 @@ mod tests {
         let subagents = HashMap::from([(
             BOSS,
             vec![Subagent {
+                agent_type:  String::new(),
+                role:        super::transcript::SubagentRole::Test,
                 activity:    AgentActivity::Idle,
                 id:          "a1".to_string(),
                 parent:      None,

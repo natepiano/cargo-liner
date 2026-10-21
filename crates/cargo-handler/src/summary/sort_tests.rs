@@ -171,7 +171,7 @@ fn default_summary_sort_keeps_phase_one_machine_order_rows_and_colors() {
     for (name, hue) in [
         ("zeta", RainbowHue::Red),
         ("alpha", RainbowHue::Orange),
-        ("other-machine", RainbowHue::Yellow),
+        ("other-machine", RainbowHue::Green),
     ] {
         assert_eq!(
             buffer[find_label(&buffer, name)].fg,

@@ -37,7 +37,13 @@ fn unassigned_forest() -> MachineState {
     let nested = agent(22, "opened-session", 6 * HOUR, Some(20));
     let postmaster = AgentRow {
         role_fallback: RoleFallback::None,
-        children: vec![child(0, ChildKind::Subagent, None, "post-task", HOUR)],
+        children: vec![child(
+            0,
+            ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+            None,
+            "post-task",
+            HOUR,
+        )],
         ..agent(30, "postmaster", 4 * HOUR, None)
     };
     MachineState::Answered(
@@ -153,7 +159,7 @@ fn unassigned_roots_share_one_tile_per_machine_and_have_no_individual_tiles() {
 }
 
 #[test]
-fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
+fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
     let state = standalone_forest();
     let machines = [Machine {
         name:  "natedev",
@@ -163,9 +169,9 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
     let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
     let buffer = draw_pool(pool(&tiles, "natedev"), 220);
     for (name, prefix) in [
-        ("ups", "ups — thinking"),
-        ("postmaster", "postmaster — thinking"),
-        ("opened-session", "opened-session — thinking"),
+        ("ups", "ups thinking"),
+        ("postmaster", "postmaster thinking"),
+        ("opened-session", "opened-session thinking"),
     ] {
         assert!(
             row_text(&buffer, name).starts_with(prefix),
@@ -176,17 +182,21 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
     let role_x = find(&buffer, TREE_ROLE_HEADER).expect("role header").0;
     for name in ["ups", "postmaster"] {
         let (name_x, y) = find(&buffer, name).expect("root row");
-        assert_eq!(buffer[(role_x, y)].symbol(), MISSING_VALUE);
-        assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
+        assert_eq!(buffer[(role_x, y)].symbol(), " ");
+        assert_eq!(
+            buffer[(role_x, y)].fg,
+            Color::Reset,
+            "blank cells contain no role ink"
+        );
         assert!((buffer.area.x..name_x).all(|x| buffer[(x, y)].symbol() == " "));
     }
-    let order = ["ups", "opened-session", "postmaster"]
+    let order = ["opened-session", "postmaster", "ups"]
         .map(|name| find(&buffer, name).expect("row drawn").1);
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     let work = work_buffer("ups");
     for (name, prefix) in [
         ("opened-session", "├─ opened-session session thinking"),
-        ("ups-shell", "└─ ups-shell — command"),
+        ("ups-shell", "└─ ups-shell shell command"),
         ("ups-codex", "└─ ups-codex worker idle"),
     ] {
         assert!(row_text(&work, name).starts_with(prefix));
@@ -248,9 +258,9 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let tiles = tile_order_sorted(&placement, &sorts, NOW);
         let buffer = draw_pool(pool(&tiles, "natedev"), 220);
         for (name, hue) in [
-            ("ups", RainbowHue::Yellow),
-            ("opened-session", RainbowHue::Green),
-            ("postmaster", RainbowHue::Cyan),
+            ("ups", RainbowHue::Green),
+            ("opened-session", RainbowHue::Cyan),
+            ("postmaster", RainbowHue::Blue),
         ] {
             assert_eq!(
                 buffer[find(&buffer, name).expect("name drawn")].fg,
@@ -264,7 +274,7 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let work = work_buffer("ups");
         assert_eq!(
             work[find(&work, "ups-codex").expect("ups worker")].fg,
-            Role::Rainbow(RainbowHue::Yellow)
+            Role::Rainbow(RainbowHue::Green)
                 .style()
                 .fg
                 .expect("owner hue")
@@ -294,8 +304,8 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
         let spans = unassigned_header_spans(entry, before.area, NOW, AccountColumn::Shown);
         let header = &lines(&before)[0];
         assert!(
-            header.contains(TREE_SESSION_HEADER)
-                && header.contains(&format!("{TREE_AGE_HEADER} ▼"))
+            header.contains(&format!("{TREE_SESSION_HEADER} ▲"))
+                && header.contains(TREE_AGE_HEADER)
         );
         assert_eq!(header.contains(TREE_DIRECTORY_HEADER), width == 220);
         for span in &spans {
