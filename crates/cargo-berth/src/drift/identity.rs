@@ -47,8 +47,9 @@ impl DriftRunValidation {
             EditAuthorization::Session { .. } | EditAuthorization::Marker { .. } => {
                 Self::ResolvedIdentityRequired
             },
-            // `Environment` and `Unidentified` split on exactly the question the constructor
-            // answers, so it decides them rather than a second variant match beside it.
+            // `PresentedCoordinationRun::from_edit_authorization` decides the split between
+            // `EditAuthorization::Environment` and `EditAuthorization::Unidentified` because
+            // that is exactly its constructor question; a second variant match would repeat it.
             authorization => match PresentedCoordinationRun::from_edit_authorization(authorization)
             {
                 Some(acting_run) => Self::IndependentWithPresentedIdentity(acting_run),

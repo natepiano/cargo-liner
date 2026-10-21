@@ -194,8 +194,9 @@ pub(crate) fn execute(
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string()),
     };
-    // A hook-driven drift answers one worktree's session, so it carries only that worktree's
-    // alerts; a drift run by hand carries every alert.
+    // `alert_routing` uses `EngineAnswerOccasion::current`: hook-driven drift answers one
+    // worktree's session, so it carries only that worktree's alerts; drift run by hand carries
+    // every alert.
     let alert_routing = reconciliation_report.alert_routing(EngineAnswerOccasion::current());
     output_envelope
         .with_alerts(alert_routing.route(reconciliation_report.alerts))
@@ -305,8 +306,9 @@ fn execute_inner(
         );
         return Ok(Enrollment::Enrolled(report));
     }
-    // This branch returns before the lock that decides refusal, and states `Permitted` without
-    // asking. Two separate things make that right, and both are needed.
+    // This branch returns before `transact_classification` decides refusal, stating
+    // `DriftScopeAcquisition::Permitted` without asking. Two facts make that right; both are
+    // needed.
     //
     // The acquisition it performs is not unguarded: `claim_post_write_paths` goes through
     // `claim::acquire_first_touch`, which asks the same occupancy question through the same
@@ -375,7 +377,7 @@ fn execute_inner(
         pre_lock_foreign_path_classification.committed_history(),
         &mut report,
     );
-    // From here the refusal withholds every acquisition this invocation could still make: the
+    // A refusal in `report.scope_acquisition` withholds every remaining acquisition: the
     // post-write first touch below, and the fingerprint publication that would move the
     // worktree's shared comparison baseline under the run that does occupy it. The previous
     // fingerprint is invalidated too: a clean commit can otherwise match an older empty
@@ -593,10 +595,10 @@ fn claim_post_write_paths(
                 results: vec![ReservationDriftResult::Unchanged { reservation_id }],
             })
         },
-        // The free paths were protected either way. Whether the foreign-held remainder is also an
-        // accusation depends on whether this comparison can say who wrote it: an `Indeterminate`
-        // one reports the protection it did take and stops there, rather than telling the caller
-        // its write entered a reservation when the paths may predate the call entirely.
+        // `FirstTouchClaimExecution::Acquired` protects free paths either way. Accusing the
+        // foreign-held remainder requires known authorship: `PostWriteAuthorship::Indeterminate`
+        // reports only acquired protection, because those paths may predate the call and cannot
+        // establish that this caller's write entered a reservation.
         Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
             acquisition,
             scopes,
@@ -628,8 +630,9 @@ fn claim_post_write_paths(
                 results: vec![ReservationDriftResult::Unchanged { reservation_id }],
             })
         },
-        // Nothing was protected here, so an `Indeterminate` comparison has neither an acquisition
-        // to report nor standing to accuse, and says nothing at all.
+        // `FirstTouchClaimExecution::Blocked` protects nothing, so
+        // `PostWriteAuthorship::Indeterminate` has neither an acquisition to report nor standing
+        // to accuse, and reports nothing.
         Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { scopes, conflicts }) => {
             let outcome = match authorship {
                 PostWriteAuthorship::ThisCall => DriftPathAttributionOutcome::IncursionDetected {
@@ -733,8 +736,9 @@ fn transact_classification(
             ) {
                 Ok(decision) => {
                     let mut report = decision.report;
-                    // A refused run holds nothing here, so no subject can carry its entry into
-                    // the incumbent's own scopes: the incumbent is the subject, and a
+                    // `DriftScopeAcquisition::RefusedToSecondRun` means the run holds nothing here,
+                    // so no subject can carry its entry into the incumbent's own scopes:
+                    // the incumbent is the subject, and a
                     // reservation never enters its own scopes. The same locked reservation set
                     // that answered the occupancy question answers this one.
                     if let DriftScopeAcquisition::RefusedToSecondRun { .. } = acquisition
