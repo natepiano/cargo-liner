@@ -258,7 +258,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 9 — Accurate clicks during motion  · status: todo
 
-**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 21
+**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 21, Phase 23
 
 **Blocked by:** tile-fixes phase 24 merged on main (tui_pane grid overlap) — the showrunner says when (showrunner, 2026-10-21).
 
@@ -286,6 +286,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. `tiles/host.rs` ≈138 calls `focus_cell(index)` on a current slot: resolve the drawn identity to its current slot at the public `Option<usize>` boundary, with a retired-content outcome inside, so a click on a vanished drawn tile never focuses its replacement. If `Cells::tile` (`render.rs` ≈243) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
 5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort and focuses no replacement; an accounts reading that changes the summary's demand between draw and click still selects the drawn agents column; an accounts-header click during motion, or after an accounts reading changed the table between draw and click, sorts by the accounts column that was drawn under the pointer. cargo-tile's suites pass.
 6. Acceptance tests also cover row, wheel and word targets, including clipped scrolled rows and retired tiles.
+7. Phase 23 drops a column that is empty in every row of a tile, and `render::cell_clicked` today rebuilds header spans from current rows and restores only saved widths. Test, red first: a tile draws a `type` or `role` column, then its rows change so that column is empty, and a click on the drawn header still selects the column drawn in that frame.
 
 **Files:**
 - `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/host_tests.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -478,32 +479,30 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 22 — Shell rows name their kind once; session sort ignores case  · status: done
 
-**Depends on:** Phase 17
+#### As-built
 
-#### Work Order
-
-**Goal:** a shell row names its kind only in the type column, and the session sort reads A to Z whatever the case.
-
-**Source:** the phase 17 final design check, 2026-10-21, moved here under the three-round landing rule. (1) say-it-once, one-vocabulary: a shell row says `shell` in the type column and `command` in the status column, two names for one fact. (2) The session sort compares bytes (`agent_cell.rs` `self.name().cmp(&other.name())`), so capitalized subagent and shell titles sort above lowercase names ("Feature-log proposals …" before "accounts"; "Run the phase 77 …" before "code90").
-
-**Constraints from prior phases:**
-- Phase 17: shell children carry `AgentActivity::Idle`, so a shell row must not copy the subagent activity path; it gets its own running state.
-- `footer_colors/mod.rs` `readable_status_style` (≈369) still uses `InkCoverage::Opaque`; session hues use `InkCoverage::Antialiased` through `readable_session_style`. Status inks move to glyph coverage here.
-
-**Spec:**
-1. The status column of a shell row shows the command's state as a subagent row does: `running`, or the timer pie when it has one. The word `command` leaves the status column; `shell` in the type column is the only place that names the kind. The status ink keeps 4.5:1 with glyph coverage (`InkCoverage::Antialiased`) in all four themes.
-2. The session sort compares names without regard to case, with a stable tie-break on the original name. Showrunner and unassigned tiles and the summary use the one comparison.
-3. Tests, red first: a rendered shell row shows `running` in its status cell (not only the absence of `command`); a shell row with a timer keeps its timer pie; the status ink on its drawn ground reaches 4.5:1 with glyph coverage in all four themes; a tile with "Feature-log …" and "accounts" sorts "accounts" first; equal names that differ only in case keep a stable order.
+- A shell row says `shell` only in the type column. Its status column shows `running` in the agent Activity vocabulary and the agent running ink, or the timer pie and time in the `Role::Shell` ink.
+- `agent_cell.rs` `ShellState::{Running, Timed(Timer)}` comes from the row's `Option<Timer>` and selects the status cell.
+- `sort::compare_names` compares names without regard to case and breaks ties on the original spelling. Showrunner tiles, unassigned tiles and the summary all use it.
+- Status inks solve at `InkCoverage::Antialiased` with `ANTIALIASED_GLYPH_COVERAGE` = 208/255, the same coverage as session hues.
+- Shell role seeds: Default Light `Rgb(0, 120, 100)`, High Contrast Light `Rgb(0, 80, 65)`, Default Dark `Rgb(140, 230, 240)`. `themes/*.toml`, `starter.toml` included, mirror them, so the shell timer stays apart from every account ink.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/agent_cell/tests/`, `crates/cargo-handler/src/footer_colors/tests.rs`
+- `crates/cargo-handler/src/agent_cell.rs` — `ShellState` and the shell status cell; tile sorts through `compare_names`.
+- `crates/cargo-handler/src/sort.rs` — `compare_names`.
+- `crates/cargo-handler/src/summary/mod.rs` — summary sort through `compare_names`; `summary/sort_tests.rs` covers it.
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `ANTIALIASED_GLYPH_COVERAGE`, `InkCoverage`, status inks at antialiased coverage.
+- `crates/cargo-handler/src/footer_colors/account_seed_tests.rs` — shell and teal inks stay at CIEDE2000 >= 12 from every account ink after solving.
+- `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/*.toml` — shell role seeds.
+- `crates/cargo-handler/src/agent_cell/tests/` — shell `running` and timer rows, design inks, case-blind sort.
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — shell presentation, the shared name comparison, the status-ink coverage and registrations; CHANGELOG.
-- `test` — separate rendered shell, timer, comparison and contrast regressions.
+**Binds later work:** shell `running` and agent `running` share one ink, and only `ShellState::Timed` keeps `Role::Shell`. Contrast checks use the literal 208/255 coverage. An ink that is added or moved must be compared, after coverage solving, against every role and account ink.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of a tile with a shell row and mixed-case session names. The checkpoint carries `Change-Review: a shell row says shell only in the type column, and sessions sort A to Z whatever the case | On natedev, in a terminal, run cargo-handler while a showrunner runs shells and subagents with capitalized titles | The status column of a shell row shows its state, never command, and names read in alphabetical order`.
+**Gotchas:**
+- Live xterm DejaVu stems measure about 216/255. At 229/255, light `running` and `waiting` fell to about 4.1:1 live.
+- A darker solve moves hue-preserving inks together (shell and codex2). `account_seed_tests.rs` catches this.
+
+**Ruled out:** Unicode special-case folding (Greek final sigma) in the session sort. Session names do not need it, and the order stays total and stable.
 
 ### Phase 23 — Timer at digit height; tiles drop empty columns; one Busy ink  · status: todo
 
@@ -519,13 +518,14 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 22: `ShellState::{Running, Timed(Timer)}` in `agent_cell.rs` gives a shell row its status text and ink; the timer text is `timer_label` with the pie glyphs from `constants.rs` (the pie list beside `LAUNCHED_BY_LABEL`).
 - Phase 17: the `type` column is right of `session`; columns are measured after the shared screen-column fit (`App.tree_layouts`), and tiles in one screen column share column positions. Click mapping reads the drawn tree metrics, so a dropped column must also leave the click map.
 - Do not change the terminal font.
+- Phase 22: status inks are solved at the antialiased coverage `ANTIALIASED_GLYPH_COVERAGE` (208/255, `footer_colors/mod.rs`). Contrast tests compute the expected ratio with their own literal 208/255, not by reading that constant, so a weaker production setting fails them.
 
 **Spec:**
 1. Timer pie: find where the pie glyph's drawn size comes from. If a font fallback draws it, pick a glyph that the primary terminal font (DejaVu Sans Mono in the shots) draws at digit height on the digit center line. If no such glyph exists, remove the pie and keep the digits only.
-2. Empty columns: a tile leaves out each column that is empty in every one of its rows, `type` and `role` included. Each tile sets its columns from its own rows; headers, widths and click mapping follow the drawn columns.
-3. Tests, red first: a rendered unassigned tile whose rows have no type and no role draws neither header; a rendered tile with type and role values keeps both columns; the timer cell draws the chosen glyph (or the digits alone) in the rendered status cell; a header click in a tile with a dropped column still selects the clicked column.
-4. One Busy ink: `thinking` and `running` resolve to the same solved Busy ink in all four built-in themes, focused and unfocused grounds, tint off and on. Remove the path that gives light `running` an ink separate from `thinking`, and keep 4.5:1 at the antialiased coverage.
-5. Tests, red first, for item 4: a rendered status cell for `thinking` and one for `running` read back the same foreground in every built-in theme.
+2. Empty columns: a tile leaves out each column that is empty in every one of its rows, `type` and `role` included. Each tile sets its columns from its own rows; headers, widths and click mapping follow the drawn columns. Tiles in one screen column that draw the same column set share column positions; a tile with a different set fits its own positions (showrunner, 2026-10-21).
+3. Tests, red first: a rendered unassigned tile whose rows have no type and no role draws neither header; a rendered tile with type and role values keeps both columns; two adjacent tiles in one screen column with different column sets each draw their own headers at their own positions, and a header click in each selects the column drawn under the pointer; two tiles with the same column set share positions; the timer cell draws the chosen glyph (or the digits alone) in the rendered status cell; a header click in a tile with a dropped column still selects the clicked column.
+4. One Busy ink: `thinking` and `running` resolve to the same solved Busy ink in all four built-in themes, focused and unfocused grounds, tint off and on. `AgentActivity::color_role` already maps both to `Role::Busy` (and `ShellState::Running` uses that path), yet the phase 22 shots drew different inks: light `thinking` #117711 against `running` #006d00, dark #64dc64 against #61d661. So the split is after the role: find the drawing path (status ink solve, readable-ink cache, tint, or a second style lookup) that gives the two words different foregrounds, write it in the phase summary, and make both draw through one solved ink. Keep 4.5:1 at the antialiased coverage.
+5. Tests, red first, for item 4: a rendered status cell for `thinking` and one for `running` read back the same foreground in every built-in theme, focused and unfocused, tint off and on. If the rendered test is green on the current tree, find the live state the shots drew (a status that changes between frames, or a row kind) and render that state, so the test is red before the fix.
 6. Live: measure the timer cap height and vertical center against the digits in framed shots, dark and light.
 
 **Files:**
@@ -559,7 +559,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 2. The overlay pages only when its rows do not fit the height it can use. When all rows fit, it draws them all and shows no page marker ("1 of 2" or the like). When they do not fit, it pages as now, and each page fills the height it can use.
 3. The page count is derived from the row count and the usable height, so a page marker can not show while every row fits (one type or one function owns that decision; no second guard).
 4. Tests, each red before its fix: at a tall terminal height where every global shortcut row fits, the rendered overlay shows every row and no page marker; at a short height, it shows a page marker and the first page holds as many rows as the usable height allows; the last row of the last page is reachable.
-5. The tui_pane fallback status bar is readable: in dark, a dark bar (about rgb 60,60,60) instead of gray #7f7f7f, under which yellow #cdcd00 and cyan were 2.0–2.35:1 and white 4.0:1; in light, the #a06400 text on #dcdcdc (3.55:1) becomes about #7a4c00. Every rendered bar ink reaches 4.5:1 in all four themes, measured on the bar each app draws, cargo-handler's own bars included (showrunner, 2026-10-20).
+5. The tui_pane fallback status bar is readable: in dark, a dark bar (about rgb 60,60,60) instead of gray #7f7f7f, under which yellow #cdcd00 and cyan were 2.0–2.35:1 and white 4.0:1. In light, `fallback_light` (`theme/fallback.rs` ≈88) draws a black active title, an rgb 70,70,70 inactive title and an rgb 0,95,135 accent, which `BarPalette::themed` reads; the code has no #a06400 ink. The #a06400 label on #dcdcdc (3.55:1) in the earlier shots comes from a named terminal color or an app's own span: find its source and write it in the phase summary before changing it. Test the drawn enabled, disabled, activity, label and value spans on each app's rendered bar, and every one reaches 4.5:1 in all four themes, cargo-handler's own bars included, without changing cargo-handler's bar colors (showrunner, 2026-10-20). Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading a production constant.
 6. The overlay test lives in its own module; it fails at the old 24-row cap.
 
 **Files:**
@@ -606,15 +606,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 12. Tests, each red before its fix: a rendered table has the nine columns in order with lower-case headers; the account cell holds only the name, and the read column holds the reading age; the dot is green for `read_ok` true and red for false and for a missing field; left is red at 9 %, yellow at 24 %, plain at 25 %, `—` with no reading; resets formats a same-day, a this-week and a later time; credits shows `13,446` for 13446.4 and `unlimited`; enabled and in use show `yes` or blank from their fields; the `%` signs and the last digit of each number column stand in one screen column in every row.
 13. Dark low-left red #890000 on black is 2.06:1: use the theme bright red; every numeric column ink reaches 4.5:1 (showrunner, 2026-10-20).
 14. Tests cover every new header click toggle, blank-last order and the per-role spans.
-15. Session-name hues (`theme.rs` `RainbowHue`) stay clear of the status, account and role palettes. The phase 17 design check measured near matches: dark session green #6edc6e vs `running` #61d661 and session cyan #50d2e6 vs `command` #57c2d6; light session green #008700 vs `thinking`/`running` #008200, session teal #047a8e vs `command` #0e7f9c and codex2 #007389, session red #c81e1e vs codex1 #e3004c. Pick session hues outside those palettes. Tests, red first: every session hue against every status ink, account ink and role ink by CIEDE2000 >= 12, and each session hue at 4.5:1 on its drawn ground with glyph coverage (`InkCoverage::Antialiased`), in all four themes (showrunner, 2026-10-21, phase 17 design check D2). The role inks in these checks include the two reserved Astra inks, pink (`role.astra-designer`) and bright-green (`role.astra-reviewer`), so phase 21 can add them without a collision; the phase 17 regression measures only the showrunner and unit-director inks.
+15. Session-name hues (`theme.rs` `RainbowHue`) stay clear of the status, account and role palettes. The phase 17 design check measured near matches: dark session green #6edc6e vs `running` #61d661 and session cyan #50d2e6 vs `command` #57c2d6; light session green #008700 vs `thinking`/`running` #008200, session teal #047a8e vs `command` #0e7f9c and codex2 #007389, session red #c81e1e vs codex1 #e3004c. Pick session hues outside those palettes. Tests, red first: every session hue against every status ink, account ink and role ink by CIEDE2000 >= 12, and each session hue at 4.5:1 on its drawn ground with glyph coverage (`InkCoverage::Antialiased`), in all four themes (showrunner, 2026-10-21, phase 17 design check D2). Phase 21 runs before this phase and adds the Astra role inks with their own distance and contrast checks; these checks read every role ink through the production role API (`FooterColors::hierarchy_role`), Astra inks included, and keep phase 21's checks passing. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs`
+- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/census/accounts_wire_tests.rs`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — accounts production files (`summary/accounts.rs`, `summary/constants.rs`, `census/accounts.rs`, `sort.rs`), the session palette in `theme.rs` and the built-in theme files; CHANGELOG.
-- `test` — the red tests in the accounts test files and the composed-grid palette tests in `render/role_title_tests.rs`.
+- `impl` — accounts production files (`summary/accounts.rs`, `summary/constants.rs`, `census/accounts.rs`, `sort.rs`), the session palette in `theme.rs` and the built-in theme files, and test module registrations; CHANGELOG.
+- `test` — the red tests in the accounts test files, a separate census account-wire test module (`census/accounts_wire_tests.rs`: `read_ok` and `credits_in_use` conversion into named states, missing fields included), and the composed-grid palette tests in `render/role_title_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of the accounts table, in a dark and a light theme, with an account that cannot be read, one under 10 % left, one with credits enabled and in use. The checkpoint carries `Change-Review: the accounts table shows a dot, account, role, left, resets, credits, enabled, in use and read, as the accounts board does, with right-aligned numbers and the reading age in its own column | open cargo-handler and /accounts-board side by side and compare the accounts tables`.
 
@@ -648,16 +648,17 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 6. Tests, each red before its fix: each key moves the selection as stated and stops at the edges; a click selects the row under the pointer in a tile; the wheel scrolls the tile under the pointer, not the focused one; when the selected row's session ends, the selection moves to the row at the old index, then to the last row, then to `NoRows`; a group line can be selected; cargo-port's existing navigation tests pass unchanged.
 7. Tests also cover duplicate descriptions, renames, pid reuse, row removal, summary selection, and a session moving between its hierarchy tile and the unassigned tile.
 8. Tests also cover: a selected seat row stays selected across a new dispatch to that seat, a seat relaunch and a remote probe round trip; key moves and row removal on the summary surface and on a tile surface; a scrolled tile keeps its unit letters in the same screen columns and its age header whole.
+9. A selected row stays readable. The selection background is a ground the inks are solved on (`footer_colors/mod.rs` `InkGrounds` gains it). Rendered tests, red first, read back the status, shell timer, account, role and session inks on a selected row in a focused and an unfocused tile and require 4.5:1, computed with their own literal 208/255 glyph coverage, in all four built-in themes. If the shared selection style leaves an ink under 4.5:1, send the conflict to the showrunner before choosing a palette.
 
 **Files:**
 - `crates/tui_pane/src/layout/viewport.rs`, `crates/tui_pane/src/runner/event_loop.rs`, `crates/tui_pane/src/runner/app.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/CHANGELOG.md`
 - `crates/cargo-port/src/tui/panes/actions.rs`, `crates/cargo-port/src/tui/input/dispatch.rs`, `crates/cargo-port/src/tui/panes/hit_test.rs`
-- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-handler/src/agent_cell/tests/`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — shared tui_pane exports, cargo-port and cargo-handler production code and registrations; CHANGELOG.
-- `test` — separate shared-navigation and handler-selection test files.
+- `impl` — shared tui_pane exports, cargo-port and cargo-handler production code and registrations, the selection ground in `InkGrounds`; CHANGELOG.
+- `test` — separate shared-navigation and handler-selection test files, including the selected-row contrast tests.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of a cargo-handler tile with a selected row after key moves, after a click and after a wheel scroll, in a dark and a light theme. The checkpoint carries `Change-Review: a cargo-handler tile has a selected row that the arrow, page, home and end keys move, a click selects and the wheel scrolls, as in cargo-port | open cargo-handler, move the selection with the keys, click a row and scroll a tile with the wheel`.
 
@@ -677,6 +678,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The code stays in cargo-handler: no other crate uses it yet, so it adds no tui_pane surface.
 - Phase 15 CIEDE2000 12 measures distinction from header ink, not readability. `ReadableInk` measures against `theme.text.bg_focus`. Use the luminance contrast oracle (4.5:1) against the real match background in all four themes, for subdued role and account ink and for selection overlap; foreground colors do not change.
 - Phase 17: `footer_colors/mod.rs` `InkGrounds` covers the base, focused and unfocused grounds, and account, management and session inks use glyph coverage (`InkCoverage::Antialiased`). Measure every ink on the drawn match and selection backgrounds with that same coverage calculation, Astra role inks included. If no match background keeps every unchanged foreground at 4.5:1, send the conflict to the showrunner before accepting a palette.
+- Phase 16's selected-row contrast tests stay green; where a match overlaps a selected row, the match background is the ground. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 
 **Spec:**
 1. A word is a token between spaces in any drawn cell, with leading and trailing punctuation removed. A match is the whole word with exact case: a click on `claude1` marks every `claude1` and no `claude12`.
@@ -713,12 +715,14 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - natedev adds to `production_tree.py --json` one edge per Astra session while it holds the role: `{"manager": <Claude session id of the unit director or showrunner>, "member": <Codex thread id>, "role": "astra-designer" | "astra-reviewer", "codex_home": <CODEX_HOME>, "state": "busy" | "idle"}`, and the `statusline.conf` keys `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
 - Today `census/hierarchy.rs` drops an edge whose role it does not know (`HierarchyWireRole` `#[serde(other)] Unknown`); `HierarchyRole` is in `census/mod.rs`; `RoleLabel` is in `census/placement.rs`; `FooterRole` and its `role.*` keys are in `footer_colors/mod.rs`. Since phase 17 there is no `From<HierarchyRole> for FooterRole` and no `FooterRole::Worker`: management roles map in `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈548), specialist role words in `FooterColors::named_role` (≈539), and worker rows draw plain.
 - Phase 17 probe schema 3: `ProbeChildWork` sends the unit kind `subagent` with an optional `subagent_role`. Keep its compatibility tests beside the new hierarchy extension tests: a capable receiver keeps recorded subagent roles; an older receiver accepts the report without the extension.
-- Phase 19 checks the reserved Astra inks (pink, bright-green) against the session hues. Repeat those distance and contrast checks here through the production role API (`FooterColors::hierarchy_role` with the new variants), not through fixed colors.
+- The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; natedev changes `statusline.conf`. This phase does not wait for that change: its distance test uses a fixture with the `statusline.conf` values and the new designer color the showrunner names, and the live shots before the checkpoint need the change on `~/.claude` main.
+- Phase 21 runs before phase 19, so this phase does its own complete palette checks for the Astra inks through the production role API (`FooterColors::hierarchy_role` with the new variants), not through fixed colors: against every session hue, every account ink and every existing role ink. Phase 19 later keeps them passing. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 - The Codex thread lookup in `constants.rs` reads only `originator = 'codex-tui'` threads; `astra_review.py` runs `codex exec` (`originator` `codex_exec`).
 - The word `review` stays the pool reviewer's.
 - `codex::read_threads_by_id` already accepts any originator (`CODEX_THREAD_BY_ID_QUERY`); only the startup-window query limits originator to `codex-tui`. Do an edge-named lookup in the named Codex home; do not widen the startup query. Reuse `SessionNames` for renamed sessions; keep the phase 15 home and resume checks (`thread_matches_home`, `ResumeRequest`) and the no-dispatch regression.
 - The scanner gets no hierarchy snapshot today, and app-server discovery needs Linux open file descriptors under the default sessions directory. Hand accepted edges from the scheduler to the scanner; keep database and rollout reads off the scheduler thread and outside the publication lock.
 - `hierarchy.rs:641` turns any wire `state: busy|idle` into `ReviewerState`; pool validation makes an edge without a lease idle and `is_drawn` hides it. Astra sessions get their own semantic state, outside the reviewer-pool state machine.
+- `HierarchyEdge` today joins a role with `ReviewerState` and has no Codex home field. An Astra edge is one typed payload that requires its Codex home and its busy or idle state (for example `AstraSeat { role: AstraRole, codex_home: CodexHome, state: AstraState }`); the optional wire fields convert into it at the input boundary, and an edge without them is refused there. Do not add separate domain `Option` fields that permit an Astra member without its address.
 - Probe schema 3 serializes `HierarchyEdges` directly; new role variants in `edges` make older receivers refuse a probe. Carry new roles in a defaulted extension.
 - Phase 15 fallbacks stay: a session with no name shows its pid text, and an unknown footer color name draws plain.
 - The edge is on `~/.claude` main at 60ca146b (natedev and the Mac): `production_tree.py --json` gives `{manager: Claude session id, member: Codex thread id, role: astra-designer|astra-reviewer, codex_home, state: busy|idle}`; a held thread no longer also prints as a worker edge. `statusline.conf` has `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Live shots: `/astra_review` holds the reviewer role while its Codex process runs; hold a designer by hand with `~/.claude/scripts/lib/py ~/.claude/scripts/astra/astra_roles.py hold designer --session-dir <delegate dir> --worker <name> [--manager <session id>]`, release with `astra_roles.py release <thread id>`.
@@ -729,7 +733,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the edge's `state` as its idle or busy status between turns.
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse and keep their words; each takes its configured color; an Astra row draws under a unit director and under a showrunner; a `codex_exec` thread named by an edge gets its name and activity; an unknown role is still dropped.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role ink, read through the production role API, at CIEDE2000 >= 12 from every session hue and at 4.5:1 with glyph coverage in all four themes.
+6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role ink, read through the production role API, at CIEDE2000 >= 12 from every session hue, every drawn account ink and every existing role ink, and at 4.5:1 with glyph coverage in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 
 **Files:**
