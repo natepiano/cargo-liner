@@ -159,7 +159,7 @@ thread_local! {
 }
 
 fn record_allocation() {
-    // Allocations during thread teardown must still reach the system allocator.
+    // `ALLOCATION_COUNTER.try_with` tolerates thread teardown so allocations still reach `System`.
     let _ = ALLOCATION_COUNTER.try_with(|counter| {
         if matches!(counter.scope.get(), AllocationCounting::Measuring) {
             counter.calls.set(counter.calls.get().saturating_add(1));
@@ -171,8 +171,8 @@ fn record_allocation() {
     unsafe_code,
     reason = "a test-only GlobalAlloc impl must be unsafe; it forwards every call to System"
 )]
-// SAFETY: every method forwards the original pointer and layout to System.
-// The counter uses allocation-free thread-local cells and never unwinds.
+// SAFETY: every `ThreadCountingAllocator` method forwards the original pointer and layout to
+// `System`. `ALLOCATION_COUNTER` uses allocation-free thread-local cells; counting never unwinds.
 unsafe impl GlobalAlloc for ThreadCountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         record_allocation();
