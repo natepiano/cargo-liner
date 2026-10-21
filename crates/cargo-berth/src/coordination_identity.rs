@@ -728,8 +728,9 @@ pub(crate) fn validate_worktree_occupancy(
     worktree_id: WorktreeId,
     acting_run: PresentedCoordinationRun,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    // Checkout occupancy follows the run's Active lifetime. A clean run that has not written
-    // yet keeps it; reconciliation ends a run only once trunk contains the work it did.
+    // `validate_worktree_occupancy` keeps checkout occupancy for the run's Active lifetime.
+    // A clean run that has not written yet keeps it; reconciliation ends a run only once trunk
+    // contains its work.
 
     let WorktreeOccupancy::Incumbent(incumbent) =
         reservations.worktree_occupancy(worktree_id, acting_run)
