@@ -195,9 +195,9 @@ mod tests {
         let (new_tx, new_rx) = channel::unbounded();
         background.swap_background_channel(new_tx, new_rx);
 
-        // Sender cloned before the swap can still send (it's tied to
-        // the dropped receiver), but the swapped-in receiver must
-        // not see anything from it.
+        // `original_sender`, cloned before `background.swap_background_channel`, can still send
+        // because it is tied to the dropped receiver, but the swapped-in
+        // `background.background_receiver()` must not see anything from it.
         let _ = original_sender.send(make_msg());
         assert!(
             background.background_receiver().try_recv().is_err(),
