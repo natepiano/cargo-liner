@@ -31,7 +31,7 @@ use crate::project::RootItem;
 
 /// Build a normalized project item for a discovered root directory.
 ///
-/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// Unlike `cargo_parse_result_to_item(from_cargo_toml(...))`, this walks nested
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {

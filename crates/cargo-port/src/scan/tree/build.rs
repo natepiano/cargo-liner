@@ -158,8 +158,8 @@ fn group_members_new(
 }
 
 /// Convert a `CargoParseResult` (from `from_cargo_toml()`) into a `RootItem`.
-pub(crate) fn cargo_parse_result_to_item(cp: CargoParseResult) -> RootItem {
-    match cp {
+pub(crate) fn cargo_parse_result_to_item(cargo_parse_result: CargoParseResult) -> RootItem {
+    match cargo_parse_result {
         CargoParseResult::Workspace(ws) => RootItem::Rust(RustProject::Workspace(ws)),
         CargoParseResult::Package(pkg) => RootItem::Rust(RustProject::Package(pkg)),
     }
