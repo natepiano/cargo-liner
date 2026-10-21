@@ -45,6 +45,7 @@ use crate::constants::MISSING_VALUE;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
 use crate::sort::ColumnSort;
@@ -340,7 +341,7 @@ fn columns(values: [Line<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Each responsibility has its own footer ink; punctuation keeps the row style.
+/// Management roles use footer ink; other words and punctuation keep the row style.
 fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) -> Line<'static> {
     let base = freshness.style();
     if row.roles.is_empty() {
@@ -354,11 +355,7 @@ fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) 
         let tint = match role {
             AccountRole::Units => colors.role(FooterRole::UnitDirector),
             AccountRole::Showrunners => colors.role(FooterRole::Showrunner),
-            AccountRole::Workers => colors.role(FooterRole::Worker),
-            AccountRole::Spare => {
-                spans.push(Span::styled(role.text(), base));
-                continue;
-            },
+            AccountRole::Workers | AccountRole::Spare => FooterTint::Plain,
         };
         let style = match freshness {
             Freshness::Fresh => tint.style(base),

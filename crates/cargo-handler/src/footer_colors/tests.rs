@@ -25,8 +25,8 @@ use super::constants::SRGB_POWER;
 use super::*;
 use crate::theme;
 
-/// Shared statusline assignments with the approved brown account override.
-const ROLE_ACCOUNT_FIXTURE: &str = "role.showrunner=bright-magenta\nrole.unit-director=bright-blue\nrole.worker=bright-cyan\nrole.unassigned=purple\naccount.claude1=brown\naccount.claude2=magenta\naccount.claude3=blue\naccount.claude4=orange\naccount.codex1=pink\naccount.codex2=teal";
+/// Proposed role assignments with the shared account assignments unchanged.
+const ROLE_ACCOUNT_FIXTURE: &str = include_str!("fixtures/statusline.conf");
 /// A distance above 10 reads as a different color at a glance; 12 keeps that margin.
 const MINIMUM_LABEL_DISTANCE: f64 = 12.0;
 
@@ -39,7 +39,7 @@ struct PerceptualColor {
 
 impl PerceptualColor {
     fn from_terminal(color: Color) -> Self {
-        let (red, green, blue) = rgb(color);
+        let (red, green, blue) = measured_channels(color);
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;
             if value <= SRGB_LINEAR_THRESHOLD {
@@ -144,6 +144,11 @@ impl PerceptualColor {
     }
 }
 
+/// Independent perceptual distance for rendered cell regressions.
+pub(crate) fn perceptual_distance(first: Color, second: Color) -> f64 {
+    PerceptualColor::from_terminal(first).distance(&PerceptualColor::from_terminal(second))
+}
+
 #[test]
 fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
     // Published CIEDE2000 reference pairs check the independent oracle first.
@@ -175,8 +180,6 @@ fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
         let entries = [
             ("role.showrunner", colors.role(FooterRole::Showrunner)),
             ("role.unit-director", colors.role(FooterRole::UnitDirector)),
-            ("role.worker", colors.role(FooterRole::Worker)),
-            ("role.unassigned", colors.role(FooterRole::Unassigned)),
             ("account.claude1", colors.account("claude1")),
             ("account.claude2", colors.account("claude2")),
             ("account.claude3", colors.account("claude3")),
@@ -205,64 +208,233 @@ fn footer_roles_and_accounts_stay_perceptually_distinct_from_column_headers() {
     );
 }
 
+/// Resolve a fixture-only future role without extending the production role enum.
+fn fixture_role_tint(key: &str) -> FooterTint {
+    let name = ROLE_ACCOUNT_FIXTURE
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|tail| tail.strip_prefix('='))
+        })
+        .expect("fixture role assignment");
+    FooterTint::Footer(name.parse().expect("fixture role color"))
+}
+
+/// Management colors cannot reuse the footer levels or the reserved designer ink.
+fn assert_management_role_names(roles: [(&str, FooterTint); 2]) {
+    for (role, tint) in roles {
+        assert!(
+            !matches!(
+                tint,
+                FooterTint::Management(
+                    FooterColor::Red
+                        | FooterColor::BrightRed
+                        | FooterColor::Green
+                        | FooterColor::BrightGreen
+                        | FooterColor::Pink
+                )
+            ),
+            "{role} must not reuse level or designer colors"
+        );
+    }
+}
+
+/// Roles must not reuse account, level, Astra or header colors after correction.
+#[test]
+fn footer_role_colors_stay_distinct_from_accounts_headers_and_other_roles() {
+    let colors = FooterColors::parse(ROLE_ACCOUNT_FIXTURE);
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let mut measurements = Vec::new();
+    let mut contrasts = Vec::new();
+    let role_tints = [
+        ("role.showrunner", colors.role(FooterRole::Showrunner)),
+        ("role.unit-director", colors.role(FooterRole::UnitDirector)),
+    ];
+    assert_management_role_names(role_tints);
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        let theme_name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for focused_tint in [false, true] {
+            tui_pane::set_focused_pane_tint(focused_tint);
+            let appearance = format!("{theme_name} tint={focused_tint}");
+            let ink = |tint: FooterTint| {
+                tint.style(Style::default())
+                    .fg
+                    .expect("configured foreground")
+            };
+            let roles = role_tints.map(|(role, tint)| (role, ink(tint)));
+            let accounts = [
+                "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
+            ]
+            .map(|account| (account, ink(colors.account(account))));
+            let astra = ["role.astra-designer", "role.astra-reviewer"]
+                .map(|role| (role, ink(fixture_role_tint(role))));
+            let header = tui_pane::label_color();
+            let plain = FooterTint::Plain
+                .style(Style::default().fg(tui_pane::text_default()))
+                .fg
+                .expect("plain row foreground");
+            let distance = |first, second| {
+                PerceptualColor::from_terminal(first)
+                    .distance(&PerceptualColor::from_terminal(second))
+            };
+            for (index, (role, color)) in roles.iter().enumerate() {
+                measurements.push((
+                    appearance.clone(),
+                    *role,
+                    "header",
+                    distance(*color, header),
+                ));
+                measurements.push((
+                    appearance.clone(),
+                    *role,
+                    "plain row text",
+                    distance(*color, plain),
+                ));
+                for (other, other_color) in accounts
+                    .iter()
+                    .chain(&astra)
+                    .chain(roles.iter().skip(index + 1))
+                {
+                    measurements.push((
+                        appearance.clone(),
+                        *role,
+                        *other,
+                        distance(*color, *other_color),
+                    ));
+                }
+                for focused in [false, true] {
+                    contrasts.push((
+                        appearance.clone(),
+                        *role,
+                        focused,
+                        contrast_ratio(*color, tui_pane::pane_background(focused)),
+                    ));
+                }
+            }
+        }
+    }
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_transparent_background(transparent);
+    tui_pane::set_focused_pane_tint(tinted);
+    assert_role_measurements(&measurements, &contrasts);
+}
+
+/// The showrunner's ruling of 2026-10-21 permits only purple showrunner ink
+/// against account claude3 with pane tint on. The management coverage policy
+/// measures 8.223475 in dark themes and 8.464654 in light themes. All other role/account,
+/// plain-text and role pairs keep 12.
+fn showrunner_claude3_tinted_exception(appearance: &str, role: &str, other: &str) -> bool {
+    role == "role.showrunner" && other == "claude3" && appearance.ends_with(" tint=true")
+}
+
+/// Report every measured pair before checking the complete palette.
+fn assert_role_measurements(
+    measurements: &[(String, &str, &str, f64)],
+    contrasts: &[(String, &str, bool, f64)],
+) {
+    for (theme, role, other, distance) in measurements {
+        eprintln!("{theme} {role} / {other}: CIEDE2000={distance:.6}");
+    }
+    for (theme, role, focused, ratio) in contrasts {
+        eprintln!("{theme} {role} focused={focused}: contrast={ratio:.6}");
+    }
+    let failures: Vec<_> = measurements
+        .iter()
+        .filter(|(appearance, role, other, distance)| {
+            *distance < MINIMUM_LABEL_DISTANCE
+                && !showrunner_claude3_tinted_exception(appearance, role, other)
+        })
+        .collect();
+    let unreadable: Vec<_> = contrasts
+        .iter()
+        .filter(|(_, _, _, ratio)| *ratio < MINIMUM_CONTRAST)
+        .collect();
+    assert!(
+        failures.is_empty() && unreadable.is_empty(),
+        "role distance failures: {failures:?}; pane contrast failures: {unreadable:?}"
+    );
+}
+
+/// Independent xterm channel oracle, shared by WCAG and CIEDE2000 tests.
+fn measured_channels(color: Color) -> (u8, u8, u8) {
+    let index = match color {
+        Color::Black | Color::Reset => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(index) => index,
+        Color::Rgb(red, green, blue) => return (red, green, blue),
+    };
+    let ansi = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if let Some(channels) = ansi.get(usize::from(index)) {
+        return *channels;
+    }
+    if index >= 232 {
+        let gray = 8 + 10 * (index - 232);
+        return (gray, gray, gray);
+    }
+    let levels = [0, 95, 135, 175, 215, 255];
+    let offset = index - 16;
+    (
+        levels[usize::from(offset / 36)],
+        levels[usize::from((offset % 36) / 6)],
+        levels[usize::from(offset % 6)],
+    )
+}
+
+/// The management ink policy reserves 26/255 of a glyph pixel for its ground.
+/// This models a 90% coverage pixel explicitly; it does not claim to measure
+/// arbitrary font fringes, whose coverage can approach zero.
+pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64 {
+    const GROUND_SHARE: u32 = 26;
+    let foreground = <[u8; 3]>::from(measured_channels(foreground));
+    let ground = <[u8; 3]>::from(measured_channels(background));
+    let mixed: [u8; 3] = std::array::from_fn(|index| {
+        let channel = (u32::from(foreground[index]) * (255 - GROUND_SHARE)
+            + u32::from(ground[index]) * GROUND_SHARE)
+            / 255;
+        u8::try_from(channel).expect("convex channel mixture fits a byte")
+    });
+    contrast_ratio(Color::Rgb(mixed[0], mixed[1], mixed[2]), background)
+}
+
 /// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
 pub(crate) fn contrast_ratio(foreground: Color, background: Color) -> f64 {
-    fn rgb(color: Color) -> (u8, u8, u8) {
-        let index = match color {
-            Color::Black | Color::Reset => 0,
-            Color::Red => 1,
-            Color::Green => 2,
-            Color::Yellow => 3,
-            Color::Blue => 4,
-            Color::Magenta => 5,
-            Color::Cyan => 6,
-            Color::Gray => 7,
-            Color::DarkGray => 8,
-            Color::LightRed => 9,
-            Color::LightGreen => 10,
-            Color::LightYellow => 11,
-            Color::LightBlue => 12,
-            Color::LightMagenta => 13,
-            Color::LightCyan => 14,
-            Color::White => 15,
-            Color::Indexed(index) => index,
-            Color::Rgb(red, green, blue) => return (red, green, blue),
-        };
-        let ansi = [
-            (0, 0, 0),
-            (205, 0, 0),
-            (0, 205, 0),
-            (205, 205, 0),
-            (0, 0, 238),
-            (205, 0, 205),
-            (0, 205, 205),
-            (229, 229, 229),
-            (127, 127, 127),
-            (255, 0, 0),
-            (0, 255, 0),
-            (255, 255, 0),
-            (92, 92, 255),
-            (255, 0, 255),
-            (0, 255, 255),
-            (255, 255, 255),
-        ];
-        if let Some(channels) = ansi.get(usize::from(index)) {
-            return *channels;
-        }
-        if index >= 232 {
-            let gray = 8 + 10 * (index - 232);
-            return (gray, gray, gray);
-        }
-        let levels = [0, 95, 135, 175, 215, 255];
-        let offset = index - 16;
-        (
-            levels[usize::from(offset / 36)],
-            levels[usize::from((offset % 36) / 6)],
-            levels[usize::from(offset % 6)],
-        )
-    }
     fn luminance(color: Color) -> f64 {
-        let (red, green, blue) = rgb(color);
+        let (red, green, blue) = measured_channels(color);
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;
             if value <= SRGB_LINEAR_THRESHOLD {
@@ -321,8 +493,9 @@ fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors(
             "teal",
             "brown",
         ] {
-            let colors =
-                FooterColors::parse(&format!("account.fixture={name}\nrole.worker={name}"));
+            let colors = FooterColors::parse(&format!(
+                "account.fixture={name}\nrole.unit-director={name}"
+            ));
             let original = Color::from(
                 name.parse::<FooterColor>()
                     .expect("documented footer color"),
@@ -333,18 +506,23 @@ fn footer_contrast_every_named_ink_is_readable_and_keeps_sufficient_ansi_colors(
                 .fg
                 .expect("account ink");
             let role = colors
-                .role(FooterRole::Worker)
+                .role(FooterRole::UnitDirector)
                 .style(Style::default())
                 .fg
                 .expect("role ink");
-            for foreground in [account, role] {
+            for (foreground, management) in [(account, false), (role, true)] {
                 let ratio = contrast_ratio(foreground, background);
                 assert!(
                     ratio >= MINIMUM_CONTRAST,
                     "{} {name}: {foreground:?} on {background:?} is {ratio}:1",
                     variant.id.as_str()
                 );
-                if contrast_ratio(original, background) >= MINIMUM_CONTRAST {
+                if [false, true].into_iter().all(|focused| {
+                    let ground = tui_pane::pane_background(focused);
+                    contrast_ratio(original, ground) >= MINIMUM_CONTRAST
+                        && (!management
+                            || covered_role_contrast(original, ground) >= MINIMUM_CONTRAST)
+                }) {
                     assert_eq!(
                         foreground,
                         original,
@@ -381,7 +559,6 @@ fn footer_contrast_uses_theme_ground_through_transparency_focus_and_theme_change
     let colors = FooterColors::parse("account.fixture=blue");
     let mut corrected = Vec::new();
     for variant in theme::builtins() {
-        let background = variant.theme.text.bg_focus.color;
         tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
         let expected = colors
             .account("fixture")
@@ -393,16 +570,18 @@ fn footer_contrast_uses_theme_ground_through_transparency_focus_and_theme_change
             tui_pane::set_transparent_background(transparent);
             for focused_tint in [false, true] {
                 tui_pane::set_focused_pane_tint(focused_tint);
-                let actual = colors
-                    .account("fixture")
-                    .style(Style::default())
-                    .fg
-                    .expect("blue ink");
-                assert_eq!(
-                    actual, expected,
-                    "pane decoration does not replace the theme ground"
-                );
-                assert!(contrast_ratio(actual, background) >= MINIMUM_CONTRAST);
+                let base = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+                let styled = colors.account("fixture").style(base);
+                assert_eq!(styled.add_modifier, base.add_modifier);
+                let actual = styled.fg.expect("blue ink");
+                for focused in [false, true] {
+                    let background = tui_pane::pane_background(focused);
+                    assert!(
+                        contrast_ratio(actual, background) >= MINIMUM_CONTRAST,
+                        "{} transparent={transparent} tinted={focused_tint} focused={focused}: {actual:?} on {background:?}",
+                        variant.id.as_str()
+                    );
+                }
             }
         }
     }
@@ -474,12 +653,10 @@ fn footer_configuration_accepts_comments_blanks_and_assignment_spacing() {
     for (role, name) in [
         (FooterRole::Showrunner, "bright-magenta"),
         (FooterRole::UnitDirector, "bright-blue"),
-        (FooterRole::Worker, "bright-cyan"),
-        (FooterRole::Unassigned, "purple"),
     ] {
         assert_eq!(
             colors.role(role),
-            FooterTint::Footer(name.parse().expect("fixture color")),
+            FooterTint::Management(name.parse().expect("fixture color")),
             "{role:?}"
         );
     }
@@ -508,12 +685,7 @@ fn unrelated_keys_and_invalid_colors_leave_cells_plain() {
          role.unit-director\n\
          # account.commented=green\n",
     );
-    for role in [
-        FooterRole::Showrunner,
-        FooterRole::UnitDirector,
-        FooterRole::Worker,
-        FooterRole::Unassigned,
-    ] {
+    for role in [FooterRole::Showrunner, FooterRole::UnitDirector] {
         assert_eq!(colors.role(role), FooterTint::Plain, "{role:?}");
     }
     for account in ["claude1", "claude2", "split", "commented", "high", "low"] {
@@ -530,15 +702,18 @@ fn missing_unreadable_and_removed_footer_files_leave_entries_plain() {
         ..FooterColorFile::default()
     };
     file.refresh();
-    assert_eq!(file.colors().role(FooterRole::Worker), FooterTint::Plain);
+    assert_eq!(
+        file.colors().role(FooterRole::UnitDirector),
+        FooterTint::Plain
+    );
     assert_eq!(file.colors().account("claude1"), FooterTint::Plain);
 
-    std::fs::write(&path, "role.worker=orange\naccount.claude1=cyan")
+    std::fs::write(&path, "role.unit-director=orange\naccount.claude1=cyan")
         .expect("write a fixture footer");
     assert!(file.refresh(), "a newly available file changes the palette");
     assert_eq!(
-        file.colors().role(FooterRole::Worker),
-        FooterTint::Footer(FooterColor::Orange)
+        file.colors().role(FooterRole::UnitDirector),
+        FooterTint::Management(FooterColor::Orange)
     );
     assert_eq!(
         file.colors().account("claude1"),
@@ -551,16 +726,22 @@ fn missing_unreadable_and_removed_footer_files_leave_entries_plain() {
         file.refresh(),
         "an unreadable source clears its previous colors"
     );
-    assert_eq!(file.colors().role(FooterRole::Worker), FooterTint::Plain);
+    assert_eq!(
+        file.colors().role(FooterRole::UnitDirector),
+        FooterTint::Plain
+    );
     assert_eq!(file.colors().account("claude1"), FooterTint::Plain);
 
     std::fs::remove_dir(&path).expect("remove the unreadable fixture source");
-    std::fs::write(&path, "role.worker=orange\naccount.claude1=cyan")
+    std::fs::write(&path, "role.unit-director=orange\naccount.claude1=cyan")
         .expect("restore the fixture footer");
     assert!(file.refresh(), "a readable source restores its colors");
     std::fs::remove_file(&path).expect("remove the fixture footer");
     assert!(file.refresh(), "removing the file clears its colors");
-    assert_eq!(file.colors().role(FooterRole::Worker), FooterTint::Plain);
+    assert_eq!(
+        file.colors().role(FooterRole::UnitDirector),
+        FooterTint::Plain
+    );
     assert_eq!(file.colors().account("claude1"), FooterTint::Plain);
 }
 

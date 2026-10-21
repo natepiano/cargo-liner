@@ -18,6 +18,7 @@ use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
 use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 use crate::sort::AccountsSort;
 
 const NOW: u64 = 1_792_166_400;
@@ -65,7 +66,7 @@ fn draw_account_roles(
 #[test]
 fn account_role_spans_use_each_role_color_and_keep_spare_and_separators_plain() {
     let colors = FooterColors::parse(
-        "role.showrunner=bright-magenta\nrole.unit-director=bright-blue\nrole.worker=bright-cyan",
+        "role.showrunner=bright-magenta\nrole.unit-director=bright-blue\nrole.worker=bright-cyan\nrole.unassigned=purple",
     );
     for read_at in [
         Reading::Known(
@@ -98,7 +99,6 @@ fn account_role_spans_use_each_role_color_and_keep_spare_and_separators_plain() 
         for (word, role) in [
             ("units", FooterRole::UnitDirector),
             ("showrunners", FooterRole::Showrunner),
-            ("workers", FooterRole::Worker),
         ] {
             let start = cell_width(&line[..line.find(word).expect("role word")]);
             let base = Style::default().fg(text_default());
@@ -121,18 +121,33 @@ fn account_role_spans_use_each_role_color_and_keep_spare_and_separators_plain() 
                 );
             }
         }
-        let spare = cell_width(&line[..line.find("spare").expect("spare")]);
+        let base = Style::default().fg(text_default());
+        let plain = if stale {
+            FooterTint::Plain.subdued_style(base)
+        } else {
+            FooterTint::Plain.style(base)
+        };
         let separator = cell_width(
             &line[..line
                 .find(constants::ACCOUNT_ROLE_SEPARATOR)
                 .expect("role separator")],
         );
-        for offset in 0..cell_width("spare") {
-            assert_eq!(
-                buffer[(spare + offset, row)].style(),
-                buffer[(separator, row)].style()
-            );
+        assert_eq!(buffer[(separator, row)].fg, text_default());
+        assert_eq!(
+            buffer[(separator, row)].modifier.contains(Modifier::DIM),
+            stale,
+            "separators keep the row's base style"
+        );
+        for word in ["spare", "workers"] {
+            let start = cell_width(&line[..line.find(word).expect("plain role word")]);
+            for offset in 0..cell_width(word) {
+                assert_eq!(
+                    Some(buffer[(start + offset, row)].fg),
+                    plain.fg,
+                    "{word}, stale={stale}"
+                );
+                assert_eq!(buffer[(start + offset, row)].modifier, plain.add_modifier);
+            }
         }
-        assert_eq!(buffer[(spare, row)].fg, text_default());
     }
 }

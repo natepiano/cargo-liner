@@ -69,7 +69,6 @@ use crate::constants::TREE_SPACE;
 use crate::constants::TREE_STATUS_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
-use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
@@ -607,33 +606,17 @@ fn account_sort_text(account: &Account) -> &str {
     }
 }
 
-/// The footer responsibility for each typed management role.
-impl From<HierarchyRole> for FooterRole {
-    fn from(role: HierarchyRole) -> Self {
-        match role {
-            HierarchyRole::Showrunner => Self::Showrunner,
-            HierarchyRole::Unit => Self::UnitDirector,
-            HierarchyRole::Impl
-            | HierarchyRole::Test
-            | HierarchyRole::Review
-            | HierarchyRole::Fix => Self::Worker,
-        }
-    }
-}
-
 impl TreeLine<'_> {
-    /// Only management roles and sessions use the footer's role colors.
+    /// Only management responsibilities use the footer's role colors.
     fn footer_role(&self, colors: &FooterColors) -> FooterTint {
         match self.kind() {
-            LineKind::UnassignedSession | LineKind::Session(RoleLabel::Unlabeled) => {
-                colors.role(FooterRole::Unassigned)
-            },
             LineKind::Session(RoleLabel::Stated(role) | RoleLabel::Inferred(role))
-            | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.role(role.into()),
-            LineKind::Session(RoleLabel::ReviewFallback) | LineKind::Worker(_) => {
-                colors.role(FooterRole::Worker)
-            },
-            LineKind::Shell | LineKind::Subagent => FooterTint::Plain,
+            | LineKind::Worker(WorkerRoleSource::Hierarchy(role)) => colors.hierarchy_role(role),
+            LineKind::UnassignedSession
+            | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
+            | LineKind::Worker(_)
+            | LineKind::Shell
+            | LineKind::Subagent => FooterTint::Plain,
         }
     }
 }
@@ -1983,6 +1966,8 @@ mod tests {
 
     #[path = "activity_tests.rs"]
     mod activity_tests;
+    #[path = "design_ink_tests.rs"]
+    mod design_ink_tests;
     #[path = "footer_color_tests.rs"]
     mod footer_color_tests;
     #[path = "sort_tests.rs"]

@@ -570,6 +570,52 @@ enum JobSource {
     DispatchJob,
 }
 
+/// Prompt openings name either surrounding context, a job, or role instructions.
+#[derive(Clone, Copy)]
+enum PromptLine<'a> {
+    Blank,
+    Context,
+    RoleInstructions,
+    Heading(&'a str),
+    Title(&'a str),
+    Body(&'a str),
+}
+
+impl<'a> PromptLine<'a> {
+    fn classify(line: &'a str) -> Self {
+        let line = line.trim();
+        if line.is_empty() {
+            return Self::Blank;
+        }
+        if line.starts_with("Worktree:")
+            || (line.starts_with("From ") && line.contains("(unit director)."))
+        {
+            return Self::Context;
+        }
+        if line.starts_with(ROLE_PREAMBLE) {
+            return Self::RoleInstructions;
+        }
+        if line.starts_with('#') {
+            return Self::Heading(line);
+        }
+        if line.starts_with("Phase ") || line.starts_with("Ticket:") {
+            return Self::Title(line);
+        }
+        let first = line.split_whitespace().next().unwrap_or_default();
+        if let Some((project, number)) = first.trim_end_matches(':').split_once('-')
+            && !project.is_empty()
+            && project
+                .chars()
+                .all(|character| character.is_ascii_uppercase())
+            && !number.is_empty()
+            && number.chars().all(|character| character.is_ascii_digit())
+        {
+            return Self::Title(line);
+        }
+        Self::Body(line)
+    }
+}
+
 impl JobText {
     /// Validate and flatten extracted text once, before it becomes a drawn job.
     fn from_line(line: &str) -> Self {
@@ -606,19 +652,43 @@ impl JobText {
             }
             return Self::Unrecorded;
         }
+        Self::from_task_prompt(prompt, source)
+    }
+
+    /// Context opens a search for a title; role instructions carry their board job.
+    fn from_task_prompt(prompt: &str, source: JobSource) -> Self {
         let first = prompt
             .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or_default()
-            .trim();
-        if first.starts_with('#') {
-            return Self::from_line(first);
-        }
-        if !first.starts_with(ROLE_PREAMBLE) {
-            return Self::from_line(match source {
-                JobSource::FirstTaskPrompt => first,
-                JobSource::DispatchJob => prompt,
-            });
+            .map(PromptLine::classify)
+            .find(|line| !matches!(line, PromptLine::Blank))
+            .unwrap_or(PromptLine::Blank);
+        match first {
+            PromptLine::Heading(title) => return Self::from_line(title),
+            PromptLine::Title(line) | PromptLine::Body(line) => {
+                return Self::from_line(match source {
+                    JobSource::FirstTaskPrompt => line,
+                    JobSource::DispatchJob => prompt,
+                });
+            },
+            PromptLine::Context => {
+                if let Some(title) =
+                    prompt
+                        .lines()
+                        .find_map(|line| match PromptLine::classify(line) {
+                            PromptLine::Heading(title) | PromptLine::Title(title) => Some(title),
+                            _ => None,
+                        })
+                {
+                    return Self::from_line(title);
+                }
+                if !prompt
+                    .lines()
+                    .any(|line| matches!(PromptLine::classify(line), PromptLine::RoleInstructions))
+                {
+                    return Self::Unrecorded;
+                }
+            },
+            PromptLine::RoleInstructions | PromptLine::Blank => {},
         }
         // The first prescribed `BOARD_SCRIPT` `BOARD_ROLE` call carries the director's actual job.
         for (offset, _) in prompt.match_indices(BOARD_SCRIPT) {
@@ -1232,3 +1302,6 @@ mod dispatch_form_tests;
 
 #[cfg(test)]
 mod prompt_opening_tests;
+
+#[cfg(test)]
+mod context_job_tests;

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::census::Activity;
+use crate::footer_colors::FooterTint;
 use crate::sort::SortDirection;
 
 fn account(label: &str) -> Account {
@@ -267,5 +268,77 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
             find(&buffer, name).is_some(),
             "the work row still draws: {name}"
         );
+    }
+}
+
+#[test]
+fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
+    let root = agent(10, "director", HOUR, None);
+    let rows = [
+        agent(20, "standalone session", MINUTE, None),
+        agent(30, "unlabeled session", MINUTE, None),
+        agent(40, "hierarchy worker", MINUTE, None),
+        agent(50, "fallback reviewer", MINUTE, None),
+    ];
+    let mut cell = entry(&root, None);
+    for (row, subject) in rows.iter().zip([
+        LineSubject::UnassignedSession,
+        LineSubject::Agent(RoleLabel::Unlabeled),
+        LineSubject::Agent(RoleLabel::Stated(HierarchyRole::Impl)),
+        LineSubject::Agent(RoleLabel::ReviewFallback),
+    ]) {
+        cell.lines.push(TreeLine {
+            dispatch_label: DispatchLabel::Original,
+            machine: "natedev",
+            location: SessionLocation::SameMachine,
+            row,
+            hue: RainbowHue::Red,
+            rails: Vec::new(),
+            branch: Branch::Last,
+            subject,
+        });
+    }
+    let thread = child(0, ChildKind::Thread, None, "managed worker", MINUTE);
+    cell.lines.push(TreeLine {
+        dispatch_label: DispatchLabel::Original,
+        machine:        "natedev",
+        location:       SessionLocation::SameMachine,
+        row:            &root,
+        hue:            RainbowHue::Red,
+        rails:          Vec::new(),
+        branch:         Branch::Last,
+        subject:        LineSubject::ManagedThread(&thread, HierarchyRole::Test),
+    });
+    let rect = area(104, 12);
+    let colors = FooterColors::parse("role.unassigned=purple\nrole.worker=bright-cyan");
+    let mut buffer = Buffer::empty(rect);
+    draw(
+        &mut buffer,
+        rect,
+        &cell,
+        std::slice::from_ref(&cell),
+        NOW,
+        AccountColumn::Hidden,
+        &colors,
+    );
+    let role_x = find(&buffer, "role").expect("role header").0;
+    let plain = FooterTint::Plain.style(Style::default().fg(text_default()));
+    for (name, role) in [
+        ("standalone session", MISSING_VALUE),
+        ("unlabeled session", "session"),
+        ("hierarchy worker", "impl"),
+        ("fallback reviewer", "review"),
+        ("managed worker", "test"),
+    ] {
+        let y = find(&buffer, name).expect("session or worker row").1;
+        let drawn: String = (0..summary::cell_width(role))
+            .map(|offset| buffer[(role_x + offset, y)].symbol())
+            .collect();
+        assert_eq!(drawn, role, "{name}");
+        for offset in 0..summary::cell_width(role) {
+            let drawn = &buffer[(role_x + offset, y)];
+            assert_eq!(Some(drawn.fg), plain.fg, "{name}");
+            assert_eq!(drawn.modifier, plain.add_modifier, "{name}");
+        }
     }
 }

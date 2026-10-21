@@ -287,7 +287,7 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
     let y = label_position(&buffer, name).1;
     let role_x = label_position(&buffer, TREE_ROLE_HEADER).0;
-    assert_eq!(buffer[(role_x, y)].fg, Color::Indexed(141));
+    assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
 }
 
 #[test]

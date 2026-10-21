@@ -177,7 +177,7 @@ fn unassigned_rows_are_flat_with_purple_missing_roles_and_nested_work_rails() {
     for name in ["ups", "postmaster"] {
         let (name_x, y) = find(&buffer, name).expect("root row");
         assert_eq!(buffer[(role_x, y)].symbol(), MISSING_VALUE);
-        assert_eq!(buffer[(role_x, y)].fg, Color::Indexed(141));
+        assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
         assert!((buffer.area.x..name_x).all(|x| buffer[(x, y)].symbol() == " "));
     }
     let order = ["ups", "opened-session", "postmaster"]

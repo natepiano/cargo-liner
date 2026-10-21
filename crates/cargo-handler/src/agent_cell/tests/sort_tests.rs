@@ -514,7 +514,7 @@ fn sorting_preserves_the_footer_role_and_account_foregrounds() {
         let role_x = find(&buffer, "role").expect("role header").0;
         for name in ["zeta", "alpha"] {
             let row = find(&buffer, name).expect("worker row").1;
-            assert_eq!(buffer[(role_x, row)].fg, Color::LightCyan);
+            assert_eq!(buffer[(role_x, row)].fg, tui_pane::text_default());
         }
     }
 }

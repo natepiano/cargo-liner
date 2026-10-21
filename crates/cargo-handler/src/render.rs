@@ -52,7 +52,6 @@ use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::footer_colors::FooterColors;
-use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
 use crate::settings;
@@ -378,10 +377,9 @@ impl TileCells<TileKey> for Cells<'_> {
                     entry.role_label.suffix(),
                     match entry.role_label {
                         RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
-                            self.footer_colors.role(role.into())
+                            self.footer_colors.hierarchy_role(role)
                         },
-                        RoleLabel::ReviewFallback => self.footer_colors.role(FooterRole::Worker),
-                        RoleLabel::Unlabeled => FooterTint::Plain,
+                        RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
                     }
                     .style(Style::default().fg(label_color())),
                 ),

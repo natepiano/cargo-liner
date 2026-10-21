@@ -20,7 +20,7 @@ appearance = "dark"
 name       = "High Contrast Dark"
 
 [variants.pane_chrome]
-active_title    = { color = "LightYellow", bold = true }
+active_title    = { color = { r = 255, g = 210, b = 160 }, bold = true }
 inactive_border = "White"
 inactive_title  = "White"
 

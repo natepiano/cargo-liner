@@ -8,7 +8,6 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -1054,7 +1053,7 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
                 expected_role,
                 "{short} managed={managed}"
             );
-            assert_eq!(buffer[(role_x, y)].fg, Color::LightCyan);
+            assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
             let name_color = Role::Rainbow(RainbowHue::Red)
                 .style()
                 .fg

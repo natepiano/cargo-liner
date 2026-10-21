@@ -538,10 +538,13 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
-    name.chars()
-        .take(max.saturating_sub(1))
-        .chain(std::iter::once(TRUNCATION_MARK).take(max.min(1)))
-        .collect()
+    if max == 0 {
+        return String::new();
+    }
+    let prefix: String = name.chars().take(max - 1).collect();
+    let mut cut = prefix.trim_end().to_owned();
+    cut.push(TRUNCATION_MARK);
+    cut
 }
 
 /// Column widths fitted to the widest cell across every machine's rows.

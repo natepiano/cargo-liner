@@ -9,6 +9,7 @@ use crate::census::RoleFallback;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 
 /// A probe account fixture, independent of the machine's configuration.
 fn account(label: &str) -> Account {
@@ -60,47 +61,46 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
         (
             RoleLabel::Stated(HierarchyRole::Showrunner),
             "showrunner",
-            FooterRole::Showrunner,
+            colors.role(FooterRole::Showrunner),
         ),
         (
             RoleLabel::Inferred(HierarchyRole::Showrunner),
             "showrunner",
-            FooterRole::Showrunner,
+            colors.role(FooterRole::Showrunner),
         ),
         (
             RoleLabel::Stated(HierarchyRole::Unit),
             "unit",
-            FooterRole::UnitDirector,
+            colors.role(FooterRole::UnitDirector),
         ),
         (
             RoleLabel::Inferred(HierarchyRole::Unit),
             "unit",
-            FooterRole::UnitDirector,
+            colors.role(FooterRole::UnitDirector),
         ),
         (
             RoleLabel::Stated(HierarchyRole::Impl),
             "impl",
-            FooterRole::Worker,
+            FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Test),
             "test",
-            FooterRole::Worker,
+            FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Review),
             "review",
-            FooterRole::Worker,
+            FooterTint::Plain,
         ),
         (
             RoleLabel::Stated(HierarchyRole::Fix),
             "fix",
-            FooterRole::Worker,
+            FooterTint::Plain,
         ),
-        (RoleLabel::Unlabeled, "session", FooterRole::Unassigned),
+        (RoleLabel::Unlabeled, "session", FooterTint::Plain),
     ] {
-        let expected = colors
-            .role(expected)
+        let expected = expected
             .style(text_default().into())
             .fg
             .expect("resolved footer color");
@@ -215,7 +215,7 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
             subject:        LineSubject::ManagedThread(&worker, role),
         });
         let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
-        assert_color(&buffer, label, Color::Indexed(208));
+        assert_color(&buffer, label, text_default());
         assert_color(&buffer, "codex1", Color::LightCyan);
         assert_color(
             &buffer,
@@ -336,7 +336,7 @@ fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
     let root = trunk();
     let buffer = rendered_with_colors(&entry(&root, None), 220, AccountColumn::Shown, &colors);
     assert_color(&buffer, "subagent", text_default());
-    assert_color(&buffer, "worker", Color::Indexed(208));
+    assert_color(&buffer, "worker", text_default());
     let role_x = find(&buffer, "role").expect("the role header is drawn").0;
     let branch_x = find(&buffer, "branch")
         .expect("the branch header is drawn")
@@ -415,6 +415,6 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         let y = find(&buffer, "unroled task").expect("worker row").1;
         assert_eq!(tree_column(&buffer, "role", y), "worker");
         let x = find(&buffer, "role").expect("role header").0;
-        assert_eq!(buffer[(x, y)].fg, Color::LightCyan);
+        assert_eq!(buffer[(x, y)].fg, text_default());
     }
 }

@@ -51,6 +51,7 @@ use crate::constants::RAINBOW_VIOLET_ROLE;
 use crate::constants::RAINBOW_YELLOW_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
+use crate::footer_colors;
 
 /// A chronological rank constructed only within its set of distinct reset times.
 pub(crate) struct ResetRank {
@@ -141,7 +142,16 @@ impl Role {
     /// The role's style in the active variant. A variant without the
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
-        tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self))
+        let style = tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self));
+        match self {
+            Self::Rainbow(_) => style,
+            Self::Claude
+            | Self::Codex
+            | Self::Busy
+            | Self::Shell
+            | Self::Idle
+            | Self::Unreachable => footer_colors::readable_status_style(style),
+        }
     }
 }
 
@@ -297,7 +307,7 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
     codex:       StyleSpec::from_color(Color::Rgb(110, 60, 200)),
     busy:        StyleSpec::from_color(Color::Rgb(0, 130, 0)),
     shell:       StyleSpec::from_color(Color::Rgb(0, 120, 150)),
-    idle:        StyleSpec::from_color(Color::Rgb(120, 120, 120)),
+    idle:        StyleSpec::from_color(Color::Rgb(110, 110, 110)),
     unreachable: StyleSpec::from_color(Color::Rgb(190, 0, 0)),
     rainbow:     RainbowPalette {
         red:    StyleSpec::from_color(Color::Rgb(200, 30, 30)),
@@ -391,7 +401,7 @@ fn default_dark() -> Theme {
             // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::DarkGray),
-            active_title:    StyleSpec::bold(Color::Yellow),
+            active_title:    StyleSpec::bold(Color::Rgb(255, 210, 160)),
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
@@ -416,7 +426,7 @@ fn default_dark() -> Theme {
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::DarkGray),
+            bar: StyleSpec::from_color(Color::Rgb(60, 60, 60)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(0, 90, 100)),
@@ -465,7 +475,7 @@ fn default_light() -> Theme {
             bg_focus:  StyleSpec::from_color(Color::White),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::Rgb(220, 220, 220)),
+            bar: StyleSpec::from_color(Color::Rgb(250, 250, 250)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(255, 245, 180)),
@@ -493,7 +503,7 @@ fn high_contrast_dark() -> Theme {
             // tint the focused border uses active_title's color.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::White),
-            active_title:    StyleSpec::bold(Color::LightYellow),
+            active_title:    StyleSpec::bold(Color::Rgb(255, 210, 160)),
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {

@@ -20,6 +20,7 @@ use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::footer_colors::FooterTint;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
 use crate::sort::AccountsSort;
@@ -276,8 +277,20 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
     let stale_y = at(&buffer, "codex1").1;
     let stale_line = &text(&buffer)[usize::from(stale_y - buffer.area.y)];
     assert!(stale_line.contains("2h"), "{stale_line}");
+    let spare_x = at(&buffer, "spare").0;
+    let spare_end = spare_x + cell_width("spare");
+    let subdued = FooterTint::Plain.subdued_style(Style::default().fg(text_default()));
     for x in buffer.area.x..buffer.area.right() {
         if x >= at(&buffer, "role").0 && !buffer[(x, stale_y)].symbol().trim().is_empty() {
+            if (spare_x..spare_end).contains(&x) {
+                assert_eq!(
+                    Some(buffer[(x, stale_y)].fg),
+                    subdued.fg,
+                    "stale plain role at {x}"
+                );
+                assert_eq!(buffer[(x, stale_y)].modifier, subdued.add_modifier);
+                continue;
+            }
             assert!(
                 buffer[(x, stale_y)].modifier.contains(Modifier::DIM),
                 "stale cell at {x}"

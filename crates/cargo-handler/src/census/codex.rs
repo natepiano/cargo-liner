@@ -36,8 +36,10 @@ use crate::constants::CODEX_STATE_PREFIX;
 use crate::constants::CODEX_THREAD_BY_ID_QUERY;
 use crate::constants::CODEX_THREADS_QUERY;
 use crate::constants::CODEX_TUI_ORIGINATOR;
+#[cfg(test)]
 use crate::constants::TRUNCATION_MARK;
 use crate::constants::UUID_TEXT_LENGTH;
+use crate::summary;
 
 /// Resolve the process's own configuration home, never another account's index.
 pub(super) fn session_home(process: &ProcessEntry, home: Option<&Path>) -> Option<PathBuf> {
@@ -143,16 +145,7 @@ impl CodexThread {
         if prompt.is_empty() {
             return None;
         }
-        if prompt.chars().count() <= CODEX_PROMPT_LABEL_MAX {
-            return Some(prompt);
-        }
-        Some(
-            prompt
-                .chars()
-                .take(CODEX_PROMPT_LABEL_MAX - 1)
-                .chain(std::iter::once(TRUNCATION_MARK))
-                .collect(),
-        )
+        Some(summary::truncated(&prompt, CODEX_PROMPT_LABEL_MAX))
     }
 }
 
@@ -532,3 +525,7 @@ mod tests {
         assert!(label.ends_with(TRUNCATION_MARK));
     }
 }
+
+#[cfg(test)]
+#[path = "codex_label_cut_tests.rs"]
+mod label_cut_tests;
