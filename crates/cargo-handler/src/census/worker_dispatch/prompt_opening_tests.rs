@@ -252,7 +252,7 @@ fn prompt_opening_missing_board_job_and_empty_heading_remain_role_only() {
 
 #[test]
 fn pooled_review_titles_come_from_the_opening_and_never_from_diff_code() {
-    // Exact opening of phase 17's review_prompt_2_closure.md; its following body is a diff.
+    // Exact opening of a pooled closure review prompt; its following body is a diff.
     let opening = "You are a pooled reviewer for handler-enh-unit, phase 17. Edit nothing. Your first command is git -C /home/natepiano/rust/cargo-liner-handler rev-parse HEAD; if it is not a540eb5d2fe13096e3ba380e03c2d05716fb03bd, report error. Re-read the tree; trust nothing from memory about its state. The phase's change is uncommitted: review `git diff HEAD` in the worktree.";
     let diff = "\n\n## Diff\n```diff\ndiff --git a/module.rs b/module.rs\n--- a/module.rs\n+++ b/module.rs\n@@ -1,2 +1,3 @@\n# ; /// The launcher interprets this code\n+fn launch() {}\n```";
     for prompt in [

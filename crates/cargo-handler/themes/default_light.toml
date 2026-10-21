@@ -54,7 +54,7 @@ rainbow_cyan   = { r = 0, g = 120, b = 140 }
 rainbow_green  = { r = 0, g = 135, b = 0 }
 rainbow_orange = { r = 180, g = 85, b = 0 }
 rainbow_red    = { r = 200, g = 30, b = 30 }
-shell          = { r = 0, g = 120, b = 150 }
+shell          = { r = 0, g = 120, b = 100 }
 unreachable    = { r = 190, g = 0, b = 0 }
 
 [variants.status]

@@ -468,8 +468,8 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         ("clock job", "", "◑ 1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
         ("review worker", "", "idle", "claude1", "8m"),
-        ("nested command", "", "command", "claude1", "7m"),
-        ("root command", "", "command", "claude2", "1h"),
+        ("nested command", "", "running", "claude1", "7m"),
+        ("root command", "", "running", "claude2", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
