@@ -7,6 +7,8 @@
 //! sits between a terminal emulator and the shell running in it. A walk
 //! that stopped there never reached the emulator above it.
 
+#[cfg(target_os = "macos")]
+use libc::PROC_PIDT_SHORTBSDINFO;
 use sysinfo::Pid;
 
 /// The pid standing above `pid`, asked of the kernel rather than of a
@@ -36,7 +38,7 @@ pub fn kernel_parent(pid: Pid) -> Option<Pid> {
     let written = unsafe {
         libc::proc_pidinfo(
             i32::try_from(pid.as_u32()).ok()?,
-            libc::PROC_PIDT_SHORTBSDINFO,
+            PROC_PIDT_SHORTBSDINFO,
             0,
             info.as_mut_ptr().cast(),
             size,
