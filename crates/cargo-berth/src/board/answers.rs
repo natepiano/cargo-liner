@@ -319,7 +319,7 @@ pub(super) fn board_overlap_answers(
                 &replaced_edges,
                 constraints,
             )?,
-            // An answer recorded without a reservation has no answering row to list.
+            // `JournalOperation::Answer` without a `reservation_id` has no answering row to list.
             JournalOperation::Answer {
                 reservation_id: Some(reservation_id),
                 authorizations,
@@ -466,7 +466,8 @@ fn accumulated_deferral_approvals(
                 .peekable();
             if approved.peek().is_some() {
                 exact_approved_scopes.extend(approved.cloned());
-                // Replay retains one deferral per enrollment pair in journal order.
+                // `constraints.deferrals` retains one deferral per enrollment pair in journal
+                // order.
                 deferral_reasons.extend(enrollment_reasons.next().cloned());
             }
         }
@@ -567,8 +568,9 @@ fn append_authorization_answer(
                 })
             })?;
         },
-        // One row per holder, each with that holder's own binding, direction and edge, so the
-        // board lists a several-holder answer exactly as it lists one `Sequence` answer per holder.
+        // `append_holder_sequence_answers` emits one row per holder with its own binding, direction
+        // and edge, so the board lists `ConflictAuthorization::SequencePerHolder` exactly as one
+        // `RecordedOverlapAnswer::Sequence` answer per holder.
         ConflictAuthorization::SequencePerHolder {
             overlaps,
             holders,
@@ -623,8 +625,9 @@ fn append_authorization_answer(
             reason,
             row.acquisition,
         )?,
-        // No foreign overlap, overlaps earlier answers already cover, and a deferral a later
-        // sequence resolved each record no answer of their own.
+        // `ConflictAuthorization::NoConflict`, `ExistingAnswersCoverEveryOverlap`, and a `Defer`
+        // resolved by a later sequence record no answer of their own: there is no foreign overlap,
+        // earlier answers cover the overlaps, or the later sequence resolved the deferral.
         ConflictAuthorization::NoConflict
         | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. }
         | ConflictAuthorization::Defer { .. } => {},

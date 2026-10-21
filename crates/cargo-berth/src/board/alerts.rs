@@ -551,8 +551,8 @@ pub(super) fn incursion_sections(
 ) -> (Vec<OutstandingIncursion>, Vec<RecordedIncursionAnswer>) {
     let mut outstanding = Vec::new();
     let mut recorded = Vec::new();
-    // `resolve --every-incursion` answers every incident of the reservation's run and
-    // worktree, so the count names that same set.
+    // `outstanding_counts` counts every incident of the reservation's run and worktree,
+    // because `resolve --every-incursion` answers that same set.
     let outstanding_counts: HashMap<ReservationId, usize> = reservations
         .outstanding_incursion_incidents()
         .filter_map(|incident| {
