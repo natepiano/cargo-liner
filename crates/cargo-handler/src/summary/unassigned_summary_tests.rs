@@ -287,7 +287,7 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
     let y = label_position(&buffer, name).1;
     let role_x = label_position(&buffer, TREE_ROLE_HEADER).0;
-    assert_eq!(buffer[(role_x, y)].fg, Color::Indexed(141));
+    assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
 }
 
 #[test]
@@ -332,41 +332,58 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
     );
     assert_eq!(
         text_row(&buffer, "natedev ·"),
-        "natedev · 3 top-level agents"
+        "natedev · 1 top-level agent"
     );
-    assert_eq!(text_row(&buffer, "mac ·"), "mac · 1 top-level agent");
-    for (name, expected, hue) in [
-        (
-            "director",
-            "10 claude director idle 4h — /fixture/director",
-            RainbowHue::Red,
-        ),
-        (
-            "ups",
-            "20 claude ups idle 2h — /fixture/ups",
-            RainbowHue::Yellow,
-        ),
-        (
-            "postmaster",
-            "30 claude postmaster idle 1h — /fixture/postmaster",
-            RainbowHue::Green,
-        ),
-        (
-            "remote-session",
-            "20 claude remote-session idle 30m — /fixture/remote-session",
-            RainbowHue::Cyan,
-        ),
+    assert_eq!(text_row(&buffer, "mac ·"), "mac · no agents");
+    assert_eq!(
+        text_row(&buffer, "director"),
+        "10 claude director idle 4h — /fixture/director"
+    );
+    assert_eq!(
+        buffer[label_position(&buffer, "director")].fg,
+        Role::Rainbow(RainbowHue::Red)
+            .style()
+            .fg
+            .expect("director hue")
+    );
+    for (name, hue) in [
+        ("ups", RainbowHue::Yellow),
+        ("postmaster", RainbowHue::Green),
+        ("remote-session", RainbowHue::Cyan),
     ] {
-        assert_eq!(text_row(&buffer, name), expected);
-        let color = buffer[label_position(&buffer, name)].fg;
-        assert_eq!(color, Role::Rainbow(hue).style().fg.expect("name hue"));
-        if name != "director" {
-            assert_pool_matches_summary(&tiles, name, color);
-        }
+        assert!(
+            (0..AREA.height).all(|y| {
+                let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();
+                !row.contains(name)
+            }),
+            "{name} belongs only to its machine pool"
+        );
+        assert_pool_matches_summary(
+            &tiles,
+            name,
+            Role::Rainbow(hue).style().fg.expect("name hue"),
+        );
     }
-    let mut order = ["director", "ups", "postmaster", "remote-session"];
-    order.sort_by_key(|name| label_position(&buffer, name).1);
-    assert_eq!(order, ["director", "ups", "postmaster", "remote-session"]);
+    let pool = tiles
+        .iter()
+        .find_map(|tile| match tile {
+            AgentTile::Unassigned(entry) if entry.machine == "natedev" => Some(entry),
+            _ => None,
+        })
+        .expect("local pool");
+    let mut pool_buffer = Buffer::empty(AREA);
+    agent_cell::draw_unassigned(
+        &mut pool_buffer,
+        AREA,
+        pool,
+        NOW,
+        AccountColumn::Hidden,
+        &FooterColors::default(),
+    );
+    assert!(
+        label_position(&pool_buffer, "postmaster").1 < label_position(&pool_buffer, "ups").1,
+        "the pool keeps its selected session sort"
+    );
     assert!((0..AREA.height).all(|y| {
         let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();
         !row.contains("assigned-worker") && !row.contains(UNASSIGNED_CELL_TITLE)

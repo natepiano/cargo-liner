@@ -24,6 +24,7 @@ pub(crate) mod classify;
 #[cfg(test)]
 mod claude_seat_tests;
 pub(crate) mod codex;
+mod codex_names;
 pub(crate) mod desktop;
 pub(crate) mod hierarchy;
 #[cfg(test)]
@@ -69,6 +70,7 @@ pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
 pub(crate) use placement::Placement;
 pub(crate) use placement::RoleLabel;
+pub(crate) use placement::RootPresentation;
 pub(crate) use placement::RowIdentity;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
@@ -439,7 +441,7 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 pub(crate) struct ChildRow {
     /// Task naming survives placement so the final hierarchy role supplies its label.
     pub(crate) worker_task:  WorkerTask,
-    /// The last turn event, read incrementally from a live thread's rollout.
+    /// The last activity, read incrementally from a thread rollout or subagent transcript.
     pub(crate) activity:     AgentActivity,
     /// A roster-backed launcher identity, resolved only during the scan.
     pub(crate) dispatch:     WorkerDispatch,
@@ -1008,3 +1010,6 @@ mod thread_state_tests;
 #[cfg(test)]
 #[path = "activity_tests.rs"]
 mod activity_tests;
+
+#[cfg(test)]
+mod command_name_tests;

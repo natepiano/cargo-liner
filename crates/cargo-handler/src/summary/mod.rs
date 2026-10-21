@@ -45,6 +45,8 @@ use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::Machine;
 use crate::census::MachineState;
+use crate::census::RootPresentation;
+use crate::census::RowIdentity;
 use crate::census::accounts::AccountsTable;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
@@ -156,11 +158,13 @@ fn root_rows<'a>(
     machine: Machine<'a>,
     placement: &AgentPlacement<'_>,
 ) -> impl Iterator<Item = &'a AgentRow> {
-    machine
-        .state
-        .rows()
-        .iter()
-        .filter(move |row| placement.is_root(machine.name, row.pid))
+    machine.state.rows().iter().filter(move |row| {
+        placement.is_root(machine.name, row.pid)
+            && placement.root_presentation(RowIdentity {
+                machine: machine.name,
+                pid:     row.pid,
+            }) == RootPresentation::Hierarchy
+    })
 }
 
 /// Shared column widths, account visibility and the footer palette.
@@ -534,10 +538,13 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
-    name.chars()
-        .take(max.saturating_sub(1))
-        .chain(std::iter::once(TRUNCATION_MARK).take(max.min(1)))
-        .collect()
+    if max == 0 {
+        return String::new();
+    }
+    let prefix: String = name.chars().take(max - 1).collect();
+    let mut cut = prefix.trim_end().to_owned();
+    cut.push(TRUNCATION_MARK);
+    cut
 }
 
 /// Column widths fitted to the widest cell across every machine's rows.
@@ -662,7 +669,7 @@ mod tests {
     /// directory is cut.
     const WIDTH: u16 = 120;
     /// The column each name starts at in these tests.
-    const NAME_X: u16 = 18;
+    const NAME_X: u16 = 20;
 
     /// Process `pid`, an `agent` named `name`, started `age` seconds
     /// before [`NOW`].
@@ -689,7 +696,13 @@ mod tests {
             directory: directory.to_string(),
             branch: None,
             launched_by: None,
-            children: Vec::new(),
+            children: vec![
+                serde_json::from_value(serde_json::json!({
+                    "depth":0,"kind":"shell","pid":pid + 10_000_000,
+                    "name":"fixture command","started":NOW - age
+                }))
+                .expect("summary owner work"),
+            ],
         }
     }
 
@@ -1115,15 +1128,15 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 top-level agents",
-                " pid      agent   name                                  status    age ▼   desktop        directory",
-                " 1579022  claude  boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude  tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
-                " 428044   claude  enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
-                " 4039085  codex   --model gpt-5                         —         12m     —              ~/rust/handler",
+                " pid      account  session                               status    age ▼   desktop        directory",
+                " 1579022  claude   boss of bosses                        idle      21h     boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude   tmp cleanup then merge to berth and…  running   2h 29m  berth_fix      ~/rust/cargo-handler",
+                " 428044   claude   enh/handler                           thinking  1h 36m  cargo handler  ~/rust/handler",
+                " 4039085  codex    --model gpt-5                         —         12m     —              ~/rust/handler",
                 "",
                 " mac · 1 top-level agent",
-                " pid      agent   name                                  status    age ▼   desktop        directory",
-                " 12055    claude  natemccoy-30                          idle      23h     —              ~",
+                " pid      account  session                               status    age ▼   desktop        directory",
+                " 12055    claude   natemccoy-30                          idle      23h     —              ~",
                 "",
                 " studio · unreachable",
                 "",
@@ -1153,8 +1166,8 @@ mod tests {
         }
         assert_eq!(buffer[(10, 2)].fg, Color::Rgb(217, 119, 87));
         assert_eq!(buffer[(10, 5)].fg, Color::Rgb(175, 140, 255));
-        assert_eq!(buffer[(56, 4)].fg, Color::Rgb(100, 220, 100));
-        assert_eq!(buffer[(56, 5)].fg, Color::Rgb(140, 140, 140));
+        assert_eq!(buffer[(57, 4)].fg, Color::Rgb(100, 220, 100));
+        assert_eq!(buffer[(57, 5)].fg, Color::Rgb(140, 140, 140));
         assert_eq!(buffer[(10, 11)].fg, Color::Rgb(255, 100, 100));
         let names: Vec<Color> = [2, 3, 4, 5, 9]
             .into_iter()
@@ -1233,7 +1246,7 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                " pid      agent       name           status    age ▼  desktop  directory",
+                " pid      account     session        status    age ▼  desktop  directory",
                 " 428044   claude      enh/handler    thinking  1h     —        ~/rust/handler",
                 " 4039085  codex fast  --model gpt-5  —         12m    —        ~/rust/handler",
             ]
@@ -1388,3 +1401,9 @@ mod accounts_gradient_tests;
 
 #[cfg(test)]
 mod accounts_header_sort_tests;
+
+#[cfg(test)]
+mod role_span_tests;
+
+#[cfg(test)]
+mod session_membership_tests;

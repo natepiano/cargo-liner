@@ -140,8 +140,8 @@ pub(crate) const TIMER_PIE_FULL: char = '●';
 /// The summary's column labels, in column order.
 pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
     "pid",
-    "agent",
-    "name",
+    "account",
+    "session",
     "status",
     "age",
     "desktop",
@@ -394,6 +394,12 @@ pub(crate) const SLEEP_UNITS: [(char, f64); 4] =
 pub(crate) const TREE_DEPTH_LIMIT: u8 = 16;
 /// Codex's directory under the home directory.
 pub(crate) const CODEX_DIRNAME: &str = ".codex";
+/// The append-only index of names assigned to Codex sessions.
+pub(crate) const CODEX_SESSION_INDEX_FILENAME: &str = "session_index.jsonl";
+/// The Codex subcommand that resumes an existing thread.
+pub(crate) const CODEX_RESUME_SUBCOMMAND: &str = "resume";
+/// Resume the newest thread in the current directory.
+pub(crate) const CODEX_RESUME_LAST_ARGUMENT: &str = "--last";
 /// How the name of Codex's thread database starts. The whole name is
 /// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
 /// the highest `<n>` present is the one Codex writes.
@@ -409,6 +415,8 @@ pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200)
 /// ends in unix milliseconds.
 pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
      rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
+/// The newest thread in one directory, including threads older than process startup.
+pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 /// The `originator` Codex records on a thread the interactive `codex`
 /// started, as against `codex exec`, an app server's client, or the
 /// desktop app.

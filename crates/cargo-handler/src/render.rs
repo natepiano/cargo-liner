@@ -39,6 +39,7 @@ use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
 use crate::census::Machine;
+use crate::census::RoleLabel;
 use crate::census::accounts::AccountsTable;
 #[cfg(test)]
 use crate::census::scan::ScanStage;
@@ -51,6 +52,7 @@ use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
 use crate::settings;
 use crate::sort;
@@ -373,7 +375,13 @@ impl TileCells<TileKey> for Cells<'_> {
                 ),
                 Span::styled(
                     entry.role_label.suffix(),
-                    Style::default().fg(label_color()),
+                    match entry.role_label {
+                        RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
+                            self.footer_colors.hierarchy_role(role)
+                        },
+                        RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
+                    }
+                    .style(Style::default().fg(label_color())),
                 ),
             ]),
         })
@@ -686,30 +694,30 @@ fraying = "leading"
     const NOW: u64 = 1_790_372_800;
 
     /// The grid with one unassigned session: summary, then the machine's
-    /// pool with its flat session row and nested shell, worker and subagent.
+    /// pool with its flat session row. The summary excludes that session.
     const ONE_AGENT_CELL: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│ natedev · 1 top-level agent                                                  │",
-        "│ pid      agent   name            status  age ▼  desktop  directory           │",
-        "│ 1579022  claude  boss of bosses  idle    21h    —        ~/rust/hana_catalyst│",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 3  r/c: 10/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│ session                                             role      status   age ▼ │",
-        "│ boss of bosses                                      —         idle     21h   │",
-        "│ ├─ Launch the Phase 2 implementation seat           —         command  12m   │",
-        "│ │  └─ tool-based-ui-geometry-material-impl          worker    idle     12m   │",
-        "│ └─ Survey the tile grid                             subagent  claude   5m 3s │",
+        "│ session         role  status  branch  directory                       age ▼  │",
+        "│ boss of bosses  —     idle    —       ~/rust/hana_catalyst/docs/hana  21h    │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 5  r/c: 10/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 2  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1149,7 +1157,10 @@ fraying = "leading"
     fn an_unassigned_agent_gets_a_flat_row_in_the_machine_pool() {
         let mut app = laid_out_app();
         app.census.apply(CensusUpdate::Local {
-            rows:      vec![boss(21 * 60 * 60)],
+            rows:      vec![AgentRow {
+                children: Vec::new(),
+                ..boss(21 * 60 * 60)
+            }],
             hierarchy: crate::census::HierarchyEdges::default().into(),
             stage:     ScanStage::Classified,
         });
@@ -1219,11 +1230,7 @@ fraying = "leading"
             let rendered: Vec<String> = (0..body.height)
                 .map(|y| (0..body.width).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
-            let title_text = if manager_role_label == Unlabeled {
-                format!("{AGENT_CELL_TITLE_LEAD}{UNASSIGNED_CELL_TITLE}{HEADING_SEPARATOR}natedev")
-            } else {
-                format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}")
-            };
+            let title_text = format!("{AGENT_CELL_TITLE_LEAD}production{manager_label}");
             let (title_y, title_line) = rendered
                 .iter()
                 .enumerate()
@@ -1239,22 +1246,14 @@ fraying = "leading"
             let title_y = u16::try_from(title_y).expect("the row fits");
             assert_eq!(
                 buffer[(title_x + 1, title_y)].fg,
-                if manager_role_label == Unlabeled {
-                    title_color()
-                } else {
-                    Role::Rainbow(crate::theme::RainbowHue::Red)
-                        .style()
-                        .fg
-                        .expect("the title has a hue")
-                }
+                Role::Rainbow(crate::theme::RainbowHue::Red)
+                    .style()
+                    .fg
+                    .expect("the title has a hue")
             );
             let after_name = title_x
-                + u16::try_from(if manager_role_label == Unlabeled {
-                    title_text.chars().count()
-                } else {
-                    format!("{AGENT_CELL_TITLE_LEAD}production").chars().count()
-                })
-                .expect("the title fits");
+                + u16::try_from(format!("{AGENT_CELL_TITLE_LEAD}production").chars().count())
+                    .expect("the title fits");
             if manager_label.is_empty() {
                 assert_eq!(
                     buffer[(after_name, title_y)].symbol(),
@@ -1348,7 +1347,10 @@ fraying = "leading"
     fn unassigned_grid_titles_name_the_machine_and_use_theme_title_color() {
         let mut app = laid_out_app();
         app.census.apply(CensusUpdate::Local {
-            rows:      vec![boss(21 * 60 * 60)],
+            rows:      vec![AgentRow {
+                children: Vec::new(),
+                ..boss(21 * 60 * 60)
+            }],
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Classified,
         });
@@ -1359,6 +1361,7 @@ fraying = "leading"
                 vec![AgentRow {
                     role_fallback: crate::census::RoleFallback::None,
                     name: "remote-session".to_string(),
+                    children: Vec::new(),
                     ..boss(3600)
                 }],
                 HierarchyEdges::default().into(),
@@ -1400,7 +1403,10 @@ fraying = "leading"
     fn an_unassigned_name_and_its_summary_row_share_a_hue() {
         let mut app = laid_out_app();
         app.census.apply(CensusUpdate::Local {
-            rows:      vec![boss(21 * 60 * 60)],
+            rows:      vec![AgentRow {
+                children: Vec::new(),
+                ..boss(21 * 60 * 60)
+            }],
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Classified,
         });
@@ -1417,7 +1423,7 @@ fraying = "leading"
                 colors.push(buffer[(x, y)].fg);
             }
         }
-        assert_eq!(colors, [Color::Rgb(255, 95, 95); 2]);
+        assert_eq!(colors, [Color::Rgb(255, 95, 95); 1]);
     }
 
     /// Each agent's cell asks for the rows it takes at the width its
@@ -1495,3 +1501,7 @@ fraying = "leading"
 #[cfg(test)]
 #[path = "render/accounts_grid_tests.rs"]
 mod accounts_grid_tests;
+
+#[cfg(test)]
+#[path = "render/role_title_tests.rs"]
+mod role_title_tests;

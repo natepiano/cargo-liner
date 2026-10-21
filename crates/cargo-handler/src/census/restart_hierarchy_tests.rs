@@ -187,6 +187,36 @@ fn tiles(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Vec<String> {
         .collect()
 }
 
+/// Draw only the unassigned tile, so visibility checks cannot accept an owner tile.
+fn unassigned_text(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> String {
+    let state = MachineState::Answered(rows.to_vec(), hierarchy.clone());
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = agent_cell::cell_order_placed(&placement);
+    let tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000);
+    let entry = tiles
+        .iter()
+        .find_map(|tile| match tile {
+            AgentTile::Unassigned(entry) => Some(entry),
+            AgentTile::Agent(_) => None,
+        })
+        .expect("the standalone session has an unassigned tile");
+    let area = Rect::new(0, 0, 240, 18);
+    let mut buffer = Buffer::empty(area);
+    agent_cell::draw_unassigned(
+        &mut buffer,
+        area,
+        entry,
+        1000,
+        AccountColumn::Hidden,
+        &FooterColors::default(),
+    );
+    text(&buffer)
+}
+
 fn production_rows(unit_pid: u32) -> Vec<AgentRow> {
     let (mut processes, mut sessions) = fixture();
     processes.retain(|process| process.pid != 30);
@@ -368,8 +398,9 @@ fn restart_hierarchy_unmapped_home_session_stays_in_the_top_level_table() {
     let rows = classified(&processes, &sessions);
     let hierarchy = HierarchySnapshot::from(production_edges());
     let summary = summary_text(&rows, &hierarchy);
-    assert!(summary.contains("ordinary home session"), "{summary}");
-    assert!(summary.contains("2 top-level agents"), "{summary}");
+    assert!(!summary.contains("ordinary home session"), "{summary}");
+    assert!(unassigned_text(&rows, &hierarchy).contains("ordinary home session"));
+    assert!(summary.contains("1 top-level agent"), "{summary}");
     assert!(!summary.contains("shutdown-unit"), "{summary}");
     let drawn = tiles(&rows, &hierarchy);
     assert_eq!(drawn.len(), 2);
@@ -458,8 +489,9 @@ fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() 
         "the unnamed id receives one extra check"
     );
     let summary = summary_text(&rows, &checked);
-    assert!(summary.contains("ordinary home session"), "{summary}");
-    assert!(summary.contains("2 top-level agents"), "{summary}");
+    assert!(!summary.contains("ordinary home session"), "{summary}");
+    assert!(unassigned_text(&rows, &checked).contains("ordinary home session"));
+    assert!(summary.contains("1 top-level agent"), "{summary}");
     for tick in 2..=4 {
         cache.snapshot(
             source.clone(),
@@ -497,8 +529,9 @@ fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() 
         );
     }
     let summary = summary_text(&rows, &new_session);
-    assert!(summary.contains("ordinary home session"), "{summary}");
-    assert!(summary.contains("2 top-level agents"), "{summary}");
+    assert!(!summary.contains("ordinary home session"), "{summary}");
+    assert!(unassigned_text(&rows, &new_session).contains("ordinary home session"));
+    assert!(summary.contains("1 top-level agent"), "{summary}");
 }
 
 /// The test controls each scan and answer while the scheduler stays alive.
@@ -611,7 +644,7 @@ impl Drop for RunningFixture {
 fn independent_codex() -> AgentRow {
     serde_json::from_value(serde_json::json!({
         "agent":"codex", "name":"independent codex", "pid":40,
-        "started":100, "directory":"/work/fixture", "children":[]
+        "started":100, "directory":"/work/fixture", "children":[{"depth":0,"kind":"shell","pid":41,"name":"independent work","started":100}]
     }))
     .expect("an unrelated row can publish before hierarchy")
 }

@@ -45,7 +45,7 @@ fn sort_row(
 ) -> AgentRow {
     serde_json::from_value(serde_json::json!({
         "agent":"claude","name":name,"status":status,"started":started,"process_started":started,
-        "pid":pid,"desktop":desktop,"directory":directory,"branch":null,"launched_by":null,"children":[],
+        "pid":pid,"desktop":desktop,"directory":directory,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}],
         "account":{"home":format!("~/.{account}"),"label":account}
     })).expect("summary row fixture")
 }

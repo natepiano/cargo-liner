@@ -149,7 +149,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "alpha",
             "└─ alpha impl thinking a-account a-branch /a-directory 4h",
         ),
-        ("a-shell", "└─ a-shell — command — — — 2h"),
+        ("a-shell", "└─ a-shell — command a-account — — 2h"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -514,7 +514,7 @@ fn sorting_preserves_the_footer_role_and_account_foregrounds() {
         let role_x = find(&buffer, "role").expect("role header").0;
         for name in ["zeta", "alpha"] {
             let row = find(&buffer, name).expect("worker row").1;
-            assert_eq!(buffer[(role_x, row)].fg, Color::LightCyan);
+            assert_eq!(buffer[(role_x, row)].fg, tui_pane::text_default());
         }
     }
 }

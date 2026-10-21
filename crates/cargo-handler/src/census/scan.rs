@@ -47,6 +47,8 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
 use super::codex::CodexThread;
+use super::codex_names::SessionName;
+use super::codex_names::SessionNames;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
@@ -124,12 +126,24 @@ pub(super) struct LocalScanner {
     session_starts:      HashMap<PathBuf, Option<u64>>,
     /// Each Codex rollout read for its tier, as far as it was read.
     rollouts:            Rollouts,
+    session_names:       SessionNames,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
     worker_names:        WorkerNames,
+    /// Where desktop information comes from for this scanner.
+    desktop_source:      DesktopSource,
     /// What `KWin` and tmux last answered, kept for
     /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
     desktops:            Option<DesktopRead>,
+}
+
+/// Live desktop queries or windows supplied by an isolated scanner fixture.
+#[derive(Debug)]
+enum DesktopSource {
+    System,
+    #[cfg(test)]
+    Windows(Vec<WindowEntry>),
 }
 
 /// What `KWin` and tmux answered at one moment.
@@ -241,10 +255,13 @@ impl LocalScanner {
             transcript_paths: HashMap::new(),
             session_starts: HashMap::new(),
             rollouts: Rollouts::default(),
+            session_names: super::codex_names::SessionNames::default(),
             transcript_activity: HashMap::new(),
+            subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
             reviewer_pools: ReviewerPools::default(),
+            desktop_source: DesktopSource::System,
             desktops: None,
         }
     }
@@ -273,10 +290,25 @@ impl LocalScanner {
         // Codex's database is opened only while an interactive Codex runs,
         // and read only for the span its threads could have been created in.
         let codex_threads = startup_log::startup_stage("codex_sqlite", || {
-            home.as_deref()
-                .zip(classify::codex_thread_window(&processes))
-                .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
-                .unwrap_or_default()
+            let mut threads = Vec::new();
+            let homes: HashSet<_> = processes
+                .iter()
+                .filter(|process| process.is_codex())
+                .filter_map(|process| codex::session_home(process, home.as_deref()))
+                .collect();
+            for codex_home in homes {
+                if let Some(window) = classify::codex_thread_window(&processes) {
+                    threads.extend(codex::read_threads(&codex_home, &window));
+                }
+                let resumed = processes
+                    .iter()
+                    .filter(|process| {
+                        codex::session_home(process, home.as_deref()).as_ref() == Some(&codex_home)
+                    })
+                    .flat_map(|process| codex::read_resumed_threads(process, &codex_home));
+                threads.extend(resumed);
+            }
+            threads
         });
         self.scan_stages_with(
             &processes,
@@ -311,7 +343,7 @@ impl LocalScanner {
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
         let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
-            self.codex_tiers(processes, codex_threads, &pacer)
+            self.codex_tiers(processes, codex_threads, &pacer, home)
         });
         for row in rows.iter_mut() {
             if let Some(tier) = service_tiers.get(&row.pid) {
@@ -330,7 +362,7 @@ impl LocalScanner {
         startup_log::startup_stage("transcript_session_starts", || {
             self.attach_session_starts(&transcripts, rows);
         });
-        let subagents: HashMap<u32, Vec<Subagent>> =
+        let mut subagents: HashMap<u32, Vec<Subagent>> =
             startup_log::startup_stage("transcript_subagents", || {
                 transcripts
                     .iter()
@@ -346,6 +378,7 @@ impl LocalScanner {
                     })
                     .collect()
             });
+        self.attach_subagent_activity(&mut subagents);
         let shell_calls = startup_log::startup_stage("transcript_shell_calls", || {
             self.find_shell_calls(processes, &transcripts, &subagents, now)
         });
@@ -362,12 +395,31 @@ impl LocalScanner {
             })
             .unwrap_or_default()
         });
+        self.attach_codex_sessions(processes, codex_threads, home, rows);
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names)
         });
+        let thread_dispatches = threads
+            .values()
+            .flatten()
+            .filter_map(|thread| {
+                let CodexThreadId::Recorded(id) = &thread.thread_id else {
+                    return None;
+                };
+                let read = self.rollouts.thread(id)?;
+                match self
+                    .worker_names
+                    .resolve(id, read.first_prompt.text(), &read.worktree)
+                {
+                    WorkerDispatch::Worker(worker) => Some((id.clone(), worker)),
+                    WorkerDispatch::Plain => None,
+                }
+            })
+            .collect();
         let sources = TreeSources {
             dispatches,
+            thread_dispatches,
             sessions,
             subagents,
             shell_calls,
@@ -382,6 +434,63 @@ impl LocalScanner {
         });
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
+    }
+
+    /// Resolve the interactive session itself, using the same rollout reader as workers.
+    fn attach_codex_sessions(
+        &mut self,
+        processes: &[ProcessEntry],
+        threads: &[CodexThread],
+        home: Option<&Path>,
+        rows: &mut [AgentRow],
+    ) {
+        let startup = classify::codex_startup_threads(processes, threads, home);
+        let homes: HashSet<_> = processes
+            .iter()
+            .filter(|process| process.is_codex())
+            .filter_map(|process| codex::session_home(process, home))
+            .collect();
+        for codex_home in &homes {
+            self.session_names.read(codex_home);
+        }
+        for row in rows.iter_mut().filter(|row| row.agent == Agent::Codex) {
+            let Some(process) = processes.iter().find(|process| process.pid == row.pid) else {
+                continue;
+            };
+            if process.is_app_server() {
+                continue;
+            }
+            row.activity = AgentActivity::Idle;
+            row.name = format!("pid {}", row.pid);
+            let Some(thread) = startup.get(&row.pid) else {
+                continue;
+            };
+            let read = self.rollouts.read(&thread.rollout);
+            row.activity = read.activity();
+            let Some(id) = tree::thread_id(&thread.rollout) else {
+                continue;
+            };
+            if let Some(codex_home) = codex::session_home(process, home)
+                && let SessionName::Named(name) = self.session_names.name(&codex_home, &id)
+            {
+                row.name = name;
+            }
+        }
+    }
+
+    /// Advance each live subagent's own Claude transcript and forget finished ones.
+    fn attach_subagent_activity(&mut self, subagents: &mut HashMap<u32, Vec<Subagent>>) {
+        let mut seen = HashSet::new();
+        for agent in subagents.values_mut().flatten() {
+            seen.insert(agent.transcript.clone());
+            let read = self
+                .subagent_activity
+                .entry(agent.transcript.clone())
+                .or_insert_with(|| TranscriptRead::new(AgentActivity::Idle));
+            read.advance(&agent.transcript, AgentActivity::Idle);
+            agent.activity = read.activity();
+        }
+        self.subagent_activity.retain(|path, _| seen.contains(path));
     }
 
     /// Resolve conversation tools and detached runs once, after child attachment.
@@ -480,8 +589,9 @@ impl LocalScanner {
         processes: &[ProcessEntry],
         codex_threads: &[CodexThread],
         pacer: &PacerHistory,
+        home: Option<&Path>,
     ) -> HashMap<u32, ServiceTier> {
-        let startup = classify::codex_startup_threads(processes, codex_threads);
+        let startup = classify::codex_startup_threads(processes, codex_threads, home);
         processes
             .iter()
             .filter(|process| process.is_codex() && !process.is_app_server())
@@ -502,16 +612,24 @@ impl LocalScanner {
         if rows.is_empty() {
             return;
         }
-        if self.desktops.as_ref().is_none_or(DesktopRead::is_stale) {
-            self.desktops = Some(DesktopRead::now(processes, rows));
-        }
-        if let Some(DesktopRead {
-            windows: Some(windows),
-            tmux,
-            ..
-        }) = &self.desktops
-        {
-            desktop::attach_desktops(rows, processes, windows, tmux.as_ref());
+        match &self.desktop_source {
+            DesktopSource::System => {
+                if self.desktops.as_ref().is_none_or(DesktopRead::is_stale) {
+                    self.desktops = Some(DesktopRead::now(processes, rows));
+                }
+                if let Some(DesktopRead {
+                    windows: Some(windows),
+                    tmux,
+                    ..
+                }) = &self.desktops
+                {
+                    desktop::attach_desktops(rows, processes, windows, tmux.as_ref());
+                }
+            },
+            #[cfg(test)]
+            DesktopSource::Windows(windows) => {
+                desktop::attach_desktops(rows, processes, windows, None);
+            },
         }
     }
 
@@ -1292,10 +1410,13 @@ mod tests {
             transcript_paths:    HashMap::new(),
             session_starts:      HashMap::new(),
             rollouts:            Rollouts::default(),
+            session_names:       super::super::codex_names::SessionNames::default(),
             transcript_activity: HashMap::new(),
+            subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
             reviewer_pools:      ReviewerPools::default(),
+            desktop_source:      DesktopSource::Windows(Vec::new()),
             desktops:            None,
         }
     }
@@ -1517,6 +1638,7 @@ mod tests {
         let subagents = HashMap::from([(
             BOSS,
             vec![Subagent {
+                activity:    AgentActivity::Idle,
                 id:          "a1".to_string(),
                 parent:      None,
                 description: "Test it".to_string(),
@@ -1680,3 +1802,11 @@ mod hierarchy_publication_tests {
 #[cfg(test)]
 #[path = "scan/activity_scan_tests.rs"]
 mod activity_scan_tests;
+
+#[cfg(test)]
+#[path = "subagent_activity_tests.rs"]
+mod subagent_activity_tests;
+
+#[cfg(test)]
+#[path = "codex_session_tests.rs"]
+mod codex_session_tests;
