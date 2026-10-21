@@ -527,8 +527,16 @@ pub(super) fn publish_status(
 ) {
     if let Ok(mut statuses) = status_cache.lock() {
         let key = paths::project_key(project_root);
-        if let Some(cached_status) = CachedLintStatus::from_lint_status(&status) {
-            statuses.insert(key, cached_status);
+        match status {
+            LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::EnvUnavailable(_) => {
+                // A display status lacks the run's start. Hydrate the complete
+                // record from disk on the next cache read instead of assuming a start.
+                statuses.remove(&key);
+            },
+            LintStatus::NoLog => {
+                statuses.insert(key, CachedLintStatus::NoLog);
+            },
+            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => {},
         }
     }
     let _ = background_tx.send(BackgroundMsg::LintStatus {
