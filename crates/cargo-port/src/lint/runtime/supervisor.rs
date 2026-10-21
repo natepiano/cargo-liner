@@ -380,7 +380,7 @@ pub(crate) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> C
             .rev()
             .find(|r| !matches!(r.status, LintRunStatus::Running))
     });
-    run.and_then(|run| CachedLintStatus::from_lint_status(&status::parse_run(&run)))
+    run.and_then(|run| CachedLintStatus::from_run(&run))
         .unwrap_or_default()
 }
 
@@ -1981,7 +1981,7 @@ mod tests {
         let status = read_status_from_disk(cache_dir.path(), project_dir.path());
 
         assert!(
-            matches!(status, CachedLintStatus::Failed(_)),
+            matches!(status.into_lint_status(), LintStatus::Failed(_)),
             "history fallback"
         );
         assert!(
@@ -2039,7 +2039,7 @@ mod tests {
             match message {
                 BackgroundMsg::LintStartupStatus { path, status }
                     if path.as_path() == project_dir.path()
-                        && matches!(status, CachedLintStatus::Passed(_)) =>
+                        && matches!(status.clone().into_lint_status(), LintStatus::Passed(_)) =>
                 {
                     saw_cached_passed = true;
                 },
