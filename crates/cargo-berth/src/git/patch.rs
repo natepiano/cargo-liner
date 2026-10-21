@@ -641,7 +641,7 @@ fn history_relationship(
     left: &GitObjectId,
     right: &GitObjectId,
 ) -> Result<HistoryRelationship, ScopedPatchComparisonError> {
-    // A commit is its own merge base.
+    // `left == right` proves shared history because a commit is its own merge base.
     if left == right {
         return Ok(HistoryRelationship::Shared);
     }
@@ -1295,8 +1295,9 @@ mod tests {
             &MAPPED_BASE.replace("twelve\n", "protected\nadjacent resolution edit\n"),
         )?;
         let target = fixture.commit("overlapping resolution edit")?;
-        // Git's explicit-base replay conflicts on overlapping replacements even when
-        // the target retains the old line. A map supplies no authority to ignore that.
+        // `mapped_equivalence` uses Git's explicit-base replay, which conflicts on overlapping
+        // replacements even when the target retains the old line. A map supplies no
+        // authority to ignore that.
         assert_eq!(
             mapped_equivalence(
                 &fixture,
@@ -1459,7 +1460,8 @@ mod tests {
                 &pairs,
                 &fixture.phase_start_head,
             )?;
-            // Another reservation may re-anchor before this event's interval is consumed.
+            // `fixture.git` moves the retention ref because another reservation may re-anchor
+            // before this event's interval is consumed.
             fixture.git(&["update-ref", retention_ref, &target.to_string()])?;
             let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
             assert_eq!(
@@ -1634,7 +1636,8 @@ mod tests {
             ScopedPatchComparison::Equivalent
         );
 
-        // A rebase onto the first split records that commit as the phase base.
+        // `capture_created_commits` models a rebase onto `split_first`, which records that commit
+        // as the phase base.
         let created = capture_created_commits(
             fixture.root(),
             &fixture.root().join(".git"),
@@ -1652,7 +1655,8 @@ mod tests {
             })
         );
 
-        // A later rewrite that drops the first split must still fail the retained interval.
+        // `mapped_equivalence` must still reject `dropped_first`, a later rewrite dropping the
+        // first split, for the retained `mapped` interval.
         fixture.reset_to_phase_start()?;
         fixture.write(
             PRIMARY_PATH,

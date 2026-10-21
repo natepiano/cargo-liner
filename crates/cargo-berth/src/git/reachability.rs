@@ -221,7 +221,8 @@ impl CommitAncestryGraph {
                 return HistoricalIntegrationCandidateDiscovery::Nominated(commit);
             }
         }
-        // Cherry-mark supplied target ancestors; failure to locate one means incomplete history.
+        // `matches` contains target ancestors supplied by cherry-mark; failure to locate one means
+        // incomplete history.
         HistoricalIntegrationCandidateDiscovery::Unavailable
     }
 
@@ -246,8 +247,9 @@ impl CommitAncestryGraph {
             };
             current = parent;
         }
-        // An ancestor on the chain excludes its entire suffix. Other commits inherit the
-        // earliest boundary of their parents; chain.len() means none of the chain is excluded.
+        // `boundaries` records that an ancestor on `chain` excludes its entire suffix. Other
+        // commits inherit the earliest boundary of their parents; chain.len() means none of
+        // the chain is excluded.
         let mut boundaries = chain
             .iter()
             .enumerate()
@@ -481,7 +483,8 @@ pub(crate) fn unmerged_branch_paths(
     }
     let merge_output = String::from_utf8(merge_output.stdout).map_err(GitError::InvalidOutput)?;
     let mut merge_fields = merge_output.split_terminator('\0');
-    // A missing object also exits 1, the conflict status, but writes no result tree.
+    // `merge_fields.next()` checks for a result tree because a missing object also exits 1, the
+    // conflict status, but writes none.
     let Some(result_tree) = merge_fields.next() else {
         return Err(merge_failure);
     };
@@ -961,8 +964,9 @@ pub(crate) fn reachability_to_target(
     if matches!(target_availability, CommitAvailability::ObjectUnknown) {
         return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
     }
-    // A resolved commit contains itself. Retried claims commonly ask only about
-    // this same head, so they need no ancestry walk after object availability.
+    // `candidate_ancestors` all equal to `target` need no walk because a resolved commit contains
+    // itself. Retried claims commonly ask only about this same head, so they need no ancestry
+    // walk after object availability.
     if candidate_ancestors
         .iter()
         .all(|candidate| candidate == target)
@@ -1052,7 +1056,8 @@ pub(crate) fn commits_outside_origin_basis(
     match (output.status.success(), upstream) {
         (true, _) => {},
         (false, LocalTargetUpstream::Available(_)) => {
-            // A ref can resolve while an ancestor object is missing. Preserve local evidence.
+            // `commits_outside_origin_basis` retries with `LocalTargetUpstream::Unavailable` to
+            // preserve local evidence: a ref can resolve while an ancestor object is missing.
             return commits_outside_origin_basis(
                 repository_root,
                 origin_basis,
@@ -1254,7 +1259,8 @@ mod tests {
         let ids = (1..=12)
             .map(|index| format!("{index:040x}").parse::<GitObjectId>())
             .collect::<Result<Vec<_>, _>>()?;
-        // Two merging side chains share ancestry; one is unrelated, and one parent is absent.
+        // `links` describes two merging side chains with shared ancestry, an unrelated chain and an
+        // absent parent.
         let links: &[(usize, &[usize])] = &[
             (0, &[]),
             (1, &[0]),
@@ -1412,8 +1418,8 @@ mod tests {
                 .after_phase_start(&fixture.phase_start_head),
             super::ScopedPatchTargetHistory::NeedsGitQueries
         ));
-        // An invalid query directory proves this uses the retained batch, including off-trunk
-        // starts.
+        // The invalid query directory proves `observation.target_histories` uses the retained
+        // batch, including off-trunk starts.
         assert_eq!(
             observation.target_histories.earliest_containing_matches(
                 &fixture.root().join("absent-directory"),
@@ -1547,7 +1553,7 @@ mod tests {
     fn same_commit_on_both_sides_answers_without_starting_git() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
         let head = fixture.phase_start_head.clone();
-        // Git cannot start in a directory that does not exist, so an answer proves none ran.
+        // `missing_root` does not exist, so Git cannot start there and an answer proves none ran.
         let missing_root = fixture.root().join("missing");
         assert_eq!(
             unmerged_branch_paths(&missing_root, &head, &head)?,
@@ -1660,7 +1666,8 @@ mod tests {
         fixture.write(PRIMARY_PATH, "lane work beside the deletion\n")?;
         let head = fixture.commit("lane deletes the path trunk modifies")?;
 
-        // The conflicted merge keeps trunk's modified file, so only the conflict record names it.
+        // `unmerged_branch_paths` must include `SECONDARY_PATH`: the conflicted merge keeps trunk's
+        // modified file, so only the conflict record names it.
         assert_eq!(
             unmerged_branch_paths(fixture.root(), &trunk, &head)?,
             vec![PRIMARY_PATH.parse()?, SECONDARY_PATH.parse()?],
