@@ -174,7 +174,7 @@ impl OrderingGraph {
                 | JournalOperation::MergeExtentObserved { .. }
                 | JournalOperation::HolderMergeExtentObserved { .. }
                 | JournalOperation::RelocateWorktree { .. }
-                // An answer recorded without an active reservation has no requester endpoint,
+                // `JournalOperation::Answer` with no `reservation_id` has no requester endpoint,
                 // so it holds nothing at integration.
                 | JournalOperation::Answer {
                     reservation_id: None,
