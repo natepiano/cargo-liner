@@ -29,9 +29,9 @@ impl App {
         if !crates_io_refresh_due(self.crates_io_refresh_at, now) {
             return;
         }
-        // An outage or a tripped rate limit already has a recovery path
-        // (`refetch_missing_crates_io_targets`); adding a request a
-        // minute on top of it would only deepen the limit.
+        // Return when `net.crates_io_status().is_available()` is false during an outage or rate
+        // limit: `refetch_missing_crates_io_targets` already handles recovery, and another request
+        // each minute would only deepen the limit.
         if !self.net.crates_io_status().is_available() {
             return;
         }
