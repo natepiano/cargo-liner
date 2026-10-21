@@ -311,8 +311,10 @@ impl App {
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
         self.startup.details_declared.complete_once(now);
-        // Late work still completes timed-out phases after the panel closes,
-        // without reopening the toast or repeating the readiness handoff.
+        // Late work above still completes timed-out phases after panel closure;
+        // `startup.is_collecting()` prevents reopening the toast through
+        // `refresh_startup_panel` or repeating the readiness handoff through
+        // `maybe_complete_startup_ready`.
         if !self.startup.is_collecting() {
             return;
         }
@@ -494,21 +496,19 @@ impl App {
         now: Instant,
         scan_complete_at: Instant,
     ) {
-        // Gate repo-phase completion on git being terminal (complete or
-        // failed). Without this, a scan that completes before any
-        // `RepoFetchQueued` arrives would see `repo.seen (0) >=
-        // repo.expected (0)` and mark the phase done prematurely;
-        // subsequent staggered git arrivals would then strand their repo
-        // fetches outside the startup panel. Treating a timed-out git as
-        // terminal releases repo so the panel still finishes.
+        // `startup.git.is_terminal()` gates completion of `startup.repo` on complete or failed Git.
+        // Otherwise, a scan finishing before `crate::scan::BackgroundMsg::RepoFetchQueued` could
+        // satisfy `repo.seen (0) >= repo.expected (0)` prematurely, stranding repository fetches
+        // from staggered Git arrivals outside the startup panel. Timed-out Git is terminal too,
+        // releasing the repository phase so the panel finishes.
         if !self.startup.git.is_terminal() {
             return;
         }
-        // Git is terminal, so every GitHub remote discovered by local-git has
-        // resolved (or git gave up): freeze the denominator so the row
-        // switches from `Waiting` to a determinate bar. Idempotent; a later
-        // `RepoFetchQueued` still joins the stable denominator and reopens the
-        // row while startup is open.
+        // Once `startup.git` is terminal, local Git has resolved the discovered GitHub remotes or
+        // given up. `startup.repo.expected.stabilize()` freezes the denominator so
+        // `ProgressState::Waiting` becomes a determinate bar. Stabilization is idempotent; a later
+        // `crate::scan::BackgroundMsg::RepoFetchQueued` still joins the stable denominator and
+        // reopens the row while startup is open.
         self.startup.repo.expected.stabilize();
         // `net.github.has_repo_fetch_in_flight()` holds `startup.repo` open between worker spawn
         // and `RepoFetchQueued` joining its denominator, preventing early steady-state
