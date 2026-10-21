@@ -6,6 +6,7 @@ use super::*;
 use crate::census::Activity;
 use crate::census::activity::RunLocation;
 use crate::census::activity::VerifyStep;
+use crate::census::transcript::SubagentRole;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
 use crate::theme;
@@ -26,7 +27,13 @@ fn check_statuses(ground: Color) {
         .iter()
         .enumerate()
         .map(|(index, &activity)| {
-            let mut row = child(0, ChildKind::Subagent, None, &format!("job-{index}"), 10);
+            let mut row = child(
+                0,
+                ChildKind::Subagent(SubagentRole::Unrecorded),
+                None,
+                &format!("job-{index}"),
+                10,
+            );
             row.activity = activity;
             row
         })

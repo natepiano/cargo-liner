@@ -258,3 +258,39 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
         &["alpha", "gamma", "beta", "delta"],
     );
 }
+
+#[test]
+fn numeric_account_cells_align_their_right_edges_with_their_headers() {
+    let app = app_with_accounts(accounts());
+    let buffer = accounts_gradient_tests::drawn(&app);
+    for (column, previous_column, values) in [
+        (
+            AccountsColumn::WeeklyLeft,
+            AccountsColumn::Roles,
+            ["10%", "2%", "10%", "100%"],
+        ),
+        (
+            AccountsColumn::Credits,
+            AccountsColumn::Resets,
+            ["10", "2", "10", "100"],
+        ),
+    ] {
+        let header = header_point(&buffer, column);
+        let right = buffer.area.x + header.column + super::cell_width(column.header());
+        let left = buffer.area.x + header_point(&buffer, previous_column).column;
+        for (label, value) in SOURCE_ORDER.into_iter().zip(values) {
+            let y = accounts_gradient_tests::locate(&buffer, label).row;
+            let line: String = (left..buffer.area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            let index = if column == AccountsColumn::Credits {
+                line.rfind(value)
+            } else {
+                line.find(value)
+            }
+            .expect("numeric account value");
+            let value_right = left + super::cell_width(&line[..index]) + super::cell_width(value);
+            assert_eq!(value_right, right, "{label} {column:?}: {line}");
+        }
+    }
+}

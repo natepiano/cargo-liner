@@ -100,6 +100,9 @@ pub(crate) const TREE_BRANCH_HEADER: &str = "branch";
 pub(crate) const TREE_DIRECTORY_HEADER: &str = "directory";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
+/// The work type column of an agent tile tree.
+pub(crate) const TREE_TYPE_HEADER: &str = "type";
+
 /// The session column of an agent tile tree.
 pub(crate) const TREE_SESSION_HEADER: &str = "session";
 /// The status column of an agent tile tree.
@@ -179,11 +182,12 @@ pub(crate) const MISSING_VALUE: &str = "—";
 /// The units an age is written in, largest first: seconds in the unit,
 /// then its suffix.
 pub(crate) const AGE_UNITS: [(u64, &str); 4] = [(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")];
-/// The age written for no time at all.
-pub(crate) const ZERO_AGE: &str = "0s";
 /// Below this, an age's leading value is a single digit and the next
 /// unit down is written after it.
 pub(crate) const AGE_DETAIL_BELOW: u64 = 10;
+
+/// The metadata agent type that delegates responsibility to its description.
+pub(crate) const GENERAL_SUBAGENT_TYPE: &str = "general-purpose";
 
 // theme roles
 /// `[variants.roles]` key for the `claude` agent label.
@@ -205,16 +209,11 @@ pub(crate) const RAINBOW_RED_ROLE: &str = "rainbow_red";
 /// `[variants.roles]` key for the rainbow's second color.
 pub(crate) const RAINBOW_ORANGE_ROLE: &str = "rainbow_orange";
 /// `[variants.roles]` key for the rainbow's third color.
-pub(crate) const RAINBOW_YELLOW_ROLE: &str = "rainbow_yellow";
-/// `[variants.roles]` key for the rainbow's fourth color.
 pub(crate) const RAINBOW_GREEN_ROLE: &str = "rainbow_green";
-/// `[variants.roles]` key for the rainbow's fifth color.
+/// `[variants.roles]` key for the rainbow's fourth color.
 pub(crate) const RAINBOW_CYAN_ROLE: &str = "rainbow_cyan";
-/// `[variants.roles]` key for the rainbow's sixth color.
+/// `[variants.roles]` key for the rainbow's fifth color.
 pub(crate) const RAINBOW_BLUE_ROLE: &str = "rainbow_blue";
-/// `[variants.roles]` key for the rainbow's last color, after which the
-/// cells start over at [`RAINBOW_RED_ROLE`].
-pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 
 // census
 /// Verification launcher whose detached runs may override conversation activity.

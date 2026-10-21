@@ -1,6 +1,8 @@
 //! Frame rendering: the tile grid, the framework status line along the
 //! bottom, and whichever overlay is open above them.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use ratatui::Frame;
@@ -34,6 +36,7 @@ use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::agent_cell::AgentTile;
 use crate::agent_cell::TreeColumn;
+use crate::agent_cell::TreeMetrics;
 use crate::app::App;
 use crate::census;
 use crate::census::AccountColumn;
@@ -131,6 +134,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         contents,
         &cells,
     );
+    app.tree_layouts = cells.layouts.into_inner();
 }
 
 /// Map a content press through the same census and header layouts as drawing.
@@ -156,6 +160,11 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
     )
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
+    for tile in &cells.tiles {
+        if let Some(metrics) = app.tree_layouts.get(&tile.key()) {
+            tile.share_metrics(metrics.clone());
+        }
+    }
     match content {
         TileContent::Summary => {
             if let HeaderHit::Column(column) =
@@ -174,7 +183,8 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
                 && let HeaderHit::Column(column) =
                     sort::header_hit(&cells.header_spans(tile, area), point)
             {
-                app.tree_sorts.entry(id).or_default().select(column);
+                let default = tile.default_sort();
+                app.tree_sorts.entry(id).or_insert(default).select(column);
             }
         },
         TileContent::Empty(_) => {},
@@ -183,6 +193,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
 
 /// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
+    layouts:        RefCell<HashMap<TileKey, TreeMetrics>>,
     /// This machine, then each configured remote.
     machines:       Vec<Machine<'a>>,
     /// Individual sessions in default hue order, independent of tile grouping.
@@ -219,6 +230,7 @@ impl<'a> Cells<'a> {
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
         Self {
+            layouts: RefCell::new(HashMap::new()),
             machines,
             agents,
             account_column,
@@ -278,6 +290,32 @@ impl<'a> Cells<'a> {
 }
 
 impl TileCells<TileKey> for Cells<'_> {
+    fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        let allocations = allocations();
+        let mut columns: BTreeMap<u16, TreeMetrics> = BTreeMap::new();
+        for (content, area) in &allocations {
+            if let TileContent::Group(id) = content
+                && let Some(tile) = self.tile(id)
+            {
+                columns
+                    .entry(area.x)
+                    .or_default()
+                    .merge(&tile.metrics(self.now));
+            }
+        }
+        let mut layouts = self.layouts.borrow_mut();
+        layouts.clear();
+        for (content, area) in allocations {
+            if let TileContent::Group(id) = content
+                && let Some(tile) = self.tile(&id)
+                && let Some(metrics) = columns.get(&area.x)
+            {
+                tile.share_metrics(metrics.clone());
+                layouts.insert(id, metrics.clone());
+            }
+        }
+    }
+
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     /// `TileCells::demands` measures summary rows as single lines: long names
@@ -465,6 +503,7 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::hierarchy::ReviewerState;
+    use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
@@ -708,8 +747,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                  content rows: 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│ session         role  status  branch  directory                       age ▼  │",
-        "│ boss of bosses  —     idle    —       ~/rust/hana_catalyst/docs/hana  21h    │",
+        "│ session ▲                                            type  role  status  age │",
+        "│ boss of bosses                                                   idle    21h │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -939,7 +978,7 @@ fraying = "leading"
                 ),
                 child(
                     0,
-                    ChildKind::Subagent,
+                    ChildKind::Subagent(SubagentRole::Unrecorded),
                     None,
                     "Survey the tile grid",
                     5 * 60 + 3,

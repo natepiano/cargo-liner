@@ -119,12 +119,10 @@ fn reviewer_plan_process_without_session_record_draws_review_in_the_unassigned_t
                 line.contains("session") && line.contains("role") && line.contains("status")
             })
             .expect("tree column header");
-        let role_column = text
-            .lines()
-            .nth(header)
-            .expect("header")
-            .find("role")
-            .expect("role column");
+        let header_text = text.lines().nth(header).expect("header");
+        let role_column = header_text[..header_text.find("role").expect("role column")]
+            .chars()
+            .count();
         let row = text
             .lines()
             .nth(header + 1)

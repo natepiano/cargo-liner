@@ -154,7 +154,15 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
     });
     let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
     assert_color(&buffer, "codex1", Color::Indexed(211));
-    assert_color(&buffer, "claude2", Color::Indexed(30));
+    assert_color(
+        &buffer,
+        "claude2",
+        colors
+            .account("claude2")
+            .style(text_default().into())
+            .fg
+            .expect("covered account ink"),
+    );
     assert_color(
         &buffer,
         " fast",
@@ -346,9 +354,12 @@ fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
         "cargo nextest run -p hana_video --no-fail-fast -- permission_queue",
     ] {
         let y = find(&buffer, shell).expect("the shell line is drawn").1;
-        assert_eq!(buffer[(role_x, y)].symbol(), MISSING_VALUE);
-        assert_eq!(buffer[(role_x, y)].fg, text_default());
-        assert_eq!(buffer[(role_x, y)].style(), buffer[(branch_x, y)].style());
+        assert_eq!(buffer[(role_x, y)].symbol(), " ");
+        assert_eq!(
+            buffer[(role_x, y)].style(),
+            ratatui::buffer::Cell::default().style()
+        );
+        assert_eq!(buffer[(branch_x, y)].fg, text_default());
     }
 }
 
@@ -397,13 +408,35 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         children: vec![
             child(0, ChildKind::Thread, None, "unroled task", MINUTE),
             child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),
-            child(0, ChildKind::Subagent, None, "subagent task", MINUTE),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "subagent task",
+                MINUTE,
+            ),
         ],
         ..agent(10, "root", HOUR, None)
     };
     let cell = entry(&root, None);
     let colors = FooterColors::parse("role.worker=bright-cyan");
-    for width in [60, 220] {
+    let full_width = (1..=220)
+        .find(|&width| {
+            matches!(
+                CellView::at_width(&cell, width, NOW, AccountColumn::Shown),
+                CellView::Full(_)
+            )
+        })
+        .expect("the fixture fits the full view");
+    for width in [full_width - 1, 220] {
+        assert_eq!(
+            matches!(
+                CellView::at_width(&cell, width, NOW, AccountColumn::Shown),
+                CellView::Compressed
+            ),
+            width < full_width,
+            "exercise both compressed and full name colors"
+        );
         let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
         assert_color(
             &buffer,

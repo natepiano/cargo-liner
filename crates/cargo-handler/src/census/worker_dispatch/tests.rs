@@ -1260,3 +1260,399 @@ fn multiline_dispatch_jobs_draw_every_word_on_one_worker_line() {
         assert!(!text.contains("original multiline worker"), "{text}");
     }
 }
+
+#[test]
+fn seat_sender_commands_use_current_legacy_and_messenger_paths_without_hiding_other_work() {
+    let directory = roster_fixture();
+    let roster = WorkerRoster::read(directory.path());
+    let legacy = command(directory.path(), &format!("--to {SEAT}"));
+    let current = legacy.replace("/delegate/", "/direct/");
+    let review = format!(
+        "bash ~/.claude/scripts/direct/review.sh --to {SEAT} '{}' /fixture/cargo-liner-handler-enh /fixture/prompt.md review '{JOB}' reviewing 1 contract",
+        directory.path().display()
+    );
+    let messenger = format!(
+        "python3 ~/.claude/scripts/agents/codex_mesh.py send --session-dir '{}' --to {SEAT} --message 'continue the task'",
+        directory.path().display()
+    );
+    for literal in [legacy, current, review, messenger] {
+        let parsed = ParsedDispatch::parse(&literal).expect("seat sender parses");
+        let dispatch = parsed.resolve(&roster, 701);
+        assert!(matches!(dispatch, WorkerDispatch::Worker(_)), "{literal}");
+        let mut shell = child("shell", "seat delivery command");
+        shell.dispatch = dispatch;
+        let mut thread = child("thread", "seat task");
+        thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+        thread.pid = None;
+        let build = child("shell", "cargo test");
+        let text = drawn_tiles(vec![agent(10, &[shell, thread, build])]).join("\n");
+        assert!(!text.contains("seat delivery command"), "{literal}: {text}");
+        assert!(
+            text.contains("continue the task") || text.contains(JOB),
+            "seat survives: {text}"
+        );
+        assert!(
+            text.contains("cargo test"),
+            "ordinary work survives: {text}"
+        );
+        let other = literal.replace(SEAT, "missing-seat");
+        let parsed = ParsedDispatch::parse(&other).expect("unknown seat syntax parses");
+        let mut shell = child("shell", "unmatched seat delivery");
+        shell.dispatch = parsed.resolve(&roster, 701);
+        assert!(
+            drawn_tiles(vec![agent(10, &[shell])])
+                .join("\n")
+                .contains("unmatched seat delivery")
+        );
+    }
+}
+
+#[test]
+fn variable_prompt_wrappers_fold_only_the_final_observed_seat_dispatch() {
+    let directory = roster_fixture();
+    for family in ["delegate", "direct"] {
+        let script = format!("/fixture/.claude/scripts/{family}/implement.sh");
+        let mut arguments = launcher_arguments(directory.path());
+        arguments[1] = script.clone();
+        arguments[6] = directory.path().join("prompt.md").display().to_string();
+        arguments.splice(2..2, ["--to".to_owned(), SEAT.to_owned()]);
+        // Widget's observed form prepares a prompt, then passes $S2 and $P to its launcher.
+        let command = format!(
+            "S2='{}'; P=$S2/prompt.md; {{ cat <<'PROMPT'\nResolve the three conflicts.\nPROMPT\nsed -n '1,2p' $S2/rules.md; }} > $P; PLAN_DELEGATE_RESOLVES_ROUND=0 bash {script} --to {SEAT} --phase 1 $S2 /fixture/cargo-liner-handler-enh $P impl '{JOB}' impl 'implement worker' 0 impl",
+            directory.path().display()
+        );
+        for continuation in ["", "; cargo test"] {
+            let wrapper = process(
+                600,
+                10,
+                "zsh",
+                vec![
+                    "zsh".into(),
+                    "-c".into(),
+                    format!("{command}{continuation}"),
+                ],
+            );
+            let launcher = process(701, 600, "bash", arguments.clone());
+            let dispatches = scan::find_worker_dispatches(&[wrapper, launcher]);
+            let mut shell = child("shell", "prepare prompt and send seat");
+            shell.pid = Some(600);
+            shell.dispatch = dispatches
+                .get(&600)
+                .cloned()
+                .unwrap_or(WorkerDispatch::Plain);
+            let mut thread = child("thread", "original seat name");
+            thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+            thread.pid = None;
+            let text = drawn_tiles(vec![agent(10, &[shell, thread])]).join("\n");
+            if continuation.is_empty() {
+                assert!(
+                    !text.contains("prepare prompt and send seat"),
+                    "{family}: {text}"
+                );
+                assert!(
+                    text.contains(&format!("impl7 · {JOB}")),
+                    "the exact seat remains: {text}"
+                );
+            } else {
+                assert!(
+                    text.contains("prepare prompt and send seat"),
+                    "additional build work remains: {text}"
+                );
+                assert!(
+                    text.contains("original seat name"),
+                    "the seat remains: {text}"
+                );
+            }
+        }
+    }
+}
+
+/// A build before a delivery is still work, even when its launcher is the final command.
+#[test]
+fn builds_before_seat_dispatches_keep_their_command_rows() {
+    let directory = roster_fixture();
+    let literal =
+        command(directory.path(), &format!("--to {SEAT}")).replace("/delegate/", "/direct/");
+    let mut arguments = launcher_arguments(directory.path());
+    arguments[1] = arguments[1].replace("/delegate/", "/direct/");
+    arguments.splice(2..2, ["--to".to_owned(), SEAT.to_owned()]);
+    for same_wrapper in [true, false] {
+        let wrapper_command = if same_wrapper {
+            format!("cargo build && {literal}")
+        } else {
+            literal.clone()
+        };
+        let wrapper = process(
+            600,
+            10,
+            "zsh",
+            vec!["zsh".into(), "-c".into(), wrapper_command],
+        );
+        let launcher = process(701, 600, "bash", arguments.clone());
+        let dispatches = scan::find_worker_dispatches(&[wrapper, launcher]);
+        let mut build = child("shell", "cargo build before dispatch");
+        build.pid = Some(if same_wrapper { 600 } else { 599 });
+        build.dispatch = dispatches
+            .get(&build.pid.expect("build pid"))
+            .cloned()
+            .unwrap_or(WorkerDispatch::Plain);
+        let mut delivery = child("shell", "seat delivery only");
+        delivery.pid = Some(701);
+        delivery.dispatch = dispatches
+            .get(&701)
+            .cloned()
+            .expect("observed launcher dispatch");
+        let mut thread = child("thread", "original seat name");
+        thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+        thread.pid = None;
+        let text = drawn_tiles(vec![agent(10, &[build, delivery, thread])]).join("\n");
+        assert!(
+            text.contains("cargo build before dispatch"),
+            "same wrapper={same_wrapper}: {text}"
+        );
+        assert!(
+            !text.contains("seat delivery only"),
+            "delivery folds: {text}"
+        );
+        assert!(
+            text.contains(&format!("impl7 · {JOB}")),
+            "the exact seat remains: {text}"
+        );
+    }
+}
+
+/// Render the actual scan result, including the observed launcher's exact seat.
+fn drawn_observed_sender(wrapper: String, arguments: Vec<String>) -> String {
+    let processes = [
+        process(600, 10, "zsh", vec!["zsh".into(), "-c".into(), wrapper]),
+        process(701, 600, "bash", arguments),
+    ];
+    let dispatches = scan::find_worker_dispatches(&processes);
+    let mut shell = child("shell", "prompt preparation and delivery");
+    shell.pid = Some(600);
+    shell.dispatch = dispatches
+        .get(&600)
+        .cloned()
+        .unwrap_or(WorkerDispatch::Plain);
+    let mut delivery = child("shell", "observed seat delivery");
+    delivery.pid = Some(701);
+    delivery.dispatch = dispatches
+        .get(&701)
+        .cloned()
+        .unwrap_or(WorkerDispatch::Plain);
+    let mut thread = child("thread", "original seat name");
+    thread.thread_id = CodexThreadId::Recorded("worker-thread".into());
+    thread.pid = None;
+    drawn_tiles(vec![agent(10, &[shell, delivery, thread])]).join("\n")
+}
+
+#[test]
+fn prompt_preparation_with_substitution_or_in_place_edits_keeps_its_work_row() {
+    let directory = roster_fixture();
+    let literal = command(directory.path(), &format!("--to {SEAT}"));
+    let arguments = command_words(&literal).expect("literal launcher argv");
+    for preparation in [
+        "{ cat <<PROMPT\n$(cargo build)\nPROMPT\n} > /tmp/prompt;",
+        "{ cat <<PROMPT\n`cargo build`\nPROMPT\n} > /tmp/prompt;",
+        "{ sed -i 's/old/new/g' src/lib.rs; } > /tmp/prompt;",
+        "{ sed -i.bak 's/old/new/g' src/lib.rs; } > /tmp/prompt;",
+        "{ sed --in-place 's/old/new/g' src/lib.rs; } > /tmp/prompt;",
+        "{ sed --in-place=.bak 's/old/new/g' src/lib.rs; } > /tmp/prompt;",
+        "{ sed -ni 's/old/new/g' src/lib.rs; } > /tmp/prompt;",
+        "{ sed 'w src/lib.rs' rules.md; } > /tmp/prompt;",
+        "{ sed 'e cargo build' rules.md; } > /tmp/prompt;",
+        "{ sed 's/old/new/e' rules.md; } > /tmp/prompt;",
+        "{ cat <<PROMPT\n$\\\n(cargo build)\nPROMPT\n} > /tmp/prompt;",
+    ] {
+        let text = drawn_observed_sender(format!("{preparation} {literal}"), arguments.clone());
+        assert!(
+            text.contains("prompt preparation and delivery"),
+            "{preparation}: {text}"
+        );
+        assert!(
+            !text.contains("observed seat delivery"),
+            "the separate delivery folds: {text}"
+        );
+        assert!(
+            text.contains(&format!("impl7 · {JOB}")),
+            "the exact seat remains: {text}"
+        );
+    }
+}
+
+#[test]
+fn quoted_heredoc_prose_does_not_keep_the_delivery_beside_its_seat() {
+    let directory = roster_fixture();
+    let literal = command(directory.path(), &format!("--to {SEAT}"));
+    let arguments = command_words(&literal).expect("literal launcher argv");
+    for delimiter in ["'PROMPT'", "\"PROMPT\"", "\\PROMPT"] {
+        let wrapper = format!(
+            "{{ cat <<{delimiter}\nDon't change the API.\nLiteral $(cargo build), `cargo test`, and a closing }}.\nPROMPT\n}} > /tmp/prompt; {literal}"
+        );
+        let text = drawn_observed_sender(wrapper, arguments.clone());
+        assert!(
+            !text.contains("prompt preparation and delivery"),
+            "{delimiter}: {text}"
+        );
+        assert!(!text.contains("observed seat delivery"), "{text}");
+        assert!(text.contains(&format!("impl7 · {JOB}")), "{text}");
+    }
+}
+
+#[test]
+fn review_launchers_without_a_lens_and_with_slot_or_pool_fold_into_the_exact_seat() {
+    let directory = roster_fixture();
+    for flags in [
+        format!("--to {SEAT}"),
+        "--slot impl7 --phase 17".into(),
+        "--pool code --lease production/fixture/17 --phase 17".into(),
+    ] {
+        let literal = format!(
+            "bash ~/.claude/scripts/direct/review.sh {flags} '{}' /fixture/cargo-liner-handler-enh /fixture/prompt.md review '{JOB}' reviewing 1",
+            directory.path().display()
+        );
+        let arguments = command_words(&literal).expect("literal review argv");
+        let text = drawn_observed_sender(literal.clone(), arguments.clone());
+        assert!(
+            !text.contains("prompt preparation and delivery"),
+            "{flags}: {text}"
+        );
+        assert!(!text.contains("observed seat delivery"), "{flags}: {text}");
+        assert!(text.contains(&format!("impl7 · {JOB}")), "{text}");
+        // Resolving to a different thread must not remove an unrelated seat.
+        let mut other = arguments;
+        if let Some(index) = other.iter().position(|word| word == SEAT) {
+            other[index] = "missing-seat".into();
+            let text = drawn_observed_sender(other.join(" "), other);
+            assert!(text.contains("prompt preparation and delivery"), "{text}");
+            assert!(text.contains("original seat name"), "{text}");
+        }
+    }
+}
+
+/// The observed delivery forms each exercise a distinct shell prefix.
+#[derive(Clone, Copy, Debug)]
+enum LiveSenderForm {
+    SessionBinding,
+    LegacyLauncher,
+    DirectoryAndEnvironment,
+    CablesRelaunch,
+}
+
+/// Actual launcher argv and shell cwd anchor literal expansion; no shell is executed.
+fn assert_live_sender_folds(form: LiveSenderForm) {
+    let directory = roster_fixture();
+    let session = directory.path().display().to_string();
+    let worktree = "/fixture/cargo-liner-handler-enh";
+    let script = if matches!(form, LiveSenderForm::LegacyLauncher) {
+        "/fixture/.claude/scripts/delegate/implement.sh"
+    } else {
+        "/fixture/.claude/scripts/direct/implement.sh"
+    };
+    let task = if matches!(form, LiveSenderForm::SessionBinding) {
+        "fix"
+    } else {
+        "impl"
+    };
+    let pass = if matches!(form, LiveSenderForm::SessionBinding) {
+        "fix"
+    } else {
+        "impl"
+    };
+    let fix_pass = if matches!(form, LiveSenderForm::CablesRelaunch) {
+        ""
+    } else {
+        "1"
+    };
+    let arguments = [
+        "bash",
+        script,
+        "--to",
+        SEAT,
+        "--phase",
+        "123",
+        &session,
+        worktree,
+        "/fixture/prompt.md",
+        task,
+        JOB,
+        pass,
+        "implement worker",
+        fix_pass,
+        "impl",
+    ]
+    .map(String::from)
+    .to_vec();
+    let call = format!(
+        "bash {script} --to {SEAT} --phase 123 $S \"$PWD\" /fixture/prompt.md {task} '{JOB}' {pass} 'implement worker' '{fix_pass}' impl"
+    );
+    let command = match form {
+        LiveSenderForm::SessionBinding | LiveSenderForm::LegacyLauncher => {
+            format!("S='{session}'; {call}")
+        },
+        LiveSenderForm::DirectoryAndEnvironment => {
+            format!("S='{session}'; cd {worktree} && PLAN_DELEGATE_RESOLVES_ROUND=0 {call}")
+        },
+        LiveSenderForm::CablesRelaunch => format!(
+            "S4='{session}'; cd {worktree} && {}",
+            call.replace("$S ", "$S4 ")
+        ),
+    };
+    for suffix in ["", "; cargo test", " && cargo build"] {
+        let mut wrapper = process(
+            600,
+            10,
+            "zsh",
+            vec!["zsh".into(), "-c".into(), format!("{command}{suffix}")],
+        );
+        wrapper.directory = Some(PathBuf::from(
+            if matches!(
+                form,
+                LiveSenderForm::DirectoryAndEnvironment | LiveSenderForm::CablesRelaunch
+            ) {
+                "/fixture/before-cd"
+            } else {
+                worktree
+            },
+        ));
+        let launch = process(701, 600, "bash", arguments.clone());
+        let found = scan::find_worker_dispatches(&[wrapper, launch]);
+        let mut shell = child("shell", "live dispatch wrapper");
+        shell.pid = Some(600);
+        shell.dispatch = found.get(&600).cloned().unwrap_or(WorkerDispatch::Plain);
+        let mut seat = child("thread", "original seat name");
+        seat.pid = None;
+        seat.thread_id = CodexThreadId::Recorded("worker-thread".into());
+        let text = drawn_tiles(vec![agent(10, &[shell, seat])]).join("\n");
+        if suffix.is_empty() {
+            assert!(!text.contains("live dispatch wrapper"), "{form:?}: {text}");
+            assert!(
+                text.contains(&format!("impl7 · {JOB}")),
+                "exact seat remains: {text}"
+            );
+        } else {
+            assert!(
+                text.contains("live dispatch wrapper"),
+                "additional work remains: {text}"
+            );
+            assert!(text.contains("original seat name"), "seat remains: {text}");
+        }
+    }
+}
+
+#[test]
+fn literal_session_bindings_and_pwd_fold_the_live_fix_delivery() {
+    assert_live_sender_folds(LiveSenderForm::SessionBinding);
+}
+#[test]
+fn legacy_launcher_with_impl_kind_folds_the_live_delivery() {
+    assert_live_sender_folds(LiveSenderForm::LegacyLauncher);
+}
+#[test]
+fn directory_and_environment_prefixes_fold_only_the_seat_delivery() {
+    assert_live_sender_folds(LiveSenderForm::DirectoryAndEnvironment);
+}
+#[test]
+fn cables_relaunch_binding_and_directory_fold_into_the_resumed_seat() {
+    assert_live_sender_folds(LiveSenderForm::CablesRelaunch);
+}

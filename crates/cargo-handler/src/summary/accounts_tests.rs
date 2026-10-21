@@ -231,7 +231,7 @@ fn accounts_table_reset_minutes_round_hour_jitter_and_half_minute_up() {
         .expect("reset fixtures parse"),
     );
     let buffer = drawn(&table);
-    let column = at(&buffer, "resets").0;
+    let column = at(&buffer, "resets").0 + 6 - 9;
     for (label, _, rounded) in cases {
         let row = at(&buffer, label).1;
         let actual: String = (column..column + 9)
@@ -266,7 +266,7 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
             .contains(Modifier::DIM),
         "exactly one hour is fresh"
     );
-    let credits_x = at(&buffer, "credits").0;
+    let credits_x = at(&buffer, "credits").0 + 6;
     let claude_y = at(&buffer, "claude1").1;
     assert_eq!(buffer[(credits_x, claude_y)].symbol(), "—");
     assert!(
@@ -449,7 +449,7 @@ fn account_credit_policy_from_wire_controls_balance_emphasis() {
         ],"problems":[]
     }"#).expect("wire credit policy"));
     let buffer = drawn(&table);
-    let column = at(&buffer, "credits").0;
+    let column = at(&buffer, "credits").0 + 7 - 4;
     let held = buffer[(column, at(&buffer, "held").1)].clone();
     let spending = buffer[(column, at(&buffer, "spending").1)].clone();
     assert_eq!(held.symbol(), "1");
