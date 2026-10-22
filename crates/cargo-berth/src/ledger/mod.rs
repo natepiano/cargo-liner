@@ -11,6 +11,7 @@ mod identity;
 mod journal;
 mod lock;
 mod path;
+mod preparation;
 mod projection;
 mod replay_checkpoint;
 mod target;

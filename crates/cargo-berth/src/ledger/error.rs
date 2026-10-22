@@ -4,7 +4,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use super::constants::MUTATION_PREPARATION_ATTEMPTS;
 use super::journal::JournalError;
 use super::lock::MutationLockError;
 use super::projection::ProjectionError;
@@ -67,8 +66,6 @@ pub(crate) enum LedgerError {
     JournalSizeUnrepresentable,
     /// Best-effort bypass auditing could not wait for or encode the journal transaction.
     BypassAuditUnavailable,
-    /// Concurrent events repeatedly invalidated preparation before any append.
-    PreparationInvalidated,
 }
 
 impl Display for LedgerError {
@@ -133,10 +130,6 @@ impl Display for LedgerError {
             Self::JournalSizeUnrepresentable => {
                 formatter.write_str("journal size cannot be represented for reinitialization")
             },
-            Self::PreparationInvalidated => write!(
-                formatter,
-                "the ledger changed during {MUTATION_PREPARATION_ATTEMPTS} preparation attempts; retry the operation"
-            ),
             Self::BypassAuditUnavailable => {
                 formatter.write_str("the bypass audit could not be journalled immediately")
             },

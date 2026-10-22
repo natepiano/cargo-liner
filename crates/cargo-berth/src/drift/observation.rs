@@ -565,8 +565,8 @@ pub(crate) fn observe_merge_working_tree(
     let output = repository
         .working_tree_status_at(repository_root)
         .map_err(|error| error.to_string())?;
-    let mut status =
-        git_output::parse_working_tree_status(&output.stdout).map_err(|error| error.to_string())?;
+    let mut status = git_output::parse_working_tree_status(&output.porcelain)
+        .map_err(|error| error.to_string())?;
     let configuration_path = BerthConfig::relative_path();
     for paths in [
         &mut status.staged,
@@ -586,7 +586,7 @@ fn observe_working_tree_status(
     repository: &RepositorySnapshot,
 ) -> Result<WorkingTreeChangePartition, DriftFingerprintError> {
     let status = repository.working_tree_status()?;
-    git_output::parse_working_tree_status(&status.stdout)
+    git_output::parse_working_tree_status(&status.porcelain)
 }
 
 fn join_full_observation_worker<T>(

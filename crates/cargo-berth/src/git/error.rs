@@ -42,6 +42,11 @@ use crate::ids::InvalidReservationScopePath;
 pub(crate) enum GitError {
     /// Every consumer of a snapshot sees the first unsuccessful read.
     SnapshotReadFailed(Arc<Self>),
+    /// An in-process repository read failed; this is never a missing fact.
+    RepositoryReadFailed {
+        activity:   &'static str,
+        diagnostic: String,
+    },
     /// Git could not be started or read.
     Io(std::io::Error),
     /// Git completed unsuccessfully.
@@ -105,6 +110,10 @@ impl Display for GitError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::SnapshotReadFailed(error) => Display::fmt(error, formatter),
+            Self::RepositoryReadFailed {
+                activity,
+                diagnostic,
+            } => write!(formatter, "could not {activity}: {diagnostic}"),
             Self::Io(error) => write!(formatter, "could not run git: {error}"),
             Self::CommandFailed { command, stderr } => {
                 write!(formatter, "git {command} failed: {stderr}")

@@ -45,6 +45,7 @@ use super::journal::JournalOperation;
 use super::journal::JournalReplay;
 use super::lock::MutationLock;
 use super::lock::MutationLockError;
+use super::preparation;
 use super::projection::Projection;
 use super::projection::ProjectionError;
 use super::replay_checkpoint::ReplayCheckpoint;
@@ -259,7 +260,7 @@ enum CompactionPreparation {
 
 impl PreparedJournalCompaction {
     /// Include only the newly committed tail while holding the mutation lock. A rewrite that
-    /// prunes expired history needs a new dependency plan outside the lock instead.
+    /// prunes expired history needs a new dependency plan instead.
     fn include_committed_tail(&mut self, path: &Path) -> Result<bool, JournalCompactionError> {
         if self.still_current(path)? {
             return Ok(true);
@@ -345,22 +346,26 @@ impl Ledger {
     ) -> Result<JournalCompaction, JournalCompactionError> {
         self.require_existing()?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
-        for _ in 0..8 {
-            let CompactionPreparation::Ready(mut prepared) =
-                self.prepare_compaction(repo_instance_id, replays_agree)?
-            else {
-                return Ok(JournalCompaction::NothingToCompact);
-            };
-            let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
-            if !prepared.include_committed_tail(&self.paths.journal)? {
-                std::mem::drop(lock);
-                continue;
-            }
-            let result = self.publish_compacted(&prepared, repo_instance_id, &mut at_boundary);
-            std::mem::drop(lock);
-            return result.map(|()| prepared.result);
-        }
-        Err(LedgerError::PreparationInvalidated.into())
+        let (lock, (), preparation) = preparation::prepare_with_lock(
+            &self.paths.lock,
+            MUTATING_VERB_CONTENTION_TOLERANCE,
+            (),
+            |()| self.prepare_compaction(repo_instance_id, replays_agree),
+            |(), preparation| match preparation {
+                CompactionPreparation::Unchanged => Ok(true),
+                CompactionPreparation::Ready(prepared) => {
+                    prepared.include_committed_tail(&self.paths.journal)
+                },
+            },
+        )?;
+        let result = match preparation {
+            CompactionPreparation::Unchanged => Ok(JournalCompaction::NothingToCompact),
+            CompactionPreparation::Ready(prepared) => self
+                .publish_compacted(&prepared, repo_instance_id, &mut at_boundary)
+                .map(|()| prepared.result),
+        };
+        std::mem::drop(lock);
+        result
     }
 
     /// Compact the journal after a transaction whose replay held `droppable_bytes` of superseded

@@ -101,7 +101,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -1625,7 +1624,7 @@ fn ambiguity_and_replay_preserve_the_frozen_corpus_text() -> TestResult {
 }
 
 struct PausedHookCall {
-    child:             Child,
+    child:             cargo_berth_test_support::TestProcessGroup,
     continue_path:     PathBuf,
     ready_path:        PathBuf,
     wrapper_directory: TempDir,
@@ -1657,7 +1656,10 @@ impl PausedHookCall {
             std::iter::once(wrapper_directory.path().to_path_buf())
                 .chain(std::env::split_paths(&original_path)),
         )?;
-        let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        let mut child = cargo_berth_test_support::TestProcessGroup::spawn(
+            cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+                "CARGO_BIN_EXE_cargo-berth"
+            )))
             .args(["hook", event])
             .current_dir(repository_root)
             .env("PATH", wrapped_path)
@@ -1669,9 +1671,10 @@ impl PausedHookCall {
             .env_remove("CARGO_BERTH_SESSION_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped()),
+        )?;
         let mut stdin = child
+            .child_mut()
             .stdin
             .take()
             .ok_or_else(|| failure("paused hook stdin should be piped"))?;
@@ -1688,7 +1691,7 @@ impl PausedHookCall {
     fn wait_until_paused(&mut self) -> TestResult {
         let deadline = Instant::now() + PAUSED_GIT_TIMEOUT;
         while !self.ready_path.exists() && Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.child.child_mut().try_wait()? {
                 return Err(failure(format!(
                     "hook exited with {status} before the git pause"
                 )));
@@ -1698,8 +1701,6 @@ impl PausedHookCall {
         if self.ready_path.exists() {
             return Ok(());
         }
-        self.child.kill()?;
-        self.child.wait()?;
         Err(failure("hook did not reach the git pause"))
     }
 

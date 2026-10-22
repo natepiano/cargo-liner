@@ -154,7 +154,8 @@ const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
 /// lacks. Every branch path read is those two invocations. Authorship also reads the
 /// locally available upstream once per distinct integration target.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 13;
+/// In-process repository reads also discover Git's installation configuration once per process.
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 10;
 const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -4393,7 +4394,7 @@ fn pending_rewrite_board_shares_its_object_reader_with_reconciliation() {
     );
     assert_eq!(
         git_command_count(&invocations, "worktree"),
-        1,
+        0,
         "{invocations:?}"
     );
     assert_second_rewrite_remains_deferred(&fixture);
@@ -4432,7 +4433,7 @@ fn pending_rewrite_gate_shares_its_object_reader_with_preflight() {
     );
     assert_eq!(
         git_command_count(&invocations, "worktree"),
-        1,
+        0,
         "{invocations:?}"
     );
     assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
@@ -5192,6 +5193,8 @@ fn git_hook_post_commit_reservation_cardinality_is_fixed() {
     let three_reservations = post_commit_reservation_cardinality_trace(&fixture, 3);
 
     assert_same_git_process_multiset(&one_reservation, &three_reservations);
+    assert_eq!(git_command_count(&one_reservation, "config"), 1);
+    assert_eq!(git_command_count(&three_reservations, "config"), 1);
     assert_eq!(
         one_reservation.len(),
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
@@ -5222,12 +5225,14 @@ fn git_hook_post_commit_attributed_path_and_commit_cardinality_is_fixed() {
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
+    assert_eq!(git_command_count(&attributed_baseline, "config"), 1);
     for (path_count, commit_count) in [(1, 2), (2, 1), (2, 2)] {
         let observed =
             post_commit_path_commit_cardinality_trace(&fixture, path_count, commit_count);
         assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
         assert_same_git_process_multiset(&attributed_baseline, &observed);
         assert_eq!(git_command_count(&observed, "log"), 1);
+        assert_eq!(git_command_count(&observed, "config"), 1);
     }
 }
 
@@ -5383,6 +5388,15 @@ fn incursion_report_survives_origin_classification_failure() {
         ],
     );
     let entering_commit = git_stdout(&subject_root, &["rev-parse", "HEAD"]);
+    // Multiple merge refs require Git's first-upstream selection, whose failure is injected below.
+    git(
+        &subject_root,
+        &["config", "--add", "branch.main.merge", "refs/heads/main"],
+    );
+    git(
+        &subject_root,
+        &["config", "--add", "branch.main.merge", "refs/heads/other"],
+    );
     let (reported, trace) = run_berth_with_raw_git_behavior(
         &subject_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
@@ -7224,7 +7238,7 @@ fn normalized_git_invocations(invocations: &[RawGitInvocation]) -> Vec<&RawGitIn
         .take_while(|invocation| {
             matches!(
                 raw_git_command(invocation),
-                Some("cat-file" | "rev-list" | "status" | "worktree")
+                Some("cat-file" | "config" | "rev-list" | "status" | "worktree")
             )
         })
         .count();

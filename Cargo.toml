@@ -21,6 +21,7 @@ crossterm = "0.29.0"
 dark-light = "3.0.0"
 dirs = "7.0.0"
 futures-lite = "2.6.1"
+gix = { version = "=0.89.0", default-features = false }
 ignore = "0.4"
 image = { version = "0.25.10", default-features = false }
 indexmap = "2"
