@@ -351,3 +351,238 @@ fn hidden_accounts_do_not_split_shared_drawn_column_positions() {
         assert_eq!(positions[0], positions[1], "{word}: {headers:#?}");
     }
 }
+
+/// Draw exact content allocations through the same frame preparation as the grid.
+fn allocated_tiles(rows: Vec<AgentRow>, allocations: &[(u32, Rect)]) -> Buffer {
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
+    let machines = vec![Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
+    let allocations: Vec<_> = allocations
+        .iter()
+        .map(|&(pid, rect)| {
+            let key = tiles
+                .iter()
+                .find_map(|tile| match tile {
+                    AgentTile::Agent(entry) if entry.row.pid == pid => Some(tile.key()),
+                    _ => None,
+                })
+                .expect("allocated root tile");
+            (key, rect)
+        })
+        .collect();
+    let width = allocations
+        .iter()
+        .map(|(_, rect)| rect.right())
+        .max()
+        .expect("allocated width");
+    let height = allocations
+        .iter()
+        .map(|(_, rect)| rect.bottom())
+        .max()
+        .expect("allocated height");
+    let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+    render::draw_allocated_tiles_for_test(machines, NOW, &allocations, &mut buffer);
+    buffer
+}
+
+/// Read a tile's allocation without changing the screen positions in the source buffer.
+fn allocation_text(buffer: &Buffer, area: Rect) -> Vec<String> {
+    (area.y..area.bottom())
+        .map(|y| {
+            (area.x..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() {
+    let mut left = agent(10, "left-owner", HOUR, None);
+    left.children = [
+        ("implementation", "impl", 600),
+        ("inspection", "review", 500),
+        ("another-inspection", "review", 400),
+        ("later-inspection", "review", 300),
+        ("last-inspection", "review", 200),
+        ("offscreen-manager", "showrunner", 60),
+    ]
+    .into_iter()
+    .map(|(name, role, age)| {
+        child(
+            0,
+            ChildKind::Subagent(SubagentRole::from_record(role, "")),
+            None,
+            name,
+            age,
+        )
+    })
+    .collect();
+    let mut lower = agent(20, "lower-owner", HOUR, None);
+    lower.children = vec![
+        child(
+            0,
+            ChildKind::Subagent(SubagentRole::from_record("impl", "")),
+            None,
+            "lower-implementation",
+            600,
+        ),
+        child(
+            0,
+            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            None,
+            "lower-inspection",
+            500,
+        ),
+    ];
+    let mut right = agent(30, "right-owner", HOUR, None);
+    right.children.push(child(
+        0,
+        ChildKind::Subagent(SubagentRole::from_record("showrunner", "")),
+        None,
+        "visible-manager",
+        600,
+    ));
+    let upper_area = Rect::new(0, 0, 110, 6);
+    let lower_area = Rect::new(0, 8, 110, 6);
+    let right_area = Rect::new(120, 0, 110, 14);
+    let buffer = allocated_tiles(
+        vec![left, lower, right],
+        &[(10, upper_area), (20, lower_area), (30, right_area)],
+    );
+    for rect in [upper_area, lower_area] {
+        let rows = allocation_text(&buffer, rect);
+        let header = rows
+            .iter()
+            .find(|line| line.contains("session") && line.contains("role"))
+            .expect("role header");
+        let role_x = header.find("role").expect("role column");
+        let status_x = header.find("status").expect("status column");
+        assert!(rows.iter().any(|line| line.contains("impl")), "{rows:?}");
+        assert!(rows.iter().any(|line| line.contains("review")), "{rows:?}");
+        assert!(
+            !rows.iter().any(|line| line.contains("offscreen-manager")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_x - role_x,
+            6 + 2,
+            "six-cell role plus two-cell gap: {rows:?}"
+        );
+        for (y, _) in rows
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains("review"))
+        {
+            let y = rect.y + u16::try_from(y).expect("drawn row fits");
+            let start = rect.x + u16::try_from(role_x).expect("role column fits");
+            let end = rect.x + u16::try_from(status_x).expect("status column fits");
+            let role: String = (start..end).map(|x| buffer[(x, y)].symbol()).collect();
+            assert_eq!(role, "review  ");
+        }
+    }
+    let right = allocation_text(&buffer, right_area);
+    assert!(
+        right
+            .iter()
+            .any(|line| line.contains("visible-manager") && line.contains("showrunner")),
+        "{right:?}"
+    );
+}
+
+#[test]
+fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
+    let mut first = agent(10, "first-owner", HOUR, None);
+    first.children.push(child(
+        0,
+        ChildKind::Shell,
+        Some(11),
+        "build",
+        14 * 24 * HOUR,
+    ));
+    let mut second = agent(20, "second-owner", HOUR, None);
+    second.children.push(child(
+        0,
+        ChildKind::Shell,
+        Some(21),
+        "run-the-project-build",
+        2 * MINUTE + 49,
+    ));
+    let mut first_member = agent(12, "first-member", 8 * 24 * HOUR + 20 * HOUR, Some(10));
+    first_member.branch =
+        Some("branch-that-forces-the-compressed-layout-because-it-is-long".into());
+    first_member.directory =
+        "/a/directory/that/makes/this/populated/column/set/different/from/the/other/tile".into();
+    let mut second_member = agent(22, "second-member", 5 * HOUR + 16 * MINUTE, Some(20));
+    second_member.branch = first_member.branch.clone();
+    second_member.directory.clear();
+    let upper = Rect::new(0, 0, 90, 12);
+    let lower = Rect::new(0, 14, 90, 12);
+    let buffer = allocated_tiles(
+        vec![first, second, first_member, second_member],
+        &[(10, upper), (20, lower)],
+    );
+    let headers: Vec<_> = [upper, lower]
+        .into_iter()
+        .map(|rect| {
+            allocation_text(&buffer, rect)
+                .into_iter()
+                .find(|line| line.contains("session") && line.contains("status"))
+                .expect("tree header")
+        })
+        .collect();
+    let words = |line: &str| {
+        line.split_whitespace()
+            .filter(|word| !matches!(*word, "▲" | "▼"))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        words(&headers[0]),
+        words(&headers[1]),
+        "both fitted sets: {headers:?}"
+    );
+    for word in words(&headers[0]) {
+        assert_eq!(
+            headers[0].find(&word),
+            headers[1].find(&word),
+            "{word}: {headers:?}"
+        );
+    }
+    let member_y =
+        ["first-member", "second-member"].map(|name| find(&buffer, name).expect("member row").1);
+    let edge = header_indented(upper).right();
+    let age_text = |y| {
+        (edge - 15..edge)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    };
+    assert_eq!(age_text(member_y[0]), " 8d 20h        ");
+    assert_eq!(age_text(member_y[1]), "     5h 16m    ");
+    assert_eq!(
+        age_text(find(&buffer, "build").expect("old shell").1),
+        "14d            "
+    );
+    assert_eq!(
+        age_text(
+            find(&buffer, "run-the-project-build")
+                .expect("young shell")
+                .1
+        ),
+        "         2m 49s"
+    );
+    let hour_x = member_y.map(|y| {
+        (0..90)
+            .rev()
+            .find(|&x| buffer[(x, y)].symbol() == "h")
+            .expect("drawn hour unit")
+    });
+    assert_eq!(
+        hour_x[0], hour_x[1],
+        "hours share a slot across formerly separate groups"
+    );
+}

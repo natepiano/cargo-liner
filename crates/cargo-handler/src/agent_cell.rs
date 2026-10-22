@@ -7,7 +7,9 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::iter;
+use std::num::NonZeroU64;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -210,31 +212,47 @@ enum WorkKind<'a> {
     Thread,
 }
 
-/// A retained shell command is running, with or without a known deadline.
+/// A positive countdown resolved at the frame's clock boundary.
+#[derive(Clone, Copy, Debug)]
+struct PositiveRemainingTime(NonZeroU64);
+
+/// A retained shell command either counts down or continues running.
 #[derive(Clone, Copy, Debug)]
 enum ShellState {
     Running,
-    Timed(Timer),
-}
-
-impl From<Option<Timer>> for ShellState {
-    fn from(timer: Option<Timer>) -> Self { timer.map_or(Self::Running, Self::Timed) }
+    CountingDown(PositiveRemainingTime),
 }
 
 impl ShellState {
+    fn resolve(timer: Option<Timer>, now: u64) -> Self {
+        timer
+            .and_then(|timer| NonZeroU64::new(timer.deadline.saturating_sub(now)))
+            .map_or(Self::Running, |remaining| {
+                Self::CountingDown(PositiveRemainingTime(remaining))
+            })
+    }
+
     const fn role(self) -> Role {
         match self {
             Self::Running => thread_status_role(AgentActivity::Active(Activity::Running)),
-            Self::Timed(_) => Role::Shell,
+            Self::CountingDown(_) => Role::Shell,
         }
     }
 
-    fn text(self, now: u64) -> String {
+    fn text(self) -> String {
         match self {
             Self::Running => AgentActivity::Active(Activity::Running).text().to_owned(),
-            Self::Timed(timer) => timer_label(timer, now),
+            Self::CountingDown(PositiveRemainingTime(remaining)) => {
+                time_left_label(remaining.get())
+            },
         }
     }
+}
+
+/// Text and ink resolved together for one row in this frame.
+struct ResolvedStatus {
+    text: String,
+    role: Role,
 }
 
 /// A work row paired with its classified role in the tree.
@@ -249,13 +267,6 @@ impl<'a> Work<'a> {
         match (self.kind, &self.child.account) {
             (WorkKind::Thread, _) | (_, Account::Home(_)) => &self.child.account,
             (WorkKind::Shell | WorkKind::Subagent(_), Account::Unrecorded) => parent,
-        }
-    }
-
-    fn status(self, now: u64) -> String {
-        match self.kind {
-            WorkKind::Shell => ShellState::from(self.child.timer).text(now),
-            WorkKind::Subagent(_) | WorkKind::Thread => self.child.activity.text().to_string(),
         }
     }
 }
@@ -421,12 +432,12 @@ impl TreeColumns {
     }
 }
 
-/// Populated columns allowed by a tile's account visibility.
-/// Construction always removes Account when accounts are hidden.
+/// Populated columns allowed by the account decision, with optional columns
+/// removed only in the fixed fitting order.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct VisibleTreeColumns(TreeColumns);
+struct PermittedTreeColumns(TreeColumns);
 
-impl VisibleTreeColumns {
+impl PermittedTreeColumns {
     fn for_lines(lines: &[TreeLine<'_>], now: u64, account_column: AccountColumn) -> Self {
         let mut columns = TreeColumns::for_lines(lines, now);
         match account_column {
@@ -435,14 +446,48 @@ impl VisibleTreeColumns {
         }
         Self(columns)
     }
+
+    fn columns(self) -> Vec<TreeColumn> { self.0.retain(FULL_ACCOUNTS) }
+
+    const fn remove(&mut self, step: ColumnDrop) { self.0.0[step.column() as usize] = false; }
 }
 
-/// Shared positions for tiles with the same drawn columns in one screen column.
+/// A finite fitting pass can discard only these three optional columns.
+#[derive(Clone, Copy)]
+enum ColumnDrop {
+    Directory,
+    Branch,
+    Type,
+}
+
+impl ColumnDrop {
+    const ORDER: [Self; 3] = [Self::Directory, Self::Branch, Self::Type];
+
+    const fn column(self) -> TreeColumn {
+        match self {
+            Self::Directory => TreeColumn::Directory,
+            Self::Branch => TreeColumn::Branch,
+            Self::Type => TreeColumn::Type,
+        }
+    }
+}
+
+/// Full headings and complete names, or a compact tree with truncated names.
+#[derive(Clone, Copy, Debug)]
+enum TreePresentation {
+    Full,
+    Compressed,
+}
+
+/// Shared positions for tiles with the same fitted columns in one screen column.
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMetrics {
-    widths:        [u16; TreeColumn::COUNT],
-    heading_width: u16,
-    ages:          AgeLayout,
+    widths:               [u16; TreeColumn::COUNT],
+    heading_width:        u16,
+    session_header_width: u16,
+    ages:                 AgeLayout,
+    columns:              PermittedTreeColumns,
+    presentation:         TreePresentation,
 }
 
 /// Direct draws measure their source; a prepared grid supplies its screen-column layout.
@@ -453,77 +498,195 @@ enum TreeSizing {
 }
 
 impl TreeMetrics {
-    fn for_entry(entry: &AgentEntry<'_>, now: u64) -> Self {
-        let mut metrics =
-            Self::measure(&entry.lines, now, entry.sort, SessionHeaderLead::OverBranch);
-        metrics.heading_width = u16::try_from(
-            [
-                header_line(entry.row, entry.machine, now, AccountColumn::Shown).width(),
-                place_line(entry.row).width(),
-            ]
-            .into_iter()
-            .max()
-            .unwrap_or(0),
-        )
-        .unwrap_or(u16::MAX);
-        metrics
-    }
-
-    fn measure(lines: &[TreeLine<'_>], now: u64, sort: TreeSort, lead: SessionHeaderLead) -> Self {
-        let columns = FULL_ACCOUNTS;
-        let widths = tree_widths(lines, columns, now, sort, lead, &TreeSizing::Local);
-        let mut metrics = Self {
-            widths:        [0; TreeColumn::COUNT],
-            heading_width: 0,
-            ages:          AgeLayout::from_ages(
-                lines.iter().map(|line| now.saturating_sub(line.started())),
-            ),
-        };
-        for (&column, width) in columns.iter().zip(widths) {
-            metrics.widths[column as usize] = width;
-        }
-        metrics
-    }
-
     fn merge(&mut self, other: &Self) {
         self.heading_width = self.heading_width.max(other.heading_width);
+        self.session_header_width = self.session_header_width.max(other.session_header_width);
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
+        }
+        if matches!(other.presentation, TreePresentation::Compressed) {
+            self.presentation = TreePresentation::Compressed;
+        }
+    }
+
+    fn drop_step(&mut self, step: ColumnDrop, width: u16) {
+        let columns = self.columns.columns();
+        let widths: Vec<_> = columns
+            .iter()
+            .map(|column| self.widths[*column as usize])
+            .collect();
+        let full_fits =
+            table_width(&widths) <= usize::from(width) && header_width(self.heading_width) <= width;
+        if !full_fits {
+            self.presentation = TreePresentation::Compressed;
+        }
+        let minimum = usize::from(self.session_header_width)
+            + widths
+                .iter()
+                .skip(1)
+                .map(|width| usize::from(*width))
+                .sum::<usize>()
+            + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING);
+        let drop = match step {
+            ColumnDrop::Directory => {
+                !full_fits || matches!(self.presentation, TreePresentation::Compressed)
+            },
+            ColumnDrop::Branch => !full_fits,
+            ColumnDrop::Type => minimum > usize::from(width),
+        };
+        if drop {
+            self.columns.remove(step);
+        }
+    }
+}
+
+/// A value selected by the presentation that will draw it.
+#[derive(Clone, Copy)]
+struct PresentationValues<T> {
+    full:       T,
+    compressed: T,
+}
+
+impl<T: Copy> PresentationValues<T> {
+    const fn get(&self, presentation: TreePresentation) -> T {
+        match presentation {
+            TreePresentation::Full => self.full,
+            TreePresentation::Compressed => self.compressed,
+        }
+    }
+}
+
+/// Rows reserved above the tree in either fitted presentation.
+#[derive(Clone, Copy)]
+struct TreeHeadingSpace {
+    width: u16,
+    rows:  PresentationValues<usize>,
+}
+
+/// Complete ages and the two visible row budgets are measured once per tile.
+pub(crate) struct TreeMeasurement {
+    area:        Rect,
+    metrics:     TreeMetrics,
+    ages:        Vec<u64>,
+    role_widths: PresentationValues<u16>,
+}
+
+impl TreeMeasurement {
+    fn for_entry(
+        entry: &AgentEntry<'_>,
+        area: Rect,
+        now: u64,
+        account_column: AccountColumn,
+    ) -> Self {
+        let heading_width = [
+            header_line(entry.row, entry.machine, now, account_column).width(),
+            place_line(entry.row).width(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        let full_above = above_tree_rows(entry.row, TreePresentation::Full).len();
+        let compressed_above = above_tree_rows(entry.row, TreePresentation::Compressed).len();
+        let mut measurement = Self::measure(
+            &entry.lines,
+            area,
+            now,
+            entry.sort,
+            account_column,
+            SessionHeaderLead::OverBranch,
+            TreeHeadingSpace {
+                width: u16::try_from(heading_width).unwrap_or(u16::MAX),
+                rows:  PresentationValues {
+                    full:       full_above,
+                    compressed: compressed_above,
+                },
+            },
+        );
+        if full_above + usize::from(TABLE_HEADER_HEIGHT) + entry.lines.len()
+            > usize::from(area.height)
+        {
+            measurement.metrics.presentation = TreePresentation::Compressed;
+        }
+        measurement
+    }
+
+    fn measure(
+        lines: &[TreeLine<'_>],
+        area: Rect,
+        now: u64,
+        sort: TreeSort,
+        account_column: AccountColumn,
+        lead: SessionHeaderLead,
+        heading: TreeHeadingSpace,
+    ) -> Self {
+        let measured = tree_widths(lines, FULL_ACCOUNTS, now, sort, lead, &TreeSizing::Local);
+        let mut widths = [0; TreeColumn::COUNT];
+        for (column, width) in FULL_ACCOUNTS.iter().zip(measured) {
+            widths[*column as usize] = width;
+        }
+        let role_width = |above: usize| {
+            let count =
+                usize::from(area.height).saturating_sub(above + usize::from(TABLE_HEADER_HEIGHT));
+            lines
+                .iter()
+                .take(count)
+                .map(|line| summary::cell_width(line.role_text()))
+                .max()
+                .unwrap_or(0)
+                .max(summary::cell_width(&TreeColumn::Role.sorted_header(sort)))
+        };
+        let role_widths = PresentationValues {
+            full:       role_width(heading.rows.get(TreePresentation::Full)),
+            compressed: role_width(heading.rows.get(TreePresentation::Compressed)),
+        };
+        widths[TreeColumn::Role as usize] = role_widths.get(TreePresentation::Full);
+        let ages: Vec<_> = lines
+            .iter()
+            .map(|line| now.saturating_sub(line.started()))
+            .collect();
+        Self {
+            area,
+            metrics: TreeMetrics {
+                widths,
+                heading_width: heading.width,
+                session_header_width: summary::cell_width(
+                    &TreeColumn::Session.sorted_header_text(sort, lead),
+                ),
+                ages: AgeLayout::from_ages(ages.iter().copied()),
+                columns: PermittedTreeColumns::for_lines(lines, now, account_column),
+                presentation: TreePresentation::Full,
+            },
+            ages,
+            role_widths,
         }
     }
 }
 
 impl AgentTile<'_> {
-    pub(crate) fn visible_columns(
+    pub(crate) fn measure(
         &self,
+        area: Rect,
         now: u64,
         account_column: AccountColumn,
-    ) -> VisibleTreeColumns {
-        let lines = match self {
-            Self::Agent(entry) => &entry.lines,
-            Self::Unassigned(entry) => &entry.lines,
-        };
-        VisibleTreeColumns::for_lines(lines, now, account_column)
-    }
-
-    pub(crate) fn metrics(&self, now: u64) -> TreeMetrics {
+    ) -> TreeMeasurement {
         match self {
-            Self::Agent(entry) => TreeMetrics::for_entry(entry, now),
-            Self::Unassigned(entry) => {
-                TreeMetrics::measure(&entry.lines, now, entry.sort, SessionHeaderLead::Flush)
-            },
+            Self::Agent(entry) => TreeMeasurement::for_entry(entry, area, now, account_column),
+            Self::Unassigned(entry) => TreeMeasurement::measure(
+                &entry.lines,
+                area,
+                now,
+                entry.sort,
+                account_column,
+                SessionHeaderLead::Flush,
+                TreeHeadingSpace {
+                    width: 0,
+                    rows:  PresentationValues {
+                        full:       0,
+                        compressed: 0,
+                    },
+                },
+            ),
         }
-    }
-
-    /// Every elapsed age in the tile, including rows below the visible slice.
-    pub(crate) fn elapsed_ages(&self, now: u64) -> impl Iterator<Item = u64> + '_ {
-        let lines = match self {
-            Self::Agent(entry) => &entry.lines,
-            Self::Unassigned(entry) => &entry.lines,
-        };
-        lines
-            .iter()
-            .map(move |line| now.saturating_sub(line.started()))
     }
 
     pub(crate) fn share_metrics(&self, metrics: TreeMetrics) {
@@ -535,57 +698,106 @@ impl AgentTile<'_> {
     }
 }
 
-/// Merge each measured tile once, grouped by screen column and permitted columns.
-pub(crate) fn shared_tree_metrics<Ages: IntoIterator<Item = u64>>(
-    measurements: impl IntoIterator<Item = (u16, VisibleTreeColumns, TreeMetrics, Ages)>,
-) -> HashMap<(u16, VisibleTreeColumns), TreeMetrics> {
-    let mut groups: HashMap<_, (TreeMetrics, Vec<u64>)> = HashMap::new();
-    for (x, columns, metrics, tile_ages) in measurements {
-        let (_, ages) = groups
-            .entry((x, columns))
-            .and_modify(|(shared, _)| shared.merge(&metrics))
-            .or_insert_with(|| (metrics, Vec::new()));
-        ages.extend(tile_ages);
-    }
-    groups
-        .into_iter()
-        .map(|(key, (mut metrics, ages))| {
-            metrics.ages = AgeLayout::from_ages(ages);
-            metrics.widths[TreeColumn::Age as usize] = metrics.widths[TreeColumn::Age as usize]
-                .max(u16::try_from(metrics.ages.width()).unwrap_or(u16::MAX));
-            (key, metrics)
+/// Every fitting pass either drops its named column or merges the final sets.
+enum GroupFitStep {
+    Drop(ColumnDrop),
+    FinalMerge,
+}
+
+impl GroupFitStep {
+    const ORDER: [Self; 4] = [
+        Self::Drop(ColumnDrop::Directory),
+        Self::Drop(ColumnDrop::Branch),
+        Self::Drop(ColumnDrop::Type),
+        Self::FinalMerge,
+    ];
+}
+
+struct MeasuredTreeGroup {
+    x:       u16,
+    width:   u16,
+    metrics: TreeMetrics,
+    members: Vec<usize>,
+}
+
+/// Merge equal fitted sets before each of the three possible column drops.
+/// The array, rather than a convergence condition, bounds the entire pass.
+pub(crate) fn shared_tree_metrics(
+    measurements: impl IntoIterator<Item = TreeMeasurement>,
+) -> Vec<TreeMetrics> {
+    let measurements: Vec<_> = measurements.into_iter().collect();
+    let mut groups: Vec<_> = measurements
+        .iter()
+        .enumerate()
+        .map(|(index, measurement)| MeasuredTreeGroup {
+            x:       measurement.area.x,
+            width:   header_width(measurement.area.width),
+            metrics: measurement.metrics.clone(),
+            members: vec![index],
         })
-        .collect()
-}
-
-/// The layout whose columns are selected for an account decision.
-enum TreeLayout {
-    Full,
-    Compressed,
-    Narrow,
-}
-
-impl TreeLayout {
-    /// Fit candidates contain only columns populated by this tile's rows.
-    fn populated_columns(
-        self,
-        lines: &[TreeLine<'_>],
-        now: u64,
-        account_column: AccountColumn,
-    ) -> Vec<TreeColumn> {
-        TreeColumns::for_lines(lines, now).retain(self.columns(account_column))
+        .collect();
+    for step in GroupFitStep::ORDER {
+        let mut merged: HashMap<_, MeasuredTreeGroup> = HashMap::new();
+        for group in groups {
+            match merged.entry((group.x, group.metrics.columns)) {
+                Entry::Vacant(entry) => {
+                    entry.insert(group);
+                },
+                Entry::Occupied(mut entry) => {
+                    let shared = entry.get_mut();
+                    shared.metrics.merge(&group.metrics);
+                    shared.width = shared.width.min(group.width);
+                    shared.members.extend(group.members);
+                },
+            }
+        }
+        groups = merged
+            .into_values()
+            .map(|mut group| {
+                group.metrics.ages = AgeLayout::from_ages(
+                    group
+                        .members
+                        .iter()
+                        .flat_map(|index| measurements[*index].ages.iter().copied()),
+                );
+                group.metrics.widths[TreeColumn::Age as usize] = group.metrics.widths
+                    [TreeColumn::Age as usize]
+                    .max(u16::try_from(group.metrics.ages.width()).unwrap_or(u16::MAX));
+                let role_width = |presentation| {
+                    group
+                        .members
+                        .iter()
+                        .map(|index| {
+                            let measurement = &measurements[*index];
+                            measurement.role_widths.get(presentation)
+                        })
+                        .max()
+                        .unwrap_or(0)
+                };
+                group.metrics.widths[TreeColumn::Role as usize] =
+                    role_width(group.metrics.presentation);
+                match step {
+                    GroupFitStep::Drop(step) => {
+                        group.metrics.drop_step(step, group.width);
+                        group.metrics.widths[TreeColumn::Role as usize] =
+                            role_width(group.metrics.presentation);
+                    },
+                    GroupFitStep::FinalMerge => {},
+                }
+                group
+            })
+            .collect();
     }
-
-    const fn columns(self, account_column: AccountColumn) -> &'static [TreeColumn] {
-        match (self, account_column) {
-            (Self::Full, AccountColumn::Shown) => FULL_ACCOUNTS,
-            (Self::Full, AccountColumn::Hidden) => FULL,
-            (Self::Compressed, AccountColumn::Shown) => COMPRESSED_ACCOUNTS,
-            (Self::Compressed, AccountColumn::Hidden) => COMPRESSED,
-            (Self::Narrow, AccountColumn::Shown) => NARROW_ACCOUNTS,
-            (Self::Narrow, AccountColumn::Hidden) => NARROW,
+    let mut result: Vec<_> = measurements
+        .iter()
+        .map(|measurement| measurement.metrics.clone())
+        .collect();
+    for group in groups {
+        for index in group.members {
+            result[index] = group.metrics.clone();
         }
     }
+    result
 }
 
 impl TreeLine<'_> {
@@ -792,13 +1004,7 @@ impl TreeLine<'_> {
                 }) => "",
             }
             .to_owned(),
-            TreeColumn::Status => match self.subject {
-                LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                    summary::status_text(self.row).to_string()
-                },
-                LineSubject::ManagedThread(child, _) => child.activity.text().to_string(),
-                LineSubject::Work(work) => work.status(now),
-            },
+            TreeColumn::Status => self.status(now).text,
             TreeColumn::Account => match self.account() {
                 Account::Unrecorded => MISSING_VALUE.to_string(),
                 Account::Home(home) => self
@@ -835,22 +1041,30 @@ impl TreeLine<'_> {
         }
     }
 
-    /// The status color of the subject.
-    fn status_role(&self) -> Role {
-        match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                summary::status_role(self.row)
-            },
+    /// Resolve a shell's clock once so text and ink cannot disagree.
+    fn status(&self, now: u64) -> ResolvedStatus {
+        let (text, role) = match self.subject {
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => (
+                summary::status_text(self.row).to_owned(),
+                summary::status_role(self.row),
+            ),
             LineSubject::ManagedThread(child, _)
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread | WorkKind::Subagent(_),
-            }) => thread_status_role(child.activity),
+            }) => (
+                child.activity.text().to_owned(),
+                thread_status_role(child.activity),
+            ),
             LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Shell,
-            }) => ShellState::from(child.timer).role(),
-        }
+            }) => {
+                let state = ShellState::resolve(child.timer, now);
+                (state.text(), state.role())
+            },
+        };
+        ResolvedStatus { text, role }
     }
 }
 
@@ -1502,49 +1716,6 @@ const FULL_ACCOUNTS: &[TreeColumn] = &[
     TreeColumn::Directory,
     TreeColumn::Age,
 ];
-/// Active full columns for one label per program.
-const FULL: &[TreeColumn] = &[
-    TreeColumn::Session,
-    TreeColumn::Type,
-    TreeColumn::Role,
-    TreeColumn::Status,
-    TreeColumn::Branch,
-    TreeColumn::Directory,
-    TreeColumn::Age,
-];
-/// Active compressed columns when accounts distinguish rows.
-const COMPRESSED_ACCOUNTS: &[TreeColumn] = &[
-    TreeColumn::Session,
-    TreeColumn::Type,
-    TreeColumn::Role,
-    TreeColumn::Status,
-    TreeColumn::Account,
-    TreeColumn::Age,
-];
-/// Active compressed columns for one label per program.
-const COMPRESSED: &[TreeColumn] = &[
-    TreeColumn::Session,
-    TreeColumn::Type,
-    TreeColumn::Role,
-    TreeColumn::Status,
-    TreeColumn::Age,
-];
-
-/// At the narrowest widths, preserve readable names and the existing short columns.
-const NARROW_ACCOUNTS: &[TreeColumn] = &[
-    TreeColumn::Session,
-    TreeColumn::Role,
-    TreeColumn::Status,
-    TreeColumn::Account,
-    TreeColumn::Age,
-];
-const NARROW: &[TreeColumn] = &[
-    TreeColumn::Session,
-    TreeColumn::Role,
-    TreeColumn::Status,
-    TreeColumn::Age,
-];
-
 /// A fitted full tree, or the compressed column set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CellView {
@@ -1563,7 +1734,12 @@ impl CellView {
         lead: SessionHeaderLead,
         sizing: &TreeSizing,
     ) -> Self {
-        let columns = TreeLayout::Full.populated_columns(lines, now, account_column);
+        let columns = match sizing {
+            TreeSizing::Local => {
+                PermittedTreeColumns::for_lines(lines, now, account_column).columns()
+            },
+            TreeSizing::Shared(metrics) => metrics.columns.columns(),
+        };
         let widths = tree_widths(lines, &columns, now, sort, lead, sizing);
         if !lines.is_empty() && table_width(&widths) > usize::from(width) {
             Self::Compressed
@@ -1608,7 +1784,10 @@ impl FlatColumns {
         account_column: AccountColumn,
     ) -> Option<Self> {
         let heading_fits = match &*entry.sizing.borrow() {
-            TreeSizing::Shared(metrics) => metrics.heading_width <= width,
+            TreeSizing::Shared(metrics) => {
+                matches!(metrics.presentation, TreePresentation::Full)
+                    && metrics.heading_width <= width
+            },
             TreeSizing::Local => [
                 header_line(entry.row, entry.machine, now, account_column),
                 place_line(entry.row),
@@ -1699,19 +1878,11 @@ pub(crate) fn draw(
     let shared;
     let entry = if matches!(*entry.sizing.borrow(), TreeSizing::Local) && cells.len() > 1 {
         let entries = iter::once(entry).chain(cells.iter().filter(|cell| cell.id != entry.id));
-        let groups = shared_tree_metrics(entries.map(|cell| {
-            (
-                area.x,
-                VisibleTreeColumns::for_lines(&cell.lines, now, account_column),
-                TreeMetrics::for_entry(cell, now),
-                cell.lines
-                    .iter()
-                    .map(|line| now.saturating_sub(line.started())),
-            )
-        }));
-        let columns = VisibleTreeColumns::for_lines(&entry.lines, now, account_column);
+        let measurements = shared_tree_metrics(
+            entries.map(|cell| TreeMeasurement::for_entry(cell, area, now, account_column)),
+        );
         shared = entry.clone();
-        *shared.sizing.borrow_mut() = TreeSizing::Shared(groups[&(area.x, columns)].clone());
+        *shared.sizing.borrow_mut() = TreeSizing::Shared(measurements[0].clone());
         &shared
     } else {
         entry
@@ -1846,6 +2017,11 @@ fn tree_widths(
     columns
         .iter()
         .map(|&column| {
+            if column == TreeColumn::Role
+                && let TreeSizing::Shared(metrics) = sizing
+            {
+                return metrics.widths[column as usize];
+            }
             lines
                 .iter()
                 .map(|line| summary::cell_width(&line.cell_text(column, now, &ages)))
@@ -1914,64 +2090,64 @@ fn tree_header(
     layout: TreeHeaderLayout<'_>,
 ) -> TreeHeader {
     let TreeHeaderLayout { view, lead, sizing } = layout;
-    let shared_view;
-    let view = match sizing {
-        TreeSizing::Local => view,
-        TreeSizing::Shared(metrics) => {
-            shared_view = if header_width(metrics.heading_width) > tree.width {
-                CellView::Compressed
-            } else {
-                CellView::tree_at_width(lines, sort, tree.width, now, account_column, lead, sizing)
-            };
-            &shared_view
-        },
-    };
-    let (columns, mut widths, spacing) = match view {
-        CellView::Full(fitted) => (
-            fitted.columns.clone(),
-            fitted.widths.clone(),
-            TABLE_COLUMN_SPACING,
-        ),
-        CellView::Compressed => {
-            let mut columns = TreeLayout::Compressed.populated_columns(lines, now, account_column);
-            let mut widths = tree_widths(lines, &columns, now, sort, lead, sizing);
-            let minimum = |columns: &[TreeColumn], widths: &[u16]| {
-                usize::from(summary::cell_width(
-                    &columns[0].sorted_header_text(sort, lead),
-                )) + widths[1..]
-                    .iter()
-                    .map(|&width| usize::from(width))
-                    .sum::<usize>()
-                    + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING)
-            };
-            if minimum(&columns, &widths) > usize::from(tree.width) {
-                columns = TreeLayout::Narrow.populated_columns(lines, now, account_column);
-                widths = tree_widths(lines, &columns, now, sort, lead, sizing);
-            }
-            let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-            let minimum_columns = widths[1..]
-                .iter()
-                .map(|&width| usize::from(width))
-                .sum::<usize>()
-                + usize::from(summary::cell_width(
-                    &columns[0].sorted_header_text(sort, lead),
-                ));
-            let spacing = TABLE_COLUMN_SPACING.min(
-                tree.width
-                    .saturating_sub(u16::try_from(minimum_columns).unwrap_or(u16::MAX))
-                    / gaps.max(1),
+    let local_metrics;
+    let metrics = match sizing {
+        TreeSizing::Shared(metrics) => metrics,
+        TreeSizing::Local => {
+            let mut measurement = TreeMeasurement::measure(
+                lines,
+                tree,
+                now,
+                sort,
+                account_column,
+                lead,
+                TreeHeadingSpace {
+                    width: 0,
+                    rows:  PresentationValues {
+                        full:       0,
+                        compressed: 0,
+                    },
+                },
             );
-            let fixed = widths[1..]
-                .iter()
-                .map(|&width| usize::from(width))
-                .sum::<usize>()
-                + usize::from(spacing) * usize::from(gaps);
-            widths[0] = tree
-                .width
-                .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX));
-            (columns, widths, spacing)
+            if matches!(view, CellView::Compressed) {
+                measurement.metrics.presentation = TreePresentation::Compressed;
+            }
+            for step in ColumnDrop::ORDER {
+                measurement.metrics.drop_step(step, tree.width);
+            }
+            measurement.metrics.widths[TreeColumn::Role as usize] =
+                measurement.role_widths.get(TreePresentation::Compressed);
+            local_metrics = measurement.metrics;
+            &local_metrics
         },
     };
+    let columns = metrics.columns.columns();
+    let mut widths: Vec<_> = columns
+        .iter()
+        .map(|column| metrics.widths[*column as usize])
+        .collect();
+    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let minimum = widths
+        .iter()
+        .skip(1)
+        .map(|width| usize::from(*width))
+        .sum::<usize>()
+        + usize::from(metrics.session_header_width);
+    let spacing = TABLE_COLUMN_SPACING.min(
+        tree.width
+            .saturating_sub(u16::try_from(minimum).unwrap_or(u16::MAX))
+            / gaps.max(1),
+    );
+    let fixed = widths
+        .iter()
+        .skip(1)
+        .map(|width| usize::from(*width))
+        .sum::<usize>()
+        + usize::from(spacing) * usize::from(gaps);
+    widths[0] = widths[0].min(
+        tree.width
+            .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX)),
+    );
     // Resolve the group's age slots before giving any remaining width to its
     // directory, or to its session column when the directory is absent.
     let ages = match sizing {
@@ -1985,7 +2161,8 @@ fn tree_header(
             .unwrap_or(u16::MAX)
             .max(summary::cell_width(
                 &TreeColumn::Age.sorted_header_text(sort, lead),
-            ));
+            ))
+            .max(metrics.widths[TreeColumn::Age as usize]);
     }
     fill_tree_width(&columns, &mut widths, tree.width, spacing);
     let rects = Layout::horizontal(widths.iter().copied().map(Constraint::Length))
@@ -2082,6 +2259,7 @@ fn draw_tree(
     debug_assert!(spans.iter().all(|span| span.row == area.y));
     let text = Style::default().fg(text_default());
     let rows = lines.iter().map(|line| {
+        let status = line.status(now);
         Row::new(columns.iter().enumerate().map(|(index, &column)| {
             if column == TreeColumn::Session {
                 let lead = line.lead();
@@ -2110,9 +2288,12 @@ fn draw_tree(
             } else {
                 Cell::from(
                     Line::from(Span::styled(
-                        line.cell_text(column, now, &ages),
                         match column {
-                            TreeColumn::Status => line.status_role().style(),
+                            TreeColumn::Status => status.text.clone(),
+                            _ => line.cell_text(column, now, &ages),
+                        },
+                        match column {
+                            TreeColumn::Status => status.role.style(),
                             TreeColumn::Role => line.footer_role(footer_colors).style(text),
                             _ => text,
                         },
@@ -2138,6 +2319,25 @@ fn draw_tree(
         .column_spacing(spacing)
         .render(area, buffer);
 }
+/// The decoration rows shared by slice measurement and painting.
+enum TreeHeadingRow {
+    Heading,
+    Place,
+    Launcher(u32),
+}
+
+fn above_tree_rows(row: &AgentRow, presentation: TreePresentation) -> Vec<TreeHeadingRow> {
+    match (presentation, row.launched_by) {
+        (TreePresentation::Compressed, None) => Vec::new(),
+        (_, None) => vec![TreeHeadingRow::Heading, TreeHeadingRow::Place],
+        (_, Some(launcher)) => vec![
+            TreeHeadingRow::Heading,
+            TreeHeadingRow::Place,
+            TreeHeadingRow::Launcher(launcher),
+        ],
+    }
+}
+
 /// The lines `entry`'s cell draws above its tree in `view`, `width`
 /// cells across: its [`header_line`], its [`place_line`], and the agent
 /// that opened it when one did, each one line cut by [`cut_line`] where
@@ -2153,28 +2353,35 @@ fn above_tree(
     footer_colors: &FooterColors,
 ) -> Vec<Line<'static>> {
     let row = entry.row;
-    if *view == CellView::Compressed && row.launched_by.is_none() {
-        return Vec::new();
-    }
-    let heading =
-        AgentHeading::new(row, entry.machine, now, account_column, footer_colors).fitted(width);
-    let mut lines = vec![heading, place_line(row)];
-    if let Some(launcher) = row.launched_by {
-        let name = entry
-            .launcher
-            .map_or_else(|| format!("{PID_LABEL} {launcher}"), str::to_string);
-        lines.push(Line::from(vec![
-            Span::raw(SECTION_HEADER_INDENT),
-            Span::styled(
-                format!("{LAUNCHED_BY_LABEL} "),
-                Style::default().fg(label_color()),
-            ),
-            Span::styled(name, name_style(cells, entry.machine, launcher)),
-        ]));
-    }
-    lines
+    let presentation = match view {
+        CellView::Full(_) => TreePresentation::Full,
+        CellView::Compressed => TreePresentation::Compressed,
+    };
+    above_tree_rows(row, presentation)
         .into_iter()
-        .map(|line| cut_line(line.spans, width))
+        .map(|row_kind| {
+            let line = match row_kind {
+                TreeHeadingRow::Heading => {
+                    AgentHeading::new(row, entry.machine, now, account_column, footer_colors)
+                        .fitted(width)
+                },
+                TreeHeadingRow::Place => place_line(row),
+                TreeHeadingRow::Launcher(launcher) => {
+                    let name = entry
+                        .launcher
+                        .map_or_else(|| format!("{PID_LABEL} {launcher}"), str::to_string);
+                    Line::from(vec![
+                        Span::raw(SECTION_HEADER_INDENT),
+                        Span::styled(
+                            format!("{LAUNCHED_BY_LABEL} "),
+                            Style::default().fg(label_color()),
+                        ),
+                        Span::styled(name, name_style(cells, entry.machine, launcher)),
+                    ])
+                },
+            };
+            cut_line(line.spans, width)
+        })
         .collect()
 }
 
@@ -2337,11 +2544,6 @@ fn cut_line(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
             })
             .collect::<Vec<_>>(),
     )
-}
-
-/// Remaining time uses only digit-height glyphs from the terminal's primary font.
-fn timer_label(timer: Timer, now: u64) -> String {
-    time_left_label(timer.deadline.saturating_sub(now))
 }
 
 /// `left` seconds on a timer, as `m:ss` under an hour and `h:mm:ss`
@@ -2919,17 +3121,19 @@ mod tests {
         let idle = agent(ARRANGE, "tool-based-ui-arrange", 2 * HOUR, Some(BOSS));
         let natedev = boss_group();
         let group = natedev_cells(&natedev);
-        let labels: HashSet<String> = iter::once(LAUNCHED_BY_LABEL.to_owned())
-            .chain(
-                FULL.iter()
-                    .map(|column| column.sorted_header(TreeSort::default())),
-            )
-            .collect();
         let entries = [
             entry(&trunk, Some("boss of bosses")),
             entry(&idle, Some("boss of bosses")),
             group[0].clone(),
         ];
+        let labels: HashSet<String> = iter::once(LAUNCHED_BY_LABEL.to_owned())
+            .chain(entries.iter().flat_map(|entry| {
+                PermittedTreeColumns::for_lines(&entry.lines, NOW, AccountColumn::Hidden)
+                    .columns()
+                    .into_iter()
+                    .map(|column| column.sorted_header(TreeSort::default()))
+            }))
+            .collect();
         let mut drawn = HashSet::new();
         for entry in &entries {
             for width in [NARROW, 220] {
@@ -3623,7 +3827,7 @@ mod tests {
             started:  NOW - 2 * MINUTE,
             deadline: NOW - MINUTE,
         };
-        assert_eq!(timer_label(past, NOW), "0:00");
+        assert_eq!(ShellState::resolve(Some(past), NOW).text(), "running");
     }
 
     /// A timer shell retains its description and draws its remaining time

@@ -434,7 +434,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `WorkKind` decides type text, account and program: shell and subagent rows take the parent session's account and agent (`TreeLine::program`, `Work::account`); a Codex thread keeps its own account or the missing value.
 - A subagent row's status shows its activity in worker words, read from its own transcript with the incremental Claude activity reader into `ChildRow.activity`; with no activity it shows the idle form.
 - A command row named from its command drops leading `NAME=value` assignments (`AssignmentQuote` stack handles quotes, `$( )` and backticks); a command that is only assignments keeps its text.
-- The summary's top-level table reads `pid account session status age desktop directory` and lists only sessions with a hierarchy; one placement decision feeds the summary and the unassigned tile, so no session is in both. The heading count counts listed sessions.
+- The summary's top-level table reads `pid account session status age desktop directory`, and drops a column when no listed row has a value in it (phase 24); it lists only sessions with a hierarchy; one placement decision feeds the summary and the unassigned tile, so no session is in both. The heading count counts listed sessions.
 - A top-level Codex session shows its `/rename` name from the newest `thread_name` in its home's `session_index.jsonl` (`census/codex_names.rs`, `SessionNames`), else `pid <n>`; its fast mark (`<account> fast`) and its `idle` or activity words from its own rollout. Threads match a process by Codex home (`thread_matches_home`) and resume request (`ResumeRequest::{NewSession, NamedId, LastThread}`).
 - A worker row needs a real dispatch record: roster resolution or an exact `CodexThread` dispatch.
 
@@ -530,7 +530,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a fixed-point loop over drawn columns for grouping (it ends only by argument, not by type); a per-tile `AgeLayout` (each tile gets its own slack and same-set tiles misalign).
 
-### Phase 24 — Role column fits its drawn values; a spent timer reads running  · status: todo
+### Phase 24 — Role column fits its drawn values; a spent timer reads running  · status: done
 
 **Depends on:** Phase 23
 

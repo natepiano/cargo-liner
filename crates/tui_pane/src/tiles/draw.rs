@@ -198,6 +198,17 @@ pub trait TileCells<Id> {
     /// Areas exclude borders and foot rows, using the same calculation as painting.
     fn prepare_frame(&self, _allocations: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>) {}
 
+    /// Prepare widths using destination geometry by default. Providers whose widths
+    /// depend on visible rows can opt into the tallest source/destination heights.
+    /// The second callback retains destination positions and widths.
+    fn prepare_moving_frame(
+        &self,
+        destination: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+        _: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+    ) {
+        self.prepare_frame(destination);
+    }
+
     /// Rows each cell's contents would take given all the room they
     /// want, each measured at the width `widths` gives that cell.
     ///
@@ -274,7 +285,10 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     cells: &impl TileCells<Id>,
 ) {
     grid.set_draw_layout(area, growth);
-    cells.prepare_frame(|| grid.preparation_allocations(area, growth));
+    cells.prepare_moving_frame(
+        || grid.preparation_allocations(area, growth),
+        || grid.motion_preparation_allocations(area, growth),
+    );
     let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
     let mut cells_demands = cells.demands(&cells_widths);
     let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
