@@ -96,6 +96,20 @@ mod tests {
     use super::build_keymap;
     use crate::app::AppPaneId;
 
+    #[test]
+    fn the_shortcuts_bar_shows_both_display_keys() {
+        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        let keymap = build_keymap(&mut framework, None).expect("display keymap");
+        let rows = keymap.global_shortcut_rows();
+        for key in ["p", "h"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row.key.as_ref().is_some_and(|bind| bind.to_string() == key)),
+                "missing {key}: {rows:?}"
+            );
+        }
+    }
+
     /// `keymap.toml` is hand-edited, so the table each attract mode's
     /// keys are read from keeps its name wherever the scope is declared.
     #[test]
@@ -201,7 +215,7 @@ mod overlay_tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED: [&str; 91] = [
+    const EXPECTED: [&str; 92] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
@@ -222,9 +236,10 @@ mod overlay_tests {
         "global.restart = R",
         "global.save_favorite = ctrl-s",
         "global.random_favorite = m",
+        "global.arguments = h",
         "global.open_global_shortcuts = ?",
-        "global.attract = a",
         "global.process_tree = p",
+        "global.attract = a",
         "global.undo_attract_replacement = u",
         "[Navigation] navigation",
         "navigation.half_page_down = ",

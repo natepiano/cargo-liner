@@ -17,6 +17,12 @@ pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
 pub(crate) const HEADING_MIN_TAIL: u16 = 8;
 
 // configuration
+/// Argument names shown before the full-arguments key is enabled.
+pub(crate) const DEFAULT_ARGUMENTS: [&str; 3] = ["all-targets", "fix", "workspace"];
+/// Editable command argument selection in Settings.
+pub(crate) const DEFAULT_ARGUMENTS_LABEL: &str = "default arguments";
+/// Status note while all command arguments are shown.
+pub(crate) const ALL_ARGUMENTS_NOTE_LABEL: &str = "all arguments";
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, and `themes/`.
 pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
@@ -192,8 +198,6 @@ pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
     "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// Marks anything shortened or shed for lack of room.
 pub(crate) const ELISION: &str = "\u{2026}";
-/// Spaced mark for arguments omitted from a Short command.
-pub(crate) const ARGUMENT_OMISSION_MARK: &str = " …";
 /// Written on the summary cell's top border, so the one cell listing
 /// every command is named rather than told apart by its contents. A
 /// manager's own cell reads much like the summary -- one row per cargo
@@ -366,9 +370,6 @@ pub(crate) const HOME_ALIAS: &str = "~";
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
 pub(crate) const MANAGED_COLUMN: usize = 9;
-/// The argument the summary leaves out, in either of the two spellings
-/// cargo accepts -- `--manifest-path <path>` and `--manifest-path=<path>`.
-const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// Index of the `mem` column in [`TABLE_HEADERS`], which carries the
 /// resident memory used by the invocation and everything under it. A
 /// `12.4G` reading and its spacing take seven cells from `command`.
@@ -446,22 +447,6 @@ pub(crate) const STATE_COLUMN: usize = 6;
 /// to the command's own cell is the colour on `pid`, which it keeps.
 pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
     [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
-/// Flags the summary leaves out, with the word each of them takes.
-/// Both spellings count: `--color always` and `--color=always`.
-///
-/// What they have in common is that none of them say anything about
-/// what is being built. A `--manifest-path` names the directory already
-/// heading the row, in full and in absolute form; a `--message-format`
-/// or `--color` names how the caller wanted the output rendered, which
-/// is the caller's business rather than the run's. Between them they
-/// are long enough to push the subcommand -- the one word worth
-/// reading -- off the edge of a narrow cell.
-///
-/// Only these. Everything else stands, however long: `-p` names which
-/// member of a workspace is being built and `--all-targets` names how
-/// much of it, which is exactly what the row is there to say.
-pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
-    [MANIFEST_PATH_FLAG, CARGO_MESSAGE_FORMAT_FLAG, "--color"];
 /// Label before the summary's total resident memory.
 pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
 /// Shared reductions for every view: arguments, blank state alignment, counts,
@@ -507,28 +492,55 @@ pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;
 pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 10] = [
     "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "nu",
 ];
-/// Launchers that pass execution to another program rather than owning the session.
-pub(crate) const EXEC_WRAPPER_PROCESS_NAMES: [&str; 14] = [
-    "env",
-    "nice",
-    "nohup",
-    "setsid",
-    "stdbuf",
-    "timeout",
-    "time",
-    "sudo",
-    "doas",
-    "script",
-    "ionice",
-    "chrt",
-    "taskset",
-    "caffeinate",
-];
 /// Cargo flags selecting its optimized profile.
 pub(crate) const CARGO_RELEASE_FLAGS: [&str; 2] = ["--release", "-r"];
-/// Cargo's global options whose separate values precede the subcommand name.
-/// Assigned or attached values stay in the option's own argument.
-pub(crate) const CARGO_GLOBAL_VALUED_OPTIONS: [&str; 4] = ["--color", "--config", "-Z", "-C"];
+/// The argument language in which an option accepts a separate value.
+#[derive(Clone, Copy)]
+pub(crate) enum ValuedOptionScope {
+    /// Cargo accepts the option before its subcommand as well.
+    Global,
+    /// Cargo accepts the option in its own argument tail.
+    Cargo,
+    /// Rustc and its lint-aware drivers accept the lint level and its value.
+    RustcLint,
+}
+
+/// The single arity table for command selection and command wrapping.
+pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
+    ("--color", ValuedOptionScope::Global),
+    ("--config", ValuedOptionScope::Global),
+    ("-Z", ValuedOptionScope::Global),
+    ("-C", ValuedOptionScope::Global),
+    ("--features", ValuedOptionScope::Cargo),
+    ("-p", ValuedOptionScope::Cargo),
+    ("--package", ValuedOptionScope::Cargo),
+    ("--target", ValuedOptionScope::Cargo),
+    ("--bin", ValuedOptionScope::Cargo),
+    ("--example", ValuedOptionScope::Cargo),
+    ("--test", ValuedOptionScope::Cargo),
+    ("--bench", ValuedOptionScope::Cargo),
+    ("--manifest-path", ValuedOptionScope::Cargo),
+    ("--target-dir", ValuedOptionScope::Cargo),
+    ("-j", ValuedOptionScope::Cargo),
+    ("--jobs", ValuedOptionScope::Cargo),
+    ("--profile", ValuedOptionScope::Cargo),
+    ("--message-format", ValuedOptionScope::Cargo),
+    ("--exclude", ValuedOptionScope::Cargo),
+    ("-D", ValuedOptionScope::RustcLint),
+    ("-W", ValuedOptionScope::RustcLint),
+    ("-A", ValuedOptionScope::RustcLint),
+    ("-F", ValuedOptionScope::RustcLint),
+    ("--deny", ValuedOptionScope::RustcLint),
+    ("--warn", ValuedOptionScope::RustcLint),
+    ("--allow", ValuedOptionScope::RustcLint),
+    ("--forbid", ValuedOptionScope::RustcLint),
+];
+/// Separates a flag from a value assigned in the same argv entry.
+pub(crate) const ARGUMENT_ASSIGNMENT: char = '=';
+/// Joins displayed argv entries without changing their boundaries.
+pub(crate) const COMMAND_WORD_SEPARATOR: &str = " ";
+/// Programs and Cargo subcommands whose child arguments use rustc lint arity.
+pub(crate) const RUSTC_LINT_OWNERS: &[&str] = &["clippy", "rustc", "clippy-driver"];
 /// Cargo flag naming a build profile.
 pub(crate) const CARGO_PROFILE_FLAG: &str = "--profile";
 /// Cargo's default development profile.

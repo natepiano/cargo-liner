@@ -7531,7 +7531,7 @@ mod tests {
     }
 
     /// Unused rows from the measured five-cell column at each considered height.
-    const fn measured_column_unused(index: usize, rows: u16, _purpose: RowUsePurpose) -> u16 {
+    const fn measured_column_unused(index: usize, rows: u16, _: RowUsePurpose) -> u16 {
         match (index, rows) {
             (0 | 2 | 3, 6) => 1,
             _ => 0,

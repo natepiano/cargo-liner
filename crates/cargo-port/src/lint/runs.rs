@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn archive_bytes_returns_the_size_persisted_on_the_run() {
-        // The entry is present for every run in the set; its value is the
-        // `archive_bytes` field carried on the run. Distinguishing a present
-        // entry from an unknown run is the whole point of the `Option` API.
+        // `LintRuns::archive_bytes` has an entry for every run in the set, storing
+        // `LintRun::archive_bytes`. Its `Option` API distinguishes a present
+        // entry from an unknown run.
         let mut lr = LintRuns::default();
         lr.set_runs(vec![make_run("a")]);
         assert_eq!(lr.archive_bytes("a"), Some(0));
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn set_hydrated_runs_preserves_live_stale_over_prior_terminal() {
-        // A paused/killed run publishes `Stale`; the subsequent history hydrate
+        // A paused/killed run publishes `LintStatus::Stale`; `LintRuns::set_hydrated_runs`
         // must not overwrite it with the prior passed run, or the killed lint
         // would read as settled-green instead of pending re-lint.
         let mut lr = LintRuns::default();

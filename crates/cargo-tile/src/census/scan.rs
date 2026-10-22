@@ -408,7 +408,7 @@ pub(crate) struct Ancestor {
     /// Process id.
     pub(crate) pid:            u32,
     /// What the process is, as [`describe`] reads it.
-    pub(crate) command:        String,
+    pub(crate) command:        CommandText,
     /// Whether the process passed a command through rather than
     /// starting it, per [`is_transparent`]. Whether a cell draws one of
     /// these is settled where the chain is drawn rather than here: the
@@ -2967,19 +2967,19 @@ fn is_transparent(name: &OsStr) -> bool {
 /// user owns and of nothing else, so a root-owned ancestor -- a login
 /// process, a launch agent -- arrives with an empty argv and falls
 /// through to one of the other two.
-fn describe(process: &ProcessObservation<'_>, home: ScannerHome<'_>) -> String {
-    let line: Vec<String> = process
+fn describe(process: &ProcessObservation<'_>, home: ScannerHome<'_>) -> CommandText {
+    let mut words = process
         .cmd()
         .iter()
-        .map(|word| command_text::home_relative(Path::new(word), home))
-        .collect();
-    if !line.is_empty() {
-        return line.join(" ");
+        .map(|word| command_text::home_relative(Path::new(word), home));
+    if let Some(program) = words.next() {
+        return CommandText::new(program, words.collect());
     }
-    match process.exe() {
+    let program = match process.exe() {
         ProcessField::Observed(exe) => command_text::home_relative(exe, home),
         ProcessField::Unavailable => process.name().to_string_lossy().into_owned(),
-    }
+    };
+    CommandText::new(program, Vec::new())
 }
 
 /// A tilde is meaningful only when the writer and scanner agree on its prefix.
@@ -5935,11 +5935,7 @@ mod tests {
         let lines = render_group_lines(group);
         let text = lines.join("\n");
         for row in std::iter::once(&group.lead).chain(&group.rest) {
-            let command = format!(
-                "{} {}",
-                row.command.program,
-                row.command.line(crate::render::SummaryDetail::Full)
-            );
+            let command = format!("{} {}", row.command.program, row.command.line());
             let matching: Vec<_> = lines
                 .iter()
                 .filter(|line| line.contains(&command))

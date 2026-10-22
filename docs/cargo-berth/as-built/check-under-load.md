@@ -14,7 +14,7 @@ The problem was measured on natedev in `hana_catalyst-inspectors` (17 worktrees,
   - `Clear` allows the edit.
   - `LedgerUnreadable` (4) fails open: the edit is allowed with a notice.
   - `BlockedByOverlap`, `BlockedByOrdering`, `UsageError`, `BlockedByContention` (6) and `TerminalViewFailed` refuse. The hook writes the engine's rendered blocks to stderr and exits 2.
-- **Codex seats.** The Codex pre-edit hook (`~/.claude/scripts/hooks/pre-tool-use-berth.py`) runs `~/.claude/scripts/delegate/phase_reservation.py`, which runs `cargo-berth check <scopes> --json` from the repository root with `CARGO_BERTH_SESSION_ID=<director session>.phase-<n>` and `CHECK_TIMEOUT_SECONDS = 25`. The CLI parses a bare check to `SessionMappingOrNew` and `--reservation <id>` to `Explicit(id)`.
+- **Codex seats.** The Codex pre-edit hook (`~/.claude/scripts/hooks/pre-tool-use-berth.py`) runs `~/.claude/scripts/direct/phase_reservation.py`, which runs `cargo-berth check <scopes> --json` from the repository root with `CARGO_BERTH_SESSION_ID=<director session>.phase-<n>` and `CHECK_TIMEOUT_SECONDS = 25`. The CLI parses a bare check to `SessionMappingOrNew` and `--reservation <id>` to `Explicit(id)`.
 
 Both callers reach `verb/check.rs`:
 

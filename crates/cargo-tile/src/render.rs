@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 
 use ratatui::Frame;
@@ -53,7 +54,64 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::app::ProcessTree;
+use crate::app::ArgumentDetail;
+use crate::app::ProcessHierarchy;
+use crate::census::command_text::CommandWord;
+use crate::census::command_text::CommandWordDisplay;
+use crate::config::DefaultArguments;
+use crate::constants::ALL_ARGUMENTS_NOTE_LABEL;
+use crate::constants::CARGO_RELEASE_PROFILE;
+use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
+use crate::constants::COMMAND_WORD_SEPARATOR;
+use crate::constants::MACHINE_CPU_STAT_FILE;
+use crate::constants::MACHINE_CPU_STAT_PREFIX;
+use crate::constants::NEXTEST_SUBCOMMAND_NAME;
+
+/// A frame's independent hierarchy and argument choices with checked defaults.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CommandView {
+    hierarchy: ProcessHierarchy,
+    arguments: ArgumentDetail,
+    defaults:  DefaultArguments,
+}
+
+impl CommandView {
+    fn new(
+        hierarchy: ProcessHierarchy,
+        arguments: ArgumentDetail,
+        defaults: &DefaultArguments,
+    ) -> Self {
+        Self {
+            hierarchy,
+            arguments,
+            defaults: defaults.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn short() -> &'static Self {
+        static VIEW: LazyLock<CommandView> = LazyLock::new(|| {
+            CommandView::new(
+                ProcessHierarchy::Shown,
+                ArgumentDetail::Default,
+                &DefaultArguments::default(),
+            )
+        });
+        &VIEW
+    }
+
+    fn long() -> &'static Self {
+        static VIEW: LazyLock<CommandView> = LazyLock::new(|| {
+            CommandView::new(
+                ProcessHierarchy::Shown,
+                ArgumentDetail::All,
+                &DefaultArguments::default(),
+            )
+        });
+        &VIEW
+    }
+}
+
 use crate::census;
 use crate::census::Ancestor;
 use crate::census::CargoProcess;
@@ -85,7 +143,6 @@ use crate::constants::CONTENT_RIGHT_INSET;
 use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::ELISION;
-use crate::constants::EXEC_WRAPPER_PROCESS_NAMES;
 use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -123,7 +180,6 @@ use crate::constants::TABLE_CONTINUATION_CLEARANCE;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
-use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::globals::AppGlobalAction;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
@@ -205,20 +261,6 @@ impl From<&CaptureLookup> for CounterState {
             CaptureLookup::Unregistered => Self::Unregistered,
         }
     }
-}
-
-/// How much of an invocation's command line a cell prints.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SummaryDetail {
-    /// The whole line, the way a command's own cell shows it.
-    Full,
-    /// The manifest path and the summary's noise flags left out, the
-    /// way the summary shows it. Every row there already sits under the
-    /// working directory heading its group, and cargo is handed the
-    /// manifest as an absolute path -- long enough to push the
-    /// subcommand off the edge of a narrow cell to repeat what the
-    /// header just said.
-    Trimmed,
 }
 
 /// The memory of every running command together, as far as it can be read.
@@ -314,12 +356,12 @@ fn draw_visible_panes(
     roster: VisibleRoster,
 ) -> DrawnSummaryFrames {
     let growth = app.loaded_config.config.tiles.growth();
-    let cells = Cells::for_frame(
-        roster,
+    let view = CommandView::new(
         app.tree,
-        &app.sccache,
-        area.height.saturating_sub(3),
+        app.arguments,
+        &app.loaded_config.config.commands.default_arguments,
     );
+    let cells = Cells::for_frame(roster, &view, &app.sccache, area.height.saturating_sub(3));
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -354,12 +396,12 @@ impl<'a> Cells<'a> {
     fn new(
         roster: &Roster,
         hidden_commands: &[String],
-        tree: ProcessTree,
+        view: &CommandView,
         sccache: &'a SccacheStats,
     ) -> Self {
         Self::for_frame(
             roster.clone().visible(hidden_commands),
-            tree,
+            view,
             sccache,
             u16::MAX,
         )
@@ -368,14 +410,14 @@ impl<'a> Cells<'a> {
     /// Cell provider with an empty cache for this draw.
     fn for_frame(
         roster: VisibleRoster,
-        tree: ProcessTree,
+        view: &CommandView,
         sccache: &'a SccacheStats,
         height: u16,
     ) -> Self {
         Self {
             sccache,
             row_uses: RefCell::new(HashMap::new()),
-            grids: FrameColumnGrids::for_frame(&roster, tree, height),
+            grids: FrameColumnGrids::for_frame(&roster, view, height),
             roster,
         }
     }
@@ -444,9 +486,9 @@ impl TileCells<InvocationId> for Cells<'_> {
                         PinnedGroup::Lead(&group.lead.process),
                         grid,
                     );
-                    let ancestry = drawn_ancestry(group, grid.tree);
+                    let ancestry = drawn_ancestry(group, &grid.view);
                     let used = ancestry_source_row_use(
-                        AncestrySource::for_group(&ancestry, group, grid.tree),
+                        AncestrySource::for_group(&ancestry, group, &grid.view),
                         area,
                         demand,
                     )
@@ -460,7 +502,7 @@ impl TileCells<InvocationId> for Cells<'_> {
                     let pinned = PinnedGroup::Lead(&group.lead.process);
                     let cut = table_needs_continuation(&table_grid, table, &rows, pinned);
                     commands_cut |= cut;
-                    if !cut && grid.tree == ProcessTree::Short {
+                    if !cut && grid.view.arguments == ArgumentDetail::Default {
                         preserve_whole_short_table(&table_grid, table, &rows);
                     }
                 },
@@ -501,7 +543,9 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn content_extent(&self, content: &TileContent) -> CellContentExtent {
         let cut = match content {
             TileContent::Group(id) => self.roster.groups().iter().any(|group| {
-                &group.id == id && matches!(group.ancestry(), AncestryWalk::LimitCut(_))
+                &group.id == id
+                    && self.grids.commands.0.view.hierarchy == ProcessHierarchy::Shown
+                    && matches!(group.ancestry(), AncestryWalk::LimitCut(_))
             }),
             TileContent::Summary | TileContent::Empty(_) => false,
         };
@@ -672,9 +716,9 @@ impl PreparedCellRows {
                 let grid = &grids.commands.0;
 
                 let rows: Vec<_> = group.rows().collect();
-                let walk = drawn_ancestry(group, grid.tree);
+                let walk = drawn_ancestry(group, &grid.view);
                 let ancestry = PreparedAncestryRows::new(
-                    AncestrySource::for_group(&walk, group, grid.tree),
+                    AncestrySource::for_group(&walk, group, &grid.view),
                     width,
                 );
                 let pinned = PinnedGroup::Lead(&group.lead.process);
@@ -685,7 +729,7 @@ impl PreparedCellRows {
                         pinned,
                         &table_grid_after_ancestry(grid, 0),
                     ))
-                } else if grid.tree == ProcessTree::Short {
+                } else if grid.view.hierarchy == ProcessHierarchy::Shown {
                     AncestryTableRows::ParentColumnFollowsAncestry {
                         above: PreparedTableRows::new(&rows, width, pinned, grid),
                         alone: PreparedTableRows::new(
@@ -1129,9 +1173,9 @@ fn content_rows_drawn(
     content: &TileContent,
     area: Rect,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) -> u16 {
-    content_row_use(roster, content, area, hidden_commands, tree).drawn
+    content_row_use(roster, content, area, hidden_commands, view).drawn
 }
 
 /// Painted and retained rows for one cell allocation.
@@ -1141,10 +1185,10 @@ fn content_row_use(
     content: &TileContent,
     area: Rect,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) -> GroupRowUse {
     let stats = SccacheStats::default();
-    let cells = Cells::new(roster, hidden_commands, tree, &stats);
+    let cells = Cells::new(roster, hidden_commands, view, &stats);
     cells.prepare_frame(|| vec![(content.clone(), area)]);
     cells.row_use(content, area)
 }
@@ -1156,9 +1200,9 @@ fn content_rows_kept(
     content: &TileContent,
     area: Rect,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) -> u16 {
-    content_row_use(roster, content, area, hidden_commands, tree).kept
+    content_row_use(roster, content, area, hidden_commands, view).kept
 }
 
 /// Painted and retained rows across one command cell's two sections.
@@ -1200,13 +1244,13 @@ fn tile_demands(
     roster: &Roster,
     widths: &[(TileContent, u16)],
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) -> TileDemands {
     frame_tile_demands(
         roster,
         widths,
         hidden_commands,
-        &FrameColumnGrids::new(roster, hidden_commands, tree),
+        &FrameColumnGrids::new(roster, hidden_commands, view),
     )
 }
 
@@ -1298,9 +1342,9 @@ fn frame_summary_width(rows: &[&TrackedRow], grid: &FrameTableColumnGrid) -> u16
 /// height has room for -- the ask is what the cell wants, and what it is
 /// given is the answer.
 #[cfg(test)]
-fn group_height(group: &TrackedGroup, width: u16, tree: ProcessTree) -> usize {
+fn group_height(group: &TrackedGroup, width: u16, view: &CommandView) -> usize {
     let rows: Vec<_> = group.rows().collect();
-    let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, tree);
+    let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, view);
     frame_group_height(group, width, &grid)
 }
 
@@ -1311,7 +1355,7 @@ fn frame_group_height(group: &TrackedGroup, width: u16, grid: &FrameTableColumnG
     // command wrapping down the cell wants the rows it wraps onto, and
     // asking for one row a level would leave the block short of what it
     // would have drawn with the room.
-    let ancestry = drawn_ancestry(group, grid.tree);
+    let ancestry = drawn_ancestry(group, &grid.view);
     let table_grid = if ancestry.as_slice().is_empty() {
         table_grid_after_ancestry(grid, 0)
     } else {
@@ -1324,7 +1368,7 @@ fn frame_group_height(group: &TrackedGroup, width: u16, grid: &FrameTableColumnG
         &table_grid,
     );
     ancestry_source_demand(
-        AncestrySource::for_group(&ancestry, group, grid.tree),
+        AncestrySource::for_group(&ancestry, group, &grid.view),
         width,
     )
     .saturating_add(table)
@@ -1446,7 +1490,7 @@ pub(crate) fn draw_cell_for_test(
                 inner,
                 pane_background(false),
                 &[],
-                ProcessTree::Long,
+                CommandView::long(),
             );
         },
     );
@@ -1461,7 +1505,7 @@ fn draw_contents(
     inner: Rect,
     ground: Color,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) {
     let visible = roster.clone().visible(hidden_commands);
     let roster = &visible;
@@ -1471,7 +1515,7 @@ fn draw_contents(
         content,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, tree, u16::MAX),
+        &FrameColumnGrids::for_frame(roster, view, u16::MAX),
     );
 }
 
@@ -1508,7 +1552,7 @@ fn draw_summary(
     inner: Rect,
     ground: Color,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) {
     let visible = roster.clone().visible(hidden_commands);
     let roster = &visible;
@@ -1517,7 +1561,7 @@ fn draw_summary(
         roster,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, tree, inner.height)
+        &FrameColumnGrids::for_frame(roster, view, inner.height)
             .summary
             .0,
     );
@@ -1633,7 +1677,7 @@ fn draw_group(
     inner: Rect,
     ground: Color,
     hidden_commands: &[String],
-    tree: ProcessTree,
+    view: &CommandView,
 ) {
     let visible = roster.clone().visible(hidden_commands);
     let roster = &visible;
@@ -1643,7 +1687,7 @@ fn draw_group(
         id,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, tree, u16::MAX)
+        &FrameColumnGrids::for_frame(roster, view, u16::MAX)
             .commands
             .0,
     );
@@ -1662,7 +1706,7 @@ fn frame_draw_group(
     };
 
     let rows: Vec<&TrackedRow> = group.rows().collect();
-    let ancestry = drawn_ancestry(group, grid.tree);
+    let ancestry = drawn_ancestry(group, &grid.view);
     // The chain and table fade together when their command finishes.
     let faded = group_fade(group, &rows);
     // The same measurement [`frame_group_height`] made when the cell
@@ -1677,7 +1721,7 @@ fn frame_draw_group(
     let used = draw_ancestry_source(
         buffer,
         inner,
-        AncestrySource::for_group(&ancestry, group, grid.tree),
+        AncestrySource::for_group(&ancestry, group, &grid.view),
         faded,
         ground,
         table_rows,
@@ -1704,7 +1748,7 @@ fn table_grid_after_ancestry(
     grid: &FrameTableColumnGrid,
     rows_drawn: u16,
 ) -> Cow<'_, FrameTableColumnGrid> {
-    if rows_drawn == 0 && grid.tree == ProcessTree::Short {
+    if rows_drawn == 0 && grid.view.hierarchy == ProcessHierarchy::Hidden {
         let mut table_grid = grid.clone();
         table_grid.parent_links = AncestryParentLinks::default();
         table_grid.parent_content = ParentColumnContent::NamesParents;
@@ -1721,50 +1765,27 @@ fn table_grid_after_ancestry(
 /// actually draw. Counting the raw chain asked for rows that
 /// [`carried`] then dropped.
 ///
-/// Short view names the nearest session runner by executable file name.
-/// A chain consisting only of shells and wrappers retains its known steps.
-fn drawn_ancestry(group: &TrackedGroup, tree: ProcessTree) -> AncestryWalk<Ancestor> {
-    let chain = group.ancestry().as_slice().to_vec();
-    let chain = match tree {
-        ProcessTree::Long => carried(chain),
-        ProcessTree::Short => {
-            let runner = chain
-                .iter()
-                .rev()
-                .find(|ancestor| {
-                    let program = ancestor
-                        .command
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or_default();
-                    let name = Path::new(program)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(program)
-                        .trim_start_matches('-');
-                    !TRANSPARENT_PROCESS_NAMES.contains(&name)
-                        && !EXEC_WRAPPER_PROCESS_NAMES.contains(&name)
-                })
-                .map(shortened);
-            runner.map_or_else(
-                || carried(chain).iter().map(shortened).collect(),
-                |runner| vec![runner],
-            )
-        },
+/// The hidden view reserves no ancestry rows; argument detail applies equally
+/// to ancestors and command rows when the hierarchy is shown.
+fn drawn_ancestry(group: &TrackedGroup, view: &CommandView) -> AncestryWalk<Ancestor> {
+    let chain = match view.hierarchy {
+        ProcessHierarchy::Shown => carried(group.ancestry().as_slice().to_vec())
+            .into_iter()
+            .map(|mut ancestor| {
+                ancestor.command = match view.arguments {
+                    ArgumentDetail::Default => {
+                        ancestor.command.with_default_arguments(&view.defaults)
+                    },
+                    ArgumentDetail::All => ancestor.command,
+                };
+                ancestor
+            })
+            .collect(),
+        ProcessHierarchy::Hidden => return AncestryWalk::Ended(Vec::new()),
     };
     match group.ancestry() {
         AncestryWalk::Ended(_) => AncestryWalk::Ended(chain),
         AncestryWalk::LimitCut(_) => AncestryWalk::LimitCut(chain),
-    }
-}
-
-/// One step of a chain with its arguments omitted.
-fn shortened(ancestor: &Ancestor) -> Ancestor {
-    let command = census::command_name(&ancestor.command).words;
-    Ancestor {
-        pid: ancestor.pid,
-        command,
-        passes_through: ancestor.passes_through,
     }
 }
 
@@ -1860,13 +1881,30 @@ fn draw_ancestry_source(
         let reserved = count.saturating_sub(index).saturating_sub(1);
         let kept = lines.len().min(remaining.saturating_sub(reserved));
         if lines.len() > kept {
-            let continuation = ancestry_continuation(levels[index], lines, kept, command);
-            lines.truncate(kept);
-            if let Some(line) = lines.last_mut() {
-                continuation.append_to(line, area.width);
-                mark_cut_line(line, area.width);
+            let prefix = lines[0]
+                .spans
+                .iter()
+                .take(3)
+                .map(|span| cell_width(&span.content))
+                .fold(0, u16::saturating_add);
+            let ancestor = match levels[index] {
+                AncestryLevel::Ancestor(ancestor)
+                | AncestryLevel::AncestorAfterElision(ancestor) => ancestor,
+            };
+            let wrapped = wrapped_command(
+                ancestor_command_words(ancestor, Style::default().fg(command)),
+                area.width.saturating_sub(prefix),
+                Style::default().fg(command),
+            )
+            .into_rows(kept);
+            for (index, (line, text)) in lines.iter_mut().zip(wrapped).enumerate() {
+                line.spans.truncate(if index == 0 { 3 } else { 1 });
+                // Continuation lines have only their hanging indentation span.
+                line.spans.extend(text.spans);
             }
+            lines.truncate(kept);
         }
+
         remaining = remaining.saturating_sub(lines.len());
     }
     let lines: Vec<_> = blocks.into_iter().flatten().collect();
@@ -1904,7 +1942,7 @@ fn short_ancestry_line(
         .saturating_sub(cell_width(&label))
         .saturating_sub(cell_width(separator))
         .saturating_sub(cell_width(&suffix));
-    let name = elide_summary_end(&ancestor.command, room);
+    let name = elide_summary_end(&ancestor.command.display_line(), room);
     Line::from(vec![
         Span::styled(indent, Style::default().fg(command)),
         Span::styled(label, Style::default().fg(pid)),
@@ -1912,117 +1950,6 @@ fn short_ancestry_line(
         Span::styled(name, Style::default().fg(command)),
         Span::styled(suffix, Style::default().fg(command)),
     ])
-}
-
-/// Recover the unwrapped source immediately following the ancestry's visible lines.
-fn ancestry_continuation(
-    ancestor: AncestryLevel<'_>,
-    lines: &[Line<'static>],
-    kept: usize,
-    command: Color,
-) -> CutCommandContinuation {
-    let ancestor = match ancestor {
-        AncestryLevel::Ancestor(ancestor) | AncestryLevel::AncestorAfterElision(ancestor) => {
-            ancestor
-        },
-    };
-    let command_lines: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            Line::from(
-                line.spans
-                    .iter()
-                    .skip(if index == 0 { 3 } else { 1 })
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect();
-    let continuation = command_line_continuation(&ancestor.command, &command_lines, kept);
-    let source = ancestor
-        .command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let consumed: usize = command_lines
-        .iter()
-        .take(kept)
-        .map(|line| line.to_string().chars().count())
-        .sum();
-    let separators = command_lines
-        .iter()
-        .take(kept)
-        .enumerate()
-        .skip(1)
-        .filter(|(index, _)| {
-            matches!(
-                command_line_continuation(&source, &command_lines, *index).join,
-                CommandContinuationJoin::WordSeparator
-            )
-        })
-        .count();
-    let remaining: String = source
-        .chars()
-        .skip(consumed + separators)
-        .skip_while(|character| character.is_whitespace())
-        .collect();
-    CutCommandContinuation {
-        join:      continuation.join,
-        next_line: Line::from(Span::styled(remaining, Style::default().fg(command))),
-    }
-}
-
-/// End a line where its remaining content was cut.
-fn mark_cut_line(line: &mut Line<'static>, width: u16) {
-    let room = usize::from(width).saturating_sub(UnicodeWidthStr::width(ELISION));
-    let marker_style = line
-        .spans
-        .iter()
-        .rev()
-        .find(|span| !span.content.is_empty())
-        .map_or_else(Style::default, |span| span.style);
-    let mut kept = Vec::new();
-    let mut used: usize = 0;
-    for span in std::mem::take(&mut line.spans) {
-        let span_width = UnicodeWidthStr::width(span.content.as_ref());
-        if used.saturating_add(span_width) <= room {
-            used = used.saturating_add(span_width);
-            kept.push(span);
-            continue;
-        }
-        let content: String = span
-            .styled_graphemes(Style::default())
-            .take_while(|grapheme| {
-                let grapheme_width = UnicodeWidthStr::width(grapheme.symbol);
-                let fits = used.saturating_add(grapheme_width) <= room;
-                if fits {
-                    used = used.saturating_add(grapheme_width);
-                }
-                fits
-            })
-            .map(|grapheme| grapheme.symbol)
-            .collect();
-        if !content.is_empty() {
-            kept.push(Span::styled(content, span.style));
-        }
-        break;
-    }
-    while let Some(span) = kept.last_mut() {
-        let trimmed = span.content.trim_end().len();
-        if trimmed == span.content.len() {
-            break;
-        }
-        span.content = span.content[..trimmed].to_owned().into();
-        if !span.content.is_empty() {
-            break;
-        }
-        kept.pop();
-    }
-    line.spans = kept;
-    if UnicodeWidthStr::width(ELISION) <= usize::from(width) {
-        line.spans.push(Span::styled(ELISION, marker_style));
-    }
 }
 
 /// Apply the shared cut mark without making a whole command look shortened.
@@ -2053,32 +1980,9 @@ fn mark_table_continuation(
             .set_style(cut_mark_style(layout.ground, faded));
         return;
     }
-    let Some(right) = (command.left()..command.right())
-        .rev()
-        .find(|&x| buffer[(x, y)].symbol() != " ")
-    else {
+    let TableContinuation::CommandWasCut { line } = continuation else {
         return;
     };
-    let mut spans = Vec::new();
-    let mut x = command.left();
-    while x <= right {
-        let cell = &buffer[(x, y)];
-        let symbol = cell.symbol();
-        spans.push(Span::styled(symbol.to_owned(), cell.style()));
-        let cells = UnicodeWidthStr::width(symbol).max(1);
-        x = x.saturating_add(u16::try_from(cells).unwrap_or(u16::MAX));
-    }
-    let mut line = Line::from(spans);
-    if let TableContinuation::CommandWasCut { continuation, tree } = continuation {
-        continuation.append_to(&mut line, command.width);
-        match tree {
-            ProcessTree::Long => mark_cut_line(&mut line, command.width),
-            ProcessTree::Short => mark_short_cut_line(&mut line, command.width),
-        }
-    }
-    if let Some(marker) = line.spans.last_mut() {
-        marker.style = cut_mark_style(layout.ground, faded);
-    }
     for x in command.left()..command.right() {
         buffer[(x, y)].set_symbol(" ");
     }
@@ -2090,81 +1994,6 @@ fn mark_table_continuation(
         },
         buffer,
     );
-}
-
-/// Keep complete Short-name words and their styles before the spaced cut mark.
-fn mark_short_cut_line(line: &mut Line<'static>, width: u16) {
-    let room = width.saturating_sub(cell_width(crate::constants::ARGUMENT_OMISSION_MARK));
-    let mut words = Vec::new();
-    let mut word = Vec::new();
-    for span in &line.spans {
-        for grapheme in span.styled_graphemes(Style::default()) {
-            if grapheme.symbol.chars().all(char::is_whitespace) {
-                if !word.is_empty() {
-                    words.push(Line::from(std::mem::take(&mut word)));
-                }
-            } else {
-                word.push(Span::styled(grapheme.symbol.to_owned(), grapheme.style));
-            }
-        }
-    }
-    if !word.is_empty() {
-        words.push(Line::from(word));
-    }
-    let mut kept = Line::default();
-    for word in words {
-        let gap = u16::from(!kept.spans.is_empty());
-        if cell_width(&kept.to_string())
-            .saturating_add(gap)
-            .saturating_add(cell_width(&word.to_string()))
-            > room
-        {
-            break;
-        }
-        if gap > 0 {
-            kept.spans.push(Span::raw(" "));
-        }
-        kept.spans.extend(word.spans);
-    }
-    if kept.spans.is_empty() {
-        let first_width = line
-            .to_string()
-            .split_whitespace()
-            .next()
-            .map_or(0, cell_width);
-        if first_width <= width && cell_width(crate::constants::ARGUMENT_OMISSION_MARK) <= width {
-            *line = Line::from(crate::constants::ARGUMENT_OMISSION_MARK);
-        } else {
-            mark_cut_line(line, width);
-        }
-    } else {
-        kept.spans
-            .push(Span::raw(crate::constants::ARGUMENT_OMISSION_MARK));
-        *line = kept;
-    }
-}
-
-/// Styled command text immediately below a cell's last visible table line.
-struct CutCommandContinuation {
-    /// How this line follows the last visible one in the source command.
-    join:      CommandContinuationJoin,
-    /// The next wrapped line, whose beginning can fill the visible line's room.
-    next_line: Line<'static>,
-}
-
-impl CutCommandContinuation {
-    /// Continue `visible` across its unused cells, retaining the command's styles.
-    fn append_to(self, visible: &mut Line<'static>, width: u16) {
-        if UnicodeWidthStr::width(visible) < usize::from(width)
-            && matches!(self.join, CommandContinuationJoin::WordSeparator)
-            && !visible.spans.is_empty()
-            && !self.next_line.spans.is_empty()
-        {
-            let style = self.next_line.spans[0].style;
-            visible.spans.push(Span::styled(" ", style));
-        }
-        visible.spans.extend(self.next_line.spans);
-    }
 }
 
 /// What stood between adjacent wrapped command lines before wrapping.
@@ -2272,9 +2101,9 @@ struct AncestryPlan<'a> {
 }
 
 impl<'a> AncestrySource<'a> {
-    fn for_tree(walk: &'a AncestryWalk<Ancestor>, tree: ProcessTree) -> Self {
+    fn for_tree(walk: &'a AncestryWalk<Ancestor>, view: &CommandView) -> Self {
         let mut source = Self::from(walk);
-        if tree == ProcessTree::Short && source.levels.len() == 1 {
+        if view.hierarchy == ProcessHierarchy::Hidden && source.levels.len() == 1 {
             source.wrapping = AncestryWrapping::SingleRow;
         }
         source
@@ -2283,10 +2112,10 @@ impl<'a> AncestrySource<'a> {
     fn for_group(
         walk: &'a AncestryWalk<Ancestor>,
         group: &TrackedGroup,
-        tree: ProcessTree,
+        view: &CommandView,
     ) -> Self {
-        let mut source = Self::for_tree(walk, tree);
-        let hidden = tree == ProcessTree::Short
+        let mut source = Self::for_tree(walk, view);
+        let hidden = view.hierarchy == ProcessHierarchy::Hidden
             && walk.as_slice().last().is_some_and(|kept| {
                 group
                     .ancestry()
@@ -2586,9 +2415,14 @@ fn ancestry_rows(
     if room < ANCESTRY_MIN_COMMAND_WIDTH {
         return 1;
     }
-    wrapped_command(vec![Span::raw(ancestor.command.clone())], room)
-        .height()
-        .max(1)
+    wrapped_command(
+        ancestor_command_words(ancestor, Style::default()),
+        room,
+        cut_mark_style(Color::Reset, 0),
+    )
+    .lines
+    .len()
+    .max(1)
 }
 
 /// One level of the ancestry block: its pid and what the process is,
@@ -2633,13 +2467,12 @@ fn ancestry_lines(
             .saturating_add(separator.len()),
     );
     let wrapped = wrapped_command(
-        vec![Span::styled(
-            ancestor.command.clone(),
-            Style::default().fg(command),
-        )],
+        ancestor_command_words(ancestor, Style::default().fg(command)),
         room,
+        Style::default().fg(command),
     );
     wrapped
+        .into_text()
         .lines
         .into_iter()
         .enumerate()
@@ -2673,17 +2506,6 @@ impl TableKind {
     /// Whether this cell describes single invocations, which is what
     /// the columns in [`SUMMARY_HIDDEN_COLUMNS`] have to say.
     const fn shows_invocation_detail(self) -> bool { matches!(self, Self::Command) }
-
-    /// How much command detail a row of this kind prints. A summary row
-    /// already sits under the working directory heading its group, so
-    /// the manifest path says nothing new while costing the width the
-    /// command line wants.
-    const fn detail(self) -> SummaryDetail {
-        match self {
-            Self::Summary => SummaryDetail::Trimmed,
-            Self::Command => SummaryDetail::Full,
-        }
-    }
 }
 
 /// Whether the command's own directory must head the cell.
@@ -2930,31 +2752,20 @@ enum ProcessValueUse {
 /// Text and command-name demand before any cell width is assigned.
 struct ProcessRowValues<'a> {
     /// Invocation supplying styles, grouping and cut-command provenance.
-    source:    &'a TrackedRow,
+    source: &'a TrackedRow,
     /// Column metadata; numeric display text is deferred during row selection.
-    cells:     [String; TABLE_HEADERS.len()],
-    /// Command arguments in the frame's detail and tree mode.
-    arguments: String,
+    cells:  [String; TABLE_HEADERS.len()],
 }
 
 impl<'a> ProcessRowValues<'a> {
     /// Read every value independently of the eventual viewport.
-    fn of(source: &'a TrackedRow, detail: SummaryDetail, tree: ProcessTree) -> Self {
-        Self::for_use(source, detail, tree, ProcessValueUse::FitColumns)
+    fn of(source: &'a TrackedRow, view: &CommandView) -> Self {
+        Self::for_use(source, view, ProcessValueUse::FitColumns)
     }
 
-    fn for_use(
-        source: &'a TrackedRow,
-        detail: SummaryDetail,
-        tree: ProcessTree,
-        usage: ProcessValueUse,
-    ) -> Self {
+    fn for_use(source: &'a TrackedRow, view: &CommandView, usage: ProcessValueUse) -> Self {
         let process = &source.process;
-        let arguments = match tree {
-            ProcessTree::Long => process.command.line(detail),
-            ProcessTree::Short => process.command.named().words,
-        };
-        let command = displayed_command(&process.command, detail, tree);
+        let command = displayed_command(&process.command, view);
         let (cpu, memory, compiler) = match usage {
             ProcessValueUse::SelectRows => (String::new(), String::new(), String::new()),
             ProcessValueUse::FitColumns => {
@@ -2990,7 +2801,6 @@ impl<'a> ProcessRowValues<'a> {
                 compiler,
                 managed_text(process),
             ],
-            arguments,
         }
     }
 }
@@ -3054,7 +2864,7 @@ impl SessionColumnWidths {
 /// Online logical processors, without collecting their counters and brand strings.
 fn machine_processor_count() -> usize {
     #[cfg(target_os = "linux")]
-    if let Ok(statistics) = std::fs::read_to_string(crate::constants::MACHINE_CPU_STAT_FILE) {
+    if let Ok(statistics) = std::fs::read_to_string(MACHINE_CPU_STAT_FILE) {
         let cores = processor_rows(&statistics);
         if cores > 0 {
             return cores;
@@ -3079,7 +2889,7 @@ fn processor_rows(statistics: &str) -> usize {
         .filter_map(|line| line.split_whitespace().next())
         .filter(|label| {
             label
-                .strip_prefix(crate::constants::MACHINE_CPU_STAT_PREFIX)
+                .strip_prefix(MACHINE_CPU_STAT_PREFIX)
                 .is_some_and(|number| {
                     !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
                 })
@@ -3103,12 +2913,12 @@ struct FrameColumnGrids {
 
 impl FrameColumnGrids {
     #[cfg(test)]
-    fn new(roster: &Roster, hidden_commands: &[String], tree: ProcessTree) -> Self {
-        Self::for_frame(&roster.clone().visible(hidden_commands), tree, u16::MAX)
+    fn new(roster: &Roster, hidden_commands: &[String], view: &CommandView) -> Self {
+        Self::for_frame(&roster.clone().visible(hidden_commands), view, u16::MAX)
     }
 
     /// Fit intrinsic widths once over the rows this frame can possibly draw.
-    fn for_frame(roster: &VisibleRoster, tree: ProcessTree, height: u16) -> Self {
+    fn for_frame(roster: &VisibleRoster, view: &CommandView, height: u16) -> Self {
         let mut command_rows = Vec::new();
         let mut command_tables = Vec::new();
         let mut command_progress = Vec::new();
@@ -3116,8 +2926,8 @@ impl FrameColumnGrids {
         for group in roster.groups() {
             let rows: Vec<_> = group.rows().collect();
             command_progress.extend(invocation_progress_rows(&rows, TableKind::Command));
-            if tree == ProcessTree::Short {
-                let ancestry = drawn_ancestry(group, tree);
+            if view.hierarchy == ProcessHierarchy::Shown {
+                let ancestry = drawn_ancestry(group, view);
                 for row in &rows {
                     if let VisibleParent::Ancestor(pid) = row.process.parent
                         && ancestry
@@ -3141,14 +2951,14 @@ impl FrameColumnGrids {
         let mut commands = FrameTableColumnGrid::with_parent_links(
             &command_rows,
             TableKind::Command,
-            tree,
+            view,
             parent_links,
             command_progress,
         );
         let mut summary = FrameTableColumnGrid::with_parent_links(
             &summary,
             TableKind::Summary,
-            tree,
+            view,
             AncestryParentLinks::default(),
             summary_progress,
         );
@@ -3175,7 +2985,7 @@ impl FrameColumnGrids {
             .iter()
             .map(|rows| {
                 let local = commands.for_visible_rows(rows);
-                TableWidthBudget::of(rows, local.state_column)
+                TableWidthBudget::of(rows, local.state_column, view)
             })
             .collect();
         Self {
@@ -3205,7 +3015,7 @@ fn possible_frame_rows<'a>(groups: &[PathGroup<'a>], height: u16) -> Vec<&'a Tra
     rows
 }
 
-/// Parent links whose ancestry endpoint remains visible in this tree view.
+/// Parent links whose ancestry endpoint remains visible in this view view.
 #[derive(Clone, Default)]
 struct AncestryParentLinks {
     hidden: Vec<InvocationId>,
@@ -3451,7 +3261,7 @@ struct FrameTableColumnGrid {
     /// Summary and command cells use separate grids.
     kind:                     TableKind,
     /// Detail used to read the row texts that fitted this grid.
-    tree:                     ProcessTree,
+    view:                     CommandView,
 }
 
 impl FrameTableColumnGrid {
@@ -3486,11 +3296,11 @@ impl FrameTableColumnGrid {
 
     /// Fit all intrinsic values without depending on a cell's width or height.
     #[cfg(test)]
-    fn of(rows: &[&TrackedRow], kind: TableKind, tree: ProcessTree) -> Self {
+    fn of(rows: &[&TrackedRow], kind: TableKind, view: &CommandView) -> Self {
         Self::with_parent_links(
             rows,
             kind,
-            tree,
+            view,
             AncestryParentLinks::default(),
             invocation_progress_rows(rows, kind),
         )
@@ -3499,14 +3309,14 @@ impl FrameTableColumnGrid {
     fn with_parent_links(
         rows: &[&TrackedRow],
         kind: TableKind,
-        tree: ProcessTree,
+        view: &CommandView,
         parent_links: AncestryParentLinks,
         row_progress: Vec<InvocationId>,
     ) -> Self {
         let values: Vec<_> = rows
             .iter()
             .map(|row| {
-                let mut values = ProcessRowValues::of(row, kind.detail(), tree);
+                let mut values = ProcessRowValues::of(row, view);
                 values.cells[PARENT_COLUMN] = parent_text(&row.process);
                 if row_progress.contains(&row.process.invocation_id)
                     && let CounterState::Working { progress, .. } = own_counter(row)
@@ -3525,7 +3335,7 @@ impl FrameTableColumnGrid {
                 value_widths[column] = value_widths[column].max(width);
             }
         }
-        if tree == ProcessTree::Short {
+        if view.arguments == ArgumentDetail::Default {
             intrinsic_widths[STATE_COLUMN] = values
                 .iter()
                 .map(|row| cell_width(row.cells[STATE_COLUMN].trim()))
@@ -3571,7 +3381,7 @@ impl FrameTableColumnGrid {
             command_title_width: cell_width(TABLE_HEADERS[COMMAND_COLUMN]),
             longest_command_width: longest_command_width(&values),
             continuation_clearance: TABLE_CONTINUATION_CLEARANCE,
-            table_budgets: vec![TableWidthBudget::of(rows, state_column)],
+            table_budgets: vec![TableWidthBudget::of(rows, state_column, view)],
             empty_tail_columns: if values.iter().all(|value| {
                 value.cells[COMPILER_COLUMN].is_empty() && value.cells[MANAGED_COLUMN].is_empty()
             }) {
@@ -3589,7 +3399,7 @@ impl FrameTableColumnGrid {
                 .max()
                 .unwrap_or_default(),
             kind,
-            tree,
+            view: view.clone(),
         }
     }
 
@@ -3597,7 +3407,7 @@ impl FrameTableColumnGrid {
     fn for_visible_rows(&self, rows: &[&TrackedRow]) -> Self {
         let mut local = self.clone();
         local.empty_tail_columns = if rows.iter().all(|row| {
-            let values = ProcessRowValues::of(row, self.kind.detail(), self.tree);
+            let values = ProcessRowValues::of(row, &self.view);
             values.cells[COMPILER_COLUMN].is_empty() && values.cells[MANAGED_COLUMN].is_empty()
         }) {
             vec![COMPILER_COLUMN, MANAGED_COLUMN]
@@ -3722,7 +3532,7 @@ impl FrameTableColumnGrid {
             return 0;
         }
         columns.last().map_or(0, |&column| {
-            if self.tree == ProcessTree::Long && column == COMMAND_COLUMN {
+            if self.view.arguments == ArgumentDetail::All && column == COMMAND_COLUMN {
                 0
             } else {
                 self.trailing_column_clearance(column)
@@ -3755,9 +3565,9 @@ impl FrameTableColumnGrid {
                 continue;
             };
             // Argument tails have already yielded to the subcommand in Short view.
-            let command_width = match self.tree {
-                ProcessTree::Short => table.short.min(table.subcommand),
-                ProcessTree::Long => table.full.saturating_sub(TABLE_CONTINUATION_CLEARANCE),
+            let command_width = match self.view.arguments {
+                ArgumentDetail::Default => table.short.min(table.subcommand),
+                ArgumentDetail::All => table.full.saturating_sub(TABLE_CONTINUATION_CLEARANCE),
             };
             let fixed = fitted
                 .constraints
@@ -3798,7 +3608,9 @@ impl FrameTableColumnGrid {
     /// without taking cells from the command or hiding a metadata value.
     fn trailing_column_clearance(&self, column: usize) -> u16 {
         let clearance = self.rightmost_value_clearance();
-        if self.tree == ProcessTree::Long && matches!(column, COMPILER_COLUMN | MANAGED_COLUMN) {
+        if self.view.arguments == ArgumentDetail::All
+            && matches!(column, COMPILER_COLUMN | MANAGED_COLUMN)
+        {
             let padding = self.intrinsic_widths[column].saturating_sub(self.value_widths[column]);
             clearance.saturating_sub(padding)
         } else {
@@ -3836,7 +3648,9 @@ impl FrameTableColumnGrid {
         used <= width.saturating_sub(self.trailing_column_clearance(last))
             || (used <= width
                 && (!has_command
-                    || (self.tree == ProcessTree::Long && last == COMMAND_COLUMN && has_memory)))
+                    || (self.view.arguments == ArgumentDetail::All
+                        && last == COMMAND_COLUMN
+                        && has_memory)))
     }
 
     /// Only dispensable state owns a handle that a reduction can name.
@@ -3905,17 +3719,17 @@ struct TableWidthBudget {
 }
 
 impl TableWidthBudget {
-    fn of(rows: &[&TrackedRow], state_column: TableStateColumn) -> Self {
+    fn of(rows: &[&TrackedRow], state_column: TableStateColumn, view: &CommandView) -> Self {
         Self {
             short: rows
                 .iter()
-                .map(|row| cell_width(&displayed_short_name(&row.process.command).marked()))
+                .map(|row| cell_width(&displayed_command(&row.process.command, view)))
                 .max()
                 .unwrap_or_default(),
             full: rows
                 .iter()
                 .map(|row| {
-                    let values = ProcessRowValues::of(row, SummaryDetail::Full, ProcessTree::Long);
+                    let values = ProcessRowValues::of(row, CommandView::long());
                     cell_width(&values.cells[COMMAND_COLUMN])
                         .saturating_add(TABLE_CONTINUATION_CLEARANCE)
                 })
@@ -3965,7 +3779,7 @@ fn frame_slot_columns(values: &[ProcessRowValues<'_>], kind: TableKind) -> Vec<u
 fn preserve_whole_short_table(grid: &FrameTableColumnGrid, table: Rect, rows: &[&TrackedRow]) {
     let whole_width = rows
         .iter()
-        .map(|row| cell_width(&displayed_short_name(&row.process.command).marked()))
+        .map(|row| cell_width(&displayed_command(&row.process.command, &grid.view)))
         .max()
         .unwrap_or_default();
     let unreserved = CellTableLayout::for_table_slots(grid, table, Color::Reset, rows);
@@ -4127,13 +3941,13 @@ struct CellTableLayout {
     column_spacing: u16,
     /// Invocations that show their own reading in the state slot.
     row_progress:   Vec<InvocationId>,
-    /// Ancestry links retained in the frame's selected tree view.
+    /// Ancestry links retained in the frame's selected view view.
     parent_links:   AncestryParentLinks,
     /// How much of each row's command line the cell prints.
-    detail:         SummaryDetail,
+
     /// Whether a row spells out its whole command line or only the
     /// name of what runs.
-    tree:           ProcessTree,
+    view:           CommandView,
     /// The colour the cell is painted on, which a finished row's text
     /// is carried toward as it fades.
     ground:         Color,
@@ -4148,9 +3962,9 @@ impl CellTableLayout {
         kind: TableKind,
         area: Rect,
         ground: Color,
-        tree: ProcessTree,
+        view: &CommandView,
     ) -> Self {
-        Self::from_grid(&FrameTableColumnGrid::of(rows, kind, tree), area, ground)
+        Self::from_grid(&FrameTableColumnGrid::of(rows, kind, view), area, ground)
     }
 
     /// Reuse the frame slots while reserving the edge for any hidden rows.
@@ -4266,8 +4080,8 @@ impl CellTableLayout {
             columns,
             column_widths,
             column_spacing,
-            detail: grid.kind.detail(),
-            tree: grid.tree,
+
+            view: grid.view.clone(),
             ground,
         }
     }
@@ -4390,7 +4204,7 @@ fn draw_process_table(
     kind: TableKind,
     ground: Color,
     pinned: PinnedGroup<'_>,
-    tree: ProcessTree,
+    view: &CommandView,
 ) {
     frame_draw_process_table(
         buffer,
@@ -4398,7 +4212,7 @@ fn draw_process_table(
         rows,
         ground,
         pinned,
-        &FrameTableColumnGrid::of(rows, kind, tree),
+        &FrameTableColumnGrid::of(rows, kind, view),
     );
 }
 
@@ -5006,16 +4820,14 @@ enum TableContinuation {
     FullyDrawn,
     /// The final visible command continues onto lines that did not fit.
     CommandWasCut {
-        /// Styled text that follows the last visible command line.
-        continuation: CutCommandContinuation,
-        /// Short names lose complete words; Long arguments can end inside a word.
-        tree:         ProcessTree,
+        /// The final row, already cut from parsed units with its neutral mark.
+        line: Line<'static>,
     },
     /// The final visible command is whole, but later process rows did not fit.
     RowsWereOmitted,
 }
 
-/// Classify a vertical cut through drawn rows and retain a cut command's next line.
+/// Classify a vertical cut and ask the wrapper for its final visible command row.
 fn table_continuation(rows: &[LaidOutProcessRow<'_>], visible_lines: u16) -> TableContinuation {
     let mut used = 0u16;
     for row in rows {
@@ -5025,8 +4837,7 @@ fn table_continuation(rows: &[LaidOutProcessRow<'_>], visible_lines: u16) -> Tab
         if used.saturating_add(row.lines) > visible_lines {
             let first_hidden_line = usize::from(visible_lines.saturating_sub(used));
             return TableContinuation::CommandWasCut {
-                continuation: row.cut_command_continuation(first_hidden_line),
-                tree:         row.tree,
+                line: row.cut_command_continuation(first_hidden_line),
             };
         }
         used = used.saturating_add(row.lines);
@@ -5155,11 +4966,11 @@ fn longest_command_width(rows: &[ProcessRowValues<'_>]) -> u16 {
         .unwrap_or_default()
 }
 
-/// The executable spelling selected by the current tree view.
-fn displayed_program(command: &CommandText, tree: ProcessTree) -> &str {
-    match tree {
-        ProcessTree::Short => command.program_name(),
-        ProcessTree::Long => &command.program,
+/// The executable spelling selected by the current view view.
+fn displayed_program<'a>(command: &'a CommandText, view: &CommandView) -> &'a str {
+    match view.arguments {
+        ArgumentDetail::Default => command.program_name(),
+        ArgumentDetail::All => &command.program,
     }
 }
 
@@ -5167,46 +4978,28 @@ fn displayed_program(command: &CommandText, tree: ProcessTree) -> &str {
 fn profile_label(command: &CommandText) -> String {
     match command.profile() {
         CargoProfile::Default => String::new(),
-        CargoProfile::Release => format!(
-            "{PROFILE_LABEL_OPEN}{}{PROFILE_LABEL_CLOSE}",
-            crate::constants::CARGO_RELEASE_PROFILE
-        ),
+        CargoProfile::Release => {
+            format!("{PROFILE_LABEL_OPEN}{CARGO_RELEASE_PROFILE}{PROFILE_LABEL_CLOSE}")
+        },
         CargoProfile::Named(name) => format!("{PROFILE_LABEL_OPEN}{name}{PROFILE_LABEL_CLOSE}"),
     }
 }
 
 /// All words painted by the command column, including its profile.
-fn displayed_command(command: &CommandText, detail: SummaryDetail, tree: ProcessTree) -> String {
-    if tree == ProcessTree::Short {
-        return displayed_short_name(command).marked();
-    }
-    let arguments = command.line(detail);
+fn displayed_command(command: &CommandText, view: &CommandView) -> String {
+    let arguments = match view.arguments {
+        ArgumentDetail::Default => command.selected_arguments(&view.defaults),
+        ArgumentDetail::All => command.line(),
+    };
     [
         profile_label(command),
-        displayed_program(command, tree).to_string(),
+        displayed_program(command, view).to_string(),
         arguments,
     ]
-    .iter()
-    .flat_map(|part| part.split_whitespace())
+    .into_iter()
+    .filter(|part| !part.is_empty())
     .collect::<Vec<_>>()
-    .join(" ")
-}
-
-/// Short command words retain the source's argument-omission state.
-fn displayed_short_name(command: &CommandText) -> CommandName {
-    let arguments = command.named();
-    CommandName {
-        words:     [
-            profile_label(command),
-            command.program_name().to_string(),
-            arguments.words,
-        ]
-        .iter()
-        .flat_map(|part| part.split_whitespace())
-        .collect::<Vec<_>>()
-        .join(" "),
-        arguments: arguments.arguments,
-    }
+    .join(COMMAND_WORD_SEPARATOR)
 }
 
 /// Only the toolchain, profile and subcommand set the resource-column budget.
@@ -5216,7 +5009,7 @@ fn displayed_subcommand_name(command: &CommandText) -> CommandName {
     let mut kept = vec![profile_label(command), command.program_name().to_string()];
     while words
         .peek()
-        .is_some_and(|word| word.starts_with(crate::constants::CARGO_TOOLCHAIN_SELECTOR))
+        .is_some_and(|word| word.starts_with(CARGO_TOOLCHAIN_SELECTOR))
     {
         if let Some(selector) = words.next() {
             kept.push(selector.to_string());
@@ -5224,7 +5017,7 @@ fn displayed_subcommand_name(command: &CommandText) -> CommandName {
     }
     if let Some(subcommand) = words.next() {
         kept.push(subcommand.to_string());
-        if subcommand == crate::constants::NEXTEST_SUBCOMMAND_NAME
+        if subcommand == NEXTEST_SUBCOMMAND_NAME
             && let Some(action) = words.next()
         {
             kept.push(action.to_string());
@@ -5261,74 +5054,292 @@ fn memory_text(reading: Measurement<u64>) -> String {
     }
 }
 
-/// Keep the argument mark beside the final whole word of a Short name.
-fn wrapped_short_command(
-    spans: Vec<Span<'static>>,
-    width: u16,
-    omission: ArgumentOmission,
-) -> Text<'static> {
-    let marker_style = spans.last().map_or_else(Style::default, |span| span.style);
-    let mut spans = spans;
-    if omission == ArgumentOmission::Dropped {
-        while let Some(span) = spans.last_mut()
-            && let Some(word) = span.content.split_whitespace().next_back()
-            && cell_width(word) > width
-        {
-            let kept = span.content.trim_end().len() - word.len();
-            span.content = span.content[..kept].trim_end().to_string().into();
-            if span.content.is_empty() {
-                spans.pop();
-                if spans
-                    .last()
-                    .is_some_and(|span| span.content.trim().is_empty())
-                {
-                    spans.pop();
-                }
-            }
-        }
-    }
-    let mut text = tui_pane::wrapped(spans, width);
-    if omission == ArgumentOmission::Dropped
-        && let Some(last) = text.lines.last_mut()
-    {
-        if cell_width(&last.to_string())
-            .saturating_add(cell_width(crate::constants::ARGUMENT_OMISSION_MARK))
-            <= width
-        {
-            last.spans.push(Span::styled(
-                crate::constants::ARGUMENT_OMISSION_MARK,
-                marker_style,
-            ));
-        } else if let Some(word) = last.spans.pop() {
-            if last
-                .spans
-                .last()
-                .is_some_and(|span| span.content.trim().is_empty())
-            {
-                last.spans.pop();
-            }
-            let empty = last.spans.is_empty();
-            if empty {
-                text.lines.pop();
-            }
-            let word_width = cell_width(word.content.as_ref());
-            let mark = Span::styled(crate::constants::ARGUMENT_OMISSION_MARK, marker_style);
-            if word_width.saturating_add(cell_width(mark.content.as_ref())) <= width {
-                text.lines.push(Line::from(vec![word, mark]));
-            } else {
-                text.lines.push(Line::from(word));
-                if cell_width(mark.content.as_ref()) <= width {
-                    text.lines.push(Line::from(mark));
-                }
-            }
-        }
-    }
-    text
+/// The parsed word fixes both its wrap boundary and its permitted cut.
+enum StyledCommandWord {
+    /// An independent argv entry may use path, punctuation and whitespace breaks.
+    Independent(Span<'static>),
+    /// A cut must reach the value; it may never leave this flag by itself.
+    BoundValue {
+        flag:  Span<'static>,
+        value: Span<'static>,
+    },
 }
 
-/// Wrap complete command words at their available column width.
-fn wrapped_command(spans: Vec<Span<'static>>, width: u16) -> Text<'static> {
-    tui_pane::wrapped(spans, width)
+impl StyledCommandWord {
+    fn argument(word: &CommandWord, style: Style) -> Self {
+        match word.display_word() {
+            CommandWordDisplay::Independent(text) => {
+                Self::Independent(Span::styled(text.into_owned(), style))
+            },
+            CommandWordDisplay::FlagWithValue { flag, value } => Self::BoundValue {
+                flag:  Span::styled(flag.to_owned(), style),
+                value: Span::styled(value.to_owned(), style),
+            },
+        }
+    }
+
+    fn width(&self) -> u16 {
+        match self {
+            Self::Independent(span) => cell_width(&span.content),
+            Self::BoundValue { flag, value } => cell_width(&flag.content)
+                .saturating_add(cell_width(COMMAND_WORD_SEPARATOR))
+                .saturating_add(cell_width(&value.content)),
+        }
+    }
+
+    fn write_to(self, line: &mut Line<'static>) {
+        match self {
+            Self::Independent(span) => line.spans.push(span),
+            Self::BoundValue { flag, value } => {
+                line.spans.push(flag);
+                line.spans.push(Span::raw(COMMAND_WORD_SEPARATOR));
+                line.spans.push(value);
+            },
+        }
+    }
+}
+
+/// Ancestors keep the same parsed argv units as process rows.
+fn ancestor_command_words(ancestor: &Ancestor, style: Style) -> Vec<StyledCommandWord> {
+    let command = &ancestor.command;
+    let mut words = vec![StyledCommandWord::Independent(Span::styled(
+        command.program.clone(),
+        style,
+    ))];
+    words.extend(
+        command
+            .words()
+            .iter()
+            .map(|word| StyledCommandWord::argument(word, style)),
+    );
+    words
+}
+
+/// A parsed unit or source fragment, with its original boundary before it.
+struct JoinedCommandWord {
+    join: CommandContinuationJoin,
+    word: StyledCommandWord,
+}
+
+/// Wrapped units retain their boundaries until the row budget is known.
+struct WrappedCommand {
+    lines: Vec<WrappedCommandLine>,
+    width: u16,
+    cut:   Style,
+}
+
+/// One line's units; no painted cells are needed to decide a later height cut.
+struct WrappedCommandLine {
+    words: Vec<JoinedCommandWord>,
+}
+
+impl WrappedCommand {
+    fn into_text(self) -> Text<'static> { Text::from(self.into_rows(usize::MAX)) }
+
+    /// Build the last row from its units with the mark already reserved.
+    fn into_rows(mut self, budget: usize) -> Vec<Line<'static>> {
+        if budget == 0 {
+            return Vec::new();
+        }
+        let cut_words = if self.lines.len() > budget {
+            self.lines
+                .split_off(budget - 1)
+                .into_iter()
+                .flat_map(|line| line.words)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut lines: Vec<_> = self
+            .lines
+            .into_iter()
+            .map(|line| command_unit_line(line.words, self.width, self.cut, CommandRowEnd::Whole))
+            .collect();
+        if !cut_words.is_empty() {
+            lines.push(command_unit_line(
+                cut_words,
+                self.width,
+                self.cut,
+                CommandRowEnd::Cut,
+            ));
+        }
+        lines
+    }
+}
+
+/// Whether the row budget requires a mark even when the next unit starts offscreen.
+#[derive(Clone, Copy)]
+enum CommandRowEnd {
+    Whole,
+    Cut,
+}
+
+/// Wrap parsed units; independent oversized entries split at their own source boundaries.
+fn wrapped_command(words: Vec<StyledCommandWord>, width: u16, cut: Style) -> WrappedCommand {
+    let mut lines = Vec::new();
+    let mut line = Vec::new();
+    let mut used: u16 = 0;
+    for unit in command_wrap_units(words, width) {
+        let separator = if line.is_empty() {
+            0
+        } else {
+            unit.join.width()
+        };
+        let needed = unit.word.width();
+        if !line.is_empty() && used.saturating_add(separator).saturating_add(needed) > width {
+            lines.push(WrappedCommandLine {
+                words: std::mem::take(&mut line),
+            });
+            used = 0;
+        }
+        if !line.is_empty() {
+            used = used.saturating_add(unit.join.width());
+        }
+        used = used.saturating_add(needed);
+        line.push(unit);
+    }
+    if !line.is_empty() {
+        lines.push(WrappedCommandLine { words: line });
+    }
+    WrappedCommand { lines, width, cut }
+}
+
+/// Read whitespace boundaries from the source, before the shared punctuation wrapper.
+fn command_wrap_units(words: Vec<StyledCommandWord>, width: u16) -> Vec<JoinedCommandWord> {
+    let mut units = Vec::new();
+    for word in words {
+        match word {
+            StyledCommandWord::Independent(span) if cell_width(&span.content) > width => {
+                for source_word in span.content.split_whitespace() {
+                    let parts = tui_pane::wrapped(
+                        vec![Span::styled(source_word.to_owned(), span.style)],
+                        width,
+                    );
+                    for (index, part) in parts.lines.into_iter().enumerate() {
+                        units.push(JoinedCommandWord {
+                            join: if index == 0 {
+                                CommandContinuationJoin::WordSeparator
+                            } else {
+                                CommandContinuationJoin::Direct
+                            },
+                            word: StyledCommandWord::Independent(Span::styled(
+                                part.to_string(),
+                                span.style,
+                            )),
+                        });
+                    }
+                }
+            },
+            word => units.push(JoinedCommandWord {
+                join: CommandContinuationJoin::WordSeparator,
+                word,
+            }),
+        }
+    }
+    units
+}
+
+impl CommandContinuationJoin {
+    const fn width(self) -> u16 {
+        match self {
+            Self::Direct => 0,
+            Self::WordSeparator => 1,
+        }
+    }
+}
+
+/// A cut prefix either includes a value or omits the entire bound unit.
+enum CutCommandUnit {
+    Prefix(StyledCommandWord),
+    Omitted,
+}
+
+/// The only command cut owner: parsed units and a cell budget produce the row.
+fn command_unit_line(
+    words: Vec<JoinedCommandWord>,
+    width: u16,
+    cut: Style,
+    end: CommandRowEnd,
+) -> Line<'static> {
+    let total = words.iter().enumerate().fold(0u16, |used, (index, unit)| {
+        used.saturating_add(if index == 0 { 0 } else { unit.join.width() })
+            .saturating_add(unit.word.width())
+    });
+    let needs_mark = matches!(end, CommandRowEnd::Cut) || total > width;
+    let room = width.saturating_sub(if needs_mark { cell_width(ELISION) } else { 0 });
+    let mut used: u16 = 0;
+    let mut line = Line::default();
+    let mut words = words.into_iter().peekable();
+    while let Some(unit) = words.next() {
+        if !line.spans.is_empty() && matches!(unit.join, CommandContinuationJoin::WordSeparator) {
+            if used >= room {
+                break;
+            }
+            line.spans.push(Span::raw(COMMAND_WORD_SEPARATOR));
+            used = used.saturating_add(1);
+        }
+        let available = room.saturating_sub(used);
+        let boundary = if needs_mark {
+            words.peek().map_or(0, |next| next.join.width())
+        } else {
+            0
+        };
+        if unit.word.width().saturating_add(boundary) <= available {
+            used = used.saturating_add(unit.word.width());
+            unit.word.write_to(&mut line);
+        } else {
+            let prefix_room = if unit.word.width() <= available {
+                available.saturating_sub(boundary)
+            } else {
+                available
+            };
+            if let CutCommandUnit::Prefix(word) = cut_command_unit(unit.word, prefix_room) {
+                word.write_to(&mut line);
+            }
+            break;
+        }
+    }
+    if needs_mark && width >= cell_width(ELISION) {
+        line.spans.push(Span::styled(ELISION, cut));
+    }
+    line
+}
+
+/// Grapheme-safe prefixes keep their original whitespace, including a cut separator.
+fn command_span_prefix(span: &Span<'static>, room: u16) -> Span<'static> {
+    let mut used: usize = 0;
+    let text: String = span
+        .styled_graphemes(Style::default())
+        .take_while(|grapheme| {
+            let cells = UnicodeWidthStr::width(grapheme.symbol);
+            if used.saturating_add(cells) > usize::from(room) {
+                return false;
+            }
+            used += cells;
+            true
+        })
+        .map(|grapheme| grapheme.symbol)
+        .collect();
+    Span::styled(text, span.style)
+}
+
+fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
+    match word {
+        StyledCommandWord::Independent(span) => CutCommandUnit::Prefix(
+            StyledCommandWord::Independent(command_span_prefix(&span, room)),
+        ),
+        StyledCommandWord::BoundValue { flag, value } => {
+            let value_room = room
+                .saturating_sub(cell_width(&flag.content))
+                .saturating_sub(1);
+            let value = command_span_prefix(&value, value_room);
+            if value.content.trim().is_empty() {
+                CutCommandUnit::Omitted
+            } else {
+                CutCommandUnit::Prefix(StyledCommandWord::BoundValue { flag, value })
+            }
+        },
+    }
 }
 
 /// The common neutral ink of cut marks, faded on the row's own ground.
@@ -5342,8 +5353,8 @@ fn cut_mark_style(ground: Color, faded: u8) -> Style {
 
 /// Cells one displayed command takes before wrapping.
 #[cfg(test)]
-fn command_line_width(row: &TrackedRow, detail: SummaryDetail, tree: ProcessTree) -> u16 {
-    cell_width(&displayed_command(&row.process.command, detail, tree))
+fn command_line_width(row: &TrackedRow, view: &CommandView) -> u16 {
+    cell_width(&displayed_command(&row.process.command, view))
 }
 
 /// Width requested by `constraints`, including the gaps between them.
@@ -5362,6 +5373,10 @@ fn table_width_with_spacing(constraints: &[Constraint], spacing: u16) -> u16 {
 
 /// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
+const fn numeric_column(column: usize) -> bool {
+    matches!(column, CPU_COLUMN | MEMORY_COLUMN | STATE_COLUMN)
+}
+
 fn column_header(layout: &CellTableLayout, faded: u8, plan: &ProcessTablePlan<'_>) -> Row<'static> {
     let style = column_header_style(layout, faded);
     Row::new(
@@ -5378,7 +5393,7 @@ fn column_header(layout: &CellTableLayout, faded: u8, plan: &ProcessTablePlan<'_
                     },
                     style,
                 ));
-                if column == STATE_COLUMN {
+                if numeric_column(column) {
                     line.right_aligned()
                 } else {
                     line
@@ -5395,19 +5410,20 @@ fn column_header_style(layout: &CellTableLayout, faded: u8) -> Style {
 /// One process row prepared for measurement and table rendering.
 struct LaidOutProcessRow<'a> {
     /// Cells in canonical column order, filtered only when the table takes them.
-    cells:   [Text<'static>; TABLE_HEADERS.len()],
+    cells:         [Text<'static>; TABLE_HEADERS.len()],
     /// Stable invocation identity for viewport planning.
-    source:  &'a TrackedRow,
+    source:        &'a TrackedRow,
     /// Lines the row occupies. The command is the one cell that ever
     /// asks for more than one, and it asks for as many as its line
     /// wrapped to.
-    lines:   u16,
-    /// Original command retained only to classify the boundary of an actual cut.
-    command: &'a CommandText,
-    /// Detail used to prepare the command cell.
-    detail:  SummaryDetail,
-    /// Tree mode used to prepare the command cell.
-    tree:    ProcessTree,
+    lines:         u16,
+    /// Solved width used by both wrapping and height-cut continuation.
+    command_width: u16,
+    /// Ground used to retain the row's faded styles in a budgeted cut.
+    ground:        Color,
+
+    /// Display mode used to prepare the command cell.
+    view: CommandView,
 }
 
 impl LaidOutProcessRow<'_> {
@@ -5418,28 +5434,86 @@ impl LaidOutProcessRow<'_> {
                 .into_iter()
                 .enumerate()
                 .filter(|(column, _)| layout.columns.contains(column))
-                .map(|(_, cell)| cell),
+                .map(|(column, cell)| {
+                    if numeric_column(column) {
+                        cell.right_aligned()
+                    } else {
+                        cell
+                    }
+                }),
         )
         .height(self.lines)
     }
 
-    /// Styled text immediately below the one visible line where this command was cut.
-    fn cut_command_continuation(&self, first_hidden_line: usize) -> CutCommandContinuation {
-        let command = displayed_command(self.command, self.detail, self.tree);
-        command_line_continuation(
-            &command,
-            &self.cells[COMMAND_COLUMN].lines,
-            first_hidden_line,
+    /// The wrapper produces the cut row directly from the selected units.
+    fn cut_command_continuation(&self, visible_lines: usize) -> Line<'static> {
+        let words = styled_process_command_words(self.source, &self.view, self.ground);
+        wrapped_command(
+            words,
+            self.command_width,
+            cut_mark_style(self.ground, self.source.faded()),
         )
+        .into_rows(visible_lines)
+        .pop()
+        .unwrap_or_default()
     }
 }
 
-fn command_cell(
+/// Selection and wrapping share the exact styled parsed-word list.
+fn process_command_words(
+    command: &CommandText,
+    view: &CommandView,
+    program: Style,
+    arguments: Style,
+    ground: Color,
+    faded: u8,
+) -> Vec<StyledCommandWord> {
+    let mut spans = Vec::new();
+    let profile = profile_label(command);
+    if !profile.is_empty() {
+        spans.push(StyledCommandWord::Independent(Span::styled(
+            profile,
+            cut_mark_style(ground, faded),
+        )));
+    }
+    spans.push(StyledCommandWord::Independent(Span::styled(
+        displayed_program(command, view).to_string(),
+        program,
+    )));
+    let words = match view.arguments {
+        ArgumentDetail::All => command.words().iter().collect(),
+        ArgumentDetail::Default => command.selected_words(&view.defaults),
+    };
+    spans.extend(
+        words
+            .into_iter()
+            .map(|word| StyledCommandWord::argument(word, arguments)),
+    );
+    spans
+}
+
+fn command_cell(row: &TrackedRow, layout: &CellTableLayout) -> Text<'static> {
+    let command_width = layout.column_width(COMMAND_COLUMN);
+    if command_width == 0 {
+        Text::default()
+    } else {
+        let spans = styled_process_command_words(row, &layout.view, layout.ground);
+        wrapped_command(
+            spans,
+            command_width,
+            cut_mark_style(layout.ground, row.faded()),
+        )
+        .into_text()
+    }
+}
+
+/// Style selection is identical for measured rows and their budgeted cut rows.
+fn styled_process_command_words(
     row: &TrackedRow,
-    layout: &CellTableLayout,
-    arguments_text: String,
-    muted: Style,
-) -> Text<'static> {
+    view: &CommandView,
+    ground: Color,
+) -> Vec<StyledCommandWord> {
+    let muted = Style::default().fg(blend_color(label_color(), ground, row.faded()));
     let process = &row.process;
     let faded = row.faded();
     let program = if row.is_ended() {
@@ -5452,29 +5526,7 @@ fn command_cell(
     } else {
         Style::default().fg(success_color())
     };
-    let command_width = layout.column_width(COMMAND_COLUMN);
-    if command_width == 0 {
-        Text::default()
-    } else {
-        let mut spans = Vec::new();
-        let profile = profile_label(&process.command);
-        if !profile.is_empty() {
-            spans.push(Span::styled(profile, cut_mark_style(layout.ground, faded)));
-        }
-        spans.extend([
-            Span::styled(
-                displayed_program(&process.command, layout.tree).to_string(),
-                program,
-            ),
-            Span::styled(arguments_text, arguments),
-        ]);
-        match layout.tree {
-            ProcessTree::Long => wrapped_command(spans, command_width),
-            ProcessTree::Short => {
-                wrapped_short_command(spans, command_width, process.command.named().arguments)
-            },
-        }
-    }
+    process_command_words(&process.command, view, program, arguments, ground, faded)
 }
 
 /// Read a prepared height without cloning the row's styled cells.
@@ -5521,21 +5573,20 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         })
     {
         return LaidOutProcessRow {
-            cells:   cached.cells.clone(),
-            lines:   cached.lines,
-            source:  row,
-            command: &row.process.command,
-            detail:  layout.detail,
-            tree:    layout.tree,
+            cells:         cached.cells.clone(),
+            lines:         cached.lines,
+            source:        row,
+            command_width: layout.column_width(COMMAND_COLUMN),
+            ground:        layout.ground,
+            view:          layout.view.clone(),
         };
     }
 
-    let values =
-        ProcessRowValues::for_use(row, layout.detail, layout.tree, ProcessValueUse::SelectRows);
+    let values = ProcessRowValues::for_use(row, &layout.view, ProcessValueUse::SelectRows);
     let process = &values.source.process;
     let faded = row.faded();
     let muted = Style::default().fg(layout.ink(label_color(), faded));
-    let command = command_cell(row, layout, values.arguments, muted);
+    let command = command_cell(row, layout);
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
     let pid = number_text_if_fits(
         values.cells[PID_COLUMN].clone(),
@@ -5583,44 +5634,9 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         cells,
         lines,
         source: row,
-        command: &process.command,
-        detail: layout.detail,
-        tree: layout.tree,
-    }
-}
-
-/// The one wrapped line below a vertical cut and its source boundary.
-fn command_line_continuation(
-    command: &str,
-    lines: &[Line<'static>],
-    first_hidden_line: usize,
-) -> CutCommandContinuation {
-    let source: Vec<char> = command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .collect();
-    let mut consumed = 0usize;
-    for line in lines.iter().take(first_hidden_line) {
-        if source.get(consumed).is_some_and(char::is_ascii_whitespace) {
-            consumed = consumed.saturating_add(1);
-        }
-        consumed = consumed.saturating_add(
-            line.spans
-                .iter()
-                .map(|span| span.content.chars().count())
-                .sum::<usize>(),
-        );
-    }
-    let join = if source.get(consumed).is_some_and(char::is_ascii_whitespace) {
-        CommandContinuationJoin::WordSeparator
-    } else {
-        CommandContinuationJoin::Direct
-    };
-    CutCommandContinuation {
-        join,
-        next_line: lines[first_hidden_line].clone(),
+        command_width: layout.column_width(COMMAND_COLUMN),
+        ground: layout.ground,
+        view: layout.view.clone(),
     }
 }
 
@@ -5715,7 +5731,7 @@ fn solved_column_widths(width: u16, constraints: &[Constraint], column_spacing: 
 /// owned readings when a directory contains more than one progressing command.
 #[cfg(test)]
 fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
-    FrameTableColumnGrid::of(rows, kind, ProcessTree::Long).slots
+    FrameTableColumnGrid::of(rows, kind, CommandView::long()).slots
 }
 /// A wait or the invocation's own reading when its directory has several.
 fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
@@ -5975,7 +5991,11 @@ fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).u
 /// slots named here, so `?` lands in the bottom-right corner and stays
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
-    let globals = [StatusLineGlobal::global_shortcuts_help()];
+    let globals = [
+        StatusLineGlobal::app(AppGlobalAction::ProcessTree),
+        StatusLineGlobal::app(AppGlobalAction::Arguments),
+        StatusLineGlobal::global_shortcuts_help(),
+    ];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
@@ -5995,8 +6015,11 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     // short setting is where the display starts, so a cell full of
     // ancestry is a key that was pressed rather than a command with a
     // long history. Say which.
-    if app.tree == ProcessTree::Long {
+    if app.tree == ProcessHierarchy::Shown {
         notes.push(StatusLineNote::flag(PROCESS_TREE_NOTE_LABEL));
+    }
+    if app.arguments == ArgumentDetail::All {
+        notes.push(StatusLineNote::flag(ALL_ARGUMENTS_NOTE_LABEL));
     }
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
@@ -6076,6 +6099,7 @@ mod tests {
     use tui_pane::BackdropNotice;
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
+    use tui_pane::Globals;
     use tui_pane::TileFill;
     use tui_pane::TileGrid;
     use tui_pane::TileGrowth;
@@ -6108,11 +6132,14 @@ mod tests {
     use crate::census::scan::ProcessObservations;
     use crate::config::Config;
     use crate::constants::COMPILER_PROCESS_NAMES;
+    use crate::constants::DEFAULT_FADE_SECONDS;
     use crate::constants::LARGE_TABLE_TEST_AREA;
     use crate::constants::LARGE_TABLE_TEST_COMMAND;
     use crate::constants::LARGE_TABLE_TEST_FIRST_PID;
     use crate::constants::LARGE_TABLE_TEST_ROWS;
     use crate::constants::LOCK_WAIT_MARKER;
+    use crate::constants::MIN_CELL_HEIGHT;
+    use crate::constants::MIN_CELL_WIDTH;
     use crate::constants::PHASE_TESTING;
     use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::REGISTRATION_MAGIC;
@@ -6123,6 +6150,548 @@ mod tests {
     use crate::progress::capture_read::Phase;
     use crate::progress::capture_roots::CaptureRoots;
     use crate::progress::capture_roots::RootReadStatus;
+
+    /// Draw a real one-column table, then read only its command viewport.
+    fn argument_command_buffer(
+        arguments: &[&str],
+        view: &CommandView,
+        width: u16,
+        height: u16,
+    ) -> Buffer {
+        argument_program_buffer("cargo", arguments, view, width, height)
+    }
+
+    fn argument_program_buffer(
+        program: &str,
+        arguments: &[&str],
+        view: &CommandView,
+        width: u16,
+        height: u16,
+    ) -> Buffer {
+        let mut row = row(None);
+        row.process.command = CommandText::of(program, arguments);
+        let indent = cell_width(SECTION_ITEM_INDENT);
+        let area = Rect::new(
+            0,
+            0,
+            width + indent + CONTENT_RIGHT_INSET,
+            height + TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT,
+        );
+        let mut layout = CellTableLayout::of(&[&row], TableKind::Summary, area, Color::Reset, view);
+        layout.columns = vec![COMMAND_COLUMN];
+        layout.column_widths = vec![width];
+        layout.constraints = vec![Constraint::Length(width)];
+        let groups = group_by_path(&[&row], PinnedGroup::Unpinned);
+        let headings = TableAccountHeadings::of(&groups, width);
+        let mut drawn = Buffer::empty(area);
+        let body = Rect {
+            y: TABLE_HEADER_HEIGHT,
+            height: height + GROUP_HEADER_HEIGHT,
+            ..area
+        };
+        let outcome = draw_path_group(
+            &mut drawn,
+            body,
+            &groups[0],
+            &layout,
+            vec![process_row(&row, &layout)],
+            &headings,
+        );
+        if !matches!(outcome.continuation, TableContinuation::FullyDrawn) {
+            mark_table_continuation(&mut drawn, area, &layout, outcome.continuation, row.faded());
+        }
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+        for y in 0..height {
+            for x in 0..width {
+                buffer[(x, y)] =
+                    drawn[(x + indent, y + TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT)].clone();
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn a_dropped_command_word_keeps_its_separator_before_the_cut_mark() {
+        let buffer = argument_command_buffer(
+            &["nextest", "run", "--locked", "--offline"],
+            CommandView::long(),
+            19,
+            1,
+        );
+        assert_eq!(buffer_line(&buffer, 0), "cargo nextest run …");
+        assert_eq!(buffer[(18, 0)].fg, cut_mark_ink(Color::Reset, 0));
+        assert_eq!(buffer[(14, 0)].fg, success_color());
+    }
+
+    #[test]
+    fn a_height_cut_never_draws_a_lint_flag_without_its_value() {
+        for (width, expected) in [
+            (20, "cargo clippy -- …"),
+            (21, "cargo clippy -- -D w…"),
+            (22, "cargo clippy -- -D wa…"),
+        ] {
+            let buffer = argument_command_buffer(
+                &["clippy", "--", "-D", "warnings"],
+                CommandView::long(),
+                width,
+                1,
+            );
+            let drawn = buffer_line(&buffer, 0);
+            assert_eq!(drawn.trim_end(), expected, "width {width}");
+            let marker = u16::try_from(drawn.find(ELISION).unwrap()).unwrap();
+            assert_eq!(buffer[(marker, 0)].fg, cut_mark_ink(Color::Reset, 0));
+            assert_eq!(buffer[(6, 0)].fg, success_color());
+        }
+    }
+
+    #[test]
+    fn a_height_cut_inside_one_spaced_argv_entry_keeps_word_separators() {
+        let buffer = argument_command_buffer(
+            &["build", "--config=env.FOO=\"ab  cd efghij\""],
+            CommandView::long(),
+            27,
+            2,
+        );
+        let rows = buffer_rows(&buffer);
+        assert!(rows[1].contains("cd "), "{rows:?}");
+        assert!(!rows[1].contains("cdef"), "{rows:?}");
+        let marker = u16::try_from(rows[1].find(ELISION).unwrap()).unwrap();
+        assert_eq!(buffer[(marker, 1)].fg, cut_mark_ink(Color::Reset, 0));
+        assert_eq!(buffer[(0, 1)].fg, success_color());
+    }
+
+    #[test]
+    fn rustc_lint_arguments_keep_their_values_when_selected_and_wrapped() {
+        let selected = CommandView::new(
+            ProcessHierarchy::Hidden,
+            ArgumentDetail::Default,
+            &DefaultArguments::new(
+                ["D", "W", "A", "F", "deny", "warn", "allow", "forbid"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+        );
+        for flag in [
+            "-D", "-W", "-A", "-F", "--deny", "--warn", "--allow", "--forbid",
+        ] {
+            for view in [&selected, CommandView::long()] {
+                for (program, mut arguments) in [
+                    ("cargo", vec!["rustc", "--"]),
+                    ("rustc", vec![]),
+                    ("clippy-driver", vec![]),
+                ] {
+                    arguments.extend([flag, "warnings"]);
+                    let expected = format!("{flag} warnings");
+                    let width = cell_width(&expected).max(11);
+                    let buffer = argument_program_buffer(program, &arguments, view, width, 5);
+                    let lines = buffer_rows(&buffer);
+                    let y = lines
+                        .iter()
+                        .position(|line| line.trim() == expected)
+                        .unwrap_or_else(|| panic!("{program}: {view:?}: {lines:?}"));
+                    assert_eq!(buffer[(0, u16::try_from(y).unwrap())].fg, success_color());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_ancestor_lint_arguments_wrap_with_their_values() {
+        let mut group = cargo_group(invocation(500, &["check"]));
+        let mut parent = ancestor(100, "cargo");
+        parent.command = CommandText::of("cargo", &["clippy", "--", "-D", "warnings"]);
+        group.ancestry = AncestryWalk::Ended(vec![parent]);
+        let mut roster = Roster::new();
+        roster.observe(vec![group], Instant::now());
+        let view = CommandView::new(
+            ProcessHierarchy::Shown,
+            ArgumentDetail::Default,
+            &DefaultArguments::new(vec!["D".to_string()]),
+        );
+        let group = &roster.groups()[0];
+        let walk = drawn_ancestry(group, &view);
+        let levels: Vec<_> = walk
+            .as_slice()
+            .iter()
+            .map(AncestryLevel::Ancestor)
+            .collect();
+        let indentation = AncestryIndentation::of(&levels);
+        let (indent, label) = indentation.stem(levels[0], 0, 80);
+        let width = cell_width(&indent) + cell_width(&label) + 1 + 11;
+        let lines = ancestry_lines(levels[0], 0, width, Color::Blue, Color::Green, &indentation);
+        let area = Rect::new(0, 0, width, 6);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(lines).render(area, &mut buffer);
+        let rows = buffer_rows(&buffer);
+        let y = rows
+            .iter()
+            .position(|line| line.trim() == "-D warnings")
+            .unwrap_or_else(|| panic!("{rows:?}"));
+        let x = rows[y].find("-D").unwrap();
+        assert_eq!(
+            buffer[(u16::try_from(x).unwrap(), u16::try_from(y).unwrap())].fg,
+            Color::Green
+        );
+    }
+
+    #[test]
+    fn a_height_cut_keeps_the_separator_after_a_spaced_argv_value() {
+        let buffer = argument_command_buffer(
+            &["build", "--config", "build.jobs  =  1", "--workspace"],
+            CommandView::long(),
+            30,
+            2,
+        );
+        let rows = buffer_rows(&buffer);
+        assert!(rows[1].contains("build.jobs  =  1 --"), "{rows:?}");
+        assert!(rows[1].trim_end().ends_with(ELISION), "{rows:?}");
+        let end = rows[1].find(ELISION).unwrap();
+        assert_eq!(
+            buffer[(u16::try_from(end).unwrap(), 1)].fg,
+            cut_mark_ink(Color::Reset, 0)
+        );
+    }
+
+    #[test]
+    fn a_selected_test_boolean_does_not_take_the_test_filter() {
+        let view = CommandView::new(
+            ProcessHierarchy::Hidden,
+            ArgumentDetail::Default,
+            &DefaultArguments::new(vec!["nocapture".to_string()]),
+        );
+        let buffer =
+            argument_command_buffer(&["test", "--", "--nocapture", "my_test"], &view, 80, 2);
+        assert_eq!(buffer_line(&buffer, 0).trim(), "cargo test --nocapture");
+        assert!(!buffer_rows(&buffer).join("\n").contains("my_test"));
+        assert_eq!(buffer[(11, 0)].fg, success_color());
+    }
+
+    #[test]
+    fn an_offline_flag_wraps_separately_from_its_subcommand() {
+        let buffer = argument_command_buffer(&["--offline", "check"], CommandView::long(), 11, 4);
+        let lines = buffer_rows(&buffer);
+        assert_eq!(
+            lines.iter().map(|line| line.trim()).collect::<Vec<_>>(),
+            ["cargo", "--offline", "check", ""]
+        );
+        assert_eq!(buffer[(0, 1)].fg, success_color());
+    }
+
+    #[test]
+    fn a_config_flag_wraps_with_its_whole_argv_value() {
+        let buffer = argument_command_buffer(
+            &["build", "--config", "build.jobs = 1"],
+            CommandView::long(),
+            32,
+            3,
+        );
+        let lines = buffer_rows(&buffer);
+        assert_eq!(lines[1].trim(), "--config build.jobs = 1", "{lines:?}");
+        assert_eq!(buffer[(0, 1)].fg, success_color());
+        assert_eq!(buffer[(21, 1)].fg, success_color());
+    }
+
+    #[test]
+    fn an_oversized_flag_value_uses_the_neutral_cut_ink() {
+        let buffer = argument_command_buffer(
+            &["clippy", "--", "-D", "warnings"],
+            CommandView::long(),
+            10,
+            5,
+        );
+        let lines = buffer_rows(&buffer);
+        let y = lines
+            .iter()
+            .position(|line| line.contains("-D warnin"))
+            .expect("flag row");
+        assert_eq!(buffer[(9, u16::try_from(y).unwrap())].symbol(), ELISION);
+        assert_eq!(
+            buffer[(9, u16::try_from(y).unwrap())].fg,
+            cut_mark_ink(Color::Reset, 0)
+        );
+        assert_eq!(buffer[(0, u16::try_from(y).unwrap())].fg, success_color());
+    }
+
+    #[test]
+    fn a_hidden_hierarchy_has_a_measured_foot_and_no_cut_mark() {
+        let mut group = cargo_group(invocation(500, &["check"]));
+        group.ancestry = AncestryWalk::LimitCut(vec![ancestor(100, "claude")]);
+        let mut roster = Roster::new();
+        roster.observe(vec![group], Instant::now());
+        let stats = SccacheStats::new();
+        let view = CommandView::new(
+            ProcessHierarchy::Hidden,
+            ArgumentDetail::Default,
+            &DefaultArguments::default(),
+        );
+        let cells = Cells::new(&roster, &[], &view, &stats);
+        let area = Rect::new(0, 0, 160, 30);
+        let (grid, buffer) = settled_buffer_with_cells(&cells, area);
+        for placement in grid.placements(
+            area,
+            TileGrowth {
+                initial_rows:  12,
+                fill:          TileFill::Redistribute,
+                widen_summary: false,
+            },
+        ) {
+            if !matches!(placement.content, TileContent::Group(_)) {
+                continue;
+            }
+            let inner = placement.frame.inner();
+            let rows: Vec<String> = (inner.top()..inner.bottom())
+                .map(|y| {
+                    (inner.left()..inner.right())
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect()
+                })
+                .collect();
+            assert!(!rows.iter().any(|line| line.contains(ELISION)), "{rows:?}");
+            let foot = rows.last().expect("foot");
+            let start = foot.find("content rows: ").expect("row count") + "content rows: ".len();
+            let x = inner.left() + u16::try_from(foot[..start].chars().count()).unwrap();
+            assert_eq!(
+                buffer[(x, inner.bottom() - 1)].fg,
+                success_color(),
+                "{rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_shows_its_subcommand_and_the_default_arguments() {
+        let buffer = argument_command_buffer(
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            CommandView::short(),
+            100,
+            1,
+        );
+        assert_eq!(
+            buffer_line(&buffer, 0).trim(),
+            "cargo clippy --workspace --all-targets"
+        );
+        let view = CommandView::new(
+            ProcessHierarchy::Hidden,
+            ArgumentDetail::Default,
+            &crate::config::DefaultArguments::new(vec!["features".to_string(), "D".to_string()]),
+        );
+        let custom = argument_command_buffer(
+            &[
+                "+nightly",
+                "--offline",
+                "clippy",
+                "--workspace",
+                "--features",
+                "extras",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            &view,
+            100,
+            1,
+        );
+        assert_eq!(
+            buffer_line(&custom, 0).trim(),
+            "cargo +nightly clippy --features extras -D warnings"
+        );
+    }
+
+    #[test]
+    fn a_row_with_hidden_arguments_and_no_cut_draws_no_ellipsis() {
+        let buffer = argument_command_buffer(
+            &["check", "--manifest-path", "/tmp/project/Cargo.toml"],
+            CommandView::short(),
+            80,
+            1,
+        );
+        assert_eq!(buffer_line(&buffer, 0).trim(), "cargo check");
+    }
+
+    #[test]
+    fn a_row_cut_by_width_draws_its_ellipsis_at_the_cut() {
+        let buffer =
+            argument_command_buffer(&["clippy", "--workspace"], CommandView::short(), 16, 1);
+        assert_eq!(buffer_line(&buffer, 0).trim(), "cargo clippy --…");
+        assert_eq!(buffer[(15, 0)].symbol(), ELISION);
+    }
+
+    fn argument_toggle_app() -> App {
+        let mut app = App::new_for_test().expect("argument toggle app");
+        app.roster = roster_with_ancestry(
+            invocation(
+                4100,
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            ),
+            vec![],
+            vec![ancestor(4000, "bash --login")],
+        );
+        app
+    }
+
+    fn argument_toggle_screen(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(180, 30)).expect("argument terminal");
+        terminal
+            .draw(|frame| {
+                draw_panes(frame, app, frame.area(), TileGridContents::Shown);
+            })
+            .expect("argument frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| {
+                draw_panes(frame, app, frame.area(), TileGridContents::Shown);
+            })
+            .expect("settled argument frame");
+        buffer_rows(terminal.backend().buffer()).join("\n")
+    }
+
+    fn press_argument_key(app: &mut App, key: char) {
+        let action = crate::globals::AppGlobalAction::defaults()
+            .into_scope_map()
+            .action_for(&tui_pane::KeyBind::from(key))
+            .expect("bound display key");
+        crate::globals::AppGlobalAction::dispatcher()(action, app);
+    }
+
+    #[test]
+    fn p_shows_the_hierarchy_and_keeps_the_default_arguments() {
+        let mut app = argument_toggle_app();
+        let hidden = argument_toggle_screen(&mut app);
+        assert!(!hidden.contains("4000"), "{hidden}");
+        press_argument_key(&mut app, 'p');
+        let screen = argument_toggle_screen(&mut app);
+        assert!(screen.contains("4000"), "{screen}");
+        assert!(screen.contains("--workspace --all-targets"), "{screen}");
+        assert!(
+            !screen.contains("warnings") && !screen.contains("--login"),
+            "{screen}"
+        );
+        press_argument_key(&mut app, 'p');
+        let hidden_again = argument_toggle_screen(&mut app);
+        assert!(!hidden_again.contains("4000"), "{hidden_again}");
+    }
+
+    #[test]
+    fn h_shows_and_hides_all_arguments() {
+        let mut app = argument_toggle_app();
+        press_argument_key(&mut app, 'h');
+        let all = argument_toggle_screen(&mut app);
+        assert!(
+            all.contains("-D warnings") && !all.contains("4000"),
+            "{all}"
+        );
+        press_argument_key(&mut app, 'p');
+        let hierarchy = argument_toggle_screen(&mut app);
+        assert!(
+            hierarchy.contains("4000")
+                && hierarchy.contains("--login")
+                && hierarchy.contains("-D warnings"),
+            "{hierarchy}"
+        );
+        press_argument_key(&mut app, 'h');
+        let selected = argument_toggle_screen(&mut app);
+        assert!(selected.contains("--workspace --all-targets"), "{selected}");
+        assert!(
+            !selected.contains("warnings")
+                && !selected.contains("--login")
+                && selected.contains("4000"),
+            "{selected}"
+        );
+    }
+
+    #[test]
+    fn cpu_values_align_on_their_right_edge() {
+        let mut first = row(None);
+        let mut second = same_second(GAUGE_PATH, 500);
+        first.process.resource_use.cpu = Measurement::Reading(99.0);
+        second.process.resource_use.cpu = Measurement::Reading(302.0);
+        let area = Rect::new(0, 0, 200, 8);
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            &[&first, &second],
+            TableKind::Summary,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            CommandView::long(),
+        );
+        let lines = buffer_rows(&buffer);
+        let first = lines
+            .iter()
+            .find(|line| line.contains("99%"))
+            .expect("first cpu reading");
+        let second = lines
+            .iter()
+            .find(|line| line.contains("302%"))
+            .expect("second cpu reading");
+        assert_eq!(first.find('%'), second.find('%'), "{lines:?}");
+    }
+
+    #[test]
+    fn a_wrapped_command_keeps_a_flag_with_its_value() {
+        let buffer = argument_command_buffer(
+            &["clippy", "--", "-D", "warnings"],
+            CommandView::long(),
+            11,
+            4,
+        );
+        let lines = buffer_rows(&buffer);
+        assert!(
+            lines.iter().any(|line| line.trim() == "-D warnings"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_runs_out_of_rows_after_its_wrap_ends_with_an_ellipsis() {
+        let mut lead = invocation(
+            4100,
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        );
+        lead.resource_use.cpu = Measurement::Reading(0.0);
+        let roster = roster_with_ancestry(lead, vec![], vec![]);
+        let area = Rect::new(0, 0, 40, 4);
+        let mut buffer = Buffer::empty(area);
+        draw_contents(
+            &mut buffer,
+            &roster,
+            &TileContent::Group(roster.groups()[0].id.clone()),
+            area,
+            Color::Reset,
+            &[],
+            CommandView::short(),
+        );
+        let lines = buffer_rows(&buffer);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("--w") && line.trim_end().ends_with(ELISION)),
+            "{lines:?}"
+        );
+    }
 
     /// The state of a command compiling `done` of `total` units.
     fn compiling(done: usize, total: usize) -> RunState {
@@ -6334,14 +6903,15 @@ mod tests {
     #[test]
     fn one_row_cells_keep_their_subcommands_in_a_blocked_frame() {
         let mut app = blocked_command_frame(true);
+        app.loaded_config.config.commands.default_arguments = DefaultArguments::new(Vec::new());
         let terminal = draw_nested_progress(&mut app);
         let placements = app.tiles.placements(
             Rect::new(0, 0, 64, 50),
             app.loaded_config.config.tiles.growth(),
         );
         for (pid, command) in [
-            (850_000, "[p20h] cargo build …"),
-            (860_000, "cargo nextest run …"),
+            (850_000, "[p20h] cargo build"),
+            (860_000, "cargo nextest run"),
         ] {
             let cell = placements
                 .iter()
@@ -6476,10 +7046,11 @@ mod tests {
 
     #[test]
     fn working_invocations_share_resource_offsets_with_an_ordinary_cell() {
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        for view in [CommandView::short(), CommandView::long()] {
             let mut app = App::new_for_test().expect("app");
             app.loaded_config.config.tiles.view = TileView::Cells;
-            app.tree = tree;
+            app.tree = view.hierarchy;
+            app.arguments = view.arguments;
             app.tiles.set_min_tile_height(4);
             let mut first = invocation(870_000, &["nextest", "run", "--workspace"]);
             first.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(1, 2)));
@@ -6636,11 +7207,11 @@ mod tests {
         );
     }
 
-    fn hidden_state_frame(tree: ProcessTree) -> App {
-        hidden_state_frame_with_arguments(tree, &["clippy", "--locked", "--offline", "-j", "1"])
+    fn hidden_state_frame(view: &CommandView) -> App {
+        hidden_state_frame_with_arguments(view, &["clippy", "--locked", "--offline", "-j", "1"])
     }
 
-    fn hidden_state_frame_with_arguments(tree: ProcessTree, blocked_arguments: &[&str]) -> App {
+    fn hidden_state_frame_with_arguments(view: &CommandView, blocked_arguments: &[&str]) -> App {
         let mut app = App::new_for_test().expect("app");
         app.loaded_config.config.tiles.view = TileView::Cells;
         app.tiles.set_min_tile_height(6);
@@ -6649,7 +7220,8 @@ mod tests {
                 .expect("tile config")
                 .initial_rows;
         app.loaded_config.config.commands.hidden.clear();
-        app.tree = tree;
+        app.tree = view.hierarchy;
+        app.arguments = view.arguments;
         app.roster = Roster::for_test(SessionColumnWidths::for_machine(
             64,
             64 * BYTES_PER_GIBIBYTE,
@@ -6699,8 +7271,8 @@ mod tests {
         app
     }
 
-    fn subcommand_frame(tree: ProcessTree, blocked: &[&str], first_pid: u32) -> App {
-        let mut app = hidden_state_frame_with_arguments(tree, blocked);
+    fn subcommand_frame(view: &CommandView, blocked: &[&str], first_pid: u32) -> App {
+        let mut app = hidden_state_frame_with_arguments(view, blocked);
         let groups = (0..8)
             .map(|index| {
                 let pid = first_pid + index * 100;
@@ -6748,7 +7320,7 @@ mod tests {
 
     fn assert_frame_column_priority(
         grids: &FrameColumnGrids,
-        tree: ProcessTree,
+        view: &CommandView,
         pid: u32,
         failures: &mut Vec<String>,
     ) {
@@ -6804,7 +7376,7 @@ mod tests {
                 let columns = grid.columns_for_command_name(available).columns;
                 if !expected.iter().all(|column| columns.contains(column)) {
                     failures.push(format!(
-                        "{tree:?}, pid {pid}, width {width}, {:?}: expected {expected:?}, got {:?}",
+                        "{view:?}, pid {pid}, width {width}, {:?}: expected {expected:?}, got {:?}",
                         grid.kind, columns
                     ));
                 }
@@ -6835,7 +7407,7 @@ mod tests {
 
     fn assert_shot_frame_columns(
         cells: &Cells<'_>,
-        tree: ProcessTree,
+        view: &CommandView,
         arguments: &[&str],
         pid: u32,
         shot_width: u16,
@@ -6853,7 +7425,7 @@ mod tests {
                     "{text}"
                 );
             }
-            if tree == ProcessTree::Long && pid >= 3_920_000 {
+            if view.arguments == ArgumentDetail::All && pid >= 3_920_000 {
                 assert!(header.contains("mem"), "{text}");
             }
             let command = if text.contains(&(pid + 200).to_string()) {
@@ -6895,7 +7467,7 @@ mod tests {
 
     fn assert_main_state_columns(cells: &Cells<'_>, width: u16, failures: &mut Vec<String>) {
         let width = if width == 48 { 64 } else { width };
-        let tree = cells.grids.commands.0.tree;
+        let view = &cells.grids.commands.0.view;
         for group in cells.roster.groups() {
             if !matches!(
                 group.lead.process.state,
@@ -6914,11 +7486,11 @@ mod tests {
             let text = buffer_rows(&buffer).join("\n");
             let header = buffer_line(&buffer, 0);
             if width >= 54 && (!header.contains("state") || !text.contains("blocked")) {
-                failures.push(format!("filled state at {width}, {tree:?}: {text}"));
+                failures.push(format!("filled state at {width}, {view:?}: {text}"));
             }
             if width == 64
                 && (!header.contains("cpu")
-                    || (tree == ProcessTree::Long && !header.contains("mem")))
+                    || (view.arguments == ArgumentDetail::All && !header.contains("mem")))
             {
                 failures.push(format!("resources beside state: {text}"));
             }
@@ -6939,7 +7511,7 @@ mod tests {
 
     #[derive(Clone, Copy)]
     struct ShotColumnFixture {
-        tree:       ProcessTree,
+        view:       &'static CommandView,
         arguments:  &'static [&'static str],
         pid:        u32,
         blocked:    bool,
@@ -6950,7 +7522,7 @@ mod tests {
     fn shot_column_fixtures() -> [ShotColumnFixture; 7] {
         [
             (
-                ProcessTree::Short,
+                CommandView::short(),
                 &["clippy", "--locked"][..],
                 860_000,
                 true,
@@ -6958,7 +7530,7 @@ mod tests {
                 50,
             ),
             (
-                ProcessTree::Long,
+                CommandView::long(),
                 &["clippy", "--locked"][..],
                 870_000,
                 true,
@@ -6966,7 +7538,7 @@ mod tests {
                 50,
             ),
             (
-                ProcessTree::Short,
+                CommandView::short(),
                 &["install", "cargo-nextest", "--locked"][..],
                 3_910_000,
                 true,
@@ -6974,7 +7546,7 @@ mod tests {
                 50,
             ),
             (
-                ProcessTree::Short,
+                CommandView::short(),
                 &["clippy", "--locked"][..],
                 4_180_000,
                 true,
@@ -6982,7 +7554,7 @@ mod tests {
                 120,
             ),
             (
-                ProcessTree::Long,
+                CommandView::long(),
                 &["install", "cargo-nextest-with-extra-components", "--locked"][..],
                 3_920_000,
                 false,
@@ -6990,7 +7562,7 @@ mod tests {
                 50,
             ),
             (
-                ProcessTree::Long,
+                CommandView::long(),
                 &[
                     "clippy",
                     "--locked",
@@ -7003,7 +7575,7 @@ mod tests {
                 50,
             ),
             (
-                ProcessTree::Short,
+                CommandView::short(),
                 &["clippy", "--locked"][..],
                 4_190_000,
                 false,
@@ -7012,8 +7584,8 @@ mod tests {
             ),
         ]
         .map(
-            |(tree, arguments, pid, blocked, shot_width, height)| ShotColumnFixture {
-                tree,
+            |(view, arguments, pid, blocked, shot_width, height)| ShotColumnFixture {
+                view,
                 arguments,
                 pid,
                 blocked,
@@ -7126,7 +7698,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 49);
         let sccache = SccacheStats::new();
         let hidden = hidden_commands();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Short, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placements = grid.placements(
             area,
@@ -7160,46 +7732,6 @@ mod tests {
                 painted,
                 "height={height}: {}",
                 buffer_rows(&buffer).join("\n")
-            );
-        }
-    }
-
-    #[test]
-    fn a_long_cut_drops_the_space_before_its_mark() {
-        let mut row = same_second("/work/ci", 1_425_874);
-        row.process.command =
-            CommandText::of("cargo", &["nextest", "run", "--locked", "--offline"]);
-        let rows = [&row];
-        let area = Rect::new(0, 0, 62, 3);
-        let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, ProcessTree::Long);
-        let layout =
-            CellTableLayout::for_table(&grid, area, Color::Reset, &rows, PinnedGroup::Unpinned);
-        let mut line = Line::from("cargo nextest run --locked --offline");
-        mark_cut_line(&mut line, 28);
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "cargo nextest run --locked…");
-        let mut buffer = Buffer::empty(area);
-        frame_draw_process_table(
-            &mut buffer,
-            area,
-            &rows,
-            Color::Reset,
-            PinnedGroup::Unpinned,
-            &grid,
-        );
-        let command = layout.command_area(area);
-        let rendered = table_column_text(&buffer, &layout, COMMAND_COLUMN, 2);
-        assert!(command.width > 0);
-        if rendered.ends_with(ELISION) {
-            assert!(
-                !rendered
-                    .trim_end_matches(ELISION)
-                    .ends_with(char::is_whitespace),
-                "{rendered}"
             );
         }
     }
@@ -7246,7 +7778,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 50);
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 50);
         let area = Rect::new(0, 0, 200, 50);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placement = grid
@@ -7284,7 +7816,7 @@ mod tests {
 
     #[test]
     fn progress_in_the_summary_does_not_tighten_the_cells_gap() {
-        let mut app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 2_593_000);
+        let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 2_593_000);
         let groups = app
             .roster
             .groups()
@@ -7303,7 +7835,7 @@ mod tests {
             .collect();
         app.roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(app.roster.visible(&[]), ProcessTree::Short, &stats, 120);
+        let cells = Cells::for_frame(app.roster.visible(&[]), CommandView::short(), &stats, 120);
         let area = Rect::new(0, 0, 46, 30);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -7378,7 +7910,7 @@ mod tests {
                     CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
             }
             let rows = [&first, &neighbour];
-            let mut grid = FrameTableColumnGrid::of(&rows, TableKind::Command, ProcessTree::Long);
+            let mut grid = FrameTableColumnGrid::of(&rows, TableKind::Command, CommandView::long());
             if !blocked {
                 // Another table's reading reserves this alignment slot in longcut.
                 let mut slots = grid.slots.clone();
@@ -7405,11 +7937,14 @@ mod tests {
                 &grid,
             );
             let line = buffer_line(&buffer, height - 1);
-            let edge = command.right() - 1;
-            if buffer[(edge, height - 1)].symbol() != ELISION
-                || buffer[(edge - 1, height - 1)].symbol() == " "
-                || line.matches(ELISION).count() != 1
-            {
+            let mark = (command.left()..command.right())
+                .find(|&x| buffer[(x, height - 1)].symbol() == ELISION);
+            let valid_cut = mark.is_some_and(|x| {
+                buffer[(x, height - 1)].fg == cut_mark_ink(Color::Reset, first.faded())
+                    && (x + 1..command.right())
+                        .all(|after| buffer[(after, height - 1)].symbol() == " ")
+            });
+            if !valid_cut || line.matches(ELISION).count() != 1 {
                 failures.push(format!("blocked={blocked}: {line}"));
             }
         }
@@ -7461,7 +7996,7 @@ mod tests {
         .collect();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 32);
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 32);
         let allocations: Vec<_> = roster
             .groups()
             .iter()
@@ -7482,9 +8017,9 @@ mod tests {
 
     #[test]
     fn blocked_frames_keep_ordinary_cell_gaps_at_two_hundred_columns() {
-        let mut app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 4_180_000);
+        let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 4_180_000);
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(app.roster.visible(&[]), ProcessTree::Short, &stats, 120);
+        let cells = Cells::for_frame(app.roster.visible(&[]), CommandView::short(), &stats, 120);
         let area = Rect::new(0, 0, 198, 8);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -7534,7 +8069,7 @@ mod tests {
                 pid: first.process.pid,
             };
             let rows = [&first, &child];
-            let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, ProcessTree::Long);
+            let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, CommandView::long());
             grid.row_end.set(TableRowEnd::Reserved);
             let area = Rect::new(0, 0, 62, 3);
             let mut buffer = Buffer::empty(area);
@@ -7559,7 +8094,7 @@ mod tests {
         row.process.command = CommandText::of("cargo", &["build", "--release", "--locked"]);
         row.process.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(98, 100)));
         let rows = [&row];
-        let grid = FrameTableColumnGrid::of(&rows, TableKind::Summary, ProcessTree::Short);
+        let grid = FrameTableColumnGrid::of(&rows, TableKind::Summary, CommandView::short());
         for width in [38, 46] {
             let area = Rect::new(0, 0, width, 8);
             let mut buffer = Buffer::empty(area);
@@ -7579,7 +8114,8 @@ mod tests {
             );
             if width == 38 {
                 assert!(lines[2].contains("[release] cargo"), "{lines:#?}");
-                assert!(lines[3].trim().starts_with("build"), "{lines:#?}");
+                assert!(lines[2].contains("cargo build"), "{lines:#?}");
+                assert!(!lines[2].contains(ELISION), "{lines:#?}");
             }
         }
     }
@@ -7589,8 +8125,8 @@ mod tests {
         let mut row = same_second("~/project", 2_373_911);
         row.process.command = CommandText::of("cargo", &["build", "--release"]);
         row.process.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(98, 100)));
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
-            let grid = FrameTableColumnGrid::of(&[&row], TableKind::Summary, tree);
+        for view in [CommandView::short(), CommandView::long()] {
+            let grid = FrameTableColumnGrid::of(&[&row], TableKind::Summary, view);
             let area = Rect::new(0, 0, 18, 5);
             let mut buffer = Buffer::empty(area);
             frame_draw_process_table(
@@ -7614,7 +8150,7 @@ mod tests {
     }
 
     fn assert_progress_summary(failures: &mut Vec<String>) {
-        let mut app = hidden_state_frame(ProcessTree::Short);
+        let mut app = hidden_state_frame(CommandView::short());
         app.loaded_config.config.tiles.view = TileView::Summary;
         let area = Rect::new(0, 0, 48, 120);
         let mut terminal = Terminal::new(TestBackend::new(48, 120)).unwrap();
@@ -7637,7 +8173,7 @@ mod tests {
 
     fn assert_shot_column_fixture(fixture: ShotColumnFixture) -> Vec<String> {
         let ShotColumnFixture {
-            tree,
+            view,
             arguments,
             pid,
             blocked,
@@ -7645,7 +8181,7 @@ mod tests {
             height,
         } = fixture;
         let mut failures = Vec::new();
-        let mut app = subcommand_frame(tree, arguments, pid);
+        let mut app = subcommand_frame(view, arguments, pid);
         let groups = app
             .roster
             .groups()
@@ -7682,12 +8218,12 @@ mod tests {
         }
         {
             let stats = SccacheStats::default();
-            let cells = Cells::for_frame(app.roster.visible(&[]), tree, &stats, height);
+            let cells = Cells::for_frame(app.roster.visible(&[]), view, &stats, height);
             cells.grids.commands.0.row_end.set(TableRowEnd::Reserved);
             cells.grids.summary.0.row_end.set(TableRowEnd::Reserved);
             assert_main_state_columns(&cells, shot_width, &mut failures);
-            assert_frame_column_priority(&cells.grids, tree, pid, &mut failures);
-            assert_shot_frame_columns(&cells, tree, arguments, pid, shot_width);
+            assert_frame_column_priority(&cells.grids, view, pid, &mut failures);
+            assert_shot_frame_columns(&cells, view, arguments, pid, shot_width);
         }
         if shot_width == 48 {
             let texts = state_frame_text_when_settled(&mut app, shot_width, height);
@@ -7704,14 +8240,14 @@ mod tests {
     }
 
     fn assert_duration_and_long_tail_columns(failures: &mut Vec<String>) {
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        for view in [CommandView::short(), CommandView::long()] {
             let mut first = same_second("/work/release", 1_012_329);
             first.process.parent = VisibleParent::Ancestor(1_012_300);
             first.process.resource_use.cpu = Measurement::Reading(6400.0);
             first.process.command = CommandText::of("cargo", &["build", "--release", "--locked"]);
             first.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
             let rows = [&first];
-            let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, tree);
+            let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, view);
             grid.row_end.set(TableRowEnd::Reserved);
             let area = Rect::new(0, 0, 62, 4);
             let mut buffer = Buffer::empty(area);
@@ -7725,7 +8261,7 @@ mod tests {
             );
             let header = buffer_line(&buffer, 0);
             if !header.contains("dur") {
-                failures.push(format!("64-column {tree:?} cell loses duration: {header}"));
+                failures.push(format!("64-column {view:?} cell loses duration: {header}"));
             }
         }
         let mut lead = same_second("/work/ci", 895_427);
@@ -7760,7 +8296,7 @@ mod tests {
             count: 1,
         });
         let rows = [&lead, &child];
-        let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, ProcessTree::Long);
+        let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, CommandView::long());
         grid.row_end.set(TableRowEnd::Reserved);
         let area = Rect::new(0, 0, 88, 4);
         let mut buffer = Buffer::empty(area);
@@ -7801,7 +8337,7 @@ mod tests {
     #[test]
     fn blocked_clippy_keeps_its_subcommand_before_start_and_duration() {
         let mut app = subcommand_frame(
-            ProcessTree::Short,
+            CommandView::short(),
             &["clippy", "--locked", "--offline", "-j", "1"],
             860_000,
         );
@@ -7821,7 +8357,7 @@ mod tests {
     #[test]
     fn long_blocked_clippy_keeps_its_subcommand_before_optional_columns() {
         let mut app = subcommand_frame(
-            ProcessTree::Long,
+            CommandView::long(),
             &["clippy", "--locked", "--offline", "-j", "1"],
             870_000,
         );
@@ -7841,7 +8377,7 @@ mod tests {
     #[test]
     fn seven_digit_pids_leave_room_for_install_before_cpu_and_memory() {
         let mut app = subcommand_frame(
-            ProcessTree::Short,
+            CommandView::short(),
             &["install", "cargo-nextest", "--locked"],
             3_910_000,
         );
@@ -7861,7 +8397,8 @@ mod tests {
     #[test]
     fn a_narrow_release_row_keeps_build_before_optional_columns() {
         for width in [40, 48] {
-            let mut app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 4_180_000);
+            let mut app =
+                subcommand_frame(CommandView::short(), &["clippy", "--locked"], 4_180_000);
             let texts = state_frame_text_when_settled(&mut app, width, 50);
             let release = texts
                 .iter()
@@ -7876,7 +8413,7 @@ mod tests {
 
     #[test]
     fn a_narrow_blocked_frame_keeps_parent_before_the_state_slot() {
-        let mut app = subcommand_frame(ProcessTree::Short, &["clippy", "--locked"], 3_910_000);
+        let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 3_910_000);
         let texts = state_frame_text_when_settled(&mut app, 48, 120);
         assert_eq!(texts.len(), 8);
         for text in &texts {
@@ -7905,7 +8442,7 @@ mod tests {
 
     fn assert_long_frame_keeps_memory(blocked: bool) {
         let mut app = subcommand_frame(
-            ProcessTree::Long,
+            CommandView::long(),
             &[
                 "clippy",
                 "--locked",
@@ -7981,7 +8518,7 @@ mod tests {
     #[test]
     fn runs_titles_align_when_only_one_table_has_a_state_value() {
         let mut app = subcommand_frame(
-            ProcessTree::Short,
+            CommandView::short(),
             &["clippy", "--locked", "--offline", "-j", "1"],
             970_000,
         );
@@ -8059,7 +8596,7 @@ mod tests {
         let area = LARGE_TABLE_TEST_AREA;
         let cells = Cells::for_frame(
             roster.visible(&[]),
-            ProcessTree::Short,
+            CommandView::short(),
             &stats,
             area.height.saturating_sub(3),
         );
@@ -8121,7 +8658,7 @@ mod tests {
             Instant::now(),
         );
         let stats = SccacheStats::default();
-        let cells = Cells::new(&roster, &[], ProcessTree::Short, &stats);
+        let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
         let content = TileContent::Group(roster.groups()[0].id.clone());
         ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
         LIMIT_ROW_USE_LAYOUTS.with(|limit| limit.set(true));
@@ -8176,8 +8713,8 @@ mod tests {
             .collect()
     }
 
-    fn assert_hidden_state_frame_keeps_memory(tree: ProcessTree) {
-        let mut app = hidden_state_frame(tree);
+    fn assert_hidden_state_frame_keeps_memory(view: &CommandView) {
+        let mut app = hidden_state_frame(view);
         let texts = state_frame_text(&mut app, 66, 50);
         assert_eq!(texts.len(), 8);
         let mut offsets = Vec::new();
@@ -8191,8 +8728,8 @@ mod tests {
                 .lines()
                 .find(|line| line.trim_start().starts_with("316"))
                 .expect(text);
-            let memory_at = header.find("mem").expect(text);
-            let memory = process[memory_at..memory_at + 5].trim();
+            let memory_end = header.find("mem").expect(text) + "mem".len();
+            let memory = process[memory_end.saturating_sub(5)..memory_end].trim();
             assert!(
                 memory.ends_with('G')
                     && memory.starts_with(|character: char| character.is_ascii_digit()),
@@ -8213,7 +8750,7 @@ mod tests {
                 text.contains("cargo") && text.split_whitespace().any(|word| word == subcommand),
                 "{text}"
             );
-            if tree == ProcessTree::Long {
+            if view.arguments == ArgumentDetail::All {
                 let command_at = header.find("command").expect(text);
                 for line in text.lines().skip_while(|line| *line != header).skip(2) {
                     if line.contains("content rows:") {
@@ -8268,17 +8805,17 @@ mod tests {
 
     #[test]
     fn hidden_short_state_tables_keep_memory_before_argument_tails() {
-        assert_hidden_state_frame_keeps_memory(ProcessTree::Short);
+        assert_hidden_state_frame_keeps_memory(CommandView::short());
     }
 
     #[test]
     fn hidden_long_state_tables_keep_memory_before_argument_tails() {
-        assert_hidden_state_frame_keeps_memory(ProcessTree::Long);
+        assert_hidden_state_frame_keeps_memory(CommandView::long());
     }
 
     #[test]
     fn a_narrow_frame_keeps_parent_before_its_state_reading() {
-        let mut app = hidden_state_frame(ProcessTree::Short);
+        let mut app = hidden_state_frame(CommandView::short());
         let texts = state_frame_text(&mut app, 48, 120);
         let blocked = texts
             .iter()
@@ -8332,7 +8869,7 @@ mod tests {
     #[test]
     fn a_short_install_tail_never_raises_the_state_frames_command_minimum() {
         let mut app = hidden_state_frame_with_arguments(
-            ProcessTree::Short,
+            CommandView::short(),
             &["install", "cargo-nextest", "--locked"],
         );
         let groups = app
@@ -8391,11 +8928,8 @@ mod tests {
                 }
             }
             assert!(
-                commands
-                    .join(" ")
-                    .trim_end()
-                    .ends_with(crate::constants::ARGUMENT_OMISSION_MARK),
-                "width {width}: missing argument mark: {blocked}"
+                !commands.join(" ").contains(ELISION),
+                "width {width}: hidden arguments are not a cut: {blocked}"
             );
         }
     }
@@ -8403,7 +8937,7 @@ mod tests {
     #[test]
     fn stateless_tables_keep_memory_beside_a_blocked_install() {
         let mut app = hidden_state_frame_with_arguments(
-            ProcessTree::Short,
+            CommandView::short(),
             &["install", "cargo-nextest", "--locked"],
         );
         for width in [53, 57, 65, 67] {
@@ -8458,7 +8992,7 @@ mod tests {
 
     #[test]
     fn resource_columns_align_beside_a_blocked_test_at_threshold_widths() {
-        let mut app = hidden_state_frame_with_arguments(ProcessTree::Short, &["test"]);
+        let mut app = hidden_state_frame_with_arguments(CommandView::short(), &["test"]);
         let groups = app
             .roster
             .groups()
@@ -8478,7 +9012,7 @@ mod tests {
             .collect();
         app.roster.observe(groups, Instant::now());
         for width in [48, 49, 50, 51, 52] {
-            let grids = FrameColumnGrids::new(&app.roster, &[], ProcessTree::Short);
+            let grids = FrameColumnGrids::new(&app.roster, &[], CommandView::short());
             let grid = &grids.commands.0;
             grid.row_end.set(TableRowEnd::Reserved);
             grid.frame_row_end.set(TableRowEnd::Reserved);
@@ -8713,7 +9247,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let index = layout
             .columns
@@ -8740,18 +9274,19 @@ mod tests {
     }
 
     #[test]
-    fn a_short_ancestry_marks_hidden_levels_without_marking_arguments() {
-        for (ancestors, expected) in [
-            (vec![ancestor(100, "claude session")], "100 claude"),
-            (
-                vec![
-                    ancestor(100, "claude session"),
-                    ancestor(101, "zsh"),
-                    ancestor(102, "bash"),
-                ],
-                "100 claude …",
-            ),
+    fn default_ancestry_shows_each_level_without_hidden_argument_marks() {
+        for ancestors in [
+            vec![ancestor(100, "claude session")],
+            vec![
+                ancestor(100, "claude session"),
+                ancestor(101, "zsh"),
+                ancestor(102, "bash"),
+            ],
         ] {
+            let expected = ancestors
+                .iter()
+                .map(|row| format!("{} {}", row.pid, row.command.program.as_str()))
+                .collect::<Vec<_>>();
             let roster = roster_with_ancestry(
                 invocation(500, &["check", "--workspace"]),
                 vec![],
@@ -8766,13 +9301,19 @@ mod tests {
                 area,
                 Color::Reset,
                 &[],
-                ProcessTree::Short,
+                CommandView::short(),
             );
-            assert_eq!(buffer_line(&buffer, 0).trim(), expected);
+            for (row, expected) in expected.iter().enumerate() {
+                assert_eq!(
+                    buffer_line(&buffer, u16::try_from(row).expect("ancestor row")).trim(),
+                    expected
+                );
+            }
+            let text = buffer_rows(&buffer).join("\n");
+            assert!(text.contains("cargo check --workspace"), "{text}");
             assert!(
-                buffer_rows(&buffer)
-                    .iter()
-                    .any(|line| line.contains("cargo check …"))
+                !text.contains(ELISION) && !text.contains("session"),
+                "{text}"
             );
         }
     }
@@ -8795,7 +9336,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Short,
+            CommandView::short(),
         );
         assert!(buffer_line(&buffer, 0).contains("parent"));
         assert!(buffer_line(&buffer, 2).contains("102"));
@@ -8829,7 +9370,7 @@ mod tests {
             TableKind::Summary,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Short,
+            CommandView::short(),
         );
         let line = buffer_line(&buffer, 2);
         assert_eq!(
@@ -8936,13 +9477,13 @@ mod tests {
             .enumerate()
             .find(|(_, line)| line.contains("cargo nextest"))
             .expect("last command row");
-        assert!(line.contains("cargo nextest …"), "{lines:#?}");
+        assert!(line.contains("cargo nextest run"), "{lines:#?}");
         assert_eq!(line.matches(ELISION).count(), 1, "{line}");
         assert_eq!(
             terminal.backend().buffer()[(area.right() - 3, u16::try_from(y).expect("row"))]
                 .symbol(),
-            " ",
-            "{line}"
+            ELISION,
+            "later rows are cut: {line}"
         );
         assert!(
             !lines.iter().any(|line| line.contains("run…")),
@@ -9067,16 +9608,11 @@ mod tests {
         let mut app = App::new_for_test().expect("test app");
         app.started = Instant::now();
         let mut process = invocation(500, &["check"]);
-        let arguments: Vec<_> = std::iter::once("check")
-            .chain(
-                std::iter::repeat_n(["--color", "very_long_configuration_argument"], 40).flatten(),
-            )
-            .collect();
-        process.command = CommandText::of("cargo", &arguments);
-        app.tree = ProcessTree::Long;
+        app.tree = ProcessHierarchy::Shown;
+        app.arguments = ArgumentDetail::Default;
         process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         process.subtree_resource_use.memory = process.resource_use.memory;
-        app.roster = roster_of(process, vec![]);
+        app.roster = roster_with_ancestry(process, vec![], chain(20));
         app.loaded_config.config.tiles.view = TileView::Cells;
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = Terminal::new(TestBackend::new(64, 24)).expect("terminal");
@@ -9215,7 +9751,8 @@ mod tests {
     #[test]
     fn an_empty_compiler_and_runs_slot_returns_a_cut_commands_last_argument() {
         let mut app = App::new_for_test().expect("test app");
-        app.tree = ProcessTree::Long;
+        app.tree = ProcessHierarchy::Shown;
+        app.arguments = ArgumentDetail::All;
         app.loaded_config.config.tiles.view = TileView::Cells;
         app.tiles.set_min_tile_height(8);
         let mut first = invocation(500, &["check"]);
@@ -9299,7 +9836,8 @@ mod tests {
     #[test]
     fn reserved_long_columns_stay_settled_on_repeated_frames() {
         let mut app = App::new_for_test().expect("test app");
-        app.tree = ProcessTree::Long;
+        app.tree = ProcessHierarchy::Shown;
+        app.arguments = ArgumentDetail::All;
         app.loaded_config.config.tiles.view = TileView::Cells;
         let groups = (0..8)
             .map(|index| {
@@ -9419,7 +9957,7 @@ mod tests {
             })
             .expect("one-row cell");
         let text = placement_text(terminal.backend().buffer(), whole);
-        assert!(text.contains("[release] cargo build …"), "{text}");
+        assert!(text.contains("[release] cargo build"), "{text}");
         assert_eq!(whole.frame.inner().height, 4, "{text}");
         let cut = placements
             .iter()
@@ -9433,7 +9971,8 @@ mod tests {
     #[test]
     fn hiding_and_whole_cells_measure_the_same_reserved_column_ends() {
         let mut app = App::new_for_test().expect("test app");
-        app.tree = ProcessTree::Long;
+        app.tree = ProcessHierarchy::Shown;
+        app.arguments = ArgumentDetail::All;
         app.loaded_config.config.tiles.view = TileView::Cells;
         let make_lead = |pid| {
             let mut process = invocation(
@@ -9517,7 +10056,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_profiled_command_keeps_its_subcommand_and_argument_mark_whole() {
+    fn a_default_profiled_command_keeps_its_subcommand_whole() {
         for (profile, pid) in [("p19b", 1_234_567), ("release", 12_345)] {
             let source = TrackedRow::from(invocation(pid, &["build", "--profile", profile]));
             let mut first = TrackedRow::from(invocation(pid + 1, &["check"]));
@@ -9535,10 +10074,10 @@ mod tests {
                 TableKind::Summary,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Short,
+                CommandView::short(),
             );
             assert!(
-                buffer_line(&buffer, 2).contains(&format!("[{profile}] cargo build …")),
+                buffer_line(&buffer, 2).contains(&format!("[{profile}] cargo build")),
                 "{:?}",
                 buffer_rows(&buffer)
             );
@@ -9550,8 +10089,11 @@ mod tests {
         let waiting = row(Some(RunState::Blocked));
         let mut running = row(None);
         running.process.pid += 1;
-        let grid =
-            FrameTableColumnGrid::of(&[&waiting, &running], TableKind::Command, ProcessTree::Long);
+        let grid = FrameTableColumnGrid::of(
+            &[&waiting, &running],
+            TableKind::Command,
+            CommandView::long(),
+        );
         let area = Rect::new(0, 0, 160, 6);
         let mut headers = Vec::new();
         for source in [&waiting, &running] {
@@ -9587,7 +10129,7 @@ mod tests {
         let mut grid = FrameTableColumnGrid::of(
             &[&waiting, &running, &first, &second],
             TableKind::Command,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         grid.set_frame_slots(vec![PID_COLUMN, STATE_COLUMN, COMMAND_COLUMN]);
         let area = Rect::new(0, 0, 40, 6);
@@ -9617,7 +10159,7 @@ mod tests {
         let long_grid = FrameTableColumnGrid::of(
             &[&long_waiting, &long_running, &first, &second],
             TableKind::Command,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let long_area = Rect::new(0, 0, 62, 6);
         let mut long_buffer = Buffer::empty(long_area);
@@ -9641,75 +10183,43 @@ mod tests {
     }
 
     #[test]
-    fn each_short_ancestry_mark_reads_as_what_it_marks() {
-        for (walk, name_cut, hidden, walk_cut) in [
-            (
-                AncestryWalk::Ended(vec![ancestor(
+    fn default_ancestry_marks_only_a_cut_name_or_walk() {
+        for limit_cut in [false, true] {
+            for height in [4, 12] {
+                let mut group = cargo_group(invocation(500, &["check"]));
+                let ancestors = vec![ancestor(
                     100,
                     "/opt/very_long_session_runner_executable_name",
-                )]),
-                true,
-                false,
-                false,
-            ),
-            (
-                AncestryWalk::Ended(vec![
-                    ancestor(100, "claude session"),
-                    ancestor(101, "zsh"),
-                    ancestor(102, "bash"),
-                ]),
-                false,
-                true,
-                false,
-            ),
-            (
-                AncestryWalk::LimitCut(vec![ancestor(100, "claude session")]),
-                false,
-                false,
-                true,
-            ),
-            (
-                AncestryWalk::LimitCut(vec![
-                    ancestor(100, "/opt/very_long_session_runner_executable_name"),
-                    ancestor(101, "zsh"),
-                    ancestor(102, "bash"),
-                ]),
-                true,
-                true,
-                true,
-            ),
-        ] {
-            let mut group = cargo_group(invocation(500, &["check", "--workspace"]));
-            group.ancestry = walk;
-            let mut roster = Roster::new();
-            roster.observe(vec![group], Instant::now());
-            let area = Rect::new(0, 0, 40, 12);
-            let mut buffer = Buffer::empty(area);
-            draw_group(
-                &mut buffer,
-                &roster,
-                &InvocationId::for_test(500),
-                area,
-                Color::Reset,
-                &[],
-                ProcessTree::Short,
-            );
-            let line = buffer_line(&buffer, 0);
-            let text = line.trim();
-            assert_eq!(text.starts_with("… "), walk_cut, "{line}");
-            assert_eq!(text.ends_with(" …"), hidden, "{line}");
-            if name_cut {
-                let name = if hidden {
-                    text.strip_suffix(" …").expect("hidden-level mark")
+                )];
+                group.ancestry = if limit_cut {
+                    AncestryWalk::LimitCut(ancestors)
                 } else {
-                    text
+                    AncestryWalk::Ended(ancestors)
                 };
-                assert!(name.ends_with(ELISION));
-                assert!(!name.strip_suffix(ELISION).expect("name cut").ends_with(' '));
-            }
-            for (x, cell) in (0..area.width).map(|x| (x, &buffer[(x, 0)])) {
-                if cell.symbol() == ELISION {
-                    assert_eq!(cell.fg, cut_mark_ink(Color::Reset, 0), "mark at {x}");
+                let mut roster = Roster::new();
+                roster.observe(vec![group], Instant::now());
+                let area = Rect::new(0, 0, 40, height);
+                let mut buffer = Buffer::empty(area);
+                draw_group(
+                    &mut buffer,
+                    &roster,
+                    &InvocationId::for_test(500),
+                    area,
+                    Color::Reset,
+                    &[],
+                    CommandView::short(),
+                );
+                let text = buffer_rows(&buffer).join("\n");
+                assert_eq!(text.contains(ELISION), limit_cut || height == 4, "{text}");
+                assert_eq!(
+                    buffer_line(&buffer, 0).trim().starts_with("… "),
+                    limit_cut,
+                    "{text}"
+                );
+                for cell in &buffer.content {
+                    if cell.symbol() == ELISION {
+                        assert_eq!(cell.fg, cut_mark_ink(Color::Reset, 0), "{text}");
+                    }
                 }
             }
         }
@@ -9730,7 +10240,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Short,
+            CommandView::short(),
         );
         assert_eq!(buffer_line(&buffer, 0).trim(), "100 cargo …");
     }
@@ -9761,7 +10271,7 @@ mod tests {
                 &TileContent::Summary,
                 content,
                 &hidden_commands(),
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let spare = placements.iter().any(|placement| {
                 matches!(placement.content, TileContent::Group(_))
@@ -9810,7 +10320,7 @@ mod tests {
     fn reading_scope_buffer(roster: &Roster, summary: bool, height: u16) -> Buffer {
         let area = Rect::new(0, 0, 200, height);
         let mut buffer = Buffer::empty(area);
-        let grids = FrameColumnGrids::new(roster, &[], ProcessTree::Long);
+        let grids = FrameColumnGrids::new(roster, &[], CommandView::long());
         let rows: Vec<_> = if summary {
             vec![&roster.groups()[0].lead]
         } else {
@@ -10011,7 +10521,7 @@ mod tests {
     fn a_height_cut_keeps_its_hidden_childs_compiler_column() {
         let mut roster = reading_scope_roster();
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &stats, 3);
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 3);
         let area = Rect::new(0, 0, 200, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(
@@ -10044,7 +10554,7 @@ mod tests {
         let mut grid = FrameTableColumnGrid::of(
             &[&waiting, &running, &other],
             TableKind::Command,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         grid.set_frame_slots(vec![PID_COLUMN, STATE_COLUMN, COMMAND_COLUMN]);
         let area = Rect::new(0, 0, 52, 8);
@@ -10132,7 +10642,7 @@ mod tests {
     fn a_summary_alone_uses_its_last_row_for_a_separator_before_its_foot() {
         let mut roster = directory_rich_roster(&[1; 26]);
         let stats = SccacheStats::new();
-        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Short, &stats, 46);
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::short(), &stats, 46);
         let area = Rect::new(0, 0, 40, 49);
         let mut buffer = Buffer::empty(area);
         let mut grid = TileGrid::new();
@@ -10171,7 +10681,7 @@ mod tests {
             count: 15,
         });
         let rows = [&first];
-        let mut grid = FrameTableColumnGrid::of(&rows, TableKind::Command, ProcessTree::Long);
+        let mut grid = FrameTableColumnGrid::of(&rows, TableKind::Command, CommandView::long());
         grid.slots = vec![PID_COLUMN, COMMAND_COLUMN, COMPILER_COLUMN];
         let area = Rect::new(0, 0, 28, 20);
         let mut actual = Buffer::empty(area);
@@ -10212,7 +10722,7 @@ mod tests {
             let mut grid = FrameTableColumnGrid::of(
                 &[&rows[0], &rows[1]],
                 TableKind::Command,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             grid.slots = if compiler {
                 vec![PID_COLUMN, COMMAND_COLUMN, COMPILER_COLUMN]
@@ -10375,7 +10885,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let lines = buffer_rows(&buffer);
         assert!(
@@ -10413,7 +10923,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let line = buffer_line(&buffer, 2);
         let x = u16::try_from(line.find("500").expect("parent pid")).unwrap();
@@ -10435,7 +10945,7 @@ mod tests {
                 TableKind::Summary,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Short,
+                CommandView::short(),
             );
             let lines = buffer_rows(&buffer);
             assert!(lines[0].contains("state"), "{lines:#?}");
@@ -10444,11 +10954,11 @@ mod tests {
             if done == total {
                 assert!(first.contains("100.0%"), "{lines:#?}");
                 assert!(first.contains("[release] cargo"), "{lines:#?}");
-                assert!(!first.contains("build"), "{lines:#?}");
-                assert!(lines[3].trim().starts_with("build …"), "{lines:#?}");
+                assert!(first.contains("cargo build"), "{lines:#?}");
+                assert!(lines[3].trim().is_empty(), "{lines:#?}");
             } else {
                 assert!(first.contains("66.1%"), "{lines:#?}");
-                assert!(first.contains("[release] cargo build …"), "{lines:#?}");
+                assert!(first.contains("[release] cargo build"), "{lines:#?}");
             }
         }
     }
@@ -10477,7 +10987,7 @@ mod tests {
                 area,
                 Color::Reset,
                 &hidden_commands(),
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let lines = buffer_rows(&buffer);
             let parent_row = lines.iter().position(|line| line.contains("4200"));
@@ -10500,7 +11010,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_short_view_runner_stays_on_one_drawn_row() {
+    fn a_long_default_view_runner_wraps_without_an_omission_mark() {
         let roster = roster_with_ancestry(
             invocation(4100, &["check"]),
             vec![],
@@ -10518,7 +11028,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Short,
+            CommandView::short(),
         );
         let lines = buffer_rows(&buffer);
         let header = lines
@@ -10529,24 +11039,25 @@ mod tests {
             .iter()
             .filter(|line| !line.trim().is_empty())
             .collect::<Vec<_>>();
-        assert_eq!(ancestry.len(), 1, "{lines:#?}");
+        assert_eq!(ancestry.len(), 2, "{lines:#?}");
         assert!(ancestry[0].contains("1234567"), "{lines:#?}");
-        assert!(ancestry[0].trim_end().ends_with(ELISION), "{lines:#?}");
-        let marker = area.width - CONTENT_RIGHT_INSET - 1;
-        assert_eq!(buffer[(marker, 0)].symbol(), ELISION);
-        assert_eq!(buffer[(marker, 0)].fg, cut_mark_ink(Color::Reset, 0));
+        assert!(ancestry[1].contains("executable_name"), "{lines:#?}");
+        assert!(
+            ancestry.iter().all(|line| !line.contains(ELISION)),
+            "{lines:#?}"
+        );
         assert!(!ancestry[0].contains("/opt"), "{lines:#?}");
         let table_rows = frame_table_height(
             &roster.groups()[0].rows().collect::<Vec<_>>(),
             area.width,
             PinnedGroup::Lead(&roster.groups()[0].lead.process),
-            &FrameColumnGrids::new(&roster, &[], ProcessTree::Short)
+            &FrameColumnGrids::new(&roster, &[], CommandView::short())
                 .commands
                 .0,
         );
         assert_eq!(
-            group_height(&roster.groups()[0], area.width, ProcessTree::Short),
-            table_rows + 2
+            group_height(&roster.groups()[0], area.width, CommandView::short()),
+            table_rows + 3
         );
     }
 
@@ -10581,14 +11092,14 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        for view in [CommandView::short(), CommandView::long()] {
             let area = Rect::new(0, 0, 46, 16);
-            let cells = Cells::for_frame(roster.visible(&[]), tree, &sccache, area.height);
+            let cells = Cells::for_frame(roster.visible(&[]), view, &sccache, area.height);
             let mut buffer = Buffer::empty(area);
             cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
             let text = buffer_rows(&buffer).join("\n");
-            assert_eq!(text.matches("84%").count(), 1, "{tree:?}: {text}");
-            assert_eq!(text.matches("58%").count(), 1, "{tree:?}: {text}");
+            assert_eq!(text.matches("84%").count(), 1, "{view:?}: {text}");
+            assert_eq!(text.matches("58%").count(), 1, "{view:?}: {text}");
             for reading in ["84%", "58%"] {
                 let (y, line) = buffer_rows(&buffer)
                     .into_iter()
@@ -10608,8 +11119,8 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![group], Instant::now());
         let sccache = SccacheStats::new();
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
-            let cells = Cells::new(&roster, &[], tree, &sccache);
+        for view in [CommandView::short(), CommandView::long()] {
+            let cells = Cells::new(&roster, &[], view, &sccache);
             let area = Rect::new(0, 0, 160, 30);
             let (grid, buffer) = settled_buffer_with_cells(&cells, area);
             for placement in grid.placements(
@@ -10632,7 +11143,7 @@ mod tests {
                     TileContent::Group(_) => tui_pane::error_color(),
                     TileContent::Empty(_) => continue,
                 };
-                assert_eq!(buffer[(x, y)].fg, expected, "{tree:?}: {line}");
+                assert_eq!(buffer[(x, y)].fg, expected, "{view:?}: {line}");
             }
         }
     }
@@ -10660,7 +11171,7 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::for_frame(roster.visible(&[]), ProcessTree::Long, &sccache, 3);
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &sccache, 3);
         let area = Rect::new(0, 0, 160, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
@@ -10681,7 +11192,7 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for (group, reading) in roster.groups().iter().zip(["84%", "58%"]) {
             let area = Rect::new(0, 0, 160, 6);
             let mut buffer = Buffer::empty(area);
@@ -10698,7 +11209,7 @@ mod tests {
 
     #[test]
     fn a_chain_cut_by_the_walk_limit_opens_with_the_cut_mark() {
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        for view in [CommandView::short(), CommandView::long()] {
             for levels in [chain(6), vec![ancestor(3334, "claude")]] {
                 let mut group = cargo_group(invocation(500, &["check"]));
                 group.ancestry = AncestryWalk::LimitCut(levels);
@@ -10713,7 +11224,7 @@ mod tests {
                     area,
                     Color::Reset,
                     &[],
-                    tree,
+                    view,
                 );
                 assert!(buffer_line(&buffer, 0).trim().starts_with("… "));
             }
@@ -10774,7 +11285,7 @@ mod tests {
         assert_eq!(buffer[(reading, 2)].fg, success_color());
     }
 
-    fn seven_digit_progress_summary(width: u16, tree: ProcessTree) -> Buffer {
+    fn seven_digit_progress_summary(width: u16, view: &CommandView) -> Buffer {
         let mut first = invocation(1_727_353, &["build"]);
         first.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(7, 100)));
         let mut second = invocation(1_727_354, &["check"]);
@@ -10787,7 +11298,7 @@ mod tests {
         );
         let sccache = SccacheStats::new();
         let area = Rect::new(1, 1, width - 2, 8);
-        let cells = Cells::for_frame(roster.visible(&[]), tree, &sccache, area.height);
+        let cells = Cells::for_frame(roster.visible(&[]), view, &sccache, area.height);
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, 10));
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         buffer
@@ -10795,10 +11306,10 @@ mod tests {
 
     #[test]
     fn a_sixteen_column_summary_identifies_every_row_by_pid() {
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
-            let buffer = seven_digit_progress_summary(16, tree);
+        for view in [CommandView::short(), CommandView::long()] {
+            let buffer = seven_digit_progress_summary(16, view);
             let header = buffer_line(&buffer, 1);
-            assert_eq!(header.trim(), "pid", "{tree:?}: {header}");
+            assert_eq!(header.trim(), "pid", "{view:?}: {header}");
             let x = u16::try_from(header.find("pid").expect("pid title")).unwrap();
             assert_eq!(buffer[(x, 1)].fg, label_color());
             let lines = buffer_rows(&buffer);
@@ -10806,7 +11317,7 @@ mod tests {
                 assert_eq!(
                     lines.iter().filter(|line| line.contains(pid)).count(),
                     1,
-                    "{tree:?}: {lines:#?}"
+                    "{view:?}: {lines:#?}"
                 );
             }
         }
@@ -10814,11 +11325,11 @@ mod tests {
 
     #[test]
     fn a_summary_keeps_pid_at_the_reading_column_boundary() {
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        for view in [CommandView::short(), CommandView::long()] {
             for width in 11..=17 {
-                let buffer = seven_digit_progress_summary(width, tree);
+                let buffer = seven_digit_progress_summary(width, view);
                 let header = buffer_line(&buffer, 1);
-                assert!(header.contains("pid"), "{tree:?} at {width}: {header}");
+                assert!(header.contains("pid"), "{view:?} at {width}: {header}");
                 assert_eq!(header.contains("state"), width == 17, "{header}");
                 let lines = buffer_rows(&buffer);
                 for pid in ["1727353", "1727354", "1727355"] {
@@ -10977,7 +11488,7 @@ mod tests {
         let sccache = SccacheStats::new();
         for (height, ink) in [(12, success_color()), (11, tui_pane::error_color())] {
             let area = Rect::new(0, 0, 162, height);
-            let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+            let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
             let mut grid = TileGrid::new();
             grid.set_view(TileView::Summary);
             let growth = TileGrowth {
@@ -11033,7 +11544,7 @@ mod tests {
             (12, vec![1, 4, 7, 10]),
         ] {
             let area = Rect::new(0, 0, 162, height);
-            let mut grid = FrameTableColumnGrid::of(&refs, TableKind::Summary, ProcessTree::Long);
+            let mut grid = FrameTableColumnGrid::of(&refs, TableKind::Summary, CommandView::long());
             grid.separation = DirectorySeparation::YieldEarliest;
             let mut buffer = Buffer::empty(area);
             frame_draw_process_table(
@@ -11069,7 +11580,7 @@ mod tests {
     fn a_summary_can_lend_separators_without_losing_any_process() {
         let roster = directory_rich_roster(&[1, 6, 1, 1]);
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for (height, drawn) in [(12, 12), (11, 11), (10, 10), (9, 9)] {
             let use_rows = cells.row_use(&TileContent::Summary, Rect::new(0, 0, 160, height));
             assert_eq!(use_rows.drawn, drawn);
@@ -11105,8 +11616,8 @@ mod tests {
             }
             let roster = roster_with_ancestry(lead, vec![], ancestors);
             let sccache = SccacheStats::new();
-            for tree in [ProcessTree::Short, ProcessTree::Long] {
-                let cells = Cells::new(&roster, &[], tree, &sccache);
+            for view in [CommandView::short(), CommandView::long()] {
+                let cells = Cells::new(&roster, &[], view, &sccache);
                 let group = &roster.groups()[0];
                 let area = Rect::new(0, 0, 160, 10);
                 let mut buffer = Buffer::empty(area);
@@ -11122,14 +11633,10 @@ mod tests {
                     .position(|line| line.contains("pid") && line.contains("command"))
                     .unwrap();
                 let row = &rows[header_y + 2];
-                if tree == ProcessTree::Short && shell_between {
-                    assert!(!row.contains("200"), "{rows:#?}");
-                } else {
-                    assert!(
-                        row.contains(if shell_between { "200" } else { "100" }),
-                        "{rows:#?}"
-                    );
-                }
+                assert!(
+                    row.contains(if shell_between { "200" } else { "100" }),
+                    "{rows:#?}"
+                );
             }
         }
     }
@@ -11153,8 +11660,8 @@ mod tests {
             fill:          TileFill::Redistribute,
             widen_summary: false,
         };
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
-            let cells = Cells::new(&roster, &[], tree, &sccache);
+        for view in [CommandView::short(), CommandView::long()] {
+            let cells = Cells::new(&roster, &[], view, &sccache);
             let (mut grid, _) = settled_buffer_with_cells(&cells, area);
             for focus in [1, 2] {
                 grid.focus_cell(focus);
@@ -11217,7 +11724,7 @@ mod tests {
     }
 
     #[test]
-    fn the_short_ancestry_is_the_nearest_session_runner() {
+    fn default_ancestry_keeps_the_retained_chain_with_minimal_arguments() {
         for (chain, expected) in [
             (
                 vec![
@@ -11228,9 +11735,16 @@ mod tests {
                     ),
                     shell(1_558_245, "/nix/store/bash/bin/bash"),
                 ],
-                "1556662 Runner.Worker",
+                vec![
+                    "519409 Runner.Listener",
+                    "1556662 Runner.Worker",
+                    "1558245 bash",
+                ],
             ),
-            (vec![ancestor(11, "claude"), shell(12, "bash")], "11 claude"),
+            (
+                vec![ancestor(11, "claude"), shell(12, "bash")],
+                vec!["11 claude", "12 bash"],
+            ),
             (
                 vec![
                     ancestor(11, "ghostty"),
@@ -11238,20 +11752,28 @@ mod tests {
                     ancestor(14, "/bin/nohup cargo"),
                     shell(12, "zsh"),
                 ],
-                "11 ghostty",
+                vec!["11 ghostty", "13 env", "14 nohup", "12 zsh"],
             ),
         ] {
             let roster = roster_with_ancestry(invocation(20, &["check"]), vec![], chain);
-            let ancestors = drawn_ancestry(&roster.groups()[0], ProcessTree::Short);
-            assert_eq!(ancestors.as_slice().len(), 1);
-            assert_eq!(
-                format!(
-                    "{} {}",
-                    ancestors.as_slice()[0].pid,
-                    ancestors.as_slice()[0].command
-                ),
-                expected
+            let area = Rect::new(0, 0, 160, 20);
+            let mut buffer = Buffer::empty(area);
+            draw_group(
+                &mut buffer,
+                &roster,
+                &InvocationId::for_test(20),
+                area,
+                Color::Reset,
+                &[],
+                CommandView::short(),
             );
+            for (row, expected) in expected.iter().enumerate() {
+                assert_eq!(
+                    buffer_line(&buffer, u16::try_from(row).expect("ancestor row")).trim(),
+                    *expected
+                );
+            }
+            assert!(!buffer_rows(&buffer).join("\n").contains("spawnclient"));
         }
     }
 
@@ -11267,7 +11789,7 @@ mod tests {
         ];
         let roster = roster_with_ancestry(invocation(20, &["check"]), vec![], chain.clone());
         assert_eq!(
-            drawn_ancestry(&roster.groups()[0], ProcessTree::Long).as_slice(),
+            drawn_ancestry(&roster.groups()[0], CommandView::long()).as_slice(),
             chain.as_slice()
         );
     }
@@ -11287,14 +11809,10 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Short,
+            CommandView::short(),
         );
-        assert!(buffer_line(&buffer, 2).contains("cargo check …"));
+        assert!(buffer_line(&buffer, 2).contains("cargo check --workspace"));
         assert!(!buffer_rows(&buffer).join("\n").contains("/nix/store"));
-        assert_eq!(
-            shortened(&ancestor(12, "/nix/store/runner/Runner.Worker spawnclient")).command,
-            "Runner.Worker"
-        );
     }
 
     #[test]
@@ -11314,7 +11832,7 @@ mod tests {
                 Measurement::Reading(cpu.trim_end_matches('%').parse::<f32>().unwrap());
             process.resource_use.memory = Measurement::Reading(memory);
             roster.observe(vec![cargo_group(process.clone())], Instant::now());
-            let grids = FrameColumnGrids::new(&roster, &[], ProcessTree::Long);
+            let grids = FrameColumnGrids::new(&roster, &[], CommandView::long());
             let rows = [&roster.groups()[0].lead];
             let mut frame_headers = Vec::new();
             for grid in [&grids.summary.0, &grids.commands.0] {
@@ -11385,7 +11903,7 @@ mod tests {
             ),
             Vec::new(),
         );
-        let buffer = summary_alone_buffer_in_tree(&roster, 198, ProcessTree::Short);
+        let buffer = summary_alone_buffer_in_tree(&roster, 198, CommandView::short());
         assert_eq!(buffer.area.width, 200);
         let header_y = (0..buffer.area.height)
             .find(|&y| buffer_line(&buffer, y).contains("command"))
@@ -11407,7 +11925,7 @@ mod tests {
         let command = buffer_line(&buffer, command_y);
         let byte_x = command.find("cargo").expect("the command names cargo");
         let x = u16::try_from(command[..byte_x].chars().count()).expect("command fits the buffer");
-        let name = "cargo nextest run …";
+        let name = "cargo nextest run";
         let drawn: String = (x..x + cell_width(name))
             .map(|column| buffer[(column, command_y)].symbol())
             .collect();
@@ -11443,7 +11961,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let header = buffer_line(&buffer, 0);
         assert!(header.contains("cpu"), "{header}");
@@ -11470,7 +11988,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Long,
+            CommandView::long(),
         );
         assert!(!buffer_line(&buffer, 0).contains("cpu"));
         assert!(!buffer_line(&buffer, 0).contains("mem"));
@@ -11496,7 +12014,7 @@ mod tests {
             ),
         ] {
             let row = TrackedRow::from(invocation(500, &arguments));
-            for tree in [ProcessTree::Long, ProcessTree::Short] {
+            for view in [CommandView::long(), CommandView::short()] {
                 for kind in [TableKind::Summary, TableKind::Command] {
                     let area = Rect::new(0, 0, 200, 5);
                     let mut buffer = Buffer::empty(area);
@@ -11507,19 +12025,19 @@ mod tests {
                         kind,
                         Color::Reset,
                         PinnedGroup::Unpinned,
-                        tree,
+                        view,
                     );
                     let line = buffer_line(&buffer, 2);
-                    let name = match tree {
-                        ProcessTree::Long => format!("{label} cargo {full}"),
-                        ProcessTree::Short => format!("{label} cargo build …"),
+                    let name = match view.arguments {
+                        ArgumentDetail::All => format!("{label} cargo {full}"),
+                        ArgumentDetail::Default => format!("{label} cargo build"),
                     };
                     let x = u16::try_from(line.find(label).expect("the row has its profile label"))
                         .expect("the row fits the buffer");
                     let drawn: String = (x..x + cell_width(&name))
                         .map(|column| buffer[(column, 2)].symbol())
                         .collect();
-                    assert_eq!(drawn, name, "{tree:?}/{kind:?}");
+                    assert_eq!(drawn, name, "{view:?}/{kind:?}");
                     assert_eq!(
                         buffer[(x, 2)].fg,
                         cut_mark_style(Color::Reset, 0)
@@ -11544,7 +12062,7 @@ mod tests {
             vec!["build"],
         ] {
             let row = TrackedRow::from(invocation(500, &arguments));
-            for tree in [ProcessTree::Short, ProcessTree::Long] {
+            for view in [CommandView::short(), CommandView::long()] {
                 for kind in [TableKind::Summary, TableKind::Command] {
                     let area = Rect::new(0, 0, 160, 5);
                     let mut buffer = Buffer::empty(area);
@@ -11555,13 +12073,13 @@ mod tests {
                         kind,
                         Color::Reset,
                         PinnedGroup::Unpinned,
-                        tree,
+                        view,
                     );
                     let command = buffer_line(&buffer, 2);
                     assert!(!command.contains("[release]") && !command.contains("[dev]"));
-                    match tree {
-                        ProcessTree::Short => assert!(!command.contains("--profile")),
-                        ProcessTree::Long => assert!(command.contains(&arguments.join(" "))),
+                    match view.arguments {
+                        ArgumentDetail::Default => assert!(!command.contains("--profile")),
+                        ArgumentDetail::All => assert!(command.contains(&arguments.join(" "))),
                     }
                 }
             }
@@ -11579,7 +12097,10 @@ mod tests {
                 "one/two/three/four/five/six/seven/eight",
             ],
         ));
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
+        let defaults = DefaultArguments::new(vec!["features".to_string()]);
+        let selected =
+            CommandView::new(ProcessHierarchy::Shown, ArgumentDetail::Default, &defaults);
+        for view in [&selected, CommandView::long()] {
             for kind in [TableKind::Summary, TableKind::Command] {
                 let area = Rect::new(0, 0, 40, 3);
                 let mut buffer = Buffer::empty(area);
@@ -11590,7 +12111,7 @@ mod tests {
                     kind,
                     Color::Reset,
                     PinnedGroup::Unpinned,
-                    tree,
+                    view,
                 );
                 let command = buffer_line(&buffer, 2);
                 assert!(command.contains("[release]"), "{command}");
@@ -11607,8 +12128,8 @@ mod tests {
         );
         let sccache = SccacheStats::new();
         let hidden = Vec::new();
-        for tree in [ProcessTree::Short, ProcessTree::Long] {
-            let cells = Cells::new(&roster, &hidden, tree, &sccache);
+        for view in [CommandView::short(), CommandView::long()] {
+            let cells = Cells::new(&roster, &hidden, view, &sccache);
             let area = Rect::new(0, 0, 160, 16);
             let mut buffer = Buffer::empty(area);
             cells.draw(
@@ -11639,7 +12160,7 @@ mod tests {
                 "[release]"
             };
             let row = TrackedRow::from(invocation(500, &arguments));
-            for tree in [ProcessTree::Short, ProcessTree::Long] {
+            for view in [CommandView::short(), CommandView::long()] {
                 for kind in [TableKind::Summary, TableKind::Command] {
                     let area = Rect::new(0, 0, 40, 3);
                     let mut buffer = Buffer::empty(area);
@@ -11650,11 +12171,11 @@ mod tests {
                         kind,
                         Color::Reset,
                         PinnedGroup::Unpinned,
-                        tree,
+                        view,
                     );
                     assert!(
                         buffer_line(&buffer, 2).contains(profile),
-                        "{kind:?}/{tree:?}: {:?}",
+                        "{kind:?}/{view:?}: {:?}",
                         buffer_line(&buffer, 2)
                     );
                 }
@@ -11853,7 +12374,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Long,
+            CommandView::long(),
         );
         assert!(buffer_line(&buffer, 2).contains("500"));
         assert!(buffer_line(&buffer, 2).contains("cargo nextest run"));
@@ -11902,33 +12423,17 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Short,
+            CommandView::short(),
         );
         layout.columns = vec![COMMAND_COLUMN];
         layout.column_widths = vec![10];
-        let values = ProcessRowValues::of(&row, layout.detail, layout.tree);
-        let command = command_cell(&row, &layout, values.arguments, Style::default());
+        let command = command_cell(&row, &layout);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 3));
         let area = buffer.area;
         Paragraph::new(command).render(area, &mut buffer);
         assert_eq!(buffer_line(&buffer, 0).trim_end(), "cargo");
         assert_eq!(buffer_line(&buffer, 1).trim_end(), "nextest");
-        assert_eq!(buffer_line(&buffer, 2).trim_end(), "run …");
-    }
-
-    #[test]
-    fn a_whole_short_word_leaves_its_argument_mark_on_the_next_line() {
-        let name = CommandText::of("abcdefghijklmnop", &["--argument"]).named();
-        let text = wrapped_short_command(vec![Span::raw("abcdefghijklmnop")], 16, name.arguments);
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 16, 2));
-        let area = buffer.area;
-        Paragraph::new(text).render(area, &mut buffer);
-        assert_eq!(buffer_line(&buffer, 0), "abcdefghijklmnop");
-        assert_eq!(
-            buffer_line(&buffer, 1),
-            crate::constants::ARGUMENT_OMISSION_MARK
-        );
-        assert_eq!(buffer[(0, 1)].symbol(), " ");
+        assert_eq!(buffer_line(&buffer, 2).trim_end(), "run");
     }
 
     #[test]
@@ -12002,7 +12507,7 @@ mod tests {
             TableKind::Command,
             area,
             pane_background(false),
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let group = PathGroup {
             identity: GroupingIdentity::from(&row.process),
@@ -12092,7 +12597,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![cargo_group(narrow), cargo_group(wide)], Instant::now());
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for width in [64, 200] {
             let mut buffer = Buffer::empty(Rect::new(0, 0, width, 8));
             for (index, group) in roster.groups().iter().enumerate() {
@@ -12142,7 +12647,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let header = buffer_line(&buffer, 0);
         let command = header.find("command").unwrap();
@@ -12178,7 +12683,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let header = buffer_line(&buffer, 0);
         let command = header.find("command").unwrap();
@@ -12217,7 +12722,7 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for width in [38, 62, 198] {
             for content in [
                 TileContent::Summary,
@@ -12278,7 +12783,7 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 200, 8));
         for (index, group) in roster.groups().iter().enumerate() {
             cells.draw(
@@ -12355,7 +12860,7 @@ mod tests {
                         kind,
                         Color::Reset,
                         PinnedGroup::Unpinned,
-                        ProcessTree::Long,
+                        CommandView::long(),
                     );
                     assert!(
                         buffer_line(&buffer, 2).contains("cargo clippy"),
@@ -12400,7 +12905,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let line = buffer_line(&buffer, 2);
         let command = line.find("cargo check").unwrap();
@@ -12486,7 +12991,7 @@ mod tests {
                 area,
                 Color::Reset,
                 &hidden_commands(),
-                ProcessTree::Long,
+                CommandView::long(),
             ),
             TableKind::Summary => draw_summary(
                 &mut buffer,
@@ -12494,7 +12999,7 @@ mod tests {
                 area,
                 Color::Reset,
                 &hidden_commands(),
-                ProcessTree::Long,
+                CommandView::long(),
             ),
         }
         buffer
@@ -12511,29 +13016,15 @@ mod tests {
     /// Locate CPU by the drawn column labels so markers in other cells cannot pass.
     fn cpu_cell_text(buffer: &Buffer, y: u16) -> String {
         let header = buffer_line(buffer, 0);
-        let start = header
-            .find(TABLE_HEADERS[CPU_COLUMN])
-            .expect("the table draws a CPU column");
-        let end = TABLE_HEADERS[CPU_COLUMN + 1..]
-            .iter()
-            .filter_map(|label| header.find(label))
-            .min()
-            .expect("the table draws a column after CPU");
-        buffer_line(buffer, y)[start..end].trim().to_string()
+        let row = buffer_line(buffer, y);
+        census::measurement_cell(&header, &row, TABLE_HEADERS[CPU_COLUMN], &row)
     }
 
     /// Locate memory by the drawn column labels.
     fn memory_cell_text(buffer: &Buffer, y: u16) -> String {
         let header = buffer_line(buffer, 0);
-        let start = header
-            .find(TABLE_HEADERS[MEMORY_COLUMN])
-            .expect("the table draws a memory column");
-        let end = TABLE_HEADERS[MEMORY_COLUMN + 1..]
-            .iter()
-            .filter_map(|label| header.find(label))
-            .min()
-            .expect("the table draws a column after memory");
-        buffer_line(buffer, y)[start..end].trim().to_string()
+        let row = buffer_line(buffer, y);
+        census::measurement_cell(&header, &row, TABLE_HEADERS[MEMORY_COLUMN], &row)
     }
 
     #[test]
@@ -12787,7 +13278,7 @@ mod tests {
                 kind,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             [
                 buffer_line(&buffer, 0),
@@ -12799,17 +13290,17 @@ mod tests {
         assert_eq!(
             draw(TableKind::Summary),
             [
-                " pid    start  dur    cpu  mem    command",
-                " 41233  11:04  00:18  12%  0.3G   cargo build",
-                " 41234  11:05  00:08  5%   12.4G  cargo test",
+                " pid    start  dur    cpu    mem  command",
+                " 41233  11:04  00:18  12%   0.3G  cargo build",
+                " 41234  11:05  00:08   5%  12.4G  cargo test",
             ]
         );
         assert_eq!(
             draw(TableKind::Command),
             [
-                " pid    parent  start  dur    cpu  mem    command",
-                " 41233          11:04  00:18  12%  0.3G   cargo build",
-                " 41234          11:05  00:08  5%   12.4G  cargo test",
+                " pid    parent  start  dur    cpu    mem  command",
+                " 41233          11:04  00:18  12%   0.3G  cargo build",
+                " 41234          11:05  00:08   5%  12.4G  cargo test",
             ]
         );
     }
@@ -12824,8 +13315,7 @@ mod tests {
         assert!(text.ends_with("cargo build"), "{text:?}");
         assert_eq!(
             usize::from(cell_width(
-                &ProcessRowValues::of(&row, SummaryDetail::Full, ProcessTree::Long).cells
-                    [COMPILER_COLUMN]
+                &ProcessRowValues::of(&row, CommandView::long()).cells[COMPILER_COLUMN]
             )),
             0
         );
@@ -12878,8 +13368,7 @@ mod tests {
         assert!(text.ends_with("cargo build"), "{text:?}");
         assert_eq!(
             usize::from(cell_width(
-                &ProcessRowValues::of(&row, SummaryDetail::Full, ProcessTree::Long).cells
-                    [COMPILER_COLUMN]
+                &ProcessRowValues::of(&row, CommandView::long()).cells[COMPILER_COLUMN]
             )),
             0
         );
@@ -12953,7 +13442,7 @@ mod tests {
     fn ancestor(pid: u32, command: &str) -> Ancestor {
         Ancestor {
             pid,
-            command: command.to_string(),
+            command: CommandText::from_display_line(command),
             passes_through: false,
         }
     }
@@ -13174,15 +13663,20 @@ mod tests {
 
     #[test]
     fn an_ancestry_cut_appends_or_replaces_inside_its_width() {
-        for (text, width, retained) in [("short", 6, "short"), ("abcdef", 6, "abcde")] {
-            let mut line = Line::from(text);
-            mark_cut_line(&mut line, width);
-            let marked: String = line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
-            assert_eq!(marked, format!("{retained}{ELISION}"));
+        for (text, width, expected) in [("short", 7, "short …"), ("abcdef", 6, "abcde…")] {
+            let lines = wrapped_command(
+                vec![
+                    StyledCommandWord::Independent(Span::raw(text)),
+                    StyledCommandWord::Independent(Span::raw("next")),
+                ],
+                width,
+                Style::default().fg(Color::Gray),
+            )
+            .into_rows(1);
+            let area = Rect::new(0, 0, width, 1);
+            let mut buffer = Buffer::empty(area);
+            Paragraph::new(lines).render(area, &mut buffer);
+            assert_eq!(buffer_line(&buffer, 0), expected);
         }
     }
 
@@ -13253,7 +13747,7 @@ mod tests {
     fn a_command_too_wide_for_the_cell_wraps_under_where_it_started() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 12));
         let area = buffer.area;
-        let ancestry = vec![ancestor(6218, "claude --remote-control hana_clerestory")];
+        let ancestry = vec![ancestor(6218, "claude hana_clerestory start_session")];
 
         let used = draw_ancestry(
             &mut buffer,
@@ -13264,10 +13758,10 @@ mod tests {
             usize::from(area.height - area.height / 2),
         );
 
-        assert_eq!(buffer_line(&buffer, 0), " 6218 claude --remote-control");
+        assert_eq!(buffer_line(&buffer, 0), " 6218 claude hana_clerestory");
         assert_eq!(
             buffer_line(&buffer, 1),
-            "      hana_clerestory",
+            "      start_session",
             "set to the column the command started at, not the pid's"
         );
         assert_eq!(used, 3, "both rows, and the blank one under them");
@@ -13460,7 +13954,7 @@ mod tests {
         let mut expected = Buffer::empty(area);
         Cells::for_frame(
             baseline.visible(&hidden),
-            ProcessTree::Long,
+            CommandView::long(),
             &stats,
             area.height,
         )
@@ -13468,7 +13962,7 @@ mod tests {
         let mut actual = Buffer::empty(area);
         Cells::for_frame(
             roster.visible(&hidden),
-            ProcessTree::Long,
+            CommandView::long(),
             &stats,
             area.height,
         )
@@ -13510,7 +14004,7 @@ mod tests {
         let stats = SccacheStats::default();
         let area = Rect::new(0, 0, 160, 15);
         let mut buffer = Buffer::empty(area);
-        Cells::new(&roster, &hidden_commands(), ProcessTree::Long, &stats).draw(
+        Cells::new(&roster, &hidden_commands(), CommandView::long(), &stats).draw(
             &mut buffer,
             &TileContent::Group(InvocationId::for_test(6100)),
             area,
@@ -13577,7 +14071,7 @@ mod tests {
         }
         let stats = SccacheStats::default();
         let area = Rect::new(0, 0, 160, 15);
-        let cells = Cells::for_frame(visible, ProcessTree::Long, &stats, area.height);
+        let cells = Cells::for_frame(visible, CommandView::long(), &stats, area.height);
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         assert_eq!(
@@ -13596,7 +14090,12 @@ mod tests {
                 .unwrap_or_else(|error| panic!("invalid config: {error}"));
             let roster = roster_of(invocation(4100, arguments), Vec::new());
             let stats = SccacheStats::default();
-            let cells = Cells::new(&roster, &config.commands.hidden, ProcessTree::Long, &stats);
+            let cells = Cells::new(
+                &roster,
+                &config.commands.hidden,
+                CommandView::long(),
+                &stats,
+            );
             assert_eq!(cells.demands(&[]).groups.len(), 0, "{key}: {arguments:?}");
             let area = Rect::new(0, 0, 160, 12);
             for content in [
@@ -13675,7 +14174,12 @@ mod tests {
                 Vec::new(),
             );
             let stats = SccacheStats::default();
-            let cells = Cells::new(&roster, &config.commands.hidden, ProcessTree::Long, &stats);
+            let cells = Cells::new(
+                &roster,
+                &config.commands.hidden,
+                CommandView::long(),
+                &stats,
+            );
             assert_eq!(
                 cells.demands(&[]).groups[0].id,
                 InvocationId::for_test(4100)
@@ -13721,7 +14225,7 @@ mod tests {
         );
         let hidden = hidden_commands();
         let stats = SccacheStats::default();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &stats);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &stats);
         let area = Rect::new(0, 0, 160, 12);
         for content in [
             TileContent::Summary,
@@ -13787,7 +14291,7 @@ mod tests {
         );
         let hidden = hidden_commands();
         let stats = SccacheStats::default();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &stats);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &stats);
         let area = Rect::new(0, 0, 160, 20);
         let mut buffer = Buffer::empty(area);
         cells.draw(
@@ -13862,13 +14366,13 @@ mod tests {
             roster.observe(scan, now);
             let expected = Cells::for_frame(
                 baseline.visible(&hidden_commands),
-                ProcessTree::Long,
+                CommandView::long(),
                 &stats,
                 u16::MAX,
             );
             let actual = Cells::for_frame(
                 roster.visible(&hidden_commands),
-                ProcessTree::Long,
+                CommandView::long(),
                 &stats,
                 u16::MAX,
             );
@@ -14049,7 +14553,7 @@ mod tests {
             long_chain(),
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, ProcessTree::Long);
+        let demand = group_height(group, width, CommandView::long());
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
@@ -14060,7 +14564,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert_eq!(
@@ -14082,7 +14586,7 @@ mod tests {
             vec![invocation(4212, &["test"])],
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, ProcessTree::Long);
+        let demand = group_height(group, width, CommandView::long());
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
@@ -14093,7 +14597,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert_eq!(filled_rows(&buffer), demand);
@@ -14187,8 +14691,8 @@ mod tests {
     #[test]
     fn a_deep_ancestry_uses_its_row_budget_and_marks_the_cut() {
         let mut ancestry = chain(24);
-        ancestry[22].command = format!("python3 {}", "nested.py ".repeat(12));
-        ancestry[23].command = "uv run".to_string();
+        ancestry[22].command = CommandText::of("python3", &["nested.py"; 12]);
+        ancestry[23].command = CommandText::of("uv", &["run"]);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 4));
         let area = buffer.area;
 
@@ -14249,7 +14753,7 @@ mod tests {
             area,
             Color::Reset,
             &[],
-            ProcessTree::Long,
+            CommandView::long(),
         );
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
         let table = buffer_rows(&buffer).join("\n");
@@ -14262,7 +14766,7 @@ mod tests {
         assert!(table.contains("4212"), "{table}");
     }
 
-    /// A short tree draws every step the long one does. What it takes
+    /// A short view draws every step the long one does. What it takes
     /// off is the arguments: a step reached as `zsh -c cargo nextest
     /// run --package tui_pane ...` is a shell however it was called, and
     /// the eight words saying which package are the run's business, not
@@ -14280,16 +14784,13 @@ mod tests {
             area,
             Color::Reset,
             &hidden_commands(),
-            ProcessTree::Short,
+            CommandView::short(),
         );
 
         let drawn: Vec<String> = (0..area.height).map(|y| buffer_line(&buffer, y)).collect();
         let drawn = drawn.join("\n");
-        assert!(drawn.contains("18581 node …"), "{drawn}");
-        assert!(
-            !drawn.contains("6218") && !drawn.contains("24101"),
-            "{drawn}"
-        );
+        assert!(drawn.contains("18581 node"), "{drawn}");
+        assert!(drawn.contains("6218") && drawn.contains("24101"), "{drawn}");
         assert!(
             !drawn.contains("--setting") && !drawn.contains("--package"),
             "and none of them should carry arguments: {drawn}",
@@ -14313,7 +14814,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden_commands(),
-            ProcessTree::Short,
+            CommandView::short(),
         );
 
         assert_eq!(buffer_line(&buffer, 0), " 596633 sh");
@@ -14324,7 +14825,7 @@ mod tests {
     /// what the short setting is for, and they are what a cell spends
     /// three wrapped rows on when the column is narrow.
     #[test]
-    fn a_short_row_names_the_command_without_its_arguments() {
+    fn a_default_row_keeps_selected_arguments_and_hides_the_others() {
         // Wide enough that the command column holds the whole name: the
         // point here is what the row says, not where it wraps.
         let mut buffer = Buffer::empty(Rect::new(0, 0, 90, 14));
@@ -14344,19 +14845,19 @@ mod tests {
             area,
             Color::Reset,
             &hidden_commands(),
-            ProcessTree::Short,
+            CommandView::short(),
         );
 
         let drawn: Vec<String> = (0..area.height).map(|y| buffer_line(&buffer, y)).collect();
         let drawn = drawn.join("\n");
         assert!(drawn.contains("cargo build"), "{drawn}");
         assert!(
-            !drawn.contains("--features") && !drawn.contains("--all-targets"),
-            "the arguments should be off the row: {drawn}",
+            !drawn.contains("--features") && drawn.contains("--all-targets"),
+            "only the selected arguments should be on the row: {drawn}",
         );
     }
 
-    /// A cell asks for fewer rows with the tree short than with it long.
+    /// A cell asks for fewer rows with the view short than with it long.
     /// The demand and the draw are measured by different code, so a
     /// setting that shortened what reached the screen without shortening
     /// what was asked for would leave the cell sized for command lines
@@ -14376,8 +14877,8 @@ mod tests {
         );
         let group = roster.groups().first().unwrap();
 
-        let short = group_height(group, width, ProcessTree::Short);
-        let long = group_height(group, width, ProcessTree::Long);
+        let short = group_height(group, width, CommandView::short());
+        let long = group_height(group, width, CommandView::long());
 
         assert!(
             short < long,
@@ -14393,7 +14894,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden,
-            ProcessTree::Short,
+            CommandView::short(),
         );
         assert_eq!(
             filled_rows(&buffer),
@@ -14417,7 +14918,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden_commands(),
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         // Nothing closes this chain, so its shell is the foot and stays.
@@ -14483,7 +14984,7 @@ mod tests {
             kind,
             Color::Reset,
             pinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         (0..area.height)
             .map(|y| buffer_line(&buffer, y))
@@ -14912,7 +15413,7 @@ mod tests {
                 kind,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let mut heading = String::new();
             let mut x = area.left();
@@ -14935,10 +15436,22 @@ mod tests {
     #[test]
     fn a_cut_line_keeps_wide_graphemes_within_its_cell_budget() {
         let text = "❤\u{fe0f}".repeat(6);
-        let mut line = Line::from(text);
-        mark_cut_line(&mut line, 10);
-        assert!(UnicodeWidthStr::width(&line) <= 10, "{line:?}");
-        assert!(line.to_string().ends_with(ELISION));
+        let lines = wrapped_command(
+            vec![StyledCommandWord::Independent(Span::raw(text))],
+            10,
+            Style::default().fg(Color::Gray),
+        )
+        .into_rows(1);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(lines).render(area, &mut buffer);
+        for x in [0, 2, 4, 6] {
+            assert_eq!(buffer[(x, 0)].symbol(), "❤\u{fe0f}");
+            assert_eq!(buffer[(x + 1, 0)].symbol(), " ");
+        }
+        assert_eq!(buffer[(8, 0)].symbol(), ELISION);
+        assert_eq!(buffer[(8, 0)].fg, Color::Gray);
+        assert_eq!(buffer[(9, 0)].symbol(), " ");
     }
 
     #[test]
@@ -15012,7 +15525,7 @@ mod tests {
     #[test]
     fn an_unreadable_directory_heading_keeps_only_its_account() {
         let mut row = owned(
-            crate::constants::UNRESOLVED_PATH,
+            UNRESOLVED_PATH,
             40,
             1000,
             AccountName::Resolved("hana-linux-2".into()),
@@ -15034,7 +15547,7 @@ mod tests {
                     kind,
                     Color::Reset,
                     PinnedGroup::Unpinned,
-                    ProcessTree::Long,
+                    CommandView::long(),
                 );
                 assert_eq!(
                     buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(),
@@ -15059,7 +15572,7 @@ mod tests {
     #[test]
     fn a_narrow_unreadable_directory_heading_marks_its_accounts_tail() {
         let mut row = owned(
-            crate::constants::UNRESOLVED_PATH,
+            UNRESOLVED_PATH,
             40,
             1000,
             AccountName::Resolved("hana-linux-2".into()),
@@ -15081,7 +15594,7 @@ mod tests {
                     kind,
                     Color::Reset,
                     PinnedGroup::Unpinned,
-                    ProcessTree::Long,
+                    CommandView::long(),
                 );
                 let heading = buffer_line(&buffer, TABLE_HEADER_HEIGHT);
                 assert_eq!(heading.trim(), expected, "{kind:?}, {room}: {heading}");
@@ -15103,7 +15616,7 @@ mod tests {
     fn a_runner_heading_names_its_checkout_once_the_shim_registers_it() {
         let checkout = "/run/github-runner/runner-one/hana/hana";
         let mut unread = owned(
-            crate::constants::UNRESOLVED_PATH,
+            UNRESOLVED_PATH,
             40,
             1000,
             AccountName::Resolved("runner-one".into()),
@@ -15241,7 +15754,7 @@ mod tests {
             TableKind::Command,
             Rect::new(0, 0, 60, 5),
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let gauge = heading_gauge(&groups[0], 60, &layout);
         let width = cell_width(SECTION_HEADER_INDENT)
@@ -15275,7 +15788,7 @@ mod tests {
             TableKind::Summary,
             area,
             pane_background(false),
-            ProcessTree::Long,
+            CommandView::long(),
         );
         assert_eq!(
             groups
@@ -15615,7 +16128,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let mut buffer = Buffer::empty(area);
 
@@ -15626,7 +16139,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert!(!layout.columns.contains(&COMPILER_COLUMN));
@@ -15672,7 +16185,7 @@ mod tests {
             kind,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         buffer
     }
@@ -15743,14 +16256,14 @@ mod tests {
         let row_refs: Vec<&TrackedRow> = rows.iter().collect();
         let indent = cell_width(SECTION_ITEM_INDENT);
         let full_columns = visible_columns(&row_refs, kind);
-        let grid = FrameTableColumnGrid::of(&row_refs, kind, ProcessTree::Long);
+        let grid = FrameTableColumnGrid::of(&row_refs, kind, CommandView::long());
         let full_width =
             table_width_with_spacing(&grid.constraints(&grid.slots), TIGHT_TABLE_COLUMN_SPACING)
                 .saturating_add(grid.rightmost_value_clearance());
         for interior_width in interior_widths {
             let area = Rect::new(0, 0, interior_width + indent + CONTENT_RIGHT_INSET, 8);
             let layout =
-                CellTableLayout::of(&row_refs, kind, area, Color::Reset, ProcessTree::Long);
+                CellTableLayout::of(&row_refs, kind, area, Color::Reset, CommandView::long());
             let mut buffer = Buffer::empty(area);
             draw_process_table(
                 &mut buffer,
@@ -15759,7 +16272,7 @@ mod tests {
                 kind,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Long,
+                CommandView::long(),
             );
 
             if layout.columns.is_empty() {
@@ -15772,7 +16285,7 @@ mod tests {
             }
             for &column in &layout.columns {
                 assert_eq!(
-                    table_column_text(&buffer, &layout, column, 0).trim_end(),
+                    table_column_text(&buffer, &layout, column, 0).trim(),
                     TABLE_HEADERS[column],
                     "{kind:?} column {column} at {interior_width}",
                 );
@@ -15843,21 +16356,21 @@ mod tests {
 
     /// Draw the production grid at a chosen summary interior width.
     fn summary_alone_buffer(roster: &Roster, inner_width: u16) -> Buffer {
-        summary_alone_buffer_in_tree(roster, inner_width, ProcessTree::Long)
+        summary_alone_buffer_in_tree(roster, inner_width, CommandView::long())
     }
 
     fn summary_alone_buffer_in_tree(
         roster: &Roster,
         inner_width: u16,
-        tree: ProcessTree,
+        view: &CommandView,
     ) -> Buffer {
         let area = Rect::new(0, 0, inner_width.saturating_add(2), 8);
         let mut buffer = Buffer::empty(area);
         let mut grid = tui_pane::TileGrid::new();
-        grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
+        grid.set_min_tile_width(MIN_CELL_WIDTH);
         let sccache = SccacheStats::new();
         let hidden_commands = hidden_commands();
-        let cells = Cells::new(roster, &hidden_commands, tree, &sccache);
+        let cells = Cells::new(roster, &hidden_commands, view, &sccache);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
@@ -15890,8 +16403,8 @@ mod tests {
             widen_summary: false,
         };
         let mut grid = tui_pane::TileGrid::new();
-        grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
-        grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
+        grid.set_min_tile_width(MIN_CELL_WIDTH);
+        grid.set_min_tile_height(MIN_CELL_HEIGHT);
         grid.set_view(TileView::Cells);
         let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
@@ -15919,7 +16432,7 @@ mod tests {
     fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
         let sccache = SccacheStats::new();
         let hidden_commands = hidden_commands();
-        let cells = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
+        let cells = Cells::new(roster, &hidden_commands, CommandView::long(), &sccache);
         settled_buffer_with_cells(&cells, area)
     }
 
@@ -15941,10 +16454,10 @@ mod tests {
         roster.observe(vec![cargo_group(lead)], now);
         roster.advance(
             now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         let group = &roster.groups()[0];
         assert!(group.rows().skip(1).any(|row| row.faded() > 0));
         assert_eq!(
@@ -15955,13 +16468,13 @@ mod tests {
         roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
         roster.advance(
             now + std::time::Duration::from_secs(2),
-            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let group = &roster.groups()[0];
         let rows: Vec<_> = group.rows().collect();
         let fade = heading_fade(&rows).min(group.lead.faded());
         assert!(fade > 0);
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
             cells.readout_fade(&TileContent::Group(group.id.clone())),
             CellReadoutFade::Fading(CellFadeProgress::new(fade))
@@ -15990,7 +16503,7 @@ mod tests {
         roster.observe(Vec::new(), now);
         roster.advance(
             now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let hidden = hidden_commands();
         let visible = roster.visible(&hidden);
@@ -15998,7 +16511,7 @@ mod tests {
         let fade = heading_fade(&rows);
         assert!(fade > 0, "finished summary rows fade");
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
             cells.readout_fade(&TileContent::Summary),
             CellReadoutFade::Fading(CellFadeProgress::new(fade))
@@ -16033,7 +16546,7 @@ mod tests {
             }],
             now + std::time::Duration::from_secs(1),
         );
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
             cells.readout_fade(&TileContent::Summary),
             CellReadoutFade::Unfaded
@@ -16192,8 +16705,8 @@ mod tests {
     ) {
         let sccache = SccacheStats::new();
         let hidden_commands = hidden_commands();
-        let production = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
-        let mut former = Cells::new(roster, &hidden_commands, ProcessTree::Long, &sccache);
+        let production = Cells::new(roster, &hidden_commands, CommandView::long(), &sccache);
+        let mut former = Cells::new(roster, &hidden_commands, CommandView::long(), &sccache);
         former.grids.summary.0.separation = DirectorySeparation::KeepTogether;
         let without_report = CellsWithoutRowReport(former);
         (
@@ -16271,7 +16784,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(roster, &widths, &hidden_commands(), ProcessTree::Long);
+        let demands = tile_demands(roster, &widths, &hidden_commands(), CommandView::long());
         placements
             .iter()
             .filter(|placement| {
@@ -16340,7 +16853,7 @@ mod tests {
             .find(|placement| placement.content == TileContent::Summary)
             .expect("the summary is placed");
         let widths = [(TileContent::Summary, summary.frame.inner().width)];
-        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
 
         assert_eq!(demands.summary, 18, "{}", buffer_rows(&buffer).join("\n"));
         assert_eq!(
@@ -16420,7 +16933,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
 
         assert!(former.contains(&TileContent::Summary));
         assert!(!repaired.contains(&TileContent::Summary));
@@ -16527,8 +17040,8 @@ mod tests {
         let hidden = hidden_commands();
         assert_eq!(
             (
-                content_rows_drawn(&roster, content, content_area, &hidden, ProcessTree::Long),
-                content_rows_kept(&roster, content, content_area, &hidden, ProcessTree::Long),
+                content_rows_drawn(&roster, content, content_area, &hidden, CommandView::long()),
+                content_rows_kept(&roster, content, content_area, &hidden, CommandView::long()),
             ),
             (4, 3)
         );
@@ -16541,7 +17054,7 @@ mod tests {
         let roster = ancestry_transfer_roster(1);
         let hidden = hidden_commands();
         let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         let content = TileContent::Group(roster.groups()[0].id.clone());
         let area = Rect::new(0, 0, 24, 2);
 
@@ -16551,8 +17064,8 @@ mod tests {
         assert_eq!(
             (drawn, kept),
             (
-                content_rows_drawn(&roster, &content, area, &hidden, ProcessTree::Long),
-                content_rows_kept(&roster, &content, area, &hidden, ProcessTree::Long),
+                content_rows_drawn(&roster, &content, area, &hidden, CommandView::long()),
+                content_rows_kept(&roster, &content, area, &hidden, CommandView::long()),
             )
         );
         assert_eq!(cells.row_uses.borrow().len(), 1);
@@ -16578,7 +17091,7 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
+        let demands = tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
         let hidden = placements
             .iter()
             .filter(|placement| {
@@ -16643,11 +17156,11 @@ mod tests {
             widen_summary: false,
         };
         let mut grid = tui_pane::TileGrid::new();
-        grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
-        grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
+        grid.set_min_tile_width(MIN_CELL_WIDTH);
+        grid.set_min_tile_height(MIN_CELL_HEIGHT);
         let sccache = SccacheStats::new();
         let hidden_commands = hidden_commands();
-        let cells = Cells::new(&roster, &hidden_commands, ProcessTree::Long, &sccache);
+        let cells = Cells::new(&roster, &hidden_commands, CommandView::long(), &sccache);
         let short = Rect::new(0, 0, 40, 6);
         let mut buffer = Buffer::empty(short);
         tui_pane::draw_tile_grid(
@@ -16748,7 +17261,8 @@ mod tests {
                     .iter()
                     .map(|placement| (placement.content.clone(), placement.frame.inner().width))
                     .collect();
-                let demands = tile_demands(&roster, &widths, &hidden_commands(), ProcessTree::Long);
+                let demands =
+                    tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
                 assert_eq!(demands.summary, expected, "{area:?}");
             }
             let commands: Vec<_> = placements
@@ -16895,7 +17409,7 @@ mod tests {
         let empty_values = ["no", "cargo", "processes", "running"];
         let whole_foot = "mem 1.0G";
 
-        let last_summary_only_inner_width = crate::constants::MIN_CELL_WIDTH.saturating_sub(3);
+        let last_summary_only_inner_width = MIN_CELL_WIDTH.saturating_sub(3);
         for inner_width in 6..=last_summary_only_inner_width {
             let occupied = summary_alone_buffer(&roster, inner_width);
             assert_summary_alone(&occupied, inner_width);
@@ -16922,7 +17436,7 @@ mod tests {
             );
         }
 
-        let floor_inner_width = crate::constants::MIN_CELL_WIDTH.saturating_sub(2);
+        let floor_inner_width = MIN_CELL_WIDTH.saturating_sub(2);
         let floor = summary_alone_buffer(&roster, floor_inner_width);
         let right = floor.area.right().saturating_sub(1);
         assert!(
@@ -16952,7 +17466,7 @@ mod tests {
                 TableKind::Command,
                 Rect::new(0, 0, interior_width + indent, 1),
                 Color::Reset,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let departed: Vec<usize> = prior
                 .iter()
@@ -16999,7 +17513,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let header = buffer_line(&buffer, 0);
@@ -17032,7 +17546,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let header = buffer_line(&buffer, 0);
@@ -17065,7 +17579,7 @@ mod tests {
             TableKind::Summary,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let buffer = narrow_table_buffer(&rows, TableKind::Summary, interior_width, area.height);
         let command_lines: Vec<String> = (2..area.height)
@@ -17093,7 +17607,7 @@ mod tests {
         let roster = roster_with_ancestry(lead, rest, Vec::new());
         let group = roster.groups().first().unwrap();
         let inner_width = 64;
-        let content_rows = group_height(group, inner_width, ProcessTree::Long);
+        let content_rows = group_height(group, inner_width, CommandView::long());
         let inner = Rect::new(
             0,
             0,
@@ -17133,7 +17647,7 @@ mod tests {
         });
         row.process.managed = Measurement::Reading(1);
         let rows = [&row];
-        let command_width = command_line_width(&row, SummaryDetail::Full, ProcessTree::Long);
+        let command_width = command_line_width(&row, CommandView::long());
         for width in [85, 200] {
             let area = Rect::new(0, 0, width, 16);
             let layout = CellTableLayout::of(
@@ -17141,7 +17655,7 @@ mod tests {
                 TableKind::Command,
                 area,
                 Color::Reset,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let mut buffer = Buffer::empty(area);
             draw_process_table(
@@ -17151,7 +17665,7 @@ mod tests {
                 TableKind::Command,
                 Color::Reset,
                 PinnedGroup::Unpinned,
-                ProcessTree::Long,
+                CommandView::long(),
             );
             let header = buffer_line(&buffer, 0);
             let command_start = header.find(TABLE_HEADERS[COMMAND_COLUMN]).unwrap();
@@ -17165,25 +17679,22 @@ mod tests {
             } else {
                 assert!(drawn_width < usize::from(command_width + TABLE_CONTINUATION_CLEARANCE));
             }
-            assert!(
-                drawn_width
-                    >= usize::from(command_line_width(
-                        &row,
-                        SummaryDetail::Full,
-                        ProcessTree::Short
-                    ))
-            );
+            assert!(drawn_width >= usize::from(command_line_width(&row, CommandView::short())));
         }
     }
 
     #[test]
-    fn command_width_joins_displayed_words_with_one_space() {
+    fn command_width_preserves_spaces_inside_an_argv_value() {
+        let arguments = ["build", "--config", "build.jobs  =  1"];
         let mut row = row(None);
-        row.process.command = CommandText::of(" cargo ", &["build  ", "", "--workspace"]);
-
+        row.process.command = CommandText::of("cargo", &arguments);
+        let buffer = argument_command_buffer(&arguments, CommandView::long(), 80, 1);
+        let drawn = buffer_line(&buffer, 0);
+        assert_eq!(drawn.trim(), "cargo build --config build.jobs  =  1");
+        assert_eq!(buffer[(21, 0)].fg, success_color());
         assert_eq!(
-            command_line_width(&row, SummaryDetail::Full, ProcessTree::Long),
-            cell_width("cargo build --workspace")
+            command_line_width(&row, CommandView::long()),
+            cell_width(drawn.trim())
         );
     }
 
@@ -17207,7 +17718,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         // The column labels are drawn once at the top of the cell, so
@@ -17257,7 +17768,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert!(buffer_line(&buffer, 2).ends_with(ELISION));
@@ -17279,7 +17790,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         draw_process_table(
@@ -17289,7 +17800,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert!(
@@ -17315,7 +17826,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         draw_process_table(
@@ -17325,7 +17836,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let command = layout.command_area(area);
@@ -17348,7 +17859,7 @@ mod tests {
                     TableKind::Command,
                     *area,
                     Color::Reset,
-                    ProcessTree::Long,
+                    CommandView::long(),
                 )
                 .column_width(COMMAND_COLUMN)
                     == 11
@@ -17359,7 +17870,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let mut buffer = Buffer::empty(area);
 
@@ -17370,7 +17881,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert_eq!(
@@ -17402,7 +17913,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         draw_process_table(
@@ -17412,7 +17923,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Lead(&lead.process),
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let command = table_column_text(&buffer, &layout, COMMAND_COLUMN, 5);
@@ -17447,7 +17958,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         draw_process_table(
@@ -17457,7 +17968,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Lead(&lead.process),
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert_eq!(
@@ -17495,7 +18006,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         draw_process_table(
@@ -17505,7 +18016,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Lead(&lead.process),
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert_eq!(
@@ -17535,7 +18046,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let header = buffer_line(&buffer, 0);
@@ -17566,7 +18077,7 @@ mod tests {
             TableKind::Summary,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         assert!(buffer_line(&buffer, 6).ends_with(ELISION));
@@ -17597,7 +18108,7 @@ mod tests {
             TableKind::Summary,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let marked = buffer_line(&buffer, 5);
@@ -17643,7 +18154,7 @@ mod tests {
                     TableKind::Summary,
                     Color::Reset,
                     PinnedGroup::Unpinned,
-                    ProcessTree::Long,
+                    CommandView::long(),
                 );
             },
         );
@@ -17724,7 +18235,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let mut buffer = Buffer::empty(area);
 
@@ -17735,7 +18246,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let drawn = buffer_rows(&buffer).join("\n");
@@ -17774,7 +18285,7 @@ mod tests {
             TableKind::Command,
             area,
             Color::Reset,
-            ProcessTree::Long,
+            CommandView::long(),
         );
         let mut buffer = Buffer::empty(area);
 
@@ -17785,7 +18296,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let drawn = buffer_rows(&buffer).join("\n");
@@ -17820,7 +18331,7 @@ mod tests {
             TableKind::Summary,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let last = buffer_line(&buffer, 2);
@@ -17842,7 +18353,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             PinnedGroup::Unpinned,
-            ProcessTree::Long,
+            CommandView::long(),
         );
 
         let header = buffer_line(&buffer, 0);
@@ -17944,7 +18455,9 @@ mod tests {
 
         let inner = usize::from(WIDTH) - 2;
         let title = SUMMARY_CELL_TITLE;
-        let notes = format!("cargo-tile {APP_VERSION} attract  ? shortcuts ");
+        let notes = format!(
+            "cargo-tile {APP_VERSION} attract  p process_tree   h arguments   ? shortcuts "
+        );
         let mut expected = vec![format!(
             "┌{title}{}┐",
             "─".repeat(inner - title.chars().count())
@@ -17953,7 +18466,7 @@ mod tests {
         expected.push(format!("└{}┘", "─".repeat(inner)));
         expected.push(format!(
             "{:<width$}{notes}",
-            " Uptime: 0s",
+            "",
             width = usize::from(WIDTH) - notes.chars().count()
         ));
         assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
@@ -17983,7 +18496,7 @@ mod tests {
                 "│ │                                                      │ │",
                 "│ └──────────────────────────────────────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
             ],
         ),
         (
@@ -18021,7 +18534,7 @@ mod tests {
                 "│ │   Focus the tile below                          down │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
             ],
         ),
         (
@@ -18040,7 +18553,7 @@ mod tests {
                 "│ │  │   Focus the tile to the left        left      │   │ │",
                 "│ └──│   Focus the tile to the right       right     │───┘ │",
                 "└────└───────────────────1 of 3 ▼────────────────────┘─────┘",
-                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
+                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
             ],
         ),
     ];
@@ -18068,10 +18581,9 @@ mod tests {
             terminal.backend().buffer(),
             FRAME_TAIL_HEIGHT.saturating_sub(1),
         );
-        assert!(
-            status.contains(&format!("cargo-tile {APP_VERSION}")),
-            "{status:?}"
-        );
+        assert!(status.contains("Uptime: 0s"), "{status:?}");
+        assert!(status.contains("p process_tree"), "{status:?}");
+        assert!(status.contains("h arguments"), "{status:?}");
         assert!(status.contains("? shortcuts"), "{status:?}");
     }
 
