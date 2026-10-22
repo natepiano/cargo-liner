@@ -833,8 +833,8 @@ mod tests {
     #[test]
     fn serialized_driver_report_loads_back_through_load_report() {
         let fixture = PersistenceFixture::new();
-        // The fact rides with the finding that authorizes it: same file, same
-        // line, same item name.
+        // Match the `StoredPubUseFixFact` to its authorizing `StoredFinding` by file,
+        // line and item name.
         let mut finding = stored_finding(
             DiagnosticCode::SuspiciousPub,
             &fixture.crate_root,
