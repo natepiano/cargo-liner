@@ -55,7 +55,7 @@ pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 
 // mutation preparation
-/// Bound optimistic re-preparation when another writer invalidates a decision.
+/// Optimistic attempts before preparation holds the mutation lock to prevent invalidation.
 pub(super) const MUTATION_PREPARATION_ATTEMPTS: u32 = 8;
 /// Exponential jitter window base in milliseconds, before unlocked re-preparation.
 pub(super) const MUTATION_RETRY_WINDOW_BASE_MILLISECONDS: u64 = 2;
