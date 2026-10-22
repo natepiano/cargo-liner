@@ -258,7 +258,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 9 — Accurate clicks during motion  · status: todo
 
-**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 21, Phase 23
+**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 21, Phase 23, Phase 24
 
 **Blocked by:** tile-fixes phase 24 merged on main (tui_pane grid overlap) — the showrunner says when (showrunner, 2026-10-21).
 
@@ -269,7 +269,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** the user (via the showrunner), 2026-10-16: "can cargo handler make mouse clicks accurate…". The repro sent to the showrunner found that misses happen only during add/remove/`+` motion. `cell_at` answers against the destination layout (`tui_pane/src/tiles/grid.rs:2894`) while drawing interpolates (`drawing_at`, `grid.rs` ≈3019), and there is a gap between tick, advance and draw. Showrunner ruling: `draw_tile_grid` records the last-drawn piece rects and their cell, and `cell_at` answers from the last drawn frame, which also covers the tick gap. Keep `cell_at`'s public signature. Run cargo-tile's suites. Live-check a click during motion in both apps. Since phase 6, `summary::machine_height` counts hierarchy notice lines, so a first-machine notice appearing or clearing moves later machines' clickable headers; add a two-machine draw → notice change → click regression.
 
 **Constraints from prior phases:**
-- Phase 23: `shared_tree_metrics` builds one `AgeLayout` and one populated column set per screen-column group from the complete rows of every tile in the group. During motion, keep the group layout drawn before a census change until the new frame measures it.
+- Phases 23 and 24: `shared_tree_metrics` (`agent_cell.rs`) groups tiles by `PermittedTreeColumns` (columns populated in the complete rows) and screen x, then runs the fixed steps of `GroupFitStep::ORDER` (drop Directory, Branch, Type, then a final merge); after each step, groups with equal fitted column sets at one screen x merge and share widths and one `AgeLayout`, measured from the complete rows of every tile in the group.
+- Phase 24 motion: tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (`tiles/draw.rs`; the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` (`tiles/grid.rs`) give destination positions and widths with the taller of the source and destination heights; cargo-handler `Cells` (`render.rs`) uses those bounds to measure role widths, and cargo-tile keeps the default. Keep these preparation bounds for measurement; record hit regions and header spans from the pieces actually painted, not from preparation allocations. Test: a shrinking tile clicked during motion selects the header drawn under the pointer, and the existing moving-role tests (`render/moving_role_tests.rs`) stay green.
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
 - After phase 5 the summary's demand changes with each accounts reading.
 - Phase 2's cell-local click hook (`cell_content_at`, `tiles/host.rs`) resolves content from current slots and the destination layout through a crate-private settled-geometry helper in `tiles/grid.rs`. This phase moves it to the last-drawn record too, so the header hit-test matches what is on screen.
@@ -278,7 +279,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render.rs` ≈243 `Cells::tile`, ≈248 `header_spans`, `agent_cell.rs` ≈1605).
 - Phase 12's accounts-header click: `render::cell_clicked` (`render.rs` ≈156–167) tries the summary's agent headers first. Then it rebuilds `summary::accounts_header_spans(area, &cells.summary_frame())` (`summary/mod.rs` ≈231) from the current accounts reading, clock and `App.accounts_sort`, and calls `AccountsSort::select` (`sort.rs`). `SummaryFrame.accounts_sort` carries the sort into `summary::width` and `summary::draw`, and `accounts::header_spans` reads the lines that `accounts::draw_sorted` draws. Keep these drawn accounts spans with the frame, as for the agent headers.
 - Phases 16 and 20 add row and word clicks that can also hit changed content between draw and click: the frame record covers drawn row identities, clipped scrolled rows, wheel targets and word cells, retired tiles included.
-- Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render.rs` ≈137), and each tile keeps its own age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the tile's own age layout kept.
+- Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render.rs` ≈137); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
 
 **Spec:**
 1. `draw_tile_grid` (`tiles/draw.rs`) records, for each drawn piece, the cell's stable content identity, its drawn rect, and its visible (clipped) hit region, in the grid's own state, replacing the previous frame's record. Where pieces overlap, the one drawn on top wins. Model the record's state as a type that tells "never drawn" apart from "a frame drew no interactive content" (e.g. `enum DrawnHits { NotDrawn, Drawn(Vec<DrawnPiece>) }`), never a bare `Option`.
@@ -534,33 +535,33 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 23
 
-#### Work Order
+#### As-built
 
-**Goal:** a tile's role column is as wide as its widest drawn role, and a shell whose timer has run out while the shell still runs reads `running`, not `0:00`.
-
-**Source:** the phase 23 design check 3, 2026-10-22. Both defects moved here under the hard landing: neither is a regression phase 23 caused.
-
-**Constraints from prior phases:**
-- Phase 23: each tile drops columns empty in all its rows (`TreeColumns::for_lines`, `agent_cell.rs`); tiles that share a `(screen-column x, VisibleTreeColumns)` group share one `TreeMetrics`, age slots included (`shared_tree_metrics`, measured once from the complete rows of every tile in the group); `fill_tree_width` gives the slack to `directory`, else `session`. Keep one fitter and one slack rule.
-- Phase 23: the shell timer draws digits only (`timer_label` → `time_left_label`); `ShellState::{Running, Timed(Timer)}` gives the status text and ink; `running` and `thinking` draw in one Busy ink.
-- Phase 17: ages are measured from complete row sets, never a visible slice.
-
-**Spec:**
-1. Role width: in the phase 23 shots, natedev and hana (left screen column, same column set) draw the role column 10 cells wide while their widest drawn role is `review` (6 cells), so the gap from role to status is 6 cells where every other pair has 2 (dark role x 459, status x 555). 10 cells is the width of `showrunner`, which only the cargo-liner tile (right screen column) draws; sdlc fits its role to `unit`. Find which value sets that width (a row not drawn, such as the tile's own root shown as its title, a shared width across screen columns, or a role label that differs from the drawn text) and write the cause in the summary. The role column is as wide as the widest role that the tile group draws, never less than its header.
-2. Spent timer: a shell row whose timer has reached zero while the shell still runs draws `running` in the Busy ink, as an untimed running shell does. A timer with time left keeps its digits. The live case: a shell running `for i in 1 2 3 4 5 6; do sleep …` showed `0:00` for over a minute. `ShellState` picks its ink without a clock while its text reads `now`, so convert the timer input once per frame into one clock-aware resolved state (for example `Running` or `CountingDown(PositiveRemainingTime)`) that gives both the text and the ink.
-3. Drawn column groups (showrunner ruling, 2026-10-22): in one screen column, tiles that draw the same column set share widths and age slots. Today tiles group by populated columns (`VisibleTreeColumns`) before the fit, and `tree_header` can then drop columns, so tiles from different groups can draw the same set with different widths. A fit per group is not enough: group A (populated branch, directory, type) can drop directory and draw {branch, type}, the same set as group B (populated branch, type), with other widths. Construction: columns only drop, in one fixed drop order of at most 3 droppable columns. Iterate over that fixed list, never an open loop: at each drop step, merge the groups whose fitted sets are equal, refit on the merged widths, then go to the next step, so the loop ends by its type. The group key's name states only the guarantee the code keeps.
-4. Summary empty columns (showrunner, 2026-10-22): the summary's top-level table drops a column when no row has a value, by the same rule as the tiles; in the phase 23 shots `desktop` shows `—` in all 4 rows. Headers, widths, sort and clicks follow the drawn columns. The checkpoint also updates the phase 15 line that lists the summary columns, so it states the new rule.
-5. Tests, red first: a rendered tile group whose drawn roles are `impl` and `review`, beside a tile in another screen column that draws `showrunner`, draws its role column 6 cells wide with a 2-cell gap to status; a shell row at the exact deadline and on a later frame reads `running` in the Busy ink, and one with time left reads its digits in the Shell ink; the cross-group case: two tiles in one screen column from different populated groups, whose fit makes their drawn sets equal, draw every header at the same x and share age slots; a summary whose rows have no desktop value draws no `desktop` header, and one with a value keeps it.
+- Role width comes from the rows a tile paints. `TreeMeasurement::measure` (`agent_cell.rs`) counts only the tree rows that fit below `above_tree_rows(row, presentation) -> Vec<TreeHeadingRow>` (`TreeHeadingRow::{Heading, Place, Launcher(u32)}`, shared with drawing), and keeps one value per presentation in `PresentationValues<T>{full, compressed}`. The role column is never narrower than its header. Ages and populated columns still come from complete rows.
+- During motion, tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` measure at the taller of the source and destination heights. cargo-handler `Cells` overrides the hook in `render.rs`; cargo-tile keeps the default.
+- `ShellState::{Running, CountingDown(PositiveRemainingTime(NonZeroU64))}` comes from `ShellState::resolve(timer, now)` once per frame. `TreeLine::status(now)` gives `ResolvedStatus{text, role}`. A shell at or past its deadline reads `running` in the Busy ink; a shell with time left reads its digits in the Shell ink.
+- Tiles of one screen column group by `PermittedTreeColumns` plus screen x. `GroupFitStep::ORDER` is `Drop(Directory)`, `Drop(Branch)`, `Drop(Type)`, `FinalMerge`. After each step, groups with equal fitted sets merge and share widths and age slots. The loop ends because the array ends.
+- The summary top-level table drops a column that no listed row fills (`populated_columns`, `summary/mod.rs`). Headers, widths, rows, sort and clicks follow the drawn columns.
+- The summary low weekly-quota red resolves through `footer_colors::readable_status_style` (dark #ff5050 at 6.52:1, light #cd0000 at 5.84:1).
+- Short tiles keep Branch when it fits (CHANGELOG).
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/census/`, `crates/cargo-handler/src/summary/`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/agent_cell/tests/`
+- `crates/cargo-handler/src/agent_cell.rs` — role measurement, timer state, column groups.
+- `crates/cargo-handler/src/render.rs` — per-frame measurement, the motion preparation override.
+- `crates/cargo-handler/src/summary/mod.rs` — populated summary columns.
+- `crates/cargo-handler/src/summary/accounts.rs` — readable low-quota ink.
+- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs` — the motion preparation hook.
+- `crates/cargo-handler/src/render/moving_role_tests.rs` — role width during motion.
+- `crates/cargo-handler/src/agent_cell/tests/activity_tests.rs`, `column_visibility_tests.rs` — spent-timer cases, the cross-group case.
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the role width cause and fix, the spent-timer state; CHANGELOG.
-- `test` — the red rendered tests.
+**Binds later work:** drawn column groups key on `PermittedTreeColumns` plus screen x and merge after each `GroupFitStep`; click mapping during motion and scrolling keep that group layout. A motion frame prepares through `TileCells::prepare_moving_frame` at the taller of the source and destination heights. Role width follows the painted rows. Summary click work maps through the drawn columns.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of the left screen column's role column and of a running shell past its timer. The checkpoint carries `Change-Review: the role column fits its words, and a shell past its timer reads running | On natedev, run cargo-handler while a shell loop runs past its timer | The role column has the same small gap as the other columns, and the shell row says running instead of 0:00`.
+**Gotchas:**
+- An above-tree `showrunner` row that the selected presentation does not paint set the 10-cell role width, because complete-row measurement counted it.
+- An animated shrink clips a role unless motion has its own measure height.
+- `render/accounts_grid_tests.rs` uses a fixed 80-cell terminal: the sort arrow adds 2 cells of real demand.
+
+**Ruled out:** measuring role width from complete rows (it counts rows no presentation paints).
 
 ### Phase 18 — The shortcuts overlay pages only when it must  · status: todo
 
@@ -599,7 +600,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 19 — Accounts table matches the accounts board  · status: todo
 
-**Depends on:** Phase 17
+**Depends on:** Phase 17, Phase 21, Phase 24
 
 #### Work Order
 
@@ -615,7 +616,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `AccountUsage.credit_use: CreditUse::{Spending, Held}` comes from `use_credits`, which is permission, not spending. Rename that domain type, and convert `read_ok` and `credits_in_use` at the wire boundary into named states.
 - Phase 15 made the Roles column per-role colored spans (`summary/accounts.rs` `role_words` ≈344); new columns keep those spans.
 - Phase 23 full suite: `render::role_title_tests::session_name_inks_stay_apart_from_roles_and_readable_on_the_drawn_ground` took 1.043 s (0.280 s alone). This phase rewrites that test under item 15; the new one runs under a second in the full suite.
-- Phase 23 design check: the dark summary `left` red measured #cd0000 3.60:1 and #890000 2.06:1 on black. Item 13 owns it.
+- Phase 24 repairs the low-quota `left` ink: `summary/accounts.rs` resolves it through `footer_colors::readable_status_style` (dark #ff5050 6.52:1, light #cd0000 5.84:1), tested by `zero_weekly_quota_remains_readable_on_every_drawn_theme_ground` (`summary/accounts_tests.rs`). Keep that repair; item 13 extends the coverage.
 
 **Spec:**
 1. Columns, in this order: a dot with no header, `account`, `role`, `left`, `resets`, `credits`, `enabled`, `in use`, `read`. Every header is lower case. Every column is always shown. Two spaces between columns; nothing is cut off.
@@ -630,10 +631,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 10. Numbers are right-aligned: left, resets, credits and read. The `%` signs line up in one column. The existing numeric columns are right-aligned already; keep that as a preservation check, with red tests only for the new columns.
 11. Header sort (phase 12) covers every new column; `AccountsColumn` gains the variants it needs. The read age and the yes columns sort with blank last.
 12. Tests, each red before its fix: a rendered table has the nine columns in order with lower-case headers; the account cell holds only the name, and the read column holds the reading age; the dot is green for `read_ok` true and red for false and for a missing field; left is red at 9 %, yellow at 24 %, plain at 25 %, `—` with no reading; resets formats a same-day, a this-week and a later time; credits shows `13,446` for 13446.4 and `unlimited`; enabled and in use show `yes` or blank from their fields; the `%` signs and the last digit of each number column stand in one screen column in every row.
-13. Dark low-left red #890000 on black is 2.06:1: use the theme bright red; every numeric column ink reaches 4.5:1 (showrunner, 2026-10-20). A rendered test reads every numeric column on its drawn grounds in all four themes, including the reset-gradient endpoints and middle ranks and the DIM credit text, and requires 4.5:1 with its own literal 208/255 coverage (`summary/accounts.rs` ≈439 draws raw gradient colors and DIM credits).
+13. Keep phase 24's readable low-quota red; every numeric column ink reaches 4.5:1 (showrunner, 2026-10-20). A rendered test reads every numeric column on its drawn grounds in all four themes, including the reset-gradient endpoints and middle ranks and the DIM credit text, and requires 4.5:1 with its own literal 208/255 coverage (`summary/accounts.rs` ≈439 draws raw gradient colors and DIM credits).
 14. Tests cover every new header click toggle, blank-last order and the per-role spans.
 15. Session-name hues (`theme.rs` `RainbowHue`) stay clear of the status, account and role palettes. The phase 17 design check measured near matches: dark session green #6edc6e vs `running` #61d661 and session cyan #50d2e6 vs `command` #57c2d6; light session green #008700 vs `thinking`/`running` #008200, session teal #047a8e vs `command` #0e7f9c and codex2 #007389, session red #c81e1e vs codex1 #e3004c. Pick session hues outside those palettes. Tests, red first: every session hue against every status ink, account ink and role ink by CIEDE2000 >= 12, and each session hue at 4.5:1 on its drawn ground with glyph coverage (`InkCoverage::Antialiased`), in all four themes (showrunner, 2026-10-21, phase 17 design check D2). Phase 21 runs before this phase and adds the Astra role inks with their own distance and contrast checks; these checks read every role ink through the production role API (`FooterColors::hierarchy_role`), Astra inks included, and keep phase 21's checks passing. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
-16. Unstable test (showrunner, 2026-10-21): `render::accounts_grid_tests::accounts_grid_measured_tables_sort_account_headers_without_changing_agent_order` panicked once with "missing grid label codex2" (`accounts_grid_tests.rs:39`), at 0.51 s in a 32-thread style merge run, and passed on the rerun. Find the shared state or timing that lets the label go missing under load, and fix that cause. A retry, a longer wait or a looser assertion is not a fix. Write the cause in the summary; the test stays under a second.
+16. Unstable test (showrunner, 2026-10-21): `render::accounts_grid_tests::accounts_grid_measured_tables_sort_account_headers_without_changing_agent_order` panicked once with "missing grid label codex2" (`accounts_grid_tests.rs:39`), at 0.51 s in a 32-thread style merge run, and passed on the rerun. Phase 24 changed that fixture from a demand-based terminal width to a fixed 80 cells, because the sort arrow adds 2 cells of demand. Check whether the fixed width removes the failure; if it persists, find its cause without assuming shared state or timing, and fix that cause. A retry, a longer wait or a looser assertion is not a fix. Write the cause in the summary; the test stays under a second.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/`, `crates/cargo-handler/CHANGELOG.md`
@@ -647,7 +648,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 16 — Row selection in tiles  · status: todo
 
-**Depends on:** Phase 17
+**Depends on:** Phase 17, Phase 24
 
 #### Work Order
 
@@ -664,7 +665,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 15: the summary lists only sessions with a hierarchy; a standalone session lives only in the unassigned tile. A session moves between tiles when it gains or loses its last visible child; selection follows the exact row.
 - The cargo-port functions are `scroll_viewport_if_contains` (`tui/input/dispatch.rs:725`) and `hit_test_table_row` (`tui/panes/hit_test.rs:11`).
 - Phase 17 folds a dispatch shell into its seat row: the row's identity is the seat's `WorkerIdentity::{CodexThread, ClaudeSession}` (`census/worker_dispatch/mod.rs` ≈226), not the shell pid. `census/tree.rs` `subagent_node` (≈648) drops the subagent id, and `ChildRow` (`census/mod.rs` ≈442) keeps only `pid: Option<u32>`, which cannot name every selectable row. Carry the seat and subagent identities through census construction (`census/tree.rs`) and probe conversion (`census/probe.rs`); a remote report from an older sender with no identity gets a named legacy variant, never an invented id.
-- Phase 17 age slots: `summary/age.rs` `AgeLayout` measures each tile's age column from its complete row set, after the shared screen-column widths fit (`App.tree_layouts`). Scrolling slices the drawn rows only; it must not re-measure ages from the visible slice. Phase 23: `shared_tree_metrics` builds one `AgeLayout` and one populated column set per screen-column group from the complete rows of every tile in the group; scrolling keeps both. Test: two tiles in one group where the only role value and the widest age scroll out of view keep their role column, age slots and header x.
+- Phase 17 age slots: `summary/age.rs` `AgeLayout` measures each tile's age column from its complete row set, after the shared screen-column widths fit (`App.tree_layouts`). Scrolling slices the drawn rows only; it must not re-measure ages from the visible slice. Phases 23 and 24: `shared_tree_metrics` groups tiles by `PermittedTreeColumns` (columns populated in the complete rows) and screen x, then merges groups with equal fitted column sets after each fixed step of `GroupFitStep::ORDER`; merged groups share widths and one `AgeLayout`. Phase 24 measures role width from the rows the tile paints (`TreeMeasurement::measure`, `agent_cell.rs`: the tree rows that fit below the rows `above_tree_rows(row, presentation)` returns, per `PresentationValues`). Scrolling keeps the columns populated in the complete row set and the age slots measured from the complete group; role width follows the rows drawn in the current viewport, and tiles with equal fitted column sets share header positions. Tests: two tiles in one group where the only role value and the widest age scroll out of view keep their role column, age slots and header x; a rendered tile where `showrunner` scrolls out of view and the widest remaining role is `review` draws the role column 6 cells wide.
+- Phase 24 timer: `ShellState::{Running, CountingDown(PositiveRemainingTime)}` is built once per frame by `ShellState::resolve(timer, now)`, and `TreeLine::status(now)` gives one `ResolvedStatus{text, role}`. `ChildRow.timer: Option<Timer>` (`census/mod.rs`) still allows a timer on a non-shell child. When this phase restructures child identities, put the timer observation in the shell payload with named untimed and observed-countdown states; convert optional probe fields at the wire boundary (`census/probe.rs`) and keep older reports readable.
 
 **Spec:**
 1. Move into tui_pane: `Viewport::navigate(NavAction)` (from cargo-port `navigate_viewport`), `Viewport::scroll_if_contains` and `table_row_at`. cargo-port calls them from tui_pane; its behavior, look and tests do not change beyond imports.
@@ -675,7 +677,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 6. Tests, each red before its fix: each key moves the selection as stated and stops at the edges; a click selects the row under the pointer in a tile; the wheel scrolls the tile under the pointer, not the focused one; when the selected row's session ends, the selection moves to the row at the old index, then to the last row, then to `NoRows`; a group line can be selected; cargo-port's existing navigation tests pass unchanged.
 7. Tests also cover duplicate descriptions, renames, pid reuse, row removal, summary selection, and a session moving between its hierarchy tile and the unassigned tile.
 8. Tests also cover: a selected seat row stays selected across a new dispatch to that seat, a seat relaunch and a remote probe round trip; key moves and row removal on the summary surface and on a tile surface; a scrolled tile keeps its unit letters in the same screen columns and its age header whole.
-9. A selected row stays readable. The selection background is a ground the inks are solved on (`footer_colors/mod.rs` `InkGrounds` gains it). Rendered tests, red first, read back the status, shell timer, account, role and session inks on a selected row in a focused and an unfocused tile and require 4.5:1, computed with their own literal 208/255 glyph coverage, in all four built-in themes. If the shared selection style leaves an ink under 4.5:1, send the conflict to the showrunner before choosing a palette.
+9. A selected row stays readable. The selection background is a ground the inks are solved on (`footer_colors/mod.rs` `InkGrounds` gains it). Rendered tests, red first, read back the status, a positive shell countdown, a shell at and after its deadline, account, role and session inks (text and ink from one frame clock) on a selected row in a focused and an unfocused tile and require 4.5:1, computed with their own literal 208/255 glyph coverage, in all four built-in themes. If the shared selection style leaves an ink under 4.5:1, send the conflict to the showrunner before choosing a palette.
+10. Status width (showrunner, 2026-10-22, phase 24 design check): in the phase 24 dark shots, the left tiles (natedev, hana) draw the status column 8 cells wide while the widest drawn status is 7 (`running`, `waiting`), so the gap before `account` is 3 cells where every other gap is 2; the light shots have 2. The width comes from a value no painted row draws, possibly an off-screen `thinking` row, as the role width did. Measure the status width from the rows the tile paints, by the same rule as the role width (phase 24, `TreeMeasurement::measure`), never less than its header. Test, red first: a rendered tile whose painted statuses are `running` and `waiting`, with a `thinking` row below the tile height, draws a 2-cell gap from status to account.
 
 **Files:**
 - `crates/tui_pane/src/layout/viewport.rs`, `crates/tui_pane/src/runner/event_loop.rs`, `crates/tui_pane/src/runner/app.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -687,7 +690,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `impl` — shared tui_pane exports, cargo-port and cargo-handler production code and registrations, the selection ground in `InkGrounds`; CHANGELOG.
 - `test` — separate shared-navigation and handler-selection test files, including the selected-row contrast tests.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of a cargo-handler tile with a selected row after key moves, after a click and after a wheel scroll, in a dark and a light theme. The checkpoint carries `Change-Review: a cargo-handler tile has a selected row that the arrow, page, home and end keys move, a click selects and the wheel scrolls, as in cargo-port | open cargo-handler, move the selection with the keys, click a row and scroll a tile with the wheel`.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of a cargo-handler tile with a selected row after key moves, after a click and after a wheel scroll, in a dark and a light theme, and of the status column gap in the left screen column; each case in its own shot, never one image under two names. The checkpoint carries `Change-Review: a cargo-handler tile has a selected row that the arrow, page, home and end keys move, a click selects and the wheel scrolls, as in cargo-port | open cargo-handler, move the selection with the keys, click a row and scroll a tile with the wheel`.
 
 ### Phase 20 — Click a word to highlight every instance  · status: todo
 
@@ -728,7 +731,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
 
-**Depends on:** Phase 17
+**Depends on:** Phase 17, Phase 16
 
 #### Work Order
 
