@@ -123,16 +123,17 @@ impl AuthorizedEditingIdentity {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        // A `--defer` answer binds its worktree and acquires no reservation to identify the
-        // caller by, so every caller in that worktree inherits it, an unidentified one included.
+        // `answer_records_authorize` honors a `--defer` answer that binds its worktree and acquires
+        // no reservation to identify the caller by, so every caller in that worktree
+        // inherits it, an unidentified one included.
         reservations.answer_records_authorize(self.worktree(), holder, overlap_scope, path_case)
             || reservations
             .iter()
             .filter(|requester| {
                 self.identifies_requester(requester)
                     && requester.edit_blocking_status() == EditBlockingStatus::Blocking
-                    // An answer authorizes the first write while the requester is still clean.
-                    // Its declaration is an entitlement here, never the holder's refusal extent.
+                    // An answer authorizes the first write while `requester` is still clean.
+                    // `requester.declared_race_scopes()` is an entitlement here, never the holder's refusal extent.
                     && requester.declared_race_scopes().as_slice().iter().any(|scope| scope.overlaps(overlap_scope, path_case))
             })
             .any(|requester| {
