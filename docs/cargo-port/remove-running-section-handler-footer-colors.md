@@ -504,7 +504,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** Unicode special-case folding (Greek final sigma) in the session sort. Session names do not need it, and the order stays total and stable.
 
-### Phase 23 — Timer at digit height; tiles drop empty columns; one Busy ink  · status: todo
+### Phase 23 — Timer at digit height; tiles drop empty columns; one Busy ink  · status: done
 
 **Depends on:** Phase 22
 
@@ -537,6 +537,36 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — the red rendered tests.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of a counting shell timer, of the unassigned tile beside a tile with type and role values, and of `thinking` beside `running` rows. The checkpoint carries `Change-Review: shell timers read at digit height, and tiles draw no empty columns | On natedev, run cargo-handler while a shell waits on a timer | The timer reads clearly beside its digits, and the unassigned tile shows no empty type or role column` and `Change-Review: thinking and running share one green | On natedev, run cargo-handler in the light and the dark theme while agents work | Every thinking and running word is the same green`.
+
+### Phase 24 — Role column fits its drawn values; a spent timer reads running  · status: todo
+
+**Depends on:** Phase 23
+
+#### Work Order
+
+**Goal:** a tile's role column is as wide as its widest drawn role, and a shell whose timer has run out while the shell still runs reads `running`, not `0:00`.
+
+**Source:** the phase 23 design check 3, 2026-10-22. Both defects moved here under the hard landing: neither is a regression phase 23 caused.
+
+**Constraints from prior phases:**
+- Phase 23: each tile drops columns empty in all its rows (`TreeColumns::for_lines`, `agent_cell.rs`); tiles that share a `(screen-column x, VisibleTreeColumns)` group share one `TreeMetrics`, age slots included (`shared_tree_metrics`, measured once from the complete rows of every tile in the group); `fill_tree_width` gives the slack to `directory`, else `session`. Keep one fitter and one slack rule.
+- Phase 23: the shell timer draws digits only (`timer_label` → `time_left_label`); `ShellState::{Running, Timed(Timer)}` gives the status text and ink; `running` and `thinking` draw in one Busy ink.
+- Phase 17: ages are measured from complete row sets, never a visible slice.
+
+**Spec:**
+1. Role width: in the phase 23 shots, natedev and hana (left screen column, same column set) draw the role column 10 cells wide while their widest drawn role is `review` (6 cells), so the gap from role to status is 6 cells where every other pair has 2 (dark role x 459, status x 555). 10 cells is the width of `showrunner`, which only the cargo-liner tile (right screen column) draws; sdlc fits its role to `unit`. Find which value sets that width (a row not drawn, such as the tile's own root shown as its title, a shared width across screen columns, or a role label that differs from the drawn text) and write the cause in the summary. The role column is as wide as the widest role that the tile group draws, never less than its header.
+2. Spent timer: a shell row whose timer has reached zero while the shell still runs draws `running` in the Busy ink, as an untimed running shell does. A timer with time left keeps its digits. The live case: a shell running `for i in 1 2 3 4 5 6; do sleep …` showed `0:00` for over a minute.
+3. Tests, red first: a rendered tile group whose drawn roles are `impl` and `review`, beside a tile in another screen column that draws `showrunner`, draws its role column 6 cells wide with a 2-cell gap to status; a rendered shell row whose timer reached zero while the shell runs reads `running` in the Busy ink, and one with time left reads its digits.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render.rs`, `crates/cargo-handler/src/census/`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell/tests/`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the role width cause and fix, the spent-timer state; CHANGELOG.
+- `test` — the red rendered tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots, dark and light, of the left screen column's role column and of a running shell past its timer. The checkpoint carries `Change-Review: the role column fits its words, and a shell past its timer reads running | On natedev, run cargo-handler while a shell loop runs past its timer | The role column has the same small gap as the other columns, and the shell row says running instead of 0:00`.
 
 ### Phase 18 — The shortcuts overlay pages only when it must  · status: todo
 
@@ -590,6 +620,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Do not edit `~/.claude`. If the JSON has no field a column needs, tell the showrunner the exact field name.
 - `AccountUsage.credit_use: CreditUse::{Spending, Held}` comes from `use_credits`, which is permission, not spending. Rename that domain type, and convert `read_ok` and `credits_in_use` at the wire boundary into named states.
 - Phase 15 made the Roles column per-role colored spans (`summary/accounts.rs` `role_words` ≈344); new columns keep those spans.
+- Phase 23 full suite: `render::role_title_tests::session_name_inks_stay_apart_from_roles_and_readable_on_the_drawn_ground` took 1.043 s (0.280 s alone). This phase rewrites that test under item 15; the new one runs under a second in the full suite.
+- Phase 23 design check: the dark summary `left` red measured #cd0000 3.60:1 and #890000 2.06:1 on black. Item 13 owns it.
 
 **Spec:**
 1. Columns, in this order: a dot with no header, `account`, `role`, `left`, `resets`, `credits`, `enabled`, `in use`, `read`. Every header is lower case. Every column is always shown. Two spaces between columns; nothing is cut off.
@@ -607,14 +639,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 13. Dark low-left red #890000 on black is 2.06:1: use the theme bright red; every numeric column ink reaches 4.5:1 (showrunner, 2026-10-20).
 14. Tests cover every new header click toggle, blank-last order and the per-role spans.
 15. Session-name hues (`theme.rs` `RainbowHue`) stay clear of the status, account and role palettes. The phase 17 design check measured near matches: dark session green #6edc6e vs `running` #61d661 and session cyan #50d2e6 vs `command` #57c2d6; light session green #008700 vs `thinking`/`running` #008200, session teal #047a8e vs `command` #0e7f9c and codex2 #007389, session red #c81e1e vs codex1 #e3004c. Pick session hues outside those palettes. Tests, red first: every session hue against every status ink, account ink and role ink by CIEDE2000 >= 12, and each session hue at 4.5:1 on its drawn ground with glyph coverage (`InkCoverage::Antialiased`), in all four themes (showrunner, 2026-10-21, phase 17 design check D2). Phase 21 runs before this phase and adds the Astra role inks with their own distance and contrast checks; these checks read every role ink through the production role API (`FooterColors::hierarchy_role`), Astra inks included, and keep phase 21's checks passing. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
+16. Unstable test (showrunner, 2026-10-21): `render::accounts_grid_tests::accounts_grid_measured_tables_sort_account_headers_without_changing_agent_order` panicked once with "missing grid label codex2" (`accounts_grid_tests.rs:39`), at 0.51 s in a 32-thread style merge run, and passed on the rerun. Find the shared state or timing that lets the label go missing under load, and fix that cause. A retry, a longer wait or a looser assertion is not a fix. Write the cause in the summary; the test stays under a second.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/sort.rs`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/census/accounts_wire_tests.rs`
+- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/census/accounts_wire_tests.rs`
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — accounts production files (`summary/accounts.rs`, `summary/constants.rs`, `census/accounts.rs`, `sort.rs`), the session palette in `theme.rs` and the built-in theme files, and test module registrations; CHANGELOG.
-- `test` — the red tests in the accounts test files, a separate census account-wire test module (`census/accounts_wire_tests.rs`: `read_ok` and `credits_in_use` conversion into named states, missing fields included), and the composed-grid palette tests in `render/role_title_tests.rs`.
+- `test` — the red tests in the accounts test files, a separate census account-wire test module (`census/accounts_wire_tests.rs`: `read_ok` and `credits_in_use` conversion into named states, missing fields included), the composed-grid palette tests in `render/role_title_tests.rs`, and the cause of the unstable accounts grid test (`render/accounts_grid_tests.rs`, item 16; a cause in production code goes to `impl`).
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of the accounts table, in a dark and a light theme, with an account that cannot be read, one under 10 % left, one with credits enabled and in use. The checkpoint carries `Change-Review: the accounts table shows a dot, account, role, left, resets, credits, enabled, in use and read, as the accounts board does, with right-aligned numbers and the reading age in its own column | open cargo-handler and /accounts-board side by side and compare the accounts tables`.
 
@@ -715,7 +748,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - natedev adds to `production_tree.py --json` one edge per Astra session while it holds the role: `{"manager": <Claude session id of the unit director or showrunner>, "member": <Codex thread id>, "role": "astra-designer" | "astra-reviewer", "codex_home": <CODEX_HOME>, "state": "busy" | "idle"}`, and the `statusline.conf` keys `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
 - Today `census/hierarchy.rs` drops an edge whose role it does not know (`HierarchyWireRole` `#[serde(other)] Unknown`); `HierarchyRole` is in `census/mod.rs`; `RoleLabel` is in `census/placement.rs`; `FooterRole` and its `role.*` keys are in `footer_colors/mod.rs`. Since phase 17 there is no `From<HierarchyRole> for FooterRole` and no `FooterRole::Worker`: management roles map in `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈548), specialist role words in `FooterColors::named_role` (≈539), and worker rows draw plain.
 - Phase 17 probe schema 3: `ProbeChildWork` sends the unit kind `subagent` with an optional `subagent_role`. Keep its compatibility tests beside the new hierarchy extension tests: a capable receiver keeps recorded subagent roles; an older receiver accepts the report without the extension.
-- The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; natedev changes `statusline.conf`. This phase does not wait for that change: its distance test uses a fixture with the `statusline.conf` values and the new designer color the showrunner names, and the live shots before the checkpoint need the change on `~/.claude` main.
+- The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
 - Phase 21 runs before phase 19, so this phase does its own complete palette checks for the Astra inks through the production role API (`FooterColors::hierarchy_role` with the new variants), not through fixed colors: against every session hue, every account ink and every existing role ink. Phase 19 later keeps them passing. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 - The Codex thread lookup in `constants.rs` reads only `originator = 'codex-tui'` threads; `astra_review.py` runs `codex exec` (`originator` `codex_exec`).
 - The word `review` stays the pool reviewer's.
