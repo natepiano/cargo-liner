@@ -192,11 +192,19 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["session", "role", "status", "account", "age", "▼"]
+        ["session", "role", "status", "account", "branch", "age", "▼"]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
-        ["├─", "dashboard", "unit", "thinking", "claude1", "6h"]
+        [
+            "├─",
+            "dashboard",
+            "unit",
+            "thinking",
+            "claude1",
+            "dashboard",
+            "6h"
+        ]
     );
     assert_eq!(
         text[2].split_whitespace().collect::<Vec<_>>(),
@@ -207,12 +215,13 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "impl",
             "idle",
             "codex1",
+            "dashboard",
             "5h"
         ]
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└─", "diagrams", "unit", "idle", "claude3", "4h"]
+        ["└─", "diagrams", "unit", "idle", "claude3", "—", "4h"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
@@ -237,6 +246,17 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             );
         }
     }
+    for (name, branch) in [
+        ("dashboard", "dashboard"),
+        ("hanadocs-dashboard-impl", "dashboard"),
+        ("diagrams", "—"),
+    ] {
+        assert_eq!(
+            column_value(&buffer, "branch", row_of(&buffer, name), &HEADERS),
+            branch
+        );
+    }
+    assert!(find(&buffer, "directory").is_none());
 }
 
 #[test]
@@ -654,7 +674,7 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         .width()
         .max(place_line(cell.row).width());
     if !cell.lines.is_empty() {
-        let columns = TreeLayout::Full.populated_columns(&cell.lines, NOW, account_column);
+        let columns = PermittedTreeColumns::for_lines(&cell.lines, NOW, account_column).columns();
         full = full.max(
             table_width(&tree_widths(
                 &cell.lines,
@@ -684,7 +704,11 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         );
     }
 
-    let columns = TreeLayout::Compressed.populated_columns(&cell.lines, NOW, account_column);
+    let columns: Vec<_> = PermittedTreeColumns::for_lines(&cell.lines, NOW, account_column)
+        .columns()
+        .into_iter()
+        .filter(|column| !matches!(column, TreeColumn::Branch | TreeColumn::Directory))
+        .collect();
     let gaps = columns.len().saturating_sub(1);
     let spacing = usize::from(TABLE_COLUMN_SPACING);
     let widths = tree_widths(

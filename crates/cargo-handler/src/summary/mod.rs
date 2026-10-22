@@ -59,7 +59,6 @@ use crate::constants::MISSING_VALUE;
 use crate::constants::NAME_COLUMN_MAX;
 use crate::constants::NO_AGENTS_NOTE;
 use crate::constants::SCANNING_NOTE;
-use crate::constants::SUMMARY_HEADERS;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
@@ -118,9 +117,11 @@ pub(crate) fn width(
         return headings.max(accounts::sorted_width(accounts, now, accounts_sort));
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
-    let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
-    let table = (0..SUMMARY_HEADERS.len())
-        .map(|column| widths.get(column))
+    let visible = populated_columns(machines, placement, account_column);
+    let columns = u16::try_from(visible.len()).unwrap_or(u16::MAX);
+    let table = visible
+        .iter()
+        .map(|column| widths.get(column.index()))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
     headings
@@ -171,6 +172,7 @@ fn root_rows<'a>(
 
 /// Shared column widths, account visibility and the footer palette.
 struct SummaryColumns<'a> {
+    visible:        Vec<SummaryColumn>,
     ages:           AgeLayout,
     footer_colors:  &'a FooterColors,
     constraints:    Vec<Constraint>,
@@ -194,11 +196,13 @@ pub(crate) struct SummaryFrame<'a, 'data> {
 /// Draw machine groups and accounts with the independent ordering in this frame.
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
     let SummaryHeader {
+        visible,
         constraints,
         machines,
         ..
     } = summary_header(area, frame);
     let columns = SummaryColumns {
+        visible,
         ages: age_layout(frame.machines, frame.placement, frame.now),
         footer_colors: frame.footer_colors,
         constraints,
@@ -332,11 +336,12 @@ fn draw_machine(
                 columns.account_column,
                 columns.footer_colors,
                 &columns.ages,
+                &columns.visible,
             )
         }),
         columns.constraints.iter().copied(),
     )
-    .header(Row::new(SummaryColumn::ALL.map(|column| {
+    .header(Row::new(columns.visible.iter().map(|&column| {
         Line::from(Span::styled(columns.sort.header(column), label)).alignment(column.alignment())
     })))
     .column_spacing(TABLE_COLUMN_SPACING)
@@ -375,6 +380,7 @@ fn compare_rows(
 
 /// Shared horizontal columns and vertical machine placement for the summary.
 struct SummaryHeader<'a> {
+    visible:     Vec<SummaryColumn>,
     /// Column widths used by every machine table.
     constraints: Vec<Constraint>,
     /// The visible machine tables and their heading rectangles.
@@ -385,7 +391,9 @@ struct SummaryHeader<'a> {
 
 /// One column layout supplies both drawing and header hit testing.
 fn summary_header<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> SummaryHeader<'a> {
+    let visible = populated_columns(frame.machines, frame.placement, frame.account_column);
     let constraints = fitted_constraints(
+        &visible,
         frame.machines,
         frame.placement,
         frame.now,
@@ -402,13 +410,10 @@ fn summary_header<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> SummaryHeader
             .spacing(TABLE_COLUMN_SPACING)
             .flex(Flex::Start)
             .split(machine.table);
-        spans.extend(sort::column_spans(
-            &SummaryColumn::ALL,
-            &rects,
-            machine.table.y,
-        ));
+        spans.extend(sort::column_spans(&visible, &rects, machine.table.y));
     }
     SummaryHeader {
+        visible,
         constraints,
         machines,
         spans,
@@ -486,6 +491,7 @@ fn agent_row(
     account_column: AccountColumn,
     footer_colors: &FooterColors,
     ages: &AgeLayout,
+    visible: &[SummaryColumn],
 ) -> Row<'static> {
     let text = Style::default().fg(text_default());
     Row::new(
@@ -509,6 +515,7 @@ fn agent_row(
         ]
         .into_iter()
         .zip(SummaryColumn::ALL)
+        .filter(|(_, column)| visible.contains(column))
         .map(|(line, column)| line.alignment(column.alignment())),
     )
 }
@@ -574,22 +581,58 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
 /// `name` stops at [`NAME_COLUMN_MAX`], and `directory` takes whatever
 /// the fitted columns leave.
 fn fitted_constraints(
+    visible: &[SummaryColumn],
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
     now: u64,
     account_column: AccountColumn,
     sort: SummarySort,
 ) -> Vec<Constraint> {
-    column_widths(machines, placement, now, account_column, sort)
-        .to_constraints()
-        .into_iter()
-        .enumerate()
-        .map(|(column, constraint)| {
-            if column == SummaryColumn::Directory.index() {
+    let constraints =
+        column_widths(machines, placement, now, account_column, sort).to_constraints();
+    visible
+        .iter()
+        .map(|column| {
+            let constraint = constraints[column.index()];
+            if *column == SummaryColumn::Directory {
                 Constraint::Min(cell_width(&sort.header(SummaryColumn::Directory)))
             } else {
                 constraint
             }
+        })
+        .collect()
+}
+
+/// A summary column exists only when a listed row supplies a value.
+fn populated_columns(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    accounts: AccountColumn,
+) -> Vec<SummaryColumn> {
+    let rows: Vec<_> = machines
+        .iter()
+        .flat_map(|machine| root_rows(*machine, placement))
+        .collect();
+    SummaryColumn::ALL
+        .into_iter()
+        .filter(|column| {
+            rows.iter().any(|row| {
+                let value = match column {
+                    SummaryColumn::Pid | SummaryColumn::Age => return true,
+                    SummaryColumn::Agent => match (accounts, &row.account) {
+                        _ if matches!(row.service_tier, crate::census::ServiceTier::Fast) => {
+                            return true;
+                        },
+                        (AccountColumn::Shown, Account::Home(home)) => home.label(),
+                        _ => return true,
+                    },
+                    SummaryColumn::Name => row.name.as_str(),
+                    SummaryColumn::Status => status_text(row),
+                    SummaryColumn::Desktop => desktop_text(row),
+                    SummaryColumn::Directory => row.directory.as_str(),
+                };
+                !value.trim().is_empty() && value != MISSING_VALUE
+            })
         })
         .collect()
 }
@@ -1318,9 +1361,9 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                "     pid  account     session        status     age ▼  desktop  directory",
-                "  428044  claude      enh/handler    thinking  1h      —        ~/rust/handler",
-                " 4039085  codex fast  --model gpt-5  —            12m  —        ~/rust/handler",
+                "     pid  account     session        status     age ▼  directory",
+                "  428044  claude      enh/handler    thinking  1h      ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  —            12m  ~/rust/handler",
             ]
         );
         for x in [10, 19] {

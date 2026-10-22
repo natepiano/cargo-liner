@@ -215,6 +215,38 @@ struct Cells<'a> {
     accounts_sort:  AccountsSort,
 }
 
+/// Render fixed content allocations through the production preparation path.
+#[cfg(test)]
+pub(crate) fn draw_allocated_tiles_for_test(
+    machines: Vec<Machine<'_>>,
+    now: u64,
+    allocations: &[(TileKey, Rect)],
+    buffer: &mut Buffer,
+) {
+    let colors = FooterColors::default();
+    let cells = Cells::new(
+        machines,
+        now,
+        &colors,
+        &HashMap::new(),
+        SummarySort::default(),
+    );
+    cells.prepare_frame(|| {
+        allocations
+            .iter()
+            .map(|(key, area)| (TileContent::Group(key.clone()), *area))
+            .collect()
+    });
+    for (key, area) in allocations {
+        cells.draw(
+            buffer,
+            &TileContent::Group(key.clone()),
+            *area,
+            Color::Reset,
+        );
+    }
+}
+
 impl<'a> Cells<'a> {
     /// Build each default tree once, then reorder only tiles with a saved sort.
     fn new(
@@ -289,32 +321,33 @@ impl<'a> Cells<'a> {
 }
 
 impl TileCells<TileKey> for Cells<'_> {
+    fn prepare_moving_frame(
+        &self,
+        _: impl FnOnce() -> Vec<(TileContent, Rect)>,
+        motion_bounds: impl FnOnce() -> Vec<(TileContent, Rect)>,
+    ) {
+        self.prepare_frame(motion_bounds);
+    }
+
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
         let allocations = allocations();
         let tiles: Vec<_> = allocations
             .iter()
             .filter_map(|(content, area)| match content {
-                TileContent::Group(id) => self.tile(id).map(|tile| {
-                    let columns = tile.visible_columns(self.now, self.account_column);
-                    (tile, (area.x, columns))
-                }),
+                TileContent::Group(id) => self.tile(id).map(|tile| (tile, *area)),
                 _ => None,
             })
             .collect();
-        let groups = agent_cell::shared_tree_metrics(tiles.iter().map(|(tile, (x, columns))| {
-            (
-                *x,
-                *columns,
-                tile.metrics(self.now),
-                tile.elapsed_ages(self.now),
-            )
-        }));
+        let measurements = agent_cell::shared_tree_metrics(
+            tiles
+                .iter()
+                .map(|(tile, area)| tile.measure(*area, self.now, self.account_column)),
+        );
         let mut layouts = self.layouts.borrow_mut();
         layouts.clear();
-        for (tile, key) in tiles {
-            let metrics = &groups[&key];
+        for ((tile, _), metrics) in tiles.into_iter().zip(measurements) {
             tile.share_metrics(metrics.clone());
-            layouts.insert(tile.key(), metrics.clone());
+            layouts.insert(tile.key(), metrics);
         }
     }
 
@@ -1560,3 +1593,7 @@ mod accounts_grid_tests;
 #[cfg(test)]
 #[path = "render/role_title_tests.rs"]
 mod role_title_tests;
+
+#[cfg(test)]
+#[path = "render/moving_role_tests.rs"]
+mod moving_role_tests;

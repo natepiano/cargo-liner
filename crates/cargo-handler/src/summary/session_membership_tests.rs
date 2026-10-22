@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::agent_cell::AgentTile;
+use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
 use crate::census::hierarchy::ReviewerState;
@@ -69,7 +70,15 @@ fn state() -> MachineState {
 
 #[test]
 fn summary_headers_name_the_account_and_session_columns() {
-    let state = state();
+    let mut state = state();
+    if let MachineState::Answered(rows, _) = &mut state {
+        rows[0].account = serde_json::from_value(serde_json::json!({
+            "home": "~/.claude1", "label": "claude1"
+        }))
+        .expect("recorded account");
+        rows[0].desktop = Some("review-desk".to_string());
+        rows[0].activity = AgentActivity::Idle;
+    }
     let machines = [Machine {
         name:  "fixture",
         state: &state,
@@ -95,6 +104,104 @@ fn summary_headers_name_the_account_and_session_columns() {
             "desktop",
             "directory"
         ]
+    );
+}
+
+#[test]
+fn summary_omits_the_desktop_header_when_no_drawn_row_has_a_desktop() {
+    let mut state = state();
+    if let MachineState::Answered(rows, _) = &mut state {
+        // This member is in the census, but only the top-level production is drawn here.
+        rows[1].desktop = Some("member-desk".to_string());
+    }
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let buffer = draw_summary(&machines, &placement);
+    let rows = text(&buffer);
+    let header = rows
+        .iter()
+        .find(|line| line.starts_with("pid "))
+        .expect("summary header");
+    assert!(
+        !header.split_whitespace().any(|word| word == "desktop"),
+        "{header}"
+    );
+    assert!(
+        header.split_whitespace().any(|word| word == "directory"),
+        "{header}"
+    );
+    assert!(
+        rows.iter()
+            .any(|line| line.contains("production") && line.contains("/fixture")),
+        "{rows:?}"
+    );
+    let cells = agent_cell::cell_order_placed(&placement);
+    let spans = header_spans(
+        AREA,
+        &SummaryFrame {
+            accounts:       &AccountsTable::NotConfigured,
+            accounts_sort:  AccountsSort::SourceOrder,
+            machines:       &machines,
+            placement:      &placement,
+            cells:          &cells,
+            now:            NOW,
+            account_column: AccountColumn::Shown,
+            footer_colors:  &FooterColors::default(),
+            sort:           SummarySort::default(),
+        },
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|span| span.column == SummaryColumn::Desktop)
+    );
+    let drawn_x = (0..AREA.width - 9)
+        .find(|&x| {
+            (0..9)
+                .map(|offset| buffer[(x + offset, spans[0].row)].symbol())
+                .collect::<String>()
+                == "directory"
+        })
+        .expect("drawn directory header");
+    assert_eq!(
+        crate::sort::header_hit(
+            &spans,
+            tui_pane::CellPoint {
+                column: drawn_x,
+                row:    spans[0].row,
+            }
+        ),
+        crate::sort::HeaderHit::Column(SummaryColumn::Directory)
+    );
+}
+
+#[test]
+fn summary_keeps_the_desktop_header_and_value_when_a_drawn_row_has_one() {
+    let mut state = state();
+    if let MachineState::Answered(rows, _) = &mut state {
+        rows[0].desktop = Some("review-desk".to_string());
+    }
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let rows = text(&draw_summary(&machines, &placement));
+    let header = rows
+        .iter()
+        .find(|line| line.starts_with("pid "))
+        .expect("summary header");
+    assert!(
+        header.split_whitespace().any(|word| word == "desktop"),
+        "{header}"
+    );
+    assert!(
+        rows.iter()
+            .any(|line| line.contains("production") && line.contains("review-desk")),
+        "{rows:?}"
     );
 }
 

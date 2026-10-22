@@ -342,8 +342,12 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
     assert_eq!(text_row(&buffer, "mac ·"), "mac · no agents");
     assert_eq!(
         text_row(&buffer, "director"),
-        "10 claude director idle 4h — /fixture/director"
+        "10 claude director idle 4h /fixture/director"
     );
+    assert!((0..AREA.height).all(|y| {
+        let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();
+        !row.split_whitespace().any(|word| word == "desktop")
+    }));
     assert_eq!(
         buffer[label_position(&buffer, "director")].fg,
         Role::Rainbow(RainbowHue::Red)

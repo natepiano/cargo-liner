@@ -43,6 +43,7 @@ use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::constants::HEADING_SEPARATOR;
 use crate::constants::MISSING_VALUE;
 use crate::constants::TABLE_COLUMN_SPACING;
+use crate::footer_colors;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
@@ -437,7 +438,7 @@ fn sorted_lines(
             },
         };
         if matches!(row.weekly_left_percent, Reading::Known(left) if left <= ACCOUNTS_LOW_PERCENT) {
-            cells[2].style = base.fg(LOW_WEEKLY_USAGE_COLOR);
+            cells[2].style = footer_colors::readable_status_style(base.fg(LOW_WEEKLY_USAGE_COLOR));
         }
         if let Reading::Known(at) = row.resets_at {
             cells[3].style = base.fg(palette[&at]);
