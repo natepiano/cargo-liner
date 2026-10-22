@@ -58,7 +58,7 @@ pub(crate) enum ServiceSignal {
     RateLimited(ServiceKind),
 }
 pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
-// ── Client ───────────────────────────────────────────────────────────
+// `HttpClient` owns the shared HTTP connection and quota state.
 
 /// Whether GitHub requests use live quotas or a simulated exhausted quota.
 #[derive(Clone, Copy)]
@@ -205,7 +205,7 @@ impl HttpClient {
         }
     }
 
-    // ── Async internals ─────────────────────────────────────────────
+    // `HttpClient::github_get_async` and the following methods perform asynchronous requests.
 
     pub(super) async fn github_get_async(&self, path: &str) -> HttpOutcome<Vec<u8>> {
         if self.github_rate_limit_forced() {
@@ -298,9 +298,9 @@ impl HttpClient {
         if http_rate_limited {
             return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
-        // GraphQL returns HTTP 200 on rate-limit, so status-code
-        // detection alone is insufficient — inspect the body's
-        // `errors[].type` for `RATE_LIMITED`.
+        // `rate_limit::graphql_body_is_rate_limited` inspects the body's
+        // `errors[].type` for `RATE_LIMITED` because GraphQL returns HTTP 200 on rate-limit,
+        // making status-code detection alone insufficient.
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
             && rate_limit::graphql_body_is_rate_limited(&json)
         {
@@ -312,7 +312,8 @@ impl HttpClient {
         )
     }
 
-    // ── Async public API ────────────────────────────────────────────
+    // `HttpClient::fetch_rate_limit_async` and `HttpClient::probe_service_async` expose
+    // asynchronous requests.
 
     /// List recent completed workflow runs for a repo (async).
     pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
@@ -650,7 +651,8 @@ mod tests {
         let clone = client.clone();
 
         for elapsed_reset in [1_700_000_000, 1_700_000_001] {
-            // Model an elapsed countdown without sleeping or changing the clock.
+            // Set `client.github_quota_mode` to `GithubQuotaMode::Synthetic` with `elapsed_reset`
+            // to model an elapsed countdown without sleeping or changing the clock.
             *client
                 .github_quota_mode
                 .lock()
@@ -659,7 +661,7 @@ mod tests {
             };
             assert!(clone.github_rate_limit_forced());
 
-            // A real quota refresh must survive the synthetic overlay.
+            // `refreshed_core` must survive the `GithubQuotaMode::Synthetic` overlay.
             let refreshed_core = RateLimitQuota {
                 limit:     5000,
                 used:      23,
@@ -705,8 +707,8 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = GithubQuotaMode::Synthetic { reset_at };
 
-            // The quota boundary must retain the payload, even when expired;
-            // zero is an epoch timestamp here, never an absent-reset marker.
+            // `displayed_core` must retain `GithubQuotaMode::Synthetic::reset_at`, even when
+            // expired; zero is an epoch timestamp here, never an absent-reset marker.
             let displayed_core = client.rate_limit().core;
             assert!(displayed_core.is_some());
             assert_eq!(
@@ -754,7 +756,8 @@ mod tests {
             client_sends_app_user_agent_header();
             return;
         }
-        // Only the child sees these settings; parallel tests keep their environment.
+        // Only the `child: Command` receives these proxy settings; parallel tests keep their
+        // environment.
         let mut child = Command::new(std::env::current_exe().expect("test executable"));
         child
             .args([

@@ -533,8 +533,8 @@ mod tests {
 
     #[test]
     fn should_lint_on_startup_gates_nolog_by_discovery_and_relints_stale_terminal() {
-        // NoLog (never linted) is the discovery case — gated by config, and
-        // independent of any source mtime.
+        // `CachedLintStatus::NoLog` (never linted) is the discovery case, gated by
+        // `DiscoveryLint` and independent of any source mtime.
         assert!(CachedLintStatus::NoLog.should_lint_on_startup(None, DiscoveryLint::Immediate));
         assert!(!CachedLintStatus::NoLog.should_lint_on_startup(None, DiscoveryLint::Deferred));
 

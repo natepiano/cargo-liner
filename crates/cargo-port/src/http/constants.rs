@@ -1,17 +1,19 @@
-// crates.io schema
+// `CRATES_IO_CRATE_KEY` and the other `CRATES_IO_*_KEY` constants name crates.io schema fields.
 pub(super) const CRATES_IO_CRATE_KEY: &str = "crate";
 pub(super) const CRATES_IO_DOWNLOADS_KEY: &str = "downloads";
 pub(super) const CRATES_IO_MAX_STABLE_VERSION_KEY: &str = "max_stable_version";
 pub(super) const CRATES_IO_MAX_VERSION_KEY: &str = "max_version";
 
-// GitHub GraphQL schema
+// `GITHUB_GRAPHQL_DATA_KEY` and the following GraphQL constants name GitHub schema fields and run
+// aliases.
 pub(super) const GITHUB_GRAPHQL_DATA_KEY: &str = "data";
 pub(super) const GITHUB_GRAPHQL_DESCRIPTION_KEY: &str = "description";
 pub(super) const GITHUB_GRAPHQL_REPO_KEY: &str = "repo";
 pub(super) const GITHUB_GRAPHQL_RUN_ALIAS_PREFIX: &str = "run_";
 pub(super) const GITHUB_GRAPHQL_STARGAZER_COUNT_KEY: &str = "stargazerCount";
 
-// GitHub rate limits
+// `GITHUB_CORE_BUCKET`, `GITHUB_CORE_RATE_LIMIT_CAP`, and the following constants describe GitHub
+// rate limits and response fields.
 pub(super) const GITHUB_CORE_BUCKET: &str = "core";
 pub(super) const GITHUB_CORE_RATE_LIMIT_CAP: u64 = 5000;
 pub(super) const GITHUB_GRAPHQL_BUCKET: &str = "graphql";
@@ -31,17 +33,18 @@ pub(super) const RATE_LIMIT_RESOURCE_HEADER: &str = "x-ratelimit-resource";
 pub(super) const RATE_LIMIT_USED_HEADER: &str = "x-ratelimit-used";
 pub(super) const RATE_LIMIT_USED_KEY: &str = "used";
 
-// http headers
+// `ACCEPT_HEADER`, `AUTHORIZATION_HEADER`, `CONTENT_TYPE_HEADER`, and `USER_AGENT_HEADER` name HTTP
+// headers.
 pub(super) const ACCEPT_HEADER: &str = "Accept";
 pub(super) const AUTHORIZATION_HEADER: &str = "Authorization";
 pub(super) const CONTENT_TYPE_HEADER: &str = "Content-Type";
 pub(super) const USER_AGENT_HEADER: &str = "User-Agent";
 
-// media types
+// `GITHUB_JSON_MEDIA_TYPE` and `JSON_MEDIA_TYPE` select GitHub and general JSON media types.
 pub(super) const GITHUB_JSON_MEDIA_TYPE: &str = "application/vnd.github+json";
 pub(super) const JSON_MEDIA_TYPE: &str = "application/json";
 
-// `HttpClient::set_force_github_rate_limit` uses this duration to set
+// `HttpClient::set_force_github_rate_limit` uses `SYNTHETIC_RATE_LIMIT_SECS` to set
 // `GithubQuotaMode::Synthetic::reset_at`.
 /// Lead time for the synthetic force-rate-limit countdown. `3599`
 /// rather than `3600` so the first displayed value is `00:59:59`
