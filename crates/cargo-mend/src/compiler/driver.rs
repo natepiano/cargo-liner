@@ -125,9 +125,9 @@ fn driver_main_impl() -> Result<ExitCode> {
     let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);
     };
-    // Cargo sets `CARGO_PRIMARY_PACKAGE` only on units belonging to a selected
-    // package, so its absence marks a workspace member the run did not ask for.
-    // Those compile through the ambient wrapper named by
+    // Cargo sets the variable named by `CARGO_PRIMARY_PACKAGE_ENV` only on units
+    // belonging to a selected package, so its absence marks an unrequested workspace member.
+    // `passthrough_to_rustc` compiles those through the ambient wrapper named by
     // `PASSTHROUGH_RUSTC_WRAPPER_ENV`, or bare `rustc` when none is set.
     // Requiring that wrapper before honoring the variable tied the analyzed
     // crate set to whether a caching wrapper happened to be installed.
