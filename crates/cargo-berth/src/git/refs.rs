@@ -37,11 +37,15 @@ use super::error::GitError;
 use super::error::GitLockRefusal;
 #[cfg(test)]
 use super::object;
+use super::object::BranchUpstream;
 use super::object::CommitAvailability;
 use super::object::OperationObjectReader;
 use super::reachability;
 use super::reachability::Reachability;
 use super::reachability::ResolvedBatchCommitCandidates;
+use super::read;
+use super::read::RepositoryRead;
+use super::read::RetentionRefReader;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::FullRefName;
@@ -62,13 +66,10 @@ pub(crate) fn local_target_upstream(
 ) -> Result<LocalTargetUpstream, GitError> {
     let branch = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}");
     let upstreams = objects.upstream_references()?;
-    let Some(reference) = upstreams
-        .get(&branch)
-        .filter(|reference| !reference.is_empty())
-    else {
+    let Some(BranchUpstream::Configured(reference)) = upstreams.get(&branch) else {
         return Ok(LocalTargetUpstream::Unavailable);
     };
-    match objects.commit(reference) {
+    match objects.commit(reference.as_str()) {
         Ok(commit) => Ok(LocalTargetUpstream::Available(commit)),
         Err(
             GitError::MissingCommitExpression { .. } | GitError::WrongCommitExpressionType { .. },
@@ -119,35 +120,37 @@ pub(crate) fn reference_lookup(
         .map_err(|_| GitError::InvalidReferenceName {
             reference: reference.to_owned(),
         })?;
-    let existence_output = command::git_output(
-        repository_root,
-        [GIT_SHOW_REF_COMMAND, GIT_SHOW_REF_EXISTS_ARG, reference],
-    )?;
-    if !existence_output.status.success() {
-        if existence_output.status.code() == Some(GIT_MISSING_REFERENCE_EXIT_CODE) {
-            return Ok(ReferenceLookup::Missing);
+    read::reference(repository_root, reference)?.or_git(|| {
+        let existence_output = command::git_output(
+            repository_root,
+            [GIT_SHOW_REF_COMMAND, GIT_SHOW_REF_EXISTS_ARG, reference],
+        )?;
+        if !existence_output.status.success() {
+            if existence_output.status.code() == Some(GIT_MISSING_REFERENCE_EXIT_CODE) {
+                return Ok(ReferenceLookup::Missing);
+            }
+            return Err(GitError::CommandFailed {
+                command: GIT_SHOW_REF_COMMAND,
+                stderr:  String::from_utf8_lossy(&existence_output.stderr)
+                    .trim()
+                    .to_owned(),
+            });
         }
-        return Err(GitError::CommandFailed {
-            command: GIT_SHOW_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&existence_output.stderr)
-                .trim()
-                .to_owned(),
-        });
-    }
 
-    let output = command::git_output(repository_root, [GIT_REV_PARSE_COMMAND, reference])?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_REV_PARSE_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let object_id = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    object_id
-        .trim()
-        .parse()
-        .map(ReferenceLookup::Present)
-        .map_err(GitError::InvalidObjectId)
+        let output = command::git_output(repository_root, [GIT_REV_PARSE_COMMAND, reference])?;
+        if !output.status.success() {
+            return Err(GitError::CommandFailed {
+                command: GIT_REV_PARSE_COMMAND,
+                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        }
+        let object_id = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+        object_id
+            .trim()
+            .parse()
+            .map(ReferenceLookup::Present)
+            .map_err(GitError::InvalidObjectId)
+    })
 }
 
 /// Atomically move one local branch from the expected old object to a proposed object.
@@ -216,20 +219,23 @@ pub(crate) fn local_branch_rename_target_resolution(
     tip: &GitObjectId,
     deleted_reference: &FullRefName,
 ) -> Result<LocalBranchRenameTargetResolution, GitError> {
-    let arguments = vec![
-        GIT_FOR_EACH_REF_COMMAND.to_owned(),
-        GIT_FULL_REF_FORMAT_ARG.to_owned(),
-        format!("{GIT_POINTS_AT_ARG_PREFIX}{tip}"),
-        GIT_LOCAL_BRANCH_REF_PREFIX.to_owned(),
-    ];
-    let output = command::git_output_dynamic(repository_root, &arguments)?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_FOR_EACH_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let references = String::from_utf8(output.stdout)
+    let bytes = read::branches_at(repository_root, tip)?.or_git(|| {
+        let arguments = vec![
+            GIT_FOR_EACH_REF_COMMAND.to_owned(),
+            GIT_FULL_REF_FORMAT_ARG.to_owned(),
+            format!("{GIT_POINTS_AT_ARG_PREFIX}{tip}"),
+            GIT_LOCAL_BRANCH_REF_PREFIX.to_owned(),
+        ];
+        let output = command::git_output_dynamic(repository_root, &arguments)?;
+        if !output.status.success() {
+            return Err(GitError::CommandFailed {
+                command: GIT_FOR_EACH_REF_COMMAND,
+                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            });
+        }
+        Ok(output.stdout)
+    })?;
+    let references = String::from_utf8(bytes)
         .map_err(GitError::InvalidOutput)?
         .lines()
         .map(|reference| {
@@ -375,12 +381,59 @@ pub(crate) struct PreparedRetentionRefTransaction {
     writer: RetentionRefWriter,
 }
 
+/// A protection or retirement that Git must apply unless its post-acquisition state satisfies it.
+#[derive(Clone)]
+pub(super) enum RetentionRefMutation {
+    Protect {
+        reference: String,
+        tip:       GitObjectId,
+    },
+    Retire {
+        reference: String,
+    },
+}
+
+impl RetentionRefMutation {
+    fn protect(repair: &ReservationRetentionRefRepair) -> Self {
+        Self::Protect {
+            reference: reservation_retention_ref_name(repair.reservation_id),
+            tip:       repair.protected_tip.clone(),
+        }
+    }
+
+    pub(super) fn reference(&self) -> &str {
+        match self {
+            Self::Protect { reference, .. } | Self::Retire { reference } => reference,
+        }
+    }
+
+    pub(super) fn is_satisfied_by(&self, current: &ReferenceLookup) -> bool {
+        match (self, current) {
+            (Self::Protect { tip, .. }, ReferenceLookup::Present(current)) => tip == current,
+            (Self::Retire { .. }, ReferenceLookup::Missing) => true,
+            _ => false,
+        }
+    }
+
+    fn encode(&self, input: &mut String) {
+        match self {
+            Self::Protect { reference, tip } => {
+                let _ = writeln!(input, "update {reference} {tip}");
+            },
+            Self::Retire { reference } => {
+                let _ = writeln!(input, "delete {reference}");
+            },
+        }
+    }
+}
+
 /// No ref locks or changes exist until the started transaction receives its writes and commit.
 enum RetentionRefWriter {
     NoWrites,
     Started {
         child:           Child,
-        input:           String,
+        writes:          Vec<RetentionRefMutation>,
+        reader:          Box<RetentionRefReader>,
         repository_root: PathBuf,
     },
 }
@@ -394,16 +447,11 @@ impl PreparedRetentionRefTransaction {
         deletions: &[ReservationId],
         resolved_candidates: &ResolvedBatchCommitCandidates,
     ) -> Result<Self, GitError> {
-        let mut input = String::new();
+        let mut writes = Vec::new();
         let mut unresolved = Vec::new();
         for repair in repairs {
             if resolved_candidates.contains(&repair.protected_tip) {
-                let _ = writeln!(
-                    input,
-                    "update {} {}",
-                    reservation_retention_ref_name(repair.reservation_id),
-                    repair.protected_tip
-                );
+                writes.push(RetentionRefMutation::protect(repair));
             } else {
                 unresolved.push(ReservationRetentionRefRepair::new(
                     repair.reservation_id,
@@ -414,8 +462,8 @@ impl PreparedRetentionRefTransaction {
         if unresolved.len() == repairs.len() {
             return Self::prepare(repository_root, objects, repairs, deletions);
         }
-        input.push_str(&Self::input(objects, &unresolved, deletions)?);
-        Self::start(repository_root, input)
+        writes.extend(Self::writes(objects, &unresolved, deletions)?);
+        Self::start(repository_root, writes)
     }
 
     /// Resolve repair tips through the operation's existing reader, before the append.
@@ -425,14 +473,14 @@ impl PreparedRetentionRefTransaction {
         repairs: &[ReservationRetentionRefRepair],
         deletions: &[ReservationId],
     ) -> Result<Self, GitError> {
-        Self::start(repository_root, Self::input(objects, repairs, deletions)?)
+        Self::start(repository_root, Self::writes(objects, repairs, deletions)?)
     }
 
-    fn input(
+    fn writes(
         objects: &OperationObjectReader,
         repairs: &[ReservationRetentionRefRepair],
         deletions: &[ReservationId],
-    ) -> Result<String, GitError> {
+    ) -> Result<Vec<RetentionRefMutation>, GitError> {
         let protected_tips = repairs
             .iter()
             .map(|repair| repair.protected_tip.clone())
@@ -442,29 +490,15 @@ impl PreparedRetentionRefTransaction {
         } else {
             objects.commit_availability(&protected_tips)?
         };
-        let input = repairs.iter().zip(availability).fold(
-            String::new(),
-            |mut input, (repair, availability)| {
-                if matches!(availability, CommitAvailability::Available) {
-                    let _ = writeln!(
-                        input,
-                        "update {} {}",
-                        reservation_retention_ref_name(repair.reservation_id),
-                        repair.protected_tip
-                    );
-                }
-                input
-            },
-        );
-        let input = deletions.iter().fold(input, |mut input, reservation_id| {
-            let _ = writeln!(
-                input,
-                "delete {}",
-                reservation_retention_ref_name(*reservation_id)
-            );
-            input
-        });
-        Ok(input)
+        Ok(repairs
+            .iter()
+            .zip(availability)
+            .filter(|&(_, availability)| matches!(availability, CommitAvailability::Available))
+            .map(|(repair, _)| RetentionRefMutation::protect(repair))
+            .chain(deletions.iter().map(|id| RetentionRefMutation::Retire {
+                reference: reservation_retention_ref_name(*id),
+            }))
+            .collect())
     }
 
     /// A committed-hook audit narrows the plan's writes without starting another writer.
@@ -474,16 +508,18 @@ impl PreparedRetentionRefTransaction {
         objects: &OperationObjectReader,
         repairs: &[ReservationRetentionRefRepair],
     ) -> Result<Self, GitError> {
-        let mut input = Self::input(objects, repairs, &[])?;
-        if input.is_empty() {
+        let writes = Self::writes(objects, repairs, &[])?;
+        if writes.is_empty() {
             return Ok(Self::empty());
         }
-        if let RetentionRefWriter::Started { input: pending, .. } = &mut self.writer {
-            input.push_str("commit\n");
-            *pending = input;
+        if let RetentionRefWriter::Started {
+            writes: pending, ..
+        } = &mut self.writer
+        {
+            *pending = writes;
             Ok(self)
         } else {
-            Self::start(repository_root, input)
+            Self::start(repository_root, writes)
         }
     }
 
@@ -493,11 +529,11 @@ impl PreparedRetentionRefTransaction {
         }
     }
 
-    fn start(repository_root: &Path, mut input: String) -> Result<Self, GitError> {
-        if input.is_empty() {
+    fn start(repository_root: &Path, writes: Vec<RetentionRefMutation>) -> Result<Self, GitError> {
+        if writes.is_empty() {
             return Ok(Self::empty());
         }
-        input.push_str("commit\n");
+        let reader = Box::new(read::RetentionRefReader::new(repository_root)?);
         let child = command::spawn_with_piped_output(
             command::git_command_with_hook_execution_policy(
                 repository_root,
@@ -509,7 +545,8 @@ impl PreparedRetentionRefTransaction {
         let mut transaction = Self {
             writer: RetentionRefWriter::Started {
                 child,
-                input,
+                writes,
+                reader,
                 repository_root: repository_root.to_path_buf(),
             },
         };
@@ -547,21 +584,28 @@ impl PreparedRetentionRefTransaction {
         }
     }
 
-    /// Apply only the ordered ref write using the process initialized before acquisition.
+    /// Recheck ref state after acquisition, then apply only the still-required ordered writes.
     pub(crate) fn commit(mut self) -> Result<(), GitError> {
+        let required = match &self.writer {
+            RetentionRefWriter::NoWrites => return Ok(()),
+            RetentionRefWriter::Started { reader, writes, .. } => reader.required_writes(writes)?,
+        };
         let RetentionRefWriter::Started {
             child,
-            input,
+            writes,
             repository_root,
+            ..
         } = std::mem::replace(&mut self.writer, RetentionRefWriter::NoWrites)
         else {
             return Ok(());
         };
-        let output = command::child_output_with_input(child, input.as_bytes())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(error::ref_write_failure(&repository_root, &output.stderr))
+        match required {
+            RepositoryRead::InProcess(required) => {
+                commit_retention_writes(child, &repository_root, &required)
+            },
+            RepositoryRead::GitRequired(requirement) => {
+                requirement.execute(|| commit_retention_writes(child, &repository_root, &writes))
+            },
         }
     }
 }
@@ -573,6 +617,25 @@ impl Drop for PreparedRetentionRefTransaction {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+/// Finish the prestarted Git transaction; an empty set commits without touching any ref locks.
+fn commit_retention_writes(
+    child: Child,
+    repository_root: &Path,
+    writes: &[RetentionRefMutation],
+) -> Result<(), GitError> {
+    let mut input = String::new();
+    for write in writes {
+        write.encode(&mut input);
+    }
+    input.push_str("commit\n");
+    let output = command::child_output_with_input(child, input.as_bytes())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(error::ref_write_failure(repository_root, &output.stderr))
     }
 }
 
@@ -720,6 +783,184 @@ mod tests {
         );
         assert!(!path(missing).exists());
         assert!(!path(retired).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_skips_satisfied_repairs_and_absent_deletions_without_their_locks()
+    -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let protected = ReservationId::new();
+        let retired = ReservationId::new();
+        super::write_reservation_retention_ref(
+            fixture.root(),
+            protected,
+            &fixture.phase_start_head,
+        )?;
+        let objects = OperationObjectReader::new(fixture.root());
+        let transaction = PreparedRetentionRefTransaction::prepare(
+            fixture.root(),
+            &objects,
+            &[ReservationRetentionRefRepair::new(
+                protected,
+                fixture.phase_start_head.clone(),
+            )],
+            &[retired],
+        )?;
+        let lock_path = |id| {
+            fixture
+                .root()
+                .join(".git")
+                .join(format!("{}.lock", reservation_retention_ref_name(id)))
+        };
+        fs::write(lock_path(protected), b"another writer\n")?;
+        fs::write(lock_path(retired), b"another deletion\n")?;
+        transaction.commit()?;
+        assert_eq!(fs::read(lock_path(protected))?, b"another writer\n");
+        assert_eq!(fs::read(lock_path(retired))?, b"another deletion\n");
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .root()
+                    .join(".git")
+                    .join(reservation_retention_ref_name(protected))
+            )?
+            .trim(),
+            fixture.phase_start_head.to_string()
+        );
+        assert!(
+            !fixture
+                .root()
+                .join(".git")
+                .join(reservation_retention_ref_name(retired))
+                .exists()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_rechecks_refs_changed_after_preparation() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let protected = ReservationId::new();
+        let retired = ReservationId::new();
+        super::write_reservation_retention_ref(
+            fixture.root(),
+            protected,
+            &fixture.phase_start_head,
+        )?;
+        fixture.git(&["pack-refs", "--all"])?;
+        let objects = OperationObjectReader::new(fixture.root());
+        let transaction = PreparedRetentionRefTransaction::prepare(
+            fixture.root(),
+            &objects,
+            &[ReservationRetentionRefRepair::new(
+                protected,
+                fixture.phase_start_head.clone(),
+            )],
+            &[retired],
+        )?;
+        fixture.write("new.txt", "later contribution\n")?;
+        let later = fixture.commit("later contribution")?;
+        super::write_reservation_retention_ref(fixture.root(), protected, &later)?;
+        super::write_reservation_retention_ref(fixture.root(), retired, &later)?;
+        fixture.git(&["pack-refs", "--all"])?;
+        transaction.commit()?;
+        assert!(matches!(
+            super::reference_lookup(fixture.root(), &reservation_retention_ref_name(protected))?,
+            super::ReferenceLookup::Present(tip) if tip == fixture.phase_start_head
+        ));
+        assert!(matches!(
+            super::reference_lookup(fixture.root(), &reservation_retention_ref_name(retired))?,
+            super::ReferenceLookup::Missing
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_repairs_packed_refs_replaced_without_an_mtime_change() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let protected = ReservationId::new();
+        let reference = reservation_retention_ref_name(protected);
+        super::write_reservation_retention_ref(
+            fixture.root(),
+            protected,
+            &fixture.phase_start_head,
+        )?;
+        fixture.git(&["pack-refs", "--all"])?;
+        let objects = OperationObjectReader::new(fixture.root());
+        let transaction = PreparedRetentionRefTransaction::prepare(
+            fixture.root(),
+            &objects,
+            &[ReservationRetentionRefRepair::new(
+                protected,
+                fixture.phase_start_head.clone(),
+            )],
+            &[],
+        )?;
+        let super::RetentionRefWriter::Started { reader, writes, .. } = &transaction.writer else {
+            return Err("expected a prestarted retention writer".into());
+        };
+        assert!(
+            matches!(reader.required_writes(writes)?, super::RepositoryRead::InProcess(required) if required.is_empty())
+        );
+        fixture.write("later.txt", "later contribution\n")?;
+        let later = fixture.commit("later contribution")?;
+        let packed = fixture.root().join(".git/packed-refs");
+        let modified = fs::metadata(&packed)?.modified()?;
+        let replacement = packed.with_extension("replacement");
+        fs::write(
+            &replacement,
+            fs::read_to_string(&packed)?.replace(
+                &format!("{} {reference}", fixture.phase_start_head),
+                &format!("{later} {reference}"),
+            ),
+        )?;
+        fs::File::options()
+            .write(true)
+            .open(&replacement)?
+            .set_times(fs::FileTimes::new().set_modified(modified))?;
+        fs::rename(replacement, &packed)?;
+        assert_eq!(fs::metadata(&packed)?.modified()?, modified);
+        assert_eq!(
+            super::reference_lookup(fixture.root(), &reference)?,
+            super::ReferenceLookup::Present(later)
+        );
+        transaction.commit()?;
+        assert_eq!(
+            super::reference_lookup(fixture.root(), &reference)?,
+            super::ReferenceLookup::Present(fixture.phase_start_head)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_keeps_symbolic_ref_dereferencing_with_git() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let protected = ReservationId::new();
+        let reference = reservation_retention_ref_name(protected);
+        fixture.write("new.txt", "later contribution\n")?;
+        let later = fixture.commit("later contribution")?;
+        fixture.git(&["update-ref", "refs/heads/retained", &later.to_string()])?;
+        fixture.git(&["symbolic-ref", &reference, "refs/heads/retained"])?;
+        let objects = OperationObjectReader::new(fixture.root());
+        PreparedRetentionRefTransaction::prepare(
+            fixture.root(),
+            &objects,
+            &[ReservationRetentionRefRepair::new(
+                protected,
+                fixture.phase_start_head.clone(),
+            )],
+            &[],
+        )?
+        .commit()?;
+        assert_eq!(
+            fs::read_to_string(fixture.root().join(".git").join(reference))?,
+            "ref: refs/heads/retained\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root().join(".git/refs/heads/retained"))?.trim(),
+            fixture.phase_start_head.to_string()
+        );
         Ok(())
     }
 }

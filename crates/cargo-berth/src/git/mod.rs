@@ -16,6 +16,7 @@ mod object;
 mod patch;
 mod paths;
 mod reachability;
+mod read;
 mod refs;
 mod snapshot;
 mod worktree_operation;

@@ -155,3 +155,114 @@ fn repository_builders_leave_no_temporary_directory_after_return_or_panic() {
         );
     }
 }
+
+#[test]
+fn dropping_a_paused_test_process_ends_its_entire_process_group() {
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use cargo_berth_test_support::TestProcessGroup;
+
+    let directory = tempfile::tempdir().expect("pause directory should exist");
+    let fifo = directory.path().join("continue");
+    let ready = directory.path().join("ready");
+    let created = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo should run");
+    assert!(created.success());
+    let mut process = TestProcessGroup::spawn(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"
+/bin/sh -c 'sleep 600 & printf ready > "$1"; read continuation < "$2"; wait' shim "$1" "$2" &
+wait
+"#,
+                "parent",
+            ])
+            .arg(&ready)
+            .arg(&fifo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("paused process group should start");
+    let group = process.child_mut().id();
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while !ready.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(ready.exists(), "shim should reach the FIFO pause");
+    let members_before = process_group_members(group);
+    assert!(
+        members_before.len() >= 3,
+        "parent, shim and descendant should exist: {members_before:?}"
+    );
+    let (finished, cleanup) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        drop(process);
+        finished
+            .send(())
+            .expect("test should still be observing cleanup");
+    });
+    let cleaned = cleanup.recv_timeout(Duration::from_millis(250));
+    // This deadline is independent of the guard: even a broken Drop cannot hang the test.
+    if cleaned.is_err() {
+        let _ = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "kill -KILL \"$1\"",
+                "cleanup-deadline",
+                &format!("-{group}"),
+            ])
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let mut remaining = process_group_members(group);
+    while !remaining.is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+        remaining = process_group_members(group);
+    }
+    // A broken guard must fail without leaving the negative-proof fixture running.
+    if !remaining.is_empty() {
+        let _ = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "kill -KILL \"$1\"",
+                "cleanup-failed-test",
+                &format!("-{group}"),
+            ])
+            .status();
+    }
+    assert!(
+        cleaned.is_ok(),
+        "guard cleanup exceeded its deadline: {cleaned:?}"
+    );
+    assert_eq!(
+        remaining,
+        Vec::<String>::new(),
+        "all group members must be reaped after drop"
+    );
+}
+
+fn process_group_members(group: u32) -> Vec<String> {
+    let output = Command::new("ps")
+        .args(["-e", "-o", "pid=,pgid=,stat="])
+        .output()
+        .expect("process table should read");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("process table should be UTF-8")
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<u32>().ok())
+                == Some(group)
+        })
+        .map(str::to_owned)
+        .collect()
+}

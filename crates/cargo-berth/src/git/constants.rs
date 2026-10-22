@@ -12,6 +12,44 @@ pub(super) const GIT_REPOSITORY_ENVIRONMENT: [&str; 5] = [
     "GIT_PREFIX",
 ];
 
+// configuration
+/// Configuration section for branch tracking rules.
+pub(super) const GIT_BRANCH_CONFIGURATION_SECTION: &str = "branch";
+/// Branch upstream merge reference key.
+pub(super) const GIT_BRANCH_MERGE_KEY: &str = "merge";
+/// Branch upstream remote key.
+pub(super) const GIT_BRANCH_REMOTE_KEY: &str = "remote";
+/// Explicit disabled configuration value.
+pub(super) const GIT_CONFIG_FALSE_VALUE: &str = "false";
+/// Shell-encoded inherited command configuration.
+pub(super) const GIT_CONFIG_PARAMETERS_ENVIRONMENT: &str = "GIT_CONFIG_PARAMETERS";
+/// Numeric disabled configuration value.
+pub(super) const GIT_CONFIG_ZERO_VALUE: &str = "0";
+/// Filesystem monitor configuration.
+pub(super) const GIT_FILESYSTEM_MONITOR_KEY: &str = "core.fsmonitor";
+/// Automatic garbage collection configuration.
+pub(super) const GIT_GC_AUTO_KEY: &str = "gc.auto";
+/// Remote name for the same repository.
+pub(super) const GIT_LOCAL_REMOTE_VALUE: &str = ".";
+/// Automatic maintenance configuration.
+pub(super) const GIT_MAINTENANCE_AUTO_KEY: &str = "maintenance.auto";
+/// Repository object hash configuration.
+pub(super) const GIT_OBJECT_FORMAT_KEY: &str = "extensions.objectFormat";
+/// Reftable reference storage format.
+pub(super) const GIT_REFTABLE_STORAGE_VALUE: &str = "reftable";
+/// Repository reference storage configuration.
+pub(super) const GIT_REF_STORAGE_KEY: &str = "extensions.refStorage";
+/// SHA-256 object hash format.
+pub(super) const GIT_SHA256_OBJECT_FORMAT_VALUE: &str = "sha256";
+/// Sparse checkout configuration.
+pub(super) const GIT_SPARSE_CHECKOUT_KEY: &str = "core.sparseCheckout";
+/// Split index configuration.
+pub(super) const GIT_SPLIT_INDEX_KEY: &str = "core.splitIndex";
+
+// file modes
+/// Bits distinguishing regular files, symlinks, trees and gitlinks.
+pub(super) const GIT_FILE_TYPE_MASK: u32 = 0o170_000;
+
 // commands
 /// The git executable.
 pub(super) const GIT_BINARY: &str = "git";

@@ -86,7 +86,7 @@ impl<'text> AnswerReasons<'text> {
 }
 
 struct PausedBerthProcess {
-    child:             Child,
+    child:             cargo_berth_test_support::TestProcessGroup,
     continue_path:     PathBuf,
     ready_path:        PathBuf,
     wrapper_directory: TempDir,
@@ -118,7 +118,10 @@ impl PausedBerthProcess {
                 .chain(std::env::split_paths(&original_path)),
         )
         .expect("wrapped PATH should join");
-        let child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        let child = cargo_berth_test_support::TestProcessGroup::spawn(
+            cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+                "CARGO_BIN_EXE_cargo-berth"
+            )))
             .args(arguments)
             .current_dir(repository_root)
             .env("PATH", wrapped_path)
@@ -126,10 +129,11 @@ impl PausedBerthProcess {
             .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
             .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
             .env_remove(RUN_ENVIRONMENT)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("cargo-berth should start with paused git");
+            .stderr(Stdio::piped()),
+        )
+        .expect("cargo-berth should start with paused git");
         Self {
             child,
             continue_path,
@@ -138,7 +142,7 @@ impl PausedBerthProcess {
         }
     }
 
-    fn wait_until_paused(&mut self) { wait_for_path(&self.ready_path, &mut self.child); }
+    fn wait_until_paused(&mut self) { wait_for_path(&self.ready_path, self.child.child_mut()); }
 
     fn continue_and_wait(self) -> Output {
         let Self {

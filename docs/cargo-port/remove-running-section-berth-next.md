@@ -35,9 +35,9 @@
   - `crates/cargo-berth/tests/board.rs` — `reservation_report` / `reservation_report_and_presentation` helpers (2134, 2139), `waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold` (614).
   - `crates/cargo-berth/README.md` — "First use" (10, init at 28–57), "Board" (388–438).
   - `crates/cargo-berth/CHANGELOG.md` — `[Unreleased]` `Fixed` (~87).
-- **Build:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`
-- **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`
-- **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`
+- **Build:** `bash ~/.claude/scripts/direct/verify.sh check cargo-berth`
+- **Test:** `bash ~/.claude/scripts/direct/verify.sh test cargo-berth`
+- **Lint:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth`
 - **Invariants:**
   - Journal replay of existing ledgers is unchanged.
   - Invalid states are unrepresentable: fix with types, never procedural guards (user, 2026-10-15).
@@ -617,33 +617,34 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Gotchas:** A cover's `covered_branch` and its integration target are separate facts in `worktree/enrollment.rs`. A missing covered-branch anchor gives an empty reachability range. That range must give `EvidenceUnavailable`, not coverage.
 
-### Phase 22 — Every cargo-berth test runs under a second on the Mac  · status: todo
+### Phase 22 — cargo-berth reads status, worktrees and refs without starting Git  · status: done
 
 #### Work Order
 
 **Depends on:** phase 19 (its lock and preparation changes move the same Git reads this phase measures), phase 20, phase 21 and phase 23 (its build-owned fixture caches change setup cost and fixture Git starts).
 
-**Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. The showrunner picks the route from measured estimates before it is built.
+**Goal:** cargo-berth reads repository status, the worktree list and refs in process through `gix`. Each read gives a typed result, and a form that `gix` does not support goes to the Git subprocess by an explicit variant. A cold full Mac run passes and its time drops from the 139.1 s baseline by a measured amount. The every-test-under-1-s goal is phase 24.
+
+**Route pick:** route 2. Source: the showrunner, 2026-10-19, verbatim: "route 2 (gix reads for status, worktree list and refs). It removes three times more process starts and six times more test time, and it needs no in-process CLI and no hook path change. Rules for the build: 1. Each gix read returns a typed result. A case gix does not support (a Git config or ref form, an annotated tag that needs peeling) is an enum variant that runs the subprocess path." It also rules out a silent fallback and any invented value, and asks for a test for each variant. It continues: "2. Remove the route 1 prototype. Remove the opt-in feature and the route_estimate scaffolding unless phase 22 still uses them to measure. Nothing stays behind a feature flag. 3. Phase 22 ends at route 2 with its measured saving, compared with the 139.1 s baseline on the Mac. […] The process-start pin stays as it is until phase 24 measures the combined result."
+
+**Measured baseline (Spec 2, done):** composed checkpoint `41d40e07`, cold Mac, 1221/1221 pass, nextest 139.103 s, setup 15.101 s, 502 tests at 1 s or more, load 11.0 → 36.6. Full count 47,770 starts: product Git 26,790; fixture Git 6,962; berth 3,279; hook berth 1,342; hook Git 10; worker 1; other 9,368; lock_diagnostic 18. Route 2 model for the five binaries: 27,800 → 22,440 starts, summed test time 853.6 s → 792.8 s.
 
 **Spec:**
 1. Source: the showrunner, 2026-10-18, verbatim: "Then plan the Mac per-test goal as its own phase. Before you build it, send me a measured estimate for each route on the five slowest binaries (lifecycle, gate, board, parallel_phases, drift): (1) berth commands in-process in the tests, with shared fixture repositories; (2) gix for the status, worktree list and ref reads, which are the largest product Git origins. Give the starts and the Mac time for each route. Route 1 must still test the real CLI in at least one test for each command. I decide with those numbers."
 2. Baseline: phase 18's cold Mac run (1175 tests, 105.775 s, 389 tests at 1 s or more, SETUP 11.8 s, load 6 → 23) and its start count 46,393 (product Git 26,112; fixture Git 6,390; berth 3,174; hook berth 1,335). First take a cold full Mac timing and process-origin measurement of the composed phase 19+20+21+23 checkpoint, recording its commit, load, setup cost and complete test count. Compare it with the phase 18 and phase 19 results. Use this composed measurement as both prototypes' baseline, including retention-transaction starts that preparation retries discard.
 3. **Estimates.** For each route, on the five binaries, measure on a prototype of one representative test per binary and extrapolate: process starts by origin, and Mac time per test and per binary. Also measure the residual cost of `tests/ledger.rs` (phase 20's stale-lock fixtures) and `tests/hooks.rs` (phase 21's real-hook covered-branch scenarios), and put it in the same table. A route 1 prototype passes the real CLI executable to the installed hooks through invocation-owned context, never process-global environment: `git/command.rs` defaults the hook executable to `current_exe()`, which is a test binary in process. It exercises one installed hook and counts its descendants. Send the table to the showrunner, then wait for its pick. This step builds nothing beyond the prototypes.
-4. **Build the picked route.** Route 1 keeps a real-CLI test for each command. Route 2 keeps every ref and config form Git supports and the typed difference between missing and failed, falling back to Git where it cannot. Adding `gix` is the showrunner's pick under route 2.
-5. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
-6. **Phase 19 lock holds at quiet load.** Source: the showrunner, 2026-10-19: "the quiet-machine re-measure (20 paired runs at load 16 or less) goes to phase 22." Phase 19's accepted busy reconcile evidence was p95 52.4 ms, maximum 68.5 ms; it did not establish the quiet-load requirement. At load 16 or less, run 20 paired measurements for each of the six paths with phase 19's method (its notes are in `/tmp/claude/unit/a433b49e-d462-472a-9f5b-3e767f5be8b6/phase19-lock-holds.md`), record the complete table in this phase's summary, and require every path's p95 under 100 ms. Find a miss's cause at its measured source, ordered retention-ref work included, and fix it in this phase.
-7. **Lock diagnostics are a named origin.** On macOS a rendered Git-lock refusal starts `/usr/sbin/lsof` (`git/error.rs`, the holder scan). The process report names these starts as their own `lock_diagnostic` origin, never `other` or an unresolved product start, with the owning tests, their start count and their Mac time, and the lowered budget keeps a measured ceiling for that origin.
+4. **Build route 2.** Status, worktree list and ref reads go through `gix` (exact version, only the features they use). Each read returns a typed result. Every case `gix` does not support — a Git config or ref form, an annotated tag that needs peeling — is its own enum variant that runs the Git subprocess path. No read falls back silently or returns an invented value. The typed difference between missing and failed stays. One test for each variant.
+5. **Remove route 1.** Delete the in-process CLI prototype (`lib.rs`, the board entry, the invocation-owned hook executable in `git/command.rs` and its `git/mod.rs` export) and the per-binary route 1 tests. Delete the `phase22-prototype` feature and `route_estimate.rs` unless the Spec 6 or Spec 7 measurement still uses them. No code stays behind a feature flag.
+6. **Proof.** One cold full Mac run passes every test. The summary compares it with the Spec 2 baseline: nextest time, setup, tests at 1 s or more and starts by origin.
+7. **Phase 19 lock holds at quiet load.** Source: the showrunner, 2026-10-19: "the quiet-machine re-measure (20 paired runs at load 16 or less) goes to phase 22." Phase 19's accepted busy reconcile evidence was p95 52.4 ms, maximum 68.5 ms; it did not establish the quiet-load requirement. At load 16 or less, run 20 paired measurements for each of the six paths with phase 19's method (its notes are in `/tmp/claude/unit/a433b49e-d462-472a-9f5b-3e767f5be8b6/phase19-lock-holds.md`), record the complete table in this phase's summary, and require every path's p95 under 100 ms. Find a miss's cause at its measured source, ordered retention-ref work included, and fix it in this phase.
+8. **Lock diagnostics move to phase 24.** The `lock_diagnostic` origin, its owning tests and its ceiling are phase 24's work. The process-start pin stays unchanged in this phase.
 
 **Files:**
-- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/drift.rs` — the five slowest binaries
-- `crates/cargo-berth-test-support/src/`, `crates/cargo-berth-test-support/Cargo.toml` — shared fixtures and the in-process runner (route 1)
-- `crates/cargo-berth/src/lib.rs`, `crates/cargo-berth/src/main.rs`, `crates/cargo-berth/src/cli.rs`, `crates/cargo-berth/Cargo.toml` — route 1 only (`lib.rs` is new): cargo-berth is a binary whose `main.rs` calls `cli::Cli`, so the in-process runner needs a library boundary. The prototype shows parallel-safe calls that share no mutable working directory or environment between tests, and keeps real-CLI coverage.
-- `crates/cargo-berth/src/git/`, `Cargo.toml`, `Cargo.lock` — route 2 (with `crates/cargo-berth/Cargo.toml` above): status, worktree list and ref reads through the picked `gix` crates
-- `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/hooks.rs` — phase 20's stale-lock and phase 21's covered-branch tests, brought under 1 s by the picked route
-- `crates/cargo-berth/src/git/error.rs` — the macOS lock-holder scan, only if its `lsof` start keeps a test over 1 s
-- `crates/cargo-berth/src/git/command.rs` — route 1 only: the hook executable from invocation-owned context
-- `crates/cargo-berth/tests/process_start_budget.json`, `crates/cargo-berth/tests/process_start_budget.rs` — the start pin, lowered to the new count, with the `lock_diagnostic` origin and its ceiling
-- `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/git/refs.rs`, `crates/cargo-berth/src/reconcile.rs` — only if the quiet lock-hold run (Spec 6) misses, at the measured source
+- `crates/cargo-berth/src/git/`, `crates/cargo-berth/Cargo.toml`, `Cargo.toml`, `Cargo.lock` — the `gix` reads, their typed results and the subprocess variants
+- `crates/cargo-berth/src/lib.rs`, `crates/cargo-berth/src/main.rs`, `crates/cargo-berth/src/cli.rs` — removal of the route 1 prototype (`lib.rs` is deleted)
+- `crates/cargo-berth-test-support/src/`, `crates/cargo-berth-test-support/Cargo.toml` — removal of `route_estimate.rs` and shared fixtures the new tests use
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/parallel_phases.rs`, `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/hooks.rs` — removal of the prototype tests and tests for each read variant
+- `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/reconcile.rs` — only if the quiet lock-hold run (Spec 7) misses, at the measured source
 
 **Workers:** 1 writer, `mac`.
 
@@ -651,7 +652,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Constraints from prior phases:** Phase 19 prepares observations outside the ledger lock and checks replay generation and session mappings under it. Keep the bounded re-preparation and its exhaustion error; never retry a durable append because a later ref action failed. A replaced journal source triggers a full replay, with no new user-facing state. The phase 19 invalidation and compaction tests stay authoritative. Phase 20 makes a stale-lock retention failure after the append a deferred outcome (`RetentionMaintenance::Deferred`), retried by the next reconciliation from journal state; only that deferrable maintenance gets zero ref-lock timeouts (`git/command.rs`), while explicit ref writes keep Git's wait and fail with `GitError::LockRefused`. Holder discovery runs while the refusal is reported, after the ledger unlocks; `GitLockHolders::Unavailable` says only that the scan could not inspect every process; its recovery is the same as for any other answer. Each answer names a deferral once, and the terminal board names it once after restore. The tests/ledger.rs stale-lock tests and `terminal_refresh_deferrals_are_silent_until_one_notice_after_restore` stay authoritative. Phase 21 decides covered integration per holder (`CoveredPathContribution {CoveredIntegration, EnteringWork, EvidenceUnavailable}`): only when the checkout is the cover's integration target and every entering commit is affirmatively reachable from the covered branch tip, read in the existing batched ancestry read; dirty or outside-branch contributions still report incursions, refused runs included, and missing evidence never proves integration. Keep these variants through any replacement API; the tests/hooks.rs covered-branch tests stay authoritative. Phase 23 keeps every fixture cache that outlives a test process under `target/tmp/cargo-berth-templates` (`fixture_cache_root`), with one build owner, `prepare_fixture_build`; a shared fixture this phase adds goes there too, never under `TMPDIR`, and `tests/temporary_directories.rs` stays green.
 
-**Acceptance gate:** The estimate table went to the showrunner and its pick is recorded in this Work Order before the build. `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. The quiet paired lock-hold run shows every path under 100 ms at p95. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence.
+**Acceptance gate:** The route pick is recorded in this Work Order. `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. Each `gix` read variant, the subprocess variants included, has its own test. No `phase22-prototype` feature, `lib.rs` or route 1 test remains. The cold full Mac run passes, and its measured saving against 139.103 s is in the summary. The quiet paired lock-hold run shows every path under 100 ms at p95. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit against the unchanged pin, with no unresolved product origin. A package pass without that report is not process-budget evidence.
 
 ### Phase 23 — A cargo-berth test run leaves no repository in `/tmp`  · status: done
 
@@ -673,3 +674,36 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Gotchas:** A test process killed without unwinding can still leave its own `TempDir`. This case is out of scope.
 
 **Ruled out:** cleanup of a killed test; a cleanup sweep or deletion of the existing leaked `/tmp` directories.
+
+### Phase 24 — Every cargo-berth test runs under a second on the Mac  · status: todo
+
+#### Work Order
+
+**Depends on:** phase 22 (its `gix` reads remove the product Git starts this phase measures beside) and phase 23 (the build-owned fixture caches).
+
+**Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. A cold quiet natedev run does the same.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-19, verbatim: "New phase 24, after 22, aims at every test under one second. First find the callers of the 9,368 "other" process starts. Then cut the per-test fixture Git work (6,962 starts), for example with shared seeds under target/tmp as in phase 23. Include the 15 lock-diagnostic tests that run lsof (144-168 ms per scan). Add phase 24 to the plan in your next shrink. The process-start pin stays as it is until phase 24 measures the combined result."
+2. **Find the `other` starts.** Measure on top of phase 22 and give each `other` start in the full capture a caller site (the phase 22 baseline had 9,368). Also find the caller sites of the two terminal-board reads that had no measured caller. Cut the starts that a test does not need.
+3. **Cut fixture Git work.** Reduce the per-test fixture Git starts (6,962 in the phase 22 baseline). Shared seeds and prepared repositories live under `target/tmp/cargo-berth-templates` and are built through `prepare_fixture_build`.
+4. **Lock diagnostics are a named origin.** On macOS a rendered Git-lock refusal starts `/usr/sbin/lsof` (`git/error.rs`, the holder scan; 144–168 ms per scan on a busy Mac). The process report names these starts as their own `lock_diagnostic` origin, never `other` or an unresolved product start, with the owning tests (15 in the phase 22 baseline), their start count and their Mac time. Each of those tests runs under 1 s.
+5. **Lower the pin.** Measure the combined result, then lower the process-start pin to the new count, with a measured ceiling for `lock_diagnostic`.
+6. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
+7. **Cost tests count work, never time.** Source: the showrunner, 2026-10-21: `reservation::retention::tests::keyed_drift_coverage_of_thirteen_holders_is_under_250_ms` (`src/reservation/retention.rs`) failed at 0.543 s in a merge test run on natedev under load and passed on rerun. Replace its wall-clock limit with a count of the work (for example scans or reads per holder), as the discovery tests do. Write the counting test first and show it fails against a version that does the extra work per holder. Find every other test in the package that asserts a wall-clock limit on product cost, and convert each one the same way.
+8. **Phase 22's Mac measurements.** Source: the showrunner, 2026-10-21: phase 22 checkpointed while the Mac was offline, and these moved here. On the phase 22 tree, before this phase's own changes: (a) a fresh 20-pair quiet lock-hold table for each of the six paths (repair, reconcile, claim, post-tool-use, release, gate), with before and after median, p95, max, load and the expected decision; each after p95 under 100 ms; (b) one cold full Mac timing at load below 10, with the settings of the accepted 88.730 s run, compared with that run and the 114.970 s run. If (b) is slower at equal load, find the cause at its measured source and fix it in this phase. The worker's driver is `/tmp/p22-mac-scratch/launch_round3_quiet.py`.
+
+**Files:**
+- `crates/cargo-berth/tests/` — every test binary whose tests run 1 s or more
+- `crates/cargo-berth-test-support/src/`, `crates/cargo-berth-test-support/Cargo.toml` — shared seeds and fixture builders
+- `crates/cargo-berth/src/reservation/retention.rs` and any other source file whose unit tests assert a wall-clock cost — the work counts
+- `crates/cargo-berth/src/git/error.rs` — the macOS lock-holder scan, only if its `lsof` start keeps a test over 1 s
+- `crates/cargo-berth/tests/process_start_budget.json`, `crates/cargo-berth/tests/process_start_budget.rs` — the lowered pin with the `lock_diagnostic` origin and its ceiling
+
+**Workers:** 1 writer, `mac`.
+
+**Constraints:** As phase 18: no thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. Mac runs: one `mac_test.py claim` per run, released when it ends. A natedev run at a load above 16 of 32 is untrusted.
+
+**Constraints from prior phases:** Phase 22's `gix` reads return typed results, and each unsupported form runs the Git subprocess through its own variant; keep the variants and their tests. Phase 23 keeps every fixture cache that outlives a test process under `target/tmp/cargo-berth-templates` (`fixture_cache_root`), with one build owner, `prepare_fixture_build`; `tests/temporary_directories.rs` stays green. Phase 20's stale-lock tests in `tests/ledger.rs` and phase 21's covered-branch tests in `tests/hooks.rs` stay authoritative: a faster fixture keeps what each test proves.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, names `lock_diagnostic` as its own origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence.
