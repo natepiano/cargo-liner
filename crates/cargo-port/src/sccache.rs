@@ -53,27 +53,38 @@ fn summary_from_lines(lines: &[String]) -> SccacheSummary {
         })
 }
 
+/// A whitespace run's byte offset and character count within a stats line.
+struct Gap {
+    start: usize,
+    len:   usize,
+}
+
 /// Split one `sccache --show-stats` line at its value column: the first run
-/// of two or more spaces separates the label from the value.
+/// of two or more whitespace characters separates the label from the value.
 pub(crate) fn split_aligned_stat(text: &str) -> Option<(&str, &str)> {
-    let mut gap_start = None;
-    let mut gap_len = 0;
+    let mut gap: Option<Gap> = None;
     for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
-            gap_start.get_or_insert(idx);
-            gap_len += 1;
+            match &mut gap {
+                Some(gap) => gap.len += 1,
+                None => {
+                    gap = Some(Gap {
+                        start: idx,
+                        len:   1,
+                    });
+                },
+            }
             continue;
         }
-        if gap_len >= 2 {
-            let start = gap_start?;
-            let label = text[..start].trim_end();
+        if let Some(gap) = gap.take()
+            && gap.len >= 2
+        {
+            let label = text[..gap.start].trim_end();
             let value = text[idx..].trim();
             if !label.is_empty() && !value.is_empty() {
                 return Some((label, value));
             }
         }
-        gap_start = None;
-        gap_len = 0;
     }
     None
 }
@@ -131,6 +142,33 @@ fn non_empty_lines(lines: Vec<String>, fallback: String) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aligned_stat_requires_two_whitespace_characters_and_a_label_and_value() {
+        for (text, expected) in [
+            ("Cache size 101 GiB", None),
+            ("Cache size  101 GiB", Some(("Cache size", "101 GiB"))),
+            ("Cache size   101 GiB  ", Some(("Cache size", "101 GiB"))),
+            ("Cache size  ", None),
+            ("Cache size", None),
+            ("A B C", None),
+            ("", None),
+            ("  ", None),
+            ("  Cache size  101 GiB", Some(("  Cache size", "101 GiB"))),
+            ("Cache size\t\t101 GiB", Some(("Cache size", "101 GiB"))),
+            ("Cache size\u{2003}101 GiB", None),
+            (
+                "Taille café\u{2003}\u{2003}101 GiB",
+                Some(("Taille café", "101 GiB")),
+            ),
+            (
+                "Cache location  Local disk:  /tmp/cache",
+                Some(("Cache location", "Local disk:  /tmp/cache")),
+            ),
+        ] {
+            assert_eq!(split_aligned_stat(text), expected, "{text:?}");
+        }
+    }
 
     fn stats_lines() -> Vec<String> {
         [
