@@ -275,11 +275,7 @@ fn parse_unit_counter(frame: &str) -> Option<UnitCounter> {
     let total = rest
         .split(|character: char| !character.is_ascii_digit())
         .next()?;
-    let unit_counter = UnitCounter {
-        done:  done.parse().ok()?,
-        total: total.parse().ok()?,
-    };
-    (unit_counter.total > 0).then_some(unit_counter)
+    UnitCounter::new(done.parse().ok()?, total.parse().ok()?)
 }
 
 fn sanitize_for_match(line: &str) -> String {
@@ -685,10 +681,7 @@ mod tests {
     fn a_captured_bar_frame_yields_cargos_counter() {
         assert_eq!(
             parse_unit_counter(CAPTURED_FRAME),
-            Some(UnitCounter {
-                done:  149,
-                total: 403,
-            })
+            UnitCounter::new(149, 403)
         );
     }
 
@@ -726,11 +719,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            progress.unit_counters.last(),
-            Some(&UnitCounter {
-                done:  150,
-                total: 403,
-            })
+            progress.unit_counters.last().copied(),
+            UnitCounter::new(150, 403)
         );
     }
 }
