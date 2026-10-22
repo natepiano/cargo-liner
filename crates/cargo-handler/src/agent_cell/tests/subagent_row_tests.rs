@@ -40,12 +40,34 @@ fn column(buffer: &Buffer, header: &str, next: &str, name: &str) -> String {
         .collect();
     let start =
         summary::cell_width(&header_text[..header_text.find(header).expect("column header")]);
-    let end =
-        summary::cell_width(&header_text[..header_text.find(next).expect("next column header")]);
+    let end = header_text.find(next).map_or_else(
+        || {
+            [
+                "session",
+                "type",
+                "role",
+                "status",
+                "account",
+                "branch",
+                "directory",
+                "age",
+            ]
+            .into_iter()
+            .filter_map(|label| header_text.find(label))
+            .map(|offset| summary::cell_width(&header_text[..offset]))
+            .filter(|&x| x > start)
+            .min()
+            .unwrap_or(buffer.area.width)
+        },
+        |offset| summary::cell_width(&header_text[..offset]),
+    );
     let row = find(buffer, name).expect("work row").1;
     (start..end)
         .map(|x| buffer[(x, row)].symbol())
         .collect::<String>()
+        .split("  ")
+        .next()
+        .expect("column text")
         .trim()
         .to_owned()
 }
@@ -193,13 +215,13 @@ fn subagent_account_width_and_sort_use_the_shown_session_account() {
 fn codex_thread_without_an_account_keeps_the_missing_value_under_a_claude_session() {
     let root = AgentRow {
         account: account("claude1"),
-        children: vec![child(
-            0,
-            ChildKind::Thread,
-            None,
-            "Unrecorded Codex task",
-            MINUTE,
-        )],
+        children: vec![
+            child(0, ChildKind::Thread, None, "Unrecorded Codex task", MINUTE),
+            ChildRow {
+                account: account("codex2"),
+                ..child(0, ChildKind::Thread, None, "Recorded Codex task", MINUTE)
+            },
+        ],
         ..agent(10, "director", HOUR, None)
     };
     assert_eq!(
@@ -481,15 +503,12 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
             buffer
         })
         .collect();
-    for header in [
-        "type",
-        "role",
-        "status",
-        "account",
-        "branch",
-        "directory",
-        "age",
-    ] {
+    for buffer in &buffers {
+        for header in ["role", "account", "branch", "directory"] {
+            assert!(find(buffer, header).is_none(), "empty {header} is omitted");
+        }
+    }
+    for header in ["type", "status", "age"] {
         let positions: Vec<_> = buffers
             .iter()
             .map(|buffer| find(buffer, header).expect("drawn column").0)
@@ -503,10 +522,10 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
         .iter()
         .map(|buffer| {
             let (type_x, y) = find(buffer, "type").expect("type header");
-            let role_x = find(buffer, "role").expect("role header").0;
+            let status_x = find(buffer, "status").expect("status header").0;
             (y + 1..buffer.area.height)
                 .map(|row| {
-                    (type_x..role_x)
+                    (type_x..status_x)
                         .map(|x| buffer[(x, row)].symbol())
                         .collect::<String>()
                         .trim_end()
@@ -521,9 +540,9 @@ fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
         .expect("tile fixtures");
     for buffer in &buffers {
         let type_x = find(buffer, "type").expect("type header").0;
-        let role_x = find(buffer, "role").expect("role header").0;
+        let status_x = find(buffer, "status").expect("status header").0;
         assert_eq!(
-            usize::from(role_x - type_x),
+            usize::from(status_x - type_x),
             widest + 2,
             "two-space gap after the widest type in the shared screen column"
         );

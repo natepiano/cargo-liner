@@ -103,7 +103,7 @@ fn specialist_management_roles_use_footer_ink_and_other_roles_stay_plain() {
 }
 
 #[test]
-fn unassigned_sessions_without_a_role_draw_an_empty_role_cell() {
+fn unassigned_sessions_without_a_role_draw_no_role_column() {
     let state = MachineState::Answered(
         vec![agent(10, "postmaster", HOUR, None)],
         HierarchyEdges::default().into(),
@@ -131,11 +131,18 @@ fn unassigned_sessions_without_a_role_draw_an_empty_role_cell() {
         AccountColumn::Shown,
         &FooterColors::default(),
     );
-    let (x, _) = find(&buffer, "role").expect("role header");
-    let (_, y) = find(&buffer, "postmaster").expect("unassigned row");
-    for x in x..x + summary::cell_width("role") {
-        assert_eq!(buffer[(x, y)].symbol(), " ", "a missing role stays blank");
-    }
+    assert!(
+        find(&buffer, "postmaster").is_some(),
+        "the unassigned row stays visible"
+    );
+    assert!(
+        find(&buffer, "role").is_none(),
+        "the missing role has no column"
+    );
+    assert!(
+        find(&buffer, "type").is_none(),
+        "a session has no work type"
+    );
 }
 
 #[test]
@@ -152,6 +159,11 @@ fn older_tiles_keep_only_their_own_age_units_beside_younger_tiles() {
         child(0, ChildKind::Thread, None, "twenty-days", 20 * 24 * HOUR),
     ];
     let mut young = agent(20, "young-owner", HOUR, None);
+    // A different visible column set keeps this tile in its own sizing group.
+    young.account = serde_json::from_value(serde_json::json!({
+        "home": "~/.claude1", "label": "claude1"
+    }))
+    .expect("recorded account");
     young.children = vec![
         child(0, ChildKind::Thread, None, "minutes-old", 2 * MINUTE + 49),
         child(
@@ -162,6 +174,9 @@ fn older_tiles_keep_only_their_own_age_units_beside_younger_tiles() {
             5 * HOUR + 16 * MINUTE,
         ),
     ];
+    for child in &mut young.children {
+        child.account = young.account.clone();
+    }
     let mut cells = [entry(&old, None), entry(&young, None)];
     for cell in &mut cells {
         cell.sort = TreeSort {

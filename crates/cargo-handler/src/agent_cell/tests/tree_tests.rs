@@ -192,7 +192,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(text.len(), 4);
     assert_eq!(
         text[0].split_whitespace().collect::<Vec<_>>(),
-        ["session", "type", "role", "status", "account", "age", "▼"]
+        ["session", "role", "status", "account", "age", "▼"]
     );
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
@@ -252,7 +252,6 @@ fn a_full_showrunner_puts_the_tree_header_directly_after_its_place() {
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
             "session",
-            "type",
             "role",
             "status",
             "account",
@@ -465,7 +464,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", "", "◑ 1:00", "claude1", "10m"),
+        ("clock job", "", "1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
         ("review worker", "", "idle", "claude1", "8m"),
         ("nested command", "", "running", "claude1", "7m"),
@@ -486,9 +485,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             );
         }
         if role != "session" {
-            for header in ["branch", "directory"] {
-                assert_eq!(column_value(&buffer, header, y, &HEADERS), "—");
-            }
+            assert!(
+                find(&buffer, "branch").is_none(),
+                "the missing branch has no column"
+            );
+            assert_eq!(column_value(&buffer, "directory", y, &HEADERS), "—");
             let at = find(&buffer, name).expect("work name");
             let expected_color = match role {
                 "worker" => buffer[find(&buffer, "unit-member").expect("parent session")].fg,
@@ -653,10 +654,11 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         .width()
         .max(place_line(cell.row).width());
     if !cell.lines.is_empty() {
+        let columns = TreeLayout::Full.populated_columns(&cell.lines, NOW, account_column);
         full = full.max(
             table_width(&tree_widths(
                 &cell.lines,
-                TreeLayout::Full.columns(account_column),
+                &columns,
                 NOW,
                 TreeSort::default(),
                 SessionHeaderLead::OverBranch,
@@ -682,12 +684,12 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         );
     }
 
-    let columns = TreeLayout::Compressed.columns(account_column);
+    let columns = TreeLayout::Compressed.populated_columns(&cell.lines, NOW, account_column);
     let gaps = columns.len().saturating_sub(1);
     let spacing = usize::from(TABLE_COLUMN_SPACING);
     let widths = tree_widths(
         &cell.lines,
-        columns,
+        &columns,
         NOW,
         TreeSort::default(),
         SessionHeaderLead::OverBranch,
