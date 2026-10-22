@@ -994,7 +994,7 @@ mod tests {
         ) {
             self.cells.draw(buffer, content, inner, ground);
         }
-        fn content_extent(&self, _content: &TileContent<u32>) -> CellContentExtent { self.extent }
+        fn content_extent(&self, _: &TileContent<u32>) -> CellContentExtent { self.extent }
     }
 
     #[test]
