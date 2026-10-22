@@ -82,7 +82,8 @@ mod tests {
             assert_eq!(WorktreeOperation::observe(directory.path()), expected);
             fs::remove_file(marker_path)?;
         }
-        // A stopped replay can expose another operation's marker at the same time.
+        // `GIT_REBASE_MERGE_STATE_PATH` and `GIT_CHERRY_PICK_STATE_PATH` can coexist because a
+        // stopped replay can expose another operation's marker at the same time.
         fs::create_dir(directory.path().join(GIT_REBASE_MERGE_STATE_PATH))?;
         fs::write(directory.path().join(GIT_CHERRY_PICK_STATE_PATH), "pending")?;
         assert_eq!(
