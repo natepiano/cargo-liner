@@ -109,9 +109,10 @@ impl PathsByFinalSegment {
     fn insert(&mut self, index: usize, final_segment: Option<&str>) {
         match final_segment.map(PathAnchor::from) {
             Some(PathAnchor::SelfType | PathAnchor::Name) => {
-                // `Self` is retained by resolution like any other name, so it is
-                // grouped rather than treated as an anchor; no export can be
-                // named `Self`, so its group is never looked up.
+                // `PathsByFinalSegment::insert` groups `PathAnchor::SelfType` in
+                // `PathsByFinalSegment::by_segment` because resolution retains `Self`
+                // as a name rather than an anchor; no export can be named `Self`,
+                // so its group is never looked up.
                 let Some(segment) = final_segment else {
                     return;
                 };
@@ -203,14 +204,14 @@ impl SourceCache {
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
         }
-        // Only the name index and the lexical scan cross threads: both read
-        // `&str` and return owned data. `syn::File` is not `Send` —
+        // Only `mentionable_names_in` and `LexicalRegions::from` cross threads:
+        // both read `&str` and return owned data. `syn::File` is not `Send` —
         // `proc_macro2` embeds a `PhantomData<Rc<()>>` marker in its spans and
         // builds token streams on `Rc<Vec<TokenTree>>`, both unconditional — so
-        // parsing and path extraction stay sequential. Walking a `Vec` snapshot
-        // and zipping the results back keeps the insertion order identical to
-        // the sequential build, because rayon's indexed `collect()` preserves
-        // order.
+        // parsing and `extract_paths` stay sequential. Walking the `content_entries`
+        // `Vec` snapshot and zipping the results back keeps insertion order identical
+        // to the sequential build, because Rayon's indexed `collect()` into `scans`
+        // preserves order.
         let content_entries: Vec<(&PathBuf, &String)> = contents.iter().collect();
         let scans: Vec<(FxHashSet<u64>, LexicalRegions)> = content_entries
             .par_iter()
