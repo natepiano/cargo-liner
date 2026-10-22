@@ -37,7 +37,10 @@ use super::constants::GIT_REV_PARSE_COMMAND;
 #[cfg(test)]
 use super::error;
 use super::error::GitError;
+use super::read;
+use super::read::RepositoryRead;
 use crate::ids::GitObjectId;
+use crate::ledger::FullRefName;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CommitObjectResolution {
@@ -244,7 +247,29 @@ pub(super) fn commit_object_resolution(line: &str) -> Result<CommitObjectResolut
         .map_err(GitError::InvalidObjectId)
 }
 
-type UpstreamReferenceRead = Result<BTreeMap<String, String>, Arc<GitError>>;
+/// A branch's configured tracking reference, or its explicit lack of an upstream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum BranchUpstream {
+    Configured(FullRefName),
+    Unconfigured,
+}
+
+impl BranchUpstream {
+    pub(super) fn from_reference(reference: &str) -> Result<Self, GitError> {
+        if reference.is_empty() {
+            Ok(Self::Unconfigured)
+        } else {
+            reference
+                .parse()
+                .map(Self::Configured)
+                .map_err(|_| GitError::InvalidReferenceName {
+                    reference: reference.to_owned(),
+                })
+        }
+    }
+}
+
+type UpstreamReferenceRead = Result<BTreeMap<String, BranchUpstream>, Arc<GitError>>;
 
 /// Shared object queries for one operation, including its post-append repairs.
 /// Clones retain the same lazy child; no prepared action can open another one.
@@ -264,44 +289,67 @@ impl OperationObjectReader {
         }
     }
 
-    /// Git resolves includes, remote fetch mappings and packed references here.
+    /// Resolve includes, remote fetch mappings and packed references once per operation.
     /// Optional upstream selectors must never enter the persistent batch protocol:
     /// Git treats an unconfigured selector as fatal, rather than a missing object.
-    pub(super) fn upstream_references(&self) -> Result<&BTreeMap<String, String>, GitError> {
+    pub(super) fn upstream_references(
+        &self,
+    ) -> Result<&BTreeMap<String, BranchUpstream>, GitError> {
         self.upstreams
             .get_or_init(|| self.read_upstream_references().map_err(Arc::new))
             .as_ref()
             .map_err(|failure| GitError::SnapshotReadFailed(Arc::clone(failure)))
     }
 
-    fn read_upstream_references(&self) -> Result<BTreeMap<String, String>, GitError> {
-        let output = command::git_output(
-            &self.repository_root,
-            [
-                "for-each-ref",
-                "--format=%(refname)%00%(upstream)",
-                "refs/heads/",
-            ],
-        )?;
-        if !output.status.success() {
-            return Err(GitError::CommandFailed {
-                command: "for-each-ref",
-                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-        let text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-        text.lines()
-            .map(|line| {
-                line.split_once('\0')
-                    .map(|(branch, upstream)| (branch.to_owned(), upstream.to_owned()))
-                    .ok_or_else(|| GitError::InvalidBatchObjectLine {
-                        line: line.to_owned(),
-                    })
-            })
-            .collect()
+    fn read_upstream_references(&self) -> Result<BTreeMap<String, BranchUpstream>, GitError> {
+        read::upstreams(&self.repository_root)?.or_git(|| {
+            let output = command::git_output(
+                &self.repository_root,
+                [
+                    "for-each-ref",
+                    "--format=%(refname)%00%(upstream)",
+                    "refs/heads/",
+                ],
+            )?;
+            if !output.status.success() {
+                return Err(GitError::CommandFailed {
+                    command: "for-each-ref",
+                    stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                });
+            }
+            let text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+            text.lines()
+                .map(|line| {
+                    line.split_once('\0')
+                        .ok_or_else(|| GitError::InvalidBatchObjectLine {
+                            line: line.to_owned(),
+                        })
+                        .and_then(|(branch, upstream)| {
+                            BranchUpstream::from_reference(upstream)
+                                .map(|upstream| (branch.to_owned(), upstream))
+                        })
+                })
+                .collect()
+        })
     }
 
     pub(super) fn resolve(
+        &self,
+        expressions: &[String],
+    ) -> Result<Vec<CommitObjectResolution>, GitError> {
+        let mut resolutions = Vec::new();
+        for expression in expressions {
+            match read::commit(&self.repository_root, expression)? {
+                RepositoryRead::InProcess(resolution) => resolutions.push(resolution),
+                RepositoryRead::GitRequired(requirement) => {
+                    return requirement.execute(|| self.resolve_with_git(expressions));
+                },
+            }
+        }
+        Ok(resolutions)
+    }
+
+    fn resolve_with_git(
         &self,
         expressions: &[String],
     ) -> Result<Vec<CommitObjectResolution>, GitError> {
@@ -417,6 +465,11 @@ mod tests {
         let snapshot = crate::git::RepositorySnapshot::discover(fixture.root())?;
         let head = snapshot.head_object_id()?.clone();
         let objects = snapshot.object_reader();
+        assert!(
+            objects.reader.get().is_none(),
+            "the exact HEAD read needs no Git child"
+        );
+        assert!(objects.commit_is_available(&head)?);
         let child_id = || -> Result<u32, Box<dyn std::error::Error>> {
             let reader = objects
                 .reader
@@ -475,6 +528,11 @@ mod tests {
                 .child
                 .id())
         };
+        assert!(
+            objects.reader.get().is_none(),
+            "exact HEAD needs no Git child"
+        );
+        assert!(objects.commit_is_available(&head)?);
         let child = child_id()?;
         assert!(matches!(
             crate::git::local_target_upstream(&objects, "no-upstream")?,
@@ -584,6 +642,11 @@ mod tests {
         let snapshot = crate::git::RepositorySnapshot::discover(fixture.root())?;
         let head = snapshot.head_object_id()?.clone();
         let objects = snapshot.object_reader();
+        assert!(
+            objects.reader.get().is_none(),
+            "the exact HEAD read needs no Git child"
+        );
+        assert!(objects.commit_is_available(&head)?);
         let child_id = || -> Result<u32, Box<dyn std::error::Error>> {
             let reader = objects
                 .reader

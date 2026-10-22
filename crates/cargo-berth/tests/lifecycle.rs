@@ -951,17 +951,19 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    let mut release = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["release", &reservation_id, "--json"])
-        .current_dir(repository.path())
-        .env("PATH", wrapped_path)
-        .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
-        .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
-        .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
-        .env_remove(RUN_ENVIRONMENT)
-        .spawn()
-        .expect("release should start");
-    wait_for_path(&ready_path, &mut release);
+    let mut release = cargo_berth_test_support::TestProcessGroup::spawn(
+        berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+            .args(["release", &reservation_id, "--json"])
+            .current_dir(repository.path())
+            .env("PATH", wrapped_path)
+            .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
+            .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
+            .env("CARGO_BERTH_TEST_REAL_GIT", git_binary())
+            .env_remove(RUN_ENVIRONMENT)
+            .stdin(Stdio::null()),
+    )
+    .expect("release should start");
+    wait_for_path(&ready_path, release.child_mut());
 
     let journal_path = repository.path().join(JOURNAL_PATH);
     let original_permissions = fs::metadata(&journal_path)
@@ -1192,14 +1194,16 @@ fn unspawnable_git_preserves_the_complete_io_diagnostic() {
     let repository = initialized_repository();
     let empty_path = tempdir().expect("empty PATH directory should exist");
 
-    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["init", "--json"])
-        .current_dir(repository.path())
-        .env("PATH", empty_path.path())
-        .env_remove(RUN_ENVIRONMENT)
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should remain spawnable when git is unavailable");
+    let output = cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+        "CARGO_BIN_EXE_cargo-berth"
+    )))
+    .args(["init", "--json"])
+    .current_dir(repository.path())
+    .env("PATH", empty_path.path())
+    .env_remove(RUN_ENVIRONMENT)
+    .env_remove(SESSION_ENVIRONMENT)
+    .output()
+    .expect("cargo-berth should remain spawnable when git is unavailable");
     let envelope = json_output(&output);
     let diagnostic = envelope["message"]
         .as_str()
@@ -4024,8 +4028,8 @@ mod merge_extent {
                     .lines()
                     .filter(|line| line.split_whitespace().any(|arg| arg == "status"))
                     .count(),
-                1,
-                "all reservations share one dirty observation: {queries}"
+                0,
+                "dirty observations need no status subprocess: {queries}"
             );
             assert_eq!(
                 queries

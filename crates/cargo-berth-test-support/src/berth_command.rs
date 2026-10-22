@@ -26,3 +26,12 @@ pub fn berth_command(executable: impl AsRef<OsStr>) -> Command {
     git_driver::disable_git_auto_maintenance(&mut command);
     command
 }
+
+/// Keep a Git fault or concurrency fixture on the subprocess read route.
+/// The benign monitor override makes command configuration explicit without changing status.
+pub fn use_git_read_subprocess(command: &mut Command) -> &mut Command {
+    command
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+}
