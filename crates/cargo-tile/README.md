@@ -19,7 +19,7 @@ behaves.
 
 ## keys
 
-Every binding below comes from `tui_pane::GlobalAction`'s defaults, and every
+The bindings below come from the framework and cargo-tile defaults, and every
 one of them is listed in the app itself: `?` opens the shortcut overlay in the
 bottom-right corner, and ctrl-k opens the full keymap viewer.
 
@@ -28,6 +28,8 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 | `?` | global shortcuts overlay |
 | ctrl-k | keymap editor — every registered action, the key it resolves to, and Enter to rebind it |
 | `s` | settings overlay |
+| `p` | show or hide the process hierarchy |
+| `h` | show or hide all command arguments |
 | `q` | quit |
 | `R` | restart — re-runs this binary with the same arguments |
 | Tab / shift-Tab | cycle panes |
@@ -635,3 +637,8 @@ the same row. If any key intervenes, including cursor movement, the confirmation
 is cancelled and nothing is written.
 
 All keys listed here are defaults and can be rebound in `keymap.toml`.
+
+Command rows show their subcommands and the flags listed in
+`commands.default_arguments`, initially `all-targets`, `fix`, and `workspace`.
+Edit the comma-separated list under Commands in Settings. Hidden arguments have
+no omission mark; `…` marks only text cut by the available width or rows.

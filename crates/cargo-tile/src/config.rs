@@ -3,6 +3,7 @@
 //! `tui_pane` finds that file, the keymap file and the themes directory
 //! by.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -15,8 +16,10 @@ use tui_pane::TileFill;
 use tui_pane::TileGrowth;
 use tui_pane::TileView;
 
+use crate::constants::ARGUMENT_ASSIGNMENT;
 use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
+use crate::constants::DEFAULT_ARGUMENTS;
 use crate::constants::DEFAULT_CAPTURE_AUTO_INSTALL;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_EXCLUDED;
@@ -24,6 +27,7 @@ use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_COMMANDS;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::DEFAULT_WIDEN_SUMMARY;
+use crate::constants::FLAG_MARK;
 use crate::constants::MAX_FADE_SECONDS;
 
 /// cargo-tile's identity for the framework's config and runner paths.
@@ -37,13 +41,66 @@ impl AppIdentity for CargoTile {
     const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] = Config::RETIRED_KEYS;
 }
 
+/// Argument names kept in lexical order without duplicates at every config boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DefaultArguments(Arc<[String]>);
+
+impl DefaultArguments {
+    /// Establish ordering once when entries enter the configuration.
+    pub(crate) fn new(mut entries: Vec<String>) -> Self {
+        entries.sort_unstable();
+        entries.dedup();
+        Self(entries.into())
+    }
+
+    /// Sorted names for the settings editor and display selection.
+    pub(crate) fn entries(&self) -> &[String] { &self.0 }
+
+    /// Match a flag's name independently of its leading dashes and assigned value.
+    pub(crate) fn contains(&self, argument: &str) -> bool {
+        let name = argument
+            .trim_start_matches(FLAG_MARK)
+            .split(ARGUMENT_ASSIGNMENT)
+            .next()
+            .unwrap_or_default();
+        self.0
+            .binary_search_by(|entry| entry.as_str().cmp(name))
+            .is_ok()
+    }
+}
+
+impl Default for DefaultArguments {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_ARGUMENTS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        )
+    }
+}
+
+impl Serialize for DefaultArguments {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.entries().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DefaultArguments {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<String>::deserialize(deserializer).map(Self::new)
+    }
+}
+
 /// Cargo subcommands omitted by the scanner or hidden with their whole subtree.
 #[derive(Debug, Serialize)]
 pub(crate) struct CommandsConfig {
     /// Commands omitted by the scanner while descendants remain eligible.
-    pub(crate) excluded: Vec<String>,
+    pub(crate) excluded:          Vec<String>,
     /// Commands whose whole subtree stays out of every table and total.
-    pub(crate) hidden:   Vec<String>,
+    pub(crate) hidden:            Vec<String>,
+    /// Argument names shown without enabling full argument detail.
+    pub(crate) default_arguments: DefaultArguments,
 }
 
 impl<'de> Deserialize<'de> for CommandsConfig {
@@ -51,15 +108,19 @@ impl<'de> Deserialize<'de> for CommandsConfig {
         /// Optional keys exist only at the saved-file boundary.
         #[derive(Deserialize)]
         struct SavedCommands {
-            excluded:         Option<Vec<String>>,
-            hidden:           Option<Vec<String>>,
-            hidden_when_idle: Option<Vec<String>>,
+            excluded:          Option<Vec<String>>,
+            hidden:            Option<Vec<String>>,
+            hidden_when_idle:  Option<Vec<String>>,
+            default_arguments: Option<DefaultArguments>,
         }
         let saved = SavedCommands::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
-            excluded: saved.excluded.unwrap_or(defaults.excluded),
-            hidden:   saved
+            default_arguments: saved
+                .default_arguments
+                .unwrap_or(defaults.default_arguments),
+            excluded:          saved.excluded.unwrap_or(defaults.excluded),
+            hidden:            saved
                 .hidden
                 .or(saved.hidden_when_idle)
                 .unwrap_or(defaults.hidden),
@@ -70,11 +131,12 @@ impl<'de> Deserialize<'de> for CommandsConfig {
 impl Default for CommandsConfig {
     fn default() -> Self {
         Self {
-            excluded: DEFAULT_EXCLUDED
+            default_arguments: DefaultArguments::default(),
+            excluded:          DEFAULT_EXCLUDED
                 .iter()
                 .map(|subcommand| (*subcommand).to_string())
                 .collect(),
-            hidden:   DEFAULT_HIDDEN_COMMANDS
+            hidden:            DEFAULT_HIDDEN_COMMANDS
                 .iter()
                 .map(|subcommand| (*subcommand).to_string())
                 .collect(),
@@ -216,6 +278,20 @@ mod tests {
         toml::to_string_pretty(&config).expect("a config should serialize")
     }
 
+    #[test]
+    fn the_default_arguments_setting_saves_sorted() {
+        let written =
+            round_trip("[commands]\ndefault_arguments = [\"workspace\", \"fix\", \"workspace\"]\n");
+        let value: Value = toml::from_str(&written).expect("saved configuration");
+        assert_eq!(
+            value["commands"]["default_arguments"],
+            Value::Array(vec![
+                Value::String("fix".into()),
+                Value::String("workspace".into()),
+            ])
+        );
+    }
+
     /// [`LoadedConfig::load`] writes the file back whenever it does not already hold
     /// every setting, so a file that does hold them must serialize to
     /// itself -- otherwise every startup rewrites the config, for good.
@@ -329,6 +405,7 @@ auto_install = true
 [commands]
 excluded = [\"berth\"]
 hidden = [\n    \"port\",\n    \"handler\",\n]
+default_arguments = [\n    \"all-targets\",\n    \"fix\",\n    \"workspace\",\n]
 
 [tiles]
 initial_rows = 4
