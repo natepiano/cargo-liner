@@ -513,7 +513,7 @@ fn package_field_value_style(ctx: &PackageRenderCtx<'_>, field: DetailField) -> 
             },
             PackageVersion::AwaitingMetadata
             | PackageVersion::Manifest(_)
-            | PackageVersion::Submodule(PinnedCommit::Sha(_) | PinnedCommit::NotPinned) => {
+            | PackageVersion::Submodule(PinnedCommit::Sha(_) | PinnedCommit::Absent) => {
                 Style::default()
             },
         },
@@ -1185,15 +1185,12 @@ fn ci_display_style(display: &CiDisplay) -> Style {
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
             Style::default().fg(inactive_border_color())
         },
-        CiDisplay::Runs {
-            ci_status: conclusion,
-            ..
-        } => render::conclusion_style(*conclusion),
+        CiDisplay::Runs { ci_status, .. } => render::ci_status_style(*ci_status),
     }
 }
 
 /// Render a typed [`CiDisplay`] to the string shown in the
-/// Package detail row. The conclusion icon is read from
+/// Package detail row. The `ci_status` icon is read from
 /// `CiStatus::icon()` at render time, in parallel with
 /// `lint_display_to_string`.
 fn ci_display_to_string(display: &CiDisplay) -> String {
@@ -1203,11 +1200,11 @@ fn ci_display_to_string(display: &CiDisplay) -> String {
         CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::NoRuns => "No CI runs".to_string(),
         CiDisplay::Runs {
-            ci_status: conclusion,
+            ci_status,
             local,
             github_total,
         } => {
-            let icon = conclusion.map_or_else(String::new, |c| c.icon().to_string());
+            let icon = ci_status.map_or_else(String::new, |c| c.icon().to_string());
             let count_label = if *github_total > 0 {
                 format!("local {local} / github {github_total}")
             } else if *local > 0 {

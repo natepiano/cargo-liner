@@ -87,13 +87,13 @@ pub(super) struct Inputs {
 /// `Inputs` plus the three internal channel pairs (example, CI
 /// fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
-    inputs:      Inputs,
-    example_tx:  Sender<OwnedRunEvent>,
-    example_rx:  Receiver<OwnedRunEvent>,
-    ci_fetch_tx: Sender<CiFetchMsg>,
-    ci_fetch_rx: Receiver<CiFetchMsg>,
-    clean_tx:    Sender<CleanMsg>,
-    clean_rx:    Receiver<CleanMsg>,
+    inputs:       Inputs,
+    owned_run_tx: Sender<OwnedRunEvent>,
+    owned_run_rx: Receiver<OwnedRunEvent>,
+    ci_fetch_tx:  Sender<CiFetchMsg>,
+    ci_fetch_rx:  Receiver<CiFetchMsg>,
+    clean_tx:     Sender<CleanMsg>,
+    clean_rx:     Receiver<CleanMsg>,
 }
 
 /// `Channeled` plus the products of applying the selected startup policy.
@@ -136,14 +136,14 @@ impl AppBuilder<Inputs> {
     }
 
     pub(super) fn open_channels(self) -> AppBuilder<Channeled> {
-        let (example_tx, example_rx) = channel::unbounded();
+        let (owned_run_tx, owned_run_rx) = channel::unbounded();
         let (ci_fetch_tx, ci_fetch_rx) = channel::unbounded();
         let (clean_tx, clean_rx) = channel::unbounded();
         AppBuilder {
             state: Channeled {
                 inputs: self.state,
-                example_tx,
-                example_rx,
+                owned_run_tx,
+                owned_run_rx,
                 ci_fetch_tx,
                 ci_fetch_rx,
                 clean_tx,
@@ -165,11 +165,10 @@ impl AppBuilder<Channeled> {
             crate::themes::builtins(),
         );
         theme_roles::apply_role_defaults_to_registry(&mut registry);
-        // Resolve the initial theme from the loaded `[appearance]`
-        // section against the just-built registry. Misses fall back to
-        // the app's own appearance-matched variant silently here —
-        // toast machinery is not yet wired this early in startup, and
-        // surface for the miss arrives through the settings UI badge.
+        // `registry.resolve_active` resolves `inputs.cargo_port_config.appearance` into `resolved`
+        // and `initial_theme`. A miss silently falls back to the app's appearance-matched variant
+        // because toasts are not yet available during startup; the settings UI badge later surfaces
+        // the miss.
         let resolved = registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,
             &inputs.cargo_port_config.appearance.light_theme,
@@ -245,7 +244,7 @@ impl AppBuilder<Started> {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
             clean:      (channeled.clean_tx, channeled.clean_rx),
-            example:    (channeled.example_tx, channeled.example_rx),
+            owned_run:  (channeled.owned_run_tx, channeled.owned_run_rx),
             watcher:    started.watcher,
         });
         let lint = Lint::new(started.lint_runtime);
@@ -327,7 +326,6 @@ fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -
 
 impl App {
     fn finish_new(&mut self) {
-        self.panes.install_cpu_placeholder();
         self.load_initial_keymap();
         if let Some(warning) = self
             .overlays

@@ -45,7 +45,7 @@ impl PatchEquivalenceFixture {
             repository.path(),
             &["init", "--quiet", "--initial-branch", "main"],
         )?;
-        // This repository is private to the fixture. Appending its identity
+        // `repository` is private to `PatchEquivalenceFixture`. Appending its identity
         // keeps git init's repository format and inherited configuration intact.
         fs::OpenOptions::new()
             .append(true)

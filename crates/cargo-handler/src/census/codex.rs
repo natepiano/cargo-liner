@@ -19,16 +19,101 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 use rusqlite::Error;
 use rusqlite::OpenFlags;
+use rusqlite::OptionalExtension;
 use rusqlite::params;
 
+use super::account::ConfigHome;
+use super::account::Program;
+use super::classify::ProcessEntry;
+use crate::constants::CODEX_DIRNAME;
+use crate::constants::CODEX_LAST_THREAD_QUERY;
 use crate::constants::CODEX_PROMPT_LABEL_MAX;
+use crate::constants::CODEX_RESUME_LAST_ARGUMENT;
+use crate::constants::CODEX_RESUME_SUBCOMMAND;
 use crate::constants::CODEX_STATE_BUSY_TIMEOUT;
 use crate::constants::CODEX_STATE_EXTENSION;
 use crate::constants::CODEX_STATE_PREFIX;
 use crate::constants::CODEX_THREAD_BY_ID_QUERY;
 use crate::constants::CODEX_THREADS_QUERY;
 use crate::constants::CODEX_TUI_ORIGINATOR;
+#[cfg(test)]
 use crate::constants::TRUNCATION_MARK;
+use crate::constants::UUID_TEXT_LENGTH;
+use crate::summary;
+
+/// Resolve the process's own configuration home, never another account's index.
+pub(super) fn session_home(process: &ProcessEntry, home: Option<&Path>) -> Option<PathBuf> {
+    match &process.config_home {
+        ConfigHome::Named(path) => Some(path.clone()),
+        ConfigHome::Default(Program::Codex) => home.map(|home| home.join(CODEX_DIRNAME)),
+        ConfigHome::Unread | ConfigHome::Default(_) => None,
+    }
+}
+
+/// The conversation an interactive Codex asks to open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ResumeRequest<'a> {
+    NewSession,
+    NamedId(&'a str),
+    LastThread,
+}
+
+/// A resume can identify a thread explicitly or select the latest in the cwd.
+pub(super) fn resume_request(process: &ProcessEntry) -> ResumeRequest<'_> {
+    process
+        .arguments
+        .windows(2)
+        .find_map(|pair| {
+            if pair[0] != CODEX_RESUME_SUBCOMMAND {
+                return None;
+            }
+            match pair[1].as_str() {
+                CODEX_RESUME_LAST_ARGUMENT => Some(ResumeRequest::LastThread),
+                id if id.len() == UUID_TEXT_LENGTH => Some(ResumeRequest::NamedId(id)),
+                _ => None,
+            }
+        })
+        .unwrap_or(ResumeRequest::NewSession)
+}
+
+/// Older resume candidates from this process's own home, outside the startup window.
+pub(super) fn read_resumed_threads(process: &ProcessEntry, codex_home: &Path) -> Vec<CodexThread> {
+    match resume_request(process) {
+        ResumeRequest::NewSession => Vec::new(),
+        ResumeRequest::NamedId(id) => read_threads_by_id(codex_home, &[id.to_owned()])
+            .into_values()
+            .collect(),
+        ResumeRequest::LastThread => process
+            .directory
+            .as_deref()
+            .and_then(|cwd| {
+                state_database(codex_home)
+                    .and_then(|path| query_last_thread(&path, cwd).ok().flatten())
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// The newest database conversation in this directory, regardless of process age.
+fn query_last_thread(path: &Path, cwd: &Path) -> rusqlite::Result<Option<CodexThread>> {
+    let connection = open_read_only(path)?;
+    connection
+        .query_row(
+            CODEX_LAST_THREAD_QUERY,
+            params![cwd.to_string_lossy()],
+            |row| {
+                Ok(CodexThread {
+                    cwd:          PathBuf::from(row.get::<_, String>(0)?),
+                    created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
+                    name:         row.get(2)?,
+                    first_prompt: row.get(3)?,
+                    rollout:      PathBuf::from(row.get::<_, String>(4)?),
+                })
+            },
+        )
+        .optional()
+}
 
 /// One thread an interactive Codex started, as the census reads it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,16 +145,7 @@ impl CodexThread {
         if prompt.is_empty() {
             return None;
         }
-        if prompt.chars().count() <= CODEX_PROMPT_LABEL_MAX {
-            return Some(prompt);
-        }
-        Some(
-            prompt
-                .chars()
-                .take(CODEX_PROMPT_LABEL_MAX - 1)
-                .chain(std::iter::once(TRUNCATION_MARK))
-                .collect(),
-        )
+        Some(summary::truncated(&prompt, CODEX_PROMPT_LABEL_MAX))
     }
 }
 
@@ -449,3 +525,7 @@ mod tests {
         assert!(label.ends_with(TRUNCATION_MARK));
     }
 }
+
+#[cfg(test)]
+#[path = "codex_label_cut_tests.rs"]
+mod label_cut_tests;

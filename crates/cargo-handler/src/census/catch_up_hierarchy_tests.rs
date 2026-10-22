@@ -69,8 +69,9 @@ fn text(buffer: &Buffer) -> String {
 }
 
 struct Drawn {
-    summary: String,
-    tiles:   Vec<String>,
+    summary:    String,
+    tiles:      Vec<String>,
+    unassigned: String,
 }
 
 fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
@@ -111,7 +112,9 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
     let mut buffer = Buffer::empty(area);
     summary::draw(&mut buffer, area, &frame);
     let summary = text(&buffer);
-    let tiles = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000)
+    let grouped = agent_cell::group_tiles(&placement, &cells, &HashMap::new(), 1000);
+    let mut unassigned = String::new();
+    let tiles = grouped
         .iter()
         .map(|tile| {
             let area = Rect::new(0, 0, 180, 16);
@@ -135,10 +138,18 @@ fn draw(rows: &[AgentRow], hierarchy: &HierarchySnapshot) -> Drawn {
                     &colors,
                 ),
             }
-            text(&buffer)
+            let drawn = text(&buffer);
+            if matches!(tile, AgentTile::Unassigned(_)) {
+                unassigned.push_str(&drawn);
+            }
+            drawn
         })
         .collect();
-    Drawn { summary, tiles }
+    Drawn {
+        summary,
+        tiles,
+        unassigned,
+    }
 }
 
 fn assert_nested(rows: &[AgentRow], hierarchy: &HierarchySnapshot) {
@@ -485,7 +496,7 @@ fn catch_up_hierarchy_checked_unnamed_session_stays_visible_during_an_expired_re
     let (checked, hierarchy) = fixture.containing(HOME);
     assert!(
         draw(&checked, &hierarchy)
-            .summary
+            .unassigned
             .contains("ordinary home session")
     );
 
@@ -515,7 +526,7 @@ fn catch_up_hierarchy_checked_unnamed_session_stays_visible_during_an_expired_re
         {
             let drawn = draw(&rows, &hierarchy);
             assert!(
-                drawn.summary.contains("ordinary home session"),
+                drawn.unassigned.contains("ordinary home session"),
                 "a checked top-level session stays visible: {}",
                 drawn.summary
             );
@@ -583,7 +594,7 @@ fn catch_up_hierarchy_failed_followup_releases_retained_links_and_retry_stays_as
     let (held, hierarchy) = fixture.containing(INDEPENDENT);
     assert!(
         !draw(&held, &hierarchy)
-            .summary
+            .unassigned
             .contains("ordinary home session")
     );
     failed_request.answer(Err(HierarchyError::TimedOut));
@@ -613,7 +624,7 @@ fn catch_up_hierarchy_failed_followup_releases_retained_links_and_retry_stays_as
         drawn.summary
     );
     assert!(
-        drawn.summary.contains("ordinary home session"),
+        drawn.unassigned.contains("ordinary home session"),
         "{}",
         drawn.summary
     );
@@ -643,7 +654,12 @@ fn catch_up_hierarchy_source_change_discards_the_pending_sources_late_links() {
     let (rows, hierarchy) = fixture.containing(UNIT);
     let drawn = draw(&rows, &hierarchy);
     assert_eq!(hierarchy.edges.0, [] as [HierarchyEdge; 0]);
-    assert!(drawn.summary.contains("new unit"), "{}", drawn.summary);
+    assert!(
+        drawn.unassigned.contains("new unit"),
+        "{}",
+        drawn.unassigned
+    );
+    assert!(!drawn.summary.contains("new unit"), "{}", drawn.summary);
 }
 
 #[test]
@@ -658,7 +674,12 @@ fn catch_up_hierarchy_disabled_source_does_not_restore_late_links() {
     assert_eq!(hierarchy.notice, HierarchyNotice::Clear);
     assert_eq!(hierarchy.edges.0, [] as [HierarchyEdge; 0]);
     let drawn = draw(&rows, &hierarchy);
-    assert!(drawn.summary.contains("new unit"), "{}", drawn.summary);
+    assert!(
+        drawn.unassigned.contains("new unit"),
+        "{}",
+        drawn.unassigned
+    );
+    assert!(!drawn.summary.contains("new unit"), "{}", drawn.summary);
     fixture.publish(rows, fixture.now);
     let (_, hierarchy) = fixture.containing(UNIT);
     assert_eq!(hierarchy.edges.0, [] as [HierarchyEdge; 0]);

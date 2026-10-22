@@ -35,7 +35,17 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::symbols::line;
+use ratatui::symbols::line::BOTTOM_LEFT;
+use ratatui::symbols::line::BOTTOM_RIGHT;
+use ratatui::symbols::line::CROSS;
+use ratatui::symbols::line::HORIZONTAL;
+use ratatui::symbols::line::HORIZONTAL_DOWN;
+use ratatui::symbols::line::HORIZONTAL_UP;
+use ratatui::symbols::line::TOP_LEFT;
+use ratatui::symbols::line::TOP_RIGHT;
+use ratatui::symbols::line::VERTICAL;
+use ratatui::symbols::line::VERTICAL_LEFT;
+use ratatui::symbols::line::VERTICAL_RIGHT;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
@@ -855,17 +865,17 @@ const fn glyph(sides: Sides) -> Option<&'static str> {
         (false, false, false, false) => None,
         // A run passing straight through, plus the one-sided stubs a
         // clipped pane leaves behind, which read as their own axis.
-        (_, false, true, false) | (true, false, false, false) => Some(line::VERTICAL),
-        (false, true, false, _) | (false, false, false, true) => Some(line::HORIZONTAL),
-        (false, true, true, false) => Some(line::TOP_LEFT),
-        (false, false, true, true) => Some(line::TOP_RIGHT),
-        (true, true, false, false) => Some(line::BOTTOM_LEFT),
-        (true, false, false, true) => Some(line::BOTTOM_RIGHT),
-        (true, true, true, false) => Some(line::VERTICAL_RIGHT),
-        (true, false, true, true) => Some(line::VERTICAL_LEFT),
-        (false, true, true, true) => Some(line::HORIZONTAL_DOWN),
-        (true, true, false, true) => Some(line::HORIZONTAL_UP),
-        (true, true, true, true) => Some(line::CROSS),
+        (_, false, true, false) | (true, false, false, false) => Some(VERTICAL),
+        (false, true, false, _) | (false, false, false, true) => Some(HORIZONTAL),
+        (false, true, true, false) => Some(TOP_LEFT),
+        (false, false, true, true) => Some(TOP_RIGHT),
+        (true, true, false, false) => Some(BOTTOM_LEFT),
+        (true, false, false, true) => Some(BOTTOM_RIGHT),
+        (true, true, true, false) => Some(VERTICAL_RIGHT),
+        (true, false, true, true) => Some(VERTICAL_LEFT),
+        (false, true, true, true) => Some(HORIZONTAL_DOWN),
+        (true, true, false, true) => Some(HORIZONTAL_UP),
+        (true, true, true, true) => Some(CROSS),
     }
 }
 

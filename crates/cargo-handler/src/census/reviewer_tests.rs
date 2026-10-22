@@ -83,12 +83,15 @@ fn leased_rows() -> Vec<AgentRow> {
 }
 
 fn reviewer_role(text: &str) -> String {
-    let column = text
+    let header = text
         .lines()
-        .find(|line| line.contains("session") && line.contains("status"))
-        .expect("tree header")
-        .find("role")
-        .expect("role column");
+        .take_while(|line| !line.contains("code3"))
+        .filter(|line| line.contains("session") && line.contains("status"))
+        .last()
+        .expect("the reviewer owner's tree header");
+    let column = header[..header.find("role").expect("role column")]
+        .chars()
+        .count();
     text.lines()
         .find(|line| line.contains("code3"))
         .expect("reviewer row")

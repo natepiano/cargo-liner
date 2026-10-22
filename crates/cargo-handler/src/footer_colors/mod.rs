@@ -25,6 +25,7 @@ use self::constants::SRGB_ENCODED_SCALE;
 use self::constants::SRGB_LINEAR_DIVISOR;
 use self::constants::SRGB_LINEAR_THRESHOLD;
 use self::constants::SRGB_POWER;
+use crate::census::HierarchyRole;
 
 pub(crate) mod constants;
 
@@ -122,14 +123,14 @@ impl From<FooterColor> for Color {
 pub(crate) enum FooterRole {
     Showrunner,
     UnitDirector,
-    Worker,
-    Unassigned,
 }
 
 /// Whether the footer supplies a foreground or leaves the theme's style intact.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum FooterTint {
     Footer(FooterColor),
+    /// Management ink reserves contrast for antialiased glyph edges.
+    Management(FooterColor),
     #[default]
     Plain,
 }
@@ -139,6 +140,7 @@ impl FooterTint {
     pub(crate) fn style(self, theme: Style) -> Style {
         match self {
             Self::Footer(color) => theme.fg(resolved(color).foreground),
+            Self::Management(color) => theme.fg(resolved_management(color).foreground),
             Self::Plain => theme,
         }
     }
@@ -147,6 +149,7 @@ impl FooterTint {
     pub(crate) fn subdued_style(self, theme: Style) -> Style {
         let foreground = match self {
             Self::Footer(color) => resolved(color).subdued,
+            Self::Management(color) => resolved_management(color).subdued,
             Self::Plain => PALETTE.with(|palette| palette.borrow_mut().current().plain.subdued),
         };
         theme.remove_modifier(Modifier::DIM).fg(foreground)
@@ -162,9 +165,12 @@ struct ReadableInk {
 
 /// One palette belongs to one active theme; drawing only looks up its colors.
 struct ReadablePalette {
-    theme:  Arc<Theme>,
-    colors: BTreeMap<FooterColor, ReadableInk>,
-    plain:  ReadableInk,
+    theme:      Arc<Theme>,
+    colors:     BTreeMap<FooterColor, ReadableInk>,
+    management: BTreeMap<FooterColor, ReadableInk>,
+    plain:      ReadableInk,
+    grounds:    InkGrounds,
+    glyph_inks: Vec<(Color, Color)>,
 }
 
 thread_local! {
@@ -173,22 +179,47 @@ thread_local! {
 
 impl ReadablePalette {
     fn new(theme: Arc<Theme>) -> Self {
-        let ground = theme.text.bg_focus.color;
+        let grounds = InkGrounds::current(&theme);
         let colors = FooterColor::ALL
             .into_iter()
-            .map(|color| (color, ReadableInk::new(color.into(), ground)))
+            .map(|color| {
+                (
+                    color,
+                    ReadableInk::new(
+                        InkPurpose::Account.source(color),
+                        grounds,
+                        InkCoverage::Antialiased,
+                    ),
+                )
+            })
             .collect();
-        let plain = ReadableInk::new(theme.text.default.color, ground);
+        let management = FooterColor::ALL
+            .into_iter()
+            .map(|color| {
+                (
+                    color,
+                    ReadableInk::new(
+                        InkPurpose::Management.source(color),
+                        grounds,
+                        InkCoverage::Antialiased,
+                    ),
+                )
+            })
+            .collect();
+        let plain = ReadableInk::new(theme.text.default.color, grounds, InkCoverage::Opaque);
         Self {
             theme,
             colors,
+            management,
             plain,
+            grounds,
+            glyph_inks: Vec::new(),
         }
     }
 
     fn current(&mut self) -> &Self {
         let theme = tui_pane::theme();
-        if !Arc::ptr_eq(&self.theme, &theme) {
+        if !Arc::ptr_eq(&self.theme, &theme) || self.grounds != InkGrounds::current(&theme) {
             *self = Self::new(theme);
         }
         self
@@ -225,6 +256,10 @@ fn resolved(color: FooterColor) -> ReadableInk {
     PALETTE.with(|palette| palette.borrow_mut().current().colors[&color])
 }
 
+fn resolved_management(color: FooterColor) -> ReadableInk {
+    PALETTE.with(|palette| palette.borrow_mut().current().management[&color])
+}
+
 /// Read named channels through `tui_pane`'s xterm approximation.
 fn rgb(color: Color) -> (u8, u8, u8) {
     match tui_pane::blend_color(color, Color::Black, 0) {
@@ -255,15 +290,112 @@ fn contrast(ink: Color, ground: Color) -> f64 {
     (ink.max(ground) + CONTRAST_LUMINANCE_OFFSET) / (ink.min(ground) + CONTRAST_LUMINANCE_OFFSET)
 }
 
+/// The actual pane grounds on which one foreground must remain readable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InkGrounds {
+    base:      Color,
+    unfocused: Color,
+    focused:   Color,
+}
+
+impl InkGrounds {
+    fn current(theme: &Theme) -> Self {
+        Self {
+            base:      theme.text.bg_focus.color,
+            unfocused: tui_pane::pane_background(false),
+            focused:   tui_pane::pane_background(true),
+        }
+    }
+
+    fn contrast(self, ink: Color) -> f64 {
+        [self.base, self.unfocused, self.focused]
+            .into_iter()
+            .map(|ground| contrast(ink, ground))
+            .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Accounts reserve azure blue, keeping it apart from management purple after tinting.
+#[derive(Clone, Copy)]
+enum InkPurpose {
+    Account,
+    Management,
+}
+
+impl InkPurpose {
+    fn source(self, color: FooterColor) -> Color {
+        match (self, color) {
+            (Self::Account, FooterColor::Blue | FooterColor::BrightBlue) => {
+                constants::ACCOUNT_BLUE_SEED
+            },
+            (Self::Account, FooterColor::Teal) => constants::ACCOUNT_TEAL_SEED,
+            (Self::Account | Self::Management, _) => color.into(),
+        }
+    }
+}
+
+/// Foreground share of a covered glyph stem, out of 255.
+/// Live xterm stems measured about 216; 208 leaves a small rasterization margin.
+const ANTIALIASED_GLYPH_COVERAGE: u8 = 208;
+
+/// The minimum glyph coverage for which an ink must retain the contrast floor.
+#[derive(Clone, Copy)]
+enum InkCoverage {
+    Opaque,
+    /// Measured stem coverage with a small margin for the terminal rasterizer.
+    Antialiased,
+}
+
+impl InkCoverage {
+    fn contrast(self, grounds: InkGrounds, ink: Color) -> f64 {
+        match self {
+            Self::Opaque => grounds.contrast(ink),
+            Self::Antialiased => [grounds.base, grounds.unfocused, grounds.focused]
+                .into_iter()
+                .map(|ground| {
+                    contrast(
+                        tui_pane::blend_color(ink, ground, 255 - ANTIALIASED_GLYPH_COVERAGE),
+                        ground,
+                    )
+                })
+                .fold(f64::INFINITY, f64::min),
+        }
+    }
+}
+
+/// Status foregrounds share the footer's contrast policy and palette lifetime.
+pub(crate) fn readable_status_style(style: Style) -> Style { readable_style(style) }
+
+/// Session hues retain readable glyph coverage on every drawn pane ground.
+pub(crate) fn readable_session_style(style: Style) -> Style { readable_style(style) }
+
+/// Solve each source ink once per theme and set of pane grounds.
+fn readable_style(style: Style) -> Style {
+    let Some(color) = style.fg else { return style };
+    let foreground = PALETTE.with(|palette| {
+        let mut palette = palette.borrow_mut();
+        palette.current();
+        let grounds = palette.grounds;
+        let inks = &mut palette.glyph_inks;
+        if let Some((_, foreground)) = inks.iter().find(|(ink, _)| *ink == color) {
+            return *foreground;
+        }
+        let foreground = ReadableInk::new(color, grounds, InkCoverage::Antialiased).foreground;
+        inks.push((color, foreground));
+        foreground
+    });
+    style.fg(foreground)
+}
+
 impl ReadableInk {
-    fn new(color: Color, ground: Color) -> Self {
-        let foreground = if contrast(color, ground) >= MINIMUM_CONTRAST {
+    fn new(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Self {
+        let foreground = if coverage.contrast(grounds, color) >= MINIMUM_CONTRAST {
             color
         } else {
-            readable_lightness(color, ground)
+            readable_lightness(color, grounds, coverage)
         };
         // `subdued` approaches the contrast boundary along the same hue.
-        let subdued = readable_lightness(foreground, ground);
+        let subdued = readable_lightness(foreground, grounds, coverage);
         Self {
             foreground,
             subdued,
@@ -272,7 +404,7 @@ impl ReadableInk {
 }
 
 /// Keep HSL hue and saturation, choosing the closest readable lightness.
-fn readable_lightness(color: Color, ground: Color) -> Color {
+fn readable_lightness(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Color {
     let channels = <[u8; 3]>::from(rgb(color)).map(|value| f64::from(value) / 255.0);
     let maximum = channels.into_iter().fold(0.0, f64::max);
     let minimum = channels.into_iter().fold(1.0, f64::min);
@@ -299,20 +431,20 @@ fn readable_lightness(color: Color, ground: Color) -> Color {
     // Each side of `ground` has a monotone readable interval. Find its boundary.
     let mut best = (f64::INFINITY, at(lightness));
     for endpoint in [0.0, 1.0] {
-        if contrast(at(endpoint), ground) < MINIMUM_CONTRAST {
+        if coverage.contrast(grounds, at(endpoint)) < MINIMUM_CONTRAST {
             continue;
         }
         let mut readable = endpoint;
-        let mut unreadable = if contrast(color, ground) >= MINIMUM_CONTRAST {
+        let mut unreadable = if coverage.contrast(grounds, color) >= MINIMUM_CONTRAST {
             // Subdued ink chooses the boundary nearest `ground`'s lightness.
-            let (red, green, blue) = rgb(ground);
+            let (red, green, blue) = rgb(grounds.base);
             (f64::from(red.max(green).max(blue)) + f64::from(red.min(green).min(blue))) / 510.0
         } else {
             lightness
         };
         for _ in 0..LIGHTNESS_SEARCH_ITERATIONS {
             let middle = readable.midpoint(unreadable);
-            if contrast(at(middle), ground) >= MINIMUM_CONTRAST {
+            if coverage.contrast(grounds, at(middle)) >= MINIMUM_CONTRAST {
                 readable = middle;
             } else {
                 unreadable = middle;
@@ -361,8 +493,6 @@ impl FooterColors {
             let role = match key.trim() {
                 "role.showrunner" => FooterRole::Showrunner,
                 "role.unit-director" => FooterRole::UnitDirector,
-                "role.worker" => FooterRole::Worker,
-                "role.unassigned" => FooterRole::Unassigned,
                 key => {
                     if let Some(account) = key.strip_prefix(ACCOUNT_KEY_PREFIX) {
                         match color {
@@ -394,7 +524,28 @@ impl FooterColors {
         self.roles
             .get(&role)
             .copied()
-            .map_or(FooterTint::Plain, FooterTint::Footer)
+            .map_or(FooterTint::Plain, FooterTint::Management)
+    }
+
+    /// A specialist can name the same management responsibilities as a session.
+    pub(crate) fn named_role(&self, word: &str) -> FooterTint {
+        match word {
+            "showrunner" => self.role(FooterRole::Showrunner),
+            "unit-director" | "unit" => self.role(FooterRole::UnitDirector),
+            _ => FooterTint::Plain,
+        }
+    }
+
+    /// Management responsibilities use configured ink; worker roles remain plain.
+    pub(crate) fn hierarchy_role(&self, role: HierarchyRole) -> FooterTint {
+        match role {
+            HierarchyRole::Showrunner => self.role(FooterRole::Showrunner),
+            HierarchyRole::Unit => self.role(FooterRole::UnitDirector),
+            HierarchyRole::Impl
+            | HierarchyRole::Test
+            | HierarchyRole::Review
+            | HierarchyRole::Fix => FooterTint::Plain,
+        }
     }
 
     /// The configured foreground of an account label.
@@ -493,3 +644,9 @@ impl FooterColorFile {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod ground_tests;
+
+#[cfg(test)]
+mod account_seed_tests;

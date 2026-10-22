@@ -45,9 +45,12 @@ use super::SessionIdentity;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::codex;
 use super::codex::CodexThread;
+use super::codex::ResumeRequest;
 use super::tmux;
 use super::transcript::BashCall;
+use super::tree;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
 use crate::constants::CLAUDE_AGENT;
@@ -217,7 +220,7 @@ pub(super) fn agent_rows(
     account_labels: &AccountLabels,
 ) -> Vec<AgentRow> {
     let table = pid_table(processes);
-    let threads = codex_startup_threads(processes, codex_threads);
+    let threads = codex_startup_threads(processes, codex_threads, home);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
         .filter_map(|session| claude_row(&table, session, home, account_labels))
@@ -296,11 +299,28 @@ pub(super) fn agent_rows(
 pub(super) fn codex_startup_threads<'a>(
     processes: &[ProcessEntry],
     codex_threads: &'a [CodexThread],
+    home: Option<&Path>,
 ) -> HashMap<u32, &'a CodexThread> {
-    startup_threads(
-        &interactive_codex(&pid_table(processes), processes),
-        codex_threads,
-    )
+    let interactive = interactive_codex(&pid_table(processes), processes);
+    let mut matched = startup_threads(&interactive, codex_threads, home);
+    for process in interactive {
+        let mut candidates = codex_threads
+            .iter()
+            .filter(|thread| thread_matches_home(process, thread, home));
+        let resumed = match codex::resume_request(process) {
+            ResumeRequest::NewSession => None,
+            ResumeRequest::NamedId(id) => {
+                candidates.find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
+            },
+            ResumeRequest::LastThread => candidates
+                .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
+                .max_by_key(|thread| (thread.created_ms, &thread.rollout)),
+        };
+        if let Some(thread) = resumed {
+            matched.insert(process.pid, thread);
+        }
+    }
+    matched
 }
 
 /// The creation times, in unix milliseconds, that a thread must fall in
@@ -358,6 +378,7 @@ fn thread_window(process: &ProcessEntry) -> RangeInclusive<u64> {
 fn startup_threads<'a>(
     codex: &[&ProcessEntry],
     threads: &'a [CodexThread],
+    home: Option<&Path>,
 ) -> HashMap<u32, &'a CodexThread> {
     let mut first: HashMap<u32, &CodexThread> = HashMap::new();
     for thread in threads {
@@ -366,6 +387,7 @@ fn startup_threads<'a>(
             .filter(|process| {
                 process.directory.as_deref() == Some(thread.cwd.as_path())
                     && thread_window(process).contains(&thread.created_ms)
+                    && thread_matches_home(process, thread, home)
             })
             .max_by_key(|process| (process.started, process.pid));
         if let Some(owner) = owner {
@@ -376,6 +398,11 @@ fn startup_threads<'a>(
         }
     }
     first
+}
+
+/// Match the lexical account home; shared sessions symlinks must not merge accounts.
+fn thread_matches_home(process: &ProcessEntry, thread: &CodexThread, home: Option<&Path>) -> bool {
+    codex::session_home(process, home).is_some_and(|home| thread.rollout.starts_with(home))
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
@@ -656,6 +683,7 @@ pub(super) fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> 
 
 #[cfg(test)]
 mod tests {
+    use super::account::Program;
     use super::*;
     use crate::census::Machine;
     use crate::census::MachineState;
@@ -993,7 +1021,7 @@ mod tests {
     #[test]
     fn an_interactive_codex_is_named_for_the_thread_it_started() {
         let work = "/home/natepiano/rust/handler";
-        let processes = [
+        let mut processes = [
             process(1, 0, "systemd", 0),
             detailed(10, 1, "codex", 100, &["codex", "resume"], work),
             detailed(20, 1, "codex", 110, &["codex"], work),
@@ -1002,12 +1030,17 @@ mod tests {
             detailed(50, 1, "claude", 90, &["claude"], HOME),
             detailed(60, 50, "codex", 125, &["codex"], HOME),
         ];
+        for process in &mut processes {
+            if process.is_codex() {
+                process.config_home = ConfigHome::Default(Program::Codex);
+            }
+        }
         let thread = |cwd: &str, created_ms, name: Option<&str>, prompt: &str| CodexThread {
             cwd: PathBuf::from(cwd),
             created_ms,
             name: name.map(str::to_string),
             first_prompt: prompt.to_string(),
-            rollout: PathBuf::from(format!("/rollouts/{created_ms}.jsonl")),
+            rollout: PathBuf::from(format!("{HOME}/.codex/sessions/{created_ms}.jsonl")),
         };
         let threads = [
             thread(work, 111_800, Some("codex test"), ""),

@@ -31,7 +31,7 @@ use crate::project::RootItem;
 
 /// Build a normalized project item for a discovered root directory.
 ///
-/// Unlike `cargo_project_to_item(from_cargo_toml(...))`, this walks nested
+/// Unlike `cargo_parse_result_to_item(from_cargo_toml(...))`, this walks nested
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
@@ -53,7 +53,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             )
         {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            items.push(tree::cargo_project_to_item(parsed));
+            items.push(tree::cargo_parse_result_to_item(parsed));
         }
     }
 
@@ -88,20 +88,19 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let repo_presence = req.repo_presence;
     let client = &fetch_context.client;
-    // Local git info — includes git status but skips first_commit,
-    // which is handled separately by
-    // `schedule_git_first_commit_refreshes` (batched by repo root).
+    // `emit_git_info` sends local Git metadata, including Git status, but skips
+    // `first_commit`, which `schedule_git_first_commit_refreshes` handles separately
+    // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
     }
 
-    // Submodules are read up front (local, fast — .gitmodules + one git
-    // ls-tree) so every crates.io fetch this task will issue — the
-    // project's own and each submodule's — registers via
-    // `CratesIoFetchQueued` before the first one completes. The startup
-    // panel's crates.io row can then never read done while a fetch from
-    // this task is still pending. (`enrich` re-sends Queued for its own
-    // fetch; registration is idempotent.)
+    // `project::get_submodules` reads `submodules` up front (local, fast: .gitmodules +
+    // one git ls-tree), so the project's own fetch and each submodule's fetch register
+    // through `BackgroundMsg::CratesIoFetchQueued` before the first one completes.
+    // The startup panel's crates.io row can then never read done while a fetch from
+    // this task is pending. (`enrichment::enrich` re-sends `CratesIoFetchQueued` for
+    // its own fetch; registration is idempotent.)
     let submodules = if repo_presence.is_in_repo() {
         project::get_submodules(abs_path)
     } else {
@@ -125,10 +124,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         emit_service_signal(sender, signal);
         if let Some(info) = info {
             let _ = sender.send(BackgroundMsg::CratesIoVersion {
-                path:       abs.clone(),
-                version:    info.version,
-                prerelease: info.prerelease,
-                downloads:  info.downloads,
+                path:    abs.clone(),
+                release: info,
             });
         }
         let _ = sender.send(BackgroundMsg::CratesIoFetchComplete {
@@ -136,11 +133,10 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         });
     }
 
-    // Send the Submodules message first so `at_path_mut` can resolve each
-    // submodule before its per-entry enrichment messages arrive. Each
-    // submodule's `enrich` call emits its own disk-usage message — that
-    // path is *not* covered by the initial batch scan, so the per-submodule
-    // singular `BackgroundMsg::DiskUsage` is the only writer for it.
+    // Send `BackgroundMsg::Submodules` first so `at_path_mut` can resolve each
+    // submodule before its per-entry enrichment messages arrive. Each submodule's
+    // `enrichment::enrich` call emits its own disk-usage message: that path is not
+    // covered by the initial batch scan, so `BackgroundMsg::DiskUsage` is its only writer.
     if !submodules.is_empty() {
         let _ = sender.send(BackgroundMsg::Submodules {
             path:       abs.clone(),
@@ -153,15 +149,14 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     let _ = sender.send(BackgroundMsg::ProjectDetailsDeclared { path: abs });
 
-    // Disk usage for the top-level project itself is computed by the
-    // initial batch scan (`spawn_initial_disk_usage` →
-    // `BackgroundMsg::DiskUsageBatch`), which folds workspace members
-    // under their root and walks each tree exactly once. We deliberately
-    // don't emit a singular `BackgroundMsg::DiskUsage` here — doing so
-    // would re-walk the same tree (an expensive duplicate, especially
-    // for projects with large `target/` directories) and feed a second
-    // path into the startup-disk phase's `seen` set, where mismatched
-    // keys could silently fail to mark the toast item.
+    // Disk usage for the top-level project itself is computed by
+    // `spawn_initial_disk_usage` and sent in `BackgroundMsg::DiskUsageBatch`,
+    // which folds workspace members under their root and walks each tree once.
+    // Deliberately omit a singular `BackgroundMsg::DiskUsage` here: it would
+    // re-walk the same tree (an expensive duplicate, especially with large
+    // `target/` directories) and feed a second path into the `KeyedPhase::seen`
+    // set in `Startup::disk`, where mismatched keys could silently fail to
+    // mark the toast item.
 }
 
 #[derive(Clone)]
@@ -324,7 +319,7 @@ pub(super) fn phase1_discover(
             {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {
+                let Ok(cargo_parse_result) = project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 tracing::trace!(
@@ -334,7 +329,7 @@ pub(super) fn phase1_discover(
                     "phase1_manifest_parse"
                 );
                 stats.projects += 1;
-                let item = tree::cargo_project_to_item(cargo_project);
+                let item = tree::cargo_parse_result_to_item(cargo_parse_result);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if project::git_repo_root(&abs_path).is_some() {

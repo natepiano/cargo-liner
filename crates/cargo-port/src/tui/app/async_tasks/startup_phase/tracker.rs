@@ -298,12 +298,6 @@ impl App {
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
             return;
         };
-        // Return when `startup.is_collecting()` is false so late results cannot re-run
-        // `maybe_complete_startup_ready` or update the taken `startup.toast`; handlers may still
-        // mark phase `seen` sets idempotently.
-        if !self.startup.is_collecting() {
-            return;
-        }
         let now = Instant::now();
         self.maybe_complete_startup_disk(now, scan_complete_at);
         self.maybe_complete_startup_git(now, scan_complete_at);
@@ -317,6 +311,13 @@ impl App {
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
         self.startup.details_declared.complete_once(now);
+        // Late work above still completes timed-out phases after panel closure;
+        // `startup.is_collecting()` prevents reopening the toast through
+        // `refresh_startup_panel` or repeating the readiness handoff through
+        // `maybe_complete_startup_ready`.
+        if !self.startup.is_collecting() {
+            return;
+        }
         self.refresh_startup_panel(now);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
@@ -406,10 +407,10 @@ impl App {
             return;
         }
         let repo = &mut self.startup.repo;
-        if repo.failure.is_some() || repo.complete_at.is_some() || repo.expected.is_unknown() {
+        if repo.is_terminal() || repo.expected.is_unknown() {
             return;
         }
-        repo.failure = Some(reason);
+        repo.lifecycle.fail(reason);
         self.maybe_log_startup_phase_completions();
     }
     /// Add counted language scan work to the startup row. The final stats still
@@ -495,21 +496,19 @@ impl App {
         now: Instant,
         scan_complete_at: Instant,
     ) {
-        // Gate repo-phase completion on git being terminal (complete or
-        // failed). Without this, a scan that completes before any
-        // `RepoFetchQueued` arrives would see `repo.seen (0) >=
-        // repo.expected (0)` and mark the phase done prematurely;
-        // subsequent staggered git arrivals would then strand their repo
-        // fetches outside the startup panel. Treating a timed-out git as
-        // terminal releases repo so the panel still finishes.
+        // `startup.git.is_terminal()` gates completion of `startup.repo` on complete or failed Git.
+        // Otherwise, a scan finishing before `crate::scan::BackgroundMsg::RepoFetchQueued` could
+        // satisfy `repo.seen (0) >= repo.expected (0)` prematurely, stranding repository fetches
+        // from staggered Git arrivals outside the startup panel. Timed-out Git is terminal too,
+        // releasing the repository phase so the panel finishes.
         if !self.startup.git.is_terminal() {
             return;
         }
-        // Git is terminal, so every GitHub remote discovered by local-git has
-        // resolved (or git gave up): freeze the denominator so the row
-        // switches from `Waiting` to a determinate bar. Idempotent; a later
-        // `RepoFetchQueued` still joins the stable denominator and reopens the
-        // row while startup is open.
+        // Once `startup.git` is terminal, local Git has resolved the discovered GitHub remotes or
+        // given up. `startup.repo.expected.stabilize()` freezes the denominator so
+        // `ProgressState::Waiting` becomes a determinate bar. Stabilization is idempotent; a later
+        // `crate::scan::BackgroundMsg::RepoFetchQueued` still joins the stable denominator and
+        // reopens the row while startup is open.
         self.startup.repo.expected.stabilize();
         // `net.github.has_repo_fetch_in_flight()` holds `startup.repo` open between worker spawn
         // and `RepoFetchQueued` joining its denominator, preventing early steady-state
@@ -583,8 +582,8 @@ impl App {
             return;
         }
         let network = self.net.startup_network_readiness(
-            self.startup.repo.failure.is_some(),
-            self.startup.crates_io.failure.is_some(),
+            self.startup.repo.is_failed(),
+            self.startup.crates_io.is_failed(),
         );
         let Some(collecting) = self.startup.take_collecting() else {
             return;

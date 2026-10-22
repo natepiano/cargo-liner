@@ -228,16 +228,6 @@ pub(crate) fn fetch_older_runs(
     )
 }
 
-pub(crate) struct CratesIoInfo {
-    /// The version to show: the latest stable release, or the newest
-    /// prerelease when the crate has only ever published prereleases.
-    pub version:    String,
-    /// The newest prerelease, set only when a stable release also exists
-    /// so both can be shown side by side.
-    pub prerelease: Option<String>,
-    pub downloads:  u64,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

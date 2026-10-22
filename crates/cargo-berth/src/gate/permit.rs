@@ -374,8 +374,8 @@ pub(crate) fn pending_branch_rewrite_markers(
         if !is_pending_marker_name(&entry.file_name().to_string_lossy()) {
             continue;
         }
-        // A concurrent importer may have removed this file; other unreadable shared
-        // markers remain the bypass importer's responsibility to report.
+        // `fs::read(entry.path())` may fail because a concurrent importer removed this file;
+        // other unreadable shared markers remain the bypass importer's responsibility to report.
         let Ok(contents) = fs::read(entry.path()) else {
             continue;
         };
@@ -703,6 +703,7 @@ mod tests {
     use super::PendingEnvironmentBypassOccurrenceTime;
     use super::write_pending_marker;
     use crate::gate::install;
+    use crate::gate::install::EXECUTABLE_ENVIRONMENT;
     use crate::ledger::BypassCause;
     use crate::ledger::BypassOccurrenceTime;
     use crate::ledger::BypassedAction;
@@ -995,7 +996,7 @@ mod tests {
             .arg("prepared")
             .current_dir(policy_worktree)
             .env(BYPASS_ENVIRONMENT, BYPASS_ENVIRONMENT_ENABLED_VALUE)
-            .env(install::EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
+            .env(EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
             .env("PATH", path)
             .output()
             .expect("managed hook should run");

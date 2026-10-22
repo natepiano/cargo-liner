@@ -72,6 +72,15 @@ impl<'a> Placement<'a> {
     }
 }
 
+/// Where a root session is shown; summary membership follows the same decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RootPresentation {
+    /// A session heads a visible hierarchy and its own tile.
+    Hierarchy,
+    /// A session has no visible hierarchy and belongs only in the flat pool.
+    Unassigned,
+}
+
 /// Why a role is shown, or why the agent has no label.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RoleLabel {
@@ -569,6 +578,39 @@ impl<'a> AgentPlacement<'a> {
                 label
             }
         })
+    }
+
+    /// Decide summary membership and tile grouping from the visible hierarchy.
+    pub(crate) fn root_presentation(&self, identity: RowIdentity<'a>) -> RootPresentation {
+        let has_members = self
+            .rows
+            .iter()
+            .any(|row| row.placement.is_child_of(identity))
+            || self.threads.iter().any(|thread| thread.manager == identity);
+        let has_work = self
+            .rows
+            .iter()
+            .find(|row| row.identity == identity)
+            .is_some_and(|row| {
+                row.row.children.iter().any(|child| {
+                    matches!(
+                        child.kind,
+                        ChildKind::Shell | ChildKind::Subagent(_) | ChildKind::Thread
+                    ) && !self.hides_thread(child)
+                        && !self.folds_dispatch(child)
+                        && !self.threads.iter().any(|thread| {
+                            std::ptr::eq(
+                                &raw const thread.owner_row.children[thread.child_index],
+                                child,
+                            )
+                        })
+                })
+            });
+        if has_members || has_work {
+            RootPresentation::Hierarchy
+        } else {
+            RootPresentation::Unassigned
+        }
     }
 
     /// Whether a listed row titles a tile and belongs in the summary.

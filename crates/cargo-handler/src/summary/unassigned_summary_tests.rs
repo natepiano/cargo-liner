@@ -17,7 +17,6 @@ use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
-use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::UNASSIGNED_CELL_TITLE;
@@ -155,6 +154,7 @@ fn unassigned_sort_survives_members_joining_and_leaving_and_resets_after_disappe
     let younger = session(30, "alpha", 3600);
     apply_local(&mut app, vec![older.clone(), younger.clone()]);
     click_pool_header(&mut app, "natedev", TreeColumn::Session);
+    click_pool_header(&mut app, "natedev", TreeColumn::Session);
     let selected = TreeSort {
         column:    TreeColumn::Session,
         direction: SortDirection::Ascending,
@@ -187,10 +187,10 @@ fn unassigned_sort_survives_members_joining_and_leaving_and_resets_after_disappe
     apply_local(&mut app, vec![older, session(50, "new-alpha", 600)]);
     let buffer = app_pool_buffer(&app, "natedev");
     assert!(
-        text_row(&buffer, &format!("{TREE_AGE_HEADER} ▼"))
-            .contains(&format!("{TREE_AGE_HEADER} ▼"))
+        text_row(&buffer, &format!("{TREE_SESSION_HEADER} ▲"))
+            .contains(&format!("{TREE_SESSION_HEADER} ▲"))
     );
-    assert!(label_position(&buffer, "zeta").1 < label_position(&buffer, "new-alpha").1);
+    assert!(label_position(&buffer, "new-alpha").1 < label_position(&buffer, "zeta").1);
 }
 
 #[test]
@@ -207,16 +207,15 @@ fn unassigned_machine_sorts_are_independent_and_one_machine_disappearing_preserv
     click_pool_header(&mut app, "natedev", TreeColumn::Session);
     let local = app_pool_buffer(&app, "natedev");
     let remote = app_pool_buffer(&app, "mac");
-    assert!(label_position(&local, "alpha").1 < label_position(&local, "zeta").1);
-    assert!(label_position(&remote, "zeta").1 < label_position(&remote, "alpha").1);
-    click_pool_header(&mut app, "mac", TreeColumn::Session);
+    assert!(label_position(&local, "zeta").1 < label_position(&local, "alpha").1);
+    assert!(label_position(&remote, "alpha").1 < label_position(&remote, "zeta").1);
     click_pool_header(&mut app, "mac", TreeColumn::Session);
     let remote_sort = app.tree_sorts[&key("mac")];
     let local = app_pool_buffer(&app, "natedev");
     let remote = app_pool_buffer(&app, "mac");
     assert!(
-        text_row(&local, &format!("{TREE_SESSION_HEADER} ▲"))
-            .contains(&format!("{TREE_SESSION_HEADER} ▲"))
+        text_row(&local, &format!("{TREE_SESSION_HEADER} ▼"))
+            .contains(&format!("{TREE_SESSION_HEADER} ▼"))
     );
     assert!(
         text_row(&remote, &format!("{TREE_SESSION_HEADER} ▼"))
@@ -287,7 +286,12 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
     let y = label_position(&buffer, name).1;
     let role_x = label_position(&buffer, TREE_ROLE_HEADER).0;
-    assert_eq!(buffer[(role_x, y)].fg, Color::Indexed(141));
+    assert_eq!(buffer[(role_x, y)].symbol(), " ");
+    assert_eq!(
+        buffer[(role_x, y)].fg,
+        Color::Reset,
+        "blank role has no ink"
+    );
 }
 
 #[test]
@@ -332,41 +336,58 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
     );
     assert_eq!(
         text_row(&buffer, "natedev ·"),
-        "natedev · 3 top-level agents"
+        "natedev · 1 top-level agent"
     );
-    assert_eq!(text_row(&buffer, "mac ·"), "mac · 1 top-level agent");
-    for (name, expected, hue) in [
-        (
-            "director",
-            "10 claude director idle 4h — /fixture/director",
-            RainbowHue::Red,
-        ),
-        (
-            "ups",
-            "20 claude ups idle 2h — /fixture/ups",
-            RainbowHue::Yellow,
-        ),
-        (
-            "postmaster",
-            "30 claude postmaster idle 1h — /fixture/postmaster",
-            RainbowHue::Green,
-        ),
-        (
-            "remote-session",
-            "20 claude remote-session idle 30m — /fixture/remote-session",
-            RainbowHue::Cyan,
-        ),
+    assert_eq!(text_row(&buffer, "mac ·"), "mac · no agents");
+    assert_eq!(
+        text_row(&buffer, "director"),
+        "10 claude director idle 4h — /fixture/director"
+    );
+    assert_eq!(
+        buffer[label_position(&buffer, "director")].fg,
+        Role::Rainbow(RainbowHue::Red)
+            .style()
+            .fg
+            .expect("director hue")
+    );
+    for (name, hue) in [
+        ("ups", RainbowHue::Green),
+        ("postmaster", RainbowHue::Cyan),
+        ("remote-session", RainbowHue::Blue),
     ] {
-        assert_eq!(text_row(&buffer, name), expected);
-        let color = buffer[label_position(&buffer, name)].fg;
-        assert_eq!(color, Role::Rainbow(hue).style().fg.expect("name hue"));
-        if name != "director" {
-            assert_pool_matches_summary(&tiles, name, color);
-        }
+        assert!(
+            (0..AREA.height).all(|y| {
+                let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();
+                !row.contains(name)
+            }),
+            "{name} belongs only to its machine pool"
+        );
+        assert_pool_matches_summary(
+            &tiles,
+            name,
+            Role::Rainbow(hue).style().fg.expect("name hue"),
+        );
     }
-    let mut order = ["director", "ups", "postmaster", "remote-session"];
-    order.sort_by_key(|name| label_position(&buffer, name).1);
-    assert_eq!(order, ["director", "ups", "postmaster", "remote-session"]);
+    let pool = tiles
+        .iter()
+        .find_map(|tile| match tile {
+            AgentTile::Unassigned(entry) if entry.machine == "natedev" => Some(entry),
+            _ => None,
+        })
+        .expect("local pool");
+    let mut pool_buffer = Buffer::empty(AREA);
+    agent_cell::draw_unassigned(
+        &mut pool_buffer,
+        AREA,
+        pool,
+        NOW,
+        AccountColumn::Hidden,
+        &FooterColors::default(),
+    );
+    assert!(
+        label_position(&pool_buffer, "postmaster").1 < label_position(&pool_buffer, "ups").1,
+        "the pool keeps its selected session sort"
+    );
     assert!((0..AREA.height).all(|y| {
         let row: String = (0..AREA.width).map(|x| buffer[(x, y)].symbol()).collect();
         !row.contains("assigned-worker") && !row.contains(UNASSIGNED_CELL_TITLE)

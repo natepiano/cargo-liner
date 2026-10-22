@@ -75,7 +75,7 @@ fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_ord
         .map(|(pid, name, started)| {
             serde_json::from_value(serde_json::json!({
                 "agent":"claude","name":name,"pid":pid,"started":started,"directory":"/fixture",
-                "desktop":null,"branch":null,"launched_by":null,"children":[]
+                "desktop":null,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
             }))
             .expect("agent fixture")
         })
@@ -143,7 +143,7 @@ fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_ord
     assert!(locate(&reversed, "zeta-session").row < locate(&reversed, "alpha-session").row);
     assert_eq!(app.summary_sort, original_sort);
     // An actual agents header still changes ordering through the same handler.
-    let header = locate(&reversed, "name ▼");
+    let header = locate(&reversed, "session ▼");
     cell_clicked(
         &mut app,
         CellClick {

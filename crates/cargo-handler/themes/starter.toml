@@ -22,7 +22,7 @@ appearance = "dark"
 name       = "Cargo Handler Dark"
 
 [variants.pane_chrome]
-active_title    = { color = "Yellow", bold = true }
+active_title    = { color = { r = 255, g = 210, b = 160 }, bold = true }
 inactive_border = "DarkGray"
 inactive_title  = "White"
 
@@ -57,13 +57,11 @@ rainbow_cyan   = { r = 80, g = 210, b = 230 }
 rainbow_green  = { r = 110, g = 220, b = 110 }
 rainbow_orange = { r = 255, g = 165, b = 70 }
 rainbow_red    = { r = 255, g = 95, b = 95 }
-rainbow_violet = { r = 190, g = 130, b = 255 }
-rainbow_yellow = { r = 240, g = 220, b = 80 }
-shell          = { r = 90, g = 200, b = 220 }
+shell          = { r = 140, g = 230, b = 240 }
 unreachable    = { r = 255, g = 100, b = 100 }
 
 [variants.status]
-bar = "DarkGray"
+bar = { r = 60, g = 60, b = 60 }
 
 [variants.finder]
 match_bg = { r = 0, g = 90, b = 100 }

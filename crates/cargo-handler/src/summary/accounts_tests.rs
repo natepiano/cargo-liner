@@ -20,6 +20,7 @@ use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::footer_colors::FooterTint;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
 use crate::sort::AccountsSort;
@@ -66,7 +67,7 @@ fn agents() -> Vec<AgentRow> {
         .map(|(pid, name, started)| {
             serde_json::from_value(serde_json::json!({
                 "agent":"claude","name":name,"started":started,"pid":pid,
-                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[]
+                "directory":"/fixture","desktop":null,"branch":null,"launched_by":null,"children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
             }))
             .expect("agent fixture")
         })
@@ -230,7 +231,7 @@ fn accounts_table_reset_minutes_round_hour_jitter_and_half_minute_up() {
         .expect("reset fixtures parse"),
     );
     let buffer = drawn(&table);
-    let column = at(&buffer, "resets").0;
+    let column = at(&buffer, "resets").0 + 6 - 9;
     for (label, _, rounded) in cases {
         let row = at(&buffer, label).1;
         let actual: String = (column..column + 9)
@@ -265,7 +266,7 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
             .contains(Modifier::DIM),
         "exactly one hour is fresh"
     );
-    let credits_x = at(&buffer, "credits").0;
+    let credits_x = at(&buffer, "credits").0 + 6;
     let claude_y = at(&buffer, "claude1").1;
     assert_eq!(buffer[(credits_x, claude_y)].symbol(), "—");
     assert!(
@@ -276,8 +277,20 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
     let stale_y = at(&buffer, "codex1").1;
     let stale_line = &text(&buffer)[usize::from(stale_y - buffer.area.y)];
     assert!(stale_line.contains("2h"), "{stale_line}");
+    let spare_x = at(&buffer, "spare").0;
+    let spare_end = spare_x + cell_width("spare");
+    let subdued = FooterTint::Plain.subdued_style(Style::default().fg(text_default()));
     for x in buffer.area.x..buffer.area.right() {
         if x >= at(&buffer, "role").0 && !buffer[(x, stale_y)].symbol().trim().is_empty() {
+            if (spare_x..spare_end).contains(&x) {
+                assert_eq!(
+                    Some(buffer[(x, stale_y)].fg),
+                    subdued.fg,
+                    "stale plain role at {x}"
+                );
+                assert_eq!(buffer[(x, stale_y)].modifier, subdued.add_modifier);
+                continue;
+            }
             assert!(
                 buffer[(x, stale_y)].modifier.contains(Modifier::DIM),
                 "stale cell at {x}"
@@ -436,7 +449,7 @@ fn account_credit_policy_from_wire_controls_balance_emphasis() {
         ],"problems":[]
     }"#).expect("wire credit policy"));
     let buffer = drawn(&table);
-    let column = at(&buffer, "credits").0;
+    let column = at(&buffer, "credits").0 + 7 - 4;
     let held = buffer[(column, at(&buffer, "held").1)].clone();
     let spending = buffer[(column, at(&buffer, "spending").1)].clone();
     assert_eq!(held.symbol(), "1");

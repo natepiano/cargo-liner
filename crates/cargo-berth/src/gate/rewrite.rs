@@ -150,9 +150,10 @@ fn stopped_apply_rebase_previous_tip(
     reference: &FullRefName,
 ) -> io::Result<ApplyRebasePreviousTip> {
     let head_name = fs::read_to_string(directory.join("head-name"))?;
-    // Git strips only the line ending; a valid ref name may end in Unicode whitespace.
+    // `head_name.trim_end_matches` strips only the line ending, as Git does; a valid ref name may
+    // end in Unicode whitespace.
     let head_name = head_name.trim_end_matches(['\n', '\r']);
-    // A detached rebase records this literal name and never updates a branch.
+    // `head_name == "detached HEAD"` identifies a detached rebase, which never updates a branch.
     if head_name == "detached HEAD" {
         return Ok(ApplyRebasePreviousTip::NotApplyBranch);
     }
@@ -331,8 +332,9 @@ pub(crate) fn capture_rewrite_created_commits(
     pairs: &[RewriteMapPair],
     base: &RewriteBase,
 ) -> Result<Vec<GitObjectId>, GitError> {
-    // An explicit absolute git directory makes Git recognize the issuing worktree;
-    // discovering Git from inside its administrative directory can count its HEAD twice.
+    // `directory` supplies an explicit absolute Git directory so Git recognizes the issuing
+    // worktree; discovering Git from inside its administrative directory can count its HEAD
+    // twice.
     let directory = fs::canonicalize(worktree_administrative_directory).map_err(GitError::Io)?;
     let directory = directory.to_str().ok_or_else(|| {
         GitError::Io(io::Error::new(
@@ -811,8 +813,8 @@ mod tests {
         ] {
             git_output(root, &["update-ref", &upper.reference.to_string(), &tip])?;
         }
-        // Drop the reset entry without rewriting adjacent records: @{1} now names M,
-        // while the newest record still says the branch moved from orig-head to V.
+        // `git_output` deletes the reset reflog entry without rewriting adjacent records: @{1} now
+        // names M, while the newest record still says the branch moved from orig-head to V.
         git_output(
             root,
             &["reflog", "delete", &format!("{}@{{1}}", upper.reference)],
@@ -912,7 +914,8 @@ mod tests {
         fixture.write_stopped_apply_rebase(1)?;
         let directory = root.join(".git/rebase-apply");
         fs::write(directory.join("head-name"), "detached HEAD\n")?;
-        // Branch creation must skip before trying to read the rebase's original tip.
+        // `super::branch_rewrites` must skip detached branch creation before reading the rebase's
+        // original tip.
         fs::remove_file(directory.join("orig-head"))?;
         git_output(root, &["branch", "side"])?;
         let update = ReferenceUpdate {
@@ -1029,7 +1032,8 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let fixture = StackedRewriteFixture::new()?;
         fixture.write_rebase_map("rebase-apply", "rewritten")?;
-        // The branch still names its old tip, so its newest entry cannot prove the update.
+        // `fixture.branches[1]` still names its old tip, so its newest reflog entry cannot prove
+        // the update.
         assert_zero_previous_capture_failure(&fixture, 1, "does not end at the proposed tip")
     }
 

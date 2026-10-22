@@ -53,9 +53,9 @@ use crate::tui::messages::OwnedRunEvent;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OwnedProcessGroupSignalOutcome {
     Sent,
-    ProcessAlreadyReaped,
+    AlreadyReaped,
     IdentityNoLongerCurrent,
-    SignalFailed,
+    Failed,
 }
 
 /// A run-bound claim on termination authority.
@@ -159,7 +159,7 @@ impl OwnedProcessGroupTerminationCapability {
     fn signal(&self) -> OwnedProcessGroupSignalOutcome {
         self.test_signal_count.fetch_add(1, Ordering::SeqCst);
         if self.authorized_process_identity.pid() == 0 {
-            OwnedProcessGroupSignalOutcome::SignalFailed
+            OwnedProcessGroupSignalOutcome::Failed
         } else {
             self.test_signal_outcome
         }
@@ -221,7 +221,7 @@ fn signal_owned_process_group(
     if root_signal_sent {
         OwnedProcessGroupSignalOutcome::Sent
     } else {
-        OwnedProcessGroupSignalOutcome::SignalFailed
+        OwnedProcessGroupSignalOutcome::Failed
     }
 }
 
@@ -249,7 +249,7 @@ fn signal_owned_process_group(
     {
         OwnedProcessGroupSignalOutcome::Sent
     } else {
-        OwnedProcessGroupSignalOutcome::SignalFailed
+        OwnedProcessGroupSignalOutcome::Failed
     }
 }
 
@@ -636,7 +636,7 @@ fn close_command_admission_after_reap(
         let owned_run_termination_outcome = if owned_run_termination_token.0 == owned_run_id {
             OwnedRunTerminationOutcome::Honored {
                 owned_run_id,
-                signal: OwnedProcessGroupSignalOutcome::ProcessAlreadyReaped,
+                signal: OwnedProcessGroupSignalOutcome::AlreadyReaped,
             }
         } else {
             OwnedRunTerminationOutcome::Refused {
@@ -769,7 +769,9 @@ mod tests {
                 CurrentProcessIdentityObservation::Verified(verified_process_identity) => {
                     verified_process_identity
                 },
-                observation => {
+                observation @ (CurrentProcessIdentityObservation::InitialUnavailable(_)
+                | CurrentProcessIdentityObservation::ReplacedDuringRevalidation(_)
+                | CurrentProcessIdentityObservation::RevalidationUnavailable(_)) => {
                     panic!(
                         "the actor child fixture should have a verified identity: {observation:?}"
                     )
@@ -846,7 +848,7 @@ mod tests {
     fn the_actor_keeps_host_signal_outcomes_distinct() {
         for signal in [
             OwnedProcessGroupSignalOutcome::IdentityNoLongerCurrent,
-            OwnedProcessGroupSignalOutcome::SignalFailed,
+            OwnedProcessGroupSignalOutcome::Failed,
         ] {
             let owned_run_id = owned_run_id(3);
             let StartedActorFixture {

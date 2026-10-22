@@ -30,11 +30,14 @@ use std::time::UNIX_EPOCH;
 
 use chrono::DateTime;
 use serde::Deserialize;
+use serde::Serialize;
 
+use super::AgentActivity;
 use crate::constants::ASSISTANT_LINE;
 use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
 use crate::constants::END_TURN;
+use crate::constants::GENERAL_SUBAGENT_TYPE;
 use crate::constants::SUBAGENT_META_SUFFIX;
 use crate::constants::SUBAGENT_PREFIX;
 use crate::constants::SUBAGENT_QUIET_LIMIT;
@@ -492,6 +495,78 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+/// The responsibility read once from a subagent's metadata and description.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum SubagentRole {
+    Capture,
+    Review,
+    Lint,
+    Test,
+    Survey,
+    Specialist(SpecialistRole),
+    #[default]
+    Unrecorded,
+}
+
+/// A nonempty specialist type recorded by Claude.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct SpecialistRole(String);
+
+impl TryFrom<String> for SpecialistRole {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.trim();
+        if value.is_empty() {
+            Err("empty subagent type")
+        } else {
+            Ok(Self(value.to_owned()))
+        }
+    }
+}
+
+impl From<SpecialistRole> for String {
+    fn from(role: SpecialistRole) -> Self { role.0 }
+}
+
+impl SubagentRole {
+    /// An explicit specialist type wins over the description's role words.
+    pub(crate) fn from_record(agent_type: &str, description: &str) -> Self {
+        let kind = agent_type.trim();
+        if !kind.is_empty() && kind != GENERAL_SUBAGENT_TYPE {
+            return Self::word(kind)
+                .unwrap_or_else(|| Self::Specialist(SpecialistRole(kind.to_owned())));
+        }
+        description
+            .split(|character: char| !character.is_alphanumeric())
+            .find_map(Self::word)
+            .unwrap_or_default()
+    }
+
+    fn word(word: &str) -> Option<Self> {
+        match word.to_ascii_lowercase().as_str() {
+            "capture" | "capturing" => Some(Self::Capture),
+            "review" | "reviewing" | "reviewer" => Some(Self::Review),
+            "lint" | "linting" => Some(Self::Lint),
+            "test" | "testing" | "tester" => Some(Self::Test),
+            "survey" | "surveying" => Some(Self::Survey),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Capture => "capture",
+            Self::Review => "review",
+            Self::Lint => "lint",
+            Self::Test => "test",
+            Self::Survey => "survey",
+            Self::Specialist(role) => &role.0,
+            Self::Unrecorded => "",
+        }
+    }
+}
+
 /// A subagent running inside a session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Subagent {
@@ -502,10 +577,14 @@ pub(super) struct Subagent {
     pub(super) parent:      Option<String>,
     /// What the subagent was asked to do, else its kind.
     pub(super) description: String,
+    pub(super) agent_type:  String,
+    pub(super) role:        SubagentRole,
     /// When it started, in unix seconds.
     pub(super) started:     u64,
     /// Its own transcript, where the shell commands it runs are written.
     pub(super) transcript:  PathBuf,
+    /// The current tool activity from this subagent's own transcript.
+    pub(super) activity:    super::AgentActivity,
 }
 
 /// What a subagent's `.meta.json` says.
@@ -567,17 +646,21 @@ pub(super) fn running_subagents(
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |since| since.as_secs());
+            let agent_type = meta.agent_type.unwrap_or_default();
             let description = meta
                 .description
                 .filter(|description| !description.is_empty())
-                .or(meta.agent_type)
                 .unwrap_or_else(|| id.clone());
+            let role = SubagentRole::from_record(&agent_type, &description);
             Some(Subagent {
                 id,
                 parent: meta.parent_agent_id,
                 description,
+                agent_type,
+                role,
                 started,
                 transcript,
+                activity: AgentActivity::Idle,
             })
         })
         .collect();
@@ -892,7 +975,15 @@ mod tests {
             "the finished subagent is left out: {described:?}"
         );
         assert!(described.contains(&("a1", "Review phase 1", None)));
-        assert!(described.contains(&("a2", "Explore", Some("a1"))));
+        assert!(described.contains(&("a2", "a2", Some("a1"))));
+        assert_eq!(
+            running
+                .iter()
+                .find(|agent| agent.id == "a2")
+                .expect("nested subagent")
+                .agent_type,
+            "Explore"
+        );
 
         let later = SystemTime::now() + SUBAGENT_QUIET_LIMIT + Duration::from_secs(60);
         assert_eq!(

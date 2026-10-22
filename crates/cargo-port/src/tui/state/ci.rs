@@ -86,11 +86,11 @@ impl CiApplicability {
                     RepoBranchProbe::Awaiting | RepoBranchProbe::Probed(_),
                 )
                 | (
-                    TrackedRef::Ref(_) | TrackedRef::Untracked,
+                    TrackedRef::Named(_) | TrackedRef::Untracked,
                     RepoBranchProbe::Probed(ResolvedBranch::Unreadable),
                 ) => Self::UnreadableEvidence,
                 (
-                    TrackedRef::Ref(_),
+                    TrackedRef::Named(_),
                     RepoBranchProbe::Awaiting
                     | RepoBranchProbe::Probed(ResolvedBranch::Named(_) | ResolvedBranch::NotFound),
                 ) => Self::Applies,

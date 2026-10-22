@@ -47,7 +47,12 @@ fn activity_forest() -> MachineState {
 }
 
 fn activity_pool(sort: TreeSort) -> Buffer {
-    let state = activity_forest();
+    let mut state = activity_forest();
+    if let MachineState::Answered(rows, _) = &mut state {
+        for row in rows {
+            row.children.clear();
+        }
+    }
     let machines = [Machine {
         name:  "fixture",
         state: &state,
@@ -91,7 +96,6 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         ("reader-root", "reading"),
         ("gate-root", "clippy"),
         ("waiting-root", "waiting"),
-        ("nested-20", "nextest (mac)"),
     ] {
         let y = find(&buffer, name).expect("row").1;
         let text: String = (status_x..status_x + u16::try_from(word.len()).expect("short word"))
@@ -111,9 +115,26 @@ fn activity_unassigned_root_and_nested_worker_draw_words_and_status_colors() {
         status_at(&buffer, "waiting-root").fg,
         Role::Idle.style().fg.expect("idle color")
     );
+    let state = activity_forest();
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = cell_order_placed(&placement);
+    let owner = cells
+        .iter()
+        .find(|entry| entry.row.pid == 20)
+        .expect("writer owns work");
+    let nested = drawn_into(owner, &cells, 240, 12);
+    assert!(
+        lines(&nested)
+            .iter()
+            .any(|line| line.contains("nextest (mac)"))
+    );
     assert_eq!(
         status_at(&buffer, "gate-root").fg,
-        status_at(&buffer, "nested-20").fg,
+        status_at(&nested, "nested-20").fg,
         "verify steps share an accent"
     );
     assert_ne!(
@@ -147,9 +168,22 @@ fn activity_pool_status_sort_uses_drawn_words_and_keeps_workers_under_their_root
             (40, "gate-root"),
             (50, "waiting-root"),
         ] {
+            let state = activity_forest();
+            let machines = [Machine {
+                name:  "fixture",
+                state: &state,
+            }];
+            let placement = AgentPlacement::from_machines(&machines);
+            let cells = cell_order_placed(&placement);
+            let owner = cells
+                .iter()
+                .find(|entry| entry.row.name == root)
+                .expect("worker owner");
+            let nested = drawn_into(owner, &cells, 240, 12);
+            assert!(lines(&nested)[0].contains(&format!("pid {pid}")));
             assert_eq!(
-                find(&buffer, &format!("nested-{pid}")).expect("worker").1,
-                find(&buffer, root).expect("root").1 + 1
+                find(&nested, &format!("nested-{pid}")).expect("worker").1,
+                find(&nested, TREE_STATUS_HEADER).expect("tree header").1 + 1
             );
         }
     }
@@ -341,4 +375,103 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         .expect("task worker")
         .1;
     assert_eq!(buffer[(role_x, y)].symbol(), "f");
+}
+
+/// Shell activity is independent of the Idle compatibility value on child rows.
+fn shell_state_buffer(width: u16) -> Buffer {
+    let root = AgentRow {
+        children: vec![
+            child(0, ChildKind::Shell, Some(21), "compile-project", MINUTE),
+            ChildRow {
+                timer: Some(Timer {
+                    started:  NOW - 92,
+                    deadline: NOW + 228,
+                }),
+                ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+            },
+        ],
+        ..agent(10, "shell-owner", HOUR, None)
+    };
+    drawn(&root, None, width)
+}
+
+#[test]
+fn shell_rows_draw_running_in_status_and_shell_only_in_type() {
+    for width in [180, 65] {
+        let buffer = shell_state_buffer(width);
+        let status_x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+        let type_x = find(&buffer, "type").expect("type header").0;
+        let y = find(&buffer, "compile-project").expect("shell row").1;
+        let status: String = (status_x..status_x + 7)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        let kind: String = (type_x..type_x + 5)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(status, "running", "width={width}");
+        assert_eq!(kind, "shell", "width={width}");
+        assert!(!lines(&buffer)[usize::from(y)].contains("command"));
+    }
+}
+
+#[test]
+fn shell_timer_status_keeps_its_pie_and_remaining_time_in_both_layouts() {
+    for width in [180, 65] {
+        let buffer = shell_state_buffer(width);
+        let status_x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+        let y = find(&buffer, "progress-clock").expect("timer row").1;
+        let status: String = (status_x..status_x + 6)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(status, "◔ 3:48", "width={width}");
+        let type_x = find(&buffer, "type").expect("type header").0;
+        let kind: String = (type_x..type_x + 5)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(kind, "shell");
+    }
+}
+
+#[test]
+fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
+    let running = AgentRow {
+        activity: AgentActivity::Active(Activity::Running),
+        ..agent(20, "running-agent", MINUTE, None)
+    };
+    let owner = AgentRow {
+        children: vec![
+            child(0, ChildKind::Shell, Some(21), "compile-project", MINUTE),
+            ChildRow {
+                timer: Some(Timer {
+                    started:  NOW - 92,
+                    deadline: NOW + 228,
+                }),
+                ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+            },
+        ],
+        ..agent(10, "shell-owner", HOUR, None)
+    };
+    let mut cell = entry(&owner, None);
+    cell.lines.push(TreeLine {
+        dispatch_label: DispatchLabel::Original,
+        machine:        "natedev",
+        location:       SessionLocation::SameMachine,
+        row:            &running,
+        hue:            RainbowHue::Red,
+        rails:          Vec::new(),
+        branch:         Branch::Last,
+        subject:        LineSubject::Agent(RoleLabel::Unlabeled),
+    });
+    for width in [180, 65] {
+        let buffer = drawn_among(&cell, &[], width);
+        let agent_status = status_at(&buffer, "running-agent");
+        let shell_status = status_at(&buffer, "compile-project");
+        assert_eq!(agent_status.symbol(), "r");
+        assert_eq!(shell_status.symbol(), "r");
+        assert_eq!(shell_status.fg, agent_status.fg, "width={width}");
+        let timer_status = status_at(&buffer, "progress-clock");
+        assert_eq!(timer_status.symbol(), "◔");
+        assert_eq!(Some(timer_status.fg), Role::Shell.style().fg);
+        assert_ne!(timer_status.fg, shell_status.fg);
+    }
 }

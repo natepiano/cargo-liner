@@ -32,9 +32,9 @@
   - `crates/cargo-handler/src/constants.rs` — `HEADING_SEPARATOR` = `" · "` ≈182.
   - `crates/cargo-tile/src/render.rs` — `draw_tile_grid` call ≈302, `impl TileCells<InvocationId> for Cells` ≈384; read only, it never calls the flow entry point.
 - **Test lanes:** `tui_pane` has `crates/tui_pane/tests/`, but the flow code is crate-private, so its tests are unit-test files under `src/` declared with `#[cfg(test)] mod …;` (a file under a self-named module such as `draw.rs` or `render.rs` takes an explicit `#[path = "…"]`); `cargo-handler`: none (unit-test files under `src/`, the crate's pattern in `terminal.rs` ≈30 and `census/scan.rs` ≈22). A test file declared inside an existing `mod tests` block is a child of it and reads that block's private fixtures through `super::`.
-- **Build:** `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`; `bash ~/.claude/scripts/delegate/verify.sh check cargo-handler`
-- **Test:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`; `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler`; regression for the unchanged consumer: `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`
-- **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane`; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler`
+- **Build:** `bash ~/.claude/scripts/direct/verify.sh check tui_pane`; `bash ~/.claude/scripts/direct/verify.sh check cargo-handler`
+- **Test:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`; `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`; regression for the unchanged consumer: `bash ~/.claude/scripts/direct/verify.sh test cargo-tile`
+- **Lint:** `bash ~/.claude/scripts/direct/verify.sh lint tui_pane`; `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`
 - **Invariants:**
   - Nothing on the UI thread runs a command or reads a file.
   - Tests run with nextest; format only with `cargo +nightly fmt`; no test takes a second.
@@ -177,7 +177,7 @@
 - Pack units: framed rows on shared borders; a band is a column's rows below the summary; a piece at `top` ends at `top + framed` and the next starts at `top + framed - 1`; each column's last piece reaches the band foot (`fill_column_foot` grows its `framed`, never its `content_rows`); a tile continues across as many columns as it needs.
 - Last column (`final_framed`): each piece takes `min(demand, rows left - reserve)` with the reserve keeping every later tile at `MIN_TILE_HEIGHT`, so several pieces can clip and every clipped piece shows its own red readout. A clipped final continuation owns every remaining content row (`SplitBuilder::complete`), so its readout reports that full remaining demand against the rows shown. Tiles that do not fit even at the floor are `Trailing(n)`; a layout whose bands all sit under `MIN_TILE_HEIGHT` has zero pieces.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green with every Spec item 10 case, the admission and shrinkage cases included, and the existing `draw.rs` tests green unedited (`draw_tile_grid` output byte-identical); `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green with no snapshot edited; `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green (it still calls `draw_tile_grid`); `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean (no `self_named_module_files` finding); the CHANGELOG entry is present.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane` green with every Spec item 10 case, the admission and shrinkage cases included, and the existing `draw.rs` tests green unedited (`draw_tile_grid` output byte-identical); `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` green with no snapshot edited; `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` green (it still calls `draw_tile_grid`); `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean (no `self_named_module_files` finding); the CHANGELOG entry is present.
 
 ### Phase 3 — tui_pane flow motion  · status: todo
 
@@ -219,7 +219,7 @@
 - Phase 1's packer (`flow_layout/`): `FlowLayout::pack(bands, tiles) -> FlowLayout<Id> { pieces, unseen }` with `FlowPiece::{Whole { tile, at }, Split(SplitTile)}`, `SplitTile` a head plus a non-empty run of contiguous continuations (`SplitPiece { at, window, content_rows }`); pure and stateless per call.
 - Phase 2's entry: public `FlowTileCells<Id>: TileCells<Id>` with `continued_title(&self, head: Line<'static>) -> Line<'static>` and `draw_tile_flow(buffer, grid, area, growth, contents, cells)` in `draw.rs`; flow geometry on `TileGrid` in `grid.rs`; `DrawnLayout::{Divided, Flowed(..)}` drives `cell_at`, `display()` and `Admission` (flow admits every group; unseen groups are `Trailing(n)`, never a summary-only fallback); demand comes from the `demands` pass, no extra pass per continuation; flow keeps `measure_row_steps`' lifecycle work through a shared method. Split pieces draw from one scratch per tile at its full demand height, pre-styled by a shared `pane/frame.rs` helper, each copying only its owned window. Readouts: each piece its own; every clipped piece red; `+n unseen` on the last piece's readout row, or on its bottom border when it has none. The per-piece drawing helper is shared with `draw_tile_grid`, whose output is unchanged. Phase 2 drew the settled flow layout each frame, with no motion.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green with every Spec item 7 case, the retarget and `tick()` cases included; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green with no snapshot edited; `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane` green with every Spec item 7 case, the retarget and `tick()` cases included; `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` green with no snapshot edited; `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean.
 
 ### Phase 4 — cargo-handler on flow  · status: todo
 
@@ -256,7 +256,7 @@
 - Phase 3: flow pieces slide, and continuations open and close like tiles, on the grid's clock; `TileGrid::tick()` keeps returning `true` through flow motion, so the existing `terminal.rs` ≈154 poll drives it and nothing in cargo-handler drives that motion.
 - `cell_at` answers against flowed pieces once `draw_tile_flow` has drawn, so clicks keep working unchanged in `app.rs`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green with every Spec item 7 case; `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding); `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` green with every Spec item 7 case; `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean (no `self_named_module_files` finding); `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` green.
 
 ### Phase 5 — Live check  · status: todo
 

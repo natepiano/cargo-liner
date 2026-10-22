@@ -31,7 +31,7 @@ use crate::project::paths::RootDirectoryName;
 pub(crate) enum PinnedCommit {
     Sha(String),
     #[default]
-    NotPinned,
+    Absent,
     Unreadable,
 }
 
@@ -45,10 +45,10 @@ enum SubmodulePins {
 impl SubmodulePins {
     fn for_path(&self, path: &str) -> PinnedCommit {
         match self {
-            Self::Listed(pins) => pins.get(path).map_or(PinnedCommit::NotPinned, |sha| {
-                PinnedCommit::Sha(sha.clone())
-            }),
-            Self::NoCommits => PinnedCommit::NotPinned,
+            Self::Listed(pins) => pins
+                .get(path)
+                .map_or(PinnedCommit::Absent, |sha| PinnedCommit::Sha(sha.clone())),
+            Self::NoCommits => PinnedCommit::Absent,
             Self::Unreadable => PinnedCommit::Unreadable,
         }
     }
@@ -149,7 +149,7 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
                 relative_path: String::new(),
                 url:           None,
                 branch:        None,
-                commit:        PinnedCommit::NotPinned,
+                commit:        PinnedCommit::Absent,
                 project_info:  ProjectInfo::default(),
                 git_repo:      None,
             });
@@ -288,7 +288,7 @@ mod tests {
         );
         assert_eq!(
             ls_tree_submodule_commits(repo.path()).for_path("vendor/lib"),
-            PinnedCommit::NotPinned
+            PinnedCommit::Absent
         );
         std::fs::write(repo.path().join(".git/HEAD"), "garbage\n").expect("corrupt HEAD");
         assert_eq!(

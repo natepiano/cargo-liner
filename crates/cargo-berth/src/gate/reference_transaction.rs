@@ -130,7 +130,8 @@ impl<'transaction> ReferenceMovement<'transaction> {
         if update.previous == update.proposed {
             return Self::NoMove;
         }
-        // Packing can report a new storage entry for a ref that already names this tip.
+        // `ReferenceMovement::classify` ignores packing's new storage entry when the ref already
+        // names this tip.
         if let (ReferenceObject::Absent, ReferenceObject::Object(proposed)) =
             (&update.previous, &update.proposed)
             && objects
@@ -300,9 +301,9 @@ pub(crate) fn evaluate_reference_transaction(
     transaction: &ReferenceTransaction,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<GateResult>, GateError> {
-    // Stand aside before reading any configuration or ledger. Git 2.55 opens every
-    // transaction with `preparing`, so the gate would otherwise pay for the whole
-    // evaluation twice per ref update to reach a no-op both times.
+    // `evaluate_reference_transaction` stands aside before reading any configuration or ledger.
+    // Git 2.55 opens every transaction with `preparing`, so the gate would otherwise pay for
+    // the whole evaluation twice per ref update to reach a no-op both times.
     if matches!(
         transaction.phase,
         ReferenceTransactionPhase::Preparing
@@ -311,9 +312,9 @@ pub(crate) fn evaluate_reference_transaction(
     ) {
         return Ok(Vec::new());
     }
-    // The managed hook exports the checkout that issued the transaction before it changes
-    // directory. A hook that did not is not one this binary installed, and there is no
-    // fallback to the process's own working directory.
+    // `REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT` carries the issuing checkout
+    // exported by the managed hook before it changes directory. A hook that did not is not
+    // one this binary installed, and there is no fallback to the process's working directory.
     let issuing_directory = match issuing_checkout {
         IssuingCheckout::Reported(directory) => directory,
         IssuingCheckout::Unreported => return Err(GateError::HookReportedNoIssuingDirectory),
@@ -326,9 +327,9 @@ pub(crate) fn evaluate_reference_transaction(
     {
         return Ok(Vec::new());
     }
-    // Ask the cheap ancestry question before discovering the worktree or reading any
-    // configuration. An ordinary fast-forward then needs only the target filter before
-    // it can stop without opening the ledger.
+    // `rewrite::branch_rewrites` asks the cheap ancestry question before discovering the
+    // worktree or reading any configuration. An ordinary fast-forward then needs only the
+    // target filter before it can stop without opening the ledger.
     let rewrites = if transaction.phase == ReferenceTransactionPhase::Committed {
         rewrite::branch_rewrites(issuing_directory, &local_branch_updates)?
     } else {

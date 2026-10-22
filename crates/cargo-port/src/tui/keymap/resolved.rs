@@ -29,67 +29,55 @@ pub(crate) struct ResolvedKeymap {
 impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
     pub(crate) fn defaults() -> Self {
-        let mut km = Self::default();
-
-        // Project list
-        km.project_list.insert(
-            KeyBind::from(KeyCode::Char('=')),
-            ProjectListAction::ExpandAll,
-        );
-        km.project_list.insert(
-            KeyBind::from(KeyCode::Char('-')),
-            ProjectListAction::CollapseAll,
-        );
-        // ExpandRow / CollapseRow are pane-scope actions routed through
-        // the pane-scope match in `handle_normal_key`. Bare Right / Left
-        // are already mapped to NavAction::Right / ::Left in the
-        // framework keymap, so the pane-scope defaults bind ExpandRow /
-        // CollapseRow to Shift+Right / Shift+Left to avoid colliding
-        // with the navigation defaults.
-        km.project_list.insert(
-            KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT),
-            ProjectListAction::ExpandRow,
-        );
-        km.project_list.insert(
-            KeyBind::from_parts(KeyCode::Left, KeyModifiers::SHIFT),
-            ProjectListAction::CollapseRow,
-        );
-
-        // Package
-        km.package
-            .insert(KeyBind::from(KeyCode::Enter), PackageAction::Activate);
-
-        // Git
-        km.git
-            .insert(KeyBind::from(KeyCode::Enter), GitAction::Activate);
-
-        // Targets
-        km.targets
-            .insert(KeyBind::from(KeyCode::Enter), TargetsAction::Activate);
-        km.targets.insert(
-            KeyBind::from(KeyCode::Char('r')),
-            TargetsAction::ReleaseBuild,
-        );
-
-        // CI runs
-        km.ci_runs
-            .insert(KeyBind::from(KeyCode::Enter), CiRunsAction::Activate);
-        km.ci_runs
-            .insert(KeyBind::from(KeyCode::Char('f')), CiRunsAction::FetchMore);
-        km.ci_runs
-            .insert(KeyBind::from(KeyCode::Char('b')), CiRunsAction::ShowBranch);
-        km.ci_runs
-            .insert(KeyBind::from(KeyCode::Char('a')), CiRunsAction::ShowAll);
-        km.ci_runs
-            .insert(KeyBind::from(KeyCode::Char('d')), CiRunsAction::ClearCache);
-
-        // Lints
-        km.lints
-            .insert(KeyBind::from(KeyCode::Enter), LintsAction::Activate);
-        km.lints
-            .insert(KeyBind::from(KeyCode::Char('d')), LintsAction::ClearHistory);
-
-        km
+        Self {
+            project_list: ScopeMap::from([
+                (
+                    KeyBind::from(KeyCode::Char('=')),
+                    ProjectListAction::ExpandAll,
+                ),
+                (
+                    KeyBind::from(KeyCode::Char('-')),
+                    ProjectListAction::CollapseAll,
+                ),
+                // ExpandRow / CollapseRow are pane-scope actions routed through
+                // the pane-scope match in `handle_normal_key`. Bare Right / Left
+                // are already mapped to NavAction::Right / ::Left in the
+                // framework keymap, so the pane-scope defaults bind ExpandRow /
+                // CollapseRow to Shift+Right / Shift+Left to avoid colliding
+                // with the navigation defaults.
+                (
+                    KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT),
+                    ProjectListAction::ExpandRow,
+                ),
+                (
+                    KeyBind::from_parts(KeyCode::Left, KeyModifiers::SHIFT),
+                    ProjectListAction::CollapseRow,
+                ),
+            ]),
+            package:      ScopeMap::from([(
+                KeyBind::from(KeyCode::Enter),
+                PackageAction::Activate,
+            )]),
+            git:          ScopeMap::from([(KeyBind::from(KeyCode::Enter), GitAction::Activate)]),
+            targets:      ScopeMap::from([
+                (KeyBind::from(KeyCode::Enter), TargetsAction::Activate),
+                (
+                    KeyBind::from(KeyCode::Char('r')),
+                    TargetsAction::ReleaseBuild,
+                ),
+            ]),
+            ci_runs:      ScopeMap::from([
+                (KeyBind::from(KeyCode::Enter), CiRunsAction::Activate),
+                (KeyBind::from(KeyCode::Char('f')), CiRunsAction::FetchMore),
+                (KeyBind::from(KeyCode::Char('b')), CiRunsAction::ShowBranch),
+                (KeyBind::from(KeyCode::Char('a')), CiRunsAction::ShowAll),
+                (KeyBind::from(KeyCode::Char('d')), CiRunsAction::ClearCache),
+            ]),
+            lints:        ScopeMap::from([
+                (KeyBind::from(KeyCode::Enter), LintsAction::Activate),
+                (KeyBind::from(KeyCode::Char('d')), LintsAction::ClearHistory),
+            ]),
+        }
     }
 
     fn write_scope<A: Copy + Eq + std::hash::Hash>(
@@ -207,14 +195,14 @@ mod tests {
                     "action missing from by_action"
                 );
             }
-            for (key, &action) in &scope.by_key {
+            for (key, &action) in scope.bindings() {
                 assert_eq!(
-                    scope.by_action.get(&action),
+                    scope.key_for(action),
                     Some(key),
                     "by_key/by_action mismatch"
                 );
             }
-            assert_eq!(scope.by_key.len(), scope.by_action.len());
+            assert_eq!(scope.bindings().count(), actions.len());
         }
 
         let km = ResolvedKeymap::defaults();

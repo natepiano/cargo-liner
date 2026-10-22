@@ -503,7 +503,7 @@ pub(super) fn format_commit_date(date: &CommitDate) -> String {
 
 pub(super) fn format_tracked_ref(reference: &TrackedRef) -> String {
     match reference {
-        TrackedRef::Ref(name) => name.clone(),
+        TrackedRef::Named(name) => name.clone(),
         TrackedRef::Untracked => NO_REMOTE_SYNC.to_string(),
         TrackedRef::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
     }

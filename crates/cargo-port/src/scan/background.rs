@@ -19,6 +19,7 @@ use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
+use crate::project::CratesIoRelease;
 use crate::project::LanguageStats;
 use crate::project::ManifestFingerprint;
 use crate::project::ProjectPrData;
@@ -86,12 +87,10 @@ pub(crate) enum BackgroundMsg {
     /// enqueue for this path. Used by startup readiness to wait for dynamic
     /// declarations such as submodule crates.io fetches.
     ProjectDetailsDeclared { path: AbsolutePath },
-    /// Crates.io version and download count fetched for a project.
+    /// A complete crates.io release fetched for a project.
     CratesIoVersion {
-        path:       AbsolutePath,
-        version:    String,
-        prerelease: Option<String>,
-        downloads:  u64,
+        path:    AbsolutePath,
+        release: CratesIoRelease,
     },
     /// A crates.io fetch has been queued for `name`. Drives the
     /// "Fetching crates.io info" running toast. Mirrors
@@ -265,7 +264,7 @@ impl BackgroundMsg {
             | Self::CheckoutInfo { path, .. }          // git.branch / git.status
             | Self::RepoInfo { path, .. }              // git.remotes / git.workflows
             | Self::GitFirstCommit { path, .. }        // git.inception
-            | Self::CratesIoVersion { path, .. }      // package.crates_version
+            | Self::CratesIoVersion { path, .. }      // package.crates_io
             | Self::RepoMeta { path, .. }              // git.stars / git.description
             | Self::Submodules { path, .. }            // submodules detail
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
@@ -275,10 +274,9 @@ impl BackgroundMsg {
             Self::ProjectDiscovered { item }
             | Self::ProjectRefreshed { item } => Some(item.path()),
 
-            // Workspace-wide metadata feeds package + targets fields for
-            // every member of the workspace, but the path we have is the
-            // workspace root — `detail_path_is_affected` will widen the
-            // match correctly.
+            // `BackgroundMsg::CargoMetadata` and `BackgroundMsg::OutOfTreeTargetSize`
+            // feed package and targets fields for every workspace member. They provide
+            // `workspace_root`, so `detail_path_is_affected` widens the match to those members.
             Self::CargoMetadata { workspace_root, .. }
             | Self::OutOfTreeTargetSize { workspace_root, .. } => Some(workspace_root.as_path()),
 

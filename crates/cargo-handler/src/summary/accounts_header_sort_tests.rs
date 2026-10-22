@@ -58,7 +58,7 @@ fn with_agents(mut app: App) -> App {
             .map(|(pid, name, started)| {
                 serde_json::from_value(serde_json::json!({
                     "agent":"claude","name":name,"pid":pid,"started":started,
-                    "directory":"/fixture","children":[]
+                    "directory":"/fixture","children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
                 }))
                 .expect("agent fixture")
             })
@@ -153,7 +153,7 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
         let second = accounts_gradient_tests::drawn(&app);
         assert_order(&second, &descending);
         assert_eq!(app.summary_sort, original_sort);
-        let agent_header = accounts_gradient_tests::locate(&second, "name");
+        let agent_header = accounts_gradient_tests::locate(&second, "session");
         render::cell_clicked(
             &mut app,
             CellClick {
@@ -257,4 +257,40 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
         &accounts_gradient_tests::drawn(&app),
         &["alpha", "gamma", "beta", "delta"],
     );
+}
+
+#[test]
+fn numeric_account_cells_align_their_right_edges_with_their_headers() {
+    let app = app_with_accounts(accounts());
+    let buffer = accounts_gradient_tests::drawn(&app);
+    for (column, previous_column, values) in [
+        (
+            AccountsColumn::WeeklyLeft,
+            AccountsColumn::Roles,
+            ["10%", "2%", "10%", "100%"],
+        ),
+        (
+            AccountsColumn::Credits,
+            AccountsColumn::Resets,
+            ["10", "2", "10", "100"],
+        ),
+    ] {
+        let header = header_point(&buffer, column);
+        let right = buffer.area.x + header.column + super::cell_width(column.header());
+        let left = buffer.area.x + header_point(&buffer, previous_column).column;
+        for (label, value) in SOURCE_ORDER.into_iter().zip(values) {
+            let y = accounts_gradient_tests::locate(&buffer, label).row;
+            let line: String = (left..buffer.area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            let index = if column == AccountsColumn::Credits {
+                line.rfind(value)
+            } else {
+                line.find(value)
+            }
+            .expect("numeric account value");
+            let value_right = left + super::cell_width(&line[..index]) + super::cell_width(value);
+            assert_eq!(value_right, right, "{label} {column:?}: {line}");
+        }
+    }
 }

@@ -24,6 +24,7 @@ pub(crate) mod classify;
 #[cfg(test)]
 mod claude_seat_tests;
 pub(crate) mod codex;
+mod codex_names;
 pub(crate) mod desktop;
 pub(crate) mod hierarchy;
 #[cfg(test)]
@@ -53,7 +54,6 @@ use std::time::UNIX_EPOCH;
 
 pub(crate) use account::Account;
 pub(crate) use account::AccountColumn;
-#[cfg(test)]
 pub(crate) use activity::Activity;
 pub(crate) use activity::AgentActivity;
 #[cfg(test)]
@@ -69,6 +69,7 @@ pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
 pub(crate) use placement::Placement;
 pub(crate) use placement::RoleLabel;
+pub(crate) use placement::RootPresentation;
 pub(crate) use placement::RowIdentity;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
@@ -76,16 +77,15 @@ use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
+use transcript::SubagentRole;
 use worker_dispatch::WorkerDispatch;
 use worker_dispatch::WorkerTask;
 
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_FAST_TIERS;
-use crate::constants::COMMAND_RUNS;
 use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
-use crate::constants::TIMER_RUNS;
 
 /// The program a census row represents, including transport-only worker hosts.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -372,13 +372,13 @@ impl AgentRow {
 }
 
 /// How an agent holds a child, including the work kinds shown in tree role columns.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
     /// A command the agent's shell tool is running.
     Shell,
     /// A subagent running inside the agent's own process.
-    Subagent,
+    Subagent(SubagentRole),
     /// An agent this one opened, in a tmux session or as a session of
     /// the Claude desktop app, which has a row of its own.
     Session(Agent),
@@ -392,30 +392,6 @@ pub(crate) enum ChildKind {
     Detached(Agent),
     /// A thread a Codex app server is running.
     Thread,
-}
-
-impl ChildKind {
-    /// The agent the row runs: none for a shell, which runs a command.
-    const fn agent(self) -> Option<Agent> {
-        match self {
-            Self::Shell => None,
-            Self::Subagent => Some(Agent::Claude),
-            Self::Session(agent)
-            | Self::UnderShell(agent)
-            | Self::Direct(agent)
-            | Self::Detached(agent) => Some(agent),
-            Self::Thread => Some(Agent::Codex),
-        }
-    }
-
-    /// The row's `runs` cell: its agent's program, or `command` for a
-    /// shell.
-    const fn runs(self) -> &'static str {
-        match self.agent() {
-            Some(agent) => agent.label(),
-            None => COMMAND_RUNS,
-        }
-    }
 }
 
 /// The span of the `sleep` a shell row's command is waiting out, in unix
@@ -439,7 +415,7 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 pub(crate) struct ChildRow {
     /// Task naming survives placement so the final hierarchy role supplies its label.
     pub(crate) worker_task:  WorkerTask,
-    /// The last turn event, read incrementally from a live thread's rollout.
+    /// The last activity, read incrementally from a thread rollout or subagent transcript.
     pub(crate) activity:     AgentActivity,
     /// A roster-backed launcher identity, resolved only during the scan.
     pub(crate) dispatch:     WorkerDispatch,
@@ -471,15 +447,6 @@ pub(crate) struct ChildRow {
     /// none for any other row. Missing from a probe printed before it
     /// existed, and left out of one for a row that has none.
     pub(crate) timer:        Option<Timer>,
-}
-
-impl ChildRow {
-    /// The `runs` cell: what the row runs, marked with its tier;
-    /// [`TIMER_RUNS`] for a shell row with a [`Timer`].
-    pub(crate) fn runs_label(&self) -> Cow<'static, str> {
-        let runs = self.timer.map_or_else(|| self.kind.runs(), |_| TIMER_RUNS);
-        self.service_tier.mark(runs)
-    }
 }
 
 /// What is known about one machine's agents.
@@ -1008,3 +975,6 @@ mod thread_state_tests;
 #[cfg(test)]
 #[path = "activity_tests.rs"]
 mod activity_tests;
+
+#[cfg(test)]
+mod command_name_tests;

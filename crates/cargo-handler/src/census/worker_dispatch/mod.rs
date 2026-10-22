@@ -34,7 +34,59 @@ const POOL_PHASE_DESCRIPTION: &str = "this is phase ";
 /// The launcher interpreter, including when it is given as an absolute path.
 const LAUNCHER_INTERPRETER: &str = "bash";
 /// The launcher path suffix shared by literal commands and process argv.
-const LAUNCHER_SCRIPT: &str = ".claude/scripts/delegate/implement.sh";
+const LAUNCHER_SCRIPTS: [&str; 2] = [
+    ".claude/scripts/delegate/implement.sh",
+    ".claude/scripts/direct/implement.sh",
+];
+const REVIEW_SCRIPTS: [&str; 2] = [
+    ".claude/scripts/delegate/review.sh",
+    ".claude/scripts/direct/review.sh",
+];
+const MESSENGER_SCRIPT: &str = ".claude/scripts/agents/codex_mesh.py";
+const PYTHON_INTERPRETERS: [&str; 3] = ["python", "python3", "py"];
+const MESSENGER_SEND: &str = "send";
+const SESSION_DIRECTORY_FLAG: &str = "--session-dir";
+const SEAT_FLAG: &str = "--to";
+const MESSAGE_FLAG: &str = "--message";
+const MESSAGE_FILE_FLAG: &str = "--message-file";
+const PROMPT_HEREDOC: &str = "cat <<";
+const PROMPT_CAT: &str = "cat";
+const PROMPT_SED: &str = "sed";
+const EXPORT_PREFIX: &str = "export ";
+const DEFAULT_REVIEW_JOB: &str = "blind review of the current diff against its spec";
+
+/// The positional schema belongs to the command that sends work to a seat.
+#[derive(Clone, Copy)]
+enum SeatSender {
+    Implement,
+    Review,
+    Message,
+}
+
+impl SeatSender {
+    fn from_program(program: &str, script: &str) -> Result<Self, NotWorkerDispatch> {
+        let program = Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let script = Path::new(script);
+        if program == LAUNCHER_INTERPRETER
+            && LAUNCHER_SCRIPTS
+                .iter()
+                .any(|suffix| script.ends_with(suffix))
+        {
+            Ok(Self::Implement)
+        } else if program == LAUNCHER_INTERPRETER
+            && REVIEW_SCRIPTS.iter().any(|suffix| script.ends_with(suffix))
+        {
+            Ok(Self::Review)
+        } else if PYTHON_INTERPRETERS.contains(&program) && script.ends_with(MESSENGER_SCRIPT) {
+            Ok(Self::Message)
+        } else {
+            Err(NotWorkerDispatch)
+        }
+    }
+}
 /// Prompt boilerplate introduces a prescribed board role call rather than a task.
 const ROLE_PREAMBLE: &str = "You are slot ";
 const BOARD_SCRIPT: &str = "board.sh";
@@ -570,6 +622,93 @@ enum JobSource {
     DispatchJob,
 }
 
+/// Prompt openings name either surrounding context, a job, or role instructions.
+#[derive(Clone, Copy)]
+enum PromptLine<'a> {
+    Blank,
+    Context,
+    RoleInstructions,
+    Heading(&'a str),
+    Title(&'a str),
+    Body(&'a str),
+}
+
+impl<'a> PromptLine<'a> {
+    fn classify(line: &'a str) -> Self {
+        let line = line.trim();
+        if line.is_empty() {
+            return Self::Blank;
+        }
+        if line.starts_with("Worktree:")
+            || (line.starts_with("From ") && line.contains("(unit director)."))
+        {
+            return Self::Context;
+        }
+        if line.starts_with(ROLE_PREAMBLE) {
+            return Self::RoleInstructions;
+        }
+        if line.starts_with('#') {
+            return Self::Heading(line);
+        }
+        if line.starts_with("Phase ") || line.starts_with("Ticket:") {
+            return Self::Title(line);
+        }
+        let first = line.split_whitespace().next().unwrap_or_default();
+        if let Some((project, number)) = first.trim_end_matches(':').split_once('-')
+            && !project.is_empty()
+            && project
+                .chars()
+                .all(|character| character.is_ascii_uppercase())
+            && !number.is_empty()
+            && number.chars().all(|character| character.is_ascii_digit())
+        {
+            return Self::Title(line);
+        }
+        Self::Body(line)
+    }
+}
+
+/// The prompt's own prose, ending before an attached diff, code block or source line.
+struct PromptOpening<'a>(&'a str);
+
+impl<'a> PromptOpening<'a> {
+    fn read(prompt: &'a str) -> Self {
+        let mut offset = 0;
+        for line in prompt.split_inclusive('\n') {
+            let text = line.trim();
+            let code = [
+                "```",
+                "~~~",
+                "diff --git ",
+                "@@",
+                "--- ",
+                "+++ ",
+                "//",
+                "/*",
+                ";",
+                "fn ",
+                "pub ",
+                "use ",
+                "let ",
+                "const ",
+            ];
+            let diff_heading = text
+                .trim_start_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("diff");
+            if diff_heading
+                || code.iter().any(|prefix| text.starts_with(prefix))
+                || (prompt[..offset].trim().is_empty()
+                    && (line.starts_with("    ") || line.starts_with('\t')))
+            {
+                return Self(&prompt[..offset]);
+            }
+            offset += line.len();
+        }
+        Self(prompt)
+    }
+}
+
 impl JobText {
     /// Validate and flatten extracted text once, before it becomes a drawn job.
     fn from_line(line: &str) -> Self {
@@ -588,12 +727,19 @@ impl JobText {
 
     /// One extraction serves roster, fallback and dispatch names.
     fn parse(prompt: &str, source: JobSource) -> Self {
-        if let Some((_, review)) = prompt.split_once(POOL_PREAMBLE) {
+        let prompt = PromptOpening::read(prompt).0;
+        if let Some((opening, review)) = prompt.split_once(POOL_PREAMBLE) {
             // Pool memory precedes the role preamble. The phase title names the job.
             if let Some((_, phase)) = review.split_once(POOL_PHASE_DESCRIPTION)
                 && let Some((_, title)) = phase.split_once('"')
                 && let Some((title, _)) = title.split_once('"')
             {
+                return Self::from_line(title);
+            }
+            if let Some(title) = opening.lines().find(|line| {
+                let title = line.trim();
+                title.starts_with('#') && !title.ends_with("review memory")
+            }) {
                 return Self::from_line(title);
             }
             if let Some(heading) = review
@@ -606,19 +752,43 @@ impl JobText {
             }
             return Self::Unrecorded;
         }
+        Self::from_task_prompt(prompt, source)
+    }
+
+    /// Context opens a search for a title; role instructions carry their board job.
+    fn from_task_prompt(prompt: &str, source: JobSource) -> Self {
         let first = prompt
             .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or_default()
-            .trim();
-        if first.starts_with('#') {
-            return Self::from_line(first);
-        }
-        if !first.starts_with(ROLE_PREAMBLE) {
-            return Self::from_line(match source {
-                JobSource::FirstTaskPrompt => first,
-                JobSource::DispatchJob => prompt,
-            });
+            .map(PromptLine::classify)
+            .find(|line| !matches!(line, PromptLine::Blank))
+            .unwrap_or(PromptLine::Blank);
+        match first {
+            PromptLine::Heading(title) => return Self::from_line(title),
+            PromptLine::Title(line) | PromptLine::Body(line) => {
+                return Self::from_line(match source {
+                    JobSource::FirstTaskPrompt => line,
+                    JobSource::DispatchJob => prompt,
+                });
+            },
+            PromptLine::Context => {
+                if let Some(title) =
+                    prompt
+                        .lines()
+                        .find_map(|line| match PromptLine::classify(line) {
+                            PromptLine::Heading(title) | PromptLine::Title(title) => Some(title),
+                            _ => None,
+                        })
+                {
+                    return Self::from_line(title);
+                }
+                if !prompt
+                    .lines()
+                    .any(|line| matches!(PromptLine::classify(line), PromptLine::RoleInstructions))
+                {
+                    return Self::Unrecorded;
+                }
+            },
+            PromptLine::RoleInstructions | PromptLine::Blank => {},
         }
         // The first prescribed `BOARD_SCRIPT` `BOARD_ROLE` call carries the director's actual job.
         for (offset, _) in prompt.match_indices(BOARD_SCRIPT) {
@@ -676,13 +846,33 @@ enum SeatSelection {
     Launcher,
 }
 
+/// Launchers know their checkout; messages select directly from the named roster.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SeatCheckout {
+    Launcher(PathBuf),
+    RosterOnly,
+}
+
+impl SeatCheckout {
+    fn short_seat<'a>(&self, seat: &'a str) -> &'a str {
+        match self {
+            Self::Launcher(path) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| seat.strip_prefix(&format!("{name}-")))
+                .unwrap_or(seat),
+            Self::RosterOnly => seat,
+        }
+    }
+}
+
 /// A literal implement.sh invocation, before roster resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ParsedDispatch {
     /// The directory containing `mesh_roster.json`.
     pub(super) session_dir: PathBuf,
     /// The worktree whose basename prefixes its seat.
-    worktree:               PathBuf,
+    worktree:               SeatCheckout,
     /// How this invocation locates its roster entry.
     seat:                   SeatSelection,
     /// The launcher's responsibility argument.
@@ -702,56 +892,54 @@ impl ParsedDispatch {
     /// A live launcher's wrapper may set variables before its final dispatch.
     /// Commands following the dispatch still belong to the shell and must stay visible.
     pub(super) fn is_final_command_of(&self, command: &str) -> bool {
-        if Self::parse(command).is_ok_and(|parsed| parsed == *self) {
-            return true;
-        }
-        let mut quote = None;
-        let mut escaped = false;
-        let mut start = 0;
-        for (offset, character) in command.char_indices() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match (quote, character) {
-                (Some('\''), '\'') | (Some('"'), '"') => quote = None,
-                (None, '\'' | '"') => quote = Some(character),
-                (Some('\''), _) => {},
-                (_, '\\') => escaped = true,
-                (None, ';' | '&' | '|' | '\n') => start = offset + character.len_utf8(),
-                _ => {},
-            }
-        }
-        // Values are already resolved in the observed launcher argv. In `final_command`, variable
-        // spellings only establish that the wrapper ends with one dispatch command.
-        let final_command = command[start..].replace('$', "_");
-        Self::parse(&final_command).is_ok_and(|parsed| parsed == *self)
+        Self::parse(command).is_ok_and(|parsed| parsed == *self)
     }
 
-    /// Read literal assignments followed by bash implement.sh without executing them.
+    /// Observed shell cwd supplies PWD; no environment variable is guessed or evaluated.
+    pub(super) fn parse_at(command: &str, directory: &Path) -> Result<Self, NotWorkerDispatch> {
+        let mut preparation = DispatchPreparation::read("")?;
+        preparation
+            .bindings
+            .insert("PWD".to_owned(), directory.to_string_lossy().into_owned());
+        Self::parse_prepared(command, preparation)
+    }
+
+    /// Read literal preparation and a final launcher without executing shell code.
     pub(super) fn parse(command: &str) -> Result<Self, NotWorkerDispatch> {
-        Self::from_arguments(&command_words(command)?)
+        Self::parse_prepared(command, DispatchPreparation::read("")?)
+    }
+
+    /// Pure invocations retain the shell lexer's quoted and ANSI-C literal support.
+    fn parse_prepared(
+        command: &str,
+        mut preparation: DispatchPreparation,
+    ) -> Result<Self, NotWorkerDispatch> {
+        if let Ok(words) = command_words(command) {
+            return Self::from_arguments(&words);
+        }
+        let start = final_command_start(command)?;
+        preparation.read_prefix(&command[..start])?;
+        let invocation = expand_bindings(&command[start..], &preparation.bindings)?;
+        Self::from_arguments(&command_words(&invocation)?)
     }
 
     /// Read argv from the actual launcher process without re-splitting it.
     pub(super) fn from_arguments(words: &[String]) -> Result<Self, NotWorkerDispatch> {
         let mut args = words.iter().map(String::as_str);
         let program = args.next().ok_or(NotWorkerDispatch)?;
-        if Path::new(program)
-            .file_name()
-            .is_none_or(|name| name != LAUNCHER_INTERPRETER)
-        {
-            return Err(NotWorkerDispatch);
-        }
         let script = args.next().ok_or(NotWorkerDispatch)?;
-        if !Path::new(script).ends_with(LAUNCHER_SCRIPT) {
-            return Err(NotWorkerDispatch);
+        let sender = SeatSender::from_program(program, script)?;
+        if matches!(sender, SeatSender::Message) {
+            return Self::message(args.collect());
+        }
+        if matches!(sender, SeatSender::Review) {
+            return Self::review(args.collect());
         }
         let mut args = args.peekable();
         let mut seat = SeatSelection::Launcher;
         while args.peek().is_some_and(|word| word.starts_with("--")) {
             match args.next() {
-                Some("--to") => {
+                Some(SEAT_FLAG) => {
                     let name = args
                         .next()
                         .filter(|name| !name.is_empty())
@@ -785,21 +973,140 @@ impl ParsedDispatch {
             .next()
             .filter(|job| !job.is_empty())
             .ok_or(NotWorkerDispatch)?;
-        // The launcher positions in `remaining` are pass kind, activity, fix pass,
-        // team role, and an optional mesh prefix. Nothing may follow them.
         let remaining: Vec<_> = args.collect();
-        match remaining.as_slice() {
-            ["impl" | "test" | "review" | "fix", _, _, team_role]
-            | ["impl" | "test" | "review" | "fix", _, _, team_role, _]
-                if !team_role.is_empty() => {},
+        let pass_role = match (sender, remaining.as_slice()) {
+            (
+                SeatSender::Implement,
+                [role @ ("impl" | "test" | "review" | "fix"), _, _, team_role]
+                | [
+                    role @ ("impl" | "test" | "review" | "fix"),
+                    _,
+                    _,
+                    team_role,
+                    _,
+                ],
+            ) if !team_role.is_empty() => DispatchRole::from_short_seat(role),
             _ => return Err(NotWorkerDispatch),
-        }
+        };
         Ok(Self {
             session_dir: PathBuf::from(session_dir),
-            worktree: PathBuf::from(worktree),
+            worktree: SeatCheckout::Launcher(PathBuf::from(worktree)),
             seat,
             job: job.to_owned(),
-            pass_role: DispatchRole::from_short_seat(remaining[0]),
+            pass_role,
+        })
+    }
+
+    /// review.sh defaults its trailing arguments and accepts named, new-slot and pooled seats.
+    fn review(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
+        let mut args = words.into_iter().peekable();
+        let mut selection = ReviewSelection::Automatic;
+        let mut lease = None;
+        while args.peek().is_some_and(|word| word.starts_with("--")) {
+            let flag = args.next().ok_or(NotWorkerDispatch)?;
+            let value = args
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(NotWorkerDispatch)?;
+            match flag {
+                "--phase" => {},
+                SEAT_FLAG if matches!(selection, ReviewSelection::Automatic) => {
+                    selection = ReviewSelection::Existing(value.to_owned());
+                },
+                "--slot"
+                    if matches!(selection, ReviewSelection::Automatic)
+                        && shell_identifier(value) =>
+                {
+                    selection = ReviewSelection::NewSlot(value.to_owned());
+                },
+                "--pool"
+                    if matches!(selection, ReviewSelection::Automatic)
+                        && matches!(value, "code" | "ui") =>
+                {
+                    selection = ReviewSelection::Pool;
+                },
+                "--lease" if lease.is_none() => lease = Some(value),
+                _ => return Err(NotWorkerDispatch),
+            }
+        }
+        match (&selection, lease) {
+            (ReviewSelection::Pool, Some(value))
+                if value.split('/').count() == 3
+                    && value.split('/').all(|part| !part.is_empty()) => {},
+            (ReviewSelection::Pool, _) | (_, Some(_)) => return Err(NotWorkerDispatch),
+            _ => {},
+        }
+        let positional: Vec<_> = args.collect();
+        let Some(session_dir) = positional.first().filter(|value| !value.is_empty()) else {
+            return Err(NotWorkerDispatch);
+        };
+        if positional.len() > 9 {
+            return Err(NotWorkerDispatch);
+        }
+        let worktree = positional
+            .get(1)
+            .filter(|value| !value.is_empty())
+            .map_or(SeatCheckout::RosterOnly, |path| {
+                SeatCheckout::Launcher(PathBuf::from(path))
+            });
+        let seat = match selection {
+            ReviewSelection::Existing(name) => SeatSelection::Named(name),
+            ReviewSelection::NewSlot(slot) => match &worktree {
+                SeatCheckout::Launcher(path) => {
+                    let checkout = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(NotWorkerDispatch)?;
+                    SeatSelection::Named(format!("{checkout}-{slot}"))
+                },
+                SeatCheckout::RosterOnly => SeatSelection::Launcher,
+            },
+            ReviewSelection::Automatic | ReviewSelection::Pool => SeatSelection::Launcher,
+        };
+        Ok(Self {
+            session_dir: PathBuf::from(session_dir),
+            worktree,
+            seat,
+            job: positional
+                .get(4)
+                .filter(|job| !job.is_empty())
+                .copied()
+                .unwrap_or(DEFAULT_REVIEW_JOB)
+                .to_owned(),
+            pass_role: DispatchRole::Worker(WorkerRole::Review),
+        })
+    }
+
+    /// Messenger flags name a roster and one exact seat; no shell operators are accepted.
+    fn message(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
+        let mut words = words.into_iter();
+        if words.next() != Some(MESSENGER_SEND) {
+            return Err(NotWorkerDispatch);
+        }
+        let mut directory = None;
+        let mut seat = None;
+        let mut job = None;
+        while let Some(flag) = words.next() {
+            let value = words
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(NotWorkerDispatch)?;
+            match flag {
+                SESSION_DIRECTORY_FLAG if directory.is_none() => directory = Some(value),
+                SEAT_FLAG if seat.is_none() => seat = Some(value),
+                MESSAGE_FLAG if job.is_none() => job = Some(value.to_owned()),
+                MESSAGE_FILE_FLAG if job.is_none() => {
+                    job = Some(fs::read_to_string(value).map_err(|_| NotWorkerDispatch)?);
+                },
+                _ => return Err(NotWorkerDispatch),
+            }
+        }
+        Ok(Self {
+            session_dir: PathBuf::from(directory.ok_or(NotWorkerDispatch)?),
+            worktree:    SeatCheckout::RosterOnly,
+            seat:        SeatSelection::Named(seat.ok_or(NotWorkerDispatch)?.to_owned()),
+            job:         job.ok_or(NotWorkerDispatch)?,
+            pass_role:   DispatchRole::Unroled,
         })
     }
 
@@ -822,13 +1129,7 @@ impl ParsedDispatch {
             return WorkerDispatch::Plain;
         };
 
-        let short_seat = self
-            .worktree
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| seat.strip_prefix(&format!("{name}-")))
-            .unwrap_or(seat)
-            .to_owned();
+        let short_seat = self.worktree.short_seat(seat).to_owned();
         WorkerDispatch::Worker(ResolvedWorkerDispatch {
             seat: seat.clone(),
             identity: WorkerIdentity::CodexThread(entry.thread_id.clone()),
@@ -840,6 +1141,430 @@ impl ParsedDispatch {
             short_seat,
         })
     }
+}
+
+/// The only quoting states used while scanning a shell command or expanding bindings.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ShellQuote {
+    Unquoted,
+    Single,
+    Double,
+}
+
+/// Quoting any part of a heredoc delimiter disables expansion throughout its body.
+enum HeredocExpansion {
+    Literal,
+    Expanded,
+}
+
+/// A parsed prompt heredoc knows where its body ends and whether it can execute substitutions.
+struct PromptHeredoc {
+    delimiter: String,
+    expansion: HeredocExpansion,
+}
+
+impl PromptHeredoc {
+    fn read(raw: &str) -> Result<Self, NotWorkerDispatch> {
+        let raw = raw.trim();
+        let words = command_words(&format!("delimiter {raw}"))?;
+        let [_, delimiter] = words.as_slice() else {
+            return Err(NotWorkerDispatch);
+        };
+        if delimiter.is_empty() {
+            return Err(NotWorkerDispatch);
+        }
+        Ok(Self {
+            delimiter: delimiter.clone(),
+            expansion: if raw.contains(['\'', '"', '\\']) {
+                HeredocExpansion::Literal
+            } else {
+                HeredocExpansion::Expanded
+            },
+        })
+    }
+
+    /// Return the first byte after the terminator; unquoted bodies must not run commands.
+    fn body_end(&self, body: &str) -> Result<usize, NotWorkerDispatch> {
+        let mut end = 0;
+        for line in body.split_inclusive('\n') {
+            end += line.len();
+            if line.strip_suffix('\n').unwrap_or(line) == self.delimiter {
+                if matches!(self.expansion, HeredocExpansion::Expanded) {
+                    // Bash removes backslash-newline before expanding an unquoted heredoc.
+                    let body = body[..end - line.len()].replace("\\\n", "");
+                    let mut chars = body.chars();
+                    while let Some(character) = chars.next() {
+                        match character {
+                            '\\' => {
+                                chars.next();
+                            },
+                            '`' => return Err(NotWorkerDispatch),
+                            '$' if chars.as_str().starts_with('(') => {
+                                return Err(NotWorkerDispatch);
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+                return Ok(end);
+            }
+        }
+        Err(NotWorkerDispatch)
+    }
+}
+
+/// Heredoc bodies are data, so their apostrophes and operators cannot change shell boundaries.
+fn final_command_start(command: &str) -> Result<usize, NotWorkerDispatch> {
+    let mut chars = command.char_indices().peekable();
+    let mut quote = ShellQuote::Unquoted;
+    let mut start = 0;
+    while let Some((offset, character)) = chars.next() {
+        match (quote, character) {
+            (ShellQuote::Single, '\'') | (ShellQuote::Double, '"') => quote = ShellQuote::Unquoted,
+            (ShellQuote::Unquoted, '\'') => quote = ShellQuote::Single,
+            (ShellQuote::Unquoted, '"') => quote = ShellQuote::Double,
+            (ShellQuote::Single, _) => {},
+            (_, '\\') => {
+                chars.next();
+            },
+            (ShellQuote::Unquoted, '<') if chars.peek().is_some_and(|(_, next)| *next == '<') => {
+                let remainder = &command[offset + 2..];
+                let (delimiter, body) = remainder.split_once('\n').ok_or(NotWorkerDispatch)?;
+                let heredoc = PromptHeredoc::read(delimiter)?;
+                let end = command.len() - body.len() + heredoc.body_end(body)?;
+                while chars.peek().is_some_and(|(position, _)| *position < end) {
+                    chars.next();
+                }
+                start = end;
+            },
+            (ShellQuote::Unquoted, ';' | '&' | '|' | '\n') => start = offset + character.len_utf8(),
+            _ => {},
+        }
+    }
+    if quote != ShellQuote::Unquoted {
+        return Err(NotWorkerDispatch);
+    }
+    Ok(start)
+}
+
+/// A sed invocation checked to read files and write only to its inherited stdout.
+struct ReadOnlySed;
+
+impl ReadOnlySed {
+    fn read(arguments: &[String]) -> Result<Self, NotWorkerDispatch> {
+        let mut arguments = arguments.iter().map(String::as_str);
+        let mut has_script = false;
+        while let Some(argument) = arguments.next() {
+            match argument {
+                "-e" | "--expression" => {
+                    let script = arguments.next().ok_or(NotWorkerDispatch)?;
+                    Self::check_script(script)?;
+                    has_script = true;
+                },
+                "--quiet" | "--silent" | "--regexp-extended" => {},
+                flags
+                    if flags.starts_with('-')
+                        && flags.len() > 1
+                        && flags[1..]
+                            .chars()
+                            .all(|flag| matches!(flag, 'n' | 'E' | 'r')) => {},
+                expression if expression.starts_with("--expression=") => {
+                    Self::check_script(&expression["--expression=".len()..])?;
+                    has_script = true;
+                },
+                flag if flag.starts_with('-') => return Err(NotWorkerDispatch),
+                script if !has_script => {
+                    Self::check_script(script)?;
+                    has_script = true;
+                },
+                _ => {},
+            }
+        }
+        if has_script {
+            Ok(Self)
+        } else {
+            Err(NotWorkerDispatch)
+        }
+    }
+
+    /// Accept the prompt filters we can prove have no file-write or execution command.
+    fn check_script(script: &str) -> Result<(), NotWorkerDispatch> {
+        let mut chars = script.chars().peekable();
+        while let Some(character) = chars.peek().copied() {
+            match character {
+                '/' => {
+                    chars.next();
+                    Self::skip_pattern(&mut chars, '/')?;
+                },
+                '0'..='9' | '$' | ',' | '!' | ' ' => {
+                    chars.next();
+                },
+                _ => break,
+            }
+        }
+        match chars.next() {
+            Some('p' | 'd') if chars.next().is_none() => Ok(()),
+            Some('s') => {
+                let delimiter = chars
+                    .next()
+                    .filter(|c| !c.is_alphanumeric() && *c != '\\')
+                    .ok_or(NotWorkerDispatch)?;
+                Self::skip_pattern(&mut chars, delimiter)?;
+                Self::skip_pattern(&mut chars, delimiter)?;
+                if chars.all(|flag| {
+                    flag.is_ascii_digit() || matches!(flag, 'g' | 'p' | 'i' | 'I' | 'm' | 'M')
+                }) {
+                    Ok(())
+                } else {
+                    Err(NotWorkerDispatch)
+                }
+            },
+            _ => Err(NotWorkerDispatch),
+        }
+    }
+
+    fn skip_pattern(
+        chars: &mut Peekable<Chars<'_>>,
+        delimiter: char,
+    ) -> Result<(), NotWorkerDispatch> {
+        while let Some(character) = chars.next() {
+            if character == '\\' {
+                chars.next().ok_or(NotWorkerDispatch)?;
+            } else if character == delimiter {
+                return Ok(());
+            }
+        }
+        Err(NotWorkerDispatch)
+    }
+}
+
+/// Review selection is either implicit, an existing seat, a new slot, or a pool lease.
+enum ReviewSelection {
+    Automatic,
+    Existing(String),
+    NewSlot(String),
+    Pool,
+}
+
+/// A checked prefix contains only bindings and output used to prepare the seat prompt.
+struct DispatchPreparation {
+    bindings: BTreeMap<String, String>,
+}
+
+/// Prompt construction consumes the rest of a prefix; bindings can precede it.
+enum PreparationStep<'a> {
+    Binding(&'a str, &'a str),
+    Prompt(&'a str),
+    Directory(&'a str, &'a str),
+}
+
+impl<'a> PreparationStep<'a> {
+    fn read(prefix: &'a str) -> Result<Self, NotWorkerDispatch> {
+        let prefix = prefix.trim();
+        if prefix.starts_with('{') {
+            return Ok(Self::Prompt(prefix));
+        }
+        let mut quote = ShellQuote::Unquoted;
+        let mut chars = prefix.char_indices().peekable();
+        while let Some((offset, character)) = chars.next() {
+            match (quote, character) {
+                (ShellQuote::Single, '\'') | (ShellQuote::Double, '"') => {
+                    quote = ShellQuote::Unquoted;
+                },
+                (ShellQuote::Unquoted, '\'') => quote = ShellQuote::Single,
+                (ShellQuote::Unquoted, '"') => quote = ShellQuote::Double,
+                (ShellQuote::Single, _) => {},
+                (_, '\\') => {
+                    chars.next();
+                },
+                (ShellQuote::Unquoted, ';') => {
+                    return Ok(Self::Binding(&prefix[..offset], &prefix[offset + 1..]));
+                },
+                (ShellQuote::Unquoted, '&')
+                    if chars.peek().is_some_and(|(_, next)| *next == '&') =>
+                {
+                    let rest = &prefix[offset + 2..];
+                    return Ok(Self::Directory(&prefix[..offset], rest));
+                },
+                _ => {},
+            }
+        }
+        Err(NotWorkerDispatch)
+    }
+}
+
+impl DispatchPreparation {
+    fn read(prefix: &str) -> Result<Self, NotWorkerDispatch> {
+        let mut preparation = Self {
+            bindings: BTreeMap::new(),
+        };
+        preparation.read_prefix(prefix)?;
+        Ok(preparation)
+    }
+
+    /// Only bindings, successful directory changes and prompt preparation may disappear.
+    fn read_prefix(&mut self, mut prefix: &str) -> Result<(), NotWorkerDispatch> {
+        while !prefix.trim().is_empty() {
+            match PreparationStep::read(prefix)? {
+                PreparationStep::Binding(binding, rest) => {
+                    let binding = binding
+                        .trim()
+                        .strip_prefix(EXPORT_PREFIX)
+                        .unwrap_or_else(|| binding.trim());
+                    let expanded = expand_bindings(binding, &self.bindings)?;
+                    let words = command_words(&format!("binding {expanded}"))?;
+                    let [_, binding] = words.as_slice() else {
+                        return Err(NotWorkerDispatch);
+                    };
+                    let (name, value) = binding.split_once('=').ok_or(NotWorkerDispatch)?;
+                    if !shell_identifier(name) {
+                        return Err(NotWorkerDispatch);
+                    }
+                    self.bindings.insert(name.to_owned(), value.to_owned());
+                    prefix = rest;
+                },
+                PreparationStep::Directory(command, rest) => {
+                    let expanded = expand_bindings(command, &self.bindings)?;
+                    let words = command_words(&expanded)?;
+                    let directory = match words.as_slice() {
+                        [program, directory] if program == "cd" => directory,
+                        [program, flag, directory] if program == "cd" && flag == "--" => directory,
+                        _ => return Err(NotWorkerDispatch),
+                    };
+                    if directory.is_empty() {
+                        return Err(NotWorkerDispatch);
+                    }
+                    let path = Path::new(directory);
+                    let path = if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        Path::new(self.bindings.get("PWD").ok_or(NotWorkerDispatch)?).join(path)
+                    };
+                    self.bindings
+                        .insert("PWD".to_owned(), path.to_string_lossy().into_owned());
+                    prefix = rest;
+                },
+                PreparationStep::Prompt(group) => {
+                    self.read_prompt(group)?;
+                    break;
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Only a redirected cat/sed group is prompt preparation, never arbitrary shell work.
+    fn read_prompt(&self, group: &str) -> Result<(), NotWorkerDispatch> {
+        let (body, output) = group
+            .strip_prefix('{')
+            .ok_or(NotWorkerDispatch)?
+            .rsplit_once('}')
+            .ok_or(NotWorkerDispatch)?;
+        let output = output
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .strip_prefix('>')
+            .ok_or(NotWorkerDispatch)?
+            .trim();
+        let output = expand_bindings(output, &self.bindings)?;
+        let words = command_words(&format!("output {output}"))?;
+        if !matches!(words.as_slice(), [_, path] if !path.is_empty()) {
+            return Err(NotWorkerDispatch);
+        }
+        let mut rest = body;
+        while !rest.is_empty() {
+            let (line, following) = rest.split_once('\n').unwrap_or((rest, ""));
+            rest = following;
+            let line = line.trim().trim_end_matches(';').trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(delimiter) = line.strip_prefix(PROMPT_HEREDOC) {
+                let heredoc = PromptHeredoc::read(delimiter)?;
+                let end = heredoc.body_end(rest)?;
+                rest = &rest[end..];
+            } else {
+                let expanded = expand_bindings(line, &self.bindings)?;
+                for command in expanded.split('|') {
+                    let words = command_words(command.trim())?;
+                    match words.split_first() {
+                        Some((program, _)) if program == PROMPT_CAT => {},
+                        Some((program, arguments)) if program == PROMPT_SED => {
+                            ReadOnlySed::read(arguments)?;
+                        },
+                        _ => return Err(NotWorkerDispatch),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A shell binding starts with a letter or underscore and continues with identifier characters.
+fn shell_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Only literal bindings are expanded; shell evaluation never runs in the census.
+fn expand_bindings(
+    command: &str,
+    bindings: &BTreeMap<String, String>,
+) -> Result<String, NotWorkerDispatch> {
+    let mut result = String::new();
+    let mut chars = command.chars().peekable();
+    let mut quote = ShellQuote::Unquoted;
+    while let Some(character) = chars.next() {
+        match (quote, character) {
+            (ShellQuote::Single, '\'') | (ShellQuote::Double, '"') => {
+                quote = ShellQuote::Unquoted;
+                result.push(character);
+            },
+            (ShellQuote::Unquoted, '\'' | '"') => {
+                quote = if character == '\'' {
+                    ShellQuote::Single
+                } else {
+                    ShellQuote::Double
+                };
+                result.push(character);
+            },
+            (ShellQuote::Single, _) => result.push(character),
+            (_, '\\') => {
+                result.push(character);
+                result.push(chars.next().ok_or(NotWorkerDispatch)?);
+            },
+            (_, '$') => {
+                let braced = chars.next_if_eq(&'{').is_some();
+                let name: String = std::iter::from_fn(|| {
+                    chars.next_if(|c| c.is_ascii_alphanumeric() || *c == '_')
+                })
+                .collect();
+                if !shell_identifier(&name) || (braced && chars.next() != Some('}')) {
+                    return Err(NotWorkerDispatch);
+                }
+                let value = bindings.get(&name).ok_or(NotWorkerDispatch)?;
+                if quote == ShellQuote::Double {
+                    for c in value.chars() {
+                        if matches!(c, '$' | '`' | '"' | '\\') {
+                            result.push('\\');
+                        }
+                        result.push(c);
+                    }
+                } else {
+                    result.push('\'');
+                    result.push_str(&value.replace('\'', "'\\''"));
+                    result.push('\'');
+                }
+            },
+            _ => result.push(character),
+        }
+    }
+    Ok(result)
 }
 
 /// Whether a roster entry records its launcher's process identity.
@@ -1232,3 +1957,6 @@ mod dispatch_form_tests;
 
 #[cfg(test)]
 mod prompt_opening_tests;
+
+#[cfg(test)]
+mod context_job_tests;

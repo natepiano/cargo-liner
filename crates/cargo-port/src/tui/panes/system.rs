@@ -145,11 +145,6 @@ impl Panes {
     pub(in crate::tui) fn reset_cpu(&mut self, cpu_config: &CpuConfig) {
         self.cpu.reset(cpu_config);
     }
-
-    /// Seed the CPU pane's content with the current sampler's
-    /// placeholder `CpuUsage`. Delegates to
-    /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
-    pub(in crate::tui) fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
 }
 
 #[cfg(test)]

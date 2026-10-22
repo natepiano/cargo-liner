@@ -23,7 +23,7 @@ impl App {
         let row = rows.get(selected)?;
         match self.project_list.display_path_for_row(*row) {
             ProjectListRowDisplayPathResolution::Resolved(display_path) => Some(display_path),
-            ProjectListRowDisplayPathResolution::RowUnavailable => None,
+            ProjectListRowDisplayPathResolution::Unavailable => None,
         }
     }
 }

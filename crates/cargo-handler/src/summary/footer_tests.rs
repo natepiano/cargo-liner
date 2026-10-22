@@ -25,7 +25,7 @@ const HOUR: u64 = 3_600;
 /// Seconds in a minute.
 const MINUTE: u64 = 60;
 
-/// A listed process with no hierarchy, account, or retained work.
+/// A listed process with real work and no recorded account.
 fn row(
     pid: u32,
     agent: Agent,
@@ -49,7 +49,13 @@ fn row(
         directory: directory.to_string(),
         branch: None,
         launched_by: None,
-        children: Vec::new(),
+        children: vec![
+            serde_json::from_value(serde_json::json!({
+                "depth":0,"kind":"shell","pid":pid + 10_000_000,
+                "name":"fixture command","started":NOW - age
+            }))
+            .expect("summary owner work"),
+        ],
     }
 }
 

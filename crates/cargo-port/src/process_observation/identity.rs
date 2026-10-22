@@ -59,7 +59,7 @@ impl VerifiedProcessIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CurrentProcessIdentityObservation {
     Verified(VerifiedProcessIdentity),
-    InitialIdentityUnavailable(InsufficientProcessIdentity),
+    InitialUnavailable(InsufficientProcessIdentity),
     ReplacedDuringRevalidation(ProcessIdentity),
     RevalidationUnavailable(InsufficientProcessIdentity),
 }
@@ -88,9 +88,7 @@ pub(crate) fn observe_current_process_identity(pid: u32) -> CurrentProcessIdenti
             }
         },
         ObservedProcessIdentity::Insufficient(insufficient_process_identity) => {
-            CurrentProcessIdentityObservation::InitialIdentityUnavailable(
-                insufficient_process_identity,
-            )
+            CurrentProcessIdentityObservation::InitialUnavailable(insufficient_process_identity)
         },
     }
 }
@@ -117,15 +115,15 @@ pub(crate) fn revalidate_strong_process_identity(
 /// Why an observed PID cannot identify one process lifetime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InsufficientProcessIdentity {
-    ProcessExitedBeforeIdentityLookup {
+    ExitedBeforeLookup {
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
-    ProcessLifetimeAnchorInvalid {
+    LifetimeAnchorInvalid {
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
-    ProcessLifetimeAnchorUnavailable {
+    LifetimeAnchorUnavailable {
         pid: u32,
     },
     #[cfg(any(test, not(target_os = "macos")))]
@@ -133,10 +131,10 @@ pub(crate) enum InsufficientProcessIdentity {
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
-    PlatformIdentityChangedDuringLookup {
+    PlatformChangedDuringLookup {
         pid: u32,
     },
-    PlatformIdentityLookupFailed {
+    PlatformLookupFailed {
         pid: u32,
     },
     #[cfg(any(target_os = "macos", test))]
@@ -181,11 +179,13 @@ fn observe_process_identity(pid: u32) -> ObservedProcessIdentity {
         Ok(Some(info)) => {
             bind_initial_anchor(pid, processkit_lifetime_anchor(pid, info.start_time()))
         },
-        Ok(None) => ObservedProcessIdentity::Insufficient(
-            InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { pid },
-        ),
+        Ok(None) => {
+            ObservedProcessIdentity::Insufficient(InsufficientProcessIdentity::ExitedBeforeLookup {
+                pid,
+            })
+        },
         Err(_) => ObservedProcessIdentity::Insufficient(
-            InsufficientProcessIdentity::PlatformIdentityLookupFailed { pid },
+            InsufficientProcessIdentity::PlatformLookupFailed { pid },
         ),
     }
 }
@@ -218,13 +218,13 @@ const fn macos_processkit_lifetime_anchor(
 ) -> ProcessLifetimeAnchorObservation {
     match start_time {
         Some(0) => ProcessLifetimeAnchorObservation::Insufficient(
-            InsufficientProcessIdentity::ProcessLifetimeAnchorInvalid { pid },
+            InsufficientProcessIdentity::LifetimeAnchorInvalid { pid },
         ),
         Some(start_time) => {
             ProcessLifetimeAnchorObservation::Present(ProcessLifetimeAnchor(start_time))
         },
         None => ProcessLifetimeAnchorObservation::Insufficient(
-            InsufficientProcessIdentity::ProcessLifetimeAnchorUnavailable { pid },
+            InsufficientProcessIdentity::LifetimeAnchorUnavailable { pid },
         ),
     }
 }
@@ -298,7 +298,7 @@ fn bind_macos_process_lifetime(
             ProcessLifetimeAnchorObservation::Present(_),
             ProcessLifetimeAnchorObservation::Present(_),
         ) => ObservedProcessIdentity::Insufficient(
-            InsufficientProcessIdentity::PlatformIdentityChangedDuringLookup { pid },
+            InsufficientProcessIdentity::PlatformChangedDuringLookup { pid },
         ),
         (
             ProcessLifetimeAnchorObservation::Present(_),
@@ -315,10 +315,10 @@ fn observe_process_lifetime_anchor(pid: u32) -> ProcessLifetimeAnchorObservation
     match process_info(pid) {
         Ok(Some(info)) => processkit_lifetime_anchor(pid, info.start_time()),
         Ok(None) => ProcessLifetimeAnchorObservation::Insufficient(
-            InsufficientProcessIdentity::ProcessExitedBeforeIdentityLookup { pid },
+            InsufficientProcessIdentity::ExitedBeforeLookup { pid },
         ),
         Err(_) => ProcessLifetimeAnchorObservation::Insufficient(
-            InsufficientProcessIdentity::PlatformIdentityLookupFailed { pid },
+            InsufficientProcessIdentity::PlatformLookupFailed { pid },
         ),
     }
 }
@@ -333,7 +333,7 @@ fn query_macos_monotonic_process_start(pid: u32) -> MacosMonotonicProcessStartOb
         return MacosMonotonicProcessStartObservation::QueryFailed;
     };
     let mut rusage_info = MaybeUninit::<libc::rusage_info_v0>::uninit();
-    // SAFETY: `rusage_info` is a writable V0 buffer that the query does not retain.
+    // SAFETY: `rusage_info` is a writable V0 buffer that `libc::proc_pid_rusage` does not retain.
     let query_result = unsafe {
         libc::proc_pid_rusage(
             native_pid,
@@ -383,11 +383,11 @@ mod tests {
         for (start_time, reason) in [
             (
                 None,
-                InsufficientProcessIdentity::ProcessLifetimeAnchorUnavailable { pid: 42 },
+                InsufficientProcessIdentity::LifetimeAnchorUnavailable { pid: 42 },
             ),
             (
                 Some(0),
-                InsufficientProcessIdentity::ProcessLifetimeAnchorInvalid { pid: 42 },
+                InsufficientProcessIdentity::LifetimeAnchorInvalid { pid: 42 },
             ),
         ] {
             let initial_anchor = macos_processkit_lifetime_anchor(42, start_time);
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(
             observed,
             ObservedProcessIdentity::Insufficient(
-                InsufficientProcessIdentity::PlatformIdentityChangedDuringLookup { pid: 42 }
+                InsufficientProcessIdentity::PlatformChangedDuringLookup { pid: 42 }
             )
         );
     }

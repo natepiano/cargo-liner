@@ -23,6 +23,7 @@ pub use cpu::CpuMonitor;
 pub use cpu::CpuPoller;
 pub use cpu::CpuSeverity;
 pub use cpu::CpuUsage;
+pub use cpu::GpuUsage;
 pub use cpu::RollingMean;
 pub use cpu::blank_bar_color;
 pub use cpu::filled_cells;

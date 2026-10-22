@@ -149,7 +149,7 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
             "alpha",
             "└─ alpha impl thinking a-account a-branch /a-directory 4h",
         ),
-        ("a-shell", "└─ a-shell — command — — — 2h"),
+        ("a-shell", "└─ a-shell shell running a-account — — 2h"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -160,8 +160,8 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
 
     for (name, hue) in [
         ("zeta", RainbowHue::Orange),
-        ("nested", RainbowHue::Yellow),
-        ("alpha", RainbowHue::Green),
+        ("nested", RainbowHue::Green),
+        ("alpha", RainbowHue::Cyan),
     ] {
         assert_eq!(
             name_color(&buffer, name),
@@ -400,7 +400,13 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
     let root = AgentRow {
         role_fallback: RoleFallback::None,
         children: vec![
-            child(0, ChildKind::Subagent, None, "work-parent", 2 * HOUR),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "work-parent",
+                2 * HOUR,
+            ),
             older,
             child(2, ChildKind::Shell, Some(51), "z-descendant", 45 * MINUTE),
             younger,
@@ -421,7 +427,10 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
                 TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
                     direction == SortDirection::Ascending
                 },
-                TreeColumn::Role | TreeColumn::Branch | TreeColumn::Directory => false,
+                TreeColumn::Type
+                | TreeColumn::Role
+                | TreeColumn::Branch
+                | TreeColumn::Directory => false,
             };
             let expected = if alpha_first {
                 vec![
@@ -514,7 +523,7 @@ fn sorting_preserves_the_footer_role_and_account_foregrounds() {
         let role_x = find(&buffer, "role").expect("role header").0;
         for name in ["zeta", "alpha"] {
             let row = find(&buffer, name).expect("worker row").1;
-            assert_eq!(buffer[(role_x, row)].fg, Color::LightCyan);
+            assert_eq!(buffer[(role_x, row)].fg, tui_pane::text_default());
         }
     }
 }
@@ -629,5 +638,135 @@ fn each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order() {
                 );
             }
         }
+    }
+}
+
+const MIXED_CASE_NAMES: [&str; 4] = [
+    "Feature-log proposals",
+    "accounts",
+    "feature-log proposals",
+    "Accounts",
+];
+const CASE_INSENSITIVE_ORDER: [&str; 4] = [
+    "Accounts",
+    "accounts",
+    "Feature-log proposals",
+    "feature-log proposals",
+];
+
+fn mixed_case_rows() -> Vec<AgentRow> {
+    MIXED_CASE_NAMES
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let pid = u32::try_from(index + 20).expect("fixture pid");
+            AgentRow {
+                session_id: SessionIdentity::Claude(format!("case-id-{pid}")),
+                ..agent(pid, name, u64::from(pid) * MINUTE, None)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
+    let mut rows = mixed_case_rows();
+    let edges = rows
+        .iter()
+        .map(|row| HierarchyEdge {
+            reviewer: ReviewerState::NotPool,
+            manager:  "case-director".into(),
+            member:   format!("case-id-{}", row.pid),
+            role:     HierarchyRole::Unit,
+        })
+        .collect();
+    rows.push(AgentRow {
+        session_id: SessionIdentity::Claude("case-director".into()),
+        ..agent(10, "director", HOUR, None)
+    });
+    let state = MachineState::Answered(rows, HierarchyEdges(edges).into());
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let original = tile_order_sorted(&placement, &HashMap::new(), NOW);
+    let director = original
+        .iter()
+        .find_map(|tile| match tile {
+            AgentTile::Agent(entry) if entry.row.pid == 10 => Some(entry),
+            AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
+        })
+        .expect("showrunner tile");
+    let cells = cell_order_placed(&placement);
+    let mut sort = director.sort;
+    for reverse in [false, true] {
+        let sorts = HashMap::from([(TileKey::Agent(director.id.clone()), sort)]);
+        let tiles = tile_order_sorted(&placement, &sorts, NOW);
+        let entry = tiles
+            .iter()
+            .find_map(|tile| match tile {
+                AgentTile::Agent(entry) if entry.row.pid == 10 => Some(entry),
+                AgentTile::Agent(_) | AgentTile::Unassigned(_) => None,
+            })
+            .expect("showrunner tile");
+        let buffer = drawn_into(entry, &cells, 240, 16);
+        let mut expected = CASE_INSENSITIVE_ORDER;
+        if reverse {
+            expected.reverse();
+        }
+        assert_eq!(
+            visible_order(&buffer, &MIXED_CASE_NAMES),
+            expected,
+            "reverse={reverse}"
+        );
+        sort.select(TreeColumn::Session);
+    }
+}
+
+#[test]
+fn unassigned_session_sort_ignores_case_and_breaks_ties_by_original_name() {
+    let state = MachineState::Answered(mixed_case_rows(), HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "fixture",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let original = tile_order_sorted(&placement, &HashMap::new(), NOW);
+    let tile = original
+        .iter()
+        .find(|tile| matches!(tile, AgentTile::Unassigned(_)))
+        .expect("pool");
+    let mut sort = tile.default_sort();
+    for reverse in [false, true] {
+        let sorts = HashMap::from([(tile.key(), sort)]);
+        let tiles = tile_order_sorted(&placement, &sorts, NOW);
+        let pool = tiles
+            .iter()
+            .find_map(|tile| match tile {
+                AgentTile::Unassigned(entry) => Some(entry),
+                AgentTile::Agent(_) => None,
+            })
+            .expect("unassigned tile");
+        let rect = area(240, 16);
+        let mut buffer = Buffer::empty(rect);
+        draw_unassigned(
+            &mut buffer,
+            rect,
+            pool,
+            NOW,
+            AccountColumn::Hidden,
+            &FooterColors::default(),
+        );
+        let mut expected = CASE_INSENSITIVE_ORDER;
+        if reverse {
+            expected.reverse();
+        }
+        assert_eq!(
+            visible_order(&buffer, &MIXED_CASE_NAMES),
+            expected,
+            "reverse={reverse}"
+        );
+        sort.select(TreeColumn::Session);
     }
 }

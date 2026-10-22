@@ -1,13 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 #[cfg(target_os = "macos")]
 use tui_pane::CoreCluster;
 use tui_pane::CpuUsage;
+use tui_pane::GpuUsage;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::Region;
@@ -17,25 +20,50 @@ use tui_pane::ViewportOverflow;
 use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
-use tui_pane::render_overflow_affordance;
 use tui_pane::text_default;
 use tui_pane::warning_color;
 
 use super::CpuPane;
+use super::pane::CpuSamplePhase;
 use crate::config::CpuConfig;
 use crate::tui::panes::constants::CPU_BAR_WIDTH;
 use crate::tui::panes::constants::CPU_BREAKDOWN_ROWS;
 use crate::tui::panes::constants::CPU_GPU_ROWS;
 use crate::tui::panes::constants::CPU_PINNED_HEAD_ROWS;
 use crate::tui::panes::constants::CPU_STATIC_INNER_HEIGHT;
-use crate::tui::panes::constants::GPU_UNAVAILABLE_TEXT;
 use crate::tui::render_context::PaneRenderCtx;
 
-/// Pinned tail rows below the scrolling cores band: breakdown rows plus GPU.
-const fn cpu_pinned_tail_rows() -> usize { CPU_BREAKDOWN_ROWS + CPU_GPU_ROWS }
+/// The GPU section expands only when the platform has metrics to show.
+#[derive(Clone, Copy)]
+enum GpuRows {
+    Unavailable,
+    Metrics,
+}
 
-const fn total_selectable_rows(core_count: usize) -> usize {
-    CPU_PINNED_HEAD_ROWS + core_count + cpu_pinned_tail_rows()
+impl From<GpuUsage> for GpuRows {
+    fn from(gpu: GpuUsage) -> Self {
+        #[cfg(target_os = "macos")]
+        let has_metrics = gpu.core_count.is_some()
+            || gpu.device_percent.is_some()
+            || gpu.renderer_percent.is_some()
+            || gpu.tiler_percent.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let has_metrics = gpu.device_percent.is_some();
+        if has_metrics {
+            Self::Metrics
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+impl GpuRows {
+    const fn count(self) -> usize {
+        match self {
+            Self::Unavailable => 1,
+            Self::Metrics => CPU_GPU_ROWS,
+        }
+    }
 }
 
 fn cpu_required_inner_height(core_count: usize) -> u16 {
@@ -50,7 +78,7 @@ pub fn cpu_required_pane_height(core_count: usize) -> u16 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CpuSelectableRow {
     CoreCount,
-    Device,
+    Total,
     Core(usize),
     System,
     User,
@@ -63,7 +91,6 @@ enum CpuSelectableRow {
     GpuRenderer,
     #[cfg(target_os = "macos")]
     GpuTiler,
-    #[cfg(not(target_os = "macos"))]
     Gpu,
 }
 
@@ -71,7 +98,7 @@ impl CpuSelectableRow {
     const fn logical_index(self, core_count: usize) -> usize {
         match self {
             Self::CoreCount => 0,
-            Self::Device => 1,
+            Self::Total => 1,
             Self::Core(index) => index + 2,
             Self::System => core_count + 2,
             Self::User => core_count + 3,
@@ -84,7 +111,6 @@ impl CpuSelectableRow {
             Self::GpuRenderer => core_count + 7,
             #[cfg(target_os = "macos")]
             Self::GpuTiler => core_count + 8,
-            #[cfg(not(target_os = "macos"))]
             Self::Gpu => core_count + 5,
         }
     }
@@ -126,6 +152,12 @@ fn cpu_bar_line(
     );
     #[cfg(not(target_os = "macos"))]
     let number_text = format!("{core_number:>number_width$} ");
+    // The embedded label consumes bar cells. Positive usage must still leave
+    // at least one visible block after it, even when rounding falls in the label.
+    let filled = match percent {
+        0 => 0,
+        _ => filled.max(number_text.len() + 1).min(CPU_BAR_WIDTH),
+    };
     let (number_on_filled, number_past_fill) = number_text.split_at(filled.min(number_text.len()));
     let number_filled_span = Span::styled(
         number_on_filled.to_string(),
@@ -156,117 +188,145 @@ fn cpu_bar_line(
     ])
 }
 
-/// Single-line GPU percent row. Falls back to compact unavailable text in
-/// warning color when the OS exposes no matching metric.
+/// Availability of one metric reported by the GPU monitor.
+enum GpuMetric<T> {
+    Available(T),
+    Missing,
+}
+
+impl<T> From<Option<T>> for GpuMetric<T> {
+    fn from(value: Option<T>) -> Self { value.map_or_else(|| Self::Missing, Self::Available) }
+}
+
+/// Single-line GPU percent row. Missing metrics keep their label and show
+/// a dim en dash in the value column.
 fn gpu_metric_line(
     label: &str,
     percent: Option<u8>,
     cpu_cfg: &CpuConfig,
     width: u16,
 ) -> Line<'static> {
-    let (value_text, value_color) = percent.map_or_else(
-        || (GPU_UNAVAILABLE_TEXT.to_string(), warning_color()),
-        |percent| {
+    let value = match GpuMetric::from(percent) {
+        GpuMetric::Missing => Span::styled("–", Style::default().add_modifier(Modifier::DIM)),
+        GpuMetric::Available(percent) => {
             let severity = tui_pane::cpu_severity(
                 percent,
                 cpu_cfg.low_utilization_max_percent,
                 cpu_cfg.medium_utilization_max_percent,
             )
             .color();
-            (format!("{percent:>3}%"), severity)
+            Span::styled(format!("{percent:>3}%"), Style::default().fg(severity))
         },
-    );
-    value_line(label, value_text, value_color, width)
+    };
+    value_span_line(label, value, width)
 }
 
 #[cfg(target_os = "macos")]
 fn gpu_core_count_line(core_count: Option<u16>, width: u16) -> Line<'static> {
-    let (value_text, value_color) = core_count.map_or_else(
-        || (GPU_UNAVAILABLE_TEXT.to_string(), warning_color()),
-        |core_count| (core_count.to_string(), text_default()),
-    );
-    value_line("GPU Cores", value_text, value_color, width)
+    let value = match GpuMetric::from(core_count) {
+        GpuMetric::Missing => Span::styled("–", Style::default().add_modifier(Modifier::DIM)),
+        GpuMetric::Available(core_count) => {
+            Span::styled(core_count.to_string(), Style::default().fg(text_default()))
+        },
+    };
+    value_span_line("GPU cores", value, width)
 }
 
-/// Pinned `CPU Cores` head row: the live CPU core count.
+/// Pinned `CPU cores` head row: the live CPU core count.
 fn cpu_core_count_line(core_count: usize, width: u16) -> Line<'static> {
-    value_line("CPU Cores", core_count.to_string(), text_default(), width)
+    value_line("CPU cores", core_count.to_string(), text_default(), width)
 }
 
-/// Pinned `Device` head row: aggregate CPU utilization, mirroring the GPU
-/// `Device` row.
-fn device_line(percent: u8, width: u16) -> Line<'static> {
-    value_line("Device", format!("{percent:>3}%"), text_default(), width)
+/// Pinned `Total` head row: aggregate CPU utilization.
+fn total_line(percent: u8, width: u16) -> Line<'static> {
+    value_line("Total", format!("{percent:>3}%"), text_default(), width)
 }
 
 /// One `label  value` row: the label in label color on the left, the value
 /// right-aligned in `value_color`, padded to `width`. No trailing colon.
 fn value_line(label: &str, value_text: String, value_color: Color, width: u16) -> Line<'static> {
-    let space_count = usize::from(width).saturating_sub(
-        label
-            .len()
-            .saturating_add(value_text.len())
-            .saturating_add(2),
-    );
+    value_span_line(
+        label,
+        Span::styled(value_text, Style::default().fg(value_color)),
+        width,
+    )
+}
+
+fn value_span_line(label: &str, value: Span<'static>, width: u16) -> Line<'static> {
+    let space_count = usize::from(width)
+        .saturating_sub(label.len().saturating_add(value.width()).saturating_add(2));
     Line::from(vec![
         Span::raw(" "),
         Span::styled(label.to_string(), Style::default().fg(label_color())),
         Span::raw(" ".repeat(space_count)),
-        Span::styled(value_text, Style::default().fg(value_color)),
+        value,
         Span::raw(" "),
     ])
 }
 
-/// System / user / idle breakdown row: a `label:` in label color with the
+/// System / user / idle breakdown row: a label in label color with the
 /// percent right-aligned in its fixed `color`.
 fn metric_line(label: &str, percent: u8, color: Color, width: u16) -> Line<'static> {
-    value_line(&format!("{label}:"), format!("{percent:>3}%"), color, width)
+    value_line(label, format!("{percent:>3}%"), color, width)
 }
 
 /// The CPU pane's box tree: a pinned aggregate row, the scrolling cores band
 /// (the one `Fill` box), the System/User/Idle breakdown (a rule above it), and
 /// the GPU row (a rule above it). Rebuilt each frame from the live core count.
-fn cpu_region(core_count: usize) -> Region {
+fn cpu_region(core_count: usize, gpu_rows: GpuRows, inner_height: u16) -> Region {
+    let pinned_rows = CPU_PINNED_HEAD_ROWS + CPU_BREAKDOWN_ROWS + gpu_rows.count() + 2;
+    let band_height = usize::from(inner_height).saturating_sub(pinned_rows);
+    let cores = Region::rows(core_count, Size::Fill);
+    // Leave at least one bar visible in very short panes. Otherwise reserve
+    // a footer only when the cores overflow; it never owns a selectable row.
+    let cores = if core_count > band_height && band_height > 1 {
+        cores.footer()
+    } else {
+        cores
+    };
     Region::stack(vec![
         Region::rows(CPU_PINNED_HEAD_ROWS, Size::Fixed),
-        Region::rows(core_count, Size::Fill),
+        cores,
         Region::rows(CPU_BREAKDOWN_ROWS, Size::Fixed).rule(),
-        Region::rows(CPU_GPU_ROWS, Size::Fixed).rule(),
+        Region::rows(gpu_rows.count(), Size::Fixed).rule(),
     ])
 }
 
-/// Resolved rects for one CPU frame. The `Cores` count and `Device`
+/// Resolved rects for one CPU frame. The `CPU cores` count and `Total`
 /// utilization rows are pinned at the top; the cores band is the `Fill` box
 /// and scrolls; the breakdown rows and GPU follow. `band_offset` is the cores
 /// band's scroll position, held across frames so the cursor stays visible.
 struct CpuPanelLayout {
     core_count:     usize,
     core_count_row: Rect,
-    device:         Rect,
+    total:          Rect,
     cores:          Rect,
     cores_divider:  Rect,
     system:         Rect,
     user:           Rect,
     idle:           Rect,
     gpu_divider:    Rect,
-    #[cfg(target_os = "macos")]
-    gpu_cores:      Rect,
-    #[cfg(target_os = "macos")]
-    gpu_device:     Rect,
-    #[cfg(target_os = "macos")]
-    gpu_renderer:   Rect,
-    #[cfg(target_os = "macos")]
-    gpu_tiler:      Rect,
-    #[cfg(not(target_os = "macos"))]
     gpu:            Rect,
+    gpu_rows:       GpuRows,
+    cores_footer:   Rect,
     band_offset:    usize,
 }
 
 impl CpuPanelLayout {
-    fn new(inner: Rect, core_count: usize, cursor_pos: usize, prior_offset: usize) -> Self {
-        // `cpu_region(core_count).place` applies `prior_offset` only to region 1, the core band;
+    fn new(
+        inner: Rect,
+        core_count: usize,
+        gpu_rows: GpuRows,
+        cursor_pos: usize,
+        prior_offset: usize,
+    ) -> Self {
+        // `cpu_region(...).place` applies `prior_offset` only to region 1, the core band;
         // the pinned regions never scroll.
-        let placed = cpu_region(core_count).place(inner, cursor_pos, &[0, prior_offset, 0, 0]);
+        let placed = cpu_region(core_count, gpu_rows, inner.height).place(
+            inner,
+            cursor_pos,
+            &[0, prior_offset, 0, 0],
+        );
         let head = placed[0].content;
         let head_row = |offset: u16| Rect {
             y: head.y.saturating_add(offset),
@@ -279,35 +339,19 @@ impl CpuPanelLayout {
             height: 1,
             ..breakdown
         };
-        #[cfg(target_os = "macos")]
-        let gpu_row = {
-            let gpu = placed[3].content;
-            move |offset: u16| Rect {
-                y: gpu.y.saturating_add(offset),
-                height: 1,
-                ..gpu
-            }
-        };
         Self {
             core_count,
             core_count_row: head_row(0),
-            device: head_row(1),
+            total: head_row(1),
             cores: placed[1].content,
             cores_divider: placed[2].chrome,
             system: breakdown_row(0),
             user: breakdown_row(1),
             idle: breakdown_row(2),
             gpu_divider: placed[3].chrome,
-            #[cfg(target_os = "macos")]
-            gpu_cores: gpu_row(0),
-            #[cfg(target_os = "macos")]
-            gpu_device: gpu_row(1),
-            #[cfg(target_os = "macos")]
-            gpu_renderer: gpu_row(2),
-            #[cfg(target_os = "macos")]
-            gpu_tiler: gpu_row(3),
-            #[cfg(not(target_os = "macos"))]
             gpu: placed[3].content,
+            gpu_rows,
+            cores_footer: placed[1].footer,
             band_offset: placed[1].scroll_offset,
         }
     }
@@ -390,10 +434,10 @@ fn render_head_rows(
         frame,
         viewport,
         row_rects,
-        layout.device,
-        CpuSelectableRow::Device.logical_index(layout.core_count),
+        layout.total,
+        CpuSelectableRow::Total.logical_index(layout.core_count),
         focus,
-        Paragraph::new(device_line(usage.total_percent, layout.device.width)),
+        Paragraph::new(total_line(usage.total_percent, layout.total.width)),
     );
 }
 
@@ -465,7 +509,6 @@ fn render_breakdown_row(
     );
 }
 
-#[cfg(target_os = "macos")]
 fn render_gpu_rows(
     frame: &mut Frame,
     viewport: &Viewport,
@@ -475,7 +518,43 @@ fn render_gpu_rows(
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
+    match layout.gpu_rows {
+        GpuRows::Unavailable => render_selectable_row(
+            frame,
+            viewport,
+            row_rects,
+            layout.gpu,
+            CpuSelectableRow::Gpu.logical_index(layout.core_count),
+            focus,
+            Paragraph::new(value_line(
+                "GPU",
+                "unavailable".to_string(),
+                warning_color(),
+                layout.gpu.width,
+            )),
+        ),
+        GpuRows::Metrics => {
+            render_gpu_metrics(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn render_gpu_metrics(
+    frame: &mut Frame,
+    viewport: &Viewport,
+    row_rects: &mut Vec<(Rect, usize)>,
+    cpu_cfg: &CpuConfig,
+    usage: &CpuUsage,
+    layout: &CpuPanelLayout,
+    focus: PaneFocusState,
+) {
     let gpu = usage.gpu;
+    let gpu_row = |offset: u16| Rect {
+        y: layout.gpu.y.saturating_add(offset),
+        height: 1,
+        ..layout.gpu
+    };
     let mut render = |row: CpuSelectableRow, area: Rect, line: Line<'static>| {
         render_selectable_row(
             frame,
@@ -489,40 +568,30 @@ fn render_gpu_rows(
     };
     render(
         CpuSelectableRow::GpuCores,
-        layout.gpu_cores,
-        gpu_core_count_line(gpu.core_count, layout.gpu_cores.width),
+        gpu_row(0),
+        gpu_core_count_line(gpu.core_count, layout.gpu.width),
     );
     render(
         CpuSelectableRow::GpuDevice,
-        layout.gpu_device,
-        gpu_metric_line(
-            "Device",
-            gpu.device_percent,
-            cpu_cfg,
-            layout.gpu_device.width,
-        ),
+        gpu_row(1),
+        gpu_metric_line("Device", gpu.device_percent, cpu_cfg, layout.gpu.width),
     );
     render(
         CpuSelectableRow::GpuRenderer,
-        layout.gpu_renderer,
-        gpu_metric_line(
-            "Renderer",
-            gpu.renderer_percent,
-            cpu_cfg,
-            layout.gpu_renderer.width,
-        ),
+        gpu_row(2),
+        gpu_metric_line("Renderer", gpu.renderer_percent, cpu_cfg, layout.gpu.width),
     );
     render(
         CpuSelectableRow::GpuTiler,
-        layout.gpu_tiler,
-        gpu_metric_line("Tiler", gpu.tiler_percent, cpu_cfg, layout.gpu_tiler.width),
+        gpu_row(3),
+        gpu_metric_line("Tiler", gpu.tiler_percent, cpu_cfg, layout.gpu.width),
     );
 }
 
-/// Single aggregate `GPU:` row on platforms that expose only device
+/// Single aggregate `GPU` row on platforms that expose only device
 /// utilization (Linux, Windows).
 #[cfg(not(target_os = "macos"))]
-fn render_gpu_rows(
+fn render_gpu_metrics(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
@@ -547,15 +616,12 @@ fn render_gpu_rows(
     );
 }
 
-const fn sync_cpu_pane_state(
-    viewport: &mut Viewport,
-    inner: Rect,
-    core_count: usize,
-    band_offset: usize,
-) {
-    viewport.set_len(total_selectable_rows(core_count));
+const fn sync_cpu_pane_state(viewport: &mut Viewport, inner: Rect, layout: &CpuPanelLayout) {
+    viewport.set_len(
+        CPU_PINNED_HEAD_ROWS + layout.core_count + CPU_BREAKDOWN_ROWS + layout.gpu_rows.count(),
+    );
     viewport.set_content_area(inner);
-    viewport.set_scroll_offset(band_offset);
+    viewport.set_scroll_offset(layout.band_offset);
 }
 
 fn render_cpu_metric_rows(
@@ -621,7 +687,6 @@ pub(super) fn render_cpu_pane_body(
     pane: &mut CpuPane,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
-    let pane_focus_state = pane.focus.pane_focus_state;
     let inner = tui_pane::frame_inner(area);
     let mut chrome = PaneFrameChrome {
         title: cpu_panel_title().to_string(),
@@ -635,21 +700,56 @@ pub(super) fn render_cpu_pane_body(
         return chrome;
     }
 
-    let usage = pane
-        .content()
-        .cloned()
-        .unwrap_or_else(|| tui_pane::CpuUsage::placeholder(1));
+    render_cpu_sample_phase(
+        frame,
+        inner,
+        area,
+        pane,
+        &ctx.config.current().cpu,
+        &mut chrome,
+    );
+    chrome
+}
+
+pub(super) fn render_cpu_sample_phase(
+    frame: &mut Frame,
+    inner: Rect,
+    area: Rect,
+    pane: &mut CpuPane,
+    cpu_cfg: &CpuConfig,
+    chrome: &mut PaneFrameChrome,
+) {
+    let usage = match pane.sample_phase() {
+        CpuSamplePhase::AwaitingFirstSample { core_count } => {
+            let lines = vec![
+                cpu_core_count_line(*core_count, inner.width),
+                Line::from(" Sampling…"),
+            ];
+            render_cpu_status(frame, inner, pane, lines);
+            return;
+        },
+        CpuSamplePhase::Suppressed => {
+            render_cpu_status(frame, inner, pane, " Monitoring off");
+            return;
+        },
+        CpuSamplePhase::Unavailable => {
+            render_cpu_status(frame, inner, pane, " Unavailable");
+            return;
+        },
+        CpuSamplePhase::Sampled(usage) => usage,
+    };
+    let core_count = usage.cores.len();
     let cursor_pos = pane.viewport.pos();
     let layout = CpuPanelLayout::new(
         inner,
-        usage.cores.len(),
+        core_count,
+        GpuRows::from(usage.gpu),
         cursor_pos,
         pane.viewport.scroll_offset(),
     );
 
-    push_cpu_dividers(area, &layout, &mut chrome);
+    push_cpu_dividers(area, &layout, chrome);
 
-    let cpu_cfg = &ctx.config.current().cpu;
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     let viewport = &pane.viewport;
     render_cpu_metric_rows(
@@ -657,23 +757,30 @@ pub(super) fn render_cpu_pane_body(
         viewport,
         &mut row_rects,
         cpu_cfg,
-        &usage,
+        usage,
         &layout,
-        pane_focus_state,
+        pane.focus.pane_focus_state,
     );
     render_cores_affordance(frame, &layout, cursor_pos);
-    sync_cpu_pane_state(
-        &mut pane.viewport,
-        inner,
-        usage.cores.len(),
-        layout.band_offset,
-    );
+    sync_cpu_pane_state(&mut pane.viewport, inner, &layout);
     pane.set_row_rects(row_rects);
-
-    chrome
 }
 
-/// Draw the `▲ n of m ▼` overflow label on the cores band when more cores
+fn render_cpu_status(
+    frame: &mut Frame,
+    inner: Rect,
+    pane: &mut CpuPane,
+    message: impl Into<Text<'static>>,
+) {
+    pane.viewport.clear_surface();
+    pane.clear_row_rects();
+    frame.render_widget(
+        Paragraph::new(message.into()).style(Style::default().fg(label_color())),
+        inner,
+    );
+}
+
+/// Draw the `▲ n of m ▼` overflow label in the cores footer when more cores
 /// exist than fit. Skipped when the band has no visible rows.
 fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_pos: usize) {
     let band_visible = layout.band_visible();
@@ -687,17 +794,18 @@ fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_po
         .checked_sub(CPU_PINNED_HEAD_ROWS)
         .filter(|local| *local < layout.core_count)
         .unwrap_or(layout.band_offset);
-    render_overflow_affordance(
-        frame,
-        layout.cores,
-        ViewportOverflow::new(
-            layout.core_count,
-            layout.band_offset,
-            band_visible,
-            band_cursor,
-        ),
-        Style::default().fg(label_color()),
+    let overflow = ViewportOverflow::new(
+        layout.core_count,
+        layout.band_offset,
+        band_visible,
+        band_cursor,
     );
+    if let Some(label) = overflow.label() {
+        frame.render_widget(
+            Paragraph::new(format!(" {label}")).style(Style::default().fg(label_color())),
+            layout.cores_footer,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -708,6 +816,7 @@ mod tests {
     use tui_pane::CoreCluster;
     use tui_pane::text_default;
 
+    use super::GpuRows;
     use super::cpu_bar_line;
     use super::cpu_region;
     #[cfg(target_os = "macos")]
@@ -716,11 +825,8 @@ mod tests {
     use crate::config::CpuConfig;
     use crate::tui::panes::constants::CPU_CONTENT_WIDTH;
 
-    // `cores_offset` places `cpu_region(15)`: its two pinned head rows make cores logical [2,17),
-    // with breakdown starting at 17. macOS has 11 fixed rows (2 head, 1+3 breakdown, 1+4 GPU), so
-    // inner heights 12 and 26 leave 1 and 15 core rows. Other platforms have 8 fixed rows and a
-    // single GPU row, so heights 12 and 23 leave 4 and 15 core rows. Region 1's `scroll_offset`
-    // reports the core-band offset.
+    // The metrics GPU section pins 11 rows on macOS, 8 elsewhere. At height
+    // 14 the remaining band reserves one pager row, leaving 2 or 5 core rows.
     /// Build a core row with the default config, supplying the macOS-only
     /// cluster argument as unmapped so the bar assertions stay platform-neutral.
     fn bar_line_for_test(core_number: usize, number_width: usize, percent: u8) -> Line<'static> {
@@ -741,34 +847,35 @@ mod tests {
             width:  20,
             height: inner_height,
         };
-        cpu_region(15).place(inner, cursor, &[0, prior, 0, 0])[1].scroll_offset
+        cpu_region(15, GpuRows::Metrics, inner.height).place(inner, cursor, &[0, prior, 0, 0])[1]
+            .scroll_offset
     }
 
     #[test]
     fn band_offset_tracks_cursor_inside_the_band() {
-        // `cores_offset(12, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
+        // `cores_offset(14, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
         // page.
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(12, 14, 0), 12);
+        assert_eq!(cores_offset(14, 14, 0), 11);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(12, 14, 0), 9);
+        assert_eq!(cores_offset(14, 14, 0), 8);
     }
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_head_row() {
-        // `cores_offset(12, 0, 7)` retains prior offset 7 because logical cursor 0 is the pinned
+        // `cores_offset(14, 0, 7)` retains prior offset 7 because logical cursor 0 is the pinned
         // core-count row outside the band.
-        assert_eq!(cores_offset(12, 0, 7), 7);
+        assert_eq!(cores_offset(14, 0, 7), 7);
     }
 
     #[test]
     fn band_offset_holds_prior_on_a_pinned_tail_row() {
-        // `cores_offset(12, 17, 20)` keeps the prior offset for breakdown cursor 17 outside the
+        // `cores_offset(14, 17, 20)` keeps the prior offset for breakdown cursor 17 outside the
         // band, clamped to its last page (15 minus visible core rows).
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(12, 17, 20), 14);
+        assert_eq!(cores_offset(14, 17, 20), 13);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(12, 17, 20), 11);
+        assert_eq!(cores_offset(14, 17, 20), 10);
     }
 
     #[test]
@@ -797,15 +904,15 @@ mod tests {
     }
 
     #[test]
-    fn core_number_splits_at_the_fill_boundary() {
-        // `bar_line_for_test(12, 2, 10)` fills one cell: `line.spans[1]` shades the first digit and
-        // `line.spans[2]` leaves the second digit and margin on the row background.
+    fn low_usage_still_fills_beyond_the_core_number() {
+        // Low usage fills the embedded number and its margin, plus one
+        // visible block. It must not disappear behind the number.
         let line = bar_line_for_test(12, 2, 10);
-        assert_eq!(line.spans[1].content, "1");
-        assert_eq!(line.spans[2].content, "2 ");
+        assert_eq!(line.spans[1].content, "12 ");
+        assert_eq!(line.spans[2].content, "");
         assert_eq!(line.spans[2].style.fg, Some(text_default()));
         assert_eq!(line.spans[2].style.bg, None);
-        assert_eq!(line.spans[3].content, "");
+        assert_eq!(line.spans[3].content, "█");
     }
 
     #[test]

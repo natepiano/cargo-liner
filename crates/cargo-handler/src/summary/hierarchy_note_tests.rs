@@ -24,7 +24,7 @@ fn rows() -> Vec<AgentRow> {
     vec![
         serde_json::from_value(serde_json::json!({
             "agent":"claude","name":"visible-production-session","pid":10,
-            "started":100,"directory":"/fixture","children":[]
+            "started":100,"directory":"/fixture","children":[{"depth":0,"kind":"shell","pid":9999,"name":"fixture command","started":100}]
         }))
         .expect("visible session"),
     ]
