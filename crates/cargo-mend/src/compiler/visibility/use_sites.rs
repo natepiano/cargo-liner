@@ -826,36 +826,37 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             DefKind::Ctor(CtorOf::Variant, _) => self.tcx.parent(self.tcx.parent(target)),
             _ => target,
         };
-        // Skip references to items in other crates — narrowing decisions
-        // only apply to local items.
+        // `UseSiteCollector::record_target` skips references to items in other crates — narrowing
+        // decisions only apply to local items.
         if target.is_local() {
             self.push_site(target, UseSiteReference::Named);
             self.record_target_modules(target);
         }
-        // Naming a tuple-struct constructor requires every positional field
-        // to be visible at the call site. This covers construction, using the
-        // constructor as a function value, and tuple-struct patterns. Numeric
-        // field access and `offset_of!` are recorded by their dedicated paths.
+        // `UseSiteCollector::record_target` records tuple-struct fields because naming a
+        // constructor requires every positional field to be visible at the call site. This
+        // covers construction, using the constructor as a function value, and tuple-struct
+        // patterns. Numeric field access and `offset_of!` are recorded by their dedicated
+        // paths.
         if matches!(original_kind, DefKind::Ctor(CtorOf::Struct, _)) {
             for field in &self.tcx.adt_def(target).non_enum_variant().fields {
                 self.record_target(field.did);
             }
         }
         match self.tcx.def_kind(target) {
-            // A reference to a type alias also reaches every type the alias
-            // names: `type M = Wrapper<Inner>` exposes `Inner` wherever `M`
-            // is used, even though `Inner` never appears at the use site.
-            // Record those component types under the same caller module so
-            // narrowing findings see the reach that flows through the alias.
+            // `UseSiteCollector::record_alias_components` records that a reference to a type alias
+            // also reaches every type the alias names: `type M = Wrapper<Inner>`
+            // exposes `Inner` wherever `M` is used, even though `Inner` never appears
+            // at the use site. Record those component types under the same caller
+            // module so narrowing findings see the reach that flows through the alias.
             // Foreign aliases can still name a local type, so this runs
             // regardless of where the alias itself lives.
             DefKind::TyAlias => self.record_alias_components(target),
-            // Calling a function reaches every local type named in its
-            // signature: `fn f() -> Guard` exposes `Guard` at the call site
-            // even though `Guard` never appears there. Record those signature
-            // types under the same caller module so narrowing findings see
-            // the reach that flows through the call. Without this, removing
-            // `pub` from a type returned by (or passed to) a `pub(crate)` fn
+            // `UseSiteCollector::record_fn_signature_components` records that calling a function
+            // reaches every local type named in its signature: `fn f() -> Guard`
+            // exposes `Guard` at the call site even though `Guard` never appears there.
+            // Record those signature types under the same caller module so narrowing
+            // findings see the reach that flows through the call. Without this,
+            // removing `pub` from a type returned by (or passed to) a `pub(crate)` fn
             // leaves a private type in that fn's signature (E0446) and rolls
             // `--fix` back.
             DefKind::Fn | DefKind::AssocFn => self.record_fn_signature_components(target),
@@ -1307,7 +1308,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         let res = match qpath {
             QPath::Resolved(_, path) => path.res,
             QPath::TypeRelative(..) => {
-                // Type-relative paths (e.g. `Foo::method`) need typeck to
+                // `QPath::TypeRelative` paths (e.g. `Foo::method`) need `self.tcx.typeck` to
                 // resolve. Best-effort lookup via typeck_results.
                 let owner = hir_id.owner.def_id;
                 if !self.tcx.has_typeck_results(owner) {
@@ -1491,8 +1492,8 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
         match &expr.kind {
             ExprKind::Path(qpath) => self.record_qpath(qpath, expr.hir_id),
-            // Method-call dispatch is type-dependent, not path-based. The
-            // callee def-id lives in `TypeckResults`.
+            // `UseSiteCollector::record_type_dependent_target` uses `type_dependent_def_id`
+            // for method-call dispatch because resolution depends on types, not paths.
             ExprKind::MethodCall(..) => {
                 self.record_type_dependent_target(expr.hir_id);
             },
@@ -1848,16 +1849,17 @@ fn fallback_facade_visibility_decision(
     match visibility {
         Visibility::Public => FacadeVisibilityDecision::reexport(ParentFacadeSpelling::Public),
         Visibility::Restricted(scope) if scope == CRATE_DEF_ID.to_def_id() => {
-            // At the crate root, rustc resolves both a private `use` and an
-            // explicit `pub(crate) use` to `CRATE_DEF_ID`. When the source span
-            // is unavailable, keep this as a facade: excluding a real
-            // `pub(crate)` re-export would create a false finding.
-            // Its spelling is unknown, though: this reach can also come from
+            // `fallback_facade_visibility_decision` retains a facade because at the crate root,
+            // rustc resolves both a private `use` and an explicit `pub(crate) use` to
+            // `CRATE_DEF_ID`. When the source span is unavailable, keep this as a
+            // facade: excluding a real `pub(crate)` re-export would create a false
+            // finding. Its spelling is unknown, though: this reach can also come from
             // `pub(super)` in a crate-root child or `pub(in crate)`.
             FacadeVisibilityDecision::reexport_with_unknown_spelling()
         },
         Visibility::Restricted(scope) if scope == parent_module.to_def_id() => {
-            // `pub(super)` and `pub(in super)` have the same resolved scope.
+            // `FacadeVisibilityDecision::reexport_with_unknown_spelling` handles `pub(super)` and
+            // `pub(in super)` because they have the same resolved scope.
             FacadeVisibilityDecision::reexport_with_unknown_spelling()
         },
         Visibility::Restricted(scope) if scope == owner_module.to_def_id() => {
