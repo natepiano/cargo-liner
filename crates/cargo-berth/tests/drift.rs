@@ -1034,18 +1034,20 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
     )
     .expect("wrapped PATH should join");
 
-    let collision = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["drift", "--full", "--reservation", &subject_id, "--json"])
-        .current_dir(repository.path())
-        .env("PATH", wrapped_path)
-        .env(FOREIGN_ROOT_ENVIRONMENT, &foreign_root)
-        .env(REAL_GIT_ENVIRONMENT, git_binary())
-        .env(REAL_PATH_ENVIRONMENT, real_path)
-        .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove(RUN_ENVIRONMENT)
-        .env_remove(POST_COMMIT_ENVIRONMENT)
-        .output()
-        .expect("collision drift should run");
+    let collision = cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+        "CARGO_BIN_EXE_cargo-berth"
+    )))
+    .args(["drift", "--full", "--reservation", &subject_id, "--json"])
+    .current_dir(repository.path())
+    .env("PATH", wrapped_path)
+    .env(FOREIGN_ROOT_ENVIRONMENT, &foreign_root)
+    .env(REAL_GIT_ENVIRONMENT, git_binary())
+    .env(REAL_PATH_ENVIRONMENT, real_path)
+    .env_remove(BYPASS_ENVIRONMENT)
+    .env_remove(RUN_ENVIRONMENT)
+    .env_remove(POST_COMMIT_ENVIRONMENT)
+    .output()
+    .expect("collision drift should run");
     let collision_envelope = json_output(&collision);
     let collision_effect = &collision_envelope["payload"]["data"]["results"][0]["effects"][0];
 
@@ -3735,30 +3737,27 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff-tree", "status"],
-        "reconciliation and drift share one status observation; HEAD is trunk, so no branch merge query starts"
+        vec!["diff-tree"],
+        "status is read in process; HEAD is trunk, so no branch merge query starts"
     );
     assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
-    assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
+    assert_eq!(cheap.fingerprint_commands(), Vec::<String>::new());
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
     let mut cheap_commands = cheap.commands();
     cheap_commands.sort_unstable();
     assert_eq!(
         cheap_commands,
-        vec!["cat-file", "status", "worktree"],
-        "the cheap PostToolUse engine path must reuse its discovered ledger and administrative directory",
+        Vec::<String>::new(),
+        "the cheap PostToolUse engine path reads its unchanged repository facts without Git children",
     );
 
     fs::remove_file(fingerprint_cache(repository.path())).expect("fingerprint cache should delete");
     let missing_cache = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(missing_cache.output.status.success());
-    assert_eq!(
-        missing_cache.fingerprint_commands(),
-        vec!["diff-tree", "status"]
-    );
+    assert_eq!(missing_cache.fingerprint_commands(), vec!["diff-tree"]);
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
         "full_phase_start_fallback"
@@ -3769,10 +3768,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
         .expect("corrupt fingerprint should write");
     let corrupt_cache = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(corrupt_cache.output.status.success());
-    assert_eq!(
-        corrupt_cache.fingerprint_commands(),
-        vec!["diff-tree", "status"]
-    );
+    assert_eq!(corrupt_cache.fingerprint_commands(), vec!["diff-tree"]);
     assert_batched_full_attribution_commands(&corrupt_cache.commands());
 }
 

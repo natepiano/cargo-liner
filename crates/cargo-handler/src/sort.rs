@@ -10,6 +10,14 @@ use crate::agent_cell::TreeColumn;
 use crate::constants::ACCOUNTS_HEADERS;
 use crate::constants::SUMMARY_HEADERS;
 
+/// Alphabetical session order, with original spelling breaking case-insensitive ties.
+pub(crate) fn compare_names(left: &str, right: &str) -> Ordering {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(right.chars().flat_map(char::to_lowercase))
+        .then_with(|| left.cmp(right))
+}
+
 /// How values in the selected column are ordered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SortDirection {

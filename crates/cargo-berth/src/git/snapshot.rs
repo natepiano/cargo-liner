@@ -19,11 +19,18 @@ use super::error::GitError;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::object::OperationObjectReader;
+use super::read;
 use super::refs::HeadAttachment;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
+
+/// Successful staged, unstaged and untracked path observations in porcelain format.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckoutStatus {
+    pub(crate) porcelain: Vec<u8>,
+}
 
 #[derive(Eq, Hash, PartialEq)]
 struct BranchPathKey {
@@ -33,7 +40,7 @@ struct BranchPathKey {
 }
 
 type BranchPathFacts = HashMap<BranchPathKey, Arc<RepositoryFact<Vec<ReservationScopePath>>>>;
-type CheckoutStatusFacts = HashMap<PathBuf, Arc<RepositoryFact<Output>>>;
+type CheckoutStatusFacts = HashMap<PathBuf, Arc<RepositoryFact<CheckoutStatus>>>;
 
 /// A fact can be initialized once, including an unsuccessful read. Workers see
 /// the same failure instead of retrying Git independently.
@@ -56,7 +63,7 @@ impl<T> RepositoryFact<T> {
 pub(crate) struct RepositorySnapshot {
     context:               WorktreeContext,
     worktrees:             Arc<RepositoryFact<Vec<u8>>>,
-    status:                Arc<RepositoryFact<Output>>,
+    status:                Arc<RepositoryFact<CheckoutStatus>>,
     other_checkout_status: Arc<Mutex<CheckoutStatusFacts>>,
     branch_paths:          Arc<Mutex<BranchPathFacts>>,
     head:                  Arc<RepositoryFact<GitObjectId>>,
@@ -109,29 +116,34 @@ impl RepositorySnapshot {
     pub(crate) fn worktree_list_porcelain(&self) -> Result<&[u8], GitError> {
         self.worktrees
             .read(|| {
-                self.successful_output(
-                    GIT_WORKTREE_COMMAND,
-                    &[
+                read::worktrees(self.repository_root())?.or_git(|| {
+                    self.successful_output(
                         GIT_WORKTREE_COMMAND,
-                        GIT_WORKTREE_LIST_ARG,
-                        GIT_PORCELAIN_ARG,
-                        GIT_NUL_TERMINATED_ARG,
-                    ],
-                )
-                .map(|output| output.stdout)
+                        &[
+                            GIT_WORKTREE_COMMAND,
+                            GIT_WORKTREE_LIST_ARG,
+                            GIT_PORCELAIN_ARG,
+                            GIT_NUL_TERMINATED_ARG,
+                        ],
+                    )
+                    .map(|output| output.stdout)
+                })
             })
             .map(Vec::as_slice)
     }
 
     /// Keep one status result for staged, unstaged and untracked paths.
-    pub(crate) fn working_tree_status(&self) -> Result<&Output, GitError> {
+    pub(crate) fn working_tree_status(&self) -> Result<&CheckoutStatus, GitError> {
         self.status
             .read(|| Self::read_checkout_status(self.repository_root()))
     }
 
     /// Each holder checkout has one status observation in this operation, even
     /// when several targets or workers ask about it.
-    pub(crate) fn working_tree_status_at(&self, checkout: &Path) -> Result<Output, GitError> {
+    pub(crate) fn working_tree_status_at(
+        &self,
+        checkout: &Path,
+    ) -> Result<CheckoutStatus, GitError> {
         let checkout = std::fs::canonicalize(checkout)?;
         if checkout == self.repository_root() {
             return self.working_tree_status().cloned();
@@ -146,22 +158,26 @@ impl RepositorySnapshot {
         fact.read(|| Self::read_checkout_status(&checkout)).cloned()
     }
 
-    fn read_checkout_status(checkout: &Path) -> Result<Output, GitError> {
-        let output = command::command_output(command::git_command(checkout)?.args([
-            "status",
-            "--porcelain",
-            "-z",
-            "--no-renames",
-            "--untracked-files=all",
-        ]))?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            Err(GitError::CommandFailed {
-                command: "status",
-                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    fn read_checkout_status(checkout: &Path) -> Result<CheckoutStatus, GitError> {
+        read::status(checkout)?
+            .or_git(|| {
+                let output = command::command_output(command::git_command(checkout)?.args([
+                    "status",
+                    "--porcelain",
+                    "-z",
+                    "--no-renames",
+                    "--untracked-files=all",
+                ]))?;
+                if output.status.success() {
+                    Ok(output.stdout)
+                } else {
+                    Err(GitError::CommandFailed {
+                        command: "status",
+                        stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                    })
+                }
             })
-        }
+            .map(|porcelain| CheckoutStatus { porcelain })
     }
 
     /// Keep immutable branch-path evidence across generation retries and holders sharing an
@@ -202,24 +218,27 @@ impl RepositorySnapshot {
 
     /// Resolve HEAD attachment once with Git's symbolic-ref and backend semantics.
     fn read_head_attachment(&self) -> Result<HeadAttachment, GitError> {
-        let output = command::git_output(
-            self.repository_root(),
-            [GIT_SYMBOLIC_REF_COMMAND, "--quiet", GIT_HEAD_REVISION],
-        )?;
-        if output.status.success() {
-            let reference = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-            return reference
-                .trim()
-                .parse()
-                .map(|full_ref| HeadAttachment::Branch { full_ref })
-                .map_err(|_| GitError::InvalidReferenceName { reference });
-        }
-        if output.status.code() == Some(1) {
-            return Ok(HeadAttachment::Detached);
-        }
-        Err(GitError::CommandFailed {
-            command: "symbolic-ref",
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        read::attachment(self.repository_root())?.or_git(|| {
+            let output = command::git_output(
+                self.repository_root(),
+                [GIT_SYMBOLIC_REF_COMMAND, "--quiet", GIT_HEAD_REVISION],
+            )?;
+            if output.status.success() {
+                let reference =
+                    String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+                return reference
+                    .trim()
+                    .parse()
+                    .map(|full_ref| HeadAttachment::Branch { full_ref })
+                    .map_err(|_| GitError::InvalidReferenceName { reference });
+            }
+            if output.status.code() == Some(1) {
+                return Ok(HeadAttachment::Detached);
+            }
+            Err(GitError::CommandFailed {
+                command: "symbolic-ref",
+                stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            })
         })
     }
 
@@ -279,7 +298,7 @@ mod tests {
             linked.to_str().ok_or("linked path is not UTF-8")?,
         ])?;
         let snapshot = RepositorySnapshot::discover(fixture.root())?;
-        let original = snapshot.working_tree_status_at(&linked)?.stdout;
+        let original = snapshot.working_tree_status_at(&linked)?.porcelain;
         std::fs::write(linked.join("pending.txt"), "holder work")?;
         let alias = linked.join("..").join("linked checkout");
         std::thread::scope(|scope| -> FixtureResult {
@@ -288,15 +307,15 @@ mod tests {
                 .collect::<Vec<_>>();
             for reader in readers {
                 let output = reader.join().map_err(|_| "status worker panicked")??;
-                assert_eq!(output.stdout, original);
+                assert_eq!(output.porcelain, original);
             }
             Ok(())
         })?;
         let fresh = RepositorySnapshot::new(snapshot.context().clone());
-        assert_ne!(fresh.working_tree_status_at(&linked)?.stdout, original);
+        assert_ne!(fresh.working_tree_status_at(&linked)?.porcelain, original);
         assert_eq!(
-            snapshot.working_tree_status_at(fixture.root())?.stdout,
-            snapshot.working_tree_status()?.stdout
+            snapshot.working_tree_status_at(fixture.root())?.porcelain,
+            snapshot.working_tree_status()?.porcelain
         );
         Ok(())
     }
@@ -306,7 +325,7 @@ mod tests {
         let fixture = PatchEquivalenceFixture::new()?;
         let snapshot = RepositorySnapshot::discover(fixture.root())?;
         let head = snapshot.head_object_id()?.clone();
-        let status = snapshot.working_tree_status()?.stdout.clone();
+        let status = snapshot.working_tree_status()?.porcelain.clone();
         let worktrees = snapshot.worktree_list_porcelain()?.to_vec();
         assert!(matches!(
             snapshot.head_attachment()?,
@@ -318,7 +337,7 @@ mod tests {
         std::fs::write(fixture.root().join("new-untracked.txt"), "pending work")?;
 
         assert_eq!(snapshot.head_object_id()?, &head);
-        assert_eq!(snapshot.working_tree_status()?.stdout, status);
+        assert_eq!(snapshot.working_tree_status()?.porcelain, status);
         assert_eq!(snapshot.worktree_list_porcelain()?, worktrees);
         assert!(matches!(
             snapshot.head_attachment()?,
@@ -327,7 +346,7 @@ mod tests {
 
         let fresh = RepositorySnapshot::new(snapshot.context().clone());
         assert_ne!(fresh.head_object_id()?, &head);
-        assert_ne!(fresh.working_tree_status()?.stdout, status);
+        assert_ne!(fresh.working_tree_status()?.porcelain, status);
         assert_ne!(fresh.worktree_list_porcelain()?, worktrees);
         assert!(matches!(fresh.head_attachment()?, HeadAttachment::Detached));
         assert_eq!(fresh.common_directory(), snapshot.common_directory());

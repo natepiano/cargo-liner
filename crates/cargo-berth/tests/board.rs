@@ -1647,17 +1647,22 @@ fn board_sections_share_one_committed_generation_when_a_claim_arrives_during_pre
     )
     .expect("wrapped PATH should join");
 
-    let board = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+    let board = cargo_berth_test_support::TestProcessGroup::spawn(
+        cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+            "CARGO_BIN_EXE_cargo-berth"
+        )))
         .args(["board", "--json"])
         .current_dir(repository.path())
         .env("PATH", wrapped_path)
         .env(REAL_GIT_ENVIRONMENT, git_binary())
+        // Exercise preparation races through the explicit command-configuration route.
         .env("CARGO_BERTH_TEST_BOARD_SIGNAL", &signal_path)
         .env("CARGO_BERTH_TEST_BOARD_RELEASE", &release_path)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("board should spawn");
+        .stderr(Stdio::piped()),
+    )
+    .expect("board should spawn");
     let deadline = Instant::now() + BOARD_LOCKED_READ_TIMEOUT;
     while !signal_path.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
@@ -3464,7 +3469,7 @@ fn board_git_cost_separates_each_scaling_dimension() {
             .lines()
             .filter(|line| line.starts_with("worktree list"))
             .count(),
-        1
+        0
     );
     assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(
@@ -5017,6 +5022,8 @@ fn release_reports_unavailable_pending_paths_after_a_trunk_rewrite() {
             "edit_blocking_status": "blocking",
         }),
     );
+    // The monitor configuration selects Git's status protocol for this fault-injection case.
+    git(root, &["config", "core.fsmonitor", "true"]);
     // Fail only the holder's pending-path observation; commit ancestry remains readable.
     let wrapper = TRACING_GIT_WRAPPER.replace(
         "exec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\"",
@@ -6148,7 +6155,7 @@ fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservatio
     let retention = format!("rev-parse refs/cargo-berth/reservations/{reservation_id}");
     let branch_ancestry = format!("merge-base --is-ancestor {protected_tip} {protected_tip}");
     let trace = fs::read_to_string(&traced.trace_path).expect("git trace should read");
-    assert_eq!(trace.lines().filter(|line| *line == branch).count(), 1);
+    assert_eq!(trace.lines().filter(|line| *line == branch).count(), 0);
     let protected_object_query = format!("cat-file -e {protected_tip}^{{commit}}");
     assert_eq!(
         trace
@@ -6159,7 +6166,7 @@ fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservatio
         "orphan object availability must reuse the operation's batch reader"
     );
     assert_batched_evidence_and_retention_queries(&trace);
-    assert_eq!(trace.lines().filter(|line| *line == retention).count(), 1);
+    assert_eq!(trace.lines().filter(|line| *line == retention).count(), 0);
     // The branch still points at the protected tip, and a commit is its own ancestor.
     assert_eq!(
         trace

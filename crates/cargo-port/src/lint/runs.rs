@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 
-use chrono::DateTime;
-use chrono::FixedOffset;
-
 use super::run::LintRun;
-use super::run::LintRunStatus;
 use super::status;
+use super::status::CachedLintStatus;
 use super::status::LintStatus;
 
 /// Per-project lint state: run history and current status.
@@ -16,6 +13,8 @@ use super::status::LintStatus;
 pub struct LintRuns {
     runs:          Vec<LintRun>,
     status:        LintStatus,
+    /// Historical outcome and validated same-run start used by the startup sweep.
+    cached_status: CachedLintStatus,
     /// Archive byte size per run, keyed by `run_id`. Populated eagerly on
     /// `set_runs` so UI reads never touch the filesystem.
     archive_bytes: HashMap<String, u64>,
@@ -26,16 +25,19 @@ impl LintRuns {
 
     pub const fn status(&self) -> &LintStatus { &self.status }
 
-    /// `started_at` of the most recent terminal run (newest run that is not
-    /// `Running`), parsed to a timestamp. `None` when there is no such run or
-    /// it fails to parse. The startup staleness check compares this against
-    /// the newest source-file mtime to decide whether an edit post-dates the
-    /// last lint.
-    pub fn last_started_at(&self) -> Option<DateTime<FixedOffset>> {
-        self.runs
-            .iter()
-            .find(|run| !matches!(run.status, LintRunStatus::Running))
-            .and_then(|run| status::parse_timestamp(&run.started_at))
+    /// Hydrated status with its same-run start time, unless a live or pending
+    /// lint supersedes the historical result.
+    pub const fn cached_status(&self) -> Option<&CachedLintStatus> {
+        match self.status {
+            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => None,
+            _ => Some(&self.cached_status),
+        }
+    }
+
+    /// Apply a startup cache result without discarding its validated start.
+    pub fn set_cached_status(&mut self, status: CachedLintStatus) {
+        self.status = status.clone().into_lint_status();
+        self.cached_status = status;
     }
 
     /// Archive byte size for a single run. `None` means we have no entry
@@ -54,6 +56,10 @@ impl LintRuns {
     /// O(1).
     pub fn set_runs(&mut self, runs: Vec<LintRun>) {
         self.status = runs.first().map_or(LintStatus::NoLog, status::parse_run);
+        self.cached_status = runs
+            .first()
+            .and_then(CachedLintStatus::from_run)
+            .unwrap_or_default();
         self.archive_bytes = runs
             .iter()
             .map(|run| (run.run_id.clone(), run.archive_bytes))
@@ -75,12 +81,18 @@ impl LintRuns {
         }
     }
 
-    pub const fn set_status(&mut self, status: LintStatus) { self.status = status; }
+    pub const fn set_status(&mut self, status: LintStatus) {
+        if let Some(cached) = CachedLintStatus::without_start_time(&status) {
+            self.cached_status = cached;
+        }
+        self.status = status;
+    }
 
     pub fn clear_runs(&mut self) {
         self.runs.clear();
         self.archive_bytes.clear();
         self.status = LintStatus::NoLog;
+        self.cached_status = CachedLintStatus::NoLog;
     }
 
     /// True iff `run_id` has an entry in the archive-size map. Distinct from
@@ -128,9 +140,9 @@ mod tests {
 
     #[test]
     fn archive_bytes_returns_the_size_persisted_on_the_run() {
-        // The entry is present for every run in the set; its value is the
-        // `archive_bytes` field carried on the run. Distinguishing a present
-        // entry from an unknown run is the whole point of the `Option` API.
+        // `LintRuns::archive_bytes` has an entry for every run in the set, storing
+        // `LintRun::archive_bytes`. Its `Option` API distinguishes a present
+        // entry from an unknown run.
         let mut lr = LintRuns::default();
         lr.set_runs(vec![make_run("a")]);
         assert_eq!(lr.archive_bytes("a"), Some(0));
@@ -160,7 +172,7 @@ mod tests {
 
     #[test]
     fn set_hydrated_runs_preserves_live_stale_over_prior_terminal() {
-        // A paused/killed run publishes `Stale`; the subsequent history hydrate
+        // A paused/killed run publishes `LintStatus::Stale`; `LintRuns::set_hydrated_runs`
         // must not overwrite it with the prior passed run, or the killed lint
         // would read as settled-green instead of pending re-lint.
         let mut lr = LintRuns::default();
@@ -170,33 +182,24 @@ mod tests {
     }
 
     #[test]
-    fn last_started_at_skips_running_and_parses_newest_terminal() {
-        fn run_at(run_id: &str, started_at: &str, status: LintRunStatus) -> LintRun {
-            LintRun {
-                run_id: run_id.to_string(),
-                started_at: started_at.to_string(),
-                finished_at: Some(started_at.to_string()),
-                duration_ms: Some(1),
-                status,
-                commands: Vec::new(),
-                archive_bytes: 0,
-            }
-        }
-
+    fn cached_status_keeps_the_hydrated_run_start_and_skips_live_status() {
         let mut lr = LintRuns::default();
-        assert_eq!(lr.last_started_at(), None);
+        assert_eq!(lr.cached_status(), Some(&CachedLintStatus::NoLog));
+        let terminal = make_run("terminal");
+        let expected = CachedLintStatus::from_run(&terminal);
+        lr.set_runs(vec![terminal]);
+        assert_eq!(lr.cached_status(), expected.as_ref());
 
-        // `LintRuns::last_started_at` skips the leading `LintRunStatus::Running`
-        // entry in newest-first `runs` and uses the next terminal run's `started_at`.
-        lr.set_runs(vec![
-            run_at("c", "2026-04-24T12:00:05Z", LintRunStatus::Running),
-            run_at("b", "2026-04-24T12:00:03Z", LintRunStatus::Passed),
-            run_at("a", "2026-04-24T12:00:00Z", LintRunStatus::Failed),
-        ]);
+        let mut running = make_run("running");
+        running.status = LintRunStatus::Running;
+        running.started_at = chrono::Utc::now().to_rfc3339();
+        running.finished_at = None;
+        lr.set_runs(vec![running, make_run("prior-pass")]);
+        assert_eq!(lr.cached_status(), None);
 
-        let expected = DateTime::parse_from_rfc3339("2026-04-24T12:00:03Z")
-            .ok()
-            .map(|ts| ts.timestamp());
-        assert_eq!(lr.last_started_at().map(|ts| ts.timestamp()), expected);
+        lr.set_status(LintStatus::Stale);
+        assert_eq!(lr.cached_status(), None);
+        lr.set_hydrated_runs(vec![make_run("prior-pass")]);
+        assert_eq!(lr.cached_status(), None);
     }
 }

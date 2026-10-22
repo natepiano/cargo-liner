@@ -1,9 +1,7 @@
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -60,7 +58,14 @@ pub(crate) enum ServiceSignal {
     RateLimited(ServiceKind),
 }
 pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
-// ── Client ───────────────────────────────────────────────────────────
+// `HttpClient` owns the shared HTTP connection and quota state.
+
+/// Whether GitHub requests use live quotas or a simulated exhausted quota.
+#[derive(Clone, Copy)]
+enum GithubQuotaMode {
+    Real,
+    Synthetic { reset_at: u64 },
+}
 
 /// Shared HTTP client backed by `reqwest::Client` for connection
 /// pooling and async I/O. `Clone` is cheap — the underlying client uses
@@ -68,21 +73,18 @@ pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub(crate) struct HttpClient {
-    pub(super) client:                  Client,
-    pub(super) github_auth:             GithubAuth,
-    pub(super) github_viewer_login:     Arc<Mutex<Option<String>>>,
-    pub(super) rate_limit:              Arc<Mutex<GitHubRateLimit>>,
-    /// When true, every GitHub REST + GraphQL call (and the recovery
-    /// probe) short-circuits to a synthetic rate-limited outcome so the
-    /// rate-limit UI and toast flow can be exercised deterministically.
+    pub(super) client:              Client,
+    pub(super) github_auth:         GithubAuth,
+    pub(super) github_viewer_login: Arc<Mutex<Option<String>>>,
+    pub(super) rate_limit:          Arc<Mutex<GitHubRateLimit>>,
+    /// In `GithubQuotaMode::Synthetic`, every GitHub REST + GraphQL call (and
+    /// the recovery probe) short-circuits to a synthetic rate-limited outcome
+    /// so the rate-limit UI and toast flow can be exercised deterministically.
     /// `/rate_limit` itself stays real — the display must keep ticking.
-    pub(super) force_github_rate_limit: Arc<AtomicBool>,
-    /// Epoch-seconds reset timestamp used to drive the synthetic
-    /// core-bucket countdown while `force_github_rate_limit` is on. `0`
-    /// means "not set". Rebased on every off→on transition so the
-    /// countdown starts at `00:59:59` and ticks down from there.
-    pub(super) force_reset_at:          Arc<AtomicU64>,
-    pub(crate) handle:                  Handle,
+    /// `GithubQuotaMode::Synthetic::reset_at` holds the epoch-seconds reset,
+    /// rebased when enabled so the countdown starts at `00:59:59`.
+    github_quota_mode:              Arc<Mutex<GithubQuotaMode>>,
+    pub(crate) handle:              Handle,
 }
 
 impl HttpClient {
@@ -97,8 +99,7 @@ impl HttpClient {
             github_auth,
             github_viewer_login: Arc::new(Mutex::new(None)),
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
-            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
-            force_reset_at: Arc::new(AtomicU64::new(0)),
+            github_quota_mode: Arc::new(Mutex::new(GithubQuotaMode::Real)),
             handle,
         })
     }
@@ -111,8 +112,7 @@ impl HttpClient {
             github_auth: GithubAuth::Unauthenticated,
             github_viewer_login: Arc::new(Mutex::new(None)),
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
-            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
-            force_reset_at: Arc::new(AtomicU64::new(0)),
+            github_quota_mode: Arc::new(Mutex::new(GithubQuotaMode::Real)),
             handle,
         })
     }
@@ -135,32 +135,41 @@ impl HttpClient {
     /// `now + SYNTHETIC_RATE_LIMIT_SECS` so the display starts at
     /// `00:59:59` and counts down from there.
     pub(crate) fn set_force_github_rate_limit(&self, on: bool) {
-        self.force_github_rate_limit.store(on, Ordering::Relaxed);
-        if on {
+        let mode = if on {
             let reset_at = rate_limit::now_epoch_secs().saturating_add(SYNTHETIC_RATE_LIMIT_SECS);
-            self.force_reset_at.store(reset_at, Ordering::Relaxed);
+            GithubQuotaMode::Synthetic { reset_at }
         } else {
-            self.force_reset_at.store(0, Ordering::Relaxed);
-        }
+            GithubQuotaMode::Real
+        };
+        *self
+            .github_quota_mode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = mode;
+    }
+
+    fn github_quota_mode(&self) -> GithubQuotaMode {
+        *self
+            .github_quota_mode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(super) fn github_rate_limit_forced(&self) -> bool {
-        self.force_github_rate_limit.load(Ordering::Relaxed)
+        matches!(self.github_quota_mode(), GithubQuotaMode::Synthetic { .. })
     }
 
-    fn synthetic_core_quota(&self) -> RateLimitQuota {
-        let reset_at = self.force_reset_at.load(Ordering::Relaxed);
+    const fn synthetic_core_quota(reset_at: u64) -> RateLimitQuota {
         RateLimitQuota {
             limit:     GITHUB_CORE_RATE_LIMIT_CAP,
             used:      GITHUB_CORE_RATE_LIMIT_CAP,
             remaining: 0,
-            reset_at:  if reset_at == 0 { None } else { Some(reset_at) },
+            reset_at:  Some(reset_at),
         }
     }
 
     /// the current live rate-limit state. Returned by value —
-    /// `GitHubRateLimit` is `Copy`. While `force_github_rate_limit` is
-    /// on, the `core` bucket is overridden with a synthetic `0/5000`
+    /// `GitHubRateLimit` is `Copy`. In `GithubQuotaMode::Synthetic`,
+    /// the `core` bucket is overridden with a synthetic `0/5000`
     /// reading whose reset timestamp is stable so the countdown ticks
     /// down instead of oscillating. `graphql` stays real so the
     /// live-refresh behaviour of the `/rate_limit` endpoint is still
@@ -171,13 +180,13 @@ impl HttpClient {
             .lock()
             .map(|state| *state)
             .unwrap_or_default();
-        if self.github_rate_limit_forced() {
-            return GitHubRateLimit {
-                core:    Some(self.synthetic_core_quota()),
+        match self.github_quota_mode() {
+            GithubQuotaMode::Real => real,
+            GithubQuotaMode::Synthetic { reset_at } => GitHubRateLimit {
+                core:    Some(Self::synthetic_core_quota(reset_at)),
                 graphql: real.graphql,
-            };
+            },
         }
-        real
     }
 
     pub(super) fn update_rate_limit_bucket(&self, bucket: RateLimitBucket, quota: RateLimitQuota) {
@@ -196,7 +205,7 @@ impl HttpClient {
         }
     }
 
-    // ── Async internals ─────────────────────────────────────────────
+    // `HttpClient::github_get_async` and the following methods perform asynchronous requests.
 
     pub(super) async fn github_get_async(&self, path: &str) -> HttpOutcome<Vec<u8>> {
         if self.github_rate_limit_forced() {
@@ -289,9 +298,9 @@ impl HttpClient {
         if http_rate_limited {
             return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
         }
-        // GraphQL returns HTTP 200 on rate-limit, so status-code
-        // detection alone is insufficient — inspect the body's
-        // `errors[].type` for `RATE_LIMITED`.
+        // `rate_limit::graphql_body_is_rate_limited` inspects the body's
+        // `errors[].type` for `RATE_LIMITED` because GraphQL returns HTTP 200 on rate-limit,
+        // making status-code detection alone insufficient.
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
             && rate_limit::graphql_body_is_rate_limited(&json)
         {
@@ -303,7 +312,8 @@ impl HttpClient {
         )
     }
 
-    // ── Async public API ────────────────────────────────────────────
+    // `HttpClient::fetch_rate_limit_async` and `HttpClient::probe_service_async` expose
+    // asynchronous requests.
 
     /// List recent completed workflow runs for a repo (async).
     pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
@@ -582,14 +592,12 @@ mod tests {
 
     fn test_client(handle: &Handle) -> HttpClient {
         HttpClient {
-            client:                  build_client(ProxyPolicy::Disabled)
-                .expect("build http client"),
-            github_auth:             GithubAuth::Unauthenticated,
-            github_viewer_login:     Arc::new(Mutex::new(None)),
-            rate_limit:              Arc::new(Mutex::new(GitHubRateLimit::default())),
-            force_github_rate_limit: Arc::new(AtomicBool::new(false)),
-            force_reset_at:          Arc::new(AtomicU64::new(0)),
-            handle:                  handle.clone(),
+            client:              build_client(ProxyPolicy::Disabled).expect("build http client"),
+            github_auth:         GithubAuth::Unauthenticated,
+            github_viewer_login: Arc::new(Mutex::new(None)),
+            rate_limit:          Arc::new(Mutex::new(GitHubRateLimit::default())),
+            github_quota_mode:   Arc::new(Mutex::new(GithubQuotaMode::Real)),
+            handle:              handle.clone(),
         }
     }
 
@@ -617,6 +625,11 @@ mod tests {
         let reset_at = core.reset_at.expect("synthetic reset_at");
         assert!(reset_at >= before + SYNTHETIC_RATE_LIMIT_SECS);
         assert!(reset_at <= after + SYNTHETIC_RATE_LIMIT_SECS);
+        assert!(matches!(
+            client.github_quota_mode(),
+            GithubQuotaMode::Synthetic { reset_at: mode_reset } if mode_reset == reset_at
+        ));
+        assert!(client.github_rate_limit_forced());
 
         // `github_rate_limit.graphql` retains `real_graphql` so quota
         // refresh remains observable while forced rate limiting is on.
@@ -629,6 +642,81 @@ mod tests {
         // at `None`.
         assert!(github_rate_limit.core.is_none());
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
+    }
+
+    #[test]
+    fn quota_mode_rebases_on_each_off_on_cycle_and_is_shared_by_clones() {
+        let runtime = test_support::test_runtime();
+        let client = test_client(runtime.handle());
+        let clone = client.clone();
+
+        for elapsed_reset in [1_700_000_000, 1_700_000_001] {
+            // Set `client.github_quota_mode` to `GithubQuotaMode::Synthetic` with `elapsed_reset`
+            // to model an elapsed countdown without sleeping or changing the clock.
+            *client
+                .github_quota_mode
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = GithubQuotaMode::Synthetic {
+                reset_at: elapsed_reset,
+            };
+            assert!(clone.github_rate_limit_forced());
+
+            // `refreshed_core` must survive the `GithubQuotaMode::Synthetic` overlay.
+            let refreshed_core = RateLimitQuota {
+                limit:     5000,
+                used:      23,
+                remaining: 4977,
+                reset_at:  Some(elapsed_reset + 7200),
+            };
+            clone.update_rate_limit_bucket(RateLimitBucket::Core, refreshed_core);
+            assert_eq!(
+                clone.rate_limit().core.and_then(|quota| quota.reset_at),
+                Some(elapsed_reset)
+            );
+
+            clone.set_force_github_rate_limit(false);
+            assert!(matches!(client.github_quota_mode(), GithubQuotaMode::Real));
+            assert!(matches!(clone.github_quota_mode(), GithubQuotaMode::Real));
+            assert!(!client.github_rate_limit_forced());
+            assert!(!clone.github_rate_limit_forced());
+            assert_eq!(client.rate_limit().core, Some(refreshed_core));
+
+            let before = rate_limit::now_epoch_secs();
+            client.set_force_github_rate_limit(true);
+            let after = rate_limit::now_epoch_secs();
+            assert!(matches!(
+                clone.github_quota_mode(),
+                GithubQuotaMode::Synthetic { reset_at }
+                    if reset_at >= before + SYNTHETIC_RATE_LIMIT_SECS
+                        && reset_at <= after + SYNTHETIC_RATE_LIMIT_SECS
+                        && reset_at > elapsed_reset
+            ));
+            assert!(clone.github_rate_limit_forced());
+            assert_eq!(client.rate_limit(), clone.rate_limit());
+        }
+    }
+
+    #[test]
+    fn synthetic_core_quota_preserves_every_mode_reset_including_epoch_zero() {
+        let runtime = test_support::test_runtime();
+        let client = test_client(runtime.handle());
+
+        for reset_at in [0, 1_700_000_000, u64::MAX] {
+            *client
+                .github_quota_mode
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = GithubQuotaMode::Synthetic { reset_at };
+
+            // `displayed_core` must retain `GithubQuotaMode::Synthetic::reset_at`, even when
+            // expired; zero is an epoch timestamp here, never an absent-reset marker.
+            let displayed_core = client.rate_limit().core;
+            assert!(displayed_core.is_some());
+            assert_eq!(
+                displayed_core.and_then(|quota| quota.reset_at),
+                Some(reset_at)
+            );
+            assert_eq!(client.rate_limit().core, displayed_core);
+        }
     }
 
     #[test]
@@ -668,7 +756,8 @@ mod tests {
             client_sends_app_user_agent_header();
             return;
         }
-        // Only the child sees these settings; parallel tests keep their environment.
+        // Only the `child: Command` receives these proxy settings; parallel tests keep their
+        // environment.
         let mut child = Command::new(std::env::current_exe().expect("test executable"));
         child
             .args([

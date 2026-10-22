@@ -107,6 +107,37 @@ fn rendered(
 
 /// Read a value between the column starts in the header, rather than by spacing.
 fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> String {
+    // Read the last age from drawn cells: right alignment puts its values before
+    // the header start, so that start cannot delimit the preceding directory.
+    let mut age_parts = Vec::new();
+    let mut cursor = buffer.area.right();
+    while cursor > buffer.area.x {
+        while cursor > buffer.area.x && buffer[(cursor - 1, row)].symbol() == " " {
+            cursor -= 1;
+        }
+        let end = cursor;
+        while cursor > buffer.area.x && buffer[(cursor - 1, row)].symbol() != " " {
+            cursor -= 1;
+        }
+        let part: String = (cursor..end).map(|x| buffer[(x, row)].symbol()).collect();
+        if part.len() <= 1
+            || !part.ends_with(['d', 'h', 'm', 's'])
+            || !part.as_bytes()[..part.len() - 1]
+                .iter()
+                .all(u8::is_ascii_digit)
+        {
+            break;
+        }
+        age_parts.push((cursor, part));
+    }
+    age_parts.reverse();
+    if header == TREE_AGE_HEADER {
+        return age_parts
+            .iter()
+            .map(|(_, part)| part.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
     let header_at = |label| {
         find_all(buffer, label)
             .into_iter()
@@ -120,6 +151,11 @@ fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> St
         .map(|(x, _)| x)
         .min()
         .unwrap_or(buffer.area.width);
+    let end = if header == TREE_DIRECTORY_HEADER {
+        age_parts.first().map_or(end, |(x, _)| end.min(*x))
+    } else {
+        end
+    };
     (start..end)
         .map(|x| buffer[(x, row)].symbol())
         .collect::<String>()
@@ -128,8 +164,9 @@ fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> St
 }
 
 /// All tree header names, including the columns absent from a compressed view.
-const HEADERS: [&str; 7] = [
+const HEADERS: [&str; 8] = [
     TREE_SESSION_HEADER,
+    TREE_TYPE_HEADER,
     TREE_ROLE_HEADER,
     TREE_STATUS_HEADER,
     TREE_ACCOUNT_HEADER,
@@ -371,7 +408,13 @@ fn working_group() -> MachineState {
             account: home("codex1"),
             ..child(2, ChildKind::Thread, None, "unheld worker", 9 * MINUTE)
         },
-        child(0, ChildKind::Subagent, None, "review worker", 8 * MINUTE),
+        child(
+            0,
+            ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+            None,
+            "review worker",
+            8 * MINUTE,
+        ),
         child(1, ChildKind::Shell, Some(103), "nested command", 7 * MINUTE),
         child(
             0,
@@ -421,11 +464,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", MISSING_VALUE, "◑ 1:00", "claude1", "10m"),
+        ("clock job", "", "1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
-        ("review worker", "subagent", "idle", "claude1", "8m"),
-        ("nested command", MISSING_VALUE, "command", "claude1", "7m"),
-        ("root command", MISSING_VALUE, "command", "claude2", "1h"),
+        ("review worker", "", "idle", "claude1", "8m"),
+        ("nested command", "", "running", "claude1", "7m"),
+        ("root command", "", "running", "claude2", "1h"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");
@@ -442,9 +485,11 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
             );
         }
         if role != "session" {
-            for header in ["branch", "directory"] {
-                assert_eq!(column_value(&buffer, header, y, &HEADERS), "—");
-            }
+            assert!(
+                find(&buffer, "branch").is_none(),
+                "the missing branch has no column"
+            );
+            assert_eq!(column_value(&buffer, "directory", y, &HEADERS), "—");
             let at = find(&buffer, name).expect("work name");
             let expected_color = match role {
                 "worker" => buffer[find(&buffer, "unit-member").expect("parent session")].fg,
@@ -609,13 +654,15 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         .width()
         .max(place_line(cell.row).width());
     if !cell.lines.is_empty() {
+        let columns = TreeLayout::Full.populated_columns(&cell.lines, NOW, account_column);
         full = full.max(
             table_width(&tree_widths(
                 &cell.lines,
-                TreeLayout::Full.columns(account_column),
+                &columns,
                 NOW,
                 TreeSort::default(),
                 SessionHeaderLead::OverBranch,
+                &TreeSizing::Local,
             )) + 2 * indent,
         );
     }
@@ -637,15 +684,16 @@ fn layout_widths(cell: &AgentEntry<'_>, account_column: AccountColumn) -> BTreeS
         );
     }
 
-    let columns = TreeLayout::Compressed.columns(account_column);
+    let columns = TreeLayout::Compressed.populated_columns(&cell.lines, NOW, account_column);
     let gaps = columns.len().saturating_sub(1);
     let spacing = usize::from(TABLE_COLUMN_SPACING);
     let widths = tree_widths(
         &cell.lines,
-        columns,
+        &columns,
         NOW,
         TreeSort::default(),
         SessionHeaderLead::OverBranch,
+        &TreeSizing::Local,
     );
     let fixed = widths[1..]
         .iter()

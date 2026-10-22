@@ -1,6 +1,7 @@
 //! Frame rendering: the tile grid, the framework status line along the
 //! bottom, and whichever overlay is open above them.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use ratatui::Frame;
@@ -34,6 +35,7 @@ use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::agent_cell::AgentTile;
 use crate::agent_cell::TreeColumn;
+use crate::agent_cell::TreeMetrics;
 use crate::app::App;
 use crate::census;
 use crate::census::AccountColumn;
@@ -131,6 +133,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         contents,
         &cells,
     );
+    app.tree_layouts = cells.layouts.into_inner();
 }
 
 /// Map a content press through the same census and header layouts as drawing.
@@ -156,6 +159,11 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
     )
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
+    for tile in &cells.tiles {
+        if let Some(metrics) = app.tree_layouts.get(&tile.key()) {
+            tile.share_metrics(metrics.clone());
+        }
+    }
     match content {
         TileContent::Summary => {
             if let HeaderHit::Column(column) =
@@ -174,7 +182,8 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
                 && let HeaderHit::Column(column) =
                     sort::header_hit(&cells.header_spans(tile, area), point)
             {
-                app.tree_sorts.entry(id).or_default().select(column);
+                let default = tile.default_sort();
+                app.tree_sorts.entry(id).or_insert(default).select(column);
             }
         },
         TileContent::Empty(_) => {},
@@ -183,6 +192,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
 
 /// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
+    layouts:        RefCell<HashMap<TileKey, TreeMetrics>>,
     /// This machine, then each configured remote.
     machines:       Vec<Machine<'a>>,
     /// Individual sessions in default hue order, independent of tile grouping.
@@ -219,6 +229,7 @@ impl<'a> Cells<'a> {
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
         Self {
+            layouts: RefCell::new(HashMap::new()),
             machines,
             agents,
             account_column,
@@ -278,6 +289,35 @@ impl<'a> Cells<'a> {
 }
 
 impl TileCells<TileKey> for Cells<'_> {
+    fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        let allocations = allocations();
+        let tiles: Vec<_> = allocations
+            .iter()
+            .filter_map(|(content, area)| match content {
+                TileContent::Group(id) => self.tile(id).map(|tile| {
+                    let columns = tile.visible_columns(self.now, self.account_column);
+                    (tile, (area.x, columns))
+                }),
+                _ => None,
+            })
+            .collect();
+        let groups = agent_cell::shared_tree_metrics(tiles.iter().map(|(tile, (x, columns))| {
+            (
+                *x,
+                *columns,
+                tile.metrics(self.now),
+                tile.elapsed_ages(self.now),
+            )
+        }));
+        let mut layouts = self.layouts.borrow_mut();
+        layouts.clear();
+        for (tile, key) in tiles {
+            let metrics = &groups[&key];
+            tile.share_metrics(metrics.clone());
+            layouts.insert(tile.key(), metrics.clone());
+        }
+    }
+
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     /// `TileCells::demands` measures summary rows as single lines: long names
@@ -465,6 +505,7 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::hierarchy::ReviewerState;
+    use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::HEADING_SEPARATOR;
@@ -708,8 +749,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                  content rows: 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│ session         role  status  branch  directory                       age ▼  │",
-        "│ boss of bosses  —     idle    —       ~/rust/hana_catalyst/docs/hana  21h    │",
+        "│ session ▲       status  directory                                        age │",
+        "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                   21h │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -939,7 +980,7 @@ fraying = "leading"
                 ),
                 child(
                     0,
-                    ChildKind::Subagent,
+                    ChildKind::Subagent(SubagentRole::Unrecorded),
                     None,
                     "Survey the tile grid",
                     5 * 60 + 3,
@@ -975,20 +1016,13 @@ fraying = "leading"
         (roots, HierarchyEdges(edges))
     }
 
-    /// The host geometry selects only the clicked tile's header preference.
-    #[test]
-    fn content_clicks_select_and_reverse_only_the_named_tile_sort() {
-        let mut app = App::new_for_test().expect("a test app");
-        app.census.apply(CensusUpdate::Local {
-            rows:      vec![boss(900)],
-            hierarchy: HierarchyEdges::default().into(),
-            stage:     ScanStage::Completed,
-        });
+    /// Resolve the role header in the current frame after each sort selection.
+    fn role_header_click(app: &App) -> CellClick<TileKey> {
         let area = Rect::new(0, 0, 220, 30);
         let (id, point) = {
             let cells = Cells::new(
                 app.census.machines(&[]),
-                NOW,
+                census::unix_now(),
                 app.footer_colors.colors(),
                 &app.tree_sorts,
                 app.summary_sort,
@@ -1007,13 +1041,32 @@ fraying = "leading"
                 },
             )
         };
-        let click = CellClick {
+        CellClick {
             index: 2,
-            content: TileContent::Group(id.clone()),
+            content: TileContent::Group(id),
             area: Rect::new(8, 5, area.width, area.height),
             point,
-        };
+        }
+    }
+
+    /// The host geometry selects only the clicked tile's header preference.
+    #[test]
+    fn content_clicks_select_and_reverse_only_the_named_tile_sort() {
+        let mut app = App::new_for_test().expect("a test app");
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(900)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
+        let mut click = role_header_click(&app);
         cell_clicked(&mut app, click.clone());
+        assert_eq!(app.tree_sorts.len(), 1, "only the clicked tile gets a sort");
+        let id = app
+            .tree_sorts
+            .keys()
+            .next()
+            .cloned()
+            .expect("the clicked tile has a saved sort");
         assert_eq!(
             app.tree_sorts[&id],
             TreeSort {
@@ -1022,9 +1075,11 @@ fraying = "leading"
             }
         );
         assert_eq!(app.summary_sort, SummarySort::default());
+        click = role_header_click(&app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts[&id].direction, SortDirection::Descending);
         let selected = app.tree_sorts[&id];
+        let point = click.point;
         cell_clicked(
             &mut app,
             CellClick {

@@ -98,11 +98,11 @@ A tile draws the lines above its tree, then one table: a header row and one line
   hanadocs · showrunner ──────────────────────────────────────────────────────────
    pid 2185158 · claude2 · idle · 14d · natedev · ups
    main · ~/rust/hana
-      session        role   status      account  branch         directory              age
-   ├─ dashboard      unit   idle        claude1  enh/dashboard  ~/rust/hana-dashboard  2h
-   │  ├─ dash-impl   impl   codex fast  codex1   enh/dashboard  ~/rust/hana-dashboard  40m
-   │  └─ cargo test  shell  command     —        —              —                      1m
-   └─ diagrams       unit   idle        claude3  enh/diagrams   ~/rust/hana-diagrams   5h
+      session               role   status      account  branch         directory              age
+   ├─ dashboard             unit   idle        claude1  enh/dashboard  ~/rust/hana-dashboard  2h
+   │  ├─ dash-impl          impl   codex fast  codex1   enh/dashboard  ~/rust/hana-dashboard  40m
+   │  └─ cargo nextest run  shell  command     —        —              —                      1m
+   └─ diagrams              unit   idle        claude3  enh/diagrams   ~/rust/hana-diagrams   5h
 ```
 
 - Above the tree (`above_tree`): `header_line` (`pid <pid> · <agent> · <status> · <age> · <machine> · <desktop>`), `place_line` (`<branch> · <directory>`, or the directory alone), and `launched by <name>` for a launched root, each cut to the width by `cut_line`. The compressed view of a top-level agent draws none of them, since the summary lists that agent.

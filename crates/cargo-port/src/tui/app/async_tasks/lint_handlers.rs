@@ -21,7 +21,7 @@ impl App {
         if let Some(lr) = self.project_list.lint_at_path_mut(path)
             && !matches!(lr.status(), LintStatus::Running(..))
         {
-            lr.set_status(status.into_lint_status());
+            lr.set_cached_status(status);
         }
         self.startup.lint_count.seen += 1;
         self.maybe_complete_startup_lint_cache();

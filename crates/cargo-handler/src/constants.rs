@@ -100,6 +100,9 @@ pub(crate) const TREE_BRANCH_HEADER: &str = "branch";
 pub(crate) const TREE_DIRECTORY_HEADER: &str = "directory";
 /// The role column of an agent tile tree.
 pub(crate) const TREE_ROLE_HEADER: &str = "role";
+/// The work type column of an agent tile tree.
+pub(crate) const TREE_TYPE_HEADER: &str = "type";
+
 /// The session column of an agent tile tree.
 pub(crate) const TREE_SESSION_HEADER: &str = "session";
 /// The status column of an agent tile tree.
@@ -124,18 +127,6 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
-/// The `runs` of a command, where the row is not an agent.
-pub(crate) const COMMAND_RUNS: &str = "command";
-/// The `runs` of a command that is only a timer, in place of
-/// [`COMMAND_RUNS`].
-pub(crate) const TIMER_RUNS: &str = "timer";
-/// The pie a timer row's name leads with while the timer runs, by the
-/// share of it gone: each glyph while the share is under its bound,
-/// from empty to three quarters filled.
-pub(crate) const TIMER_PIE: [(f64, char); 4] = [(0.25, '○'), (0.5, '◔'), (0.75, '◑'), (1.0, '◕')];
-/// The pie of a timer at or past its deadline.
-pub(crate) const TIMER_PIE_FULL: char = '●';
-
 // summary table
 /// The summary's column labels, in column order.
 pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
@@ -179,11 +170,12 @@ pub(crate) const MISSING_VALUE: &str = "—";
 /// The units an age is written in, largest first: seconds in the unit,
 /// then its suffix.
 pub(crate) const AGE_UNITS: [(u64, &str); 4] = [(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")];
-/// The age written for no time at all.
-pub(crate) const ZERO_AGE: &str = "0s";
 /// Below this, an age's leading value is a single digit and the next
 /// unit down is written after it.
 pub(crate) const AGE_DETAIL_BELOW: u64 = 10;
+
+/// The metadata agent type that delegates responsibility to its description.
+pub(crate) const GENERAL_SUBAGENT_TYPE: &str = "general-purpose";
 
 // theme roles
 /// `[variants.roles]` key for the `claude` agent label.
@@ -205,16 +197,11 @@ pub(crate) const RAINBOW_RED_ROLE: &str = "rainbow_red";
 /// `[variants.roles]` key for the rainbow's second color.
 pub(crate) const RAINBOW_ORANGE_ROLE: &str = "rainbow_orange";
 /// `[variants.roles]` key for the rainbow's third color.
-pub(crate) const RAINBOW_YELLOW_ROLE: &str = "rainbow_yellow";
-/// `[variants.roles]` key for the rainbow's fourth color.
 pub(crate) const RAINBOW_GREEN_ROLE: &str = "rainbow_green";
-/// `[variants.roles]` key for the rainbow's fifth color.
+/// `[variants.roles]` key for the rainbow's fourth color.
 pub(crate) const RAINBOW_CYAN_ROLE: &str = "rainbow_cyan";
-/// `[variants.roles]` key for the rainbow's sixth color.
+/// `[variants.roles]` key for the rainbow's fifth color.
 pub(crate) const RAINBOW_BLUE_ROLE: &str = "rainbow_blue";
-/// `[variants.roles]` key for the rainbow's last color, after which the
-/// cells start over at [`RAINBOW_RED_ROLE`].
-pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 
 // census
 /// Verification launcher whose detached runs may override conversation activity.

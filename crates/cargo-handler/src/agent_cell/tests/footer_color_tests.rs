@@ -154,7 +154,15 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
     });
     let buffer = rendered_with_colors(&cell, 220, AccountColumn::Shown, &colors);
     assert_color(&buffer, "codex1", Color::Indexed(211));
-    assert_color(&buffer, "claude2", Color::Indexed(30));
+    assert_color(
+        &buffer,
+        "claude2",
+        colors
+            .account("claude2")
+            .style(text_default().into())
+            .fg
+            .expect("covered account ink"),
+    );
     assert_color(
         &buffer,
         " fast",
@@ -273,7 +281,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
             children: vec![worker.clone()],
             ..agent(10, "root", HOUR, None)
         };
-        let mut cells = vec![entry(&root, None)];
+        let mut cells = vec![(entry(&root, None), false)];
         for role in [
             HierarchyRole::Impl,
             HierarchyRole::Test,
@@ -292,21 +300,38 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 branch:         Branch::Last,
                 subject:        LineSubject::ManagedThread(&worker, role),
             });
-            cells.push(cell);
+            cells.push((cell, true));
         }
-        for cell in cells {
+        for (cell, inherits_directory) in cells {
             for width in [80, WIDE] {
                 let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
                 if width == WIDE {
                     let (session_x, header_y) =
                         find(&buffer, "session").expect("full session header");
-                    for header in ["role", "status", "account", "branch", "directory", "age"] {
+                    for header in ["role", "status", "account", "age"] {
                         let (x, y) = find(&buffer, header).expect("full tree column header");
                         assert_eq!(y, header_y, "{header} remains in the full header");
                         assert!(x > session_x, "{header} remains its own column");
                     }
                 }
+                for header in ["type", "branch"] {
+                    assert!(find(&buffer, header).is_none(), "empty {header} is omitted");
+                }
                 let y = find(&buffer, "worker task").expect("worker row").1;
+                if inherits_directory && width == WIDE {
+                    let x = find(&buffer, "directory")
+                        .expect("inherited directory header")
+                        .0;
+                    let drawn: String = (x..x + summary::cell_width(&root.directory))
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    assert_eq!(drawn, root.directory);
+                } else if !inherits_directory {
+                    assert!(
+                        find(&buffer, "directory").is_none(),
+                        "ordinary work has no directory"
+                    );
+                }
                 assert_eq!(tree_column(&buffer, "status", y), status);
                 assert_eq!(tree_column(&buffer, "account", y), "codex1 fast");
                 let x = find(&buffer, "status").expect("status header").0;
@@ -338,17 +363,20 @@ fn footer_colors_leave_shells_and_subagents_plain_and_color_codex_workers() {
     assert_color(&buffer, "subagent", text_default());
     assert_color(&buffer, "worker", text_default());
     let role_x = find(&buffer, "role").expect("the role header is drawn").0;
-    let branch_x = find(&buffer, "branch")
-        .expect("the branch header is drawn")
-        .0;
+    assert!(
+        find(&buffer, "branch").is_none(),
+        "the missing branch has no column"
+    );
     for shell in [
         "Launch the Phase 1 implementation seat",
         "cargo nextest run -p hana_video --no-fail-fast -- permission_queue",
     ] {
         let y = find(&buffer, shell).expect("the shell line is drawn").1;
-        assert_eq!(buffer[(role_x, y)].symbol(), MISSING_VALUE);
-        assert_eq!(buffer[(role_x, y)].fg, text_default());
-        assert_eq!(buffer[(role_x, y)].style(), buffer[(branch_x, y)].style());
+        assert_eq!(buffer[(role_x, y)].symbol(), " ");
+        assert_eq!(
+            buffer[(role_x, y)].style(),
+            ratatui::buffer::Cell::default().style()
+        );
     }
 }
 
@@ -394,16 +422,39 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
 fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
     let root = AgentRow {
         role_fallback: RoleFallback::None,
+        directory: "/fixture/color-check".repeat(4),
         children: vec![
             child(0, ChildKind::Thread, None, "unroled task", MINUTE),
             child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),
-            child(0, ChildKind::Subagent, None, "subagent task", MINUTE),
+            child(
+                0,
+                ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                None,
+                "subagent task",
+                MINUTE,
+            ),
         ],
         ..agent(10, "root", HOUR, None)
     };
     let cell = entry(&root, None);
     let colors = FooterColors::parse("role.worker=bright-cyan");
-    for width in [60, 220] {
+    let full_width = (1..=220)
+        .find(|&width| {
+            matches!(
+                CellView::at_width(&cell, width, NOW, AccountColumn::Shown),
+                CellView::Full(_)
+            )
+        })
+        .expect("the fixture fits the full view");
+    for width in [full_width - 1, 220] {
+        assert_eq!(
+            matches!(
+                CellView::at_width(&cell, width, NOW, AccountColumn::Shown),
+                CellView::Compressed
+            ),
+            width < full_width,
+            "exercise both compressed and full name colors"
+        );
         let buffer = rendered_with_colors(&cell, width, AccountColumn::Shown, &colors);
         assert_color(
             &buffer,

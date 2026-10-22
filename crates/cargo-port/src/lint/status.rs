@@ -124,61 +124,125 @@ impl LintStatus {
     }
 }
 
-/// Lint status loaded from cache during startup/sync.
+/// Outcome of a terminal lint run, independent of its timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedLintOutcome {
+    Passed,
+    Failed,
+    EnvUnavailable,
+}
+
+impl CachedLintOutcome {
+    const fn into_lint_status(self, timestamp: DateTime<FixedOffset>) -> LintStatus {
+        match self {
+            Self::Passed => LintStatus::Passed(timestamp),
+            Self::Failed => LintStatus::Failed(timestamp),
+            Self::EnvUnavailable => LintStatus::EnvUnavailable(timestamp),
+        }
+    }
+}
+
+/// Lint status hydrated from a historical run during startup/sync.
 ///
-/// This deliberately cannot represent `Running`: cache hydration is historical
-/// state, while `LintStatus::Running` is reserved for a live worker in this
-/// process.
+/// `Terminal` owns the validated start of the same run as its outcome and
+/// display timestamp. `StartTimeUnavailable` names a terminal result with no
+/// validated start: a persisted record whose start is missing or invalid, or a
+/// display-only update (`CachedLintStatus::without_start_time`) held until
+/// `LintRuns::set_hydrated_runs` supplies the record. Its optional finish
+/// timestamp preserves whatever display information could be parsed. No variant can
+/// represent a live worker's `LintStatus::Running` state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum CachedLintStatus {
-    Passed(DateTime<FixedOffset>),
-    Failed(DateTime<FixedOffset>),
-    EnvUnavailable(DateTime<FixedOffset>),
+    Terminal {
+        outcome:    CachedLintOutcome,
+        timestamp:  DateTime<FixedOffset>,
+        started_at: DateTime<FixedOffset>,
+    },
+    StartTimeUnavailable {
+        outcome:   CachedLintOutcome,
+        timestamp: Option<DateTime<FixedOffset>>,
+    },
     #[default]
     NoLog,
 }
 
 impl CachedLintStatus {
-    pub const fn from_lint_status(status: &LintStatus) -> Option<Self> {
-        match status {
-            LintStatus::Passed(timestamp) => Some(Self::Passed(*timestamp)),
-            LintStatus::Failed(timestamp) => Some(Self::Failed(*timestamp)),
-            LintStatus::EnvUnavailable(timestamp) => Some(Self::EnvUnavailable(*timestamp)),
-            LintStatus::NoLog => Some(Self::NoLog),
-            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => None,
-        }
+    /// Hydrate a single run, pairing its outcome with its own validated start.
+    /// `Running` records are not historical terminal results.
+    pub fn from_run(run: &LintRun) -> Option<Self> {
+        let outcome = match run.status {
+            LintRunStatus::Passed => CachedLintOutcome::Passed,
+            LintRunStatus::Failed => CachedLintOutcome::Failed,
+            LintRunStatus::EnvUnavailable => CachedLintOutcome::EnvUnavailable,
+            LintRunStatus::Running => return None,
+        };
+        let finished_at = run.finished_at.as_deref().and_then(parse_timestamp);
+        Some(parse_timestamp(&run.started_at).map_or(
+            Self::StartTimeUnavailable {
+                outcome,
+                timestamp: finished_at,
+            },
+            |started_at| Self::Terminal {
+                outcome,
+                timestamp: finished_at.unwrap_or(started_at),
+                started_at,
+            },
+        ))
+    }
+
+    /// A display-only update cannot supply a run's start. Keep its result
+    /// explicit until `LintRuns::set_hydrated_runs` supplies the actual record.
+    pub(super) const fn without_start_time(status: &LintStatus) -> Option<Self> {
+        let (outcome, timestamp) = match status {
+            LintStatus::Passed(timestamp) => (CachedLintOutcome::Passed, *timestamp),
+            LintStatus::Failed(timestamp) => (CachedLintOutcome::Failed, *timestamp),
+            LintStatus::EnvUnavailable(timestamp) => {
+                (CachedLintOutcome::EnvUnavailable, *timestamp)
+            },
+            LintStatus::NoLog => return Some(Self::NoLog),
+            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => return None,
+        };
+        Some(Self::StartTimeUnavailable {
+            outcome,
+            timestamp: Some(timestamp),
+        })
     }
 
     pub const fn into_lint_status(self) -> LintStatus {
         match self {
-            Self::Passed(timestamp) => LintStatus::Passed(timestamp),
-            Self::Failed(timestamp) => LintStatus::Failed(timestamp),
-            Self::EnvUnavailable(timestamp) => LintStatus::EnvUnavailable(timestamp),
-            Self::NoLog => LintStatus::NoLog,
+            Self::Terminal {
+                outcome, timestamp, ..
+            }
+            | Self::StartTimeUnavailable {
+                outcome,
+                timestamp: Some(timestamp),
+            } => outcome.into_lint_status(timestamp),
+            Self::StartTimeUnavailable {
+                timestamp: None, ..
+            }
+            | Self::NoLog => LintStatus::NoLog,
         }
     }
 
     /// Should this project be linted as the startup phase closes?
     ///
-    /// - `NoLog` (never linted) is the discovery case, gated by `on_discovery` so turning discovery
-    ///   linting off does not lint every project on the first launch.
-    /// - A terminal result (`Passed`/`Failed`/`EnvUnavailable`) re-lints only when a source file
-    ///   changed since that run began — `max_source_mtime` newer than `last_started_at`. This
-    ///   staleness check is independent of `on_discovery`: an edited project always re-lints.
+    /// - `NoLog` is the discovery case, gated by `on_discovery` so turning discovery linting off
+    ///   does not lint every project on the first launch.
+    /// - `Terminal` re-lints only when `max_source_mtime` is newer than its `started_at`,
+    ///   independently of `on_discovery`: an edited project always re-lints.
+    /// - `StartTimeUnavailable` cannot establish staleness and skips startup re-lint, preserving
+    ///   the policy for an unparseable run start.
     pub fn should_lint_on_startup(
         &self,
-        last_started_at: Option<DateTime<FixedOffset>>,
         max_source_mtime: Option<SystemTime>,
         on_discovery: DiscoveryLint,
     ) -> bool {
         match self {
             Self::NoLog => on_discovery.is_immediate(),
-            Self::Passed(_) | Self::Failed(_) | Self::EnvUnavailable(_) => {
-                match (last_started_at, max_source_mtime) {
-                    (Some(started), Some(mtime)) => source_is_newer(mtime, started),
-                    _ => false,
-                }
+            Self::Terminal { started_at, .. } => {
+                max_source_mtime.is_some_and(|mtime| source_is_newer(mtime, *started_at))
             },
+            Self::StartTimeUnavailable { .. } => false,
         }
     }
 }
@@ -406,19 +470,73 @@ mod tests {
     }
 
     #[test]
+    fn hydrated_terminal_uses_its_start_instead_of_its_finish_for_staleness() {
+        for outcome in [
+            LintRunStatus::Passed,
+            LintRunStatus::Failed,
+            LintRunStatus::EnvUnavailable,
+        ] {
+            let record = run(outcome);
+            let started = parse_timestamp(&record.started_at).expect("start");
+            let finished = parse_timestamp(record.finished_at.as_deref().expect("finish text"))
+                .expect("finish");
+            let source_mtime = SystemTime::UNIX_EPOCH
+                + Duration::from_secs(u64::try_from(started.timestamp() + 5).expect("epoch"));
+            let cached = CachedLintStatus::from_run(&record).expect("terminal run");
+            assert!(
+                matches!(cached, CachedLintStatus::Terminal { started_at, timestamp, .. }
+                if started_at == started && timestamp == finished)
+            );
+            assert!(cached.should_lint_on_startup(Some(source_mtime), DiscoveryLint::Deferred));
+            assert_eq!(cached.into_lint_status(), parse_run(&record));
+        }
+    }
+
+    #[test]
+    fn unavailable_start_is_named_and_skips_startup_lint_without_losing_the_display_result() {
+        for outcome in [
+            LintRunStatus::Passed,
+            LintRunStatus::Failed,
+            LintRunStatus::EnvUnavailable,
+        ] {
+            for started_at in ["", "not a timestamp"] {
+                let mut record = run(outcome.clone());
+                record.started_at = started_at.to_string();
+                let cached = CachedLintStatus::from_run(&record).expect("terminal run");
+                assert!(matches!(
+                    cached,
+                    CachedLintStatus::StartTimeUnavailable { .. }
+                ));
+                assert!(
+                    !cached
+                        .should_lint_on_startup(Some(SystemTime::now()), DiscoveryLint::Immediate)
+                );
+                assert_eq!(cached.into_lint_status(), parse_run(&record));
+
+                record.finished_at = None;
+                let cached = CachedLintStatus::from_run(&record).expect("terminal run");
+                assert!(matches!(
+                    cached,
+                    CachedLintStatus::StartTimeUnavailable {
+                        timestamp: None,
+                        ..
+                    }
+                ));
+                assert!(
+                    !cached
+                        .should_lint_on_startup(Some(SystemTime::now()), DiscoveryLint::Immediate)
+                );
+                assert_eq!(cached.into_lint_status(), LintStatus::NoLog);
+            }
+        }
+    }
+
+    #[test]
     fn should_lint_on_startup_gates_nolog_by_discovery_and_relints_stale_terminal() {
-        // NoLog (never linted) is the discovery case — gated by config, and
-        // independent of any source mtime.
-        assert!(CachedLintStatus::NoLog.should_lint_on_startup(
-            None,
-            None,
-            DiscoveryLint::Immediate
-        ));
-        assert!(!CachedLintStatus::NoLog.should_lint_on_startup(
-            None,
-            None,
-            DiscoveryLint::Deferred
-        ));
+        // `CachedLintStatus::NoLog` (never linted) is the discovery case, gated by
+        // `DiscoveryLint` and independent of any source mtime.
+        assert!(CachedLintStatus::NoLog.should_lint_on_startup(None, DiscoveryLint::Immediate));
+        assert!(!CachedLintStatus::NoLog.should_lint_on_startup(None, DiscoveryLint::Deferred));
 
         // `passed.should_lint_on_startup` re-lints a terminal result only when the
         // source mtime post-dates `started`, independently of `DiscoveryLint`.
@@ -426,27 +544,21 @@ mod tests {
             DateTime::parse_from_rfc3339("2026-03-30T14:22:01-05:00").expect("parse start");
         let run_epoch = SystemTime::UNIX_EPOCH
             + Duration::from_secs(u64::try_from(started.timestamp()).expect("non-negative epoch"));
-        let passed = CachedLintStatus::Passed(started);
+        let passed = CachedLintStatus::from_run(&run(LintRunStatus::Passed)).expect("terminal run");
 
         assert!(passed.should_lint_on_startup(
-            Some(started),
             Some(run_epoch + Duration::from_secs(5)),
             DiscoveryLint::Deferred,
         ));
         assert!(!passed.should_lint_on_startup(
-            Some(started),
             Some(run_epoch - Duration::from_secs(5)),
             DiscoveryLint::Deferred,
         ));
         // `source_is_newer` rejects a source mtime in the same whole second as
         // `started`, preserving the rounding-noise guard.
-        assert!(!passed.should_lint_on_startup(
-            Some(started),
-            Some(run_epoch),
-            DiscoveryLint::Immediate,
-        ));
+        assert!(!passed.should_lint_on_startup(Some(run_epoch), DiscoveryLint::Immediate,));
         // `should_lint_on_startup` treats `max_source_mtime: None` as insufficient
         // evidence to re-lint a terminal result.
-        assert!(!passed.should_lint_on_startup(Some(started), None, DiscoveryLint::Immediate));
+        assert!(!passed.should_lint_on_startup(None, DiscoveryLint::Immediate));
     }
 }

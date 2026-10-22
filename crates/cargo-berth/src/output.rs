@@ -396,7 +396,8 @@ pub(crate) struct OutputEnvelope {
     payload:                 OutputPayload,
 }
 
-// Keep the wire contract unchanged while deriving maintenance prose only at publication.
+// `OutputEnvelope::serialize` preserves the wire contract and derives maintenance prose through
+// `published_message` and `published_presentation` only at publication.
 impl Serialize for OutputEnvelope {
     fn serialize<Serializer>(
         &self,
@@ -2446,11 +2447,12 @@ impl OutputEnvelope {
             report.scope_acquisition,
             DriftScopeAcquisition::RefusedToSecondRun { .. }
         ) {
-            // A refusal outranks both conditions below because each names a remedy this same
-            // rule would refuse: `drift --reservation <id>` for an attribution, `drift --full`
-            // for an unreadable phase start. Ranking either first tells a refused caller to
-            // run a command that cannot succeed, so the refusal is the answer whenever no
-            // drift effect outranks it.
+            // `OutputStatus::ScopeAcquisitionRefused` outranks attribution and unreadable
+            // phase-start conditions because each names a remedy refused by
+            // `DriftScopeAcquisition::RefusedToSecondRun`: `drift --reservation <id>`
+            // for attribution, `drift --full` for an unreadable phase start.
+            // Ranking either first tells a refused caller to run a command that cannot succeed,
+            // so refusal is the answer whenever no `DriftEffect` outranks it.
             OutputStatus::ScopeAcquisitionRefused
         } else if matches!(
             &report.path_attribution,
@@ -2957,10 +2959,10 @@ impl OutputEnvelope {
         }
         match self.status {
             OutputStatus::Clear | OutputStatus::Unconfigured => PostCommitRendering::Silent,
-            // The catch-all below is written for a run that aborted: it offers a by-hand
-            // `drift --full` that this rule would refuse the same way, and it calls the check
-            // incomplete two clauses before the message says the check observed and recorded
-            // everything it found.
+            // The fallback `PostCommitRendering::Warning` below describes an aborted run: it offers
+            // `drift --full`, which `OutputStatus::ScopeAcquisitionRefused` would refuse the same
+            // way, and calls the check incomplete two clauses before `message` says the check
+            // observed and recorded everything it found.
             OutputStatus::ScopeAcquisitionRefused => PostCommitRendering::Warning(format!(
                 "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {message} This commit remains in place."
             )),
@@ -3586,10 +3588,10 @@ impl OutputEnvelope {
         }
         let observed_effect = ObservedDriftEffect::from(report.results.as_slice());
         let condition = DriftCondition::observed(&report.path_attribution, observed_effect);
-        // A refused run must stop acting in this worktree whatever else the observation
-        // found, so the refusal both earns the reader a message and makes it a stop. The
-        // detail arms below that build their own lines never quote `self.message`, so the
-        // refusal is stated as its own line there.
+        // `DriftScopeAcquisition::RefusedToSecondRun` requires the run to stop acting in this
+        // worktree whatever else was observed, so it both earns a message and makes it a stop.
+        // The `DriftCondition` arms below that build their own lines never quote `self.message`,
+        // so they add `refusal` as its own line.
         let mut refusal = Vec::new();
         append_scope_acquisition_rendering(&report.scope_acquisition, &mut refusal);
         let refused = !refusal.is_empty();

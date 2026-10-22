@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Tiles omit columns with no recorded values. Tiles with the same columns share their positions within a screen column; other tiles fit independently. Shell timers show the remaining time as digits, avoiding undersized pie glyphs. `thinking` and `running` draw in one green in every theme.
+- Shell rows show `running` or their timer in the status column, with `shell` only in the type column. Status inks retain readable glyph coverage. Session-name sorting in tiles and the summary ignores case, with original spelling breaking ties.
 - Footer role and account ink and status words remain readable on focused and unfocused tile backgrounds. Worker job labels skip worktree and director context; shortened labels omit whitespace before the ellipsis.
 - Summary headers use `account` and `session`, and only sessions heading a hierarchy appear in that table; sessions without a hierarchy appear only in `unassigned`. Codex sessions use their own recorded names, activity and fast tier, and an open rollout alone no longer creates a worker row. Codex thread rows retain a missing account when none was recorded.
 - Role words use the configured footer colors in tile titles and each accounts-table role. Subagents show their current transcript activity; nested work inherits its session account. Command names omit leading shell assignments.
@@ -33,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `appearance.mode = "auto"` selects the light or dark theme from the system before the first frame and follows changes while cargo-handler runs.
 
 ### Added
+- Seat delivery commands now fold into their exact dispatched seat, including current and legacy launchers, review launchers, messenger sends and literal prompt-preparation wrappers. Ordinary shell work remains visible.
+- Tile trees have a `type` column for shells and subagents. Subagent roles come from specialist metadata or their own work descriptions. Summary and tree ages use shared unit slots, numeric columns align to the right, and tiles in one screen column share their table positions.
+- Showrunner and unassigned tiles start sorted by session name. Session hues omit management purple and yellow; account ink includes the glyph coverage margin, and light chrome uses a neutral accent distinct from account orange.
+
 - `[tiles] view`, stepped under Tiles in the settings overlay, selects `summary` or `cells`; `cells` is the default; a saved `auto` loads as `cells`.
 - The agents summary, when too long for its cell, takes the next cells of its column, pushing agent cells on, and gives them back once it fits; at the fit limit it is clipped as before. The summary also widens over the columns its depth opens, with `widen_summary` on by default.
 - A shell row whose subtree ends in one `sleep` and nothing else is a timer: its `runs` reads `timer`, in the shell color, and its name a pie and the time left, such as `◔ 3:48`, in place of the Bash call's description. The pie fills by the quarter of the `sleep` gone -- `○`, `◔`, `◑`, `◕` -- and reads `●` at its deadline; the time left reads `m:ss` under an hour, `h:mm:ss` from an hour up, and `0:00` once past. The `sleep`'s arguments add up as GNU `sleep` reads them, each a number with an optional `s`, `m`, `h` or `d`; a `sleep` with an argument that does not read, such as `infinity`, leaves the row a command. The countdown moves with the ages, redrawn each second. The probe's children carry `timer` with the `sleep`'s `started` and `deadline`, still at schema version 3.

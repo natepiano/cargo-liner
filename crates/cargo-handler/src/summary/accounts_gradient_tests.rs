@@ -101,7 +101,7 @@ pub(super) fn locate(buffer: &Buffer, label: &str) -> CellPoint {
 }
 
 fn reset_color(buffer: &Buffer, label: &str) -> Color {
-    let column = locate(buffer, "resets").column;
+    let column = locate(buffer, "resets").column + 6 - 9;
     let row = locate(buffer, label).row;
     let color = buffer[(column, row)].fg;
     let reset_text = DateTime::from_timestamp(i64::try_from(NOW).expect("fixture second"), 0)
@@ -209,7 +209,7 @@ fn accounts_gradient_missing_reset_keeps_plain_text_and_does_not_shift_other_ran
         account("furthest", reset(120)),
     ]);
     let buffer = drawn(&app);
-    let column = locate(&buffer, "resets").column;
+    let column = locate(&buffer, "resets").column + 5;
     let row = locate(&buffer, "missing").row;
     assert_eq!(buffer[(column, row)].symbol(), MISSING_VALUE);
     assert_eq!(buffer[(column, row)].fg, tui_pane::text_default());

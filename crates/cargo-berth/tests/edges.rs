@@ -2113,7 +2113,8 @@ fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
             .iter()
             .filter(|query| query.starts_with("status "))
             .count(),
-        worktrees
+        0,
+        "checkout status is read in process"
     );
     assert!(
         queries
@@ -3097,17 +3098,19 @@ fn run_berth_with_stale_marker(
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env("PATH", wrapped_path)
-        .env(ALERT_BRANCH_ENVIRONMENT, alert_branch)
-        .env(MARKER_PATH_ENVIRONMENT, repository_root.join(MARKER_PATH))
-        .env(REAL_GIT_ENVIRONMENT, git_binary())
-        .env(STALE_RUN_ENVIRONMENT, FOURTH_RUN)
-        .env_remove("CARGO_BERTH_RUN")
-        .output()
-        .expect("cargo-berth should run with wrapped git")
+    cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+        "CARGO_BIN_EXE_cargo-berth"
+    )))
+    .args(arguments)
+    .current_dir(repository_root)
+    .env("PATH", wrapped_path)
+    .env(ALERT_BRANCH_ENVIRONMENT, alert_branch)
+    .env(MARKER_PATH_ENVIRONMENT, repository_root.join(MARKER_PATH))
+    .env(REAL_GIT_ENVIRONMENT, git_binary())
+    .env(STALE_RUN_ENVIRONMENT, FOURTH_RUN)
+    .env_remove("CARGO_BERTH_RUN")
+    .output()
+    .expect("cargo-berth should run with wrapped git")
 }
 
 fn git_binary() -> PathBuf {

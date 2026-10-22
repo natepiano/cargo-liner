@@ -17,8 +17,6 @@ use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
-use crate::constants::TREE_AGE_HEADER;
-use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::render;
@@ -155,6 +153,7 @@ fn unassigned_sort_survives_members_joining_and_leaving_and_resets_after_disappe
     let younger = session(30, "alpha", 3600);
     apply_local(&mut app, vec![older.clone(), younger.clone()]);
     click_pool_header(&mut app, "natedev", TreeColumn::Session);
+    click_pool_header(&mut app, "natedev", TreeColumn::Session);
     let selected = TreeSort {
         column:    TreeColumn::Session,
         direction: SortDirection::Ascending,
@@ -187,10 +186,10 @@ fn unassigned_sort_survives_members_joining_and_leaving_and_resets_after_disappe
     apply_local(&mut app, vec![older, session(50, "new-alpha", 600)]);
     let buffer = app_pool_buffer(&app, "natedev");
     assert!(
-        text_row(&buffer, &format!("{TREE_AGE_HEADER} ▼"))
-            .contains(&format!("{TREE_AGE_HEADER} ▼"))
+        text_row(&buffer, &format!("{TREE_SESSION_HEADER} ▲"))
+            .contains(&format!("{TREE_SESSION_HEADER} ▲"))
     );
-    assert!(label_position(&buffer, "zeta").1 < label_position(&buffer, "new-alpha").1);
+    assert!(label_position(&buffer, "new-alpha").1 < label_position(&buffer, "zeta").1);
 }
 
 #[test]
@@ -207,16 +206,15 @@ fn unassigned_machine_sorts_are_independent_and_one_machine_disappearing_preserv
     click_pool_header(&mut app, "natedev", TreeColumn::Session);
     let local = app_pool_buffer(&app, "natedev");
     let remote = app_pool_buffer(&app, "mac");
-    assert!(label_position(&local, "alpha").1 < label_position(&local, "zeta").1);
-    assert!(label_position(&remote, "zeta").1 < label_position(&remote, "alpha").1);
-    click_pool_header(&mut app, "mac", TreeColumn::Session);
+    assert!(label_position(&local, "zeta").1 < label_position(&local, "alpha").1);
+    assert!(label_position(&remote, "alpha").1 < label_position(&remote, "zeta").1);
     click_pool_header(&mut app, "mac", TreeColumn::Session);
     let remote_sort = app.tree_sorts[&key("mac")];
     let local = app_pool_buffer(&app, "natedev");
     let remote = app_pool_buffer(&app, "mac");
     assert!(
-        text_row(&local, &format!("{TREE_SESSION_HEADER} ▲"))
-            .contains(&format!("{TREE_SESSION_HEADER} ▲"))
+        text_row(&local, &format!("{TREE_SESSION_HEADER} ▼"))
+            .contains(&format!("{TREE_SESSION_HEADER} ▼"))
     );
     assert!(
         text_row(&remote, &format!("{TREE_SESSION_HEADER} ▼"))
@@ -285,9 +283,16 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
         &FooterColors::parse("role.unassigned=purple"),
     );
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
-    let y = label_position(&buffer, name).1;
-    let role_x = label_position(&buffer, TREE_ROLE_HEADER).0;
-    assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
+    let spans = agent_cell::unassigned_header_spans(pool, AREA, NOW, AccountColumn::Hidden);
+    assert!(
+        !spans.iter().any(|span| span.column == TreeColumn::Role),
+        "the pool has no role values, so it draws no role column"
+    );
+    let header_y = label_position(&buffer, TREE_SESSION_HEADER).1;
+    let header: String = (AREA.x..AREA.right())
+        .map(|x| buffer[(x, header_y)].symbol())
+        .collect();
+    assert!(!header.split_whitespace().any(|word| word == "role"));
 }
 
 #[test]
@@ -347,9 +352,9 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
             .expect("director hue")
     );
     for (name, hue) in [
-        ("ups", RainbowHue::Yellow),
-        ("postmaster", RainbowHue::Green),
-        ("remote-session", RainbowHue::Cyan),
+        ("ups", RainbowHue::Green),
+        ("postmaster", RainbowHue::Cyan),
+        ("remote-session", RainbowHue::Blue),
     ] {
         assert!(
             (0..AREA.height).all(|y| {

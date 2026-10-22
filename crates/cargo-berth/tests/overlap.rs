@@ -1879,7 +1879,10 @@ fn run_check_without_git(worktree_root: &Path, path: &Path, run: Option<&str>) -
         .env("PATH", path);
     match run {
         Some(run) => command.env(RUN_ENVIRONMENT, run),
-        None => command.env_remove(RUN_ENVIRONMENT),
+        // Keep the foreign checkout's unavailable-Git case on the explicit config route.
+        None => {
+            cargo_berth_test_support::use_git_read_subprocess(command.env_remove(RUN_ENVIRONMENT))
+        },
     };
     command
         .output()

@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 clap          = { workspace = true }
 crossterm     = { workspace = true }
+gix           = { workspace = true, features = ["sha1", "status"] }
 ratatui       = { workspace = true }
 schemars      = { workspace = true }
 serde         = { workspace = true, features = ["derive"] }

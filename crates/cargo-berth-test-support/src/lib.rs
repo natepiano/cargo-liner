@@ -24,9 +24,11 @@ mod git_driver;
 mod integration_repository;
 mod journal_records;
 mod repository_template;
+mod test_process_group;
 
 pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
+pub use berth_command::use_git_read_subprocess;
 pub use directory_snapshot::DirectorySnapshot;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
@@ -54,3 +56,4 @@ pub use repository_template::LedgerFixture;
 pub use repository_template::LedgerTemplate;
 pub use repository_template::RepositoryTemplate;
 pub use repository_template::TemplateBuildTiming;
+pub use test_process_group::TestProcessGroup;
