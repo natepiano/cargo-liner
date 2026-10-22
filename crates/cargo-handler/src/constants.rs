@@ -127,13 +127,6 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
-/// The pie a timer row's name leads with while the timer runs, by the
-/// share of it gone: each glyph while the share is under its bound,
-/// from empty to three quarters filled.
-pub(crate) const TIMER_PIE: [(f64, char); 4] = [(0.25, '○'), (0.5, '◔'), (0.75, '◑'), (1.0, '◕')];
-/// The pie of a timer at or past its deadline.
-pub(crate) const TIMER_PIE_FULL: char = '●';
-
 // summary table
 /// The summary's column labels, in column order.
 pub(crate) const SUMMARY_HEADERS: [&str; 7] = [

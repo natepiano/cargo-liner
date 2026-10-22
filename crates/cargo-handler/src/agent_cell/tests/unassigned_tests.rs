@@ -179,15 +179,10 @@ fn unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails() {
             row_text(&buffer, name)
         );
     }
-    let role_x = find(&buffer, TREE_ROLE_HEADER).expect("role header").0;
+    assert!(find(&buffer, TREE_ROLE_HEADER).is_none());
+    assert!(find(&buffer, TREE_TYPE_HEADER).is_none());
     for name in ["ups", "postmaster"] {
         let (name_x, y) = find(&buffer, name).expect("root row");
-        assert_eq!(buffer[(role_x, y)].symbol(), " ");
-        assert_eq!(
-            buffer[(role_x, y)].fg,
-            Color::Reset,
-            "blank cells contain no role ink"
-        );
         assert!((buffer.area.x..name_x).all(|x| buffer[(x, y)].symbol() == " "));
     }
     let order = ["opened-session", "postmaster", "ups"]
@@ -297,7 +292,7 @@ fn unassigned_header_clicks_sort_full_and_compressed_rows_and_ignore_gaps() {
     let key = TileKey::Unassigned {
         machine: "natedev".into(),
     };
-    for width in [65, 220] {
+    for width in [45, 220] {
         let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
         let entry = pool(&tiles, "natedev");
         let before = draw_pool(entry, width);
@@ -401,4 +396,47 @@ fn assigned_or_empty_machines_do_not_leave_an_empty_unassigned_tile() {
     let buffer = drawn_into(entry, &cell_order_placed(&placement), 220, 12);
     assert!(find(&buffer, "assigned-worker").is_some());
     assert!(find(&buffer, UNASSIGNED_CELL_TITLE).is_none());
+}
+
+#[test]
+fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
+    let state = MachineState::Answered(
+        vec![agent(20, "free-session", 21 * HOUR, None)],
+        HierarchyEdges::default().into(),
+    );
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let tiles = tile_order_sorted(&placement, &HashMap::new(), NOW);
+    let entry = pool(&tiles, "natedev");
+    for width in [65, 220] {
+        let buffer = draw_pool(entry, width);
+        let content = header_indented(buffer.area);
+        let (header_x, header_y) = find(&buffer, "age").expect("age header");
+        let (value_x, value_y) = find(&buffer, "21h").expect("age value");
+        assert_eq!(
+            header_x + 3,
+            content.right(),
+            "width={width}: {}",
+            lines(&buffer).join("\n")
+        );
+        assert_eq!(value_x + 3, content.right(), "width={width}");
+        assert!(value_y > header_y);
+        for absent in ["type", "role"] {
+            assert!(find(&buffer, absent).is_none(), "{absent}: width={width}");
+        }
+        let spans = unassigned_header_spans(entry, buffer.area, NOW, AccountColumn::Shown);
+        assert_eq!(
+            sort::header_hit(
+                &spans,
+                CellPoint {
+                    column: header_x,
+                    row:    header_y,
+                }
+            ),
+            HeaderHit::Column(TreeColumn::Age)
+        );
+    }
 }

@@ -17,7 +17,6 @@ use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
 use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
-use crate::constants::TREE_ROLE_HEADER;
 use crate::constants::TREE_SESSION_HEADER;
 use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::render;
@@ -284,14 +283,16 @@ fn assert_pool_matches_summary(tiles: &[AgentTile<'_>], name: &str, color: Color
         &FooterColors::parse("role.unassigned=purple"),
     );
     assert_eq!(buffer[label_position(&buffer, name)].fg, color);
-    let y = label_position(&buffer, name).1;
-    let role_x = label_position(&buffer, TREE_ROLE_HEADER).0;
-    assert_eq!(buffer[(role_x, y)].symbol(), " ");
-    assert_eq!(
-        buffer[(role_x, y)].fg,
-        Color::Reset,
-        "blank role has no ink"
+    let spans = agent_cell::unassigned_header_spans(pool, AREA, NOW, AccountColumn::Hidden);
+    assert!(
+        !spans.iter().any(|span| span.column == TreeColumn::Role),
+        "the pool has no role values, so it draws no role column"
     );
+    let header_y = label_position(&buffer, TREE_SESSION_HEADER).1;
+    let header: String = (AREA.x..AREA.right())
+        .map(|x| buffer[(x, header_y)].symbol())
+        .collect();
+    assert!(!header.split_whitespace().any(|word| word == "role"));
 }
 
 #[test]

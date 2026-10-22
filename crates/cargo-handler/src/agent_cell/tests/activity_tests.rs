@@ -396,6 +396,23 @@ fn shell_state_buffer(width: u16) -> Buffer {
 }
 
 #[test]
+fn shell_timer_status_draws_digits_without_a_short_fallback_pie() {
+    for width in [65, 180] {
+        let buffer = shell_state_buffer(width);
+        let x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
+        let y = find(&buffer, "progress-clock").expect("timer row").1;
+        let status: String = (x..x + 7).map(|x| buffer[(x, y)].symbol()).collect();
+        assert_eq!(status.trim_end(), "3:48", "width={width}");
+        assert_eq!(buffer[(x, y)].symbol(), "3", "timer begins at digit height");
+        let type_x = find(&buffer, "type").expect("type header").0;
+        let kind: String = (type_x..type_x + 5)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(kind, "shell");
+    }
+}
+
+#[test]
 fn shell_rows_draw_running_in_status_and_shell_only_in_type() {
     for width in [180, 65] {
         let buffer = shell_state_buffer(width);
@@ -411,24 +428,6 @@ fn shell_rows_draw_running_in_status_and_shell_only_in_type() {
         assert_eq!(status, "running", "width={width}");
         assert_eq!(kind, "shell", "width={width}");
         assert!(!lines(&buffer)[usize::from(y)].contains("command"));
-    }
-}
-
-#[test]
-fn shell_timer_status_keeps_its_pie_and_remaining_time_in_both_layouts() {
-    for width in [180, 65] {
-        let buffer = shell_state_buffer(width);
-        let status_x = find(&buffer, TREE_STATUS_HEADER).expect("status header").0;
-        let y = find(&buffer, "progress-clock").expect("timer row").1;
-        let status: String = (status_x..status_x + 6)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect();
-        assert_eq!(status, "◔ 3:48", "width={width}");
-        let type_x = find(&buffer, "type").expect("type header").0;
-        let kind: String = (type_x..type_x + 5)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect();
-        assert_eq!(kind, "shell");
     }
 }
 
@@ -470,7 +469,7 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         assert_eq!(shell_status.symbol(), "r");
         assert_eq!(shell_status.fg, agent_status.fg, "width={width}");
         let timer_status = status_at(&buffer, "progress-clock");
-        assert_eq!(timer_status.symbol(), "◔");
+        assert_eq!(timer_status.symbol(), "3");
         assert_eq!(Some(timer_status.fg), Role::Shell.style().fg);
         assert_ne!(timer_status.fg, shell_status.fg);
     }

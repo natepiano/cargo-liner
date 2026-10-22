@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Tiles omit columns with no recorded values. Tiles with the same columns share their positions within a screen column; other tiles fit independently. Shell timers show the remaining time as digits, avoiding undersized pie glyphs. `thinking` and `running` draw in one green in every theme.
 - Shell rows show `running` or their timer in the status column, with `shell` only in the type column. Status inks retain readable glyph coverage. Session-name sorting in tiles and the summary ignores case, with original spelling breaking ties.
 - Footer role and account ink and status words remain readable on focused and unfocused tile backgrounds. Worker job labels skip worktree and director context; shortened labels omit whitespace before the ellipsis.
 - Summary headers use `account` and `session`, and only sessions heading a hierarchy appear in that table; sessions without a hierarchy appear only in `unassigned`. Codex sessions use their own recorded names, activity and fast tier, and an open rollout alone no longer creates a worker row. Codex thread rows retain a missing account when none was recorded.
