@@ -51,7 +51,7 @@ fn collision_roster() -> Roster {
     let ancestry = (0..6)
         .map(|level| Ancestor {
             pid:            5000 + level,
-            command:        format!("ancestor-{level}"),
+            command:        CommandText::of(&format!("ancestor-{level}"), &[]),
             passes_through: false,
         })
         .collect();

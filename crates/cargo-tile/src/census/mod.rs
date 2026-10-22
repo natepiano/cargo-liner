@@ -14,7 +14,6 @@ pub(crate) mod scan;
 )]
 mod summary_totals_tests;
 
-pub(crate) use command_text::command_name;
 pub(crate) use direct_capture::DirectAssociation;
 pub(crate) use direct_capture::SelectedProof;
 pub(crate) use invocation_cpu_accounting::CensusCadence;
@@ -33,6 +32,15 @@ pub(crate) use scan::RunStart;
 pub(crate) use scan::spawn_with_resolver;
 pub(crate) use scan::sum_resource_use_once_per_pid;
 
+#[cfg(test)]
+use crate::constants::CPU_COLUMN;
+#[cfg(test)]
+use crate::constants::MEMORY_COLUMN;
+#[cfg(test)]
+use crate::constants::STATE_COLUMN;
+#[cfg(test)]
+use crate::constants::TABLE_HEADERS;
+
 /// Read a rendered cell using its title's alignment and the row's inner right edge.
 #[cfg(test)]
 pub(crate) fn measurement_cell(header: &str, row: &str, column: &str, rendered: &str) -> String {
@@ -46,7 +54,10 @@ pub(crate) fn measurement_cell(header: &str, row: &str, column: &str, rendered: 
     let row: Vec<_> = row.chars().collect();
     let title_start = header[..start].chars().count();
     let cell_start = |title: &str, start: usize| {
-        if title != crate::constants::TABLE_HEADERS[crate::constants::STATE_COLUMN] {
+        if ![CPU_COLUMN, MEMORY_COLUMN, STATE_COLUMN]
+            .iter()
+            .any(|&index| title == TABLE_HEADERS[index])
+        {
             return start;
         }
         let end = start + title.chars().count();
@@ -62,7 +73,7 @@ pub(crate) fn measurement_cell(header: &str, row: &str, column: &str, rendered: 
     };
     let start = cell_start(column, title_start);
     let right = row.iter().rposition(|&ch| ch == '│').unwrap_or(row.len());
-    let end = crate::constants::TABLE_HEADERS
+    let end = TABLE_HEADERS
         .iter()
         .filter_map(|title| {
             header
@@ -72,7 +83,10 @@ pub(crate) fn measurement_cell(header: &str, row: &str, column: &str, rendered: 
         .filter(|&(_, index)| index > title_start)
         .min_by_key(|&(_, index)| index)
         .map_or(right, |(title, index)| cell_start(title, index));
-    let end = if column == crate::constants::TABLE_HEADERS[crate::constants::STATE_COLUMN] {
+    let end = if [CPU_COLUMN, MEMORY_COLUMN, STATE_COLUMN]
+        .iter()
+        .any(|&index| column == TABLE_HEADERS[index])
+    {
         title_start + column.chars().count()
     } else {
         end
@@ -99,11 +113,11 @@ mod tests {
 
     #[test]
     fn a_right_aligned_state_does_not_enter_the_memory_cell() {
-        let header = "│ cpu mem       state command │";
+        let header = "│ cpu  mem       state command │";
         for (row, memory, state) in [
-            ("│             blocked cargo   │", "", "blocked"),
-            ("│     0.5G    blocked cargo   │", "0.5G", "blocked"),
-            ("│     0.5G            cargo   │", "0.5G", ""),
+            ("│              blocked cargo   │", "", "blocked"),
+            ("│     0.5G     blocked cargo   │", "0.5G", "blocked"),
+            ("│     0.5G             cargo   │", "0.5G", ""),
         ] {
             assert_eq!(measurement_cell(header, row, "mem", row), memory);
             assert_eq!(measurement_cell(header, row, "state", row), state);

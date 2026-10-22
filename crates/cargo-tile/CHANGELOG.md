@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- `commands.default_arguments` selects the flags shown beside each subcommand, with a sorted list in Settings; defaults are `all-targets`, `fix`, and `workspace`.
+- `h` independently shows or hides all command arguments.
 - A panic is appended to `panic.log` beside `config.toml` -- the time, where it was raised, its message and a backtrace -- and the file's path is printed after the terminal is restored, so the report is not lost with the alternate screen.
 - `[tiles] view`, stepped under Tiles in the settings overlay, selects `summary` or `cells`; `cells` is the default; a saved `auto` loads as `cells`.
 - The summary cell's bottom row shows the memory of running commands, with `+` when only part of the total is readable and no memory entry when none is readable.
@@ -30,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The keymap overlay draws its sections side by side where the terminal is wide enough, since three attract screens no longer fit one column.
 - A third attract screen on `3`: the desktop drawn as itself with a band of coarseness sweeping across it, taking the picture to blocks and giving it back. Arrows point the sweep, `>`/`<` pace it, `+`/`-` size the blocks, `[`/`]` narrow and widen the band, `v` cycles how a block hands its cells back, `t` draws cells solid or shaded.
 - The drifting attract screen fills its cells with bars, and `t` swaps between those and characters. Bars draw part way into a cell, so slow lines travel rather than step, and turning carries the field over instead of dealing it afresh.
-- `p` toggles how much of each command a cell spells out: short names every step of the process tree and nothing more, full spells the lines out, with `tree` in the status line while it does.
+- `p` shows or hides the process hierarchy independently of command arguments.
 - A second attract screen on `2`, and the one the app opens with: the window filled with bars or characters in the colours of the desktop behind them, every line drifting on its own. Arrows point the drift, `<`/`>` change speed, `v` lets the lines come apart, `[`/`]` draw their speeds together or apart, dealt in lanes so neighbouring lines travel together.
 - The attract band sets off left to right with both edges fraying, so everything the animation does is on screen before a key is pressed. `v` cycles which edges fray and `[`/`]` change how fast.
 - The settings overlay moves on the rebindable navigation keys rather than hard-wired arrows, so `[navigation]` in `keymap.toml` says what walks the list.
@@ -111,6 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+
+- Hidden arguments no longer produce `…`; only a real text cut does.
+- Numeric summary values align on their right edge, including CPU percent signs.
+- Wrapped commands keep a flag and its value together, such as `-D warnings`.
 - In `cells`, busy command cells no longer switch the grid to the summary alone; summary rows that do not fit beside them go to its hidden-rows count.
 - A tile entering a column waits for its first body row before drawing its border, so the column foot never shows two stacked rules during motion.
 - Grid motion no longer leaves an empty row above a cell's foot while that cell hides content.
@@ -221,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-08-21
 
 ### Added
+
 - Establish cargo-tile as the starting point for a new `tui_pane` application, tagged `app-template-v1`. The crate is a complete TUI with no application in it: framework globals, the settings / keymap / global-shortcuts overlays, live theming, a status line, restart in place, demand-driven rendering, and input on its own thread. See `docs/tui_pane/as-built/app-template.md`.
 - Edit key bindings from the keymap overlay: Enter on a row captures the next keypress, checks it against every binding in force, writes `keymap.toml`, and reloads. The `?` overlay hands off to the same editor with the selected row already open.
 - Show the cargo invocations running on this machine, one row per invocation, grouped by the working directory they were started from and ordered by path. A process is classified as cargo by its argv rather than its process name, so a wrapper or a renamed binary is still attributed correctly, and a start-time tie between two candidates resolves toward the newer pid.

@@ -6,7 +6,7 @@
 //! section; this module places them and adds cargo-tile's own `fade
 //! seconds` stepper and its Capture and Commands rows. Every stepper
 //! walks its allowed values on Left/Right/Enter, writes `config.toml`, and swaps
-//! the active theme in place. The two Commands lists are typed in:
+//! the active theme in place. The Commands lists are typed in:
 //! Enter opens the list as comma-separated text, and Enter again writes
 //! it and applies it. Every other row reports state and is inert.
 
@@ -61,6 +61,7 @@ use crate::constants::CAPTURE_STATUS_YOURS;
 use crate::constants::CAPTURE_SUMMARY_SEPARATOR;
 use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
 use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
+use crate::constants::DEFAULT_ARGUMENTS_LABEL;
 use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MIN_FADE_SECONDS;
 use crate::constants::REGISTRATION_SEPARATOR;
@@ -140,6 +141,8 @@ pub(crate) enum CommandList {
     Excluded,
     /// `commands.hidden`.
     Hidden,
+    /// `commands.default_arguments`, sorted and deduplicated by its type.
+    DefaultArguments,
 }
 
 /// Build the settings rows for the current frame.
@@ -174,6 +177,12 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
         AppSetting::Commands(CommandList::Hidden),
         "hidden cargo commands",
         list_display(&config.commands.hidden),
+    );
+
+    out.text(
+        AppSetting::Commands(CommandList::DefaultArguments),
+        DEFAULT_ARGUMENTS_LABEL,
+        list_display(config.commands.default_arguments.entries()),
     );
 
     out.files::<CargoTile>();
@@ -233,7 +242,14 @@ fn set_command_list(app: &mut App, list: CommandList, entries: Vec<String>) {
     if list == CommandList::Excluded {
         app.excluded_commands.replace(entries.clone());
     }
-    *command_list_mut(&mut app.loaded_config.config, list) = entries;
+    let commands = &mut app.loaded_config.config.commands;
+    match list {
+        CommandList::Excluded => commands.excluded = entries,
+        CommandList::Hidden => commands.hidden = entries,
+        CommandList::DefaultArguments => {
+            commands.default_arguments = crate::config::DefaultArguments::new(entries);
+        },
+    }
 }
 
 /// The Commands list the settings selection is on, if any.
@@ -250,14 +266,7 @@ fn command_list(config: &Config, list: CommandList) -> &[String] {
     match list {
         CommandList::Excluded => &config.commands.excluded,
         CommandList::Hidden => &config.commands.hidden,
-    }
-}
-
-/// The entries `list` holds, for replacing.
-const fn command_list_mut(config: &mut Config, list: CommandList) -> &mut Vec<String> {
-    match list {
-        CommandList::Excluded => &mut config.commands.excluded,
-        CommandList::Hidden => &mut config.commands.hidden,
+        CommandList::DefaultArguments => config.commands.default_arguments.entries(),
     }
 }
 
@@ -597,6 +606,7 @@ mod tests {
     use crate::constants::CAPTURE_STATUS_IDENTITY_BOOT;
     use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
     use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
+    use crate::constants::DEFAULT_HIDDEN_COMMANDS;
     use crate::constants::SUPPORTED_REGISTRATION_VERSION;
     use crate::progress::capture::CaptureGeneration;
     use crate::progress::capture::CaptureKey;
@@ -1177,7 +1187,7 @@ mod tests {
         set_command_list(&mut app, CommandList::Hidden, parse_list("port handler"));
         assert_eq!(
             app.loaded_config.config.commands.hidden,
-            crate::constants::DEFAULT_HIDDEN_COMMANDS
+            DEFAULT_HIDDEN_COMMANDS
         );
         assert_eq!(
             worker.snapshot(),
@@ -1212,6 +1222,7 @@ mod layout_tests {
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
     use crate::config::CargoTile;
+    use crate::constants::DEFAULT_HIDDEN_COMMANDS;
     use crate::render;
 
     #[test]
@@ -1242,7 +1253,7 @@ mod layout_tests {
                 .iter()
                 .map(|value| value.as_str().expect("subcommand"))
                 .collect::<Vec<_>>(),
-            crate::constants::DEFAULT_HIDDEN_COMMANDS
+            DEFAULT_HIDDEN_COMMANDS
         );
         assert!(saved["commands"].get("hidden_when_idle").is_none());
     }
@@ -1286,7 +1297,7 @@ mod layout_tests {
     }
 
     /// Rows shared by both layouts: everything above Notices.
-    const BODY: [&str; 21] = [
+    const BODY: [&str; 22] = [
         "[Appearance]",
         "0 Stepper mode = auto",
         "1 Stepper light theme = Default Light",
@@ -1304,10 +1315,11 @@ mod layout_tests {
         "[Commands]",
         "11 Value excluded = berth",
         "12 Value hidden cargo commands = port, handler",
+        "13 Value default arguments = all-targets, fix, workspace",
         "[Files]",
-        "13 Value config = <config path>",
-        "14 Value themes = <themes dir>",
-        "15 Value keymap = <keymap path>",
+        "14 Value config = <config path>",
+        "15 Value themes = <themes dir>",
+        "16 Value keymap = <keymap path>",
     ];
 
     /// Order, section headers, labels, values, row kinds and selectable
@@ -1327,10 +1339,10 @@ mod layout_tests {
         let mut expected = BODY.to_vec();
         expected.extend([
             "[Notices]",
-            "16 Value theme = theme note",
-            "17 Value capture = kept note",
-            "18 Value capture = failure note",
-            "19 Value config = config error",
+            "17 Value theme = theme note",
+            "18 Value capture = kept note",
+            "19 Value capture = failure note",
+            "20 Value config = config error",
         ]);
         assert_eq!(layout(&app), expected);
     }

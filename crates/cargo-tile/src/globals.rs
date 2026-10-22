@@ -14,7 +14,7 @@
 //! second readable, `a` draws the attract screen over the grid whether
 //! or not anything is running, `r` draws a fresh attract screen at
 //! random, `u` restores the attract configuration that replacement
-//! displaced, and `p` says how much of each command a cell spells out.
+//! displaced, `p` shows the process hierarchy, and `h` shows all arguments.
 //! Three more belong to the attract screen's saved favorites: `ctrl-s`
 //! saves the parameters on screen now, `ctrl-o` opens the saved list,
 //! and `m` shows one of them at random.
@@ -44,7 +44,8 @@ tui_pane::action_enum! {
         Attract    => ("attract",     "Show the attract screen");
         RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
         UndoAttractReplacement => ("undo_attract_replacement", "Undo attract replacement");
-        ProcessTree => ("process_tree", "Show whole command lines");
+        ProcessTree => ("process_tree", "Show process hierarchy");
+        Arguments => ("arguments", "Show all arguments");
         SaveFavorite => ("save_favorite", "Save attract parameters");
         OpenFavorites => ("open_favorites", "Open attract favorites");
         RandomFavorite => ("random_favorite", "Show a random favorite");
@@ -71,6 +72,7 @@ impl Globals<App> for AppGlobalAction {
             'r' => Self::RandomizeAttract,
             'u' => Self::UndoAttractReplacement,
             'p' => Self::ProcessTree,
+            'h' => Self::Arguments,
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
             'm' => Self::RandomFavorite,
@@ -95,6 +97,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),
         AppGlobalAction::UndoAttractReplacement => tui_pane::undo_attract_replacement(app),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
+        AppGlobalAction::Arguments => app.arguments = app.arguments.toggled(),
         AppGlobalAction::SaveFavorite => tui_pane::save_favorite(app),
         AppGlobalAction::OpenFavorites => tui_pane::open_favorites(app),
         AppGlobalAction::RandomFavorite => tui_pane::show_random_favorite(app),
@@ -117,7 +120,6 @@ mod tests {
     use tui_pane::Updates;
 
     use super::*;
-    use crate::app::ProcessTree;
 
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
@@ -296,17 +298,5 @@ fraying = "leading"
             scope.action_for(&KeyBind::from('m')),
             Some(AppGlobalAction::RandomFavorite),
         );
-    }
-
-    /// The display starts short and the key walks between the two. A
-    /// grid opening on the whole chain spends half of every cell on
-    /// something that has not changed since the command began.
-    #[test]
-    fn the_tree_starts_short_and_the_key_walks_both_ways() {
-        let tree = ProcessTree::default();
-
-        assert_eq!(tree, ProcessTree::Short);
-        assert_eq!(tree.toggled(), ProcessTree::Long);
-        assert_eq!(tree.toggled().toggled(), ProcessTree::Short);
     }
 }
