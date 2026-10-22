@@ -1932,6 +1932,29 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect()
     }
 
+    /// Destination allocations with enough rows for either endpoint of a move.
+    /// Source geometry is retained for the whole transition, so intermediate
+    /// heights cannot change a provider's measured visible slice.
+    pub(super) fn motion_preparation_allocations(
+        &self,
+        area: Rect,
+        growth: TileGrowth,
+    ) -> Vec<(TileContent<Id>, Rect)> {
+        let mut allocations = self.preparation_allocations(area, growth);
+        if let GridMotion::Moving(transition) = &self.motion {
+            let source_cells = cells(&transition.from);
+            for (content, allocation) in &mut allocations {
+                if let Some((_, index)) = source_cells.iter().find(|(source, _)| source == content)
+                    && let Some(source) = transition.source.cell(*index)
+                {
+                    let source = draw::content_area(frame_inner(source));
+                    allocation.height = allocation.height.max(source.height);
+                }
+            }
+        }
+        allocations
+    }
+
     /// Destination state used to ask cells for their wrapped row demands.
     fn demand_measurement_held(&self) -> HeldCellLayout {
         let mut held = self.drawn_held();
