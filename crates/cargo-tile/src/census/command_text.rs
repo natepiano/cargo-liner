@@ -1,26 +1,29 @@
 //! Cargo argument classification and command display.
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::config::DefaultArguments;
+use crate::constants::ARGUMENT_ASSIGNMENT;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DEFAULT_PROFILE;
 use crate::constants::CARGO_DISPLAY_NAME;
-use crate::constants::CARGO_GLOBAL_VALUED_OPTIONS;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_PROFILE_FLAG;
 use crate::constants::CARGO_RELEASE_FLAGS;
 use crate::constants::CARGO_RELEASE_PROFILE;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
-use crate::constants::ELISION;
+use crate::constants::COMMAND_VALUED_OPTIONS;
+use crate::constants::COMMAND_WORD_SEPARATOR;
 use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
+use crate::constants::RUSTC_LINT_OWNERS;
 use crate::constants::SELF_PROCESS_NAME;
-use crate::constants::SUMMARY_HIDDEN_VALUED_FLAGS;
-use crate::render::SummaryDetail;
+use crate::constants::ValuedOptionScope;
 
 /// Convert the scanner's optional home at the external API boundary once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +72,167 @@ pub(crate) struct CommandText {
     /// than joined because a cell may leave one of them out;
     /// [`CommandText::line`] is what puts them back into a line.
     arguments:          Vec<String>,
+    /// Parsed once, preserving each argv entry and every complete option value.
+    words:              Vec<CommandWord>,
+}
+
+/// A parsed argv word; only this module can construct or classify it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CommandWord {
+    kind: CommandWordKind,
+}
+
+/// Incomplete syntax is retained as a diagnostic word, never as a valued flag.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CommandWordKind {
+    Name(String),
+    Selector(String),
+    Flag(String),
+    FlagWithValue { flag: String, value: String },
+    IncompleteOption(String),
+    Value(String),
+    Separator,
+}
+
+impl CommandWord {
+    /// Render without splitting an argv entry containing whitespace.
+    fn text(&self) -> Cow<'_, str> {
+        match &self.kind {
+            CommandWordKind::Name(text)
+            | CommandWordKind::Selector(text)
+            | CommandWordKind::Flag(text)
+            | CommandWordKind::IncompleteOption(text)
+            | CommandWordKind::Value(text) => Cow::Borrowed(text),
+            CommandWordKind::FlagWithValue { flag, value } => {
+                Cow::Owned(format!("{flag}{COMMAND_WORD_SEPARATOR}{value}"))
+            },
+            CommandWordKind::Separator => Cow::Borrowed(ARGUMENT_SEPARATOR),
+        }
+    }
+
+    /// Expose the parsed value boundary without classifying the text again.
+    pub(crate) fn display_word(&self) -> CommandWordDisplay<'_> {
+        match &self.kind {
+            CommandWordKind::FlagWithValue { flag, value } => {
+                CommandWordDisplay::FlagWithValue { flag, value }
+            },
+            _ => CommandWordDisplay::Independent(self.text()),
+        }
+    }
+
+    fn is_selected(&self, selected: &DefaultArguments) -> bool {
+        match &self.kind {
+            CommandWordKind::Name(_) | CommandWordKind::Selector(_) => true,
+            CommandWordKind::Flag(flag)
+            | CommandWordKind::IncompleteOption(flag)
+            | CommandWordKind::FlagWithValue { flag, .. } => selected.contains(flag),
+            CommandWordKind::Value(_) | CommandWordKind::Separator => false,
+        }
+    }
+}
+
+/// A display unit either stands alone or retains its flag and value separately.
+pub(crate) enum CommandWordDisplay<'a> {
+    Independent(Cow<'a, str>),
+    FlagWithValue { flag: &'a str, value: &'a str },
+}
+
+/// Which program owns the flags in the current argv segment.
+#[derive(Clone, Copy)]
+enum ArgumentOwner {
+    Cargo,
+    RustcLint,
+    Other,
+}
+
+impl ArgumentOwner {
+    /// Compiler frontends share the same lint argument language.
+    fn compiler(program: &str) -> Self {
+        if RUSTC_LINT_OWNERS.contains(&program_name(program)) {
+            Self::RustcLint
+        } else {
+            Self::Other
+        }
+    }
+
+    fn takes_value(self, flag: &str) -> bool {
+        COMMAND_VALUED_OPTIONS.iter().any(|(name, scope)| {
+            *name == flag
+                && matches!(
+                    (self, scope),
+                    (
+                        Self::Cargo,
+                        ValuedOptionScope::Global | ValuedOptionScope::Cargo
+                    ) | (Self::RustcLint, ValuedOptionScope::RustcLint)
+                )
+        })
+    }
+}
+
+/// Parse only at the argv boundary; consumers never infer arity from text.
+fn command_words(program: &str, arguments: &[String]) -> Vec<CommandWord> {
+    let cargo = CARGO_PROCESS_NAMES.contains(&program_name(program))
+        || program_name(program).starts_with(CARGO_SUBCOMMAND_PREFIX);
+    let mut owner = if cargo {
+        ArgumentOwner::Cargo
+    } else {
+        ArgumentOwner::compiler(program)
+    };
+    let mut position = if cargo {
+        CommandNamePosition::BeforeCommand
+    } else {
+        CommandNamePosition::Arguments
+    };
+    let mut child_owner = ArgumentOwner::Other;
+    let mut words = arguments.iter().peekable();
+    let mut parsed = Vec::new();
+    while let Some(word) = words.next() {
+        let kind = if word == ARGUMENT_SEPARATOR {
+            position = CommandNamePosition::Arguments;
+            owner = child_owner;
+            CommandWordKind::Separator
+        } else if word.starts_with(FLAG_MARK) {
+            if matches!(position, CommandNamePosition::Naming) {
+                position = CommandNamePosition::Arguments;
+            }
+            if !word.contains(ARGUMENT_ASSIGNMENT) && owner.takes_value(word) {
+                words
+                    .next_if(|value| !value.starts_with(FLAG_MARK))
+                    .map_or_else(
+                        || CommandWordKind::IncompleteOption(word.clone()),
+                        |value| CommandWordKind::FlagWithValue {
+                            flag:  word.clone(),
+                            value: value.clone(),
+                        },
+                    )
+            } else {
+                CommandWordKind::Flag(word.clone())
+            }
+        } else if !matches!(position, CommandNamePosition::Arguments) && names_the_command(word) {
+            if word.starts_with(CARGO_TOOLCHAIN_SELECTOR) {
+                CommandWordKind::Selector(word.clone())
+            } else {
+                if matches!(position, CommandNamePosition::BeforeCommand) {
+                    child_owner = ArgumentOwner::compiler(word);
+                }
+                position = CommandNamePosition::Naming;
+                CommandWordKind::Name(word.clone())
+            }
+        } else {
+            position = CommandNamePosition::Arguments;
+            CommandWordKind::Value(word.clone())
+        };
+        parsed.push(CommandWord { kind });
+    }
+    parsed
+}
+
+/// Which argv words can still name the invocation before its option tail.
+#[derive(Clone, Copy)]
+enum CommandNamePosition {
+    BeforeCommand,
+    Naming,
+    Arguments,
 }
 
 /// Cargo's build profile, independent of arguments passed to its child program.
@@ -98,10 +262,68 @@ impl CommandText {
     /// the crate that need an invocation to hand around.
     #[cfg(test)]
     pub(crate) fn of(program: &str, arguments: &[&str]) -> Self {
+        Self::new(
+            program.to_string(),
+            arguments.iter().map(|word| (*word).to_string()).collect(),
+        )
+    }
+
+    pub(super) fn new(program: String, arguments: Vec<String>) -> Self {
+        let words = command_words(&program, &arguments);
         Self {
-            program:   program.to_string(),
-            arguments: arguments.iter().map(|word| (*word).to_string()).collect(),
+            program,
+            arguments,
+            words,
         }
+    }
+
+    /// Parsed argument units in their original argv order.
+    pub(crate) fn words(&self) -> &[CommandWord] { &self.words }
+
+    /// Both default text and wrapping select the same parsed units.
+    pub(crate) fn selected_words<'a>(
+        &'a self,
+        selected: &DefaultArguments,
+    ) -> Vec<&'a CommandWord> {
+        self.words
+            .iter()
+            .filter(|word| word.is_selected(selected))
+            .collect()
+    }
+
+    /// Legacy display-line fixtures have no argv boundaries to preserve.
+    #[cfg(test)]
+    pub(crate) fn from_display_line(line: &str) -> Self {
+        let mut words = line.split_whitespace();
+        Self::new(
+            words.next().unwrap_or_default().to_string(),
+            words.map(str::to_string).collect(),
+        )
+    }
+
+    /// Keep selected parsed units without parsing their display text again.
+    pub(crate) fn with_default_arguments(&self, selected: &DefaultArguments) -> Self {
+        let words: Vec<_> = self.selected_words(selected).into_iter().cloned().collect();
+        let arguments = words
+            .iter()
+            .flat_map(|word| match &word.kind {
+                CommandWordKind::FlagWithValue { flag, value } => vec![flag.clone(), value.clone()],
+                _ => vec![word.text().into_owned()],
+            })
+            .collect();
+        Self {
+            program: self.program_name().to_string(),
+            arguments,
+            words,
+        }
+    }
+
+    /// A display line assembled from retained argv entries, preserving their whitespace.
+    pub(crate) fn display_line(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.arguments.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(COMMAND_WORD_SEPARATOR)
     }
 
     /// The cargo subcommand this invocation names: `port` in
@@ -114,17 +336,13 @@ impl CommandText {
     /// `cargo-port` answers this the same as one still spelled
     /// `cargo port`.
     fn subcommand(&self) -> Result<&str, RetainedSubcommandAbsence> {
-        let mut arguments = self.arguments.iter().map(String::as_str);
-        while let Some(argument) = arguments.next() {
-            if CARGO_GLOBAL_VALUED_OPTIONS.contains(&argument) {
-                let _ = arguments.next();
-            } else if !argument.starts_with(FLAG_MARK)
-                && !argument.starts_with(CARGO_TOOLCHAIN_SELECTOR)
-            {
-                return Ok(argument);
-            }
-        }
-        Err(RetainedSubcommandAbsence::NoSubcommand)
+        self.words
+            .iter()
+            .find_map(|word| match &word.kind {
+                CommandWordKind::Name(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .ok_or(RetainedSubcommandAbsence::NoSubcommand)
     }
 
     /// Whether the hidden command policy names this invocation's subcommand.
@@ -133,14 +351,35 @@ impl CommandText {
             .is_ok_and(|subcommand| hidden_commands.iter().any(|hidden| hidden == subcommand))
     }
 
-    /// The command's subcommands and toolchain, followed by a cut mark
-    /// whenever arguments were omitted.
+    /// The command's subcommands and toolchain, without its argument tail.
     ///
     /// Keeps the toolchain selector, which is part of what runs rather
     /// than an argument to it -- `+nightly fmt` says something `fmt`
     /// alone does not.
     pub(crate) fn named(&self) -> CommandName {
-        named_arguments(self.arguments.iter().map(String::as_str))
+        let mut kept = Vec::new();
+        let mut omission = ArgumentOmission::Kept;
+        for word in &self.words {
+            match &word.kind {
+                CommandWordKind::Name(name) | CommandWordKind::Selector(name) => {
+                    kept.push(name.as_str());
+                },
+                _ => omission = ArgumentOmission::Dropped,
+            }
+        }
+        CommandName {
+            words:     kept.join(COMMAND_WORD_SEPARATOR),
+            arguments: omission,
+        }
+    }
+
+    /// Subcommand words and configured flags in their original argv order.
+    pub(crate) fn selected_arguments(&self, selected: &DefaultArguments) -> String {
+        self.selected_words(selected)
+            .into_iter()
+            .map(CommandWord::text)
+            .collect::<Vec<_>>()
+            .join(COMMAND_WORD_SEPARATOR)
     }
 
     /// The program's file name for Short-view rows.
@@ -163,7 +402,7 @@ impl CommandText {
                 }
             } else if let Some(name) = argument
                 .strip_prefix(CARGO_PROFILE_FLAG)
-                .and_then(|rest| rest.strip_prefix('='))
+                .and_then(|rest| rest.strip_prefix(ARGUMENT_ASSIGNMENT))
             {
                 profile = CargoProfile::named(name);
             }
@@ -171,83 +410,31 @@ impl CommandText {
         profile
     }
 
-    /// Display arguments, including the selectors read by [`Self::profile`].
-    /// Trimmed detail omits the summary's rendering and manifest flags.
-    pub(crate) fn line(&self, detail: SummaryDetail) -> String {
-        if detail == SummaryDetail::Full {
-            return self.arguments.join(" ");
-        }
-        let mut kept: Vec<&str> = Vec::with_capacity(self.arguments.len());
-        let mut skipping = false;
-        let mut handed_over = false;
-        for argument in &self.arguments {
-            // Everything past a bare `--` belongs to the program cargo
-            // runs, which spells its flags however it likes. Nothing
-            // there is cargo's to read, so nothing there is dropped.
-            if handed_over {
-                kept.push(argument);
-                continue;
-            }
-            if argument == ARGUMENT_SEPARATOR {
-                handed_over = true;
-                kept.push(argument);
-                continue;
-            }
-            // A valued flag's next word goes wherever the flag goes.
-            if std::mem::take(&mut skipping) {
-                continue;
-            }
-            if SUMMARY_HIDDEN_VALUED_FLAGS.contains(&argument.as_str()) {
-                skipping = true;
-                continue;
-            }
-            if SUMMARY_HIDDEN_VALUED_FLAGS
-                .iter()
-                .any(|flag| is_assignment(argument, flag))
-            {
-                continue;
-            }
-            kept.push(argument);
-        }
-        kept.join(" ")
-    }
+    /// All arguments, preserving the whitespace inside each argv entry.
+    pub(crate) fn line(&self) -> String { self.arguments.join(COMMAND_WORD_SEPARATOR) }
 }
 
 /// One whole command line with its arguments taken off, for the steps
 /// of a chain, which are held as a line rather than split.
 ///
 /// Short view names executables by file name. Cargo retains its subcommands;
-/// other session runners omit arguments and mark that omission.
-pub(crate) fn command_name(line: &str) -> CommandName {
-    let mut words = line.split_whitespace();
-    let Some(program) = words.next() else {
-        return CommandName {
-            words:     String::new(),
-            arguments: ArgumentOmission::Kept,
-        };
-    };
-    let program = program_name(program);
-    let arguments =
-        if CARGO_PROCESS_NAMES.contains(&program) || program.starts_with(CARGO_SUBCOMMAND_PREFIX) {
-            named_arguments(words)
-        } else {
-            CommandName {
-                words:     String::new(),
-                arguments: if words.next().is_some() {
-                    ArgumentOmission::Dropped
-                } else {
-                    ArgumentOmission::Kept
-                },
-            }
-        };
-    let kept = if arguments.words.is_empty() {
-        program.to_string()
+/// other session runners omit arguments.
+#[cfg(test)]
+fn command_name(line: &str, selected: &DefaultArguments) -> CommandName {
+    let command = CommandText::from_display_line(line);
+    let arguments = command.selected_arguments(selected);
+    let words = if arguments.is_empty() {
+        command.program_name().to_string()
     } else {
-        format!("{program} {}", arguments.words)
+        format!("{} {arguments}", command.program_name())
     };
     CommandName {
-        words:     kept,
-        arguments: arguments.arguments,
+        words,
+        arguments: if command.arguments.join(COMMAND_WORD_SEPARATOR) == arguments {
+            ArgumentOmission::Kept
+        } else {
+            ArgumentOmission::Dropped
+        },
     }
 }
 
@@ -263,46 +450,6 @@ pub(crate) enum ArgumentOmission {
 pub(crate) struct CommandName {
     pub(crate) words:     String,
     pub(crate) arguments: ArgumentOmission,
-}
-
-impl CommandName {
-    /// Convert the named omission to its displayed argument mark.
-    pub(crate) fn marked(&self) -> String {
-        match self.arguments {
-            ArgumentOmission::Kept => self.words.clone(),
-            ArgumentOmission::Dropped if self.words.is_empty() => ELISION.to_string(),
-            ArgumentOmission::Dropped => format!("{} {ELISION}", self.words),
-        }
-    }
-}
-
-/// Skip global options before the name, then keep consecutive command words.
-fn named_arguments<'word>(words: impl IntoIterator<Item = &'word str>) -> CommandName {
-    let mut kept = Vec::new();
-    let mut dropped = false;
-    let mut words = words.into_iter();
-    while let Some(word) = words.next() {
-        if word == ARGUMENT_SEPARATOR || (!kept.is_empty() && !names_the_command(word)) {
-            dropped = true;
-            break;
-        }
-        if names_the_command(word) {
-            kept.push(word);
-        } else {
-            dropped = true;
-            if CARGO_GLOBAL_VALUED_OPTIONS.contains(&word) {
-                let _ = words.next();
-            }
-        }
-    }
-    CommandName {
-        words:     kept.join(" "),
-        arguments: if dropped {
-            ArgumentOmission::Dropped
-        } else {
-            ArgumentOmission::Kept
-        },
-    }
 }
 
 /// Convert a path-bearing executable name at the path API boundary.
@@ -322,14 +469,6 @@ fn program_name(program: &str) -> &str {
 /// toolchain selector, which is the name of what runs.
 fn names_the_command(word: &str) -> bool {
     !word.starts_with(FLAG_MARK) && !word.contains(std::path::MAIN_SEPARATOR)
-}
-
-/// Whether an argument is the `--flag=<value>` spelling, which carries
-/// the value in the same word instead of the next one.
-fn is_assignment(argument: &str, flag: &str) -> bool {
-    argument
-        .strip_prefix(flag)
-        .is_some_and(|rest| rest.starts_with('='))
 }
 
 /// Render `path` with the home directory collapsed to `~`.
@@ -378,10 +517,7 @@ pub(super) fn command_text(
     {
         arguments.insert(0, subcommand);
     }
-    Ok(CommandText {
-        program: CARGO_DISPLAY_NAME.to_string(),
-        arguments,
-    })
+    Ok(CommandText::new(CARGO_DISPLAY_NAME.to_string(), arguments))
 }
 
 /// Why a process-table candidate cannot become a cargo row.
@@ -567,14 +703,18 @@ mod tests {
     #[test]
     fn the_short_name_ends_before_subcommand_options() {
         assert_eq!(
-            command_name("cargo check --locked --offline -j 1").marked(),
-            "cargo check …"
+            command_name(
+                "cargo check --locked --offline -j 1",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo check"
         );
         assert_eq!(
             command_name(
                 "cargo nextest run --test-threads 32 --bin hana -E 'package(hana) & (test(arrange_glyph) | …)'"
-            ).marked(),
-            "cargo nextest run …"
+            , &crate::config::DefaultArguments::default()).words,
+            "cargo nextest run"
         );
         assert_eq!(
             CommandText::of(
@@ -591,64 +731,76 @@ mod tests {
                 ],
             )
             .named()
-            .marked(),
-            "nextest run …"
-        );
-        assert_eq!(
-            command_name("cargo --config profile.p19.inherits=\"dev\" build --profile p19 -j 1")
-                .marked(),
-            "cargo build …"
+            .words,
+            "nextest run"
         );
         assert_eq!(
             command_name(
-                "cargo test -p cargo-tile --test cli_lifecycle --test shim_modes --test unit_tests"
+                "cargo --config profile.p19.inherits=\"dev\" build --profile p19 -j 1",
+                &crate::config::DefaultArguments::default()
             )
-            .marked(),
-            "cargo test …"
+            .words,
+            "cargo build"
         );
         assert_eq!(
-            command_name("cargo --config x=1 -Z unstable-options build --release").marked(),
-            "cargo build …"
+            command_name(
+                "cargo test -p cargo-tile --test cli_lifecycle --test shim_modes --test unit_tests",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo test"
         );
         assert_eq!(
-            command_name("cargo --color always -C /tmp/project check").marked(),
-            "cargo check …"
+            command_name(
+                "cargo --config x=1 -Z unstable-options build --release",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo build"
         );
         assert_eq!(
-            command_name("cargo --config=x=1 -Zunstable-options -C/tmp/project +nightly fmt")
-                .marked(),
-            "cargo +nightly fmt …"
+            command_name(
+                "cargo --color always -C /tmp/project check",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo check"
+        );
+        assert_eq!(
+            command_name(
+                "cargo --config=x=1 -Zunstable-options -C/tmp/project +nightly fmt",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo +nightly fmt"
         );
     }
 
     #[test]
     fn long_arguments_keep_the_release_selector() {
         let text = CommandText::of("cargo", &["build", "--release", "--locked"]);
-        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
-            assert_eq!(text.line(detail), "build --release --locked");
-        }
+        assert_eq!(text.line(), "build --release --locked");
+
         assert_eq!(text.profile(), CargoProfile::Release);
-        assert_eq!(text.named().marked(), "build …");
+        assert_eq!(text.named().words, "build");
     }
 
     #[test]
     fn long_arguments_keep_a_separate_profile_name() {
         let text = CommandText::of("cargo", &["build", "--profile", "p19c", "--config", "x"]);
-        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
-            assert_eq!(text.line(detail), "build --profile p19c --config x");
-        }
+        assert_eq!(text.line(), "build --profile p19c --config x");
+
         assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
-        assert_eq!(text.named().marked(), "build …");
+        assert_eq!(text.named().words, "build");
     }
 
     #[test]
     fn long_arguments_keep_an_assigned_profile_name() {
         let text = CommandText::of("cargo", &["build", "--profile=p19c"]);
-        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
-            assert_eq!(text.line(detail), "build --profile=p19c");
-        }
+        assert_eq!(text.line(), "build --profile=p19c");
+
         assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
-        assert_eq!(text.named().marked(), "build …");
+        assert_eq!(text.named().words, "build");
     }
 
     #[test]
@@ -661,9 +813,8 @@ mod tests {
         ] {
             let text = CommandText::of("cargo", &arguments);
             assert_eq!(text.profile(), CargoProfile::Release);
-            assert_eq!(text.named().marked(), "build …");
-            assert_eq!(text.line(SummaryDetail::Full), arguments.join(" "));
-            assert_eq!(text.line(SummaryDetail::Trimmed), arguments.join(" "));
+            assert_eq!(text.named().words, "build");
+            assert_eq!(text.line(), arguments.join(COMMAND_WORD_SEPARATOR));
         }
         for arguments in [
             vec!["run", "--", "--release"],
@@ -691,44 +842,43 @@ mod tests {
 
     #[test]
     fn cargo_profile_selectors_stay_in_both_argument_details() {
-        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
-            for arguments in [
-                vec!["build", "--release", "--workspace"],
-                vec!["build", "-r", "--workspace"],
-                vec!["build", "--profile", "release", "--workspace"],
-                vec!["build", "--profile=release", "--workspace"],
-                vec!["build", "--profile", "dev", "--workspace"],
-                vec!["build", "--profile=dev", "--workspace"],
-                vec!["build", "--profile", "bench", "--workspace"],
-                vec!["build", "--profile=bench", "--workspace"],
-            ] {
-                assert_eq!(
-                    CommandText::of("cargo", &arguments).line(detail),
-                    arguments.join(" ")
-                );
-            }
+        for arguments in [
+            vec!["build", "--release", "--workspace"],
+            vec!["build", "-r", "--workspace"],
+            vec!["build", "--profile", "release", "--workspace"],
+            vec!["build", "--profile=release", "--workspace"],
+            vec!["build", "--profile", "dev", "--workspace"],
+            vec!["build", "--profile=dev", "--workspace"],
+            vec!["build", "--profile", "bench", "--workspace"],
+            vec!["build", "--profile=bench", "--workspace"],
+        ] {
             assert_eq!(
-                CommandText::of(
-                    "cargo",
-                    &[
-                        "run",
-                        "--release",
-                        "--",
-                        "--release",
-                        "-r",
-                        "--profile",
-                        "dev",
-                        "--profile=bench"
-                    ]
-                )
-                .line(detail),
-                "run --release -- --release -r --profile dev --profile=bench"
-            );
-            assert_eq!(
-                CommandText::of("cargo", &["build", "--profile-of-record", "bench"]).line(detail),
-                "build --profile-of-record bench"
+                CommandText::of("cargo", &arguments).line(),
+                arguments.join(COMMAND_WORD_SEPARATOR)
             );
         }
+        assert_eq!(
+            CommandText::of(
+                "cargo",
+                &[
+                    "run",
+                    "--release",
+                    "--",
+                    "--release",
+                    "-r",
+                    "--profile",
+                    "dev",
+                    "--profile=bench"
+                ]
+            )
+            .line(),
+            "run --release -- --release -r --profile dev --profile=bench"
+        );
+        assert_eq!(
+            CommandText::of("cargo", &["build", "--profile-of-record", "bench"]).line(),
+            "build --profile-of-record bench"
+        );
+
         let text = CommandText::of(
             "cargo",
             &[
@@ -741,12 +891,8 @@ mod tests {
             ],
         );
         assert_eq!(
-            text.line(SummaryDetail::Full),
+            text.line(),
             "build --color always --profile dev --workspace"
-        );
-        assert_eq!(
-            text.line(SummaryDetail::Trimmed),
-            "build --profile dev --workspace"
         );
     }
 
@@ -755,35 +901,42 @@ mod tests {
         assert_eq!(
             CommandText::of("cargo", &["--color", "always", "nextest", "run"])
                 .named()
-                .marked(),
-            "nextest run …"
+                .words,
+            "nextest run"
         );
         assert_eq!(
             CommandText::of("cargo", &["--locked", "check"])
                 .named()
-                .marked(),
-            "check …"
+                .words,
+            "check"
         );
         assert_eq!(
             CommandText::of("cargo", &["--color=always", "+nightly", "nextest", "run"])
                 .named()
-                .marked(),
-            "+nightly nextest run …"
+                .words,
+            "+nightly nextest run"
         );
     }
 
     #[test]
-    fn the_short_name_marks_dropped_arguments_only_when_it_drops_some() {
+    fn ancestor_names_keep_selected_arguments_without_an_omission_mark() {
         assert_eq!(
-            command_name("cargo check --workspace").marked(),
-            "cargo check …"
+            command_name(
+                "cargo check --workspace",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo check --workspace"
         );
-        assert_eq!(command_name("cargo check").marked(), "cargo check");
+        assert_eq!(
+            command_name("cargo check", &crate::config::DefaultArguments::default()).words,
+            "cargo check"
+        );
         assert_eq!(
             CommandText::of("cargo", &["check", "--", "child", "--release"])
                 .named()
-                .marked(),
-            "check …"
+                .words,
+            "check"
         );
     }
 
@@ -791,17 +944,29 @@ mod tests {
     fn a_short_view_program_is_named_by_its_file_name() {
         let cargo = CommandText::of("/nix/store/cargo/bin/cargo", &["check", "--workspace"]);
         assert_eq!(cargo.program_name(), "cargo");
-        assert_eq!(cargo.named().marked(), "check …");
+        assert_eq!(cargo.named().words, "check");
         assert_eq!(
-            command_name("/nix/store/runner/bin/Runner.Worker spawnclient 166 175").marked(),
-            "Runner.Worker …"
+            command_name(
+                "/nix/store/runner/bin/Runner.Worker spawnclient 166 175",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "Runner.Worker"
         );
         assert_eq!(
-            command_name("/nix/store/cargo/bin/cargo check --workspace").marked(),
-            "cargo check …"
+            command_name(
+                "/nix/store/cargo/bin/cargo check --workspace",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "cargo check --workspace"
         );
         assert_eq!(
-            command_name("/nix/store/runner/bin/Runner.Listener").marked(),
+            command_name(
+                "/nix/store/runner/bin/Runner.Listener",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
             "Runner.Listener"
         );
     }
@@ -899,7 +1064,7 @@ mod tests {
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(SummaryDetail::Full), "build --release");
+        assert_eq!(text.line(), "build --release");
         assert_eq!(text.profile(), CargoProfile::Release);
     }
 
@@ -914,7 +1079,7 @@ mod tests {
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(SummaryDetail::Full), "check --all-targets");
+        assert_eq!(text.line(), "check --all-targets");
     }
 
     #[test]
@@ -1009,33 +1174,6 @@ mod tests {
         assert!(command_text(&argv, ScannerHome::Unavailable).is_err());
     }
 
-    #[test]
-    fn the_summary_drops_the_manifest_path_and_the_flag_naming_it() {
-        let argv = vec![
-            OsString::from("cargo"),
-            OsString::from("check"),
-            OsString::from("--manifest-path"),
-            OsString::from("/opt/project/Cargo.toml"),
-            OsString::from("--all-targets"),
-        ];
-        let text =
-            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
-    }
-
-    #[test]
-    fn the_summary_drops_a_manifest_path_written_as_one_word() {
-        let argv = vec![
-            OsString::from("cargo"),
-            OsString::from("check"),
-            OsString::from("--manifest-path=/opt/project/Cargo.toml"),
-            OsString::from("--all-targets"),
-        ];
-        let text =
-            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
-    }
-
     /// What is being built is what the row is there to say: which
     /// member of a workspace, and how much of it.
     #[test]
@@ -1049,28 +1187,7 @@ mod tests {
         ];
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(
-            text.line(SummaryDetail::Trimmed),
-            "mend --all-targets -p hana_clerestory"
-        );
-    }
-
-    /// A rendering flag says how the caller wanted the output, which is
-    /// the caller's business rather than the run's -- in either
-    /// spelling, and wherever in the line it falls.
-    #[test]
-    fn the_summary_drops_the_rendering_flags() {
-        let argv = vec![
-            OsString::from("cargo"),
-            OsString::from("--color=auto"),
-            OsString::from("test"),
-            OsString::from("--no-run"),
-            OsString::from("--message-format"),
-            OsString::from("json-render-diagnostics"),
-        ];
-        let text =
-            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(text.line(SummaryDetail::Trimmed), "test --no-run");
+        assert_eq!(text.line(), "mend --all-targets -p hana_clerestory");
     }
 
     /// Past a bare `--` the arguments are the other program's. It
@@ -1092,8 +1209,8 @@ mod tests {
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(SummaryDetail::Trimmed),
-            "clippy -- -D warnings --color always"
+            text.line(),
+            "clippy --color never -- -D warnings --color always"
         );
     }
 
@@ -1110,11 +1227,7 @@ mod tests {
         ];
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(
-            text.line(SummaryDetail::Full),
-            "build --bin hana --message-format=json"
-        );
-        assert_eq!(text.line(SummaryDetail::Trimmed), "build --bin hana");
+        assert_eq!(text.line(), "build --bin hana --message-format=json");
     }
 
     /// The flag is matched whole: an argument that merely starts the
@@ -1128,10 +1241,7 @@ mod tests {
         ];
         let text =
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
-        assert_eq!(
-            text.line(SummaryDetail::Trimmed),
-            "check --manifest-path-of-record"
-        );
+        assert_eq!(text.line(), "check --manifest-path-of-record");
     }
 
     #[test]
@@ -1146,7 +1256,7 @@ mod tests {
         let text =
             command_text(&argv, ScannerHome::Known(&home)).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(SummaryDetail::Full),
+            text.line(),
             "check --manifest-path ~/rust/project/Cargo.toml"
         );
     }
@@ -1160,27 +1270,44 @@ mod tests {
         assert_eq!(
             CommandText::of("cargo", &["nextest", "run", "--workspace"])
                 .named()
-                .marked(),
-            "nextest run …",
+                .words,
+            "nextest run",
         );
         assert_eq!(
             CommandText::of("cargo", &["+nightly", "fmt", "--all"])
                 .named()
-                .marked(),
-            "+nightly fmt …",
+                .words,
+            "+nightly fmt",
         );
     }
 
-    /// A chain step names the executable while marking omitted arguments.
+    /// A chain step names the executable without its argument tail.
     #[test]
     fn a_named_chain_step_uses_the_program_file_name() {
         assert_eq!(
-            command_name("~/.claude/local/claude --setting on --setting off").marked(),
-            "claude …",
+            command_name(
+                "~/.claude/local/claude --setting on --setting off",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "claude",
         );
-        assert_eq!(command_name("zsh -c cargo nextest run").marked(), "zsh …");
-        assert_eq!(command_name("zed").marked(), "zed");
-        assert_eq!(command_name("").marked(), "");
+        assert_eq!(
+            command_name(
+                "zsh -c cargo nextest run",
+                &crate::config::DefaultArguments::default()
+            )
+            .words,
+            "zsh"
+        );
+        assert_eq!(
+            command_name("zed", &crate::config::DefaultArguments::default()).words,
+            "zed"
+        );
+        assert_eq!(
+            command_name("", &crate::config::DefaultArguments::default()).words,
+            ""
+        );
     }
 
     #[test]
@@ -1251,9 +1378,9 @@ mod tests {
             ],
         );
 
-        assert_eq!(mend.named().marked(), "mend …");
+        assert_eq!(mend.named().words, "mend");
         assert!(
-            mend.line(SummaryDetail::Full).contains("--json"),
+            mend.line().contains("--json"),
             "and the long line still carries every one of them",
         );
     }

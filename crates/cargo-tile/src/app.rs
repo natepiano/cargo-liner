@@ -83,34 +83,40 @@ pub(crate) enum AppPaneId {
     Favorites,
 }
 
-/// How much of each command a cell spells out.
-///
-/// The chain above a command and the table under it are the same tree,
-/// and either way what a row is worth reading for is the pid and the
-/// name of what runs. The arguments below that are where a cell spends
-/// most of its width -- a test suite driving cargo in a temporary
-/// directory per case gives every row a different absolute manifest
-/// path, which wraps three deep and says nothing the row's own pid does
-/// not. So [`Short`](Self::Short) is where the display starts, and the
-/// whole line is a key away.
+/// Whether command cells include the process ancestry above their rows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ProcessTree {
-    /// The tree entire, with each of its commands named and nothing
-    /// more: `cargo mend` out of `cargo mend --manifest-path
-    /// /var/folders/T/x/Cargo.toml --json`.
+pub(crate) enum ProcessHierarchy {
+    /// Reserve no ancestry rows.
     #[default]
-    Short,
-    /// The same tree with every command line spelled out in full.
-    Long,
+    Hidden,
+    /// Show the complete retained hierarchy.
+    Shown,
 }
 
-impl ProcessTree {
-    /// The other of the two, which is all the key that toggles it asks
-    /// for.
+impl ProcessHierarchy {
     pub(crate) const fn toggled(self) -> Self {
         match self {
-            Self::Short => Self::Long,
-            Self::Long => Self::Short,
+            Self::Hidden => Self::Shown,
+            Self::Shown => Self::Hidden,
+        }
+    }
+}
+
+/// Argument detail is independent of whether process ancestry is shown.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ArgumentDetail {
+    /// Subcommands plus the configured selection.
+    #[default]
+    Default,
+    /// Every command-line argument.
+    All,
+}
+
+impl ArgumentDetail {
+    pub(crate) const fn toggled(self) -> Self {
+        match self {
+            Self::Default => Self::All,
+            Self::All => Self::Default,
         }
     }
 }
@@ -178,8 +184,10 @@ pub(crate) struct App {
     pub(crate) attract:           Attract,
     /// App-owned modal for browsing attract-screen favorites.
     pub(crate) favorites_overlay: FavoritesOverlay,
-    /// How much of each command a cell spells out.
-    pub(crate) tree:              ProcessTree,
+    /// Whether command cells show process ancestry.
+    pub(crate) tree:              ProcessHierarchy,
+    /// Which command arguments each row shows.
+    pub(crate) arguments:         ArgumentDetail,
 }
 
 impl App {
@@ -220,7 +228,8 @@ impl App {
             updates: Updates::Live,
             attract: Attract::new(),
             favorites_overlay: FavoritesOverlay::default(),
-            tree: ProcessTree::default(),
+            tree: ProcessHierarchy::default(),
+            arguments: ArgumentDetail::default(),
         })
     }
 
