@@ -108,6 +108,22 @@ const fn total_fixables(outcome: &ExecutionOutcome) -> usize {
         + outcome.compiler_fixable
 }
 
+/// Whether a completed pass is an audit or can continue applying fixes.
+enum PassPolicy {
+    Audit,
+    ApplyFixes,
+}
+
+impl From<bool> for PassPolicy {
+    fn from(applies_fixes: bool) -> Self {
+        if applies_fixes {
+            Self::ApplyFixes
+        } else {
+            Self::Audit
+        }
+    }
+}
+
 fn run() -> Result<ExitCode, MendFailure> {
     let global = config::load_global_config();
     let after_help = build_diagnostics_help(&global.diagnostics);
@@ -145,64 +161,66 @@ fn run() -> Result<ExitCode, MendFailure> {
 
     let mut passes = 1;
 
-    loop {
-        // Decide whether to chain `cargo fix`. Two trigger conditions:
-        //  1. The user explicitly asked for it (`--fix-compiler` / `--fix-all`).
-        //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that produced
-        //     `unused import` warnings; auto-clean them.
-        let user_asked_for_compiler_fix = cli.fix.runs_compiler_fix();
-        let pub_use_self_heal = cli.fix.applies_fixes()
-            && outcome.applied_pub_use > 0
-            && matches!(
-                outcome.compiler_warning_facts,
-                CompilerWarningFacts::UnusedImportWarnings
-            );
+    match PassPolicy::from(cli.fix.applies_fixes()) {
+        PassPolicy::Audit => {},
+        PassPolicy::ApplyFixes => loop {
+            // Decide whether to chain `cargo fix`. Two trigger conditions:
+            //  1. The user explicitly asked for it (`--fix-compiler` / `--fix-all`).
+            //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that
+            //     produced `unused import` warnings; auto-clean them.
+            let user_asked_for_compiler_fix = cli.fix.runs_compiler_fix();
+            let pub_use_self_heal = outcome.applied_pub_use > 0
+                && matches!(
+                    outcome.compiler_warning_facts,
+                    CompilerWarningFacts::UnusedImportWarnings
+                );
 
-        let runs_compiler_fix = user_asked_for_compiler_fix || pub_use_self_heal;
-        if runs_compiler_fix {
-            total_compiler_fix_duration += compiler::run_cargo_fix(
-                &selection,
-                &cargo_plan,
-                color_mode,
-                outcome.report.facts.all_features_coverage,
-            )?;
-        }
-
-        if !cli.fix.applies_fixes() || passes >= FIX_CONVERGENCE_MAX_PASSES {
-            break;
-        }
-
-        // A pass that wrote nothing leaves the tree it planned against, so
-        // another pass would plan the same fix set and write nothing again.
-        // Only a `cargo fix` run since then can change what mend finds.
-        if outcome.pass_edits == PassEdits::Unchanged && !runs_compiler_fix {
-            break;
-        }
-
-        // Re-scan applied mend fixes so visibility cascades converge without a
-        // second invocation. Stop unless another pass strictly reduces the
-        // remaining fixable set or wrote `pub_use_outside_subtree` edits: each
-        // of those removes one link of a re-export chain and makes the next
-        // link the finding, leaving the count level.
-        let mut next = runner.run(operation_mode.clone())?;
-        let next_total = total_fixables(&next);
-        let prev_total = total_fixables(&outcome);
-        accumulated_check_duration += next.check_duration;
-        accumulated_applied_pub_use += next.applied_pub_use;
-        if let Some(next_notice) = next.notice.take() {
-            if let Some(notice) = accumulated_notice.as_mut() {
-                notice.merge(next_notice);
-            } else {
-                accumulated_notice = Some(next_notice);
+            let runs_compiler_fix = user_asked_for_compiler_fix || pub_use_self_heal;
+            if runs_compiler_fix {
+                total_compiler_fix_duration += compiler::run_cargo_fix(
+                    &selection,
+                    &cargo_plan,
+                    color_mode,
+                    outcome.report.facts.all_features_coverage,
+                )?;
             }
-        }
-        let progressed = next_total < prev_total || next.applied_subtree_reexport;
-        if next_total == 0 || !progressed {
+
+            if passes >= FIX_CONVERGENCE_MAX_PASSES {
+                break;
+            }
+
+            // A pass that wrote nothing leaves the tree it planned against, so
+            // another pass would plan the same fix set and write nothing again.
+            // Only a `cargo fix` run since then can change what mend finds.
+            if outcome.pass_edits == PassEdits::Unchanged && !runs_compiler_fix {
+                break;
+            }
+
+            // Re-scan applied mend fixes so visibility cascades converge without a
+            // second invocation. Stop unless another pass strictly reduces the
+            // remaining fixable set or wrote `pub_use_outside_subtree` edits: each
+            // of those removes one link of a re-export chain and makes the next
+            // link the finding, leaving the count level.
+            let mut next = runner.run(operation_mode.clone())?;
+            let next_total = total_fixables(&next);
+            let prev_total = total_fixables(&outcome);
+            accumulated_check_duration += next.check_duration;
+            accumulated_applied_pub_use += next.applied_pub_use;
+            if let Some(next_notice) = next.notice.take() {
+                if let Some(notice) = accumulated_notice.as_mut() {
+                    notice.merge(next_notice);
+                } else {
+                    accumulated_notice = Some(next_notice);
+                }
+            }
+            let progressed = next_total < prev_total || next.applied_subtree_reexport;
+            if next_total == 0 || !progressed {
+                outcome = next;
+                break;
+            }
             outcome = next;
-            break;
-        }
-        outcome = next;
-        passes += 1;
+            passes += 1;
+        },
     }
     outcome.notice = accumulated_notice;
     outcome.applied_pub_use = accumulated_applied_pub_use;
