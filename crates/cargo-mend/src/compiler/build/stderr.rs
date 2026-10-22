@@ -151,23 +151,27 @@ pub(super) fn stream_cargo_stderr(
             continue;
         }
 
-        if is_progress_line(&current) {
-            flush_diagnostic_block(
-                &mut block,
-                &mut suppression_notice,
-                &mut compiler_warning_facts,
-                &mut compiler_warning_count,
-                &mut compiler_fixable_count,
-                output_mode,
-                &mut progress,
-            );
-            if should_forward_progress_line(&current, output_mode, progress.is_active().into()) {
-                // Through the progress display rather than straight to stderr:
-                // when the spinner is up it owns the last line, and a bare
-                // `eprint!` would interleave with the frame it is redrawing.
-                progress.write_status_notice(current.trim_end());
-            }
-            continue;
+        let line_kind = CargoLineKind::from(current.as_str());
+        match line_kind {
+            CargoLineKind::Finished | CargoLineKind::OtherProgress => {
+                flush_diagnostic_block(
+                    &mut block,
+                    &mut suppression_notice,
+                    &mut compiler_warning_facts,
+                    &mut compiler_warning_count,
+                    &mut compiler_fixable_count,
+                    output_mode,
+                    &mut progress,
+                );
+                if line_kind.should_forward(output_mode, progress.is_active().into()) {
+                    // Through the progress display rather than straight to stderr:
+                    // when the spinner is up it owns the last line, and a bare
+                    // `eprint!` would interleave with the frame it is redrawing.
+                    progress.write_status_notice(current.trim_end());
+                }
+                continue;
+            },
+            CargoLineKind::DiagnosticOrText => {},
         }
 
         if current.trim().is_empty() {
@@ -193,42 +197,61 @@ pub(super) fn stream_cargo_stderr(
     })
 }
 
-fn should_forward_progress_line(
-    line: &str,
-    output_mode: BuildOutputMode,
-    progress_status: ProgressStatus,
-) -> bool {
-    if is_finished_line(line) {
-        return false;
-    }
-    match output_mode {
-        BuildOutputMode::Json | BuildOutputMode::Quiet => false,
-        // The main pass shows cargo's status lines even while the spinner runs:
-        // there the spinner reports which target mend is analyzing, which is
-        // additional to cargo's output rather than a replacement for it.
-        BuildOutputMode::Full => true,
-        // The fix-candidate pass replaces cargo's output with the spinner, so a
-        // forwarded line would duplicate what the spinner already says.
-        BuildOutputMode::SuppressUnusedImportWarnings => {
-            matches!(progress_status, ProgressStatus::Inactive)
-        },
+/// The role of a Cargo stderr line after terminal escapes are removed.
+#[derive(Clone, Copy)]
+enum CargoLineKind {
+    Finished,
+    OtherProgress,
+    DiagnosticOrText,
+}
+
+impl From<&str> for CargoLineKind {
+    fn from(line: &str) -> Self {
+        let sanitized = sanitize_for_match(line);
+        let trimmed = sanitized.trim_start();
+        if trimmed.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX)
+            || trimmed.contains(DIAGNOSTIC_SEVERITY_ERROR_PREFIX)
+        {
+            return Self::DiagnosticOrText;
+        }
+        if trimmed.starts_with(CARGO_PROGRESS_PREFIX_FINISHED) {
+            return Self::Finished;
+        }
+        if trimmed.starts_with(CARGO_PROGRESS_PREFIX_BLOCKING)
+            || trimmed.starts_with(CARGO_PROGRESS_PREFIX_BUILDING)
+            || trimmed.starts_with(CARGO_PROGRESS_PREFIX_CHECKING)
+            || trimmed.starts_with(CARGO_PROGRESS_PREFIX_COMPILING)
+            || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FRESH)
+        {
+            Self::OtherProgress
+        } else {
+            Self::DiagnosticOrText
+        }
     }
 }
 
-fn is_progress_line(line: &str) -> bool {
-    let sanitized = sanitize_for_match(line);
-    let trimmed = sanitized.trim_start();
-    if trimmed.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX)
-        || trimmed.contains(DIAGNOSTIC_SEVERITY_ERROR_PREFIX)
-    {
-        return false;
+impl CargoLineKind {
+    const fn should_forward(
+        self,
+        output_mode: BuildOutputMode,
+        progress_status: ProgressStatus,
+    ) -> bool {
+        match self {
+            Self::Finished | Self::DiagnosticOrText => false,
+            Self::OtherProgress => match output_mode {
+                BuildOutputMode::Json | BuildOutputMode::Quiet => false,
+                // The main pass shows cargo's status lines even while the spinner runs:
+                // there the spinner reports which target mend is analyzing, which is
+                // additional to cargo's output rather than a replacement for it.
+                BuildOutputMode::Full => true,
+                // The fix-candidate pass replaces cargo's output with the spinner, so a
+                // forwarded line would duplicate what the spinner already says.
+                BuildOutputMode::SuppressUnusedImportWarnings => {
+                    matches!(progress_status, ProgressStatus::Inactive)
+                },
+            },
+        }
     }
-    trimmed.starts_with(CARGO_PROGRESS_PREFIX_BLOCKING)
-        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_BUILDING)
-        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_CHECKING)
-        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_COMPILING)
-        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FINISHED)
-        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FRESH)
 }
 
 /// The counter in the newest complete bar frame in `pending`: text a `\r` has
@@ -252,18 +275,7 @@ fn parse_unit_counter(frame: &str) -> Option<UnitCounter> {
     let total = rest
         .split(|character: char| !character.is_ascii_digit())
         .next()?;
-    let unit_counter = UnitCounter {
-        done:  done.parse().ok()?,
-        total: total.parse().ok()?,
-    };
-    (unit_counter.total > 0).then_some(unit_counter)
-}
-
-fn is_finished_line(line: &str) -> bool {
-    let sanitized = sanitize_for_match(line);
-    sanitized
-        .trim_start()
-        .starts_with(CARGO_PROGRESS_PREFIX_FINISHED)
+    UnitCounter::new(done.parse().ok()?, total.parse().ok()?)
 }
 
 fn sanitize_for_match(line: &str) -> String {
@@ -421,6 +433,7 @@ fn flush_diagnostic_block(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::CargoLineKind;
     use super::DiagnosticBlockKind;
     use super::ProgressStatus;
     use super::StderrReader;
@@ -428,9 +441,7 @@ mod tests {
     use super::classify_diagnostic_block;
     use super::collapse_carriage_returns;
     use super::flush_diagnostic_block;
-    use super::is_progress_line;
     use super::parse_unit_counter;
-    use super::should_forward_progress_line;
     use crate::compiler::build::BuildOutputMode;
     use crate::compiler::build::progress::ProgressDisplay;
     use crate::compiler::build::progress::UnitCounter;
@@ -474,15 +485,45 @@ mod tests {
     }
 
     #[test]
+    fn finished_status_is_hidden_and_embedded_diagnostics_take_precedence() {
+        let finished = "\u{1b}[32m    Finished\u{1b}[0m `dev` profile\n";
+        let kind = CargoLineKind::from(finished);
+        assert!(matches!(kind, CargoLineKind::Finished));
+        for output_mode in [
+            BuildOutputMode::Full,
+            BuildOutputMode::Json,
+            BuildOutputMode::Quiet,
+            BuildOutputMode::SuppressUnusedImportWarnings,
+        ] {
+            for status in [ProgressStatus::Active, ProgressStatus::Inactive] {
+                assert!(!kind.should_forward(output_mode, status));
+            }
+        }
+        for diagnostic in ["warning: unused import", "error: failed"] {
+            let line = format!("{} {diagnostic}\n", finished.trim_end());
+            assert!(matches!(
+                CargoLineKind::from(line.as_str()),
+                CargoLineKind::DiagnosticOrText
+            ));
+        }
+    }
+
+    #[test]
     fn plain_building_progress_line_is_treated_as_progress() {
         let line = "    Building [                             ] 0/1: cli_json_clean_fixture      \r    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s\n";
-        assert!(is_progress_line(line));
+        assert!(matches!(
+            CargoLineKind::from(line),
+            CargoLineKind::OtherProgress
+        ));
     }
 
     #[test]
     fn progress_line_with_embedded_warning_is_not_treated_as_progress() {
         let line = "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n";
-        assert!(!is_progress_line(line));
+        assert!(matches!(
+            CargoLineKind::from(line),
+            CargoLineKind::DiagnosticOrText
+        ));
     }
 
     #[test]
@@ -532,14 +573,13 @@ mod tests {
     #[test]
     fn progress_lines_are_hidden_while_progress_status_is_active() {
         let line = "    Checking fixture v0.1.0\n";
+        let kind = CargoLineKind::from(line);
 
-        assert!(!should_forward_progress_line(
-            line,
+        assert!(!kind.should_forward(
             BuildOutputMode::SuppressUnusedImportWarnings,
             ProgressStatus::Active
         ));
-        assert!(should_forward_progress_line(
-            line,
+        assert!(kind.should_forward(
             BuildOutputMode::SuppressUnusedImportWarnings,
             ProgressStatus::Inactive
         ));
@@ -641,10 +681,7 @@ mod tests {
     fn a_captured_bar_frame_yields_cargos_counter() {
         assert_eq!(
             parse_unit_counter(CAPTURED_FRAME),
-            Some(UnitCounter {
-                done:  149,
-                total: 403,
-            })
+            UnitCounter::new(149, 403)
         );
     }
 
@@ -682,11 +719,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            progress.unit_counters.last(),
-            Some(&UnitCounter {
-                done:  150,
-                total: 403,
-            })
+            progress.unit_counters.last().copied(),
+            UnitCounter::new(150, 403)
         );
     }
 }

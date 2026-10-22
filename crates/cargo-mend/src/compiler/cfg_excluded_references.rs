@@ -91,10 +91,10 @@ impl CfgExcludedReferences {
                 collect_identifiers(&parsed_file.to_token_stream(), &mut names);
                 continue;
             }
-            // Tokenizing a node to read its outer attributes costs the node's
-            // whole subtree, and a file with no `cfg` anywhere has no excluded
-            // region to find. `read_source` returns the text the cache already
-            // holds, so this test reads no file.
+            // `ExcludedNameCollector::visit_node` tokenizes a node's whole subtree
+            // to inspect outer attributes. A file with no `cfg` has no excluded region,
+            // so `CfgExcludedReferences::collect` skips that work. `SourceCache::read_source`
+            // returns cached text, so this test performs no file read.
             if source_cache
                 .read_source(source_file)
                 .is_ok_and(|source| !source.contains("cfg"))
@@ -364,7 +364,8 @@ fn collect_identifiers(tokens: &TokenStream, names: &mut FxHashSet<String>) {
                 names.insert(identifier.to_string());
             },
             TokenTree::Group(group) => collect_identifiers(&group.stream(), names),
-            // `pair.0.1` lexes its indices as the one float literal `0.1`.
+            // `collect_identifiers` splits `literal` at dots because `pair.0.1`
+            // lexes its indices as the single float literal `0.1`.
             TokenTree::Literal(literal) if dot_position == DotPosition::FieldAccess => {
                 names.extend(
                     literal
