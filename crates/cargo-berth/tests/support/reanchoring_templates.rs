@@ -19,16 +19,13 @@ use cargo_berth_test_support::reservation_row;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use split_rebase::write_first_rebase_action;
 use tempfile::tempdir;
 
-use crate::git_configuration;
-use crate::loose_refs;
-#[path = "linked_checkout.rs"]
-mod linked_checkout;
-
-use split_rebase::write_first_rebase_action;
-
 use super::split_rebase;
+use crate::git_configuration;
+use crate::linked_checkout;
+use crate::loose_refs;
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";

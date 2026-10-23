@@ -12,7 +12,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use tempfile::TempDir;
-use tempfile::tempdir;
 
 use super::error::GitError;
 use super::patch;
@@ -40,27 +39,31 @@ pub(super) struct PatchEquivalenceFixture {
 
 impl PatchEquivalenceFixture {
     pub(super) fn new() -> FixtureResult<Self> {
-        let repository = tempdir()?;
-        run_git(
-            repository.path(),
-            &["init", "--quiet", "--initial-branch", "main"],
-        )?;
-        // `repository` is private to `PatchEquivalenceFixture`. Appending its identity
-        // keeps git init's repository format and inherited configuration intact.
-        fs::OpenOptions::new()
-            .append(true)
-            .open(repository.path().join(".git/config"))?
-            .write_all(b"\n[user]\n\temail = test@example.com\n\tname = Test User\n")?;
-        write_file(repository.path(), PRIMARY_PATH, INITIAL_PRIMARY)?;
-        write_file(repository.path(), SECONDARY_PATH, INITIAL_SECONDARY)?;
-        write_file(repository.path(), SCRIPT_PATH, "#!/bin/sh\nexit 0\n")?;
-        run_git(repository.path(), &["add", "."])?;
-        run_git(repository.path(), &["commit", "--quiet", "-m", "initial"])?;
+        let repository = cargo_berth_test_support::copy_git_repository_seed(
+            "scoped-patch-base",
+            Self::build_seed,
+        );
         let phase_start_head = refs::head_object_id(repository.path())?;
         Ok(Self {
             repository,
             phase_start_head,
         })
+    }
+
+    fn build_seed(root: &Path) -> FixtureResult {
+        run_git(root, &["init", "--quiet", "--initial-branch", "main"])?;
+        // Appending the seed identity keeps git init's repository format and
+        // inherited configuration intact.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".git/config"))?
+            .write_all(b"\n[user]\n\temail = test@example.com\n\tname = Test User\n")?;
+        write_file(root, PRIMARY_PATH, INITIAL_PRIMARY)?;
+        write_file(root, SECONDARY_PATH, INITIAL_SECONDARY)?;
+        write_file(root, SCRIPT_PATH, "#!/bin/sh\nexit 0\n")?;
+        run_git(root, &["add", "."])?;
+        run_git(root, &["commit", "--quiet", "-m", "initial"])?;
+        Ok(())
     }
 
     pub(super) fn root(&self) -> &Path { self.repository.path() }

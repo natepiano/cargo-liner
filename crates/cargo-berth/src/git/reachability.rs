@@ -49,6 +49,10 @@ use super::refs::LocalTargetUpstream;
 use super::snapshot::RepositorySnapshot;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 /// A worktree's live relationship to the configured trunk.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -238,6 +242,8 @@ impl CommitAncestryGraph {
         let mut current = target;
         loop {
             chain.push(current.clone());
+            #[cfg(test)]
+            test_work::record(Work::AncestryParents);
             let Some(parent) = self
                 .parents_by_commit
                 .get(current)
@@ -279,6 +285,8 @@ impl CommitAncestryGraph {
             if boundaries.contains_key(commit) {
                 continue;
             }
+            #[cfg(test)]
+            test_work::record(Work::AncestryParents);
             let parents = self
                 .parents_by_commit
                 .get(commit)
@@ -312,6 +320,8 @@ impl CommitAncestryGraph {
             if !ancestors.insert(commit.clone()) {
                 continue;
             }
+            #[cfg(test)]
+            test_work::record(Work::AncestryParents);
             if let Some(parents) = self.parents_by_commit.get(&commit) {
                 pending.extend(parents.iter().cloned());
             }
@@ -1208,8 +1218,6 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::time::Duration;
-    use std::time::Instant;
 
     use super::AheadBehind;
     use super::CandidateHeadReachability;
@@ -1341,8 +1349,7 @@ mod tests {
     }
 
     #[test]
-    fn batched_first_parent_intervals_of_large_merged_history_are_immediate() -> FixtureResult {
-        let started = Instant::now();
+    fn batched_first_parent_intervals_share_ancestry_reads_across_candidates() -> FixtureResult {
         let ids = (1..=6000)
             .map(|index| format!("{index:040x}").parse::<GitObjectId>())
             .collect::<Result<Vec<_>, _>>()?;
@@ -1366,6 +1373,7 @@ mod tests {
         let candidates = (0..60)
             .map(|index| super::CommitObjectResolution::Resolved(ids[index * 99 + 1].clone()))
             .collect();
+        let work = crate::test_work::WorkCounter::start();
         let (histories, classified) =
             super::classify_candidates_against_target(&ids[target_index], graph, candidates);
         assert_eq!(histories.intervals.len(), 60);
@@ -1381,11 +1389,9 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(histories.intervals[&ids[candidate_index + 1]], expected);
         }
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(250),
-            "batched ancestry took {elapsed:?}"
-        );
+        // All sixty candidates share the target traversal and memoized boundaries.
+        let counts = work.finish();
+        assert!(counts.ancestry_parents <= 6_000, "{counts:?}");
         Ok(())
     }
 

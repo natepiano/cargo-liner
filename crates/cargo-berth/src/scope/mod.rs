@@ -16,6 +16,10 @@ use crate::ids::ReservationScopePath;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 const FILE_SCOPE_PREFIX: &str = "file:";
 const GIT_CONFIG_FILE_NAME: &str = "config";
@@ -46,6 +50,8 @@ impl PathCase {
     }
 
     pub(super) fn component_eq(self, left: &str, right: &str) -> bool {
+        #[cfg(test)]
+        test_work::record(Work::ScopeComparison);
         match self {
             Self::Sensitive => left == right,
             Self::Insensitive => left.to_lowercase() == right.to_lowercase(),

@@ -5,6 +5,9 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "support/covered_branch_template.rs"]
+mod covered_branch_template;
+
 #[path = "support/git_configuration.rs"]
 mod git_configuration;
 
@@ -5108,63 +5111,14 @@ struct CoveredBranchHook {
 
 impl CoveredBranchHook {
     fn new() -> TestResult<Self> {
-        let repository =
-            cargo_berth_test_support::IntegrationRepository::from_template(RepositoryTemplate {
-                target_directory: env!("CARGO_TARGET_TMPDIR"),
-                executable:       BERTH_EXECUTABLE,
-                name:             "integration-main",
-                build:            |root| {
-                    cargo_berth_test_support::IntegrationRepository::build_main_template(
-                        root,
-                        BERTH_EXECUTABLE,
-                    );
-                },
-            });
-        let lane = repository.lane("cover-hook-lane", "integration");
-        require_success(
-            &repository.claim(&lane, "file:lane.txt", SECOND_RUN, None),
-            "lane claim establishing cover",
-        )?;
-        // Reconciliation creates the integration cover before the target merge.
-        // No board read runs after that merge, when it could settle the cover.
-        drop(repository.board());
-        let covers = repository.cover_claims();
-        let cover = required_string(
-            covers
-                .first()
-                .ok_or_else(|| failure("cover claim missing"))?,
-            "/reservation_id",
-            "cover",
-        )?
-        .to_owned();
-        // Date the newly entering contribution after every holder, without sleeping for
-        // Git's one-second committer timestamp resolution.
-        fs::write(
-            repository.integration.join("integration.txt"),
-            "covered contribution\n",
-        )?;
-        run_git(&repository.integration, &["add", "integration.txt"])?;
-        require_success(
-            &GIT.output_with_environment(
-                &repository.integration,
-                &[
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "covered contribution",
-                ],
-                "GIT_COMMITTER_DATE",
-                "2030-01-01T00:00:00Z",
-            ),
-            "covered contribution",
-        )?;
-        // The cover still protects ongoing work when its committed contribution lands.
-        fs::write(
-            repository.integration.join("integration.txt"),
-            "ongoing covered work\n",
-        )?;
+        let repository = cargo_berth_test_support::IntegrationRepository::from_recorded_template(
+            covered_branch_template::COVERED_BRANCH_HOOK,
+        );
+        let lane = repository.recorded_lane("cover-hook-lane");
+        let state: Value = serde_json::from_slice(&fs::read(
+            repository.root().join(".git/covered-branch-hook.json"),
+        )?)?;
+        let cover = required_string(&state, "/cover", "cover")?.to_owned();
         Ok(Self {
             repository,
             cover,

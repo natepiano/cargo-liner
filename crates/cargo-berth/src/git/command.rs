@@ -30,15 +30,22 @@ static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
 
 /// Seal every piped stream before another child can inherit file descriptors.
 pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<Child> {
+    with_spawn_lock(|| {
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    })?
+}
+
+/// Include dependency-owned Git probes in the pipe-creation critical section.
+pub(super) fn with_spawn_lock<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
     let spawn = PROCESS_SPAWN
         .lock()
         .map_err(|_| io::Error::other("Git spawn lock was poisoned"))?;
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+    let result = operation();
     drop(spawn);
-    child
+    Ok(result)
 }
 
 /// Capture output without holding the spawn lock while the child runs.
