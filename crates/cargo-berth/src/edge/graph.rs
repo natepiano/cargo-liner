@@ -8,6 +8,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use super::CycleClosingEdge;
 use super::DeferralOrigin;
 use super::EdgeDeclaration;
 use super::IntegrationConstraintProjection;
@@ -18,6 +19,7 @@ use super::IntegrationOrderingConstraint;
 use super::IntegrationReservationFacts;
 use super::IntegrationSubject;
 use super::MissingReadinessFact;
+use super::OrderingCycleRepairPlan;
 use super::OrderingEdge;
 use super::OrderingOverlapScopeSet;
 use super::OrderingReason;
@@ -92,6 +94,35 @@ pub(crate) struct OrderingGraph {
 impl OrderingGraph {
     /// Rebuild vertices, unresolved deferrals, edges, and adjacency in append order.
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
+        let graph = Self::replay_allowing_cycle(events)?;
+        if cycle::contains_cycle(&graph.adjacency) {
+            return Err(EdgeReplayError::Cycle);
+        }
+        Ok(graph)
+    }
+
+    /// Find the first cycle-closing edge still live after every journalled replacement.
+    /// Historical cycles already retired by a later fact require no further repair.
+    pub(crate) fn cycle_repair_plan(
+        events: &[JournalEvent],
+    ) -> Result<OrderingCycleRepairPlan, EdgeReplayError> {
+        let graph = Self::replay_allowing_cycle(events)?;
+        let mut adjacency: HashMap<ReservationId, Vec<ReservationId>> = HashMap::new();
+        for edge in graph.edges {
+            if cycle::would_create_cycle(&adjacency, edge.before, edge.after) {
+                return Ok(OrderingCycleRepairPlan::Retire(CycleClosingEdge {
+                    edge_id:              edge.edge_id,
+                    declaration_event_id: edge.declaration_event_id,
+                    predecessor:          edge.before,
+                    successor:            edge.after,
+                }));
+            }
+            adjacency.entry(edge.before).or_default().push(edge.after);
+        }
+        Ok(OrderingCycleRepairPlan::Acyclic)
+    }
+
+    fn replay_allowing_cycle(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
         let mut graph = Self::default();
         for event in events {
             match &event.operation {
@@ -152,6 +183,9 @@ impl OrderingGraph {
                     declaration_event_id: event.event_id(),
                     declaration:          EdgeDeclaration::Sequence,
                 })?,
+                JournalOperation::RetireCyclicOrderingEdge { edge } => {
+                    graph.retire_cyclic_edge(edge)?;
+                },
                 JournalOperation::OverlapRefused { .. }
                 | JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
@@ -189,9 +223,6 @@ impl OrderingGraph {
             if !graph.vertices.contains(&edge.after) {
                 return Err(EdgeReplayError::UnknownEndpoint(edge.after));
             }
-        }
-        if cycle::contains_cycle(&graph.adjacency) {
-            return Err(EdgeReplayError::Cycle);
         }
         Ok(graph)
     }
@@ -725,19 +756,36 @@ impl OrderingGraph {
         replaced: &[ContradictedOrdering],
     ) -> Result<(), EdgeReplayError> {
         for contradicted_ordering in replaced {
-            let edge_id = contradicted_ordering.edge_id;
-            let index = self
-                .edges
-                .iter()
-                .position(|edge| edge.edge_id == edge_id)
-                .ok_or(EdgeReplayError::UnknownReplacedEdge(edge_id))?;
-            let edge = self.edges.remove(index);
-            self.endpoint_pairs.remove(&(edge.before, edge.after));
-            if let Some(successors) = self.adjacency.get_mut(&edge.before) {
-                successors.retain(|successor| *successor != edge.after);
-            }
+            self.remove_edge(contradicted_ordering.edge_id)?;
         }
         Ok(())
+    }
+
+    /// Remove one live relationship while retaining its non-recyclable edge identity.
+    fn remove_edge(&mut self, edge_id: EdgeId) -> Result<(), EdgeReplayError> {
+        let index = self
+            .edges
+            .iter()
+            .position(|edge| edge.edge_id == edge_id)
+            .ok_or(EdgeReplayError::UnknownReplacedEdge(edge_id))?;
+        let edge = self.edges.remove(index);
+        self.endpoint_pairs.remove(&(edge.before, edge.after));
+        if let Some(successors) = self.adjacency.get_mut(&edge.before) {
+            successors.retain(|successor| *successor != edge.after);
+        }
+        Ok(())
+    }
+
+    /// Bind a repair retirement to the exact journalled relationship it reviewed.
+    fn retire_cyclic_edge(&mut self, edge: &CycleClosingEdge) -> Result<(), EdgeReplayError> {
+        if !self.edges.iter().any(|existing| {
+            existing.edge_id == edge.edge_id
+                && existing.declaration_event_id == edge.declaration_event_id
+                && (existing.before, existing.after) == (edge.predecessor, edge.successor)
+        }) {
+            return Err(EdgeReplayError::UnknownReplacedEdge(edge.edge_id));
+        }
+        self.remove_edge(edge.edge_id)
     }
 
     fn add_edge(&mut self, edge: OrderingEdge) -> Result<(), EdgeReplayError> {
@@ -964,6 +1012,8 @@ pub(crate) enum EdgeReplayError {
     UnknownEndpoint(ReservationId),
     /// A `--replace` answer retired an edge that was not live when it was recorded.
     UnknownReplacedEdge(EdgeId),
+    /// A repair could not bind a live edge to its original journal record.
+    MissingDeclaration(EventId),
 }
 
 impl Display for EdgeReplayError {
@@ -1003,6 +1053,10 @@ impl Display for EdgeReplayError {
             Self::UnknownReplacedEdge(edge_id) => write!(
                 formatter,
                 "replaced ordering edge {edge_id} is not a live edge"
+            ),
+            Self::MissingDeclaration(event_id) => write!(
+                formatter,
+                "ordering edge declaration {event_id} is absent from the journal"
             ),
         }
     }

@@ -69,6 +69,7 @@ impl FinishedHistory {
             | JournalOperation::OverlapRefused { .. }
             | JournalOperation::ResolveDefer { .. }
             | JournalOperation::Sequence { .. }
+            | JournalOperation::RetireCyclicOrderingEdge { .. }
             | JournalOperation::Incursion { .. }
             | JournalOperation::ResolveIncursion { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }

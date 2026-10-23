@@ -8,6 +8,7 @@ use super::journal::JournalError;
 use super::lock::MutationLockError;
 use super::projection::ProjectionError;
 use crate::config::ConfigError;
+use crate::edge::EdgeReplayError;
 use crate::git::GitError;
 use crate::ids::InvalidUuidV7;
 use crate::reservation::ReservationReplayError;
@@ -42,6 +43,8 @@ pub(crate) enum LedgerError {
     Journal(JournalError),
     /// Recorded targets could not be reconstructed from the journal.
     ReservationReplay(ReservationReplayError),
+    /// Ordering relationships could not be replayed or repaired without losing other edges.
+    OrderingReplay(EdgeReplayError),
     /// Repository policy named an invalid trunk branch.
     InvalidRepositoryTrunk(String),
     /// A validated fact could not be encoded for the journal.
@@ -104,6 +107,7 @@ impl Display for LedgerError {
             Self::ReservationReplay(error) => {
                 write!(formatter, "reservation replay failed: {error}")
             },
+            Self::OrderingReplay(error) => write!(formatter, "ordering replay failed: {error}"),
             Self::InvalidRepositoryTrunk(error) => {
                 write!(formatter, "invalid repository trunk: {error}")
             },
@@ -141,6 +145,10 @@ impl std::error::Error for LedgerError {}
 
 impl From<GitError> for LedgerError {
     fn from(error: GitError) -> Self { Self::Git(error) }
+}
+
+impl From<EdgeReplayError> for LedgerError {
+    fn from(error: EdgeReplayError) -> Self { Self::OrderingReplay(error) }
 }
 
 impl From<std::io::Error> for LedgerError {
