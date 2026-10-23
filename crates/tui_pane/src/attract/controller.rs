@@ -547,10 +547,11 @@ impl<P: FrameProbe> Attract<P> {
         self.size_all_animations();
         let drawn_mode = AttractMode::draw(seed);
         let drawn_settings = self.draw_random_settings(drawn_mode, seed);
-        // Applied unconditionally: the check below compiles out of release
-        // builds, so the call cannot live inside it. An adjusted outcome is a
-        // drawing bug rather than something the viewer should be made to see,
-        // and a clamped attract screen still draws, so release keeps running.
+        // `Attract::apply_settings` runs unconditionally: `debug_assert_eq!` compiles out of
+        // release builds, so the call cannot live inside it. An adjusted
+        // `SettingsApplicationOutcome` is a drawing bug rather than something the viewer
+        // should be made to see, and a clamped attract screen still draws, so release keeps
+        // running.
         let outcome = self.apply_settings(drawn_settings);
         debug_assert_eq!(
             outcome,
@@ -920,15 +921,15 @@ impl<P: FrameProbe> Attract<P> {
             return;
         }
         self.note_completed_backdrop_attempts(P::note);
-        // Cheap once it has settled: the monitor answers from what it
-        // found and asks the window server nothing more.
+        // `self.monitor.identify` is cheap once settled: `BackdropMonitor` answers from
+        // its cached identification and asks the window server nothing more.
         let backdrop_diagnostic = BackdropDiagnostic {
             window_identification:   self.monitor.identify(&mut io::stdout()),
             backdrop_status:         self.monitor.status(),
             captured_window_id:      self.monitor.captured_window_id(),
             latest_window_selection: self.monitor.latest_capture_attempt_window_selection(),
         };
-        // Noted when any reported value changes, so paced identification
+        // Log `backdrop_diagnostic` when any reported value changes, so paced identification
         // retries and an unchanged capture failure do not write one line per frame.
         if self.noted_backdrop_diagnostic != backdrop_diagnostic {
             self.noted_backdrop_diagnostic = backdrop_diagnostic;
@@ -976,18 +977,18 @@ impl<P: FrameProbe> Attract<P> {
     /// seconds keeps the display rather than trading it back and forth
     /// with the animation.
     fn stand(&mut self, work: AttractWork, now: Instant) -> AttractWork {
-        // A departure that has arrived is over, and this frame's reading
-        // of the roster is the first one to count since it began.
+        // Once `Standing::Leaving` reaches `self.faded == u8::MAX`, the departure is over;
+        // this frame's `work` is the first roster reading to count since it began.
         if matches!(self.standing, Standing::Leaving) && self.faded == u8::MAX {
             self.standing = Standing::Working;
         }
         self.standing = match self.standing {
-            // Nothing reaches inside a departure still in flight.
+            // `Standing::Leaving` ignores roster changes until the departure finishes.
             Standing::Leaving => return AttractWork::Running,
             Standing::Showing => match work {
                 AttractWork::Idle => Standing::Showing,
-                // Already gone, so there is no departure to make --
-                // which is the app opening onto a grid with work on it.
+                // `self.faded == u8::MAX` means the strip is already gone, so no departure
+                // is needed when the app opens onto a grid with `AttractWork::Running`.
                 AttractWork::Running if self.faded == u8::MAX => Standing::Working,
                 AttractWork::Running => Standing::Leaving,
             },
@@ -1035,7 +1036,7 @@ impl<P: FrameProbe> Attract<P> {
     ) -> AttractGrid {
         self.laid_out_area = FrameArea::LaidOut(area);
         self.pending_resize = PendingTerminalResize::NotReported;
-        // A freeze just let go of leaves a gap between this draw and
+        // Releasing `Attract::held` leaves a gap between this draw and
         // the one before it that the strip does not owe: the display
         // stood still, so the strip stood still with it. The gap is not
         // a frame's worth either -- the loop asks for no frames at all
@@ -1054,11 +1055,11 @@ impl<P: FrameProbe> Attract<P> {
         if updates == Updates::Frozen {
             return self.grid();
         }
-        // Asked for, the roster does not get a say: the strip comes in
-        // over whatever is on the grid and stays until it is asked to
+        // With `AttractVisibilityInstruction::Show`, the roster does not get a say: the strip comes
+        // in over whatever is on the grid and stays until it is asked to
         // go, so it can be watched rather than only caught.
-        // Read every frame, whatever the reader has said, so the
-        // standing describes the roster rather than the last frame the
+        // `Attract::stand` reads every frame, whatever the reader has said, so
+        // `Attract::standing` describes the roster rather than the last frame the
         // roster had the answer.
         let standing = self.stand(work, now);
         let work = match self.visibility_instruction {
@@ -1070,7 +1071,7 @@ impl<P: FrameProbe> Attract<P> {
             AttractWork::Running => self.faded.saturating_add(ATTRACT_FADE_STEP),
         };
         self.note_standing(work);
-        // Once the strip is the whole of what is on the screen, rather
+        // Start `P::trace` once the strip is the whole of what is on the screen, rather
         // than on the first frame it shows on. The frames either side
         // of that are the fade, which draws the grid underneath as
         // well -- so a trace started there measures the arrival and
@@ -1085,8 +1086,8 @@ impl<P: FrameProbe> Attract<P> {
                 P::trace();
             }
         }
-        // The grid comes back only once the strip has gone the whole
-        // way, which is also where there is nothing left to draw.
+        // `AttractGridPresentation::OverGrid` returns only once the strip has gone the whole
+        // way, which is also where `Attract::render` has nothing left to draw.
         self.grid_presentation = if matches!(
             self.visibility_instruction,
             AttractVisibilityInstruction::Show
@@ -1110,8 +1111,8 @@ impl<P: FrameProbe> Attract<P> {
         P::timed(FramePhase::Refresh, || {
             self.refresh_backdrop(area, P::note);
         });
-        // A capture takes a few frames to arrive and is re-taken on a
-        // timer, so having none for a moment is ordinary. Having none
+        // `Attract::backdrop_wait` allows for captures taking a few frames to arrive and being
+        // re-taken on a timer, so having none for a moment is ordinary. Having none
         // for longer than that is the animation drawing nothing at all,
         // which from outside is indistinguishable from an attract
         // screen that never came on -- see [`Self::backdrop_notice`].
@@ -1127,8 +1128,8 @@ impl<P: FrameProbe> Attract<P> {
             ));
         }
         self.backdrop_wait = backdrop_wait;
-        // Only the animation on screen is carried forward. The other
-        // holds wherever it was left, which is what makes turning
+        // Only the animation selected by `attract_mode` is carried forward. The others
+        // hold wherever they were left, which is what makes turning
         // between them a turn rather than a restart.
         let attract_mode = self.mode;
         match attract_mode {
@@ -1823,8 +1824,8 @@ mod tests {
         );
 
         attract.toggle();
-        // The quiet is counted from the frame the strip is gone, so a
-        // walk of the quiet alone ends with the grid still up.
+        // `ATTRACT_RETURN_QUIET` starts counting once `attract.faded == u8::MAX`, so
+        // `walk` over only that duration still ends with the grid visible.
         let now = walk(
             &mut attract,
             AttractWork::Idle,
@@ -2013,7 +2014,7 @@ mod tests {
             "the screen is on"
         );
 
-        // One frame of work, then an empty grid for the rest of the
+        // One `AttractWork::Running` frame, then `AttractWork::Idle` for the rest of the
         // fade: exactly the command that starts and stops too quickly.
         now += POLL;
         attract.advance(AREA, AttractWork::Running, Updates::Live, now);
@@ -2052,7 +2053,7 @@ mod tests {
             attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
         }
 
-        // Short of the quiet, the grid keeps the terminal.
+        // Before `ATTRACT_RETURN_QUIET` elapses, `AttractGrid::Full` keeps the terminal.
         now += ATTRACT_RETURN_QUIET / 2;
         attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
         assert_eq!(attract.faded, u8::MAX, "not back yet");

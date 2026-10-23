@@ -74,7 +74,7 @@ pub fn draw_backdrop_notice<P: FrameProbe>(frame: &mut Frame, notice: BackdropNo
     let Some(row) = body.bottom().checked_sub(1) else {
         return;
     };
-    // `set_string` stops at the edge of the buffer, so a terminal too
+    // `Buffer::set_string` stops at the edge of the buffer, so a terminal too
     // narrow for the whole notice gets as much of it as it can hold
     // rather than a panic or a wrapped second line over the grid.
     frame
