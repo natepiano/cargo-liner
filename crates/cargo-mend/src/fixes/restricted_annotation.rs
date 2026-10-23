@@ -36,7 +36,7 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
             NarrowerScope::PublicBoundary => String::from("pub"),
             NarrowerScope::Unproposed | NarrowerScope::SuppressionKey(_) => continue,
         };
-        // Whatever the annotation spells, this rewrites it.
+        // Whatever the annotation spells, `scan_from_report` plans its rewrite.
         // `visibility_constraint::apply_rewrite` is what decides which findings
         // arrive here carrying a boundary; this pass only locates the bytes and
         // confirms they still say what the report said. It once refused any
@@ -56,20 +56,22 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         else {
             continue;
         };
-        // The source may have moved on since the report was written. Only edit
-        // the exact annotation the compiler pass classified.
+        // `matches_expected_annotation` guards against source changes since the
+        // report was written. Only edit the exact annotation the compiler pass classified.
         if !matches_expected_annotation(&source, site, expected_form, expected_annotation) {
             continue;
         }
-        // An edit that writes back the bytes it replaces is not a fix. It would
-        // be counted as applied, leave the file untouched, and the finding would
+        // `scan_from_report` rejects `replacement` when it writes back the bytes it
+        // replaces: that is not a fix. It would be counted as applied, leave the
+        // file untouched, and the finding would
         // return unchanged on the next run — a `--fix-all` that never converges.
         if !replacement.is_empty() && source.get(site.start..site.end) == Some(replacement.as_str())
         {
             continue;
         }
-        // One rewrite per declaration site. The same item is reported once per
-        // compiled target, and `suspicious_pub` words its message differently
+        // `rewritten_sites` limits `scan_from_report` to one rewrite per declaration
+        // site. The same item is reported once per compiled target, and
+        // `suspicious_pub` words its message differently
         // for a binary than for a library, so both findings survive dedup and
         // would otherwise queue two edits over the same bytes — which fails
         // validation for the whole `--fix` batch. The file path pairs with the

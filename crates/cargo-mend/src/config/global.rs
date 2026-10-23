@@ -327,7 +327,8 @@ prefer_module_import = false
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
         std::fs::write(&path, default_global_config_toml()).unwrap();
-        // mutate a value and add a user comment, then write a complete file.
+        // `original` changes `prefer_module_import` and adds a user comment before
+        // `std::fs::write` writes the complete file.
         let mut original = std::fs::read_to_string(&path).unwrap();
         original = original.replace(
             "prefer_module_import = true",
@@ -368,7 +369,8 @@ prefer_module_import = false
     fn reconcile_inserts_missing_keys_and_keeps_comments() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
-        // an old-style file: diagnostics only, no [visibility], with a user comment.
+        // `std::fs::write` creates an old-style `config.toml`: diagnostics only,
+        // no [visibility], with a user comment.
         std::fs::write(
             &path,
             "# user header\n[diagnostics]\nreview_pub_mod = false\n",
@@ -396,7 +398,7 @@ prefer_module_import = false
             assert!(after.contains(code.as_str()), "{} present", code.as_str());
         }
 
-        // second run is a no-op.
+        // The second `reconcile_global_config` call leaves `config.toml` unchanged.
         reconcile_global_config(&path).unwrap();
         let second = std::fs::read_to_string(&path).unwrap();
         assert_eq!(second, after, "reconcile is idempotent");
