@@ -1064,7 +1064,7 @@ struct BandPiece<Id> {
 
 /// Where the focus ring is located within the current arrangement.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum FocusLocation {
+pub enum FocusLocation {
     /// The ring sits on this one-based cell number, including the summary.
     Cell(usize),
     /// The focused slot is outside the arrangement while it moves.
@@ -2877,7 +2877,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// The cell number focus rests on, or its departure from the arrangement.
-    fn focused_cell(&self) -> FocusLocation {
+    pub fn focused_cell(&self) -> FocusLocation {
         match &self.focus {
             Focus::Summary => FocusLocation::Cell(TABLE_CELL),
             Focus::Cell(slot) => {

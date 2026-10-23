@@ -24,7 +24,7 @@ use tui_pane::OverlayAction;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::Pane;
 use tui_pane::SLOW_INPUT_EVENT_MS;
-use tui_pane::Viewport;
+use tui_pane::ScrollDirection;
 
 use super::editor_terminal;
 use crate::tui::app::App;
@@ -621,8 +621,8 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
     }
 
     match kind {
-        MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, true),
-        MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, false),
+        MouseEventKind::ScrollUp => scroll_pane_at(app, column, row, ScrollDirection::Up),
+        MouseEventKind::ScrollDown => scroll_pane_at(app, column, row, ScrollDirection::Down),
         MouseEventKind::Down(MouseButton::Left) => {
             handle_mouse_click(app, column, row, ClickMode::Dispatch);
         },
@@ -647,16 +647,23 @@ fn handle_output_drag(app: &mut App, column: u16, row: u16) {
     app.panes.output.select_drag_to(&live, row);
 }
 
-fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
-    let up = scroll_up ^ app.config.invert_scroll().is_inverted();
+fn scroll_pane_at(app: &mut App, column: u16, row: u16, direction: ScrollDirection) {
+    let direction = if app.config.invert_scroll().is_inverted() {
+        match direction {
+            ScrollDirection::Up => ScrollDirection::Down,
+            ScrollDirection::Down => ScrollDirection::Up,
+        }
+    } else {
+        direction
+    };
     let pos = Position::new(column, row);
 
-    if scroll_modal_overlay_at(app, pos, up) {
+    if scroll_modal_overlay_at(app, pos, direction) {
         return;
     }
 
     if app.panes.project_list.body_rect.contains(pos) {
-        if up {
+        if direction == ScrollDirection::Up {
             app.project_list.move_up();
         } else {
             app.project_list.move_down();
@@ -676,12 +683,16 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             continue;
         }
         if pane_id == PaneId::Package {
-            let action = if up { NavAction::Up } else { NavAction::Down };
+            let action = if direction == ScrollDirection::Up {
+                NavAction::Up
+            } else {
+                NavAction::Down
+            };
             panes::navigate_package_detail(app, action);
             return;
         }
         if let Some(pane) = interaction::viewport_mut_for(app, pane_id) {
-            if up {
+            if direction == ScrollDirection::Up {
                 pane.up();
             } else {
                 pane.down();
@@ -691,45 +702,45 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 }
 
-const fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool {
+const fn scroll_modal_overlay_at(app: &mut App, pos: Position, direction: ScrollDirection) -> bool {
     if app.overlays.is_finder_open() {
-        scroll_viewport_if_contains(&mut app.overlays.finder_pane.viewport, pos, up);
+        app.overlays
+            .finder_pane
+            .viewport
+            .scroll_if_contains(pos, direction);
         return true;
     }
     if app.overlays.is_sccache_open() {
-        scroll_viewport_if_contains(app.overlays.sccache_pane.viewport_mut(), pos, up);
+        app.overlays
+            .sccache_pane
+            .viewport_mut()
+            .scroll_if_contains(pos, direction);
         return true;
     }
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => {
-            scroll_viewport_if_contains(app.framework.settings_pane.viewport_mut(), pos, up);
+            app.framework
+                .settings_pane
+                .viewport_mut()
+                .scroll_if_contains(pos, direction);
             true
         },
         Some(FrameworkOverlayId::Keymap) => {
-            scroll_viewport_if_contains(app.framework.keymap_pane.viewport_mut(), pos, up);
+            app.framework
+                .keymap_pane
+                .viewport_mut()
+                .scroll_if_contains(pos, direction);
             true
         },
         Some(FrameworkOverlayId::GlobalShortcuts) => {
-            scroll_viewport_if_contains(
-                app.framework.global_shortcuts_pane.viewport_mut(),
-                pos,
-                up,
-            );
+            app.framework
+                .global_shortcuts_pane
+                .viewport_mut()
+                .scroll_if_contains(pos, direction);
             true
         },
         None => false,
-    }
-}
-
-const fn scroll_viewport_if_contains(viewport: &mut Viewport, pos: Position, up: bool) {
-    if !viewport.content_area().contains(pos) {
-        return;
-    }
-    if up {
-        viewport.up();
-    } else {
-        viewport.down();
     }
 }
 
