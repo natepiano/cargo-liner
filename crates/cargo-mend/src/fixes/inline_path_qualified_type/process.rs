@@ -111,8 +111,9 @@ pub(super) fn process_occurrence(
         return;
     }
 
-    // A `#[cfg(test)] use hana_effects::ImageSourceLayout;` does not cover a
-    // non-test occurrence of `hana_effects::ImageSourceLayout::Sampleable`:
+    // `ScopeInfo::existing_binding_gated_out` rejects a gated import whose attributes do not cover
+    // `resolved.conditional_attributes`. A `#[cfg(test)] use hana_effects::ImageSourceLayout;` does
+    // not cover a non-test occurrence of `hana_effects::ImageSourceLayout::Sampleable`:
     // rewriting it bare would fail to resolve outside test builds, and adding
     // an ungated import would collide with the gated one. Leave the
     // occurrence fully qualified.
@@ -152,7 +153,7 @@ pub(super) fn process_occurrence(
         item_visibility: ItemVisibility::default(),
     });
 
-    // Group the rewrite and its companion `use` insertion so the combining
+    // `ImportGroup` groups the rewrite and its companion `use` insertion so the combining
     // layer can drop them together on cross-pass name collisions.
     let group = Some(ImportGroup {
         bare_name: occ.import_name.clone(),
@@ -200,15 +201,15 @@ pub(super) fn resolve_occurrence(
     let scope_id = scope::find_innermost_scope(ctx.scopes, byte_start);
     let scope = scope_id.map(|id| &ctx.scopes[id]);
 
-    // Resolve a partial path (`fmt::Display` written because `use std::fmt;`
-    // is in scope) to its absolute form (`std::fmt::Display`) so the inserted
+    // `absolutize_import_path` resolves a partial path (`fmt::Display` written because `use
+    // std::fmt;` is in scope) to its absolute form (`std::fmt::Display`) so the inserted
     // `use` does not depend on a sibling module import remaining in place.
     let import_path = scope.map_or_else(
         || occurrence.import_path.clone(),
         |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
     );
-    // A nested module often sees the leading segment only through a glob
-    // (`use super::*;`), so its own scope cannot absolutize. Resolve through
+    // `absolutize_through_ancestors` handles a nested module seeing the leading segment only
+    // through a glob (`use super::*;`), so its own scope cannot absolutize. Resolve through
     // ancestor imports before falling back to a `super::`-qualified path:
     // every occurrence of `io::ErrorKind` then agrees on `std::io::ErrorKind`
     // instead of the nested scope alone producing `super::io::ErrorKind` —
@@ -326,8 +327,8 @@ fn absolutize_import_path(
         },
         PathAnchor::SelfType | PathAnchor::Name => {},
     }
-    // Look for an existing `use a::b::<leading>;` (i.e. an import whose final
-    // segment matches `leading` and which has at least one parent segment).
+    // `absolutize_import_path` searches `existing_imports` for `use a::b::<leading>;` (i.e. an
+    // import whose final segment matches `leading` and which has at least one parent segment).
     // Without a parent segment, the existing import is itself a top-level
     // crate name — already absolute.
     for existing in existing_imports.keys() {
@@ -356,8 +357,8 @@ pub(super) fn find_collision_names(
     bare_type_names: &BTreeSet<String>,
     existing_imports: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    // Group by the name that will be brought into scope by the `use` (the
-    // `import_name`), and track the set of distinct import paths per name.
+    // `name_to_paths` groups by the name that will be brought into scope by the `use` (the
+    // `import_name`), and tracks the set of distinct import paths per name.
     // If more than one distinct path maps to the same import name, the
     // imports would collide — skip them all.
     let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -371,8 +372,8 @@ pub(super) fn find_collision_names(
     let mut collisions = BTreeSet::new();
     for (name, paths) in &name_to_paths {
         let ambiguous = paths.len() > 1;
-        // If the name is already used bare somewhere in the file (e.g.
-        // `use super::*` brings in a struct `Package`), introducing a new
+        // `would_shadow` tests `bare_type_names` because if the name is already used bare somewhere
+        // in the file (e.g. `use super::*` brings in a struct `Package`), introducing a new
         // `use crate::other::Package;` would shadow it.
         let would_shadow =
             bare_type_names.contains(*name) && !paths.iter().all(|p| existing_imports.contains(*p));

@@ -76,8 +76,9 @@ impl InBodyUseFinder<'_> {
     }
 
     fn try_emit_fix(&mut self, use_item: &ItemUse) {
-        // A non-`cfg` attribute on the `use` itself (`#[allow(...)]`, a doc
-        // comment, …) can change what the import means; leave those in place.
+        // `InBodyUseFinder::try_emit_fix` leaves `use_item` in place when a non-`cfg`
+        // attribute on the `use` itself (`#[allow(...)]`, a doc comment, …) can change
+        // what the import means.
         if use_item
             .attrs
             .iter()
@@ -90,12 +91,13 @@ impl InBodyUseFinder<'_> {
         if bare_paths.is_empty() {
             return;
         }
-        // Globs may shadow arbitrary names — don't move.
+        // `try_emit_fix` leaves `bare_paths` containing `*` in place because globs may shadow
+        // arbitrary names.
         if bare_paths.iter().any(|(bare, _)| bare == "*") {
             return;
         }
 
-        // The gate the moved `use` must carry: every enclosing `#[cfg]` plus
+        // `conditional_attributes` combines every enclosing `#[cfg]` plus
         // any `#[cfg]` on the `use` itself. Non-empty means the import is
         // conditionally compiled and the attributes travel with it to the top.
         let mut conditional_attributes = self.conditional_attributes.clone();
@@ -106,7 +108,7 @@ impl InBodyUseFinder<'_> {
             return;
         };
 
-        // A gated `use` can't be reconciled with any existing binding of the
+        // `blocked` rejects a gated `use` with any `scope.existing` binding of the
         // same name (even the same path double-imports when both are active),
         // so skip when the name is taken. An unconditional `use` skips only on
         // a real collision. Leaving it in place is safe on every target.
@@ -123,7 +125,7 @@ impl InBodyUseFinder<'_> {
             return;
         }
 
-        // Duplicate: every bare name already imported unconditionally with the
+        // `all_duplicates` means every bare name is already imported unconditionally with the
         // same full path. The fix collapses to a pure deletion (no insertion).
         // A gated use is never a plain duplicate — its gate must be preserved.
         let all_duplicates = !gated
@@ -156,8 +158,8 @@ impl InBodyUseFinder<'_> {
         all_duplicates: bool,
     ) {
         let use_span = use_item.span();
-        // `use_span` starts at the first attribute; the moved line is built
-        // from the `use` keyword onward so the carried gate is emitted cleanly.
+        // `use_span` includes the first attribute. Build the moved text from
+        // `use_item.use_token` so `conditional_attributes` are emitted once.
         let attr_start = offset(self.offsets, use_span.start());
         let use_kw = use_item.use_token.span().start();
         let use_kw_start = offset(self.offsets, use_kw);
@@ -291,8 +293,8 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
             .map_or_else(String::new, |scope| scope.indent.clone());
         let nested_default = format!("{parent_indent}    ");
         let scope = compute_scope_for_items(items, self.text, self.offsets, &nested_default);
-        // Empty inline mod (no items) — items list contributed no insertion
-        // offset, so compute one from the position just after the opening
+        // `visit_item_mod` handles empty `items` in `node.content`: the list contributed no
+        // insertion offset, so compute one from the position just after the opening
         // brace.
         let scope = if items.is_empty() {
             let brace_start = offset(self.offsets, brace.span.open().end());
@@ -304,10 +306,10 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         } else {
             scope
         };
-        // The module opens its own scope: an inner `use` moves only to this
-        // module's top, which the module's own gate already wraps, so gates
-        // from enclosing constructs no longer apply. Clear the stack for the
-        // body and restore it afterward.
+        // `visit_item_mod` clears `self.conditional_attributes` because `node` opens its own scope:
+        // an inner `use` moves only to this module's top, which the module's own gate
+        // already wraps, so gates from enclosing constructs no longer apply. Clear the
+        // stack for the body and restore it afterward.
         let outer_attributes = std::mem::take(&mut self.conditional_attributes);
         self.scope_stack.push(scope);
         for item in items {

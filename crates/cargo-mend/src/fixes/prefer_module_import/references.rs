@@ -114,10 +114,10 @@ impl Visit<'_> for ReferenceCollector<'_> {
             visit::visit_item_mod(self, node);
             return;
         };
-        // An inline `mod` does not inherit the file's imports: a bare name
-        // inside it resolves to the module's own items and `use` bindings.
-        // `#[cfg(test)] mod tests { fn reconcile(..) {..} }` next to a
-        // file-scope `use crate::reconcile::reconcile;` is the case that
+        // `ReferenceCollector::visit_item_mod` calls `item_bindings` because an inline `mod` does
+        // not inherit the file's imports: a bare name inside it resolves to the module's
+        // own items and `use` bindings. `#[cfg(test)] mod tests { fn reconcile(..) {..} }`
+        // next to a file-scope `use crate::reconcile::reconcile;` is the case that
         // matters — rewriting the call to `reconcile::reconcile()` resolves
         // to the local fn, not a module (E0433).
         self.inline_mod_depth += 1;
@@ -267,8 +267,8 @@ impl Visit<'_> for ReferenceCollector<'_> {
     }
 
     fn visit_macro(&mut self, node: &Macro) {
-        // The token scanner sees idents, not scopes, so filter its hits
-        // against the bindings in scope at the macro call site.
+        // `collect_bare_refs_from_tokens` sees identifiers, not scopes, so `is_shadowed` filters
+        // its hits against the bindings in scope at the macro call site.
         let mut collected = Vec::new();
         collect_bare_refs_from_tokens(
             &node.tokens,

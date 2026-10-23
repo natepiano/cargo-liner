@@ -37,9 +37,10 @@ struct AttributeNames {
 
 impl Visit<'_> for AttributeNames {
     fn visit_attribute(&mut self, node: &Attribute) {
-        // Doc comments desugar to `#[doc = "..."]`. Prose that happens to be a
-        // single word is not a reference, and treating it as one would silence
-        // the lint across most documented files.
+        // `AttributeNames::visit_attribute` skips `node.path().is_ident("doc")` because doc
+        // comments desugar to `#[doc = "..."]`. Prose that happens to be a single word is
+        // not a reference, and treating it as one would silence the lint across most
+        // documented files.
         if node.path().is_ident("doc") {
             return;
         }
