@@ -119,7 +119,7 @@ impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
                     &right.fix.replacement,
                 ))
         });
-        // Two passes proposing the byte-identical edit collapse to one. The sort
+        // `ValidatedFixSet::try_from` collapses two passes' byte-identical edits to one. The sort
         // is stable, so the survivor — and the kind credited with it — is the one
         // `runner::combine` collected first.
         fixes.dedup_by(|left, right| {

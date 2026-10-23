@@ -195,7 +195,7 @@ macro_rules! gate_tracking_visit {
     };
 }
 
-// `macro_rules!` binds privately no matter what, so a `use` re-export is the only
+// `gate_tracking_visit` is bound privately by `macro_rules!`, so a `use` re-export is the only
 // way to name it by path. It has to be `pub(crate)`: `imports/mod.rs` narrows it
 // back to `pub(super)` for `crate::fixes`, and a re-export cannot widen. Mend
 // forbids `pub(in crate::…)` on a `use` item outright — resolved paths name the
