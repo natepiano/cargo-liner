@@ -72,8 +72,8 @@ pub(in crate::fixes) fn scan_selection(
         .collect::<BTreeSet<_>>();
     excluded.extend(owners_behind_other_reexports(&facts));
 
-    // Each round drops the facts it could not place or whose edits overlap
-    // another fix, then rebuilds every edit without them.
+    // `scan_selection` adds facts that `build_round` could not place or whose edits
+    // overlap another fix to `excluded`, then rebuilds every edit without them.
     let fixes = loop {
         let round = build_round(root, &facts, &crates, &excluded, sources)?;
         let mut rejected = round.unmatched.clone();
@@ -90,8 +90,9 @@ pub(in crate::fixes) fn scan_selection(
     facade_redirect::dedup_fixes(&mut fixes);
     match ValidatedFixSet::try_from(fixes) {
         Ok(fixes) => Ok(SubtreeReexportScan { fixes, skipped }),
-        // Two caller rewrites that overlap belong to no single fact, so the
-        // whole pass stands down and every fact counts as skipped.
+        // Two overlapping caller rewrites belong to no single fact. If they make
+        // `ValidatedFixSet::try_from` fail, the whole pass stands down and every fact
+        // counts as skipped.
         Err(_) => Ok(SubtreeReexportScan {
             fixes:   ValidatedFixSet::try_from(Vec::<UseFix>::new())?,
             skipped: skipped + applied,
@@ -195,10 +196,10 @@ fn build_round(
         unmatched: BTreeSet::new(),
     };
 
-    // Step 2 runs first: the callers, per crate root, with that root's
-    // redirects. It reports the owner modules a caller's `use` still names,
-    // which step 1 must not delete, and the builds that compile the callers
-    // each ancestor re-export serves.
+    // `facade_redirect::redirect_callers_in_file` runs first, per crate root, with that
+    // root's `redirects`. It reports owner modules a caller's `use` still names,
+    // which `owner_edit::edit_owner_region` must not delete, and the builds that
+    // compile the callers each ancestor re-export serves.
     let mut outside_used: BTreeMap<usize, CallerBuilds> = BTreeMap::new();
     let mut named_owners = BTreeSet::new();
     for (crate_root, files) in crates {
@@ -248,7 +249,8 @@ fn build_round(
         }
     }
 
-    // Step 1: the owner edits, one region per owner file and owner module.
+    // `owner_edit::edit_owner_region` builds owner edits, one region per owner file and owner
+    // module.
     let mut regions: BTreeMap<(PathBuf, &[String]), Vec<OwnerFact<'_>>> = BTreeMap::new();
     for &index in &active {
         let fact = facts[index];
@@ -283,8 +285,8 @@ fn build_round(
         return Ok(round);
     }
 
-    // Step 3: the ancestor re-export, when a caller now names the item there;
-    // under `#[cfg(test)]` when only test builds compile those callers.
+    // `ancestor::insertion_fix` adds the ancestor re-export, when a caller now names the item
+    // there; under `#[cfg(test)]` when only test builds compile those callers.
     for (index, builds) in outside_used {
         if let AncestorReexport::Insert(insertion) = &facts[index].ancestor_reexport {
             let file = crate_files::canonical(&root.join(&insertion.file));
