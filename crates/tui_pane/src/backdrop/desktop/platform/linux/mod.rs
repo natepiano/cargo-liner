@@ -510,7 +510,8 @@ impl DesktopSubprocess {
 
 impl DesktopProcess for DesktopSubprocess {
     fn try_read(&mut self) -> io::Result<ControlFlow<Vec<u8>>> {
-        // Observe exit first so a final write between polling and reading cannot be missed.
+        // Observe exit with `child.try_wait()` before `stdout.read()` so a final write
+        // between polling and reading cannot be missed.
         let status = self.child.try_wait()?;
         let mut buffer = [0; DESKTOP_STDOUT_CHUNK_BYTES];
         let count = match self.stdout.read(&mut buffer) {
