@@ -741,7 +741,8 @@ mod tests {
             );
             assert_eq!(source.queries, source.answering);
         }
-        // Differing scripted answers verify that marker observations replace held classifications.
+        // Changing `source.marker_candidates` verifies that marker observations replace
+        // held `inventory.classifications`.
         source.marker_candidates.retain(|uuid| uuid != "{browser}");
         source.marker_candidates.push("{one}".to_owned());
         inventory.read(
