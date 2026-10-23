@@ -701,29 +701,26 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, names `lock_diagnostic` as its own origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence. Spec 7's counting test is shown to fail against a version that does the extra work per holder. Spec 8's evidence is recorded on the phase start commit `bf27c025` (checkpoint `566d8066` plus a merge of main that changed only comments and test imports in cargo-berth) before this phase's own edits: the complete six-path, 20-pair table with every after p95 under 100 ms, and the cold Mac timing compared with the 88.730 s and 114.970 s runs, with any slowdown at equal load fixed at its source.
 
-### Phase 25 — A claim cannot close an ordering cycle  · status: todo
+### Phase 25 — A claim cannot close an ordering cycle  · status: done
 
-#### Work Order
+#### As-built
 
-**Depends on:** none. Runs beside phase 24, which waits on the Mac.
-
-**Goal:** A claim whose ordering edges would close a cycle is refused before it writes anything, and a ledger that already holds such a cycle can be repaired. Every `--defer` combination the tool refuses is described the same way in the directing docs.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-23, after hana's showrunner reported the hana ledger unreadable ("replayed ordering edges contain a cycle", exit 4) from about 02:20 AST. A widen of startup reservation `01a16729` at 02:17 AST (`--after 01a12f50 --before 01a1140e --before 01a115b8`) added the edge organon `01a12f50` → startup `01a16729`, which closed a cycle. The showrunner's order: (2) repair the ledger, (1) refuse a cycle-closing claim at claim time, (3) settle `--after` with `--defer`.
-2. **Repair (done, checkpoint `f78f6b49`, merged as `d9e0537a`).** `cargo-berth init --repair-ordering-cycle` appends a `retire_cyclic_ordering_edge` record for the earliest live edge that closes a cycle, after it proves the graph replays with that edge retired. Every reservation and every other edge stays; the board shows the retired edge's answer as Cancelled. The hana ledger was backed up, repaired on a scratch copy, then repaired live; it reads again.
-3. **Claim-time refusal.** A `claim` (new or widening) and a `sequence` whose edges, together with the live edges, would close a cycle are refused before any journal write. The refusal names the cycle (each reservation in order) and exits as a correctable input error; the ledger is byte-for-byte unchanged. Find why the widen path at 02:17 wrote the edge: `edge/cycle.rs` already has `would_create_cycle`, so the defect is a declaration path that does not reach it, or that checks each edge alone rather than the claim's whole edge set. Make the checked edge set a type that only a cycle-free check can construct, so no declaration path can journal an unchecked edge.
-4. **Test the 02:15 shape.** A test builds the three-holder shape (a reservation ordered after A and before B and C, where a live path already runs from the new reservation to A) and shows the claim is refused with the cycle named and the journal unchanged. A second test covers a single claim whose own edges close the cycle among themselves. Each test under 1 s.
-5. **`--after` with `--defer` (done in the docs).** The tool refuses `--defer` beside `--before`, `--after` or `--override` on purpose: a defer takes no paths and the others widen. `cli.rs` `defer_and_override_exclude_every_other_answer` pins it. `~/.claude/commands/unit/direct.md` BerthDecisions said they mix; it now states the exclusion and the two-step form. No tool change.
+- `cargo-berth init --repair-ordering-cycle` (`src/ledger/ordering_repair.rs`, `src/edge/cycle_repair.rs`) appends one `retire_cyclic_ordering_edge` record for the earliest live edge that closes a cycle, after it proves the graph replays with that edge retired. Every reservation and every other edge stays. It refuses a second, independent cycle before it writes, and does nothing on an acyclic ledger. The board shows the retired edge's answer as Cancelled (`board/answers.rs`, `OrderingEdgeRetirement`). Checkpoint `f78f6b49`, merged as `d9e0537a`. It repaired the hana ledger (edge organon `01a12f50` → startup `01a16729`, from a widen at 02:17 AST, 2026-10-23).
+- Each operation that adds ordering edges reaches the journal only as a `CycleFreeOrderingOperation` (`src/edge/declaration.rs`). Only the transaction's own `ReplayedLedgerState` can construct it. It checks the whole edge set against the cached live graph once, and `LedgerTransaction::append` takes it without a second check. A reconciliation batch extends one graph event by event. `introduces_ordering` matches every `JournalOperation` variant explicitly.
+- A claim, widen or sequence whose edges would close a cycle is refused before any write: exit 2, status `ordering_cycle`, with the cycle named in order (`OrderingCycle`, `src/edge/cycle.rs`). No new journal variant and no new output field. Checkpoint `4ebd93ff`.
+- `--defer` excludes `--before`, `--after` and `--override` on purpose (a defer takes no paths). The BerthDecisions text in `~/.claude/commands/unit/direct.md` now states it; natedev commits that file.
 
 **Files:**
-- `crates/cargo-berth/src/edge/` — the cycle check over the claim's whole edge set and the checked-edge type
-- `crates/cargo-berth/src/verb/`, `crates/cargo-berth/src/ledger/handle.rs` — the claim, widen and sequence declaration paths that journal edges
-- `crates/cargo-berth/src/output.rs` — the refusal message, inside the existing envelope
-- `crates/cargo-berth/tests/edges.rs` — the two refusal tests
+- `crates/cargo-berth/src/edge/declaration.rs` — `CycleFreeOrderingOperation`, `introduces_ordering`
+- `crates/cargo-berth/src/edge/cycle.rs` — `OrderingCycle`, `ensure_acyclic`
+- `crates/cargo-berth/src/ledger/handle.rs` — `ReplayedLedgerState` graph cache, checked append, test-only `append_legacy_journal_operation`
+- `crates/cargo-berth/src/ledger/ordering_repair.rs`, `crates/cargo-berth/src/edge/cycle_repair.rs` — the repair
+- `crates/cargo-berth/tests/edges.rs` — `one_claim_checks_its_new_edges_together_before_appending`, `widening_claim_refuses_an_indirect_cycle_without_changing_the_journal`
 
-**Workers:** 1 writer, `impl`.
+**Binds later work:** A path that journals ordering edges takes a `CycleFreeOrderingOperation`; a new `JournalOperation` variant needs an explicit arm in `introduces_ordering`. A test that needs cyclic history writes it through `append_legacy_journal_operation`, never through a product path. The work-count tests `ordering_admission_reuses_the_transaction_graph_without_rechecking_at_append` and `ordering_batches_extend_one_graph_and_refuse_the_first_cycle` stay.
 
-**Constraints:** Journal replay of existing ledgers is unchanged. No new journal variant: a refusal writes nothing. The frozen output schema gains no field. A new journal variant goes into a live ledger only with an installed binary that reads it.
+**Gotchas:**
+- A new journal variant written to a live ledger by an uninstalled build makes the ledger unreadable to every installed reader. Install the reader first.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. Each refusal test is shown to fail on `d9e0537a` (the claim is accepted and the board then reads `ledger_unreadable`) and to pass after the change.
+**Ruled out:**
+- Allowing `--defer` beside a widening answer: a defer takes no paths, so one claim cannot both defer and widen.
