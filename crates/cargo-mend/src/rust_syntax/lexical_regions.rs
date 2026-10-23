@@ -169,7 +169,7 @@ impl From<&str> for LexicalRegions {
                 });
             }
         }
-        // An unterminated comment or literal runs to the end of the file.
+        // `regions.push` records an unterminated comment or literal through the end of the file.
         if let Some(kind) = state.region_kind() {
             regions.push(LexicalRegion {
                 bytes: region_start..end,
@@ -192,8 +192,8 @@ impl LexicalRegions {
         loop {
             if let Some(region) = self.region_ending_at_or_covering(offset) {
                 match region.kind {
-                    // The whole comment is trivia, so keep walking from its
-                    // opener — whitespace may precede it in the same run.
+                    // `LexicalRegionKind::Comment` is entirely trivia, so keep walking from
+                    // `region.bytes.start` — whitespace may precede its opener in the same run.
                     LexicalRegionKind::Comment => {
                         offset = region.bytes.start;
                         continue;

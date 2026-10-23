@@ -188,11 +188,11 @@ pub(crate) fn build_cargo_check_plan(
     append_repeated_flag(&mut cargo_args, CARGO_FLAG_PACKAGE, &cargo_cli.package);
     append_repeated_flag(&mut cargo_args, CARGO_FLAG_EXCLUDE, &cargo_cli.exclude);
 
-    // Mend's reachability/visibility analyses require seeing every target's
-    // call graph. Lib-only compilation strips `#[cfg(test)]` blocks and
-    // hides callers that exist in test or example code. Always include all
-    // targets so the analysis is sound regardless of the user's display
-    // filter (target_selections, bin/example/test/bench lists).
+    // `build_cargo_check_plan` always appends `CARGO_FLAG_ALL_TARGETS` to `cargo_args`:
+    // mend's reachability/visibility analyses require every target's call graph.
+    // Lib-only compilation strips `#[cfg(test)]` blocks and hides test/example
+    // callers. All targets keep the analysis sound regardless of `cargo_cli`'s
+    // display filter (`target_selections` and bin/example/test/bench lists).
     cargo_args.push(OsString::from(CARGO_FLAG_ALL_TARGETS));
 
     CargoCheckPlan {
@@ -355,8 +355,8 @@ mod tests {
 
     #[test]
     fn default_workspace_plan_checks_workspace_with_all_targets() {
-        // Mend always passes `--all-targets` for analysis so test-only
-        // callers are visible in the call graph.
+        // `build_cargo_check_plan` always adds `CARGO_FLAG_ALL_TARGETS` to `args`
+        // so test-only callers are visible in the call graph.
         let selection = fixture_selection(SelectionScope::Workspace);
 
         let args = cargo_args_strings(build_cargo_check_plan(
@@ -396,8 +396,8 @@ mod tests {
 
     #[test]
     fn plan_includes_workspace_all_targets() {
-        // User-facing target-selection flags are now display filters and do
-        // not duplicate the always-on `--all-targets`.
+        // `cargo_cli.target_selections` supplies display filters and must not
+        // duplicate the always-on `CARGO_FLAG_ALL_TARGETS` in `args`.
         let selection = fixture_selection(SelectionScope::Workspace);
         let cargo_cli = CargoCheckCli {
             workspace_selection: WorkspaceSelection::All,
@@ -466,8 +466,8 @@ mod tests {
 
     #[test]
     fn plan_includes_specific_named_targets() {
-        // Named-target flags are display filters; analysis still runs with
-        // `--all-targets` so the call graph stays complete.
+        // `cargo_cli`'s named-target flags are display filters; `args` still includes
+        // `CARGO_FLAG_ALL_TARGETS` so the analysis call graph stays complete.
         let selection = fixture_selection(SelectionScope::SinglePackage);
         let cargo_cli = CargoCheckCli {
             bin: vec!["cli".to_string()],
