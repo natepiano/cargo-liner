@@ -47,15 +47,6 @@ impl MendRunner<'_> {
         let enabled = |fix_kind: FixKind, codes: &[DiagnosticCode]| {
             self.fix_enabled(&operation_mode, fix_kind, codes)
         };
-        let import_scan = scans.imports.filter(|_| {
-            enabled(
-                FixKind::ShortenImport,
-                &[
-                    DiagnosticCode::ShortenLocalCrateImport,
-                    DiagnosticCode::ReplaceDeepSuperImport,
-                ],
-            )
-        });
         let prefer_module_import_scan = scans.prefer_module_import.filter(|_| {
             enabled(
                 FixKind::PreferModuleImport,
@@ -66,6 +57,15 @@ impl MendRunner<'_> {
             enabled(
                 FixKind::InlinePathQualifiedType,
                 &[DiagnosticCode::InlinePathQualifiedType],
+            )
+        });
+        let import_scan = scans.imports.filter(|_| {
+            enabled(
+                FixKind::ShortenImport,
+                &[
+                    DiagnosticCode::ShortenLocalCrateImport,
+                    DiagnosticCode::ReplaceDeepSuperImport,
+                ],
             )
         });
         let narrow_pub_crate_scan = enabled(

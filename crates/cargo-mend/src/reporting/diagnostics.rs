@@ -17,17 +17,17 @@ use crate::constants::HELP_URL_BASE;
 pub(crate) enum FixSupport {
     #[default]
     None,
-    ShortenImport,
-    PreferModuleImport,
-    InlinePathQualifiedType,
+    RestrictedAnnotation,
     #[serde(rename = "fix_pub_use")]
     PubUse,
     NeedsManualPubUseCleanup,
     BlockedByPrivateImport,
-    InternalParentFacade,
     UnusedPub,
+    PreferModuleImport,
+    InlinePathQualifiedType,
+    ShortenImport,
+    InternalParentFacade,
     NarrowToPubCrate,
-    RestrictedAnnotation,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
     #[serde(rename = "fix_imports_at_top")]
@@ -67,12 +67,12 @@ impl FixSupport {
             | Self::NeedsManualPubUseCleanup
             | Self::BlockedByPrivateImport
             | Self::InternalParentFacade => None,
-            Self::ShortenImport
+            Self::RestrictedAnnotation
+            | Self::UnusedPub
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
-            | Self::UnusedPub
+            | Self::ShortenImport
             | Self::NarrowToPubCrate
-            | Self::RestrictedAnnotation
             | Self::FieldVisibility
             | Self::ImportsAtTop
             | Self::PubUseOutsideSubtree => Some(FixSummaryBucket::Standard),
@@ -212,15 +212,6 @@ static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
     detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::FieldVisibility,
 };
-static PUB_USE_OUTSIDE_SUBTREE: DiagnosticSpec = DiagnosticSpec {
-    headline:    HeadlineSource::FindingMessage {
-        fallback: "re-export reaches outside this module's subtree",
-    },
-    inline_help: Some(PUB_USE_OUTSIDE_SUBTREE_HELP),
-    help_anchor: "pub-use-outside-subtree",
-    detail_mode: DetailMode::None,
-    fix_support: FixSupport::None,
-};
 static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static(
         "`use` statement should live at the top of the file or inline module",
@@ -229,6 +220,15 @@ static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     help_anchor: "imports-at-top",
     detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::ImportsAtTop,
+};
+static PUB_USE_OUTSIDE_SUBTREE: DiagnosticSpec = DiagnosticSpec {
+    headline:    HeadlineSource::FindingMessage {
+        fallback: "re-export reaches outside this module's subtree",
+    },
+    inline_help: Some(PUB_USE_OUTSIDE_SUBTREE_HELP),
+    help_anchor: "pub-use-outside-subtree",
+    detail_mode: DetailMode::None,
+    fix_support: FixSupport::None,
 };
 
 /// The visibility annotation the compiler pass read off the item this finding
