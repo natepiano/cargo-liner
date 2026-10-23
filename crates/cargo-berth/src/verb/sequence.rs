@@ -19,7 +19,6 @@ use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingEdge;
-use crate::edge::OrderingGraph;
 use crate::edge::OrderingReason;
 use crate::edge::PreparedOrderingEdge;
 use crate::ids::ReservationId;
@@ -86,8 +85,22 @@ pub(crate) fn execute(
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Sequence, &expected_configuration_path),
         Err(SequenceError::Rejected(SequenceRejection::Declaration(rejection))) => {
-            let kind = SequenceRejectionKind::from(rejection);
-            OutputEnvelope::sequence_rejected(sequence_request.first, sequence_request.then, kind)
+            match rejection {
+                EdgeDeclarationRejection::Cycle(cycle) => {
+                    let mut output = OutputEnvelope::sequence_rejected(
+                        sequence_request.first,
+                        sequence_request.then,
+                        SequenceRejectionKind::Cycle,
+                    );
+                    output.describe_ordering_cycle(&cycle);
+                    output
+                },
+                rejection => OutputEnvelope::sequence_rejected(
+                    sequence_request.first,
+                    sequence_request.then,
+                    SequenceRejectionKind::from(rejection),
+                ),
+            }
         },
         Err(SequenceError::Rejected(SequenceRejection::EdgeLimitReached(maximum))) => {
             OutputEnvelope::sequence_rejected(
@@ -181,7 +194,7 @@ fn execute_sequence(
                 };
                 return TransactionValidation::Reject(rejection);
             }
-            let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
+            let ordering_graph = match state.ordering_graph() {
                 Ok(ordering_graph) => ordering_graph,
                 Err(error) => {
                     return TransactionValidation::Reject(SequenceRejection::EdgeReplay(error));

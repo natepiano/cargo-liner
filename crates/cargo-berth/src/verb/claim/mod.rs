@@ -36,7 +36,10 @@ use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
+use crate::edge::CycleFreeOrderingOperation;
 use crate::edge::EdgeReplayError;
+use crate::edge::OrderingCycle;
+use crate::edge::OrderingDeclarationError;
 use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
@@ -359,6 +362,9 @@ fn claim_acquisition_output(
         Ok(Enrollment::Enrolled(ClaimExecution::ContradictsLiveOrdering(contradicted))) => {
             OutputEnvelope::claim_contradicts_live_ordering(contradicted)
         },
+        Ok(Enrollment::Enrolled(ClaimExecution::OrderingCycle(cycle))) => {
+            OutputEnvelope::ordering_cycle_refused(CommandVerb::Claim, &cycle)
+        },
         Ok(Enrollment::Enrolled(ClaimExecution::NothingToReplace(blockers))) => {
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
@@ -434,6 +440,7 @@ enum ClaimExecution {
     },
     AnsweredWithoutOverlap(Vec<ReservationId>),
     ContradictsLiveOrdering(Vec<ContradictedOrdering>),
+    OrderingCycle(OrderingCycle),
     NothingToReplace(Vec<ReservationId>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
@@ -1043,6 +1050,7 @@ fn record_refusal(
         | ClaimExecution::Claimed { .. }
         | ClaimExecution::Answered { .. }
         | ClaimExecution::AnsweredWithoutOverlap(_)
+        | ClaimExecution::OrderingCycle(_)
         | ClaimExecution::ContradictsLiveOrdering(_)
         | ClaimExecution::NothingToReplace(_)
         | ClaimExecution::ReservationLimitReached(_)
@@ -1525,6 +1533,7 @@ fn claim_rejection_execution(
         ClaimRejection::ContradictsLiveOrdering(contradicted) => {
             Ok(ClaimExecution::ContradictsLiveOrdering(contradicted))
         },
+        ClaimRejection::OrderingCycle(cycle) => Ok(ClaimExecution::OrderingCycle(cycle)),
         ClaimRejection::NothingToReplace(blockers) => {
             Ok(ClaimExecution::NothingToReplace(blockers))
         },
@@ -1613,7 +1622,7 @@ fn validate_claim_transaction(
             maximum_reservations,
         ));
     }
-    let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
+    let ordering_graph = match state.ordering_graph() {
         Ok(ordering_graph) => ordering_graph,
         Err(error) => {
             return TransactionValidation::Reject(ClaimRejection::EdgeReplay(error));
@@ -1629,7 +1638,7 @@ fn validate_claim_transaction(
             conflicts,
             prepared_claim,
             &OrderingContext {
-                ordering_graph: &ordering_graph,
+                ordering_graph,
                 reservations: &reservations,
                 answering_worktree,
                 reservation_selection: ClaimReservationSelection::NewReservation,
@@ -2611,6 +2620,17 @@ fn count_reaches_limit(count: usize, maximum: u32) -> bool {
     u64::try_from(count).map_or(true, |count| count >= u64::from(maximum))
 }
 
+/// Admit a complete claim declaration before converting it to the journal representation.
+fn checked_claim_operation(
+    state: &ReplayedLedgerState<'_>,
+    operation: JournalOperation,
+) -> Result<CycleFreeOrderingOperation, ClaimRejection> {
+    CycleFreeOrderingOperation::check(state, operation).map_err(|error| match error {
+        OrderingDeclarationError::Cycle(cycle) => ClaimRejection::OrderingCycle(cycle),
+        OrderingDeclarationError::Replay(error) => ClaimRejection::EdgeReplay(error),
+    })
+}
+
 impl PreparedClaim {
     /// Validate the claim before acquisition, then publish it after checking its generation.
     fn transact(
@@ -2622,7 +2642,20 @@ impl PreparedClaim {
         Ok(ledger.transact(
             requester.worktree_id,
             requester.coordination_run_id,
-            |state| validate_claim_transaction(&state, self.clone(), context.clone()),
+            |state| match validate_claim_transaction(&state, self.clone(), context.clone()) {
+                TransactionValidation::Append(operation) => {
+                    match checked_claim_operation(&state, *operation) {
+                        Ok(checked) => TransactionValidation::AppendChecked(Box::new(checked)),
+                        Err(rejection) => TransactionValidation::Reject(rejection),
+                    }
+                },
+                TransactionValidation::AppendChecked(operation) => {
+                    TransactionValidation::AppendChecked(operation)
+                },
+                TransactionValidation::Reject(rejection) => {
+                    TransactionValidation::Reject(rejection)
+                },
+            },
         )?)
     }
 
@@ -3044,6 +3077,7 @@ enum ClaimRejection {
     AnsweredWithoutOverlap(Vec<ReservationId>),
     /// A sequence answer without `--replace` points opposite to these live edges.
     ContradictsLiveOrdering(Vec<ContradictedOrdering>),
+    OrderingCycle(OrderingCycle),
     /// A `--replace` answer to these holders contradicted no live edge.
     NothingToReplace(Vec<ReservationId>),
     Replay(ReservationReplayError),

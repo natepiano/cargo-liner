@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::fmt::Formatter;
 
 use crate::ids::ReservationId;
 
@@ -60,4 +62,58 @@ pub(super) fn would_create_cycle(
         }
     }
     false
+}
+
+/// A closed traversal naming every reservation in one refused ordering cycle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OrderingCycle(Vec<ReservationId>);
+
+impl Display for OrderingCycle {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        for (index, reservation) in self.0.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(" -> ")?;
+            }
+            reservation.fmt(formatter)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reject a cyclic adjacency with a closed traversal, using an iterative depth-first search.
+pub(super) fn ensure_acyclic(
+    adjacency: &HashMap<ReservationId, Vec<ReservationId>>,
+) -> Result<(), OrderingCycle> {
+    let mut visited = HashSet::new();
+    let mut active = HashMap::new();
+    let mut path = Vec::new();
+    for root in adjacency.keys() {
+        if !visited.insert(*root) {
+            continue;
+        }
+        let mut pending = vec![(*root, 0)];
+        active.insert(*root, path.len());
+        path.push(*root);
+        while let Some((vertex, next)) = pending.last_mut() {
+            let successors = adjacency.get(vertex).map_or(&[][..], Vec::as_slice);
+            if let Some(successor) = successors.get(*next) {
+                *next += 1;
+                if let Some(start) = active.get(successor) {
+                    let mut cycle = path[*start..].to_vec();
+                    cycle.push(*successor);
+                    return Err(OrderingCycle(cycle));
+                }
+                if visited.insert(*successor) {
+                    active.insert(*successor, path.len());
+                    path.push(*successor);
+                    pending.push((*successor, 0));
+                }
+            } else {
+                active.remove(vertex);
+                path.pop();
+                pending.pop();
+            }
+        }
+    }
+    Ok(())
 }

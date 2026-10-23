@@ -42,6 +42,7 @@
   - Journal replay of existing ledgers is unchanged.
   - Invalid states are unrepresentable: fix with types, never procedural guards (user, 2026-10-15).
   - No test takes a second. Format with `cargo +nightly fmt` only. Run one `verify.sh` at a time.
+  - A new journal variant goes into a live ledger only with an installed binary that reads it (showrunner, 2026-10-23: a repair record written by an uninstalled build left the hana ledger unreadable to every installed reader).
   - `crates/cargo-berth/CHANGELOG.md` and `crates/cargo-berth/README.md` are shared by every phase, so the phases run in order.
 - **Constraints from prior phases (every remaining Work Order):**
   - `init` adds `/.claude/config/berth.toml` to the common git `info/exclude`, so the configuration is ignored in every worktree. A fixture that commits the configuration on purpose uses `git add --force`; a fixture standing for a repository initialized before that change removes the exclude entry.
@@ -699,3 +700,30 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Constraints from prior phases:** Phase 22's `gix` reads return typed results, and each unsupported form runs the Git subprocess through its own variant; keep the variants and their tests. Phase 23 keeps every fixture cache that outlives a test process under `target/tmp/cargo-berth-templates` (`fixture_cache_root`), with one build owner, `prepare_fixture_build`; `tests/temporary_directories.rs` stays green. Phase 20's stale-lock tests in `tests/ledger.rs` and phase 21's covered-branch tests in `tests/hooks.rs` stay authoritative: a faster fixture keeps what each test proves. Phase 22's retention reads stay fresh: `RetentionRefReader::required_writes` (`git/read.rs`) reads packed refs without the mtime cache, and `PreparedRetentionRefTransaction::commit` (`git/refs.rs`) reads the current refs again before it omits a satisfied write; a change that cuts reads keeps that observation point, and the regression tests for changed refs, packed refs replaced without an mtime change, satisfied writes and symbolic refs in `git/refs.rs` stay green. Phase 22's `TestProcessGroup` (`crates/cargo-berth-test-support/src/test_process_group.rs`) ends the whole process group on drop, drains both pipes while it waits and reaps the child; a cut in its shell starts keeps all three, and `dropping_a_paused_test_process_ends_its_entire_process_group` stays authoritative. Spec 7 converts only limits on product cost: a lock-wait or cleanup deadline that a test uses to prove correct behavior stays.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, names `lock_diagnostic` as its own origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence. Spec 7's counting test is shown to fail against a version that does the extra work per holder. Spec 8's evidence is recorded on the phase start commit `bf27c025` (checkpoint `566d8066` plus a merge of main that changed only comments and test imports in cargo-berth) before this phase's own edits: the complete six-path, 20-pair table with every after p95 under 100 ms, and the cold Mac timing compared with the 88.730 s and 114.970 s runs, with any slowdown at equal load fixed at its source.
+
+### Phase 25 — A claim cannot close an ordering cycle  · status: todo
+
+#### Work Order
+
+**Depends on:** none. Runs beside phase 24, which waits on the Mac.
+
+**Goal:** A claim whose ordering edges would close a cycle is refused before it writes anything, and a ledger that already holds such a cycle can be repaired. Every `--defer` combination the tool refuses is described the same way in the directing docs.
+
+**Spec:**
+1. Source: the showrunner, 2026-10-23, after hana's showrunner reported the hana ledger unreadable ("replayed ordering edges contain a cycle", exit 4) from about 02:20 AST. A widen of startup reservation `01a16729` at 02:17 AST (`--after 01a12f50 --before 01a1140e --before 01a115b8`) added the edge organon `01a12f50` → startup `01a16729`, which closed a cycle. The showrunner's order: (2) repair the ledger, (1) refuse a cycle-closing claim at claim time, (3) settle `--after` with `--defer`.
+2. **Repair (done, checkpoint `f78f6b49`, merged as `d9e0537a`).** `cargo-berth init --repair-ordering-cycle` appends a `retire_cyclic_ordering_edge` record for the earliest live edge that closes a cycle, after it proves the graph replays with that edge retired. Every reservation and every other edge stays; the board shows the retired edge's answer as Cancelled. The hana ledger was backed up, repaired on a scratch copy, then repaired live; it reads again.
+3. **Claim-time refusal.** A `claim` (new or widening) and a `sequence` whose edges, together with the live edges, would close a cycle are refused before any journal write. The refusal names the cycle (each reservation in order) and exits as a correctable input error; the ledger is byte-for-byte unchanged. Find why the widen path at 02:17 wrote the edge: `edge/cycle.rs` already has `would_create_cycle`, so the defect is a declaration path that does not reach it, or that checks each edge alone rather than the claim's whole edge set. Make the checked edge set a type that only a cycle-free check can construct, so no declaration path can journal an unchecked edge.
+4. **Test the 02:15 shape.** A test builds the three-holder shape (a reservation ordered after A and before B and C, where a live path already runs from the new reservation to A) and shows the claim is refused with the cycle named and the journal unchanged. A second test covers a single claim whose own edges close the cycle among themselves. Each test under 1 s.
+5. **`--after` with `--defer` (done in the docs).** The tool refuses `--defer` beside `--before`, `--after` or `--override` on purpose: a defer takes no paths and the others widen. `cli.rs` `defer_and_override_exclude_every_other_answer` pins it. `~/.claude/commands/unit/direct.md` BerthDecisions said they mix; it now states the exclusion and the two-step form. No tool change.
+
+**Files:**
+- `crates/cargo-berth/src/edge/` — the cycle check over the claim's whole edge set and the checked-edge type
+- `crates/cargo-berth/src/verb/`, `crates/cargo-berth/src/ledger/handle.rs` — the claim, widen and sequence declaration paths that journal edges
+- `crates/cargo-berth/src/output.rs` — the refusal message, inside the existing envelope
+- `crates/cargo-berth/tests/edges.rs` — the two refusal tests
+
+**Workers:** 1 writer, `impl`.
+
+**Constraints:** Journal replay of existing ledgers is unchanged. No new journal variant: a refusal writes nothing. The frozen output schema gains no field. A new journal variant goes into a live ledger only with an installed binary that reads it.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. Each refusal test is shown to fail on `d9e0537a` (the claim is accepted and the board then reads `ledger_unreadable`) and to pass after the change.
