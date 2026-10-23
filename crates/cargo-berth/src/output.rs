@@ -44,6 +44,7 @@ use crate::edge::EdgeHold;
 use crate::edge::EdgeOrderingTarget;
 use crate::edge::EdgeReadiness;
 use crate::edge::IntegrationHold;
+use crate::edge::OrderingCycle;
 use crate::edge::OrderingEdge;
 use crate::edge::UnintegratedPredecessorEvidence;
 use crate::exit::BerthExit;
@@ -1435,7 +1436,7 @@ impl From<EdgeDeclarationRejection> for SequenceRejectionKind {
             },
             EdgeDeclarationRejection::SameEndpoint => Self::SameEndpoint,
             EdgeDeclarationRejection::Duplicate => Self::Duplicate,
-            EdgeDeclarationRejection::Cycle => Self::Cycle,
+            EdgeDeclarationRejection::Cycle(_) => Self::Cycle,
             EdgeDeclarationRejection::TerminalEndpoint(reservation_id) => {
                 Self::TerminalEndpoint { reservation_id }
             },
@@ -2675,6 +2676,25 @@ impl OutputEnvelope {
                 readiness,
             })),
         }
+    }
+
+    /// Refuse a complete claim edge set using the existing ordering-cycle envelope.
+    pub(crate) fn ordering_cycle_refused(verb: CommandVerb, cycle: &OrderingCycle) -> Self {
+        let mut output = Self::invalid_input(verb, "ordering cycle");
+        output.status = OutputStatus::OrderingCycle;
+        output.exit_code = BerthExit::BlockedByOrdering;
+        output.describe_ordering_cycle(cycle);
+        output
+    }
+
+    /// Describe the closed traversal without extending the output schema.
+    pub(crate) fn describe_ordering_cycle(&mut self, cycle: &OrderingCycle) {
+        self.message =
+            format!("The requested ordering would create cycle {cycle}. No ordering was recorded.");
+        self.presentation = engine_result_presentation(
+            "cargo-berth did not record the requested ordering.",
+            &self.message,
+        );
     }
 
     /// Build a locked semantic rejection for a requested ordering edge.

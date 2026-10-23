@@ -1,5 +1,6 @@
 //! The shared-ledger handle and the validation-controlled transactions it drives.
 
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
@@ -56,6 +57,10 @@ use crate::config::BerthConfig;
 use crate::config::ConfigurationLookup;
 use crate::config::Enrollment;
 use crate::config::InitializationState;
+use crate::edge::CycleFreeOrderingOperation;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingDeclarationError;
+use crate::edge::OrderingGraph;
 use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
@@ -157,8 +162,10 @@ impl EditCheckLedgerSnapshot {
 }
 
 /// The replayed journal facts visible to a transaction's validation step.
+#[derive(Clone, Copy)]
 pub(crate) struct ReplayedLedgerState<'replay> {
     coordination_events: &'replay [JournalEvent],
+    ordering_graph:      &'replay OnceCell<Result<OrderingGraph, EdgeReplayError>>,
     reservations:        &'replay Result<RetainedReservationSet, ReservationReplayError>,
     generation:          ProjectionGeneration,
     journal_end_offset:  JournalByteOffset,
@@ -169,6 +176,14 @@ impl<'replay> ReplayedLedgerState<'replay> {
     ///
     /// See [`JournalOperation::is_coordination_record`].
     pub(crate) const fn coordination_events(&self) -> &[JournalEvent] { self.coordination_events }
+
+    /// Reuse the ordering graph for validation and admission against this exact replay.
+    pub(crate) fn ordering_graph(&self) -> Result<&OrderingGraph, EdgeReplayError> {
+        self.ordering_graph
+            .get_or_init(|| OrderingGraph::replay(self.coordination_events))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
 
     /// Borrow the reservation set folded from every replayed record.
     ///
@@ -188,10 +203,12 @@ impl<'replay> ReplayedLedgerState<'replay> {
     pub(crate) const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
 }
 
-/// The only two outcomes a transaction validator can authorize.
+/// A transaction either rejects its input or appends raw or already-admitted facts.
 pub(crate) enum TransactionValidation<Rejection> {
     /// Append this operation and publish the resulting projection.
     Append(Box<JournalOperation>),
+    /// Append the same operation admitted against this transaction's replay.
+    AppendChecked(Box<CycleFreeOrderingOperation>),
     /// Return the semantic rejection without changing durable state.
     Reject(Rejection),
 }
@@ -203,6 +220,13 @@ pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
         /// The journal operation that must commit first.
         operation: Box<JournalOperation>,
         /// The side effect authorized by the committed operation.
+        action:    CommittedAction,
+    },
+    /// Publish an operation already admitted against this transaction's replay.
+    AppendChecked {
+        /// The checked operation, retained through append without a second admission.
+        operation: Box<CycleFreeOrderingOperation>,
+        /// Work authorized only after the checked operation commits.
         action:    CommittedAction,
     },
     /// Commit prerequisite evidence and its dependent operation under the same mutation lock.
@@ -262,18 +286,113 @@ impl PreparedOperationSessionChange {
     }
 }
 
+/// An admitted operation and its session publication, bound to one preparation pass.
+struct CycleFreeSessionOperation {
+    operation:   CycleFreeOrderingOperation,
+    publication: PreparedSessionMappingPublication,
+}
+
+impl CycleFreeSessionOperation {
+    fn prepare(
+        ledger_directory: &Path,
+        run: CoordinationRunId,
+        operation: CycleFreeOrderingOperation,
+    ) -> Self {
+        let publication = PreparedSessionMappingPublication::prepare_sequence(
+            ledger_directory,
+            run,
+            std::slice::from_ref(operation.operation()),
+        )
+        .remove(0);
+        Self {
+            operation,
+            publication,
+        }
+    }
+
+    fn prepare_sequence(
+        state: &ReplayedLedgerState<'_>,
+        ledger_directory: &Path,
+        run: CoordinationRunId,
+        operations: Vec<JournalOperation>,
+    ) -> Result<Vec<Self>, LedgerTransactionError> {
+        let prepared = PreparedOperationSessionChange::prepare(ledger_directory, run, operations);
+        let (operations, publications): (Vec<_>, Vec<_>) = prepared
+            .into_iter()
+            .map(|prepared| (prepared.operation, prepared.publication))
+            .unzip();
+        let admitted = CycleFreeOrderingOperation::check_sequence(state, operations)
+            .map_err(ordering_declaration_transaction_error)?;
+        Ok(admitted
+            .into_iter()
+            .zip(publications)
+            .map(|(operation, publication)| Self {
+                operation,
+                publication,
+            })
+            .collect())
+    }
+}
+
 enum PreparedTransactionValidation<Rejection> {
-    Append(Box<PreparedOperationSessionChange>),
+    Append(Result<Box<CycleFreeSessionOperation>, LedgerTransactionError>),
     Reject(Rejection),
 }
 
 enum PreparedCommittedActionValidation<Rejection, Action> {
     Append {
-        operations: Vec<PreparedOperationSessionChange>,
+        operations: Result<Vec<CycleFreeSessionOperation>, LedgerTransactionError>,
         action:     Action,
     },
     AlreadySatisfied(Action),
     Reject(Rejection),
+}
+
+impl<Rejection, Action> PreparedCommittedActionValidation<Rejection, Action> {
+    fn prepare(
+        validation: CommittedActionValidation<Rejection, Action>,
+        state: &ReplayedLedgerState<'_>,
+        ledger_directory: &Path,
+        run: CoordinationRunId,
+    ) -> Self {
+        match validation {
+            CommittedActionValidation::AppendWithPrerequisites {
+                mut prerequisites,
+                operation,
+                action,
+            } => {
+                prerequisites.push(*operation);
+                Self::Append {
+                    operations: CycleFreeSessionOperation::prepare_sequence(
+                        state,
+                        ledger_directory,
+                        run,
+                        prerequisites,
+                    ),
+                    action,
+                }
+            },
+            CommittedActionValidation::Append { operation, action } => Self::Append {
+                operations: CycleFreeSessionOperation::prepare_sequence(
+                    state,
+                    ledger_directory,
+                    run,
+                    vec![*operation],
+                ),
+                action,
+            },
+            CommittedActionValidation::AppendChecked { operation, action } => Self::Append {
+                operations: Ok(vec![CycleFreeSessionOperation::prepare(
+                    ledger_directory,
+                    run,
+                    *operation,
+                )]),
+                action,
+            },
+            CommittedActionValidation::AlreadySatisfied(action) => Self::AlreadySatisfied(action),
+            CommittedActionValidation::Reject(rejection) => Self::Reject(rejection),
+        }
+    }
 }
 
 /// A reconciliation whose encoding and resulting replay precede lock acquisition.
@@ -337,7 +456,18 @@ impl PreparedReconciliationAppend {
     ) -> Result<Self, LedgerTransactionError> {
         let mut generation = replay.generation;
         let mut events = Vec::with_capacity(operations.len());
-        for operation in operations {
+        let ordering_graph = OnceCell::new();
+        let state = ReplayedLedgerState {
+            coordination_events: &replay.coordination_events,
+            ordering_graph:      &ordering_graph,
+            reservations:        &replay.reservations,
+            generation:          replay.generation,
+            journal_end_offset:  replay.end_offset,
+        };
+        let operations = CycleFreeOrderingOperation::check_sequence(&state, operations)
+            .map_err(ordering_declaration_transaction_error)?;
+        for checked in operations {
+            let operation = checked.into_operation();
             generation = next_projection_generation(generation)
                 .map_err(LedgerTransactionError::LedgerUnreadable)?;
             let operation_actor = match &operation {
@@ -644,39 +774,12 @@ impl Ledger {
     ) -> Result<LockedOutcome, LedgerCommittedActionError<CommittedActionError>> {
         let (transaction, validation) = self
             .prepare_mutation(MUTATING_VERB_CONTENTION_TOLERANCE, |state| {
-                match validate(state) {
-                    CommittedActionValidation::AppendWithPrerequisites {
-                        mut prerequisites,
-                        operation,
-                        action,
-                    } => {
-                        prerequisites.push(*operation);
-                        PreparedCommittedActionValidation::Append {
-                            operations: PreparedOperationSessionChange::prepare(
-                                &self.paths.directory,
-                                coordination_run_id,
-                                prerequisites,
-                            ),
-                            action,
-                        }
-                    },
-                    CommittedActionValidation::Append { operation, action } => {
-                        PreparedCommittedActionValidation::Append {
-                            operations: PreparedOperationSessionChange::prepare(
-                                &self.paths.directory,
-                                coordination_run_id,
-                                vec![*operation],
-                            ),
-                            action,
-                        }
-                    },
-                    CommittedActionValidation::AlreadySatisfied(action) => {
-                        PreparedCommittedActionValidation::AlreadySatisfied(action)
-                    },
-                    CommittedActionValidation::Reject(rejection) => {
-                        PreparedCommittedActionValidation::Reject(rejection)
-                    },
-                }
+                PreparedCommittedActionValidation::prepare(
+                    validate(state),
+                    &state,
+                    &self.paths.directory,
+                    coordination_run_id,
+                )
             })
             .map_err(LedgerTransactionError::from)
             .map_err(LedgerCommittedActionError::Transaction)?;
@@ -711,7 +814,7 @@ impl Ledger {
                     ));
                 },
             };
-            for operation in operations {
+            for operation in operations.map_err(LedgerCommittedActionError::Transaction)? {
                 let appended = transaction
                     .append(worktree_id, coordination_run_id, operation)
                     .map_err(LedgerCommittedActionError::Transaction)?;
@@ -802,6 +905,7 @@ impl Ledger {
                     PreparedReconciliationValidation::prepare(
                         validate(ReplayedLedgerState {
                             coordination_events: &replay.coordination_events,
+                            ordering_graph:      &OnceCell::new(),
                             reservations:        &replay.reservations,
                             generation:          replay.generation,
                             journal_end_offset:  replay.end_offset,
@@ -826,30 +930,23 @@ impl Ledger {
                     recoverable_operations,
                     action,
                 } => {
-                    let mut session_mapping_publication = transaction
+                    let batch_publication = transaction
                         .append_prepared_reconciliation(
                             *batch.map_err(LedgerCommittedActionError::Transaction)?,
                         )
                         .map_err(LedgerCommittedActionError::Transaction)?;
-                    let mut recoverable_failures = RecoverableReconciliationAppendFailures {
-                        operations: Vec::new(),
-                    };
-                    for operation in recoverable_operations {
-                        let retained_operation = operation.operation.clone();
-                        if let Ok(journal_append) =
-                            transaction.append(worktree_id, coordination_run_id, operation)
-                        {
-                            session_mapping_publication = session_mapping_publication
-                                .merge(journal_append.session_mapping_publication);
-                        } else {
-                            transaction
-                                .recover_after_recoverable_append_failure()
-                                .map_err(LedgerCommittedActionError::Transaction)?;
-                            recoverable_failures.operations.push(retained_operation);
-                        }
-                    }
+                    let (recoverable_publication, recoverable_failures) = transaction
+                        .append_recoverable_operations(
+                            worktree_id,
+                            coordination_run_id,
+                            recoverable_operations,
+                        )
+                        .map_err(LedgerCommittedActionError::Transaction)?;
+                    let session_mapping_publication =
+                        batch_publication.merge(recoverable_publication);
                     let committed_state = ReplayedLedgerState {
                         coordination_events: &transaction.replay.coordination_events,
+                        ordering_graph:      &OnceCell::new(),
                         reservations:        &transaction.replay.reservations,
                         generation:          transaction.replay.generation,
                         journal_end_offset:  transaction.replay.end_offset,
@@ -1061,15 +1158,23 @@ impl Ledger {
     ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError> {
         let (transaction, validation) = self
             .prepare_mutation(contention_tolerance, |state| match validate(state) {
-                TransactionValidation::Append(operation) => {
-                    PreparedTransactionValidation::Append(Box::new(
-                        PreparedOperationSessionChange::prepare(
+                TransactionValidation::Append(operation) => PreparedTransactionValidation::Append(
+                    CycleFreeSessionOperation::prepare_sequence(
+                        &state,
+                        &self.paths.directory,
+                        coordination_run_id,
+                        vec![*operation],
+                    )
+                    .map(|mut operations| Box::new(operations.remove(0))),
+                ),
+                TransactionValidation::AppendChecked(operation) => {
+                    PreparedTransactionValidation::Append(Ok(Box::new(
+                        CycleFreeSessionOperation::prepare(
                             &self.paths.directory,
                             coordination_run_id,
-                            vec![*operation],
-                        )
-                        .remove(0),
-                    ))
+                            *operation,
+                        ),
+                    )))
                 },
                 TransactionValidation::Reject(rejection) => {
                     PreparedTransactionValidation::Reject(rejection)
@@ -1079,7 +1184,7 @@ impl Ledger {
         self.conclude(transaction, |transaction| match validation {
             PreparedTransactionValidation::Append(operation) => {
                 let journal_append =
-                    transaction.append(worktree_id, coordination_run_id, *operation)?;
+                    transaction.append(worktree_id, coordination_run_id, *operation?)?;
                 transaction
                     .publish(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)?;
@@ -1131,6 +1236,7 @@ impl Ledger {
             concluded,
             ReplayedLedgerState {
                 coordination_events: &replay.coordination_events,
+                ordering_graph:      &OnceCell::new(),
                 reservations:        &replay.reservations,
                 generation:          replay.generation,
                 journal_end_offset:  replay.end_offset,
@@ -1155,6 +1261,7 @@ impl Ledger {
         self.prepare_mutation_from_replay(contention_tolerance, |replay, _| {
             validate(ReplayedLedgerState {
                 coordination_events: &replay.coordination_events,
+                ordering_graph:      &OnceCell::new(),
                 reservations:        &replay.reservations,
                 generation:          replay.generation,
                 journal_end_offset:  replay.end_offset,
@@ -1285,13 +1392,32 @@ impl LedgerTransaction {
         Ok(batch.session_mapping.publish(&self.ledger_directory))
     }
 
+    fn admit(
+        &self,
+        prepared: PreparedOperationSessionChange,
+    ) -> Result<CycleFreeSessionOperation, LedgerTransactionError> {
+        let state = ReplayedLedgerState {
+            coordination_events: &self.replay.coordination_events,
+            ordering_graph:      &OnceCell::new(),
+            reservations:        &self.replay.reservations,
+            generation:          self.replay.generation,
+            journal_end_offset:  self.replay.end_offset,
+        };
+        let operation = CycleFreeOrderingOperation::check(&state, prepared.operation)
+            .map_err(ordering_declaration_transaction_error)?;
+        Ok(CycleFreeSessionOperation {
+            operation,
+            publication: prepared.publication,
+        })
+    }
+
     fn append(
         &mut self,
         worktree_id: WorktreeId,
         coordination_run_id: CoordinationRunId,
-        prepared: PreparedOperationSessionChange,
+        prepared: CycleFreeSessionOperation,
     ) -> Result<JournalAppend, LedgerTransactionError> {
-        let PreparedOperationSessionChange {
+        let CycleFreeSessionOperation {
             operation,
             publication,
         } = prepared;
@@ -1304,7 +1430,7 @@ impl LedgerTransaction {
                 run:        coordination_run_id,
             },
             next_generation,
-            operation,
+            operation.into_operation(),
         );
         self.journal
             .append(&event)
@@ -1318,6 +1444,38 @@ impl LedgerTransaction {
             event,
             session_mapping_publication,
         })
+    }
+
+    /// Append marker imports individually, retaining failures for reconciliation's report.
+    fn append_recoverable_operations(
+        &mut self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        operations: Vec<PreparedOperationSessionChange>,
+    ) -> Result<
+        (
+            SessionIdentityMappingPublication,
+            RecoverableReconciliationAppendFailures,
+        ),
+        LedgerTransactionError,
+    > {
+        let mut publication = SessionIdentityMappingPublication::Published;
+        let mut failures = RecoverableReconciliationAppendFailures {
+            operations: Vec::new(),
+        };
+        for operation in operations {
+            let retained_operation = operation.operation.clone();
+            if let Ok(journal_append) = self
+                .admit(operation)
+                .and_then(|checked| self.append(worktree_id, coordination_run_id, checked))
+            {
+                publication = publication.merge(journal_append.session_mapping_publication);
+            } else {
+                self.recover_after_recoverable_append_failure()?;
+                failures.operations.push(retained_operation);
+            }
+        }
+        Ok((publication, failures))
     }
 
     fn recover_after_recoverable_append_failure(&mut self) -> Result<(), LedgerTransactionError> {
@@ -1336,6 +1494,18 @@ impl LedgerTransaction {
             .publish(&self.ledger_directory, &self.replay)?;
         Ok(())
     }
+}
+
+/// Declaration verbs return correctable cycle refusals before reaching this safety boundary.
+/// An unchecked internal proposal still cannot append edges that make replay unreadable.
+fn ordering_declaration_transaction_error(
+    error: OrderingDeclarationError,
+) -> LedgerTransactionError {
+    let replay_error = match error {
+        OrderingDeclarationError::Cycle(_) => EdgeReplayError::Cycle,
+        OrderingDeclarationError::Replay(error) => error,
+    };
+    LedgerTransactionError::LedgerUnreadable(LedgerError::OrderingReplay(replay_error))
 }
 
 /// Repository policy resolved before the mutation lock is acquired.
@@ -1514,6 +1684,33 @@ pub(super) fn next_projection_generation(
 }
 
 #[cfg(test)]
+impl Ledger {
+    /// Append historical facts an older cargo-berth accepted, without current declaration checks.
+    pub(crate) fn append_legacy_journal_operation(
+        &self,
+        actor: JournalActor,
+        operation: JournalOperation,
+    ) -> Result<(), LedgerTransactionError> {
+        let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)
+            .map_err(LedgerError::from)?;
+        let journal = Journal::open_existing(&self.paths.journal).map_err(LedgerError::from)?;
+        let replay = Journal::replay_read_only(&self.paths.journal).map_err(LedgerError::from)?;
+        identity::validate_journal_repository(actor.repository, &replay)?;
+        let event = JournalEvent::for_operation(
+            actor,
+            next_projection_generation(replay.generation)?,
+            operation,
+        );
+        journal
+            .append(&event)
+            .map_err(journal_append_transaction_error)?;
+        replay_checkpoint::remove(&self.paths.replay_checkpoint).map_err(LedgerError::from)?;
+        std::mem::drop(lock);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::panic,
@@ -1522,6 +1719,7 @@ pub(super) fn next_projection_generation(
 mod tests {
     use std::fs;
     use std::fs::TryLockError;
+    use std::path::Path;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::thread;
@@ -2118,6 +2316,188 @@ mod tests {
     }
 
     #[test]
+    fn ordering_admission_reuses_the_transaction_graph_without_rechecking_at_append()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path())?;
+        let ledger = Ledger::open(repository.path())?;
+        let holder = crate::ids::ReservationId::new();
+        ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+            TransactionValidation::<()>::Append(Box::new(ordering_claim(
+                repository.path(),
+                holder,
+                TestClaimOrdering::Unordered,
+            )))
+        })?;
+        let requester = crate::ids::ReservationId::new();
+        let operation = ordering_claim(
+            repository.path(),
+            requester,
+            TestClaimOrdering::After(holder),
+        );
+        let before = crate::edge::ordering_work();
+        let appended = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
+            state
+                .ordering_graph()
+                .expect("claim binding should read the graph");
+            let checked = crate::edge::CycleFreeOrderingOperation::check(&state, operation.clone())
+                .expect("ordered claim should be admitted");
+            TransactionValidation::<()>::AppendChecked(Box::new(checked))
+        })?;
+        assert!(matches!(
+            appended,
+            LedgerTransactionOutcome::Appended { .. }
+        ));
+        let after = crate::edge::ordering_work();
+        assert_eq!(after.graph_replays - before.graph_replays, 1);
+        assert_eq!(after.cycle_checks - before.cycle_checks, 1);
+
+        let successor = crate::ids::ReservationId::new();
+        let operation = ordering_claim(
+            repository.path(),
+            successor,
+            TestClaimOrdering::After(requester),
+        );
+        let before = crate::edge::ordering_work();
+        let appended = ledger.transact_with_committed_action(
+            WorktreeId::new(),
+            CoordinationRunId::new(),
+            |state| {
+                state
+                    .ordering_graph()
+                    .expect("named claim binding should read the graph");
+                let checked =
+                    crate::edge::CycleFreeOrderingOperation::check(&state, operation.clone())
+                        .expect("named ordering should be admitted");
+                CommittedActionValidation::<(), ()>::AppendChecked {
+                    operation: Box::new(checked),
+                    action:    (),
+                }
+            },
+            Ok::<_, std::io::Error>,
+        )?;
+        assert!(matches!(
+            appended,
+            LedgerCommittedActionOutcome::Appended { .. }
+        ));
+        let after = crate::edge::ordering_work();
+        assert_eq!(after.graph_replays - before.graph_replays, 1);
+        assert_eq!(after.cycle_checks - before.cycle_checks, 1);
+        let events = ledger.read_validated_journal()?.into_coordination_events();
+        assert_eq!(crate::edge::OrderingGraph::replay(&events)?.edge_count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn ordering_batches_extend_one_graph_and_refuse_the_first_cycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path())?;
+        let ledger = Ledger::open(repository.path())?;
+        let ids = [
+            crate::ids::ReservationId::new(),
+            crate::ids::ReservationId::new(),
+            crate::ids::ReservationId::new(),
+        ];
+        for id in ids {
+            ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                TransactionValidation::<()>::Append(Box::new(ordering_claim(
+                    repository.path(),
+                    id,
+                    TestClaimOrdering::Unordered,
+                )))
+            })?;
+        }
+        let operations = ids
+            .into_iter()
+            .zip(ids.into_iter().cycle().skip(1))
+            .map(|(predecessor, successor)| JournalOperation::Sequence {
+                predecessor,
+                successor,
+                edge_id: crate::ids::EdgeId::new(),
+                scopes: crate::ledger::ReservationScopeSet::try_from(vec![
+                    crate::ledger::ReservationScope {
+                        path: "shared.rs".parse().expect("scope path should parse"),
+                        kind: crate::ledger::ScopeKind::File,
+                    },
+                ])
+                .expect("shared scope should be nonempty"),
+                reason: "order shared work".parse().expect("reason should parse"),
+            })
+            .collect::<Vec<_>>();
+        let journal = fs::read(&ledger.paths.journal)?;
+        let before = crate::edge::ordering_work();
+        let result = ledger.transact_reconciliation(
+            WorktreeId::new(),
+            CoordinationRunId::new(),
+            |_| super::ReconciliationValidation::<(), ()>::Apply {
+                operations:             operations.clone(),
+                cover_actors:           std::collections::HashMap::new(),
+                recoverable_operations: vec![],
+                action:                 (),
+            },
+            |(), _, _| Ok::<_, std::io::Error>(()),
+        );
+        assert!(matches!(
+            result,
+            Err(super::LedgerCommittedActionError::Transaction(
+                LedgerTransactionError::LedgerUnreadable(LedgerError::OrderingReplay(
+                    crate::edge::EdgeReplayError::Cycle
+                ))
+            ))
+        ));
+        let after = crate::edge::ordering_work();
+        assert_eq!(after.graph_replays - before.graph_replays, 1);
+        assert_eq!(after.cycle_checks - before.cycle_checks, operations.len());
+        assert_eq!(fs::read(&ledger.paths.journal)?, journal);
+        ledger.transact_reconciliation(
+            WorktreeId::new(),
+            CoordinationRunId::new(),
+            |_| super::ReconciliationValidation::<(), ()>::Apply {
+                operations:             operations[..2].to_vec(),
+                cover_actors:           std::collections::HashMap::new(),
+                recoverable_operations: vec![],
+                action:                 (),
+            },
+            |(), _, _| Ok::<_, std::io::Error>(()),
+        )?;
+        let events = ledger.read_validated_journal()?.into_coordination_events();
+        assert_eq!(crate::edge::OrderingGraph::replay(&events)?.edge_count(), 2);
+        Ok(())
+    }
+
+    /// The relationship recorded by the cost-test claim fixture.
+    #[derive(Clone, Copy)]
+    enum TestClaimOrdering {
+        Unordered,
+        After(ReservationId),
+    }
+
+    fn ordering_claim(
+        root: &Path,
+        id: ReservationId,
+        ordering: TestClaimOrdering,
+    ) -> JournalOperation {
+        let authorization = match ordering {
+            TestClaimOrdering::Unordered => serde_json::json!({ "kind": "no_conflict" }),
+            TestClaimOrdering::After(holder) => serde_json::json!({
+                "kind": "sequence_per_holder", "reason": "order shared work", "replaced_orderings": [],
+                "overlaps": [{ "reservation_id": holder, "scope_revision": [{ "path": "shared.rs", "kind": "file" }], "scopes": [{ "path": "shared.rs", "kind": "file" }] }],
+                "holders": [{ "blocker": holder, "direction": "holder_before_requester", "edge_id": crate::ids::EdgeId::new() }],
+            }),
+        };
+        serde_json::from_value(serde_json::json!({
+            "op": "claim", "reservation_id": id, "scopes": [{ "path": "shared.rs", "kind": "file" }],
+            "source": { "kind": "explicit" }, "purpose": { "kind": "not_provided_by_caller" },
+            "trunk_at_claim": "1111111111111111111111111111111111111111",
+            "head_snapshot": { "kind": "branch", "full_ref": "refs/heads/lane", "head": "1111111111111111111111111111111111111111" },
+            "phase_start_head": "1111111111111111111111111111111111111111",
+            "worktree_root": root, "worktree_administrative_locator": "main",
+            "authorization": authorization, "coordination_identity_provenance": "not_presented",
+        })).expect("ordering claim fixture should decode")
+    }
+
+    #[test]
     fn validation_controls_whether_exactly_one_record_is_appended() {
         let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
@@ -2455,10 +2835,12 @@ mod tests {
             .append(
                 WorktreeId::new(),
                 CoordinationRunId::new(),
-                super::PreparedOperationSessionChange {
-                    operation:   renewal_operation(),
-                    publication: super::PreparedSessionMappingPublication::Unchanged,
-                },
+                unpublished_transaction
+                    .admit(super::PreparedOperationSessionChange {
+                        operation:   renewal_operation(),
+                        publication: super::PreparedSessionMappingPublication::Unchanged,
+                    })
+                    .expect("legacy renewal should be admitted"),
             )
             .expect("record should append before publication");
         std::mem::drop(unpublished_transaction);

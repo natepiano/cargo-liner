@@ -155,9 +155,9 @@ mod tests {
     use crate::ids::EdgeId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
+    use crate::ledger::JournalActor;
     use crate::ledger::JournalOperation;
     use crate::ledger::Ledger;
-    use crate::ledger::TransactionValidation;
     use crate::ledger::journal;
     use crate::ledger::test_support;
     use crate::reservation::RetainedReservationSet;
@@ -217,9 +217,14 @@ mod tests {
                 "worktree_root": repository.path(), "worktree_administrative_locator": "main",
                 "authorization": authorization, "coordination_identity_provenance": "not_presented",
             }))?;
-            ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-                TransactionValidation::<()>::Append(Box::new(claim.clone()))
-            })?;
+            ledger.append_legacy_journal_operation(
+                JournalActor {
+                    repository: ledger.repository_identity()?,
+                    worktree:   WorktreeId::new(),
+                    run:        CoordinationRunId::new(),
+                },
+                claim,
+            )?;
         }
         if matches!(declaration, CycleDeclaration::Widen) {
             let operation: JournalOperation = serde_json::from_value(serde_json::json!({
@@ -232,9 +237,14 @@ mod tests {
                     (ids[0], "requester_before_holder", edges[2]),
                 ]),
             }))?;
-            ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-                TransactionValidation::<()>::Append(Box::new(operation.clone()))
-            })?;
+            ledger.append_legacy_journal_operation(
+                JournalActor {
+                    repository: ledger.repository_identity()?,
+                    worktree:   WorktreeId::new(),
+                    run:        CoordinationRunId::new(),
+                },
+                operation,
+            )?;
         }
         Ok(CyclicLedger {
             repository,

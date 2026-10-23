@@ -836,27 +836,45 @@ mod tests {
             test_support::conflict_authorization(OverlapAnswerFixture::Sequence, &first)?,
         )?;
         let closing_edge = EdgeId::new();
-        let third = fixture.claim(
-            &actor,
-            "shared.rs",
-            ConflictAuthorization::SequencePerHolder {
-                overlaps: enrollment_overlaps([first.reservation_id, second.reservation_id])?,
-                holders:  vec![
-                    SequencedHolder {
-                        blocker:   second.reservation_id,
-                        direction: OrderingDirection::HolderBeforeRequester,
-                        edge_id:   EdgeId::new(),
-                    },
-                    SequencedHolder {
-                        blocker:   first.reservation_id,
-                        direction: OrderingDirection::RequesterBeforeHolder,
-                        edge_id:   closing_edge,
-                    },
-                ],
-                reason:   "pin a cycle for explicit repair".parse()?,
-                replaced: Vec::new(),
-            },
-        )?;
+        let ledger = Ledger::open(fixture.repository.path())?;
+        let second_claim = ledger
+            .read_validated_journal()?
+            .into_coordination_events()
+            .into_iter()
+            .find(|event| {
+                matches!(event.operation, JournalOperation::Claim { reservation_id, .. }
+                if reservation_id == second.reservation_id)
+            })
+            .ok_or("second claim must be recorded")?;
+        let third = ReservationId::new();
+        let mut legacy_claim = second_claim.operation;
+        let JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        } = &mut legacy_claim
+        else {
+            return Err("fixture must copy a claim".into());
+        };
+        *reservation_id = third;
+        **authorization = ConflictAuthorization::SequencePerHolder {
+            overlaps: enrollment_overlaps([first.reservation_id, second.reservation_id])?,
+            holders:  vec![
+                SequencedHolder {
+                    blocker:   second.reservation_id,
+                    direction: OrderingDirection::HolderBeforeRequester,
+                    edge_id:   EdgeId::new(),
+                },
+                SequencedHolder {
+                    blocker:   first.reservation_id,
+                    direction: OrderingDirection::RequesterBeforeHolder,
+                    edge_id:   closing_edge,
+                },
+            ],
+            reason:   "pin a cycle for explicit repair".parse()?,
+            replaced: Vec::new(),
+        };
+        ledger.append_legacy_journal_operation(second_claim.actor, legacy_claim)?;
         let before = fixture
             .model()
             .err()
@@ -873,11 +891,7 @@ mod tests {
         };
         assert_eq!(edge.edge_id, closing_edge);
         let model = fixture.model()?;
-        for id in [
-            first.reservation_id,
-            second.reservation_id,
-            third.reservation_id,
-        ] {
+        for id in [first.reservation_id, second.reservation_id, third] {
             let snapshot = test_support::board_reservation_snapshot(&model, id)?;
             let wire = serde_json::to_value(snapshot)?;
             assert_eq!(
@@ -893,7 +907,7 @@ mod tests {
             blocker,
             consequence: OrderingConsequence::Cancelled,
             ..
-        } if *reservation_id == third.reservation_id && *blocker == first.reservation_id));
+        } if *reservation_id == third && *blocker == first.reservation_id));
         Ok(())
     }
 
