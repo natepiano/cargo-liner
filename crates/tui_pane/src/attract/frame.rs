@@ -36,7 +36,7 @@ pub fn draw_attract_layers<A: AttractHost>(
     draw_panes: impl FnOnce(&mut Frame, &mut A, TileGridContents),
 ) {
     let area = frame.area();
-    // Asked for, the attract screen replaces the grid rather than
+    // Asked for, the `Attract` screen replaces the grid rather than
     // sharing the terminal with it: a strip of characters drawn across
     // a grid of borders and tables reads as neither one thing nor the
     // other. Left to come on by itself, it draws over whatever is
@@ -55,7 +55,7 @@ pub fn draw_attract_layers<A: AttractHost>(
         },
         AttractGrid::Off => (),
     });
-    // Over the grid rather than under it: the attract screen owns the
+    // `app.attract().render` draws over the grid: the attract screen owns the
     // whole terminal while nothing is running, and the app's status line
     // goes back on top of it after this.
     A::Probe::timed(FramePhase::Band, || {
