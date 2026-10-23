@@ -1324,7 +1324,8 @@ fn resolve_impl_signature_carrier(
         {
             continue;
         }
-        // Resolving a span's file is the widest test, so it is applied last:
+        // `resolve_impl_signature_carrier` applies `ModuleSourceMap::span_is_in_file`
+        // last because resolving a span's file is the widest test:
         // only a candidate already matching on module, name, and byte offset
         // reaches it.
         if !ctx
