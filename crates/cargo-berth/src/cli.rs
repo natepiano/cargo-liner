@@ -168,6 +168,8 @@ const RESERVATION_ARGUMENT: &str = "reservation";
 const RESERVATION_VALUE_NAME: &str = "RESERVATION_ID";
 const REPAIR_PROJECTION_ARGUMENT: &str = "repair-projection";
 const REPAIR_PROJECTION_ARGUMENT_ID: &str = "repair_projection";
+const REPAIR_ORDERING_CYCLE_ARGUMENT: &str = "repair-ordering-cycle";
+const REPAIR_ORDERING_CYCLE_ARGUMENT_ID: &str = "repair_ordering_cycle";
 const REINITIALIZE_AFTER_REVIEW_ARGUMENT: &str = "reinitialize-after-review";
 const REINITIALIZE_AFTER_REVIEW_ARGUMENT_ID: &str = "reinitialize_after_review";
 const RESOLVE_REASONED_DISPOSITION_GROUP: &str = "resolve-reasoned-disposition";
@@ -331,15 +333,16 @@ enum IdentityCommand {
     ArgGroup::new(INIT_OPERATION_GROUP)
         .args([
             REPAIR_PROJECTION_ARGUMENT_ID,
+            REPAIR_ORDERING_CYCLE_ARGUMENT_ID,
             COMPACT_JOURNAL_ARGUMENT_ID,
             REINITIALIZE_AFTER_REVIEW_ARGUMENT_ID,
         ])
         .multiple(false)
 ))]
 struct InitArguments {
-    /// Rebuild `reservations.json` from journal truth and delete the replay checkpoint.
-    #[arg(long = REPAIR_PROJECTION_ARGUMENT)]
-    repair_projection:         bool,
+    /// Explicit journal repairs, converted to one initialization request after parsing.
+    #[command(flatten)]
+    repairs:                   JournalRepairArguments,
     /// Remove the merge extent observations that later observations supersede from the journal;
     /// this also runs automatically once 16 MiB of them accumulate.
     #[arg(long = COMPACT_JOURNAL_ARGUMENT)]
@@ -350,6 +353,17 @@ struct InitArguments {
     /// The output representation requested for this command.
     #[command(flatten)]
     json_output:               JsonOutput,
+}
+
+/// The explicit, non-destructive repairs accepted by `init` at the command-line boundary.
+#[derive(Debug, Args)]
+struct JournalRepairArguments {
+    /// Rebuild `reservations.json` from journal truth and delete the replay checkpoint.
+    #[arg(long = REPAIR_PROJECTION_ARGUMENT)]
+    repair_projection:     bool,
+    /// Retire only the first live cycle-closing ordering edge, preserving every reservation.
+    #[arg(long = REPAIR_ORDERING_CYCLE_ARGUMENT)]
+    repair_ordering_cycle: bool,
 }
 
 /// Git's private hook lifecycle argument; update lines arrive on standard input.
@@ -1109,6 +1123,7 @@ impl CheckArguments {
 enum InitializationRequest {
     Initialize,
     RepairProjection,
+    RepairOrderingCycle,
     CompactJournal,
     ReinitializeAfterReview,
 }
@@ -1116,16 +1131,16 @@ enum InitializationRequest {
 impl InitArguments {
     const fn initialization_request(&self) -> InitializationRequest {
         match (
-            self.repair_projection,
+            self.repairs.repair_projection,
+            self.repairs.repair_ordering_cycle,
             self.compact_journal,
             self.reinitialize_after_review,
         ) {
-            (true, false, false) => InitializationRequest::RepairProjection,
-            (false, true, false) => InitializationRequest::CompactJournal,
-            (false, false, true) => InitializationRequest::ReinitializeAfterReview,
-            (false, false, false) | (true, true, _) | (true, _, true) | (_, true, true) => {
-                InitializationRequest::Initialize
-            },
+            (true, false, false, false) => InitializationRequest::RepairProjection,
+            (false, true, false, false) => InitializationRequest::RepairOrderingCycle,
+            (false, false, true, false) => InitializationRequest::CompactJournal,
+            (false, false, false, true) => InitializationRequest::ReinitializeAfterReview,
+            _ => InitializationRequest::Initialize,
         }
     }
 }
@@ -1724,6 +1739,9 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                             }
                         },
                         InitializationRequest::CompactJournal => compact_journal(&repository_root),
+                        InitializationRequest::RepairOrderingCycle => {
+                            repair_ordering_cycle(&repository_root)
+                        },
                         InitializationRequest::ReinitializeAfterReview => {
                             let worktree_context =
                                 match crate::ledger::WorktreeContext::discover(&repository_root) {
@@ -2334,6 +2352,23 @@ fn compact_journal(repository_root: &Path) -> OutputEnvelope {
             CommandVerb::Init,
             &format!("{error}; the journal is unchanged"),
         ),
+    }
+}
+
+/// Repair only a cycle-closing edge; preserve the transaction failure's public meaning.
+fn repair_ordering_cycle(repository_root: &Path) -> OutputEnvelope {
+    match Ledger::repair_ordering_cycle(repository_root) {
+        Ok(repair) => OutputEnvelope::ordering_cycle_repaired(repair),
+        Err(LedgerTransactionError::LedgerUnreadable(error)) => initialization_error(error),
+        Err(error @ LedgerTransactionError::LockContention) => {
+            OutputEnvelope::contention(CommandVerb::Init, &error.to_string())
+        },
+        Err(LedgerTransactionError::CorrectableInput(error)) => {
+            OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())
+        },
+        Err(error @ LedgerTransactionError::DerivedRecordTooLarge { .. }) => {
+            OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+        },
     }
 }
 

@@ -72,9 +72,12 @@ use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalCompaction;
+use crate::ledger::JournalOperation;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
+use crate::ledger::OrderingClaimOrigin;
+use crate::ledger::OrderingCycleRepair;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
@@ -1922,6 +1925,60 @@ impl OutputEnvelope {
                     journal:    ProjectionRepairJournalEffect::Unchanged,
                 },
             )),
+        }
+    }
+
+    /// Name the retired relationship and the claim that originally journalled it.
+    pub(crate) fn ordering_cycle_repaired(repair: OrderingCycleRepair) -> Self {
+        let message = match repair {
+            OrderingCycleRepair::AlreadyAcyclic => {
+                "Ordering edges are acyclic; the journal is unchanged.".to_owned()
+            },
+            OrderingCycleRepair::Retired {
+                edge,
+                declaration,
+                claim,
+                retirement_event_id,
+            } => {
+                let declaration_kind = match declaration.operation {
+                    JournalOperation::Claim { .. } => "claim",
+                    JournalOperation::Widen { .. } => "widen",
+                    JournalOperation::Answer { .. } => "answer",
+                    JournalOperation::Sequence { .. } => "sequence",
+                    JournalOperation::ResolveDefer { .. } => "defer resolution",
+                    _ => "ordering declaration",
+                };
+                let origin = match claim {
+                    OrderingClaimOrigin::Claim {
+                        reservation_id,
+                        event_id,
+                    } => {
+                        format!("reservation {reservation_id} (original claim record {event_id})")
+                    },
+                    OrderingClaimOrigin::Standalone => {
+                        "a standalone ordering declaration".to_owned()
+                    },
+                };
+                format!(
+                    "Retired cycle-closing edge {} ({} -> {}), added by {origin} in {declaration_kind} journal record {}; retirement record {retirement_event_id}. Every reservation and every other edge is preserved.",
+                    edge.edge_id,
+                    edge.predecessor,
+                    edge.successor,
+                    declaration.event_id(),
+                )
+            },
+        };
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
+            verb: CommandVerb::Init,
+            status: OutputStatus::Clear,
+            exit_code: BerthExit::Clear,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message,
+            presentation: EnvelopePresentation::NotProvided,
+            payload: OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
