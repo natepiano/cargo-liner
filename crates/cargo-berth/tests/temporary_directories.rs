@@ -266,3 +266,122 @@ fn process_group_members(group: u32) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+#[test]
+fn copied_git_seeds_keep_staged_changes_and_refs_private() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::path::Path;
+
+    use cargo_berth_test_support::copy_git_repository_seed;
+    use cargo_berth_test_support::fixture_git_command;
+
+    fn git(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let output = fixture_git_command()
+            .args(arguments)
+            .current_dir(root)
+            .output()?;
+        assert!(output.status.success(), "{output:?}");
+        Ok(output.stdout)
+    }
+    fn build(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        git(root, &["init", "--quiet", "--initial-branch=main"])?;
+        git(root, &["config", "user.name", "Seed Test"])?;
+        git(root, &["config", "user.email", "seed@example.invalid"])?;
+        fs::write(root.join("tracked.txt"), "initial\n")?;
+        git(root, &["add", "tracked.txt"])?;
+        git(root, &["commit", "--quiet", "-m", "initial"])?;
+        Ok(())
+    }
+    let first = copy_git_repository_seed("private-index-and-refs", build);
+    fs::write(first.path().join("tracked.txt"), "changed\n")?;
+    git(first.path(), &["add", "tracked.txt"])?;
+    git(first.path(), &["branch", "only-first"])?;
+    let second = copy_git_repository_seed("private-index-and-refs", build);
+    assert_eq!(
+        fs::read_to_string(second.path().join("tracked.txt"))?,
+        "initial\n"
+    );
+    assert_eq!(
+        git(first.path(), &["diff", "--cached", "--name-only"])?,
+        b"tracked.txt\n"
+    );
+    assert_eq!(
+        git(second.path(), &["diff", "--cached", "--name-only"])?,
+        [] as [u8; 0]
+    );
+    assert_eq!(
+        git(second.path(), &["branch", "--list", "only-first"])?,
+        [] as [u8; 0]
+    );
+    git(
+        second.path(),
+        &["commit", "--allow-empty", "--quiet", "-m", "only second"],
+    )?;
+    assert_ne!(
+        git(first.path(), &["rev-parse", "HEAD"])?,
+        git(second.path(), &["rev-parse", "HEAD"])?
+    );
+    Ok(())
+}
+
+#[test]
+fn collecting_test_process_output_drains_both_pipes_and_ends_descendants() {
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use cargo_berth_test_support::TestProcessGroup;
+
+    let directory = tempfile::tempdir().expect("output fixture should exist");
+    let payload = vec![b'x'; 1024 * 1024];
+    let payload_path = directory.path().join("payload");
+    fs::write(&payload_path, &payload).expect("pipe payload should write");
+    let mut process = TestProcessGroup::spawn(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "sleep 600 & cat \"$1\"; cat \"$1\" >&2",
+                "output-parent",
+            ])
+            .arg(&payload_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("output process group should start");
+    let group = process.child_mut().id();
+    let (finished, output) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = finished.send(process.wait_with_output());
+    });
+    let collected = output.recv_timeout(Duration::from_millis(500));
+    // This deadline also bounds a guard that waits for inherited pipe writers.
+    if collected.is_err() {
+        let _ = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "kill -KILL \"$1\"",
+                "output-deadline",
+                &format!("-{group}"),
+            ])
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let mut remaining = process_group_members(group);
+    while !remaining.is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+        remaining = process_group_members(group);
+    }
+    let captured = collected
+        .expect("normal output collection must not wait for a surviving descendant")
+        .expect("both output pipes should read");
+    assert!(captured.status.success());
+    assert_eq!(captured.stdout, payload);
+    assert_eq!(captured.stderr, payload);
+    assert_eq!(
+        remaining,
+        Vec::<String>::new(),
+        "all output writers must end"
+    );
+}

@@ -1363,8 +1363,40 @@ mod tests {
     impl StackedRewriteFixture {
         /// Build T->A->B and T->S1->S2->B' without moving either old branch.
         fn new() -> Result<Self, Box<dyn Error>> {
-            let directory = tempdir()?;
-            let root = directory.path();
+            let directory = cargo_berth_test_support::copy_git_repository_seed(
+                "stacked-rewrite-history",
+                Self::build_seed,
+            );
+            let [
+                base,
+                old_lower,
+                old_upper,
+                split_first,
+                new_lower,
+                new_upper,
+            ]: [String; 6] = serde_json::from_slice(&fs::read(
+                directory.path().join(".git/fixture-commit-ids.json"),
+            )?)?;
+            Ok(Self {
+                directory,
+                base: base.parse()?,
+                split_first: split_first.parse()?,
+                branches: [
+                    BranchRewrite {
+                        reference: "refs/heads/lower".parse()?,
+                        previous:  old_lower.parse()?,
+                        proposed:  new_lower.parse()?,
+                    },
+                    BranchRewrite {
+                        reference: "refs/heads/upper".parse()?,
+                        previous:  old_upper.parse()?,
+                        proposed:  new_upper.parse()?,
+                    },
+                ],
+            })
+        }
+
+        fn build_seed(root: &Path) -> Result<(), Box<dyn Error>> {
             git_output(root, &["init", "--quiet", "--initial-branch", "main"])?;
             git_output(root, &["config", "user.name", "Test User"])?;
             git_output(root, &["config", "user.email", "test@example.com"])?;
@@ -1385,23 +1417,18 @@ mod tests {
             ] {
                 git_output(root, &["update-ref", reference, tip])?;
             }
-            Ok(Self {
-                directory,
-                base: base.parse()?,
-                split_first: split_first.parse()?,
-                branches: [
-                    BranchRewrite {
-                        reference: "refs/heads/lower".parse()?,
-                        previous:  old_lower.parse()?,
-                        proposed:  new_lower.parse()?,
-                    },
-                    BranchRewrite {
-                        reference: "refs/heads/upper".parse()?,
-                        previous:  old_upper.parse()?,
-                        proposed:  new_upper.parse()?,
-                    },
-                ],
-            })
+            fs::write(
+                root.join(".git/fixture-commit-ids.json"),
+                serde_json::to_vec(&[
+                    base,
+                    old_lower,
+                    old_upper,
+                    split_first,
+                    new_lower,
+                    new_upper,
+                ])?,
+            )?;
+            Ok(())
         }
 
         /// Read the complete operation map, including the other branch's nomination.

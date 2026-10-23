@@ -485,6 +485,73 @@ impl IntegrationRepository {
         .expect("landing state should write");
     }
 
+    /// Prepare an active cover before a hook merges its dated contribution into main.
+    ///
+    /// # Panics
+    /// Panics when the claim, contribution, or private checkout copy fails.
+    pub fn build_covered_branch_hook(root: &Path, executable: &'static str) {
+        let repository = Self::new(executable);
+        let lane = repository.lane("cover-hook-lane", "integration");
+        assert_success(&repository.claim(
+            &lane,
+            "file:lane.txt",
+            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
+            None,
+        ));
+        // Observe the cover before the merge: a later board could settle it.
+        drop(repository.board());
+        let cover = repository.cover_claims()[0]["reservation_id"].clone();
+        fs::write(
+            repository.integration.join("integration.txt"),
+            "covered contribution\n",
+        )
+        .expect("covered contribution should write");
+        repository
+            .git_driver()
+            .run(&repository.integration, ["add", "integration.txt"]);
+        // Preserve the fixture's ordering without waiting for Git's timestamp resolution.
+        assert_success(&repository.git_driver().output_with_environment(
+            &repository.integration,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "covered contribution",
+            ],
+            "GIT_COMMITTER_DATE",
+            "2030-01-01T00:00:00Z",
+        ));
+        fs::write(
+            repository.integration.join("integration.txt"),
+            "ongoing covered work\n",
+        )
+        .expect("ongoing covered work should write");
+        let source = fs::canonicalize(repository.root()).expect("main root should resolve");
+        let linked_source = fs::canonicalize(repository.worktrees.path())
+            .expect("linked checkout source should resolve");
+        let destination = root.join(".git/fixture-worktrees");
+        let mut main = DirectorySnapshot::capture(repository.root());
+        let mut linked = DirectorySnapshot::capture(repository.worktrees.path());
+        for snapshot in [&mut main, &mut linked] {
+            drop(snapshot.replace_text(
+                &linked_source.to_string_lossy(),
+                &destination.to_string_lossy(),
+            ));
+            drop(snapshot.replace_text(&source.to_string_lossy(), &root.to_string_lossy()));
+        }
+        main.restore(root);
+        fs::create_dir_all(&destination).expect("linked checkout destination should exist");
+        linked.restore(&destination);
+        fs::write(
+            root.join(".git/covered-branch-hook.json"),
+            serde_json::to_vec(&serde_json::json!({"cover":cover}))
+                .expect("covered hook state should encode"),
+        )
+        .expect("covered hook state should write");
+    }
+
     /// Locate one of the lanes already present in a recorded pair.
     #[must_use]
     pub fn recorded_lane(&self, branch: &str) -> PathBuf { self.worktrees.path().join(branch) }
@@ -989,6 +1056,33 @@ fn prepare_fixture_build(builds: &Path, directories: &[&Path], build: impl FnOnc
         build();
         File::create(ready).expect("fixture completion should record");
     }
+}
+
+/// Copy a plain Git seed without repeating its setup commands in each test process.
+///
+/// The build owner publishes the immutable seed under the running binary's fixture
+/// cache. Each copy gets private working files, index and refs. Seeds with berth
+/// identities or journal records use `RepositoryTemplate` instead.
+///
+/// # Panics
+/// Panics when building, locking, reading or copying the seed fails.
+pub fn copy_git_repository_seed<E: std::fmt::Debug>(
+    name: &str,
+    build: impl FnOnce(&Path) -> Result<(), E>,
+) -> TempDir {
+    let binary = env::current_exe().expect("test executable should resolve");
+    let executable = binary.to_str().expect("test executable should be UTF-8");
+    let builds = fixture_build_directory(executable, "plain-git", name);
+    let source = builds.join(REPOSITORY_DIRECTORY_NAME);
+    prepare_fixture_build(&builds, &[&source], || {
+        build(&source).expect("plain Git seed should build");
+    });
+    let repository = tempdir().expect("seed destination should exist");
+    let destination = fs::canonicalize(repository.path()).expect("seed destination should resolve");
+    let mut snapshot = DirectorySnapshot::capture(&source);
+    drop(snapshot.replace_text(&source.to_string_lossy(), &destination.to_string_lossy()));
+    snapshot.restore(&destination);
+    repository
 }
 
 /// A main checkout and integration target whose hooked setup runs once per fixture.

@@ -42,6 +42,8 @@ mod recovery;
 mod reservation;
 mod scope;
 mod session;
+#[cfg(test)]
+mod test_work;
 mod verb;
 mod worktree;
 

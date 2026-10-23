@@ -26,6 +26,10 @@ mod loose_refs;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+#[path = "support/successor_templates.rs"]
+mod successor_templates;
 pub use edges_templates::COVER_LANDING;
 pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
 pub use edges_templates::CROSS_TARGET_PAIR;
@@ -50,6 +54,14 @@ pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
 pub use edges_templates::successor_history_state;
+#[path = "support/covered_branch_template.rs"]
+mod covered_branch_template;
+#[path = "support/ordered_target_pair_template.rs"]
+mod ordered_target_pair_template;
+#[path = "support/pending_rewrite_templates.rs"]
+mod pending_rewrite_templates;
+pub use pending_rewrite_templates::PENDING_ORDERED_REWRITE;
+pub use pending_rewrite_templates::TWO_PENDING_ORDERED_REWRITES;
 #[path = "support/gate_templates.rs"]
 mod gate_templates;
 pub use gate_templates::CrossTargetLandingWitnesses;
@@ -82,32 +94,7 @@ fn main() {
         require_template_progress(&receiver, &["stalled-fixture"], Duration::from_millis(25));
         return;
     }
-    let templates = [
-        edges_templates::RECORDED_PROJECTION,
-        edges_templates::MERGE_EXTENT_MAIN,
-        edges_templates::MERGE_EXTENT_PAIR,
-        edges_templates::INITIAL_INTEGRATION_PAIR,
-        edges_templates::EQUIVALENT_SUCCESSOR,
-        edges_templates::DIFFERENT_SUCCESSOR,
-        edges_templates::ONE_PREDECESSOR,
-        edges_templates::TWO_PREDECESSORS,
-        edges_templates::HISTORICAL_PROOF,
-        edges_templates::COVER_LANDING,
-        edges_templates::CROSS_TARGET_PAIR,
-        edges_templates::CROSS_TARGET_AFTER_PAIR,
-        edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP,
-        edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP,
-        edges_templates::LEFT_RIGHT_TREES,
-        gate_templates::ENROLLED_PAIR,
-        gate_templates::UNENROLLED_PAIR,
-        gate_templates::REVALIDATED_CROSS_TARGET_LANDING,
-        reanchoring_templates::TWO_REBASE_HISTORY,
-        reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT,
-        reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT,
-        reanchoring_templates::STACKED_UPPER_CHECKPOINT,
-        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION,
-        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING,
-    ];
+    let templates = recorded_populations();
     let directory = template_cache_directory();
     if env::args().any(|argument| argument == "--list") {
         fs::create_dir_all(&directory).expect("builder directory should exist");
@@ -179,6 +166,43 @@ fn main() {
         )
         .expect("template directory should publish");
     }
+}
+
+const fn recorded_populations() -> [LedgerTemplate; 32] {
+    [
+        edges_templates::RECORDED_PROJECTION,
+        edges_templates::MERGE_EXTENT_MAIN,
+        edges_templates::MERGE_EXTENT_PAIR,
+        edges_templates::INITIAL_INTEGRATION_PAIR,
+        edges_templates::EQUIVALENT_SUCCESSOR,
+        edges_templates::DIFFERENT_SUCCESSOR,
+        edges_templates::ONE_PREDECESSOR,
+        edges_templates::TWO_PREDECESSORS,
+        successor_templates::ONE_SUCCESSOR,
+        successor_templates::TWO_SUCCESSORS,
+        successor_templates::FOUR_SUCCESSORS,
+        edges_templates::HISTORICAL_PROOF,
+        edges_templates::COVER_LANDING,
+        edges_templates::CROSS_TARGET_PAIR,
+        edges_templates::CROSS_TARGET_AFTER_PAIR,
+        edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP,
+        edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP,
+        edges_templates::LEFT_RIGHT_TREES,
+        covered_branch_template::COVERED_BRANCH_HOOK,
+        ordered_target_pair_template::SEPARATE_TARGET_PAIR,
+        ordered_target_pair_template::MERGED_TARGET_PAIR,
+        PENDING_ORDERED_REWRITE,
+        TWO_PENDING_ORDERED_REWRITES,
+        gate_templates::ENROLLED_PAIR,
+        gate_templates::UNENROLLED_PAIR,
+        gate_templates::REVALIDATED_CROSS_TARGET_LANDING,
+        reanchoring_templates::TWO_REBASE_HISTORY,
+        reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT,
+        reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT,
+        reanchoring_templates::STACKED_UPPER_CHECKPOINT,
+        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION,
+        reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING,
+    ]
 }
 
 /// Bound stalled setup rather than leave nextest waiting on a stuck fixture child.
