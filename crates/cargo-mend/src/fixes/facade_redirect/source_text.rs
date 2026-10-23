@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn an_inline_format_argument_or_raw_identifier_names_the_word() {
-        // Split so the test's own literal holds no format argument.
+        // Split `format_call` so the test's own literal holds no format argument.
         let format_call = ["fn f() -> String { format!(\"{", "Name:?}\") }\n"].concat();
         assert!(word_occurs_outside(&format_call, iter::empty(), "Name"));
         assert!(word_occurs_outside(
