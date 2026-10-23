@@ -883,6 +883,141 @@ enum ObservedPredecessorLiveness {
     Unknown,
 }
 
+/// Three independent holders whose scopes can be answered by one claim.
+struct CycleClaimFixture {
+    repository: TempDir,
+    worktrees:  Vec<TempDir>,
+    holders:    [String; 3],
+}
+
+fn cycle_claim_fixture() -> CycleClaimFixture {
+    let repository = initialized_repository();
+    let mut worktrees = Vec::new();
+    let mut holders = Vec::new();
+    for (name, run) in [("a", SECOND_RUN), ("b", THIRD_RUN), ("c", FOURTH_RUN)] {
+        let (directory, root) = foreign_worktree(&repository, name);
+        let path = format!("src/{name}.rs");
+        dirty_source(&root, &path);
+        let output = claim(&root, &format!("file:{path}"), run);
+        assert_success(&output);
+        holders.push(reservation_id(&output));
+        worktrees.push(directory);
+    }
+    CycleClaimFixture {
+        repository,
+        worktrees,
+        holders: holders.try_into().expect("three holders should be built"),
+    }
+}
+
+#[test]
+fn widening_claim_refuses_an_indirect_cycle_without_changing_the_journal() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    let subject = claim(root, "file:tests/base.rs", FIRST_RUN);
+    assert_success(&subject);
+    let subject = reservation_id(&subject);
+    assert_success(&sequence(root, &subject, b, "subject before B"));
+    assert_success(&sequence(root, b, a, "B before A"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "--reservation",
+            &subject,
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--after",
+            a,
+            "--before",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "order all three holders",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, &subject, b]);
+    drop(fixture.worktrees);
+}
+
+#[test]
+fn one_claim_checks_its_new_edges_together_before_appending() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    assert_success(&sequence(root, a, b, "A before B"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--before",
+            a,
+            "--after",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "check this answer as one set",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, b]);
+    drop(fixture.worktrees);
+}
+
+fn assert_cycle_claim_refused(root: &Path, output: &Output, before: &[u8], cycle: &[&str]) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "cycle-closing claim should be refused: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope = json(output);
+    assert_eq!(envelope["status"], "ordering_cycle");
+    assert_eq!(envelope["exit_code"], 2);
+    let message = envelope["message"]
+        .as_str()
+        .expect("refusal should explain the cycle");
+    let traversal = message
+        .strip_prefix("The requested ordering would create cycle ")
+        .and_then(|message| message.strip_suffix(". No ordering was recorded."))
+        .expect("refusal should name a complete cycle")
+        .split(" -> ")
+        .collect::<Vec<_>>();
+    assert_eq!(traversal.len(), 4, "three reservations close this cycle");
+    assert_eq!(traversal.first(), traversal.last(), "cycle must close");
+    let ring = &traversal[..traversal.len() - 1];
+    let start = ring
+        .iter()
+        .position(|reservation| *reservation == cycle[0])
+        .expect("cycle should contain its first expected reservation");
+    for (offset, reservation) in cycle.iter().enumerate() {
+        assert_eq!(
+            ring[(start + offset) % ring.len()],
+            *reservation,
+            "cycle reservations must follow directed edges: {message}"
+        );
+    }
+    assert_eq!(
+        fs::read(root.join(JOURNAL_PATH)).expect("journal should read"),
+        before
+    );
+    assert_success(&run_berth(root, &["board", "--json"]));
+}
+
 #[test]
 fn claim_time_directions_keep_the_embedded_edge_and_claim_event_id() {
     assert_claim_time_direction("--after", "holder_before_requester");

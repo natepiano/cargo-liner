@@ -20,6 +20,7 @@ use super::ReservationAcquisition;
 use super::ReservationAcquisitionKind;
 use super::bind_answer_authorizations;
 use super::bind_claim_authorization;
+use super::checked_claim_operation;
 use super::claim_rejection_execution;
 use super::default_answer_request;
 use super::locked_claim_reservations;
@@ -33,7 +34,7 @@ use crate::answer::OverlapAuthorizationRequest;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::edge::OrderingGraph;
+use crate::edge::CycleFreeOrderingOperation;
 use crate::git;
 use crate::ids::ReservationId;
 use crate::ledger;
@@ -240,7 +241,7 @@ fn validate(
     } else {
         let (operation, kind, scopes) = mutation(selected, scopes, additions, authorization);
         NamedClaimMutation::Append {
-            operation: Box::new(operation),
+            operation: Box::new(checked_claim_operation(state, operation)?),
             kind,
             scopes,
         }
@@ -265,7 +266,7 @@ fn validate(
         already_held,
     };
     Ok(match mutation {
-        NamedClaimMutation::Append { operation, .. } => CommittedActionValidation::Append {
+        NamedClaimMutation::Append { operation, .. } => CommittedActionValidation::AppendChecked {
             operation,
             action: acquisition,
         },
@@ -279,7 +280,7 @@ fn validate(
 enum NamedClaimMutation {
     /// A new scope or overlap answer requires one journal record.
     Append {
-        operation: Box<JournalOperation>,
+        operation: Box<CycleFreeOrderingOperation>,
         kind:      ReservationAcquisitionKind,
         scopes:    ReservationScopeSet,
     },
@@ -504,13 +505,12 @@ fn authorization(
     };
     match &context.answer_policy {
         ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Permissive(request)) => {
-            let graph = OrderingGraph::replay(state.coordination_events())
-                .map_err(ClaimRejection::EdgeReplay)?;
+            let graph = state.ordering_graph().map_err(ClaimRejection::EdgeReplay)?;
             bind_claim_authorization(
                 (**request).clone(),
                 conflicts,
                 &OrderingContext {
-                    ordering_graph: &graph,
+                    ordering_graph: graph,
                     reservations,
                     answering_worktree,
                     reservation_selection: ClaimReservationSelection::Existing(id),
