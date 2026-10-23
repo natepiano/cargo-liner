@@ -593,8 +593,9 @@ fn matching_export_name_indexed<'name>(
     module_path: &[String],
     exported_names: &ExportNameIndex<'name>,
 ) -> Option<&'name str> {
-    // Rejecting here keeps path resolution off every path that cannot name an
-    // export, the overwhelming majority on a whole-crate sweep.
+    // `matching_export_name_indexed` uses `ExportNameIndex::could_match_final_segment`
+    // to reject paths before resolution because they cannot name an export,
+    // the overwhelming majority on a whole-crate sweep.
     if !exported_names.could_match_final_segment(raw) {
         return None;
     }

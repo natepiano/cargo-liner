@@ -80,7 +80,8 @@ fn check_field(
     let Some(field_visibility_text) = source::visibility_text(ctx.tcx, field.vis_span)? else {
         return Ok(());
     };
-    // A field with no `pub` annotation is private; nothing to narrow.
+    // `check_field` skips an empty `field_visibility_text`: a field with no `pub`
+    // annotation is private, so there is nothing to narrow.
     if field_visibility_text.is_empty() {
         return Ok(());
     }
@@ -109,8 +110,9 @@ fn check_field(
     let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
         return Ok(());
     };
-    // Only fire on truly-dead cases: the containing type has no `pub`
-    // annotation at all (private to its parent module). The conventional
+    // `check_field` reports only when `type_visibility_annotation_text` is empty:
+    // the containing type has no `pub` annotation at all (private to its parent
+    // module). The conventional
     // pattern of `pub` fields on a `pub(crate)` or `pub(super)` struct is
     // idiomatic Rust shorthand for "as wide as the type allows" — flagging
     // it would push users toward a non-idiomatic style. We only flag when
@@ -126,8 +128,9 @@ fn check_field(
     if !field_declared.is_strictly_wider(type_declared, ctx.tcx) {
         return Ok(());
     }
-    // Re-export refinement: if the type is reachable through a `pub use`, the
-    // field annotation matches the type's effective visibility and should not
+    // `effective_type_visibility` accounts for `pub use` re-exports: if the type
+    // is reachable through one, the field annotation matches the type's effective
+    // visibility and should not
     // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
     if type_effective.is_at_least(field_declared, ctx.tcx) {
