@@ -40,8 +40,8 @@ edition = "2024"
 
 #[test]
 fn pub_field_on_private_struct_is_flagged() {
-    // No `pub` on the struct → no convention defends `pub` on its fields.
-    // The `pub` annotation grants nothing because the type itself is private.
+    // `Hidden` has no `pub`, so no convention defends `pub` on `Hidden::leaked`.
+    // That field annotation grants nothing because `Hidden` itself is private.
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -77,7 +77,7 @@ edition = "2024"
 
 #[test]
 fn pub_crate_field_on_private_struct_is_tightened_to_private() {
-    // `pub(crate)` on a field of a private struct is also dead — the type
+    // `pub(crate)` on `Hidden::leaked` is also dead: the private `Hidden`
     // caps the field at private regardless.
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
@@ -120,9 +120,9 @@ edition = "2024"
 
 #[test]
 fn pub_field_on_pub_crate_struct_is_not_flagged() {
-    // Conventional Rust shorthand: `pub` on fields of a `pub(crate)` struct
-    // is the dominant idiom. Do NOT flag — the cap is implicit and readers
-    // understand it.
+    // `GhRun::id` and `GhRun::name` use conventional Rust shorthand: `pub` on
+    // fields of a `pub(crate)` struct is the dominant idiom. Do not flag them:
+    // the visibility cap is implicit and readers understand it.
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -156,7 +156,8 @@ edition = "2024"
 
 #[test]
 fn pub_field_on_pub_super_struct_is_not_flagged() {
-    // Same convention applies to `pub(super)` structs.
+    // `Local::data` uses the same convention: `pub` on a `pub(super)` struct's
+    // field leaves the struct's visibility cap implicit.
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
@@ -191,7 +192,8 @@ edition = "2024"
 
 #[test]
 fn opaque_handle_pattern_is_not_flagged() {
-    // Field visibility narrower than type — intentional, never flagged.
+    // `GqlCheckRun::name` and `GqlCheckRun::status` intentionally have narrower
+    // visibility than `GqlCheckRun`, so they must never be flagged.
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
 
