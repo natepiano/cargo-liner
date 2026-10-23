@@ -25,10 +25,10 @@ pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedFi
     for (path, mut file_fixes) in by_file {
         let mut text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        // Apply later edits first so earlier offsets remain valid. When two
-        // fixes share a start offset (a replacement at [N..M] and an insertion
-        // at [N..N]), apply the wider replacement first so [N..M] still
-        // targets the original bytes.
+        // `apply_fixes` sorts `file_fixes` by descending `(start, end)` to apply later edits first
+        // so earlier offsets remain valid. When two fixes share a start offset (a
+        // replacement at [N..M] and an insertion at [N..N]), apply the wider replacement
+        // first so [N..M] still targets the original bytes.
         file_fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
         for tagged in file_fixes {
             let fix = &tagged.fix;

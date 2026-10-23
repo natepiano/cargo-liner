@@ -225,8 +225,9 @@ impl Visit<'_> for CallerRewriter<'_> {
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
-        // A leading `::` anchors the path at an extern crate, never at a
-        // module of the crate under analysis.
+        // `CallerRewriter::visit_item_use` skips `node.leading_colon` because a leading `::`
+        // anchors the path at an extern crate, never at a module of the crate under
+        // analysis.
         if node.leading_colon.is_some() {
             return;
         }
@@ -253,14 +254,15 @@ impl Visit<'_> for CallerRewriter<'_> {
                 .collect::<Vec<_>>();
             self.rewrite_path_prefix(&idents);
         }
-        // Keep walking: a match replaces only the leading segments, so a facade
-        // name nested in the generic arguments (`Vec<super::Widget>`) is still
-        // ahead of the cursor.
+        // `CallerRewriter::visit_path` keeps walking after `rewrite_path_prefix`: a match replaces
+        // only the leading segments, so a facade name nested in the generic arguments
+        // (`Vec<super::Widget>`) is still ahead of the cursor.
         visit::visit_path(self, node);
     }
 
     fn visit_item_macro(&mut self, node: &ItemMacro) {
-        // A `macro_rules!` body is a pattern language, not caller code.
+        // `CallerRewriter::visit_item_macro` skips `macro_rules!` bodies because they are a pattern
+        // language, not caller code.
         if !node.mac.path.is_ident("macro_rules") {
             visit::visit_item_macro(self, node);
         }
@@ -605,8 +607,9 @@ impl<'a> CallerRewriter<'a> {
                 .map(|target| (length, target))
         });
         let anchored = found.and_then(|(_, target)| self.anchored_path(&segments[0], target));
-        // A module import is only ever a path's first segment of several; a
-        // path still written through it keeps it used.
+        // `record_owner_import_path` tracks module imports only for paths with several segments: a
+        // module import is only ever their first segment; a path still written through it
+        // keeps it used.
         if segments.len() > 1 {
             self.record_owner_import_path(&segments, found.is_some() && anchored.is_none());
         }
