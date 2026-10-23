@@ -1496,12 +1496,14 @@ fn write_macro_consumed_facade_fixture(temp: &TempDir) {
     }
 }
 
+// `a_facade_a_proc_macro_reaches_is_not_reported_as_internal` checks the
+// `Widget` and `LocalOnly` facades from `write_macro_consumed_facade_fixture`.
 // The facade scan reads source text, so a path a proc macro in another crate
 // emits is invisible to it: `crate::tool::Widget` lives only inside
-// `macros_fixture`'s generated token stream. Both facades below are imported
-// relatively from inside `crate::tool`, which is what makes them candidates —
-// only the HIR use sites, collected after macro expansion, separate the one
-// that also serves `crate::consumer` from the one that does not.
+// `macros_fixture`'s generated token stream. Both facades are imported
+// relatively from inside `crate::tool`, which makes them candidates; only
+// HIR use sites collected after expansion distinguish `Widget`, which also
+// serves `crate::consumer`, from `LocalOnly`, which does not.
 #[test]
 fn a_facade_a_proc_macro_reaches_is_not_reported_as_internal() {
     let temp = tempdir().expect("create macro consumed facade fixture dir");
@@ -1541,9 +1543,10 @@ fn facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The fix facts are recorded before the cross-target caller analysis runs,
-    // so both facades have one. Only the finding that survived that analysis may
-    // reach the fixer — deleting the `Widget` re-export would leave the
+    // `facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place` exercises fix
+    // facts recorded before cross-target caller analysis, so both `Widget` and
+    // `LocalOnly` facades have one. Only the finding that survives that analysis
+    // may reach the fixer: deleting the `Widget` re-export would leave the
     // macro-generated `crate::tool::Widget` unresolved.
     let parent = fs::read_to_string(temp.path().join("app/src/tool/mod.rs"))
         .expect("read fixed parent module");
