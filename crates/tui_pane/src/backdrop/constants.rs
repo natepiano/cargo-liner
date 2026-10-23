@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-// attract band
+// `BAND_BEHIND_FADE` and the constants after it configure the attract band.
 /// How far the colour behind the strip's character is carried toward
 /// the ground it is drawn on, against the character itself standing at
 /// the desktop's own colour.
@@ -126,7 +126,7 @@ pub(super) const PIXEL_PRECISION: u32 = 256;
 /// The whole of something, as a percentage.
 pub(super) const WHOLE_PERCENT: u32 = 100;
 
-// attract pixels
+// `DEFAULT_BLOCK_COLUMNS` and the constants after it configure attract pixels.
 /// How many columns one block covers at its coarsest, before anything
 /// has coarsened or sharpened it.
 ///
@@ -212,7 +212,7 @@ pub(super) const PIXEL_STEP_LEVELS: u32 = 4;
 /// is for until the wave has crossed a third of it.
 pub(super) const PIXEL_WAVE_START_PERCENT: u32 = 35;
 
-// attract text
+// `DEFAULT_TEXT_SPEED` and the constants after it configure attract text.
 /// How far a line of the drifting text travels each second, in cells,
 /// before anything has sped it up or slowed it down.
 ///
@@ -367,7 +367,7 @@ pub(super) const TEXT_WAVE_SUBLINES_PER_SECOND: u32 = LANE_FRACTION_UNIT / 2;
 /// the one part of this that cannot be done in whole percentage points.
 pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 
-// capture
+// `CAPTURE_ATTEMPT_DEADLINE` and the constants after it configure capture.
 /// How long a capture worker may hold one attempt without returning a result.
 ///
 /// Healthy attempts complete well under a second. Five seconds leaves substantial room for a
@@ -499,7 +499,7 @@ pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(super) const SAMPLES_PER_CELL: u32 = 4;
 
-// glyphs
+// `GLYPHS` defines the glyph palette.
 /// The characters a cell draws from.
 ///
 /// Punctuation and line-drawing rather than letters: the strip should
@@ -509,7 +509,7 @@ pub(super) const GLYPHS: &[char] = &[
     ';', '"', '\'', '`', '(', ')', '[', ']', '{', '}',
 ];
 
-// bars
+// `BARS_ACROSS` and the constants after it define the bars.
 /// The bar a cell of the drifting field draws, from the narrowest
 /// sliver to the whole of the cell, filling across it.
 ///
@@ -529,7 +529,7 @@ pub(super) const BARS_UP: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', 
 /// read on. One is the narrowest sliver and this is the whole cell.
 pub(super) const BAR_LEVELS: u32 = 8;
 
-// shades
+// `SHADES` defines the shading glyphs.
 /// The characters [`PixelFill::Shades`](super::PixelFill::Shades) draws
 /// a cell with, from the sparsest to the whole of it.
 ///
@@ -540,7 +540,7 @@ pub(super) const BAR_LEVELS: u32 = 8;
 /// reads as a screen printed from it rather than as the screen itself.
 pub(super) const SHADES: &[char] = &['░', '▒', '▓', '█'];
 
-// time
+// `MICROS_PER_SECOND` and the constants after it define time conversions.
 /// Microseconds in one second.
 ///
 /// The strip's travel is worked out at this resolution rather than in
@@ -551,7 +551,7 @@ pub(super) const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Milliseconds in one second.
 pub(super) const MILLIS_PER_SECOND: u32 = 1000;
 
-// xorshift
+// `XORSHIFT_FALLBACK_SEED` and the constants after it configure xorshift64.
 /// Seed the generator falls back to when the clock offers nothing to
 /// vary it by. Any non-zero value will do -- xorshift64 stays at zero
 /// forever if it ever reaches it.

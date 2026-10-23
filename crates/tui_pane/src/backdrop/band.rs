@@ -345,8 +345,8 @@ impl Default for TravelingBand {
             columns:        0,
             rows:           0,
             direction:      BandDirection::default(),
-            // Deeper than any grid, so the first draw clamps it to
-            // whatever the window turns out to be: the strip starts
+            // `width` starts at `MAX_BAND_WIDTH`, deeper than any grid,
+            // so the first draw clamps it to the window: the strip starts
             // standing across the whole of it.
             width:          MAX_BAND_WIDTH,
             cell_pixels:    (0, 0),
@@ -438,8 +438,8 @@ impl TravelingBand {
             .saturating_add(u32::try_from(travel).unwrap_or(u32::MAX));
 
         // The strip wraps rather than running clear of the grid and
-        // starting over: the position is measured modulo the lines
-        // there are, so the tail is still leaving the far edge while
+        // starting over: `leading_edge` is measured modulo `span`,
+        // so the tail is still leaving the far edge while
         // the leading edge is back at the near one. A strip that
         // finished each pass would leave the screen empty for as long
         // as it took to cross it again, which on a wide grid at a slow
@@ -490,10 +490,9 @@ impl TravelingBand {
         ) {
             return;
         }
-        // A turn from one axis to the other is a turn between two
-        // rulers. The depth is carried across it rather than the count
-        // of cells, so a strip a ruler measures at an inch across the
-        // screen is still an inch after it turns.
+        // `turned_depth` carries `width` between axes as physical depth
+        // rather than a count of cells, so a strip measured at an inch
+        // across the screen is still an inch after it turns.
         let turning =
             self.sideways() != matches!(direction, BandDirection::Left | BandDirection::Right);
         if turning {
@@ -502,8 +501,8 @@ impl TravelingBand {
         self.direction = direction;
         self.leading_edge = 0;
         self.rolled_through = 0;
-        // The ceiling is the grid's extent along the axis travelled,
-        // and that is a different number after the turn.
+        // `set_width` uses the grid's extent along the axis travelled as
+        // the ceiling, and that is a different number after the turn.
         self.set_width(self.width);
     }
 
@@ -524,14 +523,14 @@ impl TravelingBand {
         if across == 0 || down == 0 {
             return self.width;
         }
-        // Leaving the sideways axis the strip is counted in columns and
-        // arrives counted in rows, and the other way round coming back.
+        // `sideways` selects `across` then `down` when turning columns
+        // into rows, and the other way round coming back.
         let (from, to) = if self.sideways() {
             (across, down)
         } else {
             (down, across)
         };
-        // Rounded rather than truncated, so a turn and a turn back land
+        // `turned_depth` rounds rather than truncates, so a turn and a turn back land
         // on the depth they started at rather than a cell shallower
         // every time round.
         self.width
@@ -714,17 +713,17 @@ impl TravelingBand {
         let offset = self.offset_of(column, row);
         let head = self.head_at(offset);
         let tail = self.tail_at(offset);
-        // What the strip actually stands on at this offset, once both
-        // of its edges have been asked where they are.
+        // `depth` is what the strip stands on at this offset, once both
+        // `head` and `tail` have been asked where its edges are.
         let depth = tail.saturating_sub(head);
-        // A strip standing as deep as the grid has lines is the whole
-        // ring: its tail has met its own leading edge, and there is no
+        // When `depth >= span`, the strip covers the whole ring:
+        // its tail has met its own leading edge, and there is no
         // line left anywhere for either edge to be part way across.
         if depth >= span {
             return Some(u8::MAX);
         }
         let line = self.line_of(column, row);
-        // Both the cell and the strip are runs on the same ring -- the
+        // `ring_overlap` treats the cell and strip as runs on the same ring -- the
         // cell one line long ending at `near`, the strip `tail` long
         // ending at the leading edge -- so a cell near the wrap can have
         // one end of it inside the strip's head and the other inside
@@ -733,7 +732,7 @@ impl TravelingBand {
         let leading = (self.leading_edge + self.phase_at(offset)) % span;
         let near = (leading + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
         let start = (near + span - SUBCELLS_PER_CELL) % span;
-        // Turning the ring back by `head` puts this offset's own
+        // `shifted` turns the ring back by `head`, putting this offset's
         // leading edge at zero, so a strip that starts somewhere behind
         // the travel is read by the same overlap as one that starts at
         // it.
@@ -935,7 +934,7 @@ impl TravelingBand {
         self.leading_edge = 0;
         self.rolled_through = 0;
         self.read_cell_pixels();
-        // The grid is the ceiling on how deep the strip stands, so a
+        // `set_width` uses the grid as the ceiling on `width`, so a
         // grid that has just become smaller than the strip lowers it.
         self.set_width(self.width);
         let cells = usize::from(area.width) * usize::from(area.height);
@@ -944,7 +943,7 @@ impl TravelingBand {
             glyphs.push(random::random_glyph(&mut self.xorshift));
         }
         self.glyphs = glyphs;
-        // Long enough for the longer of the two axes, so turning the
+        // `offsets` sizes `tails`, `heads`, and `phases` for the longer axis, so turning the
         // strip round needs no second draw: the offsets it runs over
         // are the rows one way and the columns the other.
         let offsets = usize::from(area.width.max(area.height));
@@ -1075,9 +1074,9 @@ mod tests {
     /// tail and the edge itself is inside the area.
     fn entered(direction: BandDirection) -> TravelingBand {
         let mut band = TravelingBand::new();
-        // Where the strip stops is what these ask about, and a fraying
-        // edge is a second thing moving it. The tests that want the
-        // fraying ask for it.
+        // `entered` sets `band.fraying` to `BandFraying::Neither`: these tests ask where
+        // the strip stops, and a fraying edge is a second thing moving it.
+        // The tests that want fraying ask for it.
         band.fraying = BandFraying::Neither;
         band.narrow(u32::MAX);
         band.widen(NARROW - MIN_BAND_WIDTH);
@@ -1186,7 +1185,7 @@ mod tests {
     #[test]
     fn the_tail_is_still_leaving_the_far_edge_as_the_leading_edge_comes_back() {
         let mut band = entered(BandDirection::Right);
-        // Two cells into a fresh pass, with most of the tail still to
+        // `band.leading_edge` is two cells into a fresh pass, with most of the tail still to
         // come off the other end.
         band.leading_edge = 2 * SUBCELLS_PER_CELL;
 
@@ -1208,7 +1207,7 @@ mod tests {
         band.advance(AREA, Duration::ZERO);
         let span = u32::from(AREA.width) * SUBCELLS_PER_CELL;
 
-        // Long enough for several passes, so the wrap is exercised
+        // 600 `band.advance` calls run for several passes, so the wrap is exercised
         // rather than merely reached.
         for _ in 0..600 {
             band.advance(AREA, Duration::from_millis(16));
@@ -1369,7 +1368,7 @@ mod tests {
         let backdrop = Backdrop::flat(AREA, color);
         let lit_at = |past: u32| {
             let mut band = entered(BandDirection::Right);
-            // Carry the strip `past` subcells beyond the point where its
+            // `band.leading_edge` carries the strip `past` subcells beyond the point where its
             // tail sits exactly on the far edge of the first column, so
             // that column is the one being left.
             band.leading_edge = band.width * SUBCELLS_PER_CELL + past;
@@ -1416,7 +1415,7 @@ mod tests {
             full * VARIABLE_TAIL_FLOOR_PERCENT / WHOLE_PERCENT
         );
         assert_eq!(band.tail_at(1), full);
-        // Travelling sideways the depth varies down the rows, so the
+        // Travelling sideways, `band.tails` varies the depth down the rows, so the
         // shallow row has given the tail cell up while the full-depth
         // row under it still holds that same cell.
         assert!(!band.covers(0, 0));
@@ -1462,7 +1461,7 @@ mod tests {
         let hold = TravelingBand::new().tail_hold();
         let mut run = EdgeRun::at(u8::MAX);
 
-        // The first frame has nothing to stand out, so it draws.
+        // `run.holding` is zero on the first frame, so `run.advance` draws a target.
         run.advance(frame, travel, hold, 0);
         assert_eq!(run.target, 0);
         assert_eq!(
@@ -1471,7 +1470,7 @@ mod tests {
             "the draw is where to go, not where to be"
         );
 
-        // And it walks there, one frame's travel at a time.
+        // `run.advance` walks `run.depth` toward `run.target`, one frame's `travel` at a time.
         run.advance(frame, travel, hold, u8::MAX);
         assert_eq!(run.depth, u8::MAX - travel);
         let frames_to_arrive = u32::from(u8::MAX).div_ceil(u32::from(travel));
@@ -1481,7 +1480,7 @@ mod tests {
         assert_eq!(run.depth, 0, "it should have arrived by now");
         assert_eq!(run.holding, hold.saturating_sub(frame));
 
-        // Arrived, it stands. A draw offered mid-stand is not taken.
+        // Arrived, `run` stands; `run.advance` ignores a draw offered mid-stand.
         run.advance(frame, travel, hold, u8::MAX);
         assert_eq!(run.target, 0, "the stand is not over yet");
         while !run.holding.is_zero() {
@@ -1543,11 +1542,11 @@ mod tests {
         let inside = u16::try_from(across.width).unwrap_or(u16::MAX) - 1;
         let outside = inside + 2;
 
-        // One column of the sideways strip covers every row it crosses,
-        // and the column past its leading edge covers none of them.
+        // `across.covers` includes every row in the column at `inside`,
+        // and excludes every row in the column at `outside`, past its leading edge.
         assert!(across.covers(inside, 0) && across.covers(inside, 9));
         assert!(!across.covers(outside, 0) && !across.covers(outside, 9));
-        // And one row of the vertical strip covers every column.
+        // `down.covers` includes every column in the vertical strip's row at `inside`.
         assert!(down.covers(0, inside) && down.covers(79, inside));
         assert!(!down.covers(0, outside) && !down.covers(79, outside));
     }
@@ -1672,7 +1671,7 @@ mod tests {
         band.fraying = BandFraying::Leading;
         band.heads = vec![EdgeRun::at(0); usize::from(AREA.height)];
         band.heads[0].depth = u8::MAX;
-        // Every offset back on the one start, so what the two rows
+        // `band.phases.fill(0)` puts every offset back on the one start, so what the two rows
         // below differ by is the fraying this test is about and not
         // the stagger.
         band.phases.fill(0);
@@ -1756,8 +1755,8 @@ mod tests {
         band.tails = vec![EdgeRun::at(0); usize::from(AREA.height)];
         band.heads = vec![EdgeRun::at(u8::MAX); usize::from(AREA.height)];
 
-        // Both -> Leading puts the trailing edge away, and the step
-        // after that puts the leading one away too.
+        // `band.cycle_fraying` takes `BandFraying::Both` to `BandFraying::Leading`,
+        // putting `band.tails` away; the next step puts `band.heads` away too.
         band.cycle_fraying();
         assert_eq!(band.tails[0].depth, u8::MAX, "the tail is flat again");
         band.cycle_fraying();
