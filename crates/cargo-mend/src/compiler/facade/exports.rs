@@ -434,7 +434,8 @@ mod tests {
 
     #[test]
     fn mixed_pub_uses_keep_matching_export_names_separate() {
-        // Parent file has both `pub(crate) use` and `pub use` lines pointing at
+        // `mixed_pub_uses_keep_matching_export_names_separate` parses a parent file
+        // with both `pub(crate) use` and `pub use` lines pointing at
         // different children. The matching names must come from the line that
         // re-exports the queried item, not whichever `use` appears first.
         let source = "\
@@ -452,8 +453,9 @@ pub use second_child::Beta;
 
     #[test]
     fn duplicate_re_exports_keep_all_export_names() {
-        // Same item re-exported twice. HIR-derived `ReexportIndex` owns
-        // resolved visibility; this parser helper only exposes written names.
+        // `duplicate_re_exports_keep_all_export_names` re-exports the same item twice.
+        // HIR-derived `ReexportIndex` owns resolved visibility;
+        // `exported_names_from_parent_boundary` only exposes written names.
         let source = "\
 pub(crate) use child::Thing;
 pub use child::Thing;
