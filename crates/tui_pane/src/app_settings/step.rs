@@ -126,7 +126,8 @@ pub fn step_framework_setting<C: AppConfig>(
         FrameworkSetting::InitialRows => config.initial_rows_mut().step(step),
         FrameworkSetting::TileFill => config.tile_fill_mut().step(step),
         FrameworkSetting::TileView => config.tile_view_mut().step(step),
-        // Two values, so a step either way lands on the other one.
+        // `FrameworkSetting::WidenSummary` and `FrameworkSetting::Transparent` have two values, so
+        // either step selects the other.
         FrameworkSetting::WidenSummary => {
             let widen = config.widen_summary_mut();
             *widen = !*widen;
@@ -226,8 +227,8 @@ mod tests {
     }
 
     fn install_test_state() {
-        // Nextest gives each test its own process, so this process-wide state
-        // belongs only to the caller.
+        // Nextest gives each test its own process, so the `ThemeState` installed by
+        // `install_theme_state` belongs only to the caller.
         install_theme_state(ThemeState::with_registry(
             ThemeRegistry::new_with_builtins(vec![
                 variant("App Dark", Appearance::Dark),

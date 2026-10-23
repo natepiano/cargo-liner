@@ -4,7 +4,8 @@
 
 use super::tile_fill::TileFill;
 
-// file names
+// `CONFIG_FILENAME`, `KEYMAP_FILENAME`, and `THEMES_DIRNAME` name configuration files and
+// directories.
 /// App configuration file, read at startup and written back by
 /// [`super::LoadedConfig`].
 pub(super) const CONFIG_FILENAME: &str = "config.toml";
@@ -14,11 +15,11 @@ pub(super) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// [`crate::ThemeRegistry::from_dir_with_builtins`].
 pub(super) const THEMES_DIRNAME: &str = "themes";
 
-// appearance
+// `DEFAULT_APPEARANCE_MODE` supplies the common appearance default.
 /// The `appearance.mode` default: follow the terminal's own appearance.
 pub(super) const DEFAULT_APPEARANCE_MODE: &str = "auto";
 
-// tiles
+// `DEFAULT_INITIAL_ROWS`, `MAX_INITIAL_ROWS`, and `TILE_FILLS` configure tile steppers.
 /// `tiles.initial_rows` default: rows the grid grows to in a single
 /// column before it starts arranging itself into a square.
 pub(super) const DEFAULT_INITIAL_ROWS: usize = 4;
