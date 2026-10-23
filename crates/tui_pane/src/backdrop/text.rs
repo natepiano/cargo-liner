@@ -159,19 +159,17 @@ impl TextLine {
             .saturating_mul(u64::from(SUBCELLS_PER_CELL))
             .saturating_mul(elapsed_micros)
             / MICROS_PER_SECOND;
-        // A frame long enough to carry the line a whole lap has already
-        // dealt every cell on it afresh, and one carrying it further
-        // would only deal them again. Stopping the travel there is what
-        // keeps the loop below bounded by the line's own length.
+        // `travel` is capped at `lap`: a frame carrying the line a whole lap has
+        // already dealt every cell in `draws` afresh; further travel would deal
+        // them again. The cap bounds the loop by the line's own length.
         let lap = length.saturating_mul(SUBCELLS_PER_CELL);
         let travel = u32::try_from(travel).unwrap_or(u32::MAX).min(lap);
         let crossed = self.fraction.saturating_add(travel);
         self.fraction = crossed % SUBCELLS_PER_CELL;
         for _ in 0..(crossed / SUBCELLS_PER_CELL) {
             self.drifted = (self.drifted + 1) % length;
-            // The cell the line enters by is index zero turned back by
-            // however far it has drifted, which is where the number
-            // that just left the far end has come round to.
+            // `entering` is index zero in `draws` turned back by `drifted`,
+            // where the number that just left the far end has come round to.
             let entering = usize::try_from((length - self.drifted) % length).unwrap_or(0);
             let drawn = xorshift.byte();
             if let Some(slot) = self.draws.get_mut(entering) {
@@ -395,9 +393,8 @@ impl DriftingText {
         let ripple = &self.ripple;
         let xorshift = &mut self.xorshift;
         for (index, line) in self.lines.iter_mut().enumerate() {
-            // Where this line stands among the lanes now, which is its
-            // own place plus however far they have travelled since the
-            // field was dealt.
+            // `at` is this line's place among `lanes` plus `waved`, the distance
+            // they have travelled since the field was dealt.
             let at = u32::try_from(index)
                 .unwrap_or(u32::MAX)
                 .saturating_mul(LANE_FRACTION_UNIT)
@@ -447,11 +444,10 @@ impl DriftingText {
                     line.fraction = 0;
                 }
             },
-            // Sending the lines apart with the spread drawn shut is a
-            // key that answers by doing nothing, so this opens it far
-            // enough to be read. Only ever upward: a reader who has
-            // already sent the speeds further apart than the default
-            // is not asking to be brought back to it.
+            // `TextDrift::Apart` with `spread` drawn shut would make the key
+            // answer by doing nothing, so `set_spread` opens it far enough to
+            // be read. Only upward: a reader who has already sent the speeds
+            // further apart than `DEFAULT_TEXT_SPREAD` is not asking to return.
             TextDrift::Apart => self.set_spread(self.spread.max(DEFAULT_TEXT_SPREAD)),
         }
     }
@@ -483,8 +479,8 @@ impl DriftingText {
             .collect();
         self.direction = direction;
         self.rebuild();
-        // rebuild leaves every line un-drifted, so a cell's own number
-        // belongs at the index it sits at along its new line.
+        // `rebuild` resets `TextLine::drifted`, so a cell's own number belongs
+        // at `along(column, row)` in its new line's `draws`.
         for (column, row, drawn) in carried {
             let line = usize::from(self.line_of(column, row));
             let at = usize::from(self.along(column, row));
@@ -636,9 +632,9 @@ impl DriftingText {
         let here = u32::from(self.draw_at(column, row, 0)?);
         let next = u32::from(self.draw_at(column, row, 1)?);
         let mixed = (here * (SUBCELLS_PER_CELL - fraction) + next * fraction) / SUBCELLS_PER_CELL;
-        // A byte spread over the levels, from one so that no cell is
-        // ever left blank: this is the animation whose subject is the
-        // desktop, and an empty cell is a piece of it missing.
+        // `level` spreads the byte `mixed` over `BAR_LEVELS`, starting at one
+        // so no cell is blank: the subject is the desktop, and an empty cell
+        // is a piece of it missing.
         let level = mixed * BAR_LEVELS / (u32::from(u8::MAX) + 1) + 1;
         u8::try_from(level).ok()
     }
@@ -714,8 +710,8 @@ impl DriftingText {
             .map(LanePoint::toward_the_ends)
             .collect();
         self.ripple = draw_points(count, TEXT_RIPPLE_LINES, &mut self.xorshift);
-        // The lanes are a fresh hand, so how far the old one had
-        // travelled says nothing about this one.
+        // `lanes` has been redrawn, so the old lanes' travel distance in
+        // `waved` says nothing about the new lanes.
         self.waved = 0;
         let xorshift = &mut self.xorshift;
         self.lines = (0..count)
@@ -889,9 +885,9 @@ fn speed_at(points: &[LanePoint], at: u32, count: u32) -> u8 {
     if total == 0 || dealt == 0 {
         return first.speed;
     }
-    // The lanes hold uneven shares of the field, so where a line stands
-    // among them is measured against the extents they were dealt rather
-    // than against equal slices of the whole.
+    // `LanePoint::extent` gives lanes uneven field shares, so `along` scales
+    // `at` against their combined extent `dealt`, rather than equal slices
+    // of the whole field `total`.
     let along = (u64::from(at) % total).saturating_mul(dealt) / total;
     let (between, before) = span_at(points, along);
     let held = points.get(between).copied().unwrap_or(first);
@@ -1164,8 +1160,8 @@ mod tests {
         let mut text = locked(BandDirection::Right);
         let before = row_levels(&text, 0..AREA.width);
 
-        // Half a cell at the field's own speed, so no line has crossed
-        // a boundary and the whole-cell reading is untouched.
+        // `text.advance` travels half a cell at `DEFAULT_TEXT_SPEED`, so no line
+        // crosses a boundary and the whole-cell `drifted` reading stays unchanged.
         text.advance(
             AREA,
             Duration::from_micros(MICROS_PER_SECOND / u64::from(DEFAULT_TEXT_SPEED) / 2),
@@ -1267,9 +1263,9 @@ mod tests {
 
         text.set_direction(BandDirection::Down);
 
-        // Read back by reference: the numbers have to be off the field
-        // before the turn, and a lazy read would answer with what the
-        // cells hold after it.
+        // Read `before` by reference: its numbers must be collected before
+        // `text.set_direction`; a lazy read would return the cells' draws
+        // after the turn.
         for (row, drawn) in before.iter().enumerate() {
             for (column, number) in drawn.iter().enumerate() {
                 let column = u16::try_from(column).expect("the area is narrow");
@@ -1694,9 +1690,9 @@ mod tests {
     fn the_lanes_are_dealt_further_apart_than_they_were_drawn() {
         let middle = u8::MAX / 2;
 
-        // Halfway to the end and back again, which one pass of the curve
-        // does not manage: it leaves a draw of 64 at 40, and 40 against
-        // 64 is a difference the numbers can see and the eye cannot.
+        // `toward_the_ends` moves halfway to the end and back again. One
+        // `smoothstep` pass leaves a draw of 64 at 40; the numbers can see
+        // the difference between 40 and 64, but the eye cannot.
         assert!(toward_the_ends(64) < 32, "a slow lane is sent slower");
         assert!(toward_the_ends(192) > 224, "a fast lane is sent faster");
         assert!(

@@ -224,18 +224,15 @@ impl Desktop {
             self.cell.0 * f64::from(columns),
             self.cell.1 * f64::from(rows),
         );
-        // The frame is the window; the grid is the text area inside it,
-        // short by whatever the emulator draws around it. Left and right
-        // are even, so half of what the width leaves over is the padding
-        // on one side.
+        // `frame` bounds the window; `text_area` bounds the grid inside it,
+        // short by the emulator's decorations. Left and right are even,
+        // so `padding` is half the width left over on one side.
         //
-        // The height is measured up from the bottom rather than shared
-        // out evenly. A title bar, a tab bar, a status bar -- everything
-        // an emulator stacks around its grid sits above it, and every
-        // one of them can be switched on and off while this is running.
-        // Under the grid there is only padding, so the bottom edge is
-        // the one that holds still; anchor to it and the top may be
-        // whatever it likes.
+        // `top` is measured from `frame`'s bottom instead of sharing height
+        // evenly. Title, tab and status bars all sit above the grid, and
+        // each may be switched on and off while this runs. Below the grid
+        // there is only `padding`, so the bottom edge holds still; anchoring
+        // to it lets the top decorations change freely.
         let padding = (frame.size.0 - text_area.0) / 2.0;
         let left = frame.origin.0 - self.origin.0 + padding;
         let top = frame.origin.1 - self.origin.1 + (frame.size.1 - text_area.1 - padding).max(0.0);
