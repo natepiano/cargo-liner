@@ -667,39 +667,34 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Ruled out:** cleanup of a killed test; a cleanup sweep or deletion of the existing leaked `/tmp` directories.
 
-### Phase 24 — Every cargo-berth test runs under a second on the Mac  · status: todo
+### Phase 24 — Every cargo-berth test runs under a second on the Mac  · status: done
 
-#### Work Order
+#### As-built
 
-**Depends on:** phase 22 (its `gix` reads remove the product Git starts this phase measures beside) and phase 23 (the build-owned fixture caches).
+- Immutable shared Git seeds, configured board and ledger bases, and recorded successor (1, 2 and 4), pending-rewrite, covered-branch and ordered-target-pair histories are built once under `target/tmp/cargo-berth-templates` through `prepare_fixture_build` (`crates/cargo-berth-test-support/src/integration_repository.rs`, `tests/support/*_template*.rs`). Each test gets a private copy. Each builder still makes the real claims, defers, sequences, commits, rebases and hooks.
+- Five product-cost tests count work instead of time, through the test-only counters in `src/test_work.rs`: scope keys, pairwise comparisons, incursion reservation scans and ancestry-parent reads. A mutant that does extra work per holder fails them (947,900 keys against a bound of 1,500). Lock-wait, cleanup and readiness deadlines stay.
+- Hang fix: `gix::open_opts` runs its installation-config probe as a piped Git child. On macOS a concurrent persistent `cat-file` child could inherit that probe's pipe writer and wait forever. `git/read.rs` now opens inside `git/command.rs` `with_spawn_lock`, the same lock as every piped Git spawn. `installation_probe_seals_its_pipes_before_another_git_child_starts` fails on the old tree.
+- `TestProcessGroup` drops a duplicate cleanup shell. It keeps the whole-group kill, the drain of both pipes and the bounded reap.
+- The process-start pin went from 46,393 to 38,741 starts, from a complete Mac capture with no unresolved product start. `lock_diagnostic` (macOS `lsof` on a lock refusal) is its own origin, with 18 starts in 15 tests and ceiling 18. `berth` stays at 3,262 starts, above the original 3,174 but below the 3,281 that phase 22 accepted.
+- A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
+- Spec 8, partial (229 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.7, reconcile 51.1, claim 31.7, post-tool-use 46.8, release 50.6, gate 41.0 ms), against before medians of 3.0–8.8 s. Full table: `docs/cargo-berth/as-built/check-under-load.md`.
 
-**Goal:** A cold full `cargo nextest run -p cargo-berth` on the Mac passes every test, each in under 1 s. A cold quiet natedev run does the same.
-
-**Spec:**
-1. Source: the showrunner, 2026-10-19, verbatim: "New phase 24, after 22, aims at every test under one second. First find the callers of the 9,368 "other" process starts. Then cut the per-test fixture Git work (6,962 starts), for example with shared seeds under target/tmp as in phase 23. Include the 15 lock-diagnostic tests that run lsof (144-168 ms per scan). Add phase 24 to the plan in your next shrink. The process-start pin stays as it is until phase 24 measures the combined result."
-2. **Find the `other` starts.** Measure on top of phase 22 and give each `other` start in the full capture a caller site (the phase 22 baseline had 9,368). Also find the caller sites of the two terminal-board reads that had no measured caller. Cut the starts that a test does not need.
-3. **Cut fixture Git work.** Reduce the per-test fixture Git starts (6,962 in the phase 22 baseline). Shared seeds and prepared repositories live under `target/tmp/cargo-berth-templates` and are built through `prepare_fixture_build`.
-4. **Lock diagnostics are a named origin.** On macOS a rendered Git-lock refusal starts `/usr/sbin/lsof` (`git/error.rs`, the holder scan; 144–168 ms per scan on a busy Mac). The process report names these starts as their own `lock_diagnostic` origin, never `other` or an unresolved product start, with the owning tests (15 in the phase 22 baseline), their start count and their Mac time. Each of those tests runs under 1 s.
-5. **Lower the pin.** Measure the combined result, then lower the process-start pin to the new count, with a measured ceiling for `lock_diagnostic`.
-6. **Proof.** One cold full Mac run passes every test with each under 1.000 s; a cold quiet natedev run passes with each under 1.000 s.
-7. **Cost tests count work, never time.** Source: the showrunner, 2026-10-21: `reservation::retention::tests::keyed_drift_coverage_of_thirteen_holders_is_under_250_ms` (`src/reservation/retention.rs`) failed at 0.543 s in a merge test run on natedev under load and passed on rerun. Replace its wall-clock limit with a count of the work (for example scans or reads per holder), as the discovery tests do. Write the counting test first and show it fails against a version that does the extra work per holder. Find every other test in the package that asserts a wall-clock limit on product cost, and convert each one the same way.
-8. **Phase 22's Mac measurements.** Source: the showrunner, 2026-10-21: phase 22 checkpointed while the Mac was offline, and these moved here. On the phase 22 tree, before this phase's own changes: (a) a fresh 20-pair quiet lock-hold table for each of the six paths (repair, reconcile, claim, post-tool-use, release, gate), with before and after median, p95, max, load and the expected decision; each after p95 under 100 ms; (b) one cold full Mac timing at load below 10, with the settings of the accepted 88.730 s run, compared with that run and the 114.970 s run. If (b) is slower at equal load, find the cause at its measured source and fix it in this phase. The worker's driver is `/tmp/p22-mac-scratch/launch_round3_quiet.py`.
+**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the last 11 lock-hold samples, the cold Mac timing compared with 88.730 s and 114.970 s, and the cold Mac run with every test under 1 s. hana's tests kept the Mac above load 10. The `mac` seat runs them when the Mac is quiet and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
 
 **Files:**
-- `crates/cargo-berth/tests/` — every test binary whose tests run 1 s or more
-- `crates/cargo-berth-test-support/src/`, `crates/cargo-berth-test-support/Cargo.toml` — shared seeds and fixture builders
-- `crates/cargo-berth/src/reservation/retention.rs`, `crates/cargo-berth/src/` — the work counts, in retention.rs and in any other source file whose unit tests assert a wall-clock cost
-- `crates/cargo-berth/src/git/error.rs` — the macOS lock-holder scan, only if its `lsof` start keeps a test over 1 s
-- `crates/cargo-berth/src/git/read.rs`, `crates/cargo-berth/src/git/refs.rs` — with their unit-test fixtures, only for a slowdown that Spec 8's measurements find at its source there
-- `crates/cargo-berth/tests/process_start_budget.json`, `crates/cargo-berth/tests/process_start_budget.rs` — the lowered pin with the `lock_diagnostic` origin and its ceiling
+- `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/support/` — shared seeds and recorded histories
+- `crates/cargo-berth/src/test_work.rs` — test-only work counters
+- `crates/cargo-berth/src/git/command.rs`, `crates/cargo-berth/src/git/read.rs` — the spawn lock around the `gix` open
+- `crates/cargo-berth/tests/process_start_budget.json` — the lowered pin and the `lock_diagnostic` ceiling
 
-**Workers:** 1 writer, `mac`.
+**Binds later work:** A new fixture that outlives a test process lives under `fixture_cache_root` and is built by `prepare_fixture_build`. A product-cost test counts work through `test_work`, never wall-clock time. Every `gix` call that can spawn Git runs inside `with_spawn_lock`. A change that adds process starts updates the pin from a complete capture supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`.
 
-**Constraints:** As phase 18: no thread-count change, raised limit, longer timeout, skipped or `#[ignore]`d test, `cfg(target_os = "macos")` branch, nextest filter, or suite `TMPDIR` setting. Mac runs: one `mac_test.py claim` per run, released when it ends. A natedev run at a load above 16 of 32 is untrusted.
+**Gotchas:**
+- On the Mac, an ssh command can print a failed remote assertion and still exit 0. The Spec 8 drivers check the load locally before they stage.
+- A `cargo install` on the Mac raises its load above 10 for about 5 minutes. Do not run one during a Mac measurement.
 
-**Constraints from prior phases:** Phase 22's `gix` reads return typed results, and each unsupported form runs the Git subprocess through its own variant; keep the variants and their tests. Phase 23 keeps every fixture cache that outlives a test process under `target/tmp/cargo-berth-templates` (`fixture_cache_root`), with one build owner, `prepare_fixture_build`; `tests/temporary_directories.rs` stays green. Phase 20's stale-lock tests in `tests/ledger.rs` and phase 21's covered-branch tests in `tests/hooks.rs` stay authoritative: a faster fixture keeps what each test proves. Phase 22's retention reads stay fresh: `RetentionRefReader::required_writes` (`git/read.rs`) reads packed refs without the mtime cache, and `PreparedRetentionRefTransaction::commit` (`git/refs.rs`) reads the current refs again before it omits a satisfied write; a change that cuts reads keeps that observation point, and the regression tests for changed refs, packed refs replaced without an mtime change, satisfied writes and symbolic refs in `git/refs.rs` stay green. Phase 22's `TestProcessGroup` (`crates/cargo-berth-test-support/src/test_process_group.rs`) ends the whole process group on drop, drains both pipes while it waits and reaps the child; a cut in its shell starts keeps all three, and `dropping_a_paused_test_process_ends_its_entire_process_group` stays authoritative. Spec 7 converts only limits on product cost: a lock-wait or cleanup deadline that a test uses to prove correct behavior stays.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-berth` and `bash ~/.claude/scripts/direct/verify.sh test cargo-berth` pass. The cold full Mac run passes with every test under 1.000 s. A cold quiet natedev whole-package run also passes with every test under 1.000 s, with load recorded and no sample accepted above load 16. A fresh completed whole-suite process report, supplied through `CARGO_BERTH_PROCESS_COUNT_REPORT`, passes its budget audit: it counts setup, tests and retry starts by origin, names `lock_diagnostic` as its own origin, has no unresolved product origin, and meets the lowered budget. A package pass without that report is not process-budget evidence. Spec 7's counting test is shown to fail against a version that does the extra work per holder. Spec 8's evidence is recorded on the phase start commit `bf27c025` (checkpoint `566d8066` plus a merge of main that changed only comments and test imports in cargo-berth) before this phase's own edits: the complete six-path, 20-pair table with every after p95 under 100 ms, and the cold Mac timing compared with the 88.730 s and 114.970 s runs, with any slowdown at equal load fixed at its source.
+**Ruled out:**
+- Wall-clock limits on product cost: they fail under load and pass on rerun.
 
 ### Phase 25 — A claim cannot close an ordering cycle  · status: done
 
