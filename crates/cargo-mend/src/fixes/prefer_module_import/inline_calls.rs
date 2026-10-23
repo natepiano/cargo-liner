@@ -109,19 +109,19 @@ pub(super) fn build_inline_call_findings_and_fixes(
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
-    // Indexes into `fixes` of the file-level `use` insertions.
+    // `insertions` stores indexes into `fixes` of the file-level `use` insertions.
     let mut insertions = Vec::new();
     let covering_gates = covering_gates(inline_inputs.candidates);
 
     for candidate in inline_inputs.candidates {
-        // One `use module;` per file serves every call site, so it has to
-        // carry a gate that covers all of them. Call sites whose gates
+        // `covering_gates` supplies one gate for the `use module;` serving every call site in the
+        // file, so it has to carry a gate that covers all of them. Call sites whose gates
         // disagree share no such import — those stay fully qualified, and
         // reporting a finding without an applicable fix would only invite the
         // rewrite that breaks the build.
         let import_attributes = match candidate.import_target {
-            // The call becomes `super::function(...)`; no import is inserted,
-            // so the call site's gates do not constrain anything.
+            // `ImportTarget::ParentModule` makes the call `super::function(...)`; no import is
+            // inserted, so the call site's gates do not constrain anything.
             ImportTarget::ParentModule => None,
             ImportTarget::OtherModule => match covering_gates.get(&candidate.absolute_module) {
                 Some(attributes) => Some(attributes),
@@ -210,9 +210,9 @@ pub(super) fn build_inline_call_findings_and_fixes(
         });
     }
 
-    // Insertions at one offset apply in ascending replacement order, each
-    // landing before the last, so the smallest lands last and its trailing
-    // blank line separates every inserted `use` from the first item.
+    // `insertions` selects the smallest `UseFix::replacement`: insertions at one offset apply in
+    // ascending replacement order, each landing before the last, so the smallest lands last and
+    // its trailing blank line separates every inserted `use` from the first item.
     if inline_inputs.file_insertion.before_first_item
         && let Some(last) = insertions
             .into_iter()

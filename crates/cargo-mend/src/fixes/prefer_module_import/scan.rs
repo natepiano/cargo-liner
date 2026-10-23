@@ -316,7 +316,8 @@ fn fixable_function_candidates(
         &mut module_to_functions,
     );
 
-    // Last, so the drops above get to un-collide a pair by removing one side.
+    // `drop_candidates_colliding_with_each_other` runs last so the filters above can remove one
+    // side and eliminate a collision.
     drop_candidates_colliding_with_each_other(&mut module_to_functions, inline_candidates);
 
     module_to_functions
@@ -417,7 +418,7 @@ fn drop_candidates_colliding_with_each_other(
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
     inline_candidates: &mut Vec<InlineCallCandidate>,
 ) {
-    // Inline call candidates are only detected at file top level, so their
+    // `InlineCallDetector` detects `InlineCallCandidate` values only at file top level, so their
     // scope is always the empty chain — the same key the detector gives a
     // top-level `RawCandidate`.
     let mut name_to_modules: BTreeMap<(Vec<String>, String), BTreeSet<Vec<String>>> =
@@ -482,8 +483,8 @@ fn drop_colliding_candidates(
         });
         !functions.is_empty()
     });
-    // Inline call candidates are only detected at file top level (the detector
-    // skips inline `mod` bodies), so their scope is always the empty chain.
+    // `InlineCallDetector` detects `InlineCallCandidate` values only at file top level (the
+    // detector skips inline `mod` bodies), so their scope is always the empty chain.
     inline_candidates.retain(|candidate| {
         !module_name_collides(
             existing_module_imports,
@@ -845,8 +846,9 @@ fn build_reference_fixes(
                     full_path: function.absolute_module.join("::"),
                 });
             let replacement = if import_target == ImportTarget::ParentModule {
-                // Inside an inline `mod` (e.g. `#[cfg(test)] mod tests`) the
-                // file's parent is one `super` further away per nesting level.
+                // `reference.inline_mod_depth` determines `supers`: inside an inline `mod` (e.g.
+                // `#[cfg(test)] mod tests`) the file's parent is one `super`
+                // further away per nesting level.
                 let supers = "super::".repeat(reference.inline_mod_depth + 1);
                 format!("{supers}{}", reference.name)
             } else {
