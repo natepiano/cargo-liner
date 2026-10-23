@@ -375,9 +375,9 @@ fn default_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(125, 125, 125)),
+            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
             hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-            remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
+            remembered: StyleSpec::from_color(Color::Rgb(46, 46, 46)),
         },
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Cyan),

@@ -116,8 +116,20 @@ fn subagent_and_shell_rows_inherit_the_session_account_and_threads_keep_their_ow
                 "Inspect source files",
                 MINUTE,
             ),
-            child(1, ChildKind::Shell, Some(21), "subagent command", MINUTE),
-            child(0, ChildKind::Shell, Some(22), "session command", MINUTE),
+            child(
+                1,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "subagent command",
+                MINUTE,
+            ),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(22),
+                "session command",
+                MINUTE,
+            ),
             ChildRow {
                 account: account("codex2"),
                 ..child(0, ChildKind::Thread, None, "Codex task", MINUTE)
@@ -258,7 +270,13 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
     assert_eq!(baseline, AccountColumn::Hidden);
 
     rows[0].children = vec![
-        child(0, ChildKind::Shell, Some(21), "session command", MINUTE),
+        child(
+            0,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(21),
+            "session command",
+            MINUTE,
+        ),
         child(
             0,
             ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
@@ -266,7 +284,13 @@ fn inherited_claude_work_accounts_preserve_the_frame_account_column_decision() {
             "Inspect source files",
             MINUTE,
         ),
-        child(1, ChildKind::Shell, Some(22), "subagent command", MINUTE),
+        child(
+            1,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(22),
+            "subagent command",
+            MINUTE,
+        ),
     ];
     let after = MachineState::Answered(rows, HierarchyEdges::default().into());
     let machines = [Machine {
@@ -400,7 +424,13 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
 fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
     let root = AgentRow {
         children: vec![
-            child(0, ChildKind::Shell, Some(21), "cargo test", MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "cargo test",
+                MINUTE,
+            ),
             ChildRow {
                 kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::from_record(
                     "general-purpose",
@@ -466,7 +496,13 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
 fn equal_width_tiles_share_short_column_positions_and_two_space_gaps() {
     let roots = [
         AgentRow {
-            children: vec![child(0, ChildKind::Shell, Some(11), "short", MINUTE)],
+            children: vec![child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(11),
+                "short",
+                MINUTE,
+            )],
             ..agent(10, "first", HOUR, None)
         },
         AgentRow {

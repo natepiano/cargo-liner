@@ -256,8 +256,16 @@ fn accounts_table_reset_minutes_round_hour_jitter_and_half_minute_up() {
 #[test]
 fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_styles() {
     let buffer = drawn(&AccountsTable::Ready(reading()));
-    assert_eq!(buffer[at(&buffer, "codex2")].fg, Color::Indexed(208));
-    assert_eq!(buffer[at(&buffer, "claude1")].fg, Color::LightCyan);
+    let account_ink = buffer[at(&buffer, "codex2")].fg;
+    assert_eq!(
+        tui_pane::blend_color(account_ink, account_ink, 0),
+        Color::Rgb(255, 135, 0)
+    );
+    let claude_ink = buffer[at(&buffer, "claude1")].fg;
+    assert_eq!(
+        tui_pane::blend_color(claude_ink, claude_ink, 0),
+        Color::Rgb(0, 255, 255)
+    );
     let low_quota = footer_colors::readable_status_style(Style::default().fg(Color::Red))
         .fg
         .expect("low-quota foreground");

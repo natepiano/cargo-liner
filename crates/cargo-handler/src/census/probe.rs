@@ -26,7 +26,9 @@ use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::ServiceTier;
 use super::SessionIdentity;
+use super::ShellTimerObservation;
 use super::Timer;
+use super::WorkIdentity;
 use super::account::AccountLabels;
 use super::hierarchy;
 use super::hierarchy::CommandRunner;
@@ -105,7 +107,7 @@ impl ProbeChildWork {
 
     fn into_kind(self) -> ChildKind {
         match self.kind {
-            ProbeChildKind::Shell => ChildKind::Shell,
+            ProbeChildKind::Shell => ChildKind::Shell(ShellTimerObservation::Untimed),
             ProbeChildKind::Subagent => ChildKind::Subagent(self.subagent_role),
             ProbeChildKind::Session(agent) => ChildKind::Session(agent),
             ProbeChildKind::UnderShell(agent) => ChildKind::UnderShell(agent),
@@ -119,7 +121,7 @@ impl ProbeChildWork {
 impl From<ChildKind> for ProbeChildWork {
     fn from(kind: ChildKind) -> Self {
         let (kind, subagent_role) = match kind {
-            ChildKind::Shell => (ProbeChildKind::Shell, SubagentRole::Unrecorded),
+            ChildKind::Shell(_) => (ProbeChildKind::Shell, SubagentRole::Unrecorded),
             ChildKind::Subagent(role) => (ProbeChildKind::Subagent, role),
             ChildKind::Session(agent) => (ProbeChildKind::Session(agent), SubagentRole::Unrecorded),
             ChildKind::UnderShell(agent) => {
@@ -141,6 +143,8 @@ impl From<ChildKind> for ProbeChildWork {
 /// Child rows keep the schema-3 task vocabulary at the wire boundary.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct ProbeChildRow {
+    #[serde(default, skip_serializing_if = "work_id_is_legacy")]
+    work_id:       WorkIdentity,
     /// Task naming survives placement so the final hierarchy role supplies its label.
     #[serde(default, skip_serializing_if = "LegacyWorkerTask::is_unrecorded")]
     worker_task:   LegacyWorkerTask,
@@ -192,6 +196,10 @@ pub(super) struct ProbeChildRow {
     timer:         Option<Timer>,
 }
 
+const fn work_id_is_legacy(identity: &WorkIdentity) -> bool {
+    matches!(identity, crate::census::WorkIdentity::Legacy)
+}
+
 impl From<ChildRow> for ProbeChildRow {
     fn from(row: ChildRow) -> Self {
         let (worker_task, reviewer_task) = match row.worker_task {
@@ -210,13 +218,17 @@ impl From<ChildRow> for ProbeChildRow {
             dispatch: row.dispatch,
             thread_id: row.thread_id,
             depth: row.depth,
-            work: row.kind.into(),
+            work: row.kind.clone().into(),
+            work_id: row.work_id,
             service_tier: row.service_tier,
             account: row.account,
             pid: row.pid,
             name: row.name,
             started: row.started,
-            timer: row.timer,
+            timer: match row.kind {
+                ChildKind::Shell(ShellTimerObservation::ObservedCountdown(timer)) => Some(timer),
+                _ => None,
+            },
         }
     }
 }
@@ -238,13 +250,19 @@ impl From<ProbeChildRow> for ChildRow {
             dispatch: row.dispatch,
             thread_id: row.thread_id,
             depth: row.depth,
-            kind: row.work.into_kind(),
+            kind: match row.work.into_kind() {
+                ChildKind::Shell(_) => ChildKind::Shell(row.timer.map_or(
+                    ShellTimerObservation::Untimed,
+                    ShellTimerObservation::ObservedCountdown,
+                )),
+                kind => kind,
+            },
+            work_id: row.work_id,
             service_tier: row.service_tier,
             account: row.account,
             pid: row.pid,
             name: row.name,
             started: row.started,
-            timer: row.timer,
         }
     }
 }
@@ -489,6 +507,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::Timer;
+    use crate::census::WorkIdentity;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
 
@@ -506,7 +525,7 @@ mod tests {
             pid,
             name: name.to_string(),
             started,
-            timer: None,
+            work_id: WorkIdentity::Legacy,
         }
     }
 
@@ -558,7 +577,7 @@ mod tests {
                     children:        vec![
                         child(
                             0,
-                            ChildKind::Shell,
+                            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                             Some(80_100),
                             "Run the mesh",
                             1_790_000_110,
@@ -585,13 +604,15 @@ mod tests {
                         ),
                         ChildRow {
                             worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                            timer: Some(Timer {
-                                started:  1_790_000_125,
-                                deadline: 1_790_000_425,
-                            }),
+                            kind: ChildKind::Shell(
+                                crate::census::ShellTimerObservation::ObservedCountdown(Timer {
+                                    started:  1_790_000_125,
+                                    deadline: 1_790_000_425,
+                                }),
+                            ),
                             ..child(
                                 0,
-                                ChildKind::Shell,
+                                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                                 Some(80_300),
                                 "Re-arm the progress timer",
                                 1_790_000_125,

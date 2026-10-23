@@ -206,7 +206,12 @@ fn every_summary_column_sorts_both_directions_inside_its_machine_group() {
                 ("a-account", Color::Indexed(208)),
                 ("z-account", Color::Indexed(141)),
             ] {
-                assert_eq!(buffer[find_label(&buffer, account)].fg, color);
+                let actual = buffer[find_label(&buffer, account)].fg;
+                assert_eq!(
+                    tui_pane::blend_color(actual, actual, 0),
+                    tui_pane::blend_color(color, color, 0),
+                    "{account} {column:?} {direction:?}"
+                );
             }
         }
     }

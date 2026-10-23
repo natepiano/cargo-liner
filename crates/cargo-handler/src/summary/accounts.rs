@@ -376,6 +376,29 @@ fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) 
     Line::from(spans)
 }
 
+/// Source positions resolve equal sort keys in the same order for painting and selection.
+fn ordered_rows(reading: &AccountsReading, sort: AccountsSort) -> Vec<(usize, &AccountUsage)> {
+    let mut ordered: Vec<_> = reading.accounts.iter().enumerate().collect();
+    if let AccountsSort::Sorted(sort) = sort {
+        ordered.sort_by(|(left_index, left), (right_index, right)| {
+            compare_accounts(left, right, sort).then_with(|| left_index.cmp(right_index))
+        });
+    }
+    ordered
+}
+
+/// Selectable account rows retain their recorded labels through sorting and suffix changes.
+pub(super) fn selection_rows(table: &AccountsTable, sort: AccountsSort) -> Vec<(String, usize)> {
+    let AccountsSection::Reading { reading, .. } = AccountsSection::from(table) else {
+        return Vec::new();
+    };
+    ordered_rows(reading, sort)
+        .into_iter()
+        .enumerate()
+        .map(|(index, (_, account))| (account.label.clone(), index + 2))
+        .collect()
+}
+
 /// Resolve one reading into ordered, measured lines for drawing and hit testing.
 fn sorted_lines(
     table: &AccountsTable,
@@ -389,12 +412,7 @@ fn sorted_lines(
         AccountsSection::Reading { reading, note } => (reading, note),
     };
     let palette = reset_colors(reading);
-    let mut ordered: Vec<_> = reading.accounts.iter().enumerate().collect();
-    if let AccountsSort::Sorted(sort) = sort {
-        ordered.sort_by(|(left_index, left), (right_index, right)| {
-            compare_accounts(left, right, sort).then_with(|| left_index.cmp(right_index))
-        });
-    }
+    let ordered = ordered_rows(reading, sort);
     let rows: Vec<_> = ordered
         .iter()
         .map(|(_, row)| *row)

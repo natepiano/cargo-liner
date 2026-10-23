@@ -26,9 +26,11 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 use tui_pane::SECTION_HEADER_INDENT;
+use tui_pane::Viewport;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
+use crate::census;
 use crate::census::Account;
 use crate::census::AccountColumn;
 use crate::census::Activity;
@@ -38,6 +40,7 @@ use crate::census::AgentPlacement;
 use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
+use crate::census::CodexThreadId;
 use crate::census::HierarchyRole;
 use crate::census::Placement;
 use crate::census::RoleFallback;
@@ -45,9 +48,13 @@ use crate::census::RoleLabel;
 use crate::census::RootPresentation;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
+use crate::census::ShellTimerObservation;
+#[cfg(test)]
 use crate::census::Timer;
+use crate::census::WorkIdentity;
 use crate::census::transcript::SubagentRole;
 use crate::census::worker_dispatch::DispatchLabel;
+use crate::census::worker_dispatch::WorkerDispatch;
 use crate::census::worker_dispatch::WorkerRoleInput;
 use crate::census::worker_dispatch::WorkerRoleSource;
 use crate::census::worker_dispatch::WorkerTask;
@@ -74,6 +81,8 @@ use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
+use crate::interaction::RowIdentity as SelectedRow;
+use crate::interaction::RowOwner;
 use crate::sort;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
@@ -91,6 +100,7 @@ use crate::tiles::TileKey;
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEntry<'a> {
     sizing:                RefCell<TreeSizing>,
+    viewport:              RefCell<Viewport>,
     /// Stable grid identity of the root process.
     pub(crate) id:         AgentCell,
     /// The agent named by the tile title.
@@ -224,12 +234,16 @@ enum ShellState {
 }
 
 impl ShellState {
-    fn resolve(timer: Option<Timer>, now: u64) -> Self {
-        timer
-            .and_then(|timer| NonZeroU64::new(timer.deadline.saturating_sub(now)))
-            .map_or(Self::Running, |remaining| {
-                Self::CountingDown(PositiveRemainingTime(remaining))
-            })
+    fn resolve(timer: ShellTimerObservation, now: u64) -> Self {
+        match timer {
+            ShellTimerObservation::Untimed => Self::Running,
+            ShellTimerObservation::ObservedCountdown(timer) => {
+                NonZeroU64::new(timer.deadline.saturating_sub(now))
+                    .map_or(Self::Running, |remaining| {
+                        Self::CountingDown(PositiveRemainingTime(remaining))
+                    })
+            },
+        }
     }
 
     const fn role(self) -> Role {
@@ -281,7 +295,7 @@ enum ChildLine<'a> {
 impl<'a> From<&'a ChildKind> for ChildLine<'a> {
     fn from(kind: &'a ChildKind) -> Self {
         match kind {
-            ChildKind::Shell => Self::Work(WorkKind::Shell),
+            ChildKind::Shell(_) => Self::Work(WorkKind::Shell),
             ChildKind::Subagent(role) => Self::Work(WorkKind::Subagent(role)),
             ChildKind::Thread => Self::Work(WorkKind::Thread),
             ChildKind::Direct(_) | ChildKind::UnderShell(_) | ChildKind::Detached(_) => {
@@ -559,16 +573,18 @@ impl<T: Copy> PresentationValues<T> {
 /// Rows reserved above the tree in either fitted presentation.
 #[derive(Clone, Copy)]
 struct TreeHeadingSpace {
-    width: u16,
-    rows:  PresentationValues<usize>,
+    offset: usize,
+    width:  u16,
+    rows:   PresentationValues<usize>,
 }
 
 /// Complete ages and the two visible row budgets are measured once per tile.
 pub(crate) struct TreeMeasurement {
-    area:        Rect,
-    metrics:     TreeMetrics,
-    ages:        Vec<u64>,
-    role_widths: PresentationValues<u16>,
+    area:          Rect,
+    metrics:       TreeMetrics,
+    ages:          Vec<u64>,
+    role_widths:   PresentationValues<u16>,
+    status_widths: PresentationValues<u16>,
 }
 
 impl TreeMeasurement {
@@ -595,8 +611,9 @@ impl TreeMeasurement {
             account_column,
             SessionHeaderLead::OverBranch,
             TreeHeadingSpace {
-                width: u16::try_from(heading_width).unwrap_or(u16::MAX),
-                rows:  PresentationValues {
+                offset: entry.viewport.borrow().scroll_offset(),
+                width:  u16::try_from(heading_width).unwrap_or(u16::MAX),
+                rows:   PresentationValues {
                     full:       full_above,
                     compressed: compressed_above,
                 },
@@ -629,6 +646,7 @@ impl TreeMeasurement {
                 usize::from(area.height).saturating_sub(above + usize::from(TABLE_HEADER_HEIGHT));
             lines
                 .iter()
+                .skip(heading.offset)
                 .take(count)
                 .map(|line| summary::cell_width(line.role_text()))
                 .max()
@@ -639,6 +657,23 @@ impl TreeMeasurement {
             full:       role_width(heading.rows.get(TreePresentation::Full)),
             compressed: role_width(heading.rows.get(TreePresentation::Compressed)),
         };
+        let status_width = |above: usize| {
+            let count =
+                usize::from(area.height).saturating_sub(above + usize::from(TABLE_HEADER_HEIGHT));
+            lines
+                .iter()
+                .skip(heading.offset)
+                .take(count)
+                .map(|line| summary::cell_width(&line.status(now).text))
+                .max()
+                .unwrap_or(0)
+                .max(summary::cell_width(&TreeColumn::Status.sorted_header(sort)))
+        };
+        let status_widths = PresentationValues {
+            full:       status_width(heading.rows.get(TreePresentation::Full)),
+            compressed: status_width(heading.rows.get(TreePresentation::Compressed)),
+        };
+        widths[TreeColumn::Status as usize] = status_widths.get(TreePresentation::Full);
         widths[TreeColumn::Role as usize] = role_widths.get(TreePresentation::Full);
         let ages: Vec<_> = lines
             .iter()
@@ -658,6 +693,7 @@ impl TreeMeasurement {
             },
             ages,
             role_widths,
+            status_widths,
         }
     }
 }
@@ -679,13 +715,78 @@ impl AgentTile<'_> {
                 account_column,
                 SessionHeaderLead::Flush,
                 TreeHeadingSpace {
-                    width: 0,
-                    rows:  PresentationValues {
+                    offset: entry.viewport.borrow().scroll_offset(),
+                    width:  0,
+                    rows:   PresentationValues {
                         full:       0,
                         compressed: 0,
                     },
                 },
             ),
+        }
+    }
+
+    pub(crate) fn row_identities(&self) -> Vec<crate::interaction::RowIdentity> {
+        let lines = match self {
+            Self::Agent(entry) => &entry.lines,
+            Self::Unassigned(entry) => &entry.lines,
+        };
+        let mut legacy_counts: Vec<(SelectedRow, usize)> = Vec::new();
+        lines
+            .iter()
+            .map(|line| {
+                let mut identity = line.selection_identity(0);
+                if matches!(identity, SelectedRow::LegacyWork { .. }) {
+                    // Only indistinguishable legacy work needs an occurrence rank.
+                    // Unrelated rows must not change a legacy row's identity.
+                    let occurrence = if let Some((_, count)) = legacy_counts
+                        .iter_mut()
+                        .find(|(previous, _)| previous == &identity)
+                    {
+                        let occurrence = *count;
+                        *count += 1;
+                        occurrence
+                    } else {
+                        legacy_counts.push((identity.clone(), 1));
+                        0
+                    };
+                    if let SelectedRow::LegacyWork { ordinal, .. } = &mut identity {
+                        *ordinal = occurrence;
+                    }
+                }
+                identity
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_viewport(&self, viewport: &Viewport) {
+        let state = match self {
+            Self::Agent(entry) => &entry.viewport,
+            Self::Unassigned(entry) => &entry.viewport,
+        };
+        *state.borrow_mut() = viewport.clone();
+    }
+
+    pub(crate) fn row_area(&self, area: Rect, now: u64, accounts: AccountColumn) -> Rect {
+        let above = match self {
+            Self::Agent(entry) => above_tree_rows(
+                entry.row,
+                match CellView::fitted(entry, area, now, accounts) {
+                    CellView::Full(_) => TreePresentation::Full,
+                    CellView::Compressed => TreePresentation::Compressed,
+                },
+            )
+            .len(),
+            Self::Unassigned(_) => 0,
+        };
+        let used = u16::try_from(above)
+            .unwrap_or(u16::MAX)
+            .saturating_add(TABLE_HEADER_HEIGHT)
+            .min(area.height);
+        Rect {
+            y: area.y.saturating_add(used),
+            height: area.height.saturating_sub(used),
+            ..area
         }
     }
 
@@ -776,9 +877,21 @@ pub(crate) fn shared_tree_metrics(
                 };
                 group.metrics.widths[TreeColumn::Role as usize] =
                     role_width(group.metrics.presentation);
+                let status_width = |presentation| {
+                    group
+                        .members
+                        .iter()
+                        .map(|index| measurements[*index].status_widths.get(presentation))
+                        .max()
+                        .unwrap_or(0)
+                };
+                group.metrics.widths[TreeColumn::Status as usize] =
+                    status_width(group.metrics.presentation);
                 match step {
                     GroupFitStep::Drop(step) => {
                         group.metrics.drop_step(step, group.width);
+                        group.metrics.widths[TreeColumn::Status as usize] =
+                            status_width(group.metrics.presentation);
                         group.metrics.widths[TreeColumn::Role as usize] =
                             role_width(group.metrics.presentation);
                     },
@@ -801,6 +914,65 @@ pub(crate) fn shared_tree_metrics(
 }
 
 impl TreeLine<'_> {
+    fn selection_identity(&self, ordinal: usize) -> crate::interaction::RowIdentity {
+        if let DispatchLabel::Worker(dispatch) = self.dispatch_label {
+            return SelectedRow::Seat {
+                machine: self.machine.to_owned(),
+                seat:    dispatch.seat().to_owned(),
+                worker:  census::worker_identity(dispatch),
+            };
+        }
+        let child = match self.subject {
+            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                return SelectedRow::session(self.machine, self.row);
+            },
+            LineSubject::ManagedThread(child, _) => child,
+            LineSubject::Work(work) => work.child,
+        };
+        if let WorkerDispatch::Worker(dispatch) = &child.dispatch {
+            return SelectedRow::Seat {
+                machine: self.machine.to_owned(),
+                seat:    dispatch.seat().to_owned(),
+                worker:  census::worker_identity(dispatch),
+            };
+        }
+        if let WorkIdentity::Recorded(id) = &child.work_id {
+            return SelectedRow::Subagent {
+                machine: self.machine.to_owned(),
+                owner:   RowOwner {
+                    pid:     self.row.pid,
+                    started: self.row.process_started,
+                },
+                id:      id.clone(),
+            };
+        }
+        if let CodexThreadId::Recorded(id) = &child.thread_id {
+            return SelectedRow::Thread {
+                machine: self.machine.to_owned(),
+                id:      id.clone(),
+            };
+        }
+        if matches!(child.kind, ChildKind::Shell(_))
+            && let Some(pid) = child.pid
+        {
+            return SelectedRow::Shell {
+                machine: self.machine.to_owned(),
+                pid,
+                started: child.started,
+            };
+        }
+        SelectedRow::LegacyWork {
+            machine: self.machine.to_owned(),
+            owner: RowOwner {
+                pid:     self.row.pid,
+                started: self.row.process_started,
+            },
+            kind: crate::interaction::LegacyWorkKind::from(&child.kind),
+            started: child.started,
+            ordinal,
+        }
+    }
+
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
         let original = match self.subject {
@@ -1060,7 +1232,13 @@ impl TreeLine<'_> {
                 child,
                 kind: WorkKind::Shell,
             }) => {
-                let state = ShellState::resolve(child.timer, now);
+                let state = ShellState::resolve(
+                    match child.kind {
+                        ChildKind::Shell(timer) => timer,
+                        _ => ShellTimerObservation::Untimed,
+                    },
+                    now,
+                );
                 (state.text(), state.role())
             },
         };
@@ -1170,6 +1348,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
         });
         cells.push(AgentEntry {
             sizing: RefCell::new(TreeSizing::Local),
+            viewport: RefCell::new(tui_pane::Viewport::new()),
             id: AgentCell {
                 machine:         machine.to_string(),
                 pid:             root.row.pid,
@@ -1238,6 +1417,7 @@ fn default_tree_sort(role: RoleLabel, presentation: RootPresentation) -> TreeSor
 #[derive(Clone, Debug)]
 pub(crate) struct UnassignedEntry<'a> {
     sizing:             RefCell<TreeSizing>,
+    viewport:           RefCell<Viewport>,
     /// The machine shared by all roots in this pool.
     pub(crate) machine: &'a str,
     /// Ordering shared by the flat roots and each nested sibling group.
@@ -1345,6 +1525,7 @@ pub(crate) fn group_tiles<'a>(
                     .collect();
                 tiles.push(AgentTile::Unassigned(UnassignedEntry {
                     sizing: RefCell::new(TreeSizing::Local),
+                    viewport: RefCell::new(tui_pane::Viewport::new()),
                     machine: entry.machine,
                     sort: entry.sort,
                     lines,
@@ -1934,7 +2115,11 @@ pub(crate) fn draw(
                     sizing: &entry.sizing.borrow(),
                 },
             ),
-            &TreeDraw { now, footer_colors },
+            &TreeDraw {
+                now,
+                footer_colors,
+                offset: entry.viewport.borrow().scroll_offset(),
+            },
         );
     }
 }
@@ -2000,7 +2185,11 @@ pub(crate) fn draw_unassigned(
         &entry.lines,
         entry.sort,
         unassigned_header(entry, area, now, account_column),
-        &TreeDraw { now, footer_colors },
+        &TreeDraw {
+            now,
+            footer_colors,
+            offset: entry.viewport.borrow().scroll_offset(),
+        },
     );
 }
 
@@ -2017,7 +2206,7 @@ fn tree_widths(
     columns
         .iter()
         .map(|&column| {
-            if column == TreeColumn::Role
+            if matches!(column, TreeColumn::Role | TreeColumn::Status)
                 && let TreeSizing::Shared(metrics) = sizing
             {
                 return metrics.widths[column as usize];
@@ -2080,6 +2269,45 @@ struct TreeHeaderLayout<'a> {
     sizing: &'a TreeSizing,
 }
 
+/// Measure and fit a tree when no shared group metrics were prepared.
+fn local_tree_metrics(
+    lines: &[TreeLine<'_>],
+    sort: TreeSort,
+    tree: Rect,
+    now: u64,
+    account_column: AccountColumn,
+    view: &CellView,
+    lead: SessionHeaderLead,
+) -> TreeMetrics {
+    let mut measurement = TreeMeasurement::measure(
+        lines,
+        tree,
+        now,
+        sort,
+        account_column,
+        lead,
+        TreeHeadingSpace {
+            offset: 0,
+            width:  0,
+            rows:   PresentationValues {
+                full:       0,
+                compressed: 0,
+            },
+        },
+    );
+    if matches!(view, CellView::Compressed) {
+        measurement.metrics.presentation = TreePresentation::Compressed;
+    }
+    for step in ColumnDrop::ORDER {
+        measurement.metrics.drop_step(step, tree.width);
+    }
+    measurement.metrics.widths[TreeColumn::Role as usize] =
+        measurement.role_widths.get(TreePresentation::Compressed);
+    measurement.metrics.widths[TreeColumn::Status as usize] =
+        measurement.status_widths.get(TreePresentation::Compressed);
+    measurement.metrics
+}
+
 /// Resolve columns from the view already fitted by drawing or click mapping.
 fn tree_header(
     lines: &[TreeLine<'_>],
@@ -2094,30 +2322,7 @@ fn tree_header(
     let metrics = match sizing {
         TreeSizing::Shared(metrics) => metrics,
         TreeSizing::Local => {
-            let mut measurement = TreeMeasurement::measure(
-                lines,
-                tree,
-                now,
-                sort,
-                account_column,
-                lead,
-                TreeHeadingSpace {
-                    width: 0,
-                    rows:  PresentationValues {
-                        full:       0,
-                        compressed: 0,
-                    },
-                },
-            );
-            if matches!(view, CellView::Compressed) {
-                measurement.metrics.presentation = TreePresentation::Compressed;
-            }
-            for step in ColumnDrop::ORDER {
-                measurement.metrics.drop_step(step, tree.width);
-            }
-            measurement.metrics.widths[TreeColumn::Role as usize] =
-                measurement.role_widths.get(TreePresentation::Compressed);
-            local_metrics = measurement.metrics;
+            local_metrics = local_tree_metrics(lines, sort, tree, now, account_column, view, lead);
             &local_metrics
         },
     };
@@ -2232,6 +2437,7 @@ pub(crate) fn header_spans(
 
 /// Draw both views with one table, preserving fixed columns when names compress.
 struct TreeDraw<'a> {
+    offset:        usize,
     now:           u64,
     footer_colors: &'a FooterColors,
 }
@@ -2244,7 +2450,11 @@ fn draw_tree(
     header: TreeHeader,
     frame: &TreeDraw<'_>,
 ) {
-    let TreeDraw { now, footer_colors } = *frame;
+    let TreeDraw {
+        now,
+        footer_colors,
+        offset,
+    } = *frame;
     if area.is_empty() {
         return;
     }
@@ -2258,7 +2468,7 @@ fn draw_tree(
     } = header;
     debug_assert!(spans.iter().all(|span| span.row == area.y));
     let text = Style::default().fg(text_default());
-    let rows = lines.iter().map(|line| {
+    let rows = lines.iter().skip(offset).map(|line| {
         let status = line.status(now);
         Row::new(columns.iter().enumerate().map(|(index, &column)| {
             if column == TreeColumn::Session {
@@ -2603,6 +2813,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::WorkIdentity;
     use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::census::transcript::SubagentRole;
@@ -2681,7 +2892,7 @@ mod tests {
             pid,
             name: name.to_string(),
             started: NOW - age,
-            timer: None,
+            work_id: WorkIdentity::Legacy,
         }
     }
 
@@ -2704,7 +2915,7 @@ mod tests {
                 ),
                 child(
                     0,
-                    ChildKind::Shell,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                     Some(2_371_669),
                     "Launch the Phase 1 implementation seat",
                     12 * MINUTE,
@@ -2732,7 +2943,7 @@ mod tests {
                 ),
                 child(
                     1,
-                    ChildKind::Shell,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                     Some(2_424_763),
                     "cargo nextest run -p hana_video --no-fail-fast -- permission_queue",
                     45,
@@ -2754,6 +2965,7 @@ mod tests {
     fn entry<'a>(row: &'a AgentRow, launcher: Option<&'a str>) -> AgentEntry<'a> {
         AgentEntry {
             sizing: RefCell::new(TreeSizing::Local),
+            viewport: RefCell::new(tui_pane::Viewport::new()),
             id: AgentCell {
                 machine:         "natedev".to_string(),
                 pid:             row.pid,
@@ -3012,7 +3224,7 @@ mod tests {
         let arrange = AgentRow {
             role_fallback: RoleFallback::None,
             directory: "~/rust/hana_catalyst/crates/hana_video/src/permission_queue/deep/nested/module/source".to_string(),
-            children: vec![child(0, ChildKind::Shell, Some(2_424_763), "cargo nextest run", 45)],
+            children: vec![child(0, ChildKind::Shell(crate::census::ShellTimerObservation::Untimed), Some(2_424_763), "cargo nextest run", 45)],
             ..agent(ARRANGE, "arrange", 2 * HOUR, Some(BOSS))
         };
         let width = u16::try_from(place_line(&arrange).width()).expect("directory width");
@@ -3043,7 +3255,7 @@ mod tests {
             children: vec![
                 child(
                     0,
-                    ChildKind::Shell,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                     Some(2_424_763),
                     "cargo nextest run -p hana_video",
                     45,
@@ -3202,7 +3414,7 @@ mod tests {
                     children: vec![
                         child(
                             0,
-                            ChildKind::Shell,
+                            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                             Some(4_000_001),
                             "Run the tests",
                             2 * MINUTE,
@@ -3226,7 +3438,7 @@ mod tests {
                         ),
                         child(
                             1,
-                            ChildKind::Shell,
+                            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                             Some(2_424_763),
                             "cargo nextest run -p hana_video",
                             45,
@@ -3652,7 +3864,7 @@ mod tests {
             children: vec![
                 child(
                     0,
-                    ChildKind::Shell,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                     Some(2_424_763),
                     "cargo nextest run -p hana_video",
                     45,
@@ -3827,7 +4039,14 @@ mod tests {
             started:  NOW - 2 * MINUTE,
             deadline: NOW - MINUTE,
         };
-        assert_eq!(ShellState::resolve(Some(past), NOW).text(), "running");
+        assert_eq!(
+            ShellState::resolve(
+                crate::census::ShellTimerObservation::ObservedCountdown(past),
+                NOW
+            )
+            .text(),
+            "running"
+        );
     }
 
     /// A timer shell retains its description and draws its remaining time
@@ -3839,20 +4058,22 @@ mod tests {
             children: vec![
                 child(
                     0,
-                    ChildKind::Shell,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                     Some(2_500_000),
                     "Run lint then the full suite",
                     4 * MINUTE,
                 ),
                 ChildRow {
                     worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                    timer: Some(Timer {
-                        started:  NOW - 92,
-                        deadline: NOW + 228,
-                    }),
+                    kind: ChildKind::Shell(
+                        crate::census::ShellTimerObservation::ObservedCountdown(Timer {
+                            started:  NOW - 92,
+                            deadline: NOW + 228,
+                        }),
+                    ),
                     ..child(
                         0,
-                        ChildKind::Shell,
+                        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                         Some(2_500_100),
                         "Re-arm the progress timer",
                         92,
@@ -3905,7 +4126,13 @@ mod tests {
                 identified(1, "production", 3 * HOUR, None),
                 AgentRow {
                     role_fallback: crate::census::RoleFallback::None,
-                    children: vec![child(0, ChildKind::Shell, Some(99), "local work", MINUTE)],
+                    children: vec![child(
+                        0,
+                        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                        Some(99),
+                        "local work",
+                        MINUTE,
+                    )],
                     ..identified(7, "local unit", HOUR, None)
                 },
             ],
@@ -3914,7 +4141,13 @@ mod tests {
         let mac = MachineState::Answered(
             vec![AgentRow {
                 role_fallback: crate::census::RoleFallback::None,
-                children: vec![child(0, ChildKind::Shell, Some(99), "remote work", MINUTE)],
+                children: vec![child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(99),
+                    "remote work",
+                    MINUTE,
+                )],
                 ..identified(7, "remote unit", 2 * HOUR, None)
             }],
             links(&[("production", "remote unit")]).into(),
@@ -4007,7 +4240,13 @@ mod tests {
                 identified(2, "manager", 2 * HOUR, None),
                 AgentRow {
                     role_fallback: crate::census::RoleFallback::None,
-                    children: vec![child(0, ChildKind::Shell, Some(99), "member work", MINUTE)],
+                    children: vec![child(
+                        0,
+                        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                        Some(99),
+                        "member work",
+                        MINUTE,
+                    )],
                     ..identified(3, "worker", HOUR, Some(1))
                 },
             ],

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::census::Activity;
+use crate::census::ShellTimerObservation;
 use crate::census::activity::RunLocation;
 use crate::census::activity::VerifyStep;
 use crate::census::transcript::SubagentRole;
@@ -59,7 +60,7 @@ fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffe
     .collect();
     root.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "running-shell",
         MINUTE,
@@ -382,17 +383,23 @@ fn status_cells_keep_glyph_coverage_contrast_on_every_drawn_pane_ground() {
     .collect();
     root.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "compile-project",
         MINUTE,
     ));
     root.children.push(ChildRow {
-        timer: Some(Timer {
+        kind: ChildKind::Shell(ShellTimerObservation::ObservedCountdown(Timer {
             started:  NOW - 92,
             deadline: NOW + 228,
-        }),
-        ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+        })),
+        ..child(
+            0,
+            ChildKind::Shell(ShellTimerObservation::Untimed),
+            Some(22),
+            "progress-clock",
+            92,
+        )
     });
     let entry = entry(&root, None);
     let rect = area(180, 14);

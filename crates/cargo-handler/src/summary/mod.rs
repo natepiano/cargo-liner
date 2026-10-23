@@ -222,6 +222,45 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     );
 }
 
+/// Selectable rows use the very same sorted machine tables as drawing.
+pub(crate) fn selection_rows(
+    frame: &SummaryFrame<'_, '_>,
+    width: u16,
+) -> Vec<(crate::interaction::RowIdentity, usize)> {
+    use crate::interaction::RowIdentity;
+    let area = Rect::new(
+        0,
+        0,
+        width,
+        u16::try_from(height(frame.machines, frame.placement, frame.accounts)).unwrap_or(u16::MAX),
+    );
+    let mut result = Vec::new();
+    for mut machine in machine_tables(area, frame) {
+        result.push((
+            RowIdentity::SummaryGroup {
+                machine: machine.machine.name.to_owned(),
+            },
+            usize::from(machine.heading.y),
+        ));
+        machine
+            .rows
+            .sort_by(|a, b| compare_rows(a, b, frame.sort, frame.account_column));
+        for (index, row) in machine.rows.into_iter().enumerate() {
+            result.push((
+                RowIdentity::session(machine.machine.name, row),
+                usize::from(machine.table.y) + 1 + index,
+            ));
+        }
+    }
+    let accounts_y = usize::from(accounts_area(area, frame).y);
+    result.extend(
+        accounts::selection_rows(frame.accounts, frame.accounts_sort)
+            .into_iter()
+            .map(|(account, row)| (RowIdentity::SummaryAccount { account }, accounts_y + row)),
+    );
+    result
+}
+
 /// Accounts begin after the machine groups and their section gap, clipped to the cell.
 fn accounts_area(area: Rect, frame: &SummaryFrame<'_, '_>) -> Rect {
     let agent_height = machine_height(frame.machines, frame.placement);

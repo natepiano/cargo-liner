@@ -646,7 +646,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: framed shots of the accounts table, in a dark and a light theme, with an account that cannot be read, one under 10 % left, one with credits enabled and in use. The checkpoint carries `Change-Review: the accounts table shows a dot, account, role, left, resets, credits, enabled, in use and read, as the accounts board does, with right-aligned numbers and the reading age in its own column | open cargo-handler and /accounts-board side by side and compare the accounts tables`.
 
-### Phase 16 — Row selection in tiles  · status: todo
+### Phase 16 — Row selection in tiles  · status: done
 
 **Depends on:** Phase 17, Phase 24
 

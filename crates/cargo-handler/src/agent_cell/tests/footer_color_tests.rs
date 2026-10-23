@@ -45,7 +45,12 @@ fn rendered_with_colors(
 fn assert_color(buffer: &Buffer, text: &str, expected: Color) {
     let (x, y) = find(buffer, text).expect("the label is drawn");
     for offset in 0..summary::cell_width(text) {
-        assert_eq!(buffer[(x + offset, y)].fg, expected, "{text} at {offset}");
+        let actual = buffer[(x + offset, y)].fg;
+        assert_eq!(
+            tui_pane::blend_color(actual, actual, 0),
+            tui_pane::blend_color(expected, expected, 0),
+            "{text} at {offset}"
+        );
     }
 }
 
@@ -425,7 +430,13 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         directory: "/fixture/color-check".repeat(4),
         children: vec![
             child(0, ChildKind::Thread, None, "unroled task", MINUTE),
-            child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(11),
+                "shell task",
+                MINUTE,
+            ),
             child(
                 0,
                 ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),

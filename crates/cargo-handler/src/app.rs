@@ -27,6 +27,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
@@ -53,6 +54,7 @@ use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
+use crate::interaction::Selections;
 use crate::keymap;
 use crate::render;
 use crate::settings;
@@ -114,6 +116,8 @@ pub(crate) struct App {
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
     /// Per-root preferences, discarded when that root leaves the census.
+    pub(crate) selection_area:    Rect,
+    pub(crate) selections:        Selections,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
     /// One preference shared by the summary machine groups.
@@ -199,6 +203,8 @@ impl App {
             loaded_config,
             startup_note,
             tiles: TileGrid::new(),
+            selections: crate::interaction::Selections::default(),
+            selection_area: Rect::ZERO,
             tree_sorts: HashMap::new(),
             tree_layouts: HashMap::new(),
             summary_sort: SummarySort::default(),
@@ -296,6 +302,10 @@ impl TerminalApp for App {
         render::draw(frame, self, keymap);
     }
 
+    fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        tui_pane::handle_tile_scroll(self, position, direction);
+    }
+
     fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
 
     /// Settling the window costs several round trips to the window
@@ -353,6 +363,10 @@ impl TileGridHost for App {
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
+
+    fn cell_scrolled(&mut self, cell: CellClick<TileKey>, direction: ScrollDirection) {
+        render::cell_scrolled(self, &cell, direction);
+    }
 
     fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
 }

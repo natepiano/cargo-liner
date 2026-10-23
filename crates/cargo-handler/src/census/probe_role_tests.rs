@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use crate::census::WorkIdentity;
 use crate::census::transcript::SubagentRole;
 
 #[test]
@@ -35,7 +36,10 @@ fn probe_roles_round_trip_inside_subagent_kinds_and_read_legacy_rows() {
         "pid":21,"name":"cargo test","started":42
     }))
     .expect("older non-subagent extension is ignored");
-    assert_eq!(shell.kind, ChildKind::Shell);
+    assert_eq!(
+        shell.kind,
+        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed)
+    );
     let encoded = serde_json::to_value(shell).expect("shell row");
     assert_eq!(encoded["kind"], "shell");
     assert!(encoded.get("subagent_role").is_none());
@@ -79,7 +83,7 @@ fn recorded_subagent() -> ChildRow {
         pid:          None,
         name:         "Coordinate the release".to_owned(),
         started:      42,
-        timer:        None,
+        work_id:      WorkIdentity::Legacy,
     }
 }
 

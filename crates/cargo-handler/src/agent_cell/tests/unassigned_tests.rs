@@ -29,7 +29,13 @@ fn unassigned_forest() -> MachineState {
     let ups = AgentRow {
         role_fallback: RoleFallback::None,
         children: vec![
-            child(0, ChildKind::Shell, Some(21), "ups-shell", 2 * HOUR),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "ups-shell",
+                2 * HOUR,
+            ),
             child(1, ChildKind::Thread, None, "ups-codex", HOUR),
         ],
         ..agent(20, "ups", 8 * HOUR, None)
