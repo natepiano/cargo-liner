@@ -238,7 +238,8 @@ fn watch_connected_topology() -> Result<(), String> {
         .sender()
         .ok_or_else(|| "KScreen backend reply has no sender".to_owned())?
         .to_string();
-    // Subscribe before reading so a layout change during the subprocess cannot be lost.
+    // Subscribe `changes` and `owners` before `read_outputs` so no layout change
+    // during the subprocess is lost.
     let notifications = std::iter::from_fn(|| {
         Some(futures_lite::future::block_on(futures_lite::future::or(
             async {
@@ -254,7 +255,8 @@ fn watch_connected_topology() -> Result<(), String> {
                     else {
                         break;
                     };
-                    // Ignore the activation signal for the owner that answered requestBackend.
+                    // Ignore the activation signal when `new_owner` matches `owner`, which answered
+                    // `KSCREEN_REQUEST_BACKEND`.
                     if new_owner != owner {
                         break;
                     }
@@ -556,7 +558,8 @@ mod tests {
         ]
         .into_iter();
         let notifications = std::iter::from_fn(|| {
-            // A silent interval only exposes cached snapshots to capture callers.
+            // During a silent interval, `DisplayTopology::snapshot` exposes only cached geometry
+            // to capture callers.
             let before = reads.get();
             for _ in 0..60 {
                 assert!(matches!(
