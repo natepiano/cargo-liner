@@ -63,6 +63,7 @@ use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
+use crate::interaction::RowSpan;
 use crate::sort;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
@@ -92,6 +93,7 @@ fn machine_height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> u
 ///
 /// This is what the summary asks the grid for across, so a directory is
 /// only cut short once the summary has reached the right edge.
+#[cfg(test)]
 pub(crate) fn width(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -100,6 +102,37 @@ pub(crate) fn width(
     sort: SummarySort,
     accounts: &AccountsTable,
     accounts_sort: AccountsSort,
+) -> u16 {
+    machine_width(machines, placement, now, account_column, sort).max(accounts::sorted_width(
+        accounts,
+        now,
+        accounts_sort,
+    ))
+}
+
+/// Account demand follows its drawn layout; machine tables retain their preferred width.
+pub(crate) fn width_at_width(frame: &SummaryFrame<'_, '_>, width: u16) -> u16 {
+    machine_width(
+        frame.machines,
+        frame.placement,
+        frame.now,
+        frame.account_column,
+        frame.sort,
+    )
+    .max(accounts::sorted_width_at_width(
+        frame.accounts,
+        frame.now,
+        frame.accounts_sort,
+        width,
+    ))
+}
+
+fn machine_width(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    now: u64,
+    account_column: AccountColumn,
+    sort: SummarySort,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -114,7 +147,7 @@ pub(crate) fn width(
         .iter()
         .all(|machine| root_rows(*machine, placement).next().is_none())
     {
-        return headings.max(accounts::sorted_width(accounts, now, accounts_sort));
+        return headings;
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
     let visible = populated_columns(machines, placement, account_column);
@@ -124,12 +157,11 @@ pub(crate) fn width(
         .map(|column| widths.get(column.index()))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
-    headings
-        .max(table)
-        .max(accounts::sorted_width(accounts, now, accounts_sort))
+    headings.max(table)
 }
 
 /// Both stacked sections, with the same gap used between machine groups.
+#[cfg(test)]
 pub(crate) fn height(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -137,6 +169,26 @@ pub(crate) fn height(
 ) -> usize {
     let agents = machine_height(machines, placement);
     let usage = accounts::height(accounts);
+    agents
+        + usage
+        + if agents > 0 && usage > 0 {
+            usize::from(GROUP_GAP_HEIGHT)
+        } else {
+            0
+        }
+}
+
+/// Measure account wrapping against the same width used for painting.
+pub(crate) fn height_at_width(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    accounts: &AccountsTable,
+    now: u64,
+    accounts_sort: AccountsSort,
+    width: u16,
+) -> usize {
+    let agents = machine_height(machines, placement);
+    let usage = accounts::height_at_width(accounts, now, accounts_sort, width);
     agents
         + usage
         + if agents > 0 && usage > 0 {
@@ -226,13 +278,21 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
 pub(crate) fn selection_rows(
     frame: &SummaryFrame<'_, '_>,
     width: u16,
-) -> Vec<(crate::interaction::RowIdentity, usize)> {
+) -> Vec<(crate::interaction::RowIdentity, RowSpan)> {
     use crate::interaction::RowIdentity;
     let area = Rect::new(
         0,
         0,
         width,
-        u16::try_from(height(frame.machines, frame.placement, frame.accounts)).unwrap_or(u16::MAX),
+        u16::try_from(height_at_width(
+            frame.machines,
+            frame.placement,
+            frame.accounts,
+            frame.now,
+            frame.accounts_sort,
+            width,
+        ))
+        .unwrap_or(u16::MAX),
     );
     let mut result = Vec::new();
     for mut machine in machine_tables(area, frame) {
@@ -240,7 +300,7 @@ pub(crate) fn selection_rows(
             RowIdentity::SummaryGroup {
                 machine: machine.machine.name.to_owned(),
             },
-            usize::from(machine.heading.y),
+            RowSpan::single(usize::from(machine.heading.y)),
         ));
         machine
             .rows
@@ -248,15 +308,20 @@ pub(crate) fn selection_rows(
         for (index, row) in machine.rows.into_iter().enumerate() {
             result.push((
                 RowIdentity::session(machine.machine.name, row),
-                usize::from(machine.table.y) + 1 + index,
+                RowSpan::single(usize::from(machine.table.y) + 1 + index),
             ));
         }
     }
     let accounts_y = usize::from(accounts_area(area, frame).y);
     result.extend(
-        accounts::selection_rows(frame.accounts, frame.accounts_sort)
+        accounts::selection_rows(frame.accounts, frame.accounts_sort, frame.now, width)
             .into_iter()
-            .map(|(account, row)| (RowIdentity::SummaryAccount { account }, accounts_y + row)),
+            .map(|(account, span)| {
+                (
+                    RowIdentity::SummaryAccount { account },
+                    span.shifted(accounts_y),
+                )
+            }),
     );
     result
 }
@@ -1315,23 +1380,23 @@ mod tests {
         assert_eq!(
             names,
             [
-                Role::Rainbow(crate::theme::RainbowHue::Red)
+                Role::Session(crate::theme::SessionHue::First)
                     .style()
                     .fg
                     .expect("red session"),
-                Role::Rainbow(crate::theme::RainbowHue::Green)
+                Role::Session(crate::theme::SessionHue::Third)
                     .style()
                     .fg
                     .expect("green session"),
-                Role::Rainbow(crate::theme::RainbowHue::Cyan)
+                Role::Session(crate::theme::SessionHue::Fourth)
                     .style()
                     .fg
                     .expect("cyan session"),
-                Role::Rainbow(crate::theme::RainbowHue::Blue)
+                Role::Session(crate::theme::SessionHue::Fifth)
                     .style()
                     .fg
                     .expect("blue session"),
-                Role::Rainbow(crate::theme::RainbowHue::Red)
+                Role::Session(crate::theme::SessionHue::First)
                     .style()
                     .fg
                     .expect("wrapped red session"),

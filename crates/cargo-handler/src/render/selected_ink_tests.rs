@@ -474,7 +474,7 @@ fn unselected_rows_keep_main_inks_in_default_dark() {
         "Default Dark",
         [
             [
-                Color::Rgb(255, 165, 70),
+                Color::Rgb(218, 251, 142),
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(129, 129, 255),
@@ -482,7 +482,7 @@ fn unselected_rows_keep_main_inks_in_default_dark() {
                 Color::Rgb(255, 255, 255),
             ],
             [
-                Color::Rgb(255, 165, 70),
+                Color::Rgb(218, 251, 142),
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(165, 165, 255),
@@ -499,7 +499,7 @@ fn unselected_rows_keep_main_inks_in_default_light() {
         "Default Light",
         [
             [
-                Color::Rgb(148, 70, 0),
+                Color::Rgb(180, 20, 110),
                 Color::Rgb(0, 109, 0),
                 Color::Rgb(0, 104, 87),
                 Color::Rgb(62, 62, 255),
@@ -507,7 +507,7 @@ fn unselected_rows_keep_main_inks_in_default_light() {
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(122, 58, 0),
+                Color::Rgb(159, 18, 97),
                 Color::Rgb(0, 90, 0),
                 Color::Rgb(0, 86, 72),
                 Color::Rgb(37, 37, 255),
@@ -524,7 +524,7 @@ fn unselected_rows_keep_main_inks_in_high_contrast_dark() {
         "High Contrast Dark",
         [
             [
-                Color::Rgb(255, 170, 60),
+                Color::Rgb(205, 246, 140),
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(129, 129, 255),
@@ -532,7 +532,7 @@ fn unselected_rows_keep_main_inks_in_high_contrast_dark() {
                 Color::Rgb(255, 255, 255),
             ],
             [
-                Color::Rgb(255, 170, 60),
+                Color::Rgb(205, 246, 140),
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(165, 165, 255),
@@ -549,7 +549,7 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
         "High Contrast Light",
         [
             [
-                Color::Rgb(150, 60, 0),
+                Color::Rgb(203, 4, 119),
                 Color::Rgb(0, 100, 0),
                 Color::Rgb(0, 80, 65),
                 Color::Rgb(62, 62, 255),
@@ -557,7 +557,7 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(131, 52, 0),
+                Color::Rgb(168, 4, 99),
                 Color::Rgb(0, 90, 0),
                 Color::Rgb(0, 80, 65),
                 Color::Rgb(37, 37, 255),
@@ -815,7 +815,7 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
         FullPaletteRows::Sessions => tui_pane::theme()
             .roles
             .keys()
-            .filter(|key| key.starts_with("rainbow_"))
+            .filter(|key| key.starts_with("session_"))
             .cloned()
             .collect(),
     };

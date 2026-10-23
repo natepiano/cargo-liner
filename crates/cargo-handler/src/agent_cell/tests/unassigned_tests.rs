@@ -1,5 +1,5 @@
 //! `draw_unassigned` renders `UnassignedEntry` values with nested `ChildRow`
-//! lines and each session's `RainbowHue` preserved.
+//! lines and each session's `SessionHue` preserved.
 
 #![expect(
     clippy::panic,
@@ -259,13 +259,13 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let tiles = tile_order_sorted(&placement, &sorts, NOW);
         let buffer = draw_pool(pool(&tiles, "natedev"), 220);
         for (name, hue) in [
-            ("ups", RainbowHue::Green),
-            ("opened-session", RainbowHue::Cyan),
-            ("postmaster", RainbowHue::Blue),
+            ("ups", SessionHue::Third),
+            ("opened-session", SessionHue::Fourth),
+            ("postmaster", SessionHue::Fifth),
         ] {
             assert_eq!(
                 buffer[find(&buffer, name).expect("name drawn")].fg,
-                Role::Rainbow(hue).style().fg.expect("rainbow color"),
+                Role::Session(hue).style().fg.expect("rainbow color"),
                 "{name}"
             );
         }
@@ -275,7 +275,7 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let work = work_buffer("ups");
         assert_eq!(
             work[find(&work, "ups-codex").expect("ups worker")].fg,
-            Role::Rainbow(RainbowHue::Green)
+            Role::Session(SessionHue::Third)
                 .style()
                 .fg
                 .expect("owner hue")

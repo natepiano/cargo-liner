@@ -245,10 +245,13 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
                 ..point
             };
             let area = Rect {
-                height: u16::try_from(summary::height(
+                height: u16::try_from(summary::height_at_width(
                     &cells.machines,
                     &cells.placement,
                     cells.accounts,
+                    cells.now,
+                    cells.accounts_sort,
+                    area.width,
                 ))
                 .unwrap_or(u16::MAX),
                 ..area
@@ -480,7 +483,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     .row_identities()
                     .into_iter()
                     .enumerate()
-                    .map(|(line, identity)| (identity, line))
+                    .map(|(line, identity)| (identity, crate::interaction::RowSpan::single(line)))
                     .collect();
                 (SelectionSurface::Tile(tile.key()), rows)
             })
@@ -549,13 +552,9 @@ impl TileCells<TileKey> for Cells<'_> {
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
-    /// `TileCells::demands` measures summary rows as single lines: long names
-    /// are truncated, not wrapped. `TileDemands.summary_width` is the widest
-    /// summary row; the grid uses it to widen the summary when
-    /// `tiles.widen_summary` is enabled. `agent_cell::height` measures each
-    /// agent cell at its current width, since headers, directories and names
-    /// can require more rows at narrower widths. Cells absent from `widths`
-    /// use the narrowest supplied width, or zero when `widths` is empty.
+    /// Measure each tile at its allocated content width. Account rows choose
+    /// their full, two-line or stacked layout from the summary's width.
+    /// Cells absent from `widths` use the narrowest supplied width, or zero.
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         let narrowest = widths
             .iter()
@@ -568,17 +567,20 @@ impl TileCells<TileKey> for Cells<'_> {
                 .find(|(content, _)| matches!(content, TileContent::Group(group) if group == id))
                 .map_or(narrowest, |&(_, width)| width)
         };
+        let summary_width = widths
+            .iter()
+            .find(|(content, _)| matches!(content, TileContent::Summary))
+            .map_or(narrowest, |&(_, width)| width);
         TileDemands {
-            summary:       summary::height(&self.machines, &self.placement, self.accounts),
-            summary_width: summary::width(
+            summary:       summary::height_at_width(
                 &self.machines,
                 &self.placement,
-                self.now,
-                self.account_column,
-                self.summary_sort,
                 self.accounts,
+                self.now,
                 self.accounts_sort,
+                summary_width,
             ),
+            summary_width: summary::width_at_width(&self.summary_frame(), summary_width),
             groups:        self
                 .tiles
                 .iter()
@@ -604,7 +606,14 @@ impl TileCells<TileKey> for Cells<'_> {
                 let offset = selections
                     .surface(&SelectionSurface::Summary)
                     .map_or(0, |state| state.viewport().scroll_offset());
-                let height = summary::height(&self.machines, &self.placement, self.accounts);
+                let height = summary::height_at_width(
+                    &self.machines,
+                    &self.placement,
+                    self.accounts,
+                    self.now,
+                    self.accounts_sort,
+                    inner.width,
+                );
                 let virtual_area = Rect::new(
                     inner.x,
                     0,
@@ -652,7 +661,7 @@ impl TileCells<TileKey> for Cells<'_> {
             let selections = self.selections.borrow();
             if let Some(state) = selections.surface(&surface)
                 && !matches!(state.selection(), TileSelection::NoRows)
-                && let Some(line) = state.selected_line()
+                && let Some(span) = state.selected_span()
             {
                 let area = match content {
                     TileContent::Group(key) => self.tile(key).map_or(inner, |tile| {
@@ -661,9 +670,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     _ => inner,
                 };
                 let offset = state.viewport().scroll_offset();
-                if let Some(visible) = line.checked_sub(offset)
-                    && visible < usize::from(area.height)
-                {
+                for visible in span.visible_lines(offset, usize::from(area.height)) {
                     let focus = if self.focused.borrow().as_ref() == Some(&surface) {
                         PaneFocusState::Active
                     } else {
@@ -703,7 +710,7 @@ impl TileCells<TileKey> for Cells<'_> {
             AgentTile::Agent(entry) => Line::from(vec![
                 Span::styled(
                     format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                    Role::Rainbow(entry.hue).style(),
+                    Role::Session(entry.hue).style(),
                 ),
                 Span::styled(
                     entry.role_label.suffix(),
@@ -1594,7 +1601,7 @@ fraying = "leading"
             let title_y = u16::try_from(title_y).expect("the row fits");
             assert_eq!(
                 buffer[(title_x + 1, title_y)].fg,
-                Role::Rainbow(crate::theme::RainbowHue::Red)
+                Role::Session(crate::theme::SessionHue::First)
                     .style()
                     .fg
                     .expect("the title has a hue")
@@ -1779,7 +1786,13 @@ fraying = "leading"
                 colors.push(buffer[(x, y)].fg);
             }
         }
-        assert_eq!(colors, [Color::Rgb(255, 95, 95); 1]);
+        assert_eq!(
+            colors,
+            [Role::Session(crate::theme::SessionHue::First)
+                .style()
+                .fg
+                .expect("the session name has a hue"); 1]
+        );
     }
 
     /// Each agent's cell asks for the rows it takes at the width its

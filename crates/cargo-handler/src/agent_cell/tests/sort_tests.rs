@@ -165,13 +165,13 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     }
 
     for (name, hue) in [
-        ("zeta", RainbowHue::Orange),
-        ("nested", RainbowHue::Green),
-        ("alpha", RainbowHue::Cyan),
+        ("zeta", SessionHue::Second),
+        ("nested", SessionHue::Third),
+        ("alpha", SessionHue::Fourth),
     ] {
         assert_eq!(
             name_color(&buffer, name),
-            Role::Rainbow(hue).style().fg.expect("rainbow color"),
+            Role::Session(hue).style().fg.expect("rainbow color"),
             "{name}"
         );
     }

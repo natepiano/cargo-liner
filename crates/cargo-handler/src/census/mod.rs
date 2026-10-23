@@ -999,3 +999,7 @@ mod command_name_tests;
 
 #[cfg(test)]
 mod selection_probe_tests;
+
+#[cfg(test)]
+#[path = "accounts_wire_tests.rs"]
+mod accounts_wire_tests;

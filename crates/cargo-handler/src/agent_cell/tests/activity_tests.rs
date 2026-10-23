@@ -484,7 +484,7 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
         row:            &running,
-        hue:            RainbowHue::Red,
+        hue:            SessionHue::First,
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),

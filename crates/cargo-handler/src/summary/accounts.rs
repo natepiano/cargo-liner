@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use chrono::DateTime;
 use chrono::Duration;
@@ -21,32 +22,33 @@ use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
-use super::age;
 use super::cell_width;
+use super::constants::ACCOUNT_READ_DOT;
 use super::constants::ACCOUNT_ROLE_SEPARATOR;
 use super::constants::ACCOUNTS_HEADING;
 use super::constants::LOW_WEEKLY_USAGE_COLOR;
 use super::constants::RESET_ROUNDING_SECONDS;
 use super::constants::RESET_TIME_FORMAT;
-use super::constants::STALE_ACCOUNT_SUFFIX;
 use super::constants::UNLIMITED_CREDITS_LABEL;
+use crate::census::accounts::AccountReadStatus;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
-use crate::census::accounts::CreditUse;
+use crate::census::accounts::CreditActivity;
+use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
 use crate::constants::ACCOUNTS_LOW_PERCENT;
 use crate::constants::ACCOUNTS_STALE_SECONDS;
-use crate::constants::HEADING_SEPARATOR;
 use crate::constants::MISSING_VALUE;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::footer_colors;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
+use crate::interaction::RowSpan;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
 use crate::sort::ColumnSort;
@@ -117,6 +119,22 @@ fn compare_accounts(
             compare_readings(&left.resets_at, &right.resets_at, sort.direction, Ord::cmp)
         },
         AccountsColumn::Credits => compare_credits(&left.credits, &right.credits, sort.direction),
+        AccountsColumn::Enabled => match (left.credit_permission, right.credit_permission) {
+            (CreditPermission::Enabled, CreditPermission::Disabled) => Ordering::Less,
+            (CreditPermission::Disabled, CreditPermission::Enabled) => Ordering::Greater,
+            _ => Ordering::Equal,
+        },
+        AccountsColumn::InUse => match (left.credit_activity, right.credit_activity) {
+            (CreditActivity::InUse, CreditActivity::Idle) => Ordering::Less,
+            (CreditActivity::Idle, CreditActivity::InUse) => Ordering::Greater,
+            _ => Ordering::Equal,
+        },
+        AccountsColumn::Read => compare_readings(
+            &left.read_at,
+            &right.read_at,
+            sort.direction,
+            |left, right| right.cmp(left),
+        ),
     }
 }
 
@@ -170,6 +188,7 @@ impl<'a> From<&'a AccountsTable> for AccountsSection<'a> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn height(table: &AccountsTable) -> usize {
     match AccountsSection::from(table) {
         AccountsSection::Hidden => 0,
@@ -182,16 +201,39 @@ pub(super) fn height(table: &AccountsTable) -> usize {
     }
 }
 
-/// Sorted headers participate in demand, including their direction arrows.
+/// Measure exactly the lines drawn at this width, including wrapped accounts.
+pub(super) fn height_at_width(
+    table: &AccountsTable,
+    now: u64,
+    sort: AccountsSort,
+    width: u16,
+) -> usize {
+    measured_lines(table, now, &FooterColors::default(), sort, width)
+        .lines
+        .len()
+}
+
+/// Sorted headers participate in preferred width, including direction arrows.
+#[cfg(test)]
 pub(super) fn sorted_width(table: &AccountsTable, now: u64, sort: AccountsSort) -> u16 {
-    sorted_lines(table, now, &FooterColors::default(), sort)
+    sorted_width_at_width(table, now, sort, u16::MAX)
+}
+
+pub(super) fn sorted_width_at_width(
+    table: &AccountsTable,
+    now: u64,
+    sort: AccountsSort,
+    width: u16,
+) -> u16 {
+    measured_lines(table, now, &FooterColors::default(), sort, width)
+        .lines
         .iter()
         .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
         .max()
         .unwrap_or_default()
 }
 
-/// The same lines supply source-ordered and user-sorted account tables.
+/// The same measured lines supply painting and demand at the actual table width.
 pub(super) fn draw_sorted(
     buffer: &mut Buffer,
     area: Rect,
@@ -200,42 +242,27 @@ pub(super) fn draw_sorted(
     colors: &FooterColors,
     sort: AccountsSort,
 ) {
-    Paragraph::new(sorted_lines(table, now, colors, sort)).render(area, buffer);
+    Paragraph::new(measured_lines(table, now, colors, sort, area.width).lines).render(area, buffer);
 }
 
-/// Read the measured header spans back from the same lines that are drawn.
+/// Both header lines use the coordinates recorded while building the drawing.
 pub(super) fn header_spans(
     area: Rect,
     table: &AccountsTable,
     now: u64,
     sort: AccountsSort,
 ) -> Vec<HeaderSpan<AccountsColumn>> {
-    if !matches!(
-        AccountsSection::from(table),
-        AccountsSection::Reading { .. }
-    ) || area.height < 2
-    {
-        return Vec::new();
-    }
-    let lines = sorted_lines(table, now, &FooterColors::default(), sort);
-    let mut x = area.x;
-    let mut spans = Vec::new();
-    let mut columns = AccountsColumn::ALL.into_iter();
-    for (index, span) in lines[1].spans.iter().enumerate() {
-        let width = cell_width(&span.content);
-        // The first span is indentation; headers and their following gaps alternate.
-        if index % 2 == 1
-            && let Some(column) = columns.next()
-        {
-            spans.push(HeaderSpan {
-                column,
-                columns: x..x.saturating_add(width).min(area.right()),
-                row: area.y + 1,
-            });
-        }
-        x = x.saturating_add(width);
-    }
-    spans
+    measured_lines(table, now, &FooterColors::default(), sort, area.width)
+        .headers
+        .into_iter()
+        .filter(|header| header.row < area.height)
+        .map(|header| HeaderSpan {
+            column:  header.column,
+            row:     area.y.saturating_add(header.row),
+            columns: area.x.saturating_add(header.columns.start)
+                ..area.x.saturating_add(header.columns.end).min(area.right()),
+        })
+        .collect()
 }
 
 fn dim() -> Style {
@@ -251,10 +278,10 @@ fn note(text: impl Into<String>) -> Line<'static> {
     ))
 }
 
-/// One reading state supplies both the account suffix and the row style.
+/// Reading freshness controls account and role emphasis, independently of the read-status dot.
 enum Freshness {
     Fresh,
-    Stale(String),
+    Stale,
     Unread,
 }
 
@@ -266,7 +293,7 @@ impl Freshness {
                 let seconds =
                     now.saturating_sub(u64::try_from(read_at.timestamp()).unwrap_or_default());
                 if seconds > ACCOUNTS_STALE_SECONDS {
-                    Self::Stale(age::age_label(seconds))
+                    Self::Stale
                 } else {
                     Self::Fresh
                 }
@@ -274,24 +301,64 @@ impl Freshness {
         }
     }
 
-    fn label(&self, account: &str) -> String {
-        match self {
-            Self::Stale(age) => format!("{account}{HEADING_SEPARATOR}{age} {STALE_ACCOUNT_SUFFIX}"),
-            Self::Fresh | Self::Unread => account.to_owned(),
-        }
-    }
-
     fn style(&self) -> Style {
         match self {
             Self::Fresh => Style::default().fg(text_default()),
-            Self::Stale(_) | Self::Unread => dim(),
+            Self::Stale | Self::Unread => dim(),
         }
     }
 }
 
-fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
+/// A reset uses the same calendar cutoffs as the accounts board, in local time.
+fn reset_label(at: DateTime<Utc>, now: u64) -> String {
+    let at = (at + Duration::seconds(RESET_ROUNDING_SECONDS)).with_timezone(&Local);
+    let format = i64::try_from(now)
+        .ok()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .map_or("%d %b", |now| {
+            match at
+                .date_naive()
+                .signed_duration_since(now.with_timezone(&Local).date_naive())
+                .num_days()
+                .unsigned_abs()
+            {
+                0 => "%H:%M",
+                1..=6 => RESET_TIME_FORMAT,
+                _ => "%d %b",
+            }
+        });
+    at.format(format).to_string()
+}
+
+/// Reading ages use only their largest whole unit, without an "ago" suffix.
+fn read_age(at: DateTime<Utc>, now: u64) -> String {
+    let seconds = now.saturating_sub(u64::try_from(at.timestamp()).unwrap_or_default());
+    let (size, unit) = [(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")]
+        .into_iter()
+        .find(|(size, _)| seconds >= *size)
+        .unwrap_or((1, "s"));
+    format!("{}{unit}", seconds / size)
+}
+
+/// Round the source balance once, then group its integer digits in thousands.
+fn credit_amount(amount: f64) -> String {
+    let rounded = format!("{:.0}", amount.round());
+    let (sign, digits) = rounded
+        .strip_prefix('-')
+        .map_or(("", rounded.as_str()), |digits| ("-", digits));
+    let mut grouped = sign.to_owned();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+fn values(row: &AccountUsage, now: u64) -> [String; AccountsColumn::ALL.len()] {
     let roles = if row.roles.is_empty() {
-        MISSING_VALUE.to_owned()
+        String::new()
     } else {
         row.roles
             .iter()
@@ -300,62 +367,249 @@ fn values(row: &AccountUsage, freshness: &Freshness) -> [String; 5] {
             .join(ACCOUNT_ROLE_SEPARATOR)
     };
     [
-        freshness.label(&row.label),
+        row.label.clone(),
         roles,
         match row.weekly_left_percent {
-            Reading::Known(left) => format!("{left}%"),
+            Reading::Known(left) => format!("{:.0}%", left.round()),
             Reading::Unavailable => MISSING_VALUE.to_owned(),
         },
         match row.resets_at {
-            Reading::Known(at) => (at + Duration::seconds(RESET_ROUNDING_SECONDS))
-                .with_timezone(&Local)
-                .format(RESET_TIME_FORMAT)
-                .to_string(),
-            Reading::Unavailable => MISSING_VALUE.to_owned(),
+            Reading::Known(at) => reset_label(at, now),
+            Reading::Unavailable => String::new(),
         },
         match row.credits {
-            Credits::Amount(amount) => amount.to_string(),
+            Credits::Amount(amount) => credit_amount(amount),
             Credits::Unlimited => UNLIMITED_CREDITS_LABEL.to_owned(),
-            Credits::Unavailable => MISSING_VALUE.to_owned(),
+            Credits::Unavailable => String::new(),
+        },
+        match row.credit_permission {
+            CreditPermission::Enabled => "yes".to_owned(),
+            CreditPermission::Disabled => String::new(),
+        },
+        match row.credit_activity {
+            CreditActivity::InUse => "yes".to_owned(),
+            CreditActivity::Idle => String::new(),
+        },
+        match row.read_at {
+            Reading::Known(at) => read_age(at, now),
+            Reading::Unavailable => String::new(),
         },
     ]
 }
 
-/// Pad with display widths so account labels and notes determine the same demand drawn.
-fn columns(values: [Line<'static>; 5], widths: &[u16; 5]) -> Line<'static> {
-    let mut spans = vec![Span::raw(SECTION_ITEM_INDENT)];
-    for ((column, mut value), &column_width) in
-        AccountsColumn::ALL.into_iter().zip(values).zip(widths)
-    {
-        let width = value.spans.iter().fold(0u16, |width, span| {
-            width.saturating_add(cell_width(&span.content))
-        });
-        let padding = column_width.saturating_sub(width);
-        let trailing_padding = match column {
-            AccountsColumn::WeeklyLeft | AccountsColumn::Resets | AccountsColumn::Credits => {
-                if let Some(first) = value.spans.first_mut() {
-                    first.content =
-                        format!("{}{}", " ".repeat(usize::from(padding)), first.content).into();
-                }
-                0
-            },
-            AccountsColumn::Account | AccountsColumn::Roles => padding,
-        };
-        spans.append(&mut value.spans);
-        if column != AccountsColumn::Credits {
+/// The width chooses exactly one presentation for headers, rows and selection.
+#[derive(Clone, Copy)]
+enum AccountsLayout {
+    Full,
+    TwoLine,
+    Stacked,
+}
+
+impl AccountsLayout {
+    fn for_width(width: u16, widths: &[u16; AccountsColumn::ALL.len()]) -> Self {
+        let first = column_width(widths, 0..3, account_name_indent());
+        let second = column_width(widths, 3..8, account_name_indent());
+        if column_width(widths, 0..8, account_name_indent()) <= width {
+            Self::Full
+        } else if first <= width && second <= width {
+            Self::TwoLine
+        } else {
+            Self::Stacked
+        }
+    }
+}
+
+/// Both table lines start their values after the read dot and its column gap.
+fn account_name_indent() -> u16 {
+    cell_width(SECTION_ITEM_INDENT) + cell_width(ACCOUNT_READ_DOT) + TABLE_COLUMN_SPACING
+}
+
+fn column_width(
+    widths: &[u16; AccountsColumn::ALL.len()],
+    range: Range<usize>,
+    indent: u16,
+) -> u16 {
+    let count = u16::try_from(range.len()).unwrap_or(u16::MAX);
+    widths[range]
+        .iter()
+        .copied()
+        .fold(indent, u16::saturating_add)
+        .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(count.saturating_sub(1)))
+}
+
+/// Coordinates belong to the very lines supplying demand and painting.
+struct AccountLines {
+    lines:      Vec<Line<'static>>,
+    headers:    Vec<HeaderSpan<AccountsColumn>>,
+    selections: Vec<(String, RowSpan)>,
+}
+
+/// Each line set uses its own indentation and the same numeric alignment.
+fn column_line(
+    prefix: Vec<Span<'static>>,
+    cells: &[Line<'static>; AccountsColumn::ALL.len()],
+    widths: &[u16; AccountsColumn::ALL.len()],
+    range: Range<usize>,
+) -> Line<'static> {
+    let mut spans = prefix;
+    for index in range.clone() {
+        let column = AccountsColumn::ALL[index];
+        let value = &cells[index];
+        let padding =
+            widths[index].saturating_sub(u16::try_from(value.width()).unwrap_or(u16::MAX));
+        let right = matches!(
+            column,
+            AccountsColumn::WeeklyLeft
+                | AccountsColumn::Resets
+                | AccountsColumn::Credits
+                | AccountsColumn::Read
+        );
+        if right {
+            spans.push(Span::raw(" ".repeat(usize::from(padding))));
+        }
+        spans.extend(value.spans.iter().cloned());
+        if index + 1 < range.end {
+            let padding = if right { 0 } else { padding };
             spans.push(Span::raw(
-                " ".repeat(usize::from(TABLE_COLUMN_SPACING + trailing_padding)),
+                " ".repeat(usize::from(TABLE_COLUMN_SPACING + padding)),
             ));
         }
     }
     Line::from(spans)
 }
 
+/// Wrap only overlong headings/facts; retain the ink of each source span.
+fn wrap_line(line: Line<'static>, width: u16, indent: u16) -> Vec<Line<'static>> {
+    let room = width.saturating_sub(indent).max(1);
+    let mut result = Vec::new();
+    let mut spans = vec![Span::raw(" ".repeat(usize::from(indent)))];
+    let mut used = 0;
+    for span in line.spans {
+        let mut chunk = String::new();
+        for ch in span.content.chars() {
+            let size = cell_width(&ch.to_string());
+            if used + size > room && used > 0 {
+                spans.push(Span::styled(std::mem::take(&mut chunk), span.style));
+                result.push(Line::from(std::mem::take(&mut spans)));
+                spans.push(Span::raw(" ".repeat(usize::from(indent))));
+                used = 0;
+            }
+            chunk.push(ch);
+            used += size;
+        }
+        if !chunk.is_empty() {
+            spans.push(Span::styled(chunk, span.style));
+        }
+    }
+    result.push(Line::from(spans));
+    result
+}
+
+/// Facts stay whole unless a single fact exceeds the available line width.
+fn stacked_facts(
+    cells: &[Line<'static>; AccountsColumn::ALL.len()],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let mut facts = Vec::new();
+    for (index, prefix, suffix) in [
+        (2, "", " left"),
+        (3, "resets ", ""),
+        (4, "credits ", ""),
+        (5, "", ""),
+        (6, "", ""),
+        (7, "read ", " ago"),
+    ] {
+        if cells[index].width() == 0 {
+            continue;
+        }
+        let mut fact = cells[index].clone();
+        match index {
+            5 => fact = Line::from(Span::styled("enabled", fact.spans[0].style)),
+            6 => fact = Line::from(Span::styled("in use", fact.spans[0].style)),
+            _ => {
+                let style = fact
+                    .spans
+                    .first()
+                    .map_or_else(Style::default, |span| span.style);
+                fact.spans.insert(0, Span::styled(prefix, style));
+                fact.spans.push(Span::styled(suffix, style));
+            },
+        }
+        facts.push(fact);
+    }
+    let indent = (cell_width(SECTION_ITEM_INDENT) + 2).min(width.saturating_sub(1));
+    let room = width.saturating_sub(indent);
+    let mut result = Vec::new();
+    let mut line = Line::default();
+    for fact in facts {
+        let gap = if line.width() == 0 { 0 } else { 3 };
+        if line.width() + gap + fact.width() > usize::from(room) && line.width() > 0 {
+            result.extend(wrap_line(std::mem::take(&mut line), width, indent));
+        }
+        if fact.width() > usize::from(room) {
+            result.extend(wrap_line(fact, width, indent));
+        } else {
+            if line.width() > 0 {
+                line.spans.push(Span::raw(" · "));
+            }
+            line.spans.extend(fact.spans);
+        }
+    }
+    if line.width() > 0 {
+        result.extend(wrap_line(line, width, indent));
+    }
+    result
+}
+
+impl AccountLines {
+    fn push_columns(
+        &mut self,
+        layout: AccountsLayout,
+        dot: &Span<'static>,
+        cells: &[Line<'static>; AccountsColumn::ALL.len()],
+        widths: &[u16; AccountsColumn::ALL.len()],
+        headers: bool,
+    ) {
+        let sets: &[(usize, usize)] = match layout {
+            AccountsLayout::Full => &[(0, 8)],
+            AccountsLayout::TwoLine => &[(0, 3), (3, 8)],
+            AccountsLayout::Stacked => &[],
+        };
+        for &(start, end) in sets {
+            let prefix = if start == 0 {
+                vec![
+                    Span::raw(SECTION_ITEM_INDENT),
+                    dot.clone(),
+                    Span::raw(" ".repeat(usize::from(TABLE_COLUMN_SPACING))),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(usize::from(account_name_indent())))]
+            };
+            if headers {
+                let mut x = prefix
+                    .iter()
+                    .map(|span| cell_width(&span.content))
+                    .sum::<u16>();
+                for (index, &width) in widths.iter().enumerate().take(end).skip(start) {
+                    self.headers.push(HeaderSpan {
+                        column:  AccountsColumn::ALL[index],
+                        columns: x..x.saturating_add(width),
+                        row:     u16::try_from(self.lines.len()).unwrap_or(u16::MAX),
+                    });
+                    x = x.saturating_add(width).saturating_add(TABLE_COLUMN_SPACING);
+                }
+            }
+            self.lines
+                .push(column_line(prefix, cells, widths, start..end));
+        }
+    }
+}
+
 /// Management roles use footer ink; other words and punctuation keep the row style.
 fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) -> Line<'static> {
     let base = freshness.style();
     if row.roles.is_empty() {
-        return Line::from(Span::styled(MISSING_VALUE, base));
+        return Line::default();
     }
     let mut spans = Vec::new();
     for role in &row.roles {
@@ -369,7 +623,7 @@ fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) 
         };
         let style = match freshness {
             Freshness::Fresh => tint.style(base),
-            Freshness::Stale(_) | Freshness::Unread => tint.subdued_style(base),
+            Freshness::Stale | Freshness::Unread => tint.subdued_style(base),
         };
         spans.push(Span::styled(role.text(), style));
     }
@@ -387,28 +641,75 @@ fn ordered_rows(reading: &AccountsReading, sort: AccountsSort) -> Vec<(usize, &A
     ordered
 }
 
-/// Selectable account rows retain their recorded labels through sorting and suffix changes.
-pub(super) fn selection_rows(table: &AccountsTable, sort: AccountsSort) -> Vec<(String, usize)> {
-    let AccountsSection::Reading { reading, .. } = AccountsSection::from(table) else {
-        return Vec::new();
+/// Selectable account rows retain their recorded labels through sorting and reading updates.
+pub(super) fn selection_rows(
+    table: &AccountsTable,
+    sort: AccountsSort,
+    now: u64,
+    width: u16,
+) -> Vec<(String, RowSpan)> {
+    measured_lines(table, now, &FooterColors::default(), sort, width).selections
+}
+
+/// Apply the account, role and readable numeric inks before choosing row geometry.
+fn row_cells(
+    row: &AccountUsage,
+    values: [String; AccountsColumn::ALL.len()],
+    freshness: &Freshness,
+    colors: &FooterColors,
+    palette: &BTreeMap<DateTime<Utc>, Color>,
+) -> [Line<'static>; AccountsColumn::ALL.len()] {
+    let base = freshness.style();
+    let mut cells = values.map(|value| Span::styled(value, base));
+    cells[0].style = match freshness {
+        Freshness::Fresh => colors.account(&row.label).style(base),
+        Freshness::Stale | Freshness::Unread => colors.account(&row.label).subdued_style(base),
     };
-    ordered_rows(reading, sort)
-        .into_iter()
-        .enumerate()
-        .map(|(index, (_, account))| (account.label.clone(), index + 2))
-        .collect()
+    let numeric = Style::default().fg(text_default());
+    cells[2].style = match row.weekly_left_percent {
+        Reading::Known(left) if left < ACCOUNTS_LOW_PERCENT => {
+            footer_colors::readable_status_style(numeric.fg(LOW_WEEKLY_USAGE_COLOR))
+        },
+        Reading::Known(left) if left < 25.0 => {
+            footer_colors::readable_status_style(numeric.fg(Color::Yellow))
+        },
+        Reading::Known(_) | Reading::Unavailable => numeric,
+    };
+    cells[3].style = match row.resets_at {
+        Reading::Known(at) => footer_colors::readable_status_style(numeric.fg(palette[&at])),
+        Reading::Unavailable => numeric,
+    };
+    cells[4].style = match row.credit_permission {
+        CreditPermission::Enabled => numeric,
+        CreditPermission::Disabled => {
+            footer_colors::readable_status_style(FooterTint::Plain.subdued_style(numeric))
+        },
+    };
+    cells[7].style = footer_colors::readable_status_style(numeric);
+    let mut cells = cells.map(Line::from);
+    cells[1] = role_words(row, freshness, colors);
+    cells
 }
 
 /// Resolve one reading into ordered, measured lines for drawing and hit testing.
-fn sorted_lines(
+fn measured_lines(
     table: &AccountsTable,
     now: u64,
     colors: &FooterColors,
     sort: AccountsSort,
-) -> Vec<Line<'static>> {
+    width: u16,
+) -> AccountLines {
+    let mut result = AccountLines {
+        lines:      Vec::new(),
+        headers:    Vec::new(),
+        selections: Vec::new(),
+    };
     let (reading, failure) = match AccountsSection::from(table) {
-        AccountsSection::Hidden => return Vec::new(),
-        AccountsSection::Failure(failure) => return vec![note(failure.to_string())],
+        AccountsSection::Hidden => return result,
+        AccountsSection::Failure(failure) => {
+            result.lines = wrap_line(note(failure.to_string()), width, 0);
+            return result;
+        },
         AccountsSection::Reading { reading, note } => (reading, note),
     };
     let palette = reset_colors(reading);
@@ -418,7 +719,7 @@ fn sorted_lines(
         .map(|(_, row)| *row)
         .map(|row| {
             let freshness = Freshness::new(row, now);
-            (values(row, &freshness), freshness)
+            (values(row, now), freshness)
         })
         .collect();
     let widths = std::array::from_fn(|column| {
@@ -429,48 +730,68 @@ fn sorted_lines(
                 u16::max,
             )
     });
-    let mut result = vec![
-        Line::from(Span::styled(
-            format!("{SECTION_HEADER_INDENT}{ACCOUNTS_HEADING}"),
-            Style::default()
-                .fg(text_default())
-                .add_modifier(Modifier::BOLD),
-        )),
-        columns(
-            AccountsColumn::ALL.map(|column| {
-                Line::from(Span::styled(
-                    sort.header(column),
-                    Style::default().fg(label_color()),
-                ))
-            }),
-            &widths,
-        ),
-    ];
+    let layout = AccountsLayout::for_width(width, &widths);
+    result.lines.push(Line::from(Span::styled(
+        format!("{SECTION_HEADER_INDENT}{ACCOUNTS_HEADING}"),
+        Style::default()
+            .fg(text_default())
+            .add_modifier(Modifier::BOLD),
+    )));
+    let headers = std::array::from_fn(|index| {
+        let column = AccountsColumn::ALL[index];
+        let mut header = Line::from(Span::styled(
+            sort.header(column),
+            Style::default().fg(label_color()),
+        ));
+        if matches!(layout, AccountsLayout::TwoLine) && column == AccountsColumn::Resets {
+            // The continuation header anchors the line; reset values stay right-aligned.
+            let padding = usize::from(widths[index]).saturating_sub(header.width());
+            header.spans.push(Span::raw(" ".repeat(padding)));
+        }
+        header
+    });
+    result.push_columns(layout, &Span::raw(" "), &headers, &widths, true);
     for ((_, row), (values, freshness)) in ordered.into_iter().zip(rows) {
-        let base = freshness.style();
-        let mut cells = values.map(|value| Span::styled(value, base));
-        cells[0].style = match freshness {
-            Freshness::Fresh => colors.account(&row.label).style(base),
-            Freshness::Stale(_) | Freshness::Unread => {
-                colors.account(&row.label).subdued_style(base)
-            },
+        let cells = row_cells(row, values, &freshness, colors, &palette);
+        let dot = match row.read_status {
+            AccountReadStatus::Ok => tui_pane::success_color(),
+            AccountReadStatus::Failed => tui_pane::error_color(),
         };
-        if matches!(row.weekly_left_percent, Reading::Known(left) if left <= ACCOUNTS_LOW_PERCENT) {
-            cells[2].style = footer_colors::readable_status_style(base.fg(LOW_WEEKLY_USAGE_COLOR));
+        let first = result.lines.len();
+        let dot = Span::styled(ACCOUNT_READ_DOT, Style::default().fg(dot));
+        match layout {
+            AccountsLayout::Full | AccountsLayout::TwoLine => {
+                result.push_columns(layout, &dot, &cells, &widths, false);
+            },
+            AccountsLayout::Stacked => {
+                let mut heading = vec![dot, Span::raw(" ")];
+                heading.extend(cells[0].spans.iter().cloned());
+                if cells[1].width() > 0 {
+                    heading.push(Span::raw("  "));
+                    heading.extend(cells[1].spans.iter().cloned());
+                }
+                result.lines.extend(wrap_line(
+                    Line::from(heading),
+                    width,
+                    cell_width(SECTION_ITEM_INDENT).min(width.saturating_sub(1)),
+                ));
+                result.lines.extend(stacked_facts(&cells, width));
+            },
         }
-        if let Reading::Known(at) = row.resets_at {
-            cells[3].style = base.fg(palette[&at]);
-        }
-        if row.credit_use == CreditUse::Held {
-            cells[4].style = base.add_modifier(Modifier::DIM);
-        }
-        let mut cells = cells.map(Line::from);
-        cells[1] = role_words(row, &freshness, colors);
-        result.push(columns(cells, &widths));
+        result.selections.push((
+            row.label.clone(),
+            RowSpan::single(first).with_continuations(result.lines.len() - first - 1),
+        ));
     }
-    result.extend(reading.problems.iter().map(|problem| note(problem.clone())));
+    for problem in &reading.problems {
+        result
+            .lines
+            .extend(wrap_line(note(problem.clone()), width, 0));
+    }
     if let FailureNote::Failed(failure) = failure {
-        result.push(note(failure.to_string()));
+        result
+            .lines
+            .extend(wrap_line(note(failure.to_string()), width, 0));
     }
     result
 }

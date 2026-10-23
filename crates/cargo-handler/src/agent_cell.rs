@@ -91,8 +91,8 @@ use crate::sort::TreeSort;
 use crate::summary;
 use crate::summary::age;
 use crate::summary::age::AgeLayout;
-use crate::theme::RainbowHue;
 use crate::theme::Role;
+use crate::theme::SessionHue;
 use crate::tiles::AgentCell;
 use crate::tiles::TileKey;
 
@@ -110,7 +110,7 @@ pub(crate) struct AgentEntry<'a> {
     /// The root's machine heading.
     machine:               &'a str,
     /// The root's name color.
-    pub(crate) hue:        RainbowHue,
+    pub(crate) hue:        SessionHue,
     /// The accepted or inferred root role.
     pub(crate) role_label: RoleLabel,
     /// This tile's ordering, also used to measure its marked header.
@@ -121,7 +121,7 @@ pub(crate) struct AgentEntry<'a> {
 
 impl AgentEntry<'_> {
     /// The name color of a listed agent in this tile.
-    fn hue_of(&self, machine: &str, pid: u32) -> Option<RainbowHue> {
+    fn hue_of(&self, machine: &str, pid: u32) -> Option<SessionHue> {
         if self.machine == machine && self.row.pid == pid {
             return Some(self.hue);
         }
@@ -166,7 +166,7 @@ struct TreeLine<'a> {
     machine:        &'a str,
     location:       SessionLocation,
     row:            &'a AgentRow,
-    hue:            RainbowHue,
+    hue:            SessionHue,
     rails:          Vec<Rail>,
     branch:         Branch,
     subject:        LineSubject<'a>,
@@ -1120,7 +1120,7 @@ impl TreeLine<'_> {
         match self.kind() {
             LineKind::Shell | LineKind::Subagent(_) => Style::default().fg(text_default()),
             LineKind::UnassignedSession | LineKind::Session(_) | LineKind::Worker(_) => {
-                Role::Rainbow(self.hue).style()
+                Role::Session(self.hue).style()
             },
         }
     }
@@ -1322,7 +1322,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
     let mut agents = 0;
     for root in placement.roots() {
         let machine = root.identity.machine;
-        let hue = RainbowHue::of_agent(agents);
+        let hue = SessionHue::of_agent(agents);
         agents += 1;
         let mut lines = Vec::new();
         let context = TreeBuild {
@@ -1556,18 +1556,18 @@ enum HueAssignment<'p, 'a> {
     /// Assign hues in the existing depth-first census order.
     DefaultOrder,
     /// Borrow the hues already assigned by that traversal.
-    Preserve(&'p HashMap<(&'a str, u32), RainbowHue>),
+    Preserve(&'p HashMap<(&'a str, u32), SessionHue>),
 }
 
 impl HueAssignment<'_, '_> {
     /// Reuse a known identity's hue, assigning a default hue for a new identity.
-    fn hue(&self, identity: RowIdentity<'_>, ordinal: usize) -> RainbowHue {
+    fn hue(&self, identity: RowIdentity<'_>, ordinal: usize) -> SessionHue {
         match self {
-            Self::DefaultOrder => RainbowHue::of_agent(ordinal),
+            Self::DefaultOrder => SessionHue::of_agent(ordinal),
             Self::Preserve(hues) => hues
                 .get(&(identity.machine, identity.pid))
                 .copied()
-                .unwrap_or_else(|| RainbowHue::of_agent(ordinal)),
+                .unwrap_or_else(|| SessionHue::of_agent(ordinal)),
         }
     }
 }
@@ -1609,7 +1609,7 @@ impl<'a> TreeBuild<'_, 'a> {
         identity: RowIdentity<'a>,
         row: &'a AgentRow,
         subject: LineSubject<'a>,
-        hue: RainbowHue,
+        hue: SessionHue,
     ) -> TreeLine<'a> {
         TreeLine {
             dispatch_label: match subject {
@@ -1700,7 +1700,7 @@ fn lines_of<'a>(
     parent: RowIdentity<'a>,
     rails: &mut Vec<Rail>,
     agents: &mut usize,
-    parent_hue: RainbowHue,
+    parent_hue: SessionHue,
     lines: &mut Vec<TreeLine<'a>>,
 ) {
     let placement = context.placement;
@@ -1831,7 +1831,7 @@ fn append_work<'a>(
     row: &'a AgentRow,
     machine: &'a str,
     rails: &mut Vec<Rail>,
-    hue: RainbowHue,
+    hue: SessionHue,
     lines: &mut Vec<TreeLine<'a>>,
 ) {
     let placement = context.placement;
@@ -2042,7 +2042,7 @@ pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> S
         .find_map(|cell| cell.hue_of(machine, pid))
         .map_or_else(
             || Style::default().fg(text_default()),
-            |hue| Role::Rainbow(hue).style(),
+            |hue| Role::Session(hue).style(),
         )
 }
 
@@ -2974,7 +2974,7 @@ mod tests {
             row,
             launcher,
             machine: "natedev",
-            hue: RainbowHue::Red,
+            hue: SessionHue::First,
             role_label: RoleLabel::Unlabeled,
             sort: TreeSort::default(),
             lines: {
@@ -2992,7 +2992,7 @@ mod tests {
                     row,
                     "natedev",
                     &mut Vec::new(),
-                    RainbowHue::Red,
+                    SessionHue::First,
                     &mut lines,
                 );
                 lines
@@ -3996,7 +3996,7 @@ mod tests {
     fn each_agent_takes_the_next_hue_of_the_rainbow() {
         let (natedev, mac) = natedev_and_mac();
 
-        let hues: Vec<(&str, RainbowHue)> = natedev_and_mac_cells(&natedev, &mac)
+        let hues: Vec<(&str, SessionHue)> = natedev_and_mac_cells(&natedev, &mac)
             .iter()
             .flat_map(|cell| {
                 iter::once((cell.row.name.as_str(), cell.hue)).chain(
@@ -4011,15 +4011,15 @@ mod tests {
         assert_eq!(
             hues,
             [
-                ("boss of bosses", RainbowHue::Red),
-                ("trunk", RainbowHue::Orange),
-                ("under trunk", RainbowHue::Green),
-                ("arrange", RainbowHue::Cyan),
-                ("enh/handler", RainbowHue::Blue),
-                ("orphan", RainbowHue::Red),
-                ("left", RainbowHue::Orange),
-                ("right", RainbowHue::Green),
-                ("natemccoy-30", RainbowHue::Cyan),
+                ("boss of bosses", SessionHue::First),
+                ("trunk", SessionHue::Second),
+                ("under trunk", SessionHue::Third),
+                ("arrange", SessionHue::Fourth),
+                ("enh/handler", SessionHue::Fifth),
+                ("orphan", SessionHue::First),
+                ("left", SessionHue::Second),
+                ("right", SessionHue::Third),
+                ("natemccoy-30", SessionHue::Fourth),
             ]
         );
     }

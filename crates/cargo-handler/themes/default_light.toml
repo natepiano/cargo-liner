@@ -18,6 +18,14 @@ schema = 1
 appearance = "light"
 name       = "Default Light"
 
+session_hues = [
+  { r = 113, g = 0, b = 43 },
+  { r = 180, g = 20, b = 110 },
+  { r = 168, g = 92, b = 168 },
+  { r = 69, g = 14, b = 100 },
+  { r = 29, g = 42, b = 98 },
+]
+
 [variants.pane_chrome]
 active_title    = { color = { r = 54, g = 58, b = 61 }, bold = true }
 inactive_border = { r = 140, g = 140, b = 140 }
@@ -45,17 +53,13 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 70, g = 70, b = 70 }
 
 [variants.roles]
-busy           = { r = 0, g = 130, b = 0 }
-claude         = { r = 190, g = 85, b = 50 }
-codex          = { r = 110, g = 60, b = 200 }
-idle           = { r = 110, g = 110, b = 110 }
-rainbow_blue   = { r = 30, g = 80, b = 210 }
-rainbow_cyan   = { r = 0, g = 120, b = 140 }
-rainbow_green  = { r = 0, g = 135, b = 0 }
-rainbow_orange = { r = 180, g = 85, b = 0 }
-rainbow_red    = { r = 200, g = 30, b = 30 }
-shell          = { r = 0, g = 120, b = 100 }
-unreachable    = { r = 190, g = 0, b = 0 }
+busy   = { r = 0, g = 130, b = 0 }
+claude = { r = 190, g = 85, b = 50 }
+codex  = { r = 110, g = 60, b = 200 }
+idle   = { r = 110, g = 110, b = 110 }
+
+shell       = { r = 0, g = 120, b = 100 }
+unreachable = { r = 190, g = 0, b = 0 }
 
 [variants.status]
 bar = { r = 250, g = 250, b = 250 }

@@ -8,6 +8,7 @@
 //! [`TilePick`] that comes back.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -162,10 +163,58 @@ pub(crate) enum RowClick {
     Missed,
 }
 
+/// A selectable item always occupies its first line, with zero or more continuations.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowSpan {
+    first:              usize,
+    continuation_lines: usize,
+}
+
+impl RowSpan {
+    pub(crate) const fn single(first: usize) -> Self {
+        Self {
+            first,
+            continuation_lines: 0,
+        }
+    }
+
+    pub(crate) const fn with_continuations(self, continuation_lines: usize) -> Self {
+        Self {
+            continuation_lines,
+            ..self
+        }
+    }
+
+    const fn start(self) -> usize { self.first }
+
+    /// Exclusive end of the drawn item.
+    const fn end(self) -> usize {
+        self.first
+            .saturating_add(self.continuation_lines)
+            .saturating_add(1)
+    }
+
+    const fn contains(self, line: usize) -> bool { self.first <= line && line < self.end() }
+
+    /// The span's occupied lines clipped and translated into viewport coordinates.
+    pub(crate) fn visible_lines(self, offset: usize, height: usize) -> Range<usize> {
+        let start = self.start().saturating_sub(offset).min(height);
+        let end = self.end().saturating_sub(offset).min(height);
+        start..end
+    }
+
+    pub(crate) const fn shifted(self, offset: usize) -> Self {
+        Self {
+            first: self.first.saturating_add(offset),
+            ..self
+        }
+    }
+}
+
 /// Current row membership owns the cursor; callers cannot install an absent row.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SurfaceSelection {
-    rows:     Vec<(RowIdentity, usize)>,
+    rows:     Vec<(RowIdentity, RowSpan)>,
     viewport: Viewport,
 }
 
@@ -180,7 +229,7 @@ impl SurfaceSelection {
     pub(crate) const fn viewport(&self) -> &Viewport { &self.viewport }
 
     /// Keep an exact identity, otherwise the successor at the old index, then the tail.
-    fn resolve(&mut self, rows: Vec<(RowIdentity, usize)>) {
+    fn resolve(&mut self, rows: Vec<(RowIdentity, RowSpan)>) {
         let old = self.selection();
         let index = match old {
             TileSelection::Row(ref identity) => rows
@@ -194,12 +243,12 @@ impl SurfaceSelection {
         self.viewport
             .set_pos(index.min(self.rows.len().saturating_sub(1)));
         self.viewport
-            .set_content_height(self.rows.last().map_or(0, |(_, y)| y + 1));
+            .set_content_height(self.rows.last().map_or(0, |(_, span)| span.end()));
         self.keep_visible();
     }
 
-    pub(crate) fn selected_line(&self) -> Option<usize> {
-        self.rows.get(self.viewport.pos()).map(|(_, line)| *line)
+    pub(crate) fn selected_span(&self) -> Option<RowSpan> {
+        self.rows.get(self.viewport.pos()).map(|(_, span)| *span)
     }
 
     fn select(&mut self, identity: &RowIdentity) {
@@ -214,8 +263,58 @@ impl SurfaceSelection {
     }
 
     pub(crate) fn navigate(&mut self, action: NavAction) {
+        if self.scroll_continuation(action) {
+            return;
+        }
         self.viewport.navigate(action);
         self.keep_visible();
+        if let Some((_, span)) = self.rows.get(self.viewport.pos())
+            && span.continuation_lines > 0
+        {
+            match action {
+                NavAction::Home
+                    if span.end().saturating_sub(span.start()) > self.viewport.visible_rows() =>
+                {
+                    self.viewport.set_scroll_offset(span.start());
+                },
+                NavAction::End => self
+                    .viewport
+                    .set_scroll_offset(span.end().saturating_sub(self.viewport.visible_rows())),
+                _ => {},
+            }
+        }
+    }
+
+    /// Traverse an item taller than the viewport before leaving it for the next item.
+    fn scroll_continuation(&mut self, action: NavAction) -> bool {
+        let visible = self.viewport.visible_rows();
+        let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
+            return false;
+        };
+        if visible == 0 || span.end().saturating_sub(span.start()) <= visible {
+            return false;
+        }
+        let offset = self.viewport.scroll_offset();
+        let (forward, step) = match action {
+            NavAction::Down | NavAction::Right => (true, 1),
+            NavAction::Up | NavAction::Left => (false, 1),
+            NavAction::PageDown => (true, visible.saturating_sub(1).max(1)),
+            NavAction::PageUp => (false, visible.saturating_sub(1).max(1)),
+            NavAction::HalfPageDown => (true, (visible / 2).max(1)),
+            NavAction::HalfPageUp => (false, (visible / 2).max(1)),
+            NavAction::Home | NavAction::End => return false,
+        };
+        let next = if forward && offset.saturating_add(visible) < span.end() {
+            offset
+                .saturating_add(step)
+                .min(span.end().saturating_sub(visible))
+        } else if !forward && offset > span.start() {
+            offset.saturating_sub(step).max(span.start())
+        } else {
+            return false;
+        };
+        self.viewport.set_scroll_offset(next);
+        true
     }
 
     pub(crate) fn set_area(&mut self, area: Rect) {
@@ -230,7 +329,7 @@ impl SurfaceSelection {
         }
         let line = usize::from(position.y - self.viewport.content_area().y)
             + self.viewport.scroll_offset();
-        if let Some(index) = self.rows.iter().position(|(_, y)| *y == line) {
+        if let Some(index) = self.rows.iter().position(|(_, span)| span.contains(line)) {
             self.viewport.set_pos(index);
             self.keep_visible();
             RowClick::Selected
@@ -252,11 +351,20 @@ impl SurfaceSelection {
             return;
         }
         let offset = self.viewport.scroll_offset();
-        let cursor = self.selected_line().unwrap_or(0);
-        let offset = if cursor < offset {
-            cursor
-        } else if cursor >= offset.saturating_add(visible) {
-            cursor.saturating_add(1).saturating_sub(visible)
+        let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
+            return;
+        };
+        let offset = if span.end().saturating_sub(span.start()) > visible {
+            // A tall item can remain partially visible while its continuation is scrolled.
+            if span.end() <= offset || span.start() >= offset.saturating_add(visible) {
+                span.start()
+            } else {
+                offset
+            }
+        } else if span.start() < offset {
+            span.start()
+        } else if span.end() > offset.saturating_add(visible) {
+            span.end().saturating_sub(visible)
         } else {
             offset
         };
@@ -304,7 +412,7 @@ impl Selections {
     }
 
     /// Reconcile together so exact identities follow a session between surfaces.
-    pub(crate) fn resolve(&mut self, rows: Vec<(SelectionSurface, Vec<(RowIdentity, usize)>)>) {
+    pub(crate) fn resolve(&mut self, rows: Vec<(SelectionSurface, Vec<(RowIdentity, RowSpan)>)>) {
         let selected: Vec<_> = self
             .surfaces
             .iter()
