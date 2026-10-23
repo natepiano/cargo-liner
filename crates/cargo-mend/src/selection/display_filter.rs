@@ -59,9 +59,9 @@ impl DisplayFilter {
                     }
                 }
             }
-            // When lib is included, subtract every other target directory
-            // under the package root so `src/bin/foo.rs` etc. stay out of
-            // the lib's allow set.
+            // When `library_target_selection` is `LibraryTargetSelection::Included`, subtract every
+            // other target directory under `package.root` via `excluded_dirs`, so
+            // `src/bin/foo.rs` and similar files stay out of the library's allow set.
             if matches!(library_target_selection, LibraryTargetSelection::Included) {
                 for target in &package.targets {
                     if !target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
@@ -75,8 +75,8 @@ impl DisplayFilter {
         }
 
         if allowed.is_empty() {
-            // User asked for filtering but no targets matched — show
-            // nothing rather than misreport.
+            // `allowed.is_empty()` means filtering was requested but no targets matched;
+            // return empty `DisplayFilter::AllowDirs` to show nothing rather than misreport.
             Self::AllowDirs {
                 allowed:       Vec::new(),
                 excluded_dirs: Vec::new(),
@@ -108,9 +108,9 @@ impl DisplayFilter {
                 if !in_allowed {
                     return false;
                 }
-                // If a subtracted directory matches, the finding belongs
-                // to a narrower target. Exclude it unless that target was
-                // also explicitly included (its dir is in `allowed`).
+                // `in_excluded_dir` means the finding belongs to a narrower target.
+                // Exclude it unless that target was explicitly included too:
+                // its directory must be in `allowed`.
                 let in_excluded_dir = excluded_dirs.iter().any(|dir| absolute.starts_with(dir));
                 if in_excluded_dir {
                     let lib_dir = package_root.join(SOURCE_DIR_SRC);
