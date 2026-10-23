@@ -672,7 +672,7 @@ impl ResolvingPixels {
         if span == 0 {
             return 0;
         }
-        // The cell's own middle rather than its near edge, so a cell
+        // `at` samples the cell's own middle rather than its near edge, so a cell
         // is read where it stands rather than half a cell early.
         let at = self
             .along(column, row)
@@ -681,7 +681,7 @@ impl ResolvingPixels {
             % span;
         let ahead = (at + span - self.middle % span) % span;
         let away = ahead.min(span - ahead);
-        // The flat middle is asked about first, because at the widest
+        // `coarse_at` tests `away <= coarse` first, because at the widest
         // the wave is drawn the two radii meet: everything the field
         // has is inside the coarse one, and the ramp below has nothing
         // left to run across.
@@ -709,7 +709,7 @@ impl ResolvingPixels {
         if across == 0 || down == 0 {
             return (self.block_columns, self.block_columns);
         }
-        // Rounded rather than truncated, so a block an odd number of
+        // `rows` is rounded rather than truncated, so a block an odd number of
         // columns wide does not come out a row shallower than it should.
         let rows = (self.block_columns.saturating_mul(across) + down / 2) / down;
         (self.block_columns, rows.max(1))
@@ -761,8 +761,8 @@ impl ResolvingPixels {
         }
         Coarsened {
             levels,
-            // A field the backdrop had no colour for anywhere leaves
-            // these crossed over, and a range read the wrong way round
+            // A field the backdrop had no colour for anywhere leaves `dimmest` and
+            // `brightest` crossed over, and a range read the wrong way round
             // would put every cell at one end of the ramp. Nothing is
             // drawn in that case, so either answer will do -- and a
             // range of nothing is the one that says so.
@@ -949,7 +949,7 @@ mod tests {
             "the line the wave's middle stands on should be as coarse \
              as the field goes"
         );
-        // Half the columns along, which at the default width is well
+        // `far` is half of `AREA.width`, which at the default width is well
         // past half the wave's own depth.
         let far = u32::from(AREA.width) / 2;
         assert_eq!(
@@ -1057,7 +1057,7 @@ mod tests {
     fn a_block_reads_square_rather_than_standing_tall() {
         let mut pixels = ResolvingPixels::new();
         pixels.advance(AREA, Duration::ZERO);
-        // A cell twice as tall as it is wide, which is about what an
+        // `pixels.cell_pixels` models a cell twice as tall as it is wide, about what an
         // ordinary terminal font gives.
         pixels.cell_pixels = (1, 2);
 
@@ -1147,7 +1147,7 @@ mod tests {
         let coarsened = pixels.coarsen_field(&backdrop);
         let (columns, rows) = pixels.block_size();
 
-        // Widened until the field stands at one coarseness the whole
+        // `pixels.wider` makes the field stand at one coarseness the whole
         // way round, which is the one state that has every cell of a
         // block as coarse as the field goes.
         pixels.wider(MAX_PIXEL_WAVE_PERCENT);
@@ -1183,7 +1183,7 @@ mod tests {
         let backdrop = Backdrop::stepped(AREA);
         let mut pixels = field_with_wave_at(AT_THE_FIRST_COLUMN);
         pixels.resolve = PixelResolve::Scatter;
-        // Two cells of the first block, dealt moments a long way apart,
+        // `pixels.grains` gives two cells of the first block moments a long way apart,
         // so the coarseness that has brought one back has not yet
         // reached the other.
         pixels.grains.splice(..2, [0, u8::MAX]);
@@ -1205,7 +1205,7 @@ mod tests {
     #[test]
     fn turning_the_wave_round_leaves_it_where_it_stands() {
         let mut pixels = field_with_wave_at(0);
-        // A quarter of the way across, so neither end of the lap
+        // `pixels.middle` is a quarter of `pixels.span()`, so neither end of the lap
         // answers by accident.
         pixels.middle = pixels.span() / 4;
         let coarse = pixels.coarse_at(u32::from(AREA.width) / 4, 0);
