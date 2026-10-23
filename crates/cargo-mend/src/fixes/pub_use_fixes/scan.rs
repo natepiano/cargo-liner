@@ -200,9 +200,9 @@ fn analyze_pub_use_candidates(
             CandidateScreening::Accept(narrowable) => {
                 supported_plans.push(build_validated_plan(narrowable, parent_boundary));
             },
-            // A screened-out candidate still reaches the user as a skip: the
-            // finding advertised `FixSupport::PubUse`, so silently dropping it
-            // would report "applied 0 pub use fix(es)" with no explanation.
+            // `CandidateScreening::Skip` increments `skipped`: a screened-out candidate still
+            // reaches the user as a skip because the finding advertised `FixSupport::PubUse`;
+            // silently dropping it would report "applied 0 pub use fix(es)" with no explanation.
             CandidateScreening::Skip => skipped += 1,
         }
     }
