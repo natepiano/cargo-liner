@@ -53,8 +53,8 @@ impl MendRunner<'_> {
             .map(|(fix_kind, _)| (fix_kind, applied.count(fix_kind)))
             .collect::<Vec<_>>();
 
-        // Name only the kinds that edited something, so a run that removes one
-        // `pub` does not also announce four kinds it had no work for. When every
+        // `reported` names only the `FixKind` values that edited something, so a run that removes
+        // one `pub` does not also announce four kinds it had no work for. When every
         // enabled kind sits at zero the first one still speaks, keeping a clean
         // run's single "nothing available" line instead of going silent.
         let mut reported = enabled
@@ -81,8 +81,8 @@ impl MendRunner<'_> {
             )));
         }
 
-        // Pushed at zero too: a convergence pass that skips nothing replaces an
-        // earlier pass's count instead of leaving it standing.
+        // `NoticeKind::SubtreeReexportSkipped` is pushed at zero too: a convergence pass that skips
+        // nothing replaces an earlier pass's count instead of leaving it standing.
         if let Some(scan) = fix_scans.subtree_reexports {
             notices.push(NoticeKind::SubtreeReexportSkipped(scan.skipped));
         }

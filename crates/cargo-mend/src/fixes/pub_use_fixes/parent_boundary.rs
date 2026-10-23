@@ -98,9 +98,10 @@ pub(super) fn resolve_parent_pub_use_export(
             continue;
         }
         if !parent_pub_use_exports_item(&item_use.tree, child_module_name, item_name) {
-            // Two `use` declarations can share one physical line, so keep
-            // scanning the rest of the line rather than treating the first
-            // textual match as authoritative.
+            // `resolve_parent_pub_use_export` keeps scanning when `parent_pub_use_exports_item`
+            // rejects an item: two `use` declarations can share one physical line, so
+            // scan the rest of the line rather than treating the first textual match as
+            // authoritative.
             continue;
         }
         let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use);
