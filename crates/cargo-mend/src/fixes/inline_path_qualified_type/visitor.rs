@@ -106,15 +106,15 @@ impl InlinePathVisitor<'_> {
         let path_anchor = PathAnchor::from(first.as_str());
         let is_intra_crate = path_anchor.is_crate_relative();
 
-        // For intra-crate paths, require at least 3 segments: `crate::Foo` and
-        // `super::Foo` are already short, so adding a `use` would not shorten
-        // the call site. For external-crate paths (`ratatui::Frame`,
+        // `InlinePathVisitor::check_path` requires `segments.len() >= 3` for `is_intra_crate`:
+        // `crate::Foo` and `super::Foo` are already short, so adding a `use` would not
+        // shorten the call site. For external-crate paths (`ratatui::Frame`,
         // `std::collections::BTreeMap`), 2 segments is the minimum rewrite.
         if is_intra_crate && segments.len() < 3 {
             return;
         }
 
-        // Filter obvious non-crate roots. `self::` is a same-module reference,
+        // `PathAnchor::is_explicit_self` filters `self::`, which is a same-module reference,
         // not a candidate for a `use`.
         if path_anchor.is_explicit_self() {
             return;
@@ -146,9 +146,9 @@ impl InlinePathVisitor<'_> {
 
         let full_path = segments.join("::");
 
-        // Heuristic: if the penultimate segment is also PascalCase, the leaf
-        // is almost certainly an enum variant (or associated type/const) of
-        // that type. Import the parent type, not the leaf, so that variants
+        // `is_pascal_case(penultimate)` is the heuristic: if the penultimate segment is also
+        // PascalCase, the leaf is almost certainly an enum variant (or associated
+        // type/const) of that type. Import the parent type, not the leaf, so that variants
         // stay disambiguated by their enum container (`RustProject::Package`
         // rather than bare `Package`). This avoids collisions with
         // same-named structs or other variants that share a leaf name.
@@ -163,10 +163,11 @@ impl InlinePathVisitor<'_> {
             };
         let import_path = import_segments.join("::");
 
-        // Use ident spans to exclude generic arguments from the replacement range.
-        // path.span() includes generic args (e.g., `<T>`), but we only want to
-        // replace the path portion, leaving generic args in place.
-        // Safety: segments.len() >= 3, checked above.
+        // `first_ident_span` and `last_ident_span` use identifier spans to exclude generic
+        // arguments from the replacement range. path.span() includes generic args (e.g.,
+        // `<T>`), but we only want to replace the path portion, leaving generic args in
+        // place. `check_path` already required at least three intra-crate segments or two
+        // external-crate segments.
         let first_ident_span = path.segments[0].ident.span();
         let last_ident_span = path.segments[segments.len() - 1].ident.span();
 
@@ -203,10 +204,10 @@ impl InlinePathVisitor<'_> {
         if path.segments.len() == 1 {
             self.bare_type_names.insert(name);
         } else if name != "Self" {
-            // A bare `Self::method` is fine — `Self` isn't a name we'd ever
-            // import. Anything else PascalCase as the first segment is a real
-            // type reference whose meaning would change under a same-named
-            // import.
+            // `record_bare_name_footprint` excludes `name == "Self"`: a bare `Self::method` is fine
+            // — `Self` isn't a name we'd ever import. Anything else PascalCase as the
+            // first segment is a real type reference whose meaning would change under a
+            // same-named import.
             self.bare_type_names.insert(name);
         }
     }
@@ -216,7 +217,8 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     imports::gate_tracking_visit!();
 
     fn visit_item_use(&mut self, _: &ItemUse) {
-        // Skip use statements — they are imports, not inline code
+        // `InlinePathVisitor::visit_item_use` skips `ItemUse` because use statements are imports,
+        // not inline code.
     }
 
     fn visit_type_path(&mut self, node: &TypePath) {
@@ -232,13 +234,14 @@ impl Visit<'_> for InlinePathVisitor<'_> {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
         }
-        // Don't recurse — path segments don't contain sub-expressions
+        // `InlinePathVisitor::visit_expr_path` does not recurse because `node.path` segments do not
+        // contain sub-expressions.
     }
 
     fn visit_expr_struct(&mut self, node: &ExprStruct) {
-        // `Foo { .. }` and `crate::foo::Bar { .. }` — the path of a struct
-        // literal isn't reached by `visit_expr_path` / `visit_type_path`,
-        // so handle it explicitly.
+        // `InlinePathVisitor::visit_expr_struct` handles `node.path` in `Foo { .. }` and
+        // `crate::foo::Bar { .. }` — the path of a struct literal isn't reached by
+        // `visit_expr_path` / `visit_type_path`, so handle it explicitly.
         if node.qself.is_none() {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
@@ -247,9 +250,9 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     }
 
     fn visit_pat_struct(&mut self, node: &PatStruct) {
-        // `Foo { .. }` and `crate::foo::Bar { .. }` in pattern position
-        // (`let Bar { .. } = ...`, match arms) — also not visited by
-        // `visit_expr_path` / `visit_type_path`.
+        // `InlinePathVisitor::visit_pat_struct` handles `node.path` in `Foo { .. }` and
+        // `crate::foo::Bar { .. }` in pattern position (`let Bar { .. } = ...`, match arms)
+        // — also not visited by `visit_expr_path` / `visit_type_path`.
         if node.qself.is_none() {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
@@ -258,8 +261,8 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     }
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
-        // Track nesting depth so item-name registration below can gate on
-        // "is this at the file's top level". Names defined inside nested
+        // `InlinePathVisitor::mod_depth` tracks nesting depth so item-name registration below can
+        // gate on "is this at the file's top level". Names defined inside nested
         // modules don't collide with imports added at the top level.
         self.mod_depth += 1;
         visit::visit_item_mod(self, node);
@@ -306,10 +309,10 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.sig.ident.to_string());
         }
-        // Push the fn's generics around the entire item — signature AND body.
-        // Bodies contain closure parameter types and locals that may reference
-        // these generics (e.g. `let f = |x: &T::Item| ...` inside `fn foo<T>`).
-        // A `visit_signature`-only push pops before the body is visited, so
+        // `InlinePathVisitor::visit_item_fn` calls `push_generics` and `pop_generics` around the
+        // entire item — signature AND body. Bodies contain closure parameter types and
+        // locals that may reference these generics (e.g. `let f = |x: &T::Item| ...` inside
+        // `fn foo<T>`). A `visit_signature`-only push pops before the body is visited, so
         // those references would be misread as crate paths.
         self.push_generics(&node.sig.generics);
         visit::visit_item_fn(self, node);
@@ -360,8 +363,8 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     }
 
     fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {
-        // `Foo(..)` in pattern position — e.g. `let Foo(x) = ...` or
-        // `Some(Enum::Variant(x))` match arms.
+        // `InlinePathVisitor::visit_pat_tuple_struct` checks `node.path` in `Foo(..)` patterns —
+        // e.g. `let Foo(x) = ...` or `Some(Enum::Variant(x))` match arms.
         if node.qself.is_none() {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);

@@ -121,9 +121,9 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    // Collision detection needs every occurrence's resolved import path, and
-    // resolution never consults the collision set, so resolve once against a
-    // context with no collisions recorded yet.
+    // `process::find_collision_names` needs every occurrence's resolved import path,
+    // and `process::resolve_occurrence` never consults the collision set, so resolve
+    // once against `resolve_ctx`, which has no collisions recorded yet.
     let no_collision_names = BTreeSet::new();
     let resolve_ctx = OccurrenceContext {
         path,
