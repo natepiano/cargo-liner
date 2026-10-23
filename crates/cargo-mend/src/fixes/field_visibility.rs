@@ -30,8 +30,9 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
-        // A field's annotation is rewritten in place, so both a bare `pub` and
-        // a restricted one are in scope here. The edit covers the whitespace
+        // `VisibilityAnnotationSite::locate` locates the field annotation for an
+        // in-place rewrite, so both a bare `pub` and a restricted one are in scope
+        // here. The edit covers the whitespace
         // run after the annotation so the replacement collapses cleanly when
         // the new visibility is empty.
         let Some(site) = VisibilityAnnotationSite::locate(&source, finding.line, finding.column)
