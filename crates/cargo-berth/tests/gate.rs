@@ -48,6 +48,12 @@ pub use edges_templates::legacy_negative_state;
 pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
 pub use edges_templates::successor_history_state;
+#[path = "support/ordered_target_pair_template.rs"]
+mod ordered_target_pair_template;
+#[path = "support/pending_rewrite_templates.rs"]
+mod pending_rewrite_templates;
+pub use pending_rewrite_templates::PENDING_ORDERED_REWRITE;
+pub use pending_rewrite_templates::TWO_PENDING_ORDERED_REWRITES;
 #[path = "support/gate_templates.rs"]
 mod gate_templates;
 use cargo_berth_test_support::assert_success;
@@ -252,60 +258,26 @@ struct TargetPair {
 }
 
 fn target_pair(merge_predecessor: bool) -> TargetPair {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
-    let predecessor = repository.lane("target-a", "integration");
-    let successor = repository.lane("target-b", "integration");
-    let integration_before =
-        repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
-    write_file(&predecessor, "shared.txt", "A\n");
-    let claimed = repository.claim(
-        &predecessor,
-        "file:shared.txt",
-        FIRST_RUN,
-        Some("integration"),
-    );
-    assert_success(&claimed);
-    let predecessor_id = claim_id(&claimed);
-    let deferred = repository.defer_claim_to(
-        &successor,
-        "file:shared.txt",
-        SECOND_RUN,
-        &predecessor_id,
-        Some("integration"),
-    );
-    assert_success(&deferred);
-    let successor_id = claim_id(&deferred);
-    let sequenced = repository.run(
-        repository.root(),
-        &[
-            "sequence",
-            &predecessor_id,
-            &successor_id,
-            "--why",
-            "A lands before B",
-            "--json",
-        ],
-    );
-    assert_success(&sequenced);
-    repository.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    repository.commit_file(&successor, "shared.txt", "B\n", "B work");
-    if merge_predecessor {
-        repository.git(
-            &successor,
-            &["merge", "-s", "ours", "--no-edit", "target-a"],
-        );
-    }
-    let predecessor_tip = repository.git_stdout(&predecessor, &["rev-parse", "HEAD"]);
-    let successor_tip = repository.git_stdout(&successor, &["rev-parse", "HEAD"]);
+    let template = if merge_predecessor {
+        ordered_target_pair_template::MERGED_TARGET_PAIR
+    } else {
+        ordered_target_pair_template::SEPARATE_TARGET_PAIR
+    };
+    let repository = IntegrationRepository::from_recorded_template(template);
+    let witnesses: ordered_target_pair_template::TargetPairWitnesses = serde_json::from_slice(
+        &fs::read(repository.root().join(".git/ordered-target-pair.json"))
+            .expect("target pair witnesses should read"),
+    )
+    .expect("target pair witnesses should decode");
     TargetPair {
+        predecessor: repository.recorded_lane("target-a"),
+        successor: repository.recorded_lane("target-b"),
+        predecessor_id: witnesses.predecessor_id,
+        successor_id: witnesses.successor_id,
+        integration_before: witnesses.integration_before,
+        predecessor_tip: witnesses.predecessor_tip,
+        successor_tip: witnesses.successor_tip,
         repository,
-        predecessor,
-        successor,
-        predecessor_id,
-        successor_id,
-        integration_before,
-        predecessor_tip,
-        successor_tip,
     }
 }
 
@@ -4331,50 +4303,7 @@ fn pending_rebase_checkpoint_obeys_ordering_in_explicit_integration() {
 
 /// Leave the real rebase marker untouched until the caller enters one gate path.
 fn pending_rebase_checkpoint_with_ordering_hold() -> DeferredPair {
-    let fixture = deferred_pair(initialized_repository());
-    let root = fixture.repository.path();
-    let sequenced = run_berth(
-        root,
-        &[
-            "sequence",
-            &fixture.holder_id,
-            &fixture.blocked_id,
-            "--why",
-            "predecessor must integrate before the rebased checkpoint",
-            "--json",
-        ],
-    );
-    assert!(sequenced.status.success(), "{}", json_output(&sequenced));
-    let old_tip = commit_work(
-        &fixture.blocked_root,
-        "src/lib.rs",
-        "pub fn rebased_successor() {}\n",
-        "checkpoint successor before rebase",
-    );
-    let checkpoint = run_berth(
-        &fixture.blocked_root,
-        &["release", &fixture.blocked_id, "--json"],
-    );
-    assert!(checkpoint.status.success(), "{}", json_output(&checkpoint));
-    assert_eq!(
-        json_output(&checkpoint)["payload"]["data"]["status"],
-        "checkpointed"
-    );
-    commit_work(root, "upstream.txt", "upstream advance\n", "advance trunk");
-    set_gate_mode(root, "enforce");
-    git(&fixture.blocked_root, &["rebase", "main"]);
-    set_gate_mode(&fixture.blocked_root, "enforce");
-    let rebased_tip = git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]);
-    assert_ne!(rebased_tip, old_tip);
-    assert_eq!(pending_bypass_count(root), 1);
-    let marker = pending_bypass_marker(root);
-    assert_eq!(marker["kind"], "branch_rewrite");
-    assert_eq!(
-        marker["pairs"],
-        serde_json::json!([{"old": old_tip, "new": rebased_tip}])
-    );
-
-    fixture
+    recorded_pending_pair(PENDING_ORDERED_REWRITE)
 }
 
 #[test]
@@ -4497,119 +4426,27 @@ struct DeferredRewriteGateFixture {
 }
 
 fn two_pending_rewrites_with_ordering_hold() -> DeferredRewriteGateFixture {
-    let pair = pending_rebase_checkpoint_with_ordering_hold();
-    let root = pair.repository.path();
-    let blocked_marker = pending_bypass_marker(root);
-    let blocked_old_tip = blocked_marker["pairs"][0]["old"]
-        .as_str()
-        .expect("blocked rewrite should identify its old tip")
-        .to_owned();
-    assert_rewritten_tip_enters_without_old_tip(&pair, &blocked_old_tip);
-    let marker_path = fs::read_dir(root.join(".git"))
-        .expect("common Git directory should read")
-        .map(|entry| entry.expect("marker entry should read").path())
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(PENDING_BYPASS_PREFIX))
-        })
-        .expect("blocked marker should exist");
-    let held_marker = pair.worktrees.path().join("blocked-marker.json");
-    fs::rename(&marker_path, &held_marker)
-        .expect("hold the second marker while preparing the first");
-    let first_root = add_worktree(root, pair.worktrees.path(), "budget-first");
-    let claimed = claim(
-        &first_root,
-        "file:tests/base.rs",
-        THIRD_RUN,
-        "docs/budget-first.md",
-        "consume the first rewrite comparison",
-    );
-    assert!(claimed.status.success(), "{}", json_output(&claimed));
-    let first_id = reservation_id(&claimed);
-    commit_work(
-        &first_root,
-        "tests/base.rs",
-        "// first protected phase\n",
-        "first checkpoint",
-    );
-    let checkpoint = run_berth(&first_root, &["release", &first_id, "--json"]);
-    assert!(checkpoint.status.success(), "{}", json_output(&checkpoint));
-    assert_eq!(json_output(&checkpoint)["status"], "outstanding");
-    let journal = root.join(JOURNAL_PATH);
-    let permissions = fs::metadata(&journal)
-        .expect("journal metadata should read")
-        .permissions();
-    fs::set_permissions(
-        &journal,
-        fs::Permissions::from_mode(permissions.mode() & !0o222),
+    let pair = recorded_pending_pair(TWO_PENDING_ORDERED_REWRITES);
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            pair.repository
+                .path()
+                .join(".git/pending-rewrite-budget.json"),
+        )
+        .expect("rewrite budget should read"),
     )
-    .expect("journal should reject amend reconciliation");
-    let amended = GIT.output(
-        &first_root,
-        [
-            "commit",
-            "--amend",
-            "--quiet",
-            "-m",
-            "rewritten first checkpoint",
-        ],
-    );
-    fs::set_permissions(&journal, permissions).expect("journal permissions should restore");
-    assert!(
-        amended.status.success(),
-        "{}",
-        String::from_utf8_lossy(&amended.stderr)
-    );
-    assert_eq!(pending_bypass_count(root), 1);
-    let first_marker = pending_bypass_marker(root);
-    assert_eq!(first_marker["kind"], "branch_rewrite");
-    let first_path = root
-        .join(".git")
-        .join(format!("{PENDING_BYPASS_PREFIX}000-budget-first.json"));
-    // Preserve the real hook payload while arranging deterministic importer order.
-    for entry in fs::read_dir(root.join(".git")).expect("common Git directory should read") {
-        let entry = entry.expect("marker entry should read");
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(PENDING_BYPASS_PREFIX)
-        {
-            fs::rename(entry.path(), &first_path)
-                .expect("first marker should sort before the blocked marker");
-        }
-    }
-    fs::rename(held_marker, marker_path).expect("restore the untouched blocked marker");
-    assert_eq!(pending_bypass_count(root), 2);
+    .expect("rewrite budget should decode");
     DeferredRewriteGateFixture {
         pair,
-        first_id,
-        blocked_old_tip,
+        first_id: state["first_id"]
+            .as_str()
+            .expect("first reservation should exist")
+            .to_owned(),
+        blocked_old_tip: state["blocked_old_tip"]
+            .as_str()
+            .expect("old protected tip should exist")
+            .to_owned(),
     }
-}
-
-/// Only the rewritten destination can identify this reservation in the proposed update.
-fn assert_rewritten_tip_enters_without_old_tip(pair: &DeferredPair, old_tip: &str) {
-    for target in ["main", "HEAD"] {
-        let contains_old = GIT.output(
-            &pair.blocked_root,
-            ["merge-base", "--is-ancestor", old_tip, target],
-        );
-        assert_eq!(
-            contains_old.status.code(),
-            Some(1),
-            "old protected tip must be absent from {target}: {}",
-            String::from_utf8_lossy(&contains_old.stderr)
-        );
-    }
-    let already_on_trunk = GIT.output(
-        &pair.blocked_root,
-        ["merge-base", "--is-ancestor", "HEAD", "main"],
-    );
-    assert_eq!(already_on_trunk.status.code(), Some(1));
-    git(
-        &pair.blocked_root,
-        &["merge-base", "--is-ancestor", "main", "HEAD"],
-    );
 }
 
 fn assert_second_rewrite_remains_deferred(fixture: &DeferredRewriteGateFixture) {
@@ -7651,5 +7488,40 @@ fn assert_enrollment_gate_decision(
             serde_json::json!([other_reservation])
         );
         assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    }
+}
+
+/// Keep the external worktree layout used by the original hooked history.
+fn recorded_pending_pair(template: cargo_berth_test_support::LedgerTemplate) -> DeferredPair {
+    let repository = template.instantiate();
+    let root = fs::canonicalize(repository.path()).expect("main root should resolve");
+    let embedded = root.join(".git/fixture-worktrees");
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let external = fs::canonicalize(worktrees.path()).expect("worktree parent should resolve");
+    let mut linked = DirectorySnapshot::capture(&embedded);
+    fs::remove_dir_all(&embedded).expect("embedded checkouts should move outside the repository");
+    let mut main = DirectorySnapshot::capture(&root);
+    for snapshot in [&mut main, &mut linked] {
+        drop(snapshot.replace_text(&embedded.to_string_lossy(), &external.to_string_lossy()));
+    }
+    main.restore(&root);
+    linked.restore(&external);
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(".git/pending-ordered-pair.json"))
+            .expect("pair identities should read"),
+    )
+    .expect("pair identities should decode");
+    DeferredPair {
+        repository,
+        blocked_root: external.join("pair-blocked"),
+        worktrees,
+        blocked_id: state["blocked_id"]
+            .as_str()
+            .expect("blocked reservation should exist")
+            .to_owned(),
+        holder_id: state["holder_id"]
+            .as_str()
+            .expect("holder reservation should exist")
+            .to_owned(),
     }
 }

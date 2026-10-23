@@ -11,6 +11,7 @@ use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::copy_git_repository_seed;
 use cargo_berth_test_support::json;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -1724,20 +1725,15 @@ fn separate_git_directory_repository() -> SeparateGitDirectoryRepository {
 }
 
 fn scratch_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
-    git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch", "main"],
-    );
-    git(
-        repository.path(),
-        &["config", "user.email", "test@example.invalid"],
-    );
-    git(repository.path(), &["config", "user.name", "Berth Test"]);
-    fs::write(repository.path().join("README.md"), "scratch\n").expect("base file should write");
-    git(repository.path(), &["add", "README.md"]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    repository
+    copy_git_repository_seed("ledger-scratch-main", |root| {
+        git(root, &["init", "--quiet", "--initial-branch", "main"]);
+        git(root, &["config", "user.email", "test@example.invalid"]);
+        git(root, &["config", "user.name", "Berth Test"]);
+        fs::write(root.join("README.md"), "scratch\n")?;
+        git(root, &["add", "README.md"]);
+        git(root, &["commit", "--quiet", "-m", "initial"]);
+        Ok::<(), std::io::Error>(())
+    })
 }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {

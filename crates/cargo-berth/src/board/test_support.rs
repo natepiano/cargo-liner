@@ -18,6 +18,8 @@ use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapScopeRevision;
+use crate::config::BerthConfig;
+use crate::config::ConfigurationLookup;
 use crate::config::Enrollment;
 use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::ids::CoordinationRunId;
@@ -133,32 +135,11 @@ impl TestActor {
 
 impl BoardFixture {
     pub(super) fn new() -> FixtureResult<Self> {
-        let repository = tempdir()?;
-        git(
-            repository.path(),
-            &["init", "--quiet", "--initial-branch", "main"],
-        )?;
-        git(
-            repository.path(),
-            &["config", "user.email", "board-model@example.com"],
-        )?;
-        git(
-            repository.path(),
-            &["config", "user.name", "Board Model Test"],
-        )?;
-        fs::create_dir_all(repository.path().join("src"))?;
-        fs::write(
-            repository.path().join("src/lib.rs"),
-            "pub fn fixture() {}\n",
-        )?;
-        git(repository.path(), &["add", "."])?;
-        git(repository.path(), &["commit", "--quiet", "-m", "initial"])?;
+        let repository = cargo_berth_test_support::copy_git_repository_seed(
+            "board-model-configured-base",
+            Self::build_seed,
+        );
         Ledger::initialize(repository.path())?;
-        git(repository.path(), &["add", CONFIGURATION_PATH])?;
-        git(
-            repository.path(),
-            &["commit", "--quiet", "-m", "configure berth"],
-        )?;
         let linked_worktree_directory = tempdir()?;
         let main_actor = TestActor::discover(repository.path())?;
         let ledger = Ledger::open(repository.path())?;
@@ -168,6 +149,22 @@ impl BoardFixture {
             ledger,
             main_actor,
         })
+    }
+
+    fn build_seed(root: &Path) -> FixtureResult<()> {
+        git(root, &["init", "--quiet", "--initial-branch", "main"])?;
+        git(root, &["config", "user.email", "board-model@example.com"])?;
+        git(root, &["config", "user.name", "Board Model Test"])?;
+        fs::create_dir_all(root.join("src"))?;
+        fs::write(root.join("src/lib.rs"), "pub fn fixture() {}\n")?;
+        git(root, &["add", "."])?;
+        git(root, &["commit", "--quiet", "-m", "initial"])?;
+        BerthConfig::initialize(&ConfigurationLookup::Own {
+            repository_root: root,
+        })?;
+        git(root, &["add", CONFIGURATION_PATH])?;
+        git(root, &["commit", "--quiet", "-m", "configure berth"])?;
+        Ok(())
     }
 
     pub(super) fn main_actor(&self) -> TestActor { self.main_actor.clone() }

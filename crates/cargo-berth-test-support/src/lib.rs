@@ -42,6 +42,7 @@ pub use integration_repository::assert_success;
 pub use integration_repository::board_reservation_entries;
 pub use integration_repository::board_reservation_ids;
 pub use integration_repository::claim_id;
+pub use integration_repository::copy_git_repository_seed;
 pub use integration_repository::deferring_run_path;
 pub use integration_repository::deferring_run_scope;
 pub use integration_repository::json;

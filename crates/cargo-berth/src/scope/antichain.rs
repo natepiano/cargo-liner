@@ -6,6 +6,10 @@ use super::PathCase;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 /// Drop every scope another scope contains, keeping the first of equal scopes, in input order.
 ///
@@ -45,6 +49,8 @@ pub(super) fn reduce(scopes: ReservationScopeSet, path_case: PathCase) -> Reserv
 }
 
 pub(super) fn component_keys(scope: &ReservationScope, path_case: PathCase) -> Vec<String> {
+    #[cfg(test)]
+    test_work::record(Work::ScopeKey);
     scope
         .path
         .to_string()
@@ -90,8 +96,6 @@ pub(super) fn contains(
 mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
-    use std::time::Duration;
-    use std::time::Instant;
 
     use super::PathCase;
     use super::ReservationScope;
@@ -196,7 +200,7 @@ mod tests {
     /// One worktree's 13 blocking reservations, each protecting the same 364 files: the shape
     /// that held the post-tool-use hook in a spin for 600 seconds.
     #[test]
-    fn reduction_of_the_reported_shape_is_immediate() {
+    fn reduction_builds_each_scope_key_once_without_pairwise_comparisons() {
         let distinct = (0..28)
             .flat_map(|module| {
                 (0..13).map(move |part| {
@@ -215,15 +219,13 @@ mod tests {
         );
         assert_eq!(joined.as_slice().len(), 4_732);
 
-        let started = Instant::now();
+        let work = crate::test_work::WorkCounter::start();
         let reduced = reduce(joined, PathCase::Insensitive);
-        let elapsed = started.elapsed();
 
         assert_eq!(reduced.as_slice(), distinct.as_slice());
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "reducing 4,732 scopes took {elapsed:?}"
-        );
+        let counts = work.finish();
+        assert_eq!(counts.scope_keys, 4_732, "each input path is keyed once");
+        assert_eq!(counts.scope_comparisons, 0, "no pairwise scope comparisons");
     }
 
     #[test]
