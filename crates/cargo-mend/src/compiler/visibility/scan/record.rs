@@ -188,9 +188,9 @@ fn maybe_record_unused_pub(
     {
         return Ok(());
     }
-    // `Contained` is not a reason to keep the `pub`: nothing names the item
-    // from outside, so an unreachable annotation is exactly what this
-    // diagnostic reports.
+    // `SignatureExposure::Contained` does not preserve `pub` in
+    // `maybe_record_unused_pub`: nothing names the item from outside, so an
+    // unreachable annotation is exactly what this diagnostic reports.
     let annotation_reaches_signature =
         matches!(signature_exposure, SignatureExposure::ExposedAt(_))
             && signature_exposure.is_satisfied_by(annotation.reach(item.def_id, ctx.tcx), ctx);
@@ -280,18 +280,18 @@ pub(super) fn record_forbidden_visibility_annotation(
         return Ok(false);
     }
     match annotation.syntax() {
-        // `true` is "this annotation is handled", not "a finding was
-        // recorded". `record_overbroad_pub_crate` and
-        // `record_forbidden_pub_in_crate` answer `true` on every path that
-        // reaches a decision, and both callers stop there. Answering `false`
-        // instead would hand a `pub(crate) mod` on to `record_review_pub_mod`,
-        // which reports every module it is handed, so suppressing one
-        // diagnostic would raise another on the same line.
+        // `true` means `annotation` is handled, not that a finding was recorded.
+        // `record_overbroad_pub_crate` and `record_forbidden_pub_in_crate`
+        // return `true` on every path reaching a decision, and both callers
+        // stop there. Returning `false` would pass a `pub(crate) mod` to
+        // `record_review_pub_mod`, which reports every module it receives:
+        // suppressing one diagnostic would produce another on the same line.
         //
-        // Both narrowing diagnostics need the guard. `overbroad-pub-crate`
-        // advises a narrower spelling and `forbidden-pub-in-crate` advises
-        // removing the annotation outright; either one stops the excluded
-        // configuration compiling.
+        // Both narrowing diagnostics need `cfg_excluded_source_names_item`:
+        // `DiagnosticCode::OverbroadPubCrate` suggests a narrower spelling,
+        // and `DiagnosticCode::ForbiddenPubInCrate` suggests removing the
+        // annotation outright.
+        // Either repair would prevent the excluded configuration compiling.
         VisibilitySyntax::Crate
         | VisibilitySyntax::InCrate
         | VisibilitySyntax::InParent
@@ -465,16 +465,15 @@ const fn annotation_edit_acceptance(
             )
         },
         DiagnosticCode::ForbiddenPubInCrate => {
-            // A `use` re-export carries an annotation like any declaration, and
-            // the boundary mend resolves for it comes from the same caller map:
-            // `UseSiteCollector::record_qpath` records the *target* def for every
-            // mention, whichever path named it, so a use that travels through the
-            // re-export lands in the same set as one that names the declaration
-            // directly. That makes the resolved boundary a conservative floor for
-            // a re-export rather than a narrower one.
+            // An `ItemCategory::Use` re-export has an annotation like a declaration.
+            // `UseSiteCollector::record_qpath` records the target definition for
+            // every mention regardless of its path, so references through a
+            // re-export and directly to its declaration enter the same caller map.
+            // The resolved boundary is therefore a conservative floor for a
+            // re-export rather than a narrower boundary.
             //
-            // `Module` stays out: a `mod` line's visibility governs a whole
-            // subtree, which is a review decision rather than a rewrite.
+            // Exclude `ItemCategory::Module`: a `mod` visibility governs an entire
+            // subtree and needs a review decision rather than a rewrite.
             matches!(item.category, ItemCategory::Declaration | ItemCategory::Use)
                 && matches!(
                     annotation.syntax(),
@@ -1236,7 +1235,8 @@ fn facade_less_boundary_matches_callers(
     sink: &FindingsSink,
 ) -> bool {
     if item.category == ItemCategory::Use {
-        // Resolved paths name the imported target, not the local `use` item, so
+        // `facade_less_boundary_matches_callers` rejects `ItemCategory::Use`:
+        // resolved paths name the imported target, not the local `use` item, so
         // the caller set gathered below describes the target. It cannot show
         // where the alias is used, and so cannot show that this boundary covers
         // them.
@@ -1535,7 +1535,8 @@ fn resolved_pub_in_advice(
             PubInPath::Forbidden
         )
     {
-        // The annotation already sits at the exact boundary, so the spelling is
+        // `resolved_pub_in_advice` finds `comparison == Some(Ordering::Equal)`,
+        // so the annotation already sits at the exact boundary. The spelling is
         // the entire complaint and the setting that permits it is the whole
         // answer. A declaration can also widen to `pub` and let the facade cap
         // the reach; a `use` item is not offered that, because a `pub use` of a
@@ -1668,8 +1669,9 @@ fn no_facade_pub_in_advice(
     let item_def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
 
     if item.category == ItemCategory::Use {
-        // Resolved paths name the imported target, not the local `use` item, so
-        // the caller set gathered below describes the target and cannot say
+        // `no_facade_pub_in_advice` excludes caller-derived repairs for
+        // `ItemCategory::Use`: resolved paths name the imported target, not the
+        // local `use` item, so the caller set gathered below describes the target and cannot say
         // whether the alias still has users. That rules out every caller-derived
         // repair. The facade survives: `boundary_path` is read off the
         // annotation, so naming it asks nothing of the callers.
@@ -1704,8 +1706,9 @@ fn no_facade_pub_in_advice(
         policy::forbidden_pub_in_headline(annotation.source()),
     );
     let suggestion = policy::no_facade_suggestion(repair, &boundary_path, &item_def_path);
-    // The two repairs split on what the reader has to be convinced of. A
-    // re-export closes a gap between reach and path, which needs both named. A
+    // `policy::missing_facade_note` and `policy::no_facade_caller_note` split on
+    // what the reader has to be convinced of. A re-export closes a gap between
+    // reach and path, which needs both named. A
     // narrower visibility rests on where the item is used, which needs that
     // scope named instead.
     let note = match repair {
@@ -1784,7 +1787,8 @@ fn record_review_pub_mod(
     {
         return Ok(());
     }
-    // A crate-root `pub mod prelude;` follows the resolved `prelude_pub_mod` setting.
+    // `record_review_pub_mod` accepts a crate-root `pub mod prelude;` when
+    // `ctx.settings.visibility_config.prelude_pub_mod` is `PreludePubMod::Allowed`.
     if matches!(
         ctx.settings.visibility_config.prelude_pub_mod,
         PreludePubMod::Allowed
@@ -2144,11 +2148,11 @@ fn record_internal_parent_facade_review(
             fix_support,
             related,
             visibility_annotation: None,
-            // The facade scan reads source text, so it cannot see paths that
-            // exist only as tokens a proc macro in another crate emits. Naming
-            // the item and the subtree here hands the verdict to
-            // `caller_aware`, whose HIR use sites are collected after macro
-            // expansion and do see them.
+            // `parent_facade_export_status` scans source text, so it cannot see
+            // paths that exist only as tokens a proc macro in another crate emits.
+            // Naming the item in `item_def_path` and the subtree in
+            // `narrower_scope_def_path` hands the verdict to `caller_aware`, whose
+            // HIR use sites are collected after macro expansion and do see them.
             item_def_path: Some(use_sites::def_path_string(ctx.tcx, input.def_id)),
             narrower_scope_def_path: Some(status.boundary_def_path.clone()),
             exact_boundary_spelling: ExactBoundarySpelling::CratePath,
@@ -2198,7 +2202,8 @@ fn record_suspicious_pub_warning(
         stale_parent_pub_use,
     } = warning;
     let bare_pub = matches!(annotation.syntax(), VisibilitySyntax::Public);
-    // A `pub use` outside this item's ancestors names it, and rustc requires a
+    // `ReexportIndex::has_public_reexport_outside_ancestors` finds a `pub use`
+    // outside this item's ancestors that names it, and rustc requires a
     // re-exported declaration to be at least as visible as the re-export
     // (E0364) whether or not that re-export is reachable from outside. Only a
     // parent facade travels with the declaration when the fixers rewrite it, so
@@ -2336,8 +2341,9 @@ fn suspicious_finding_details(
             narrower_scope_def_path,
             replacement,
         } => {
-            // A bare `pub` whose exact boundary resolved is rewritten in place,
-            // but only when no facade line has to move with it: a stale facade
+            // `rewrites_annotation_only` permits rewriting a bare `pub` whose
+            // exact boundary resolved in place, but only when no facade line has
+            // to move with it: a stale facade
             // makes the repair a multi-file edit this fixer does not perform.
             //
             // The rewrite spells `pub(in crate::<path>)`, so it is confined to
@@ -2483,7 +2489,8 @@ fn suspicious_pub_advice(
         && let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain
     {
         let required = signature_exposure.combined_with(required, ctx);
-        // Only a `pub(in crate::<path>)` reach yields a boundary a fixer can
+        // `suspicious_pub_advice` derives `exact_boundary` from `required`:
+        // only a `pub(in crate::<path>)` reach yields a boundary a fixer can
         // spell out. `pub` and `pub(crate)` fall back to the enclosing module,
         // which is a suppression key, not a rewrite target.
         let exact_boundary = visibility_reach_boundary_path(required, ctx)

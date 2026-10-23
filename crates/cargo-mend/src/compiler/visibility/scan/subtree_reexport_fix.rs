@@ -183,7 +183,8 @@ pub(super) fn classify(
     if matches!(reexport.path_walk, PathWalk::Interrupted) {
         return Err(NoFixReason::PathThroughEnumOrTrait);
     }
-    // A `use` in a function body is scoped to that body, not to the module.
+    // `classify` rejects a non-`DefKind::Mod` parent because a function-body `use`
+    // is scoped to that body, not the module.
     if tcx.def_kind(tcx.local_parent(reexport.item.owner_id.def_id)) != DefKind::Mod {
         return Err(NoFixReason::Unresolved);
     }
@@ -335,8 +336,8 @@ fn ancestor_reexport(
     crate_root_file: &Path,
 ) -> Result<StoredAncestorReexport, NoFixReason> {
     let use_visibility = tcx.local_visibility(reexport.item.owner_id.def_id);
-    // The owner module is not exported, so a crate-wide target scope already
-    // holds every caller.
+    // `ancestor_reexport` receives an unexported `reexport.owner_module`, so a
+    // crate-wide `target_scope` already holds every caller.
     let callers_inside_target_scope = target_scope == CRATE_DEF_ID
         || matches!(use_visibility, Visibility::Restricted(scope)
             if tcx.is_descendant_of(scope.to_def_id(), target_scope.to_def_id()));
