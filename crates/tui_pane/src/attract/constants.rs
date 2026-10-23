@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-// attract screen
+// `ATTRACT_FADE_STEP` and the following constants configure the attract screen.
 /// How far the attract screen's strip is carried toward or away from
 /// full strength each frame. Divides the range exactly, so the fade
 /// lands on either end rather than saturating out its last frame, and
@@ -117,14 +117,15 @@ pub(super) const HELD_KEY_PRESSES_PER_STEP: u32 = 4;
 /// told apart -- and that parsing is where the CPU goes.
 pub(super) const ATTRACT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
-// notice toasts
+// `NOTICE_TOAST_MIN_INTERIOR_LINES` and `NOTICE_TOAST_VISIBLE` configure notice toasts.
 /// Interior lines a notice toast keeps even when its body is one line,
 /// so entrance and exit animate over a stable height.
 pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 /// How long a notice toast stays visible before it starts to exit.
 pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 
-// random
+// `SPLITMIX_FIRST_MULTIPLIER`, `SPLITMIX_INCREMENT`, and `SPLITMIX_SECOND_MULTIPLIER` configure
+// random draws.
 /// Second multiplier in `SplitMix64`'s finalizer.
 pub(super) const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
 /// Odd increment `SplitMix64` adds to its state before each draw.
