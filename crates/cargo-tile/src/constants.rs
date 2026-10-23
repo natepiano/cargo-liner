@@ -212,12 +212,6 @@ pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
 pub(crate) const PROFILE_LABEL_OPEN: &str = "[";
 /// Closing delimiter around a command's non-default build profile.
 pub(crate) const PROFILE_LABEL_CLOSE: &str = "]";
-/// Linux reports every online logical processor in this system-wide table.
-#[cfg(target_os = "linux")]
-pub(crate) const MACHINE_CPU_STAT_FILE: &str = "/proc/stat";
-/// Prefix of the per-processor rows in Linux's CPU statistics.
-#[cfg(target_os = "linux")]
-pub(crate) const MACHINE_CPU_STAT_PREFIX: &str = "cpu";
 /// Cells of the summary cell's top border the sccache label never
 /// gets: the two corner glyphs, and one line cell kept between the
 /// label and the right corner so the two do not run together.

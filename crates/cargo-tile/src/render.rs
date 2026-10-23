@@ -1,6 +1,10 @@
 //! Frame rendering: the app's panes, the framework status line along the
 //! bottom, and whichever framework overlay is open above them.
 
+#[cfg(target_os = "linux")]
+#[path = "render/linux_processors.rs"]
+mod linux_processors;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,8 +67,6 @@ use crate::constants::ALL_ARGUMENTS_NOTE_LABEL;
 use crate::constants::CARGO_RELEASE_PROFILE;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMMAND_WORD_SEPARATOR;
-use crate::constants::MACHINE_CPU_STAT_FILE;
-use crate::constants::MACHINE_CPU_STAT_PREFIX;
 use crate::constants::NEXTEST_SUBCOMMAND_NAME;
 
 /// A frame's independent hierarchy and argument choices with checked defaults.
@@ -2864,11 +2866,8 @@ impl SessionColumnWidths {
 /// Online logical processors, without collecting their counters and brand strings.
 fn machine_processor_count() -> usize {
     #[cfg(target_os = "linux")]
-    if let Ok(statistics) = std::fs::read_to_string(MACHINE_CPU_STAT_FILE) {
-        let cores = processor_rows(&statistics);
-        if cores > 0 {
-            return cores;
-        }
+    if let Some(cores) = linux_processors::online_processors() {
+        return cores.get();
     }
     #[cfg(not(target_os = "linux"))]
     if let Ok(cores) = std::thread::available_parallelism() {
@@ -2879,22 +2878,6 @@ fn machine_processor_count() -> usize {
     )
     .cpus()
     .len()
-}
-
-/// Count per-processor entries, excluding the aggregate and unrelated statistics.
-#[cfg(target_os = "linux")]
-fn processor_rows(statistics: &str) -> usize {
-    statistics
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|label| {
-            label
-                .strip_prefix(MACHINE_CPU_STAT_PREFIX)
-                .is_some_and(|number| {
-                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-                })
-        })
-        .count()
 }
 
 /// Intrinsic inputs for the command tables of one immutable frame.
@@ -11593,16 +11576,6 @@ mod tests {
         let widths = SessionColumnWidths::for_machine(16, 128 * BYTES_PER_GIBIBYTE);
         assert_eq!(widths.cpu, cell_width("1600%"));
         assert_eq!(widths.memory, cell_width("128.0G"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn processor_capacity_excludes_the_aggregate_and_unrelated_statistics() {
-        assert_eq!(
-            processor_rows("cpu 1 2 3\ncpu0 1 2 3\ncpu7 1 2 3\nintr 4\nprocesses 8\ncpu_other 9\n"),
-            2
-        );
-        assert_eq!(processor_rows("cpu 1 2 3\nintr 4\n"), 0);
     }
 
     #[test]
