@@ -41,6 +41,7 @@ use super::target::TargetSource;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
 use crate::coordination_identity::CoordinationIdentityProvenance;
+use crate::edge::CycleClosingEdge;
 use crate::edge::OrderingReason;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
@@ -625,6 +626,11 @@ pub(crate) enum JournalOperation {
         /// The reason for choosing this ordering.
         reason:      OrderingReason,
     },
+    /// Retire exactly one cycle-closing ordering edge after explicit journal review.
+    RetireCyclicOrderingEdge {
+        /// The edge, its endpoints and the original declaration remain auditable.
+        edge: CycleClosingEdge,
+    },
     /// Record a write that entered scopes reserved by another worktree.
     Incursion {
         /// The durable identity used to answer this incident.
@@ -782,6 +788,7 @@ impl JournalOperation {
             | Self::OverlapRefused { .. }
             | Self::ResolveDefer { .. }
             | Self::Sequence { .. }
+            | Self::RetireCyclicOrderingEdge { .. }
             | Self::ResolveIncursion { .. }
             | Self::ForcedIntegrationPermit { .. }
             | Self::ConsumeForcedIntegrationPermit { .. }
@@ -808,6 +815,7 @@ impl JournalOperation {
             | Self::Answer { .. }
             | Self::ResolveDefer { .. }
             | Self::Sequence { .. }
+            | Self::RetireCyclicOrderingEdge { .. }
             | Self::ForcedIntegrationPermit { .. }
             | Self::ConsumeForcedIntegrationPermit { .. }
             | Self::Bypass { .. } => true,

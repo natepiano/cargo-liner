@@ -40,6 +40,8 @@ use super::journal::JournalReplaySource;
 use super::journal::PreparedJournalAppend;
 use super::journal::RecordCeiling;
 use super::lock::MutationLock;
+use super::ordering_repair;
+use super::ordering_repair::OrderingCycleRepair;
 use super::preparation;
 use super::projection;
 use super::projection::JournalPosition;
@@ -934,6 +936,24 @@ impl Ledger {
         result
     }
 
+    /// Append the retirement of the first live cycle-closing edge, preserving all other facts.
+    pub(crate) fn repair_ordering_cycle(
+        repository_root: &Path,
+    ) -> Result<OrderingCycleRepair, LedgerTransactionError> {
+        let ledger = Self::locate(repository_root)?;
+        ledger.require_existing()?;
+        let context = WorktreeContext::discover(repository_root)?;
+        let identity = identity::resolve_identity(&context)?;
+        ordering_repair::repair(
+            &ledger.paths,
+            JournalActor {
+                repository: ledger.repository_identity()?,
+                worktree:   identity.worktree_id,
+                run:        identity.coordination_run_id,
+            },
+        )
+    }
+
     /// Discard journal truth only after the caller has confirmed pending orders were reviewed.
     pub(crate) fn reinitialize_after_review(
         repository_root: &Path,
@@ -1409,7 +1429,9 @@ impl LedgerTransaction {
     }
 }
 
-fn journal_append_transaction_error(error: JournalAppendError) -> LedgerTransactionError {
+pub(super) fn journal_append_transaction_error(
+    error: JournalAppendError,
+) -> LedgerTransactionError {
     match error {
         JournalAppendError::RecordTooLarge {
             bytes,
@@ -1481,7 +1503,7 @@ fn retry_concurrent_projection_publication<Read>(
     result
 }
 
-fn next_projection_generation(
+pub(super) fn next_projection_generation(
     current_generation: ProjectionGeneration,
 ) -> Result<ProjectionGeneration, LedgerError> {
     let current_generation: u64 = current_generation.into();
