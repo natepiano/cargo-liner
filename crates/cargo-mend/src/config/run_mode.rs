@@ -26,16 +26,16 @@ pub(crate) struct FixSelection {
 impl FixSelection {
     fn all_fix_kinds() -> Self {
         let mut fix_kinds = BTreeSet::new();
-        fix_kinds.insert(FixKind::ShortenImport);
+        fix_kinds.insert(FixKind::RestrictedAnnotation);
+        fix_kinds.insert(FixKind::PubUse);
+        fix_kinds.insert(FixKind::UnusedPub);
         fix_kinds.insert(FixKind::PreferModuleImport);
         fix_kinds.insert(FixKind::InlinePathQualifiedType);
-        fix_kinds.insert(FixKind::UnusedPub);
+        fix_kinds.insert(FixKind::ShortenImport);
         fix_kinds.insert(FixKind::NarrowToPubCrate);
-        fix_kinds.insert(FixKind::RestrictedAnnotation);
         fix_kinds.insert(FixKind::FieldVisibility);
         fix_kinds.insert(FixKind::ImportsAtTop);
         fix_kinds.insert(FixKind::PubUseOutsideSubtree);
-        fix_kinds.insert(FixKind::PubUse);
         Self { fix_kinds }
     }
 
@@ -50,18 +50,20 @@ impl From<&FixCli> for FixSelection {
             FixExecution::ApplyRequested | FixExecution::PreviewRequested => {
                 let mut fix_kinds = BTreeSet::new();
                 if fix_cli.includes(FixRequest::Mend) {
-                    fix_kinds.insert(FixKind::ShortenImport);
-                    fix_kinds.insert(FixKind::PreferModuleImport);
-                    fix_kinds.insert(FixKind::InlinePathQualifiedType);
-                    fix_kinds.insert(FixKind::UnusedPub);
-                    fix_kinds.insert(FixKind::NarrowToPubCrate);
                     fix_kinds.insert(FixKind::RestrictedAnnotation);
-                    fix_kinds.insert(FixKind::FieldVisibility);
-                    fix_kinds.insert(FixKind::ImportsAtTop);
-                    fix_kinds.insert(FixKind::PubUseOutsideSubtree);
                 }
                 if fix_cli.includes(FixRequest::PubUse) {
                     fix_kinds.insert(FixKind::PubUse);
+                }
+                if fix_cli.includes(FixRequest::Mend) {
+                    fix_kinds.insert(FixKind::UnusedPub);
+                    fix_kinds.insert(FixKind::PreferModuleImport);
+                    fix_kinds.insert(FixKind::InlinePathQualifiedType);
+                    fix_kinds.insert(FixKind::ShortenImport);
+                    fix_kinds.insert(FixKind::NarrowToPubCrate);
+                    fix_kinds.insert(FixKind::FieldVisibility);
+                    fix_kinds.insert(FixKind::ImportsAtTop);
+                    fix_kinds.insert(FixKind::PubUseOutsideSubtree);
                 }
                 Self { fix_kinds }
             },
