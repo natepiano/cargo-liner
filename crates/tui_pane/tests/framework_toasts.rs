@@ -164,7 +164,8 @@ fn toasts_inactive_while_focused_next_moves_to_app_pane() {
     let (mut app, keymap) = build_with_panes();
     app.framework.toasts.push("hi", "");
     app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
-    // dismiss the only toast → manager empty, focus stale on Toasts
+    // `app.framework.toasts.dismiss_focused` closes the only toast, emptying
+    // the manager and leaving focus stale on `FrameworkFocusId::Toasts`.
     let pane = app.framework.toast_pane_focus_state();
     let _ = app.framework.toasts.dismiss_focused(pane);
 
@@ -180,7 +181,7 @@ fn toasts_inactive_while_focused_next_moves_to_app_pane() {
 fn prev_from_first_app_lands_on_toasts_when_active() {
     let (mut app, keymap) = build_with_panes();
     app.framework.toasts.push("hi", "");
-    // focus is Foo (first)
+    // `app` is focused on `TestPaneId::Foo`, the first pane.
     keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
     assert_eq!(
         app.framework().focused(),
@@ -228,11 +229,12 @@ fn entering_toasts_with_next_calls_reset_to_first() {
     let a = app.framework.toasts.push("A", "");
     let _ = app.framework.toasts.push("B", "");
     let _ = app.framework.toasts.push("C", "");
-    // walk cursor away from 0
+    // Move the toast cursor away from 0 with `ListNavigation::Down`.
     let _ = app.framework.toasts.on_navigation(ListNavigation::Down);
     let _ = app.framework.toasts.on_navigation(ListNavigation::Down);
 
-    // current focus is Foo; Next-Next from Foo lands on Bar then Toasts
+    // Focus starts on `TestPaneId::Foo`; two `GlobalAction::NextPane` steps
+    // visit `TestPaneId::Bar`, then `FrameworkFocusId::Toasts`.
     keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
     keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
     assert_eq!(
@@ -254,7 +256,7 @@ fn entering_toasts_with_prev_calls_reset_to_last() {
     let _ = app.framework.toasts.push("A", "");
     let _ = app.framework.toasts.push("B", "");
     let c = app.framework.toasts.push("C", "");
-    // cursor starts at 0
+    // The cursor in `app.framework.toasts` starts at 0.
 
     keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
     assert_eq!(
