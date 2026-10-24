@@ -863,7 +863,7 @@ const fn glyph(sides: Sides) -> Option<&'static str> {
     let left = sides.has(Side::Left);
     match (up, right, down, left) {
         (false, false, false, false) => None,
-        // A run passing straight through, plus the one-sided stubs a
+        // `VERTICAL` and `HORIZONTAL` cover straight runs and the one-sided stubs a
         // clipped pane leaves behind, which read as their own axis.
         (_, false, true, false) | (true, false, false, false) => Some(VERTICAL),
         (false, true, false, _) | (false, false, false, true) => Some(HORIZONTAL),
