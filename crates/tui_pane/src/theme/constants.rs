@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-// tui_pane src theme blend
+// Colour arithmetic for `super::blend`: `ANSI_BASE_PALETTE` through `COLOR_DISTANCE_GREEN_WEIGHT`.
 /// The xterm palette for ANSI 0-15, which is what a named
 /// [`Color`](ratatui::style::Color) and the first sixteen entries of
 /// [`Color::Indexed`](ratatui::style::Color::Indexed) both stand for.
@@ -49,7 +49,7 @@ pub(super) const COLOR_DISTANCE_SIDE_WEIGHT: u32 = 2 * COLOR_DISTANCE_SCALE;
 /// it reads it the same however red the pair is.
 pub(super) const COLOR_DISTANCE_GREEN_WEIGHT: u32 = 4 * COLOR_DISTANCE_SCALE;
 
-// tui_pane src theme poller
+// Appearance tracking for `super::poller`: `APPEARANCE_NAMESPACE` through `SETTINGS_READ`.
 /// The portal namespace carrying the desktop appearance preference.
 #[cfg(target_os = "linux")]
 pub(super) const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";

@@ -99,8 +99,8 @@ fn channels(color: Color) -> Option<(u8, u8, u8)> {
 
 /// Where a named [`Color`] sits in the 256-colour palette.
 const fn ansi_index(color: Color) -> Option<u8> {
-    // The dictionary for the enum: ANSI numbers the sixteen colours,
-    // and ratatui names them.
+    // `ansi_index` maps the sixteen `Color` variants: ANSI numbers the
+    // colours, and ratatui names them.
     Some(match color {
         Color::Black => 0,
         Color::Red => 1,
@@ -238,9 +238,9 @@ mod tests {
 
     #[test]
     fn the_colour_cube_reads_as_its_three_levels() {
-        // The cube runs from its own first entry to the one below the
-        // grayscale ramp, and each of those corners is a single level
-        // standing on all three channels at once.
+        // The cube runs from `ANSI_CUBE_BASE` to just below `ANSI_GRAYSCALE_BASE`,
+        // and each of those corners is a single level standing on all three
+        // channels at once.
         let last = ANSI_GRAYSCALE_BASE - 1;
         let opens = ANSI_CUBE_LEVELS[0];
         let closes = ANSI_CUBE_LEVELS[ANSI_CUBE_LEVELS.len() - 1];
