@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-// favorites overlay
+// `COLUMN_GAP` and the constants after it configure the favorites overlay.
 /// Cells between two parameter columns in a favorite's row.
 pub(super) const COLUMN_GAP: usize = 2;
 /// Rows the favorites table keeps even when the popup is squeezed.
