@@ -77,7 +77,7 @@ pub(super) fn read_cpu_breakdown_raw() -> CpuBreakdownRaw { CpuBreakdownRaw::def
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, reason = "IOKit FFI replaces the per-poll ioreg spawn")]
 pub(super) fn read_gpu_usage() -> GpuUsage {
-    // SAFETY: the argument is a valid NUL-terminated C string the call
+    // SAFETY: `IOServiceMatching` receives a valid NUL-terminated C string that it
     // copies into the returned matching dictionary.
     let Some(matching) = (unsafe { IOServiceMatching(c"IOAccelerator".as_ptr()) }) else {
         return GpuUsage::default();
@@ -153,7 +153,7 @@ pub(super) fn read_gpu_usage() -> GpuUsage { GpuUsage::default() }
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, reason = "IOKit FFI reads the cpu node cluster map")]
 pub(super) fn read_core_clusters(core_count: usize) -> Option<Vec<CoreCluster>> {
-    // SAFETY: the argument is a valid NUL-terminated C string the call
+    // SAFETY: `IOServiceMatching` receives a valid NUL-terminated C string that it
     // copies into the returned matching dictionary.
     let matching = unsafe { IOServiceMatching(c"IOPlatformDevice".as_ptr()) }?;
     // `IOServiceGetMatchingServices` consumes one dictionary reference, so
@@ -185,7 +185,7 @@ pub(super) fn read_core_clusters(core_count: usize) -> Option<Vec<CoreCluster>> 
         }
     }
     IOObjectRelease(services);
-    // A `None` left in any slot collects to `None`, discarding a partial map.
+    // A `None` left in any `clusters` slot collects to `None`, discarding a partial map.
     clusters.into_iter().collect()
 }
 
@@ -264,14 +264,14 @@ fn gpu_core_count(accelerator: u32) -> Option<u16> {
 )]
 fn statistics_percent(statistics: &CFDictionary, key: &'static str) -> Option<u8> {
     let key = CFString::from_static_str(key);
-    // SAFETY: the key pointer must target the `CFString` object itself, not
+    // SAFETY: the pointer derived from `key` must target the `CFString` object itself, not
     // the `CFRetained` wrapper — hence the explicit deref target; the
     // returned pointer is borrowed from `statistics`, which outlives it.
     let value = unsafe { statistics.value(from_ref::<CFString>(&key).cast()) };
     if value.is_null() {
         return None;
     }
-    // SAFETY: a non-null value out of a CF dictionary is a valid CF object;
+    // SAFETY: a non-null `value` out of a `CFDictionary` is a valid `CFType`;
     // `downcast_ref` verifies the concrete type before any use.
     let number = unsafe { &*value.cast::<CFType>() }.downcast_ref::<CFNumber>()?;
     let percent = u64::try_from(number.as_i64()?).ok()?;
@@ -395,7 +395,7 @@ mod linux_tests {
 
     #[test]
     fn parse_drm_fdinfo_returns_none_without_engine_lines() {
-        // A render-node fd on a driver that emits no engine utilization
+        // `input` models a render-node fd on a driver that emits no engine utilization
         // (the Apple `asahi` driver looks exactly like this).
         let input = "pos:\t0\nflags:\t02400002\nmnt_id:\t39\nino:\t460\n";
         assert_eq!(parse_drm_fdinfo(input), None);
@@ -470,11 +470,11 @@ pub(super) fn parse_drm_fdinfo(contents: &str) -> Option<DrmClientSample> {
         if key == "drm-client-id" {
             client_id = value.parse::<i64>().ok();
         } else if let Some(engine) = key.strip_prefix("drm-engine-") {
-            // `drm-engine-capacity-<name>` is an instance count, not busy time.
+            // `engine` from `drm-engine-capacity-<name>` is an instance count, not busy time.
             if engine.starts_with("capacity-") {
                 continue;
             }
-            // The value reads "<nanoseconds> ns"; take the leading integer.
+            // `value` reads "<nanoseconds> ns"; take the leading integer.
             if let Some(busy_ns) = value
                 .split_whitespace()
                 .next()
@@ -727,7 +727,8 @@ impl GpuQuery {
             unsafe { PdhCloseQuery(query) };
             return None;
         }
-        // Rate counters need two samples to cook a value; prime the baseline.
+        // Rate counters sampled by `PdhCollectQueryData` need two samples to cook a value; prime
+        // the baseline.
         // SAFETY: `query` is a live, open query handle.
         unsafe { PdhCollectQueryData(query) };
         Some(Self { query, counter })
@@ -741,7 +742,7 @@ impl GpuQuery {
             return None;
         }
 
-        // Sizing pass: a NULL buffer yields the bytes and item count needed.
+        // `PdhGetFormattedCounterArrayW` with a NULL buffer yields the bytes and item count needed.
         let mut buffer_size: u32 = 0;
         let mut item_count: u32 = 0;
         // SAFETY: `self.counter` is live; the size/count out-params are valid;
@@ -826,14 +827,14 @@ mod tests {
         let Some(core_count) = core_count() else {
             return;
         };
-        // Intel Macs publish no `cluster-type`, so no map is the right answer
-        // there and there is nothing further to assert.
+        // Intel Macs publish no `cluster-type`, so `read_core_clusters` returning `None` is the
+        // right answer there and there is nothing further to assert.
         let Some(core_clusters) = read_core_clusters(core_count) else {
             return;
         };
         assert_eq!(core_clusters.len(), core_count);
-        // Every Apple Silicon part ships both cluster types, so a map that
-        // reports only one means the walk read the wrong property.
+        // Every Apple Silicon part ships both `CoreCluster` variants, so `core_clusters`
+        // reporting only one means the walk read the wrong property.
         assert!(core_clusters.contains(&CoreCluster::Performance));
         assert!(core_clusters.contains(&CoreCluster::Efficiency));
     }

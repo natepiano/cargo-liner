@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn evicts_the_oldest_sample() {
         let mut mean = RollingMean::default();
-        // Fill the window with zeros, then push spikes: once the window
+        // Fill `mean.window` with zeros, then push spikes: once the window
         // holds only the spikes, the zeros no longer drag the mean down.
         for _ in 0..CPU_SMOOTHING_WINDOW_POLLS {
             mean.push(0.0);
