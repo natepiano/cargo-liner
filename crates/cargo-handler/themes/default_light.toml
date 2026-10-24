@@ -53,8 +53,8 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 70, g = 70, b = 70 }
 
 [variants.roles]
-reset_farthest = { r = 28, g = 3, b = 61 }
-reset_nearest  = { r = 136, g = 35, b = 253 }
+reset_farthest = { r = 73, g = 0, b = 158 }
+reset_nearest  = { r = 115, g = 0, b = 235 }
 
 busy   = { r = 0, g = 130, b = 0 }
 claude = { r = 190, g = 85, b = 50 }

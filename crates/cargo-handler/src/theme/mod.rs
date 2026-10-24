@@ -349,8 +349,8 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
         Color::Rgb(110, 6, 54),
         Color::Rgb(33, 0, 69),
     ],
-    reset_nearest:  StyleSpec::from_color(Color::Rgb(136, 35, 253)),
-    reset_farthest: StyleSpec::from_color(Color::Rgb(28, 3, 61)),
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(115, 0, 235)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(73, 0, 158)),
 };
 
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
@@ -389,8 +389,8 @@ const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
         Color::Rgb(81, 12, 0),
         Color::Rgb(92, 40, 87),
     ],
-    reset_nearest:  StyleSpec::from_color(Color::Rgb(136, 35, 253)),
-    reset_farthest: StyleSpec::from_color(Color::Rgb(28, 3, 61)),
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(115, 0, 235)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(82, 55, 154)),
 };
 
 /// The variants cargo-handler compiles in, in the order the settings

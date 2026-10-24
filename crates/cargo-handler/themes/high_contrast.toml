@@ -115,8 +115,8 @@ dim       = { r = 80, g = 80, b = 80 }
 secondary = "Black"
 
 [variants.roles]
-reset_farthest = { r = 28, g = 3, b = 61 }
-reset_nearest  = { r = 136, g = 35, b = 253 }
+reset_farthest = { r = 82, g = 55, b = 154 }
+reset_nearest  = { r = 115, g = 0, b = 235 }
 
 busy   = { color = { r = 0, g = 100, b = 0 }, bold = true }
 claude = { color = { r = 160, g = 60, b = 0 }, bold = true }

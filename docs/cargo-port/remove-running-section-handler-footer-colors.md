@@ -722,7 +722,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
   - Light session inks: chroma >= 0.10, session-to-session dE about 13.6 (Default Light) and 14.3 (High Contrast Light).
   - The nearest light reset shade has 4.485:1 covered contrast before rounding. The unrounded covered-contrast work in "The shortcuts overlay pages only when it must" owns that gap.
   - Known defect: the far light reset shade (28,3,61) is dE 2.40 from Default Light session ink (33,0,69) and dE 2.57 from High Contrast Light session ink (37,0,67), which breaks the rule that a session colour keeps dE >= 20 from every ink within 45° of hue. The session palette checks leave reset inks out. The phase "Light session and reset inks stay apart" repairs it.
-- Dark themes keep their current `session_hues`. On dark, hue alone cannot give five session inks 60° apart that also keep dE >= 20 from the row inks: the valid hue domain is about 92.5°, and at most 2–3 inks can be dE >= 20 apart. Steps of 45°, C >= 0.10, and both together also fail. Three dark tests hold the current dark list at its measured floors and name the next item "Session colours stay apart on dark themes".
+- Dark themes keep their current `session_hues`. On dark, hue alone cannot give five session inks 60° apart that also keep dE >= 20 from the row inks: the valid hue domain is about 92.5°, and at most 2–3 inks can be dE >= 20 apart. Steps of 45°, C >= 0.10, and both together also fail. Three dark tests hold the current dark list at its measured floors and name the next item "Session colours stay apart".
 - Pinned headers and named selection results are not in this phase; the phase "Accounts headers stay in view" owns them.
 
 **Files:**
@@ -734,9 +734,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Binds later work:** a session row draws only through `SessionRowInk::style()`; a new ink on that row is a new `SessionRowInk` variant, so the tests see it. The reset ramp comes only from the two reset roles; no reset shade is `error_color()` or a `left` warning ink.
 
-**Ruled out:** a dark session list that meets the hue-spacing and dE >= 20 rules by hue alone (measured infeasible; see the next item "Session colours stay apart on dark themes").
+**Ruled out:** a dark session list that meets the hue-spacing and dE >= 20 rules by hue alone (measured infeasible; see the next item "Session colours stay apart").
 
-### Phase 29 — Light session and reset inks stay apart  · status: todo
+### Phase 29 — Light session and reset inks stay apart  · status: done
 
 **Depends on:** Phase 26
 
@@ -752,13 +752,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Session rows draw only through `SessionRowInk::style()` (`theme/mod.rs` ≈58).
 - Light `session_hues`: Default Light (70,1,2) (87,39,90) (0,35,86) (110,6,54) (33,0,69); High Contrast Light (0,35,86) (68,0,29) (37,0,67) (81,12,0) (92,40,87). Root i takes entry i (mod 5). Keep that assignment.
 - Reset floors that stay: each reset shade is dE >= 20 from `tui_pane::error_color()` and from the `left` warning and alarm inks, dE >= 15 from `Text`, OKLCH C >= 0.10, >= 30° in hue from every account ink, and covered contrast >= 4.5:1. The failed-reading dot keeps error red.
-- Session floors that stay: C >= 0.10, session-to-session dE >= 12, consecutive top-level hues >= 60° apart, and dE >= 20 against every role, account, status and reset ink within 45° of hue.
+- Session floors that stay: C >= 0.10, session-to-session dE >= 12, consecutive top-level hues >= 60° apart, dE >= 15 against every role, account and status ink (showrunner ruling, 2026-10-23), and against every reset shade within 45° of hue the largest smallest dE that the reset floors allow, accepted at >= 10 (showrunner ruling 3, 2026-10-23); the full 20 belongs to the next item "Session colours stay apart".
 - Measure on the final drawn output (after the readability lift), every intermediate reset shade included.
-- Dark themes are out of scope (unit director, 2026-10-23): they keep their lists and their floor tests (`dark_session_palette_api_keeps_current_floors_on_each_pane_ground`, `role_title_tests.rs` ≈1011). The next item "Session colours stay apart on dark themes" owns them.
+- Dark themes are out of scope (unit director, 2026-10-23): they keep their lists and their floor tests (`dark_session_palette_api_keeps_current_floors_on_each_pane_ground`, `role_title_tests.rs` ≈1011). The next item "Session colours stay apart" owns them.
 - Phase 18 runs first: covered contrast is unrounded, and the test oracles use the unrounded 208/255 blend.
 
 **Spec:**
-1. Measure first. Search light reset ends that meet every floor above. Only if no pair of ends works, also search one light session ink per theme. Write the result in the phase summary and send it to the unit director before any production edit. If no choice meets every floor, stop and report. The unit director then routes the light case to the "Session colours stay apart on dark themes" next item, which then covers both appearances.
+1. Measure first. Search light reset ends that meet every floor above. Only if no pair of ends works, also search one light session ink per theme. Write the result in the phase summary and send it to the unit director before any production edit. If no choice meets every floor, stop and report. The unit director then routes the light case to the "Session colours stay apart" next item, which then covers both appearances.
 2. Change only the light values: the light theme files and the light built-in `RolePalette` values and `session_hues` lists in `theme/mod.rs`.
 3. Tests, red first: the session palette checks include every drawn reset shade (nearest, farthest and the intermediate shades) for both light themes, through the production palette APIs (`ResetRank::positions`, `ResetRank::color` and the readability lift). The existing dark floor tests stay unchanged and pass.
 4. Write the measured pairs (the smallest dE and hue gap per class and theme) in the phase summary.
@@ -943,7 +943,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
 - The run order is 18, 25, 26, 29, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19, 26, 29 and 20.
 - Colour limits for the Astra role inks, as built. Measure them through the production role API (`FooterColors::hierarchy_role` ≈827 with the new variants, `named_role` ≈818) and `SessionRowInk::Management`, not through fixed colors, on the final drawn output with the unrounded 208/255 coverage of phase 18.
-  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until the next item "Session colours stay apart on dark themes" lands.
+  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until the next item "Session colours stay apart" lands.
   - Final targets, separate from those floors: row-fixed dE >= 15, session dE >= 20, covered contrast >= 4.5:1. This phase does not need the dE targets on dark themes. Covered contrast >= 4.5:1 applies now, in all four themes.
   - Consecutive session hue spacing applies only to the session inks, not to role inks.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.

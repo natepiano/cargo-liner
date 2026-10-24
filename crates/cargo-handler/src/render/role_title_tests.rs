@@ -28,6 +28,7 @@ use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::ReviewerState;
 use crate::census::scan::ScanStage;
+use crate::footer_colors;
 use crate::footer_colors::FooterColor;
 use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
@@ -686,10 +687,9 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
     };
     let fg = rgb(foreground);
     let bg = rgb(ground);
-    // Quantize covered glyph channels to the terminal's eight-bit RGB before luminance.
-    let mixed = std::array::from_fn::<_, 3, _>(|i| {
-        (f64::mul_add(bg[i], 47.0, fg[i] * 208.0) / 255.0).floor()
-    });
+    // Keep covered channels unrounded before luminance.
+    let mixed =
+        std::array::from_fn::<_, 3, _>(|i| f64::mul_add(bg[i], 47.0, fg[i] * 208.0) / 255.0);
     let luminance = |channels: [f64; 3]| {
         let [r, g, b] = channels.map(|c| {
             let v = c / 255.0;
@@ -706,35 +706,56 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+#[derive(Clone, Copy)]
+enum SessionResetFloor {
+    DarkNotMeasured,
+    HeldLight(f64),
+}
+
 /// Rounded down from the current final inks, with both pane-tint states measured.
 #[derive(Clone, Copy)]
 struct SessionPaletteFloors {
     consecutive_hue_gap: f64,
     session_distance:    f64,
     row_fixed_distance:  f64,
+    reset_distance:      SessionResetFloor,
 }
 
 const DEFAULT_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 14.9,
     session_distance:    14.9,
     row_fixed_distance:  12.2,
+    reset_distance:      SessionResetFloor::DarkNotMeasured,
 };
 const HIGH_CONTRAST_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 14.5,
     session_distance:    16.0,
     row_fixed_distance:  14.8,
+    reset_distance:      SessionResetFloor::DarkNotMeasured,
 };
-const LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
+// Hold the achieved reset distances; "Session colours stay apart" owns the full 20.
+const DEFAULT_LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
     consecutive_hue_gap: 60.0,
     session_distance:    12.0,
     row_fixed_distance:  15.0,
+    reset_distance:      SessionResetFloor::HeldLight(14.7),
+};
+const HIGH_CONTRAST_LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
+    reset_distance: SessionResetFloor::HeldLight(15.3),
+    ..DEFAULT_LIGHT_SESSION_FLOORS
 };
 // Both dark minima round down to 4.5; the required contrast floor stays 4.5:1.
 const MINIMUM_SESSION_GLYPH_CONTRAST: f64 = 4.5;
+const NEAR_HUE_GAP_DEGREES: f64 = 45.0;
+const RESET_RAMP_POSITION_COUNT: usize = 256;
 
 fn session_palette_floors(appearance: Appearance, name: &str) -> SessionPaletteFloors {
     match appearance {
-        Appearance::Light => LIGHT_SESSION_FLOORS,
+        Appearance::Light => match name {
+            "Default Light" => DEFAULT_LIGHT_SESSION_FLOORS,
+            "High Contrast Light" => HIGH_CONTRAST_LIGHT_SESSION_FLOORS,
+            _ => panic!("unmeasured light session palette {name}"),
+        },
         Appearance::Dark => match name {
             "Default Dark" => DEFAULT_DARK_SESSION_FLOORS,
             "High Contrast Dark" => HIGH_CONTRAST_DARK_SESSION_FLOORS,
@@ -764,6 +785,44 @@ struct SessionPaletteCheck<'a> {
 }
 
 impl SessionPaletteCheck<'_> {
+    fn check_reset_shades(&mut self, pane_ground: SessionPaneGround, minimum_distance: f64) {
+        let resets: Vec<_> = theme::ResetRank::positions(RESET_RAMP_POSITION_COUNT)
+            .map(|rank| {
+                footer_colors::readable_status_style(Style::default().fg(rank.color()))
+                    .fg
+                    .expect("final reset foreground")
+            })
+            .collect();
+        let first = theme::SessionHue::of_agent(0);
+        let sessions = std::iter::once(first).chain(
+            (1..)
+                .map(theme::SessionHue::of_agent)
+                .take_while(|hue| *hue != first),
+        );
+        for (ordinal, session) in sessions.enumerate() {
+            let session_ink = Role::Session(session).style().fg.expect("session ink");
+            for (rank, reset_ink) in resets.iter().enumerate() {
+                let gap = tests::hue_gap(session_ink, *reset_ink);
+                let distance = tests::perceptual_distance(session_ink, *reset_ink);
+                self.measurements
+                    .entry("session/reset".into())
+                    .or_default()
+                    .push((
+                        format!("pane_ground={pane_ground:?} session-{ordinal}"),
+                        session_ink,
+                        format!("reset-{rank:03}"),
+                        *reset_ink,
+                    ));
+                if gap <= NEAR_HUE_GAP_DEGREES && distance < minimum_distance {
+                    self.failures.push(format!(
+                        "{} pane_ground={pane_ground:?} session-{ordinal}/reset-{rank:03} {session_ink:?}/{reset_ink:?} dE={distance:.9} floor={minimum_distance} hue gap={gap:.9}",
+                        self.theme_name
+                    ));
+                }
+            }
+        }
+    }
+
     fn check_ink(
         &mut self,
         session_ink: Color,
@@ -957,6 +1016,9 @@ fn check_session_palette(variant_name: &str) {
             SummarySort::default(),
         );
         check.check_drawn(&cells, &palette, pane_ground);
+        if let SessionResetFloor::HeldLight(minimum_distance) = check.floors.reset_distance {
+            check.check_reset_shades(pane_ground, minimum_distance);
+        }
     }
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
@@ -989,6 +1051,7 @@ fn check_session_palette(variant_name: &str) {
 fn session_name_inks_stay_apart_from_all_palettes_in_default_dark() {
     check_session_palette("Default Dark");
 }
+/// Holds session/reset dE 14.7; "Session colours stay apart" owns the full 20.
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_default_light() {
     check_session_palette("Default Light");
@@ -999,6 +1062,7 @@ fn session_name_inks_stay_apart_from_all_palettes_in_default_light() {
 fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_dark() {
     check_session_palette("High Contrast Dark");
 }
+/// Holds session/reset dE 15.3; "Session colours stay apart" owns the full 20.
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_light() {
     check_session_palette("High Contrast Light");
