@@ -665,6 +665,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 10. cargo-port's selected pane row is readable on the Default Dark selection ground rgb 86,86,86 (showrunner, 2026-10-23). Live at phase 18: CI circle green (5,197,5) 2.55:1, Og glyph gray (162,162,162) 2.42:1, Main ☑ green (21,175,21) 2.10:1, disk text (255,212,212) 4.25:1. Use the phase 16 method: an OKLCH lightness-only lift of each ink until it reaches 4.5:1 at 208/255 coverage on the selection ground, with its hue kept and no colour-distance rule on selection grounds. Emoji glyphs (the Git crab) are exempt, because their colour is not ours to set. Shared lift boundary: the shared implementation is `crates/tui_pane/src/theme/selected_ink.rs`, exported from `theme/mod.rs` and `lib.rs`. Move only the selected-ground colour calculation into it: the OKLCH lightness search for one selection ground, the hue and chroma path it follows, and the unrounded 208/255 covered contrast it measures with. It is a pure function of the ink and the ground, with no cache and no theme state. cargo-handler's `InkCoverage::Antialiased` calls the same covered-contrast function, so there is one covered-contrast calculation. Cache invalidation stays with each app: cargo-handler keeps `SelectedGroundInk` as a wrapper over the shared function, with its `PALETTE` cache and the theme-identity and ground checks in `ReadablePalette::current`; cargo-port calls the shared function and owns any cache it adds. Keep `SessionRowInk`, the footer assignments (`FooterColors`), the pane lightness (`ReadableInk`) and the reset ranking (`ResetRank`) in cargo-handler. Unselected session inks do not change.
 11. Tests, each red before its fix: a rendered overlay has a full-width selection bar, sentence-case title and headings without colons, no repeated title heading, a blank row before each later heading (fit and paging heights counted), and no row without a key; the rendered cargo-handler bar and overlay say "tile" and never "pane"; every key name drawn on a bar or the overlay is lower case; the cargo-port bar draws "move" and the expand/collapse verbs; the sccache helper formats 85.40 as "85.4%". A rendered cargo-port pane with a selected row reads every non-emoji ink on that row at 4.5:1 or more with its own literal 208/255 coverage, in all four themes (named test `selected_project_row_inks_read_at_4_5_in_every_theme` in `crates/cargo-port/src/tui/panes/project_list/selected_row_ink_tests.rs`). The shared resolver has its own tests in `crates/tui_pane/src/theme/selected_ink_tests.rs`: an ink under 4.5:1 lifts to 4.5:1 with its hue kept, and an ink already at 4.5:1 stays unchanged. cargo-handler's `render/selected_ink_tests.rs` passes unchanged, and an unselected session row draws the same inks as before.
 12. Slow test (showrunner, 2026-10-23): `runner::lifecycle::tests::a_panic_report_holds_its_message_location_and_backtrace` (`crates/tui_pane/src/runner/lifecycle.rs`) took 1.372 s in the phase 19 full tui_pane suite. A test over a second is a defect. The probable cause is backtrace symbolization. The test proves that the report keeps a backtrace without a full symbolized capture in the test, and it runs under a second in the full suite. Write the measured cause in the summary.
+13. Slow test (showrunner, 2026-10-24): `census::scan::codex_session_tests::codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`crates/cargo-handler/src/census/codex_session_tests.rs` ≈409) took 1.510 s in the phase 30 full cargo-handler suite at high machine load. Time it alone first. If it is over a second alone, find the cause and fix it so it runs under a second; write the measured times and the cause in the summary. If it is under a second alone, write the times and make no change.
 
 **Files:**
 - `crates/tui_pane/src/overlays/global_shortcuts.rs`, `crates/tui_pane/src/overlays/global_shortcuts_tests.rs`, `crates/tui_pane/src/keymap/mod.rs`, `crates/tui_pane/src/keymap/key_bind.rs`, `crates/tui_pane/src/bar/nav_region.rs`, `crates/tui_pane/src/runner/lifecycle.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -675,10 +676,11 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/tui_pane/src/theme/selected_ink_tests.rs` — new resolver tests, registered in `theme/selected_ink.rs`
 - `crates/cargo-handler/src/render/selected_ink_tests.rs` — the handler selected-ink tests, unchanged expectations
 - `crates/cargo-port/src/tui/panes/project_list/selected_row_ink_tests.rs` — new cargo-port selected-row render test, registered in `tree_rows.rs`
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the census slow test (spec 13)
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
-- `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), and sole owner of `crates/tui_pane/src/runner/lifecycle.rs` for the panic-report test repair.
+- `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), sole owner of `crates/tui_pane/src/runner/lifecycle.rs` for the panic-report test repair, and of `crates/cargo-handler/src/census/codex_session_tests.rs` for the census slow test.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean. No test takes a second. Live: framed shots of the overlay in cargo-handler and cargo-tile, and of the cargo-handler and cargo-port bars, in a dark and a light theme. The checkpoint carries `Change-Review: the shortcuts overlay and the status bars use sentence case, lower-case key names, one word for tiles in cargo-handler and one sccache percent format | open the global shortcuts overlay in cargo-handler and cargo-tile, and read the cargo-handler and cargo-port bars`.
 
@@ -759,46 +761,30 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 30 — Light session inks and reset ramp read apart  · status: done
 
-**Depends on:** Phase 29
+#### As-built
 
-#### Work Order
+- No palette change. Every light value stays as phase 29 left it. Showrunner rulings, 2026-10-24: measure four relaxations, each alone, then (c)+(a); land a palette only if the smallest session-pair dE is >= 12 and the ramp ends are dE >= 20 in both light themes; if none passes, land only the ramp-order test and the CHANGELOG line, and stop tuning floors.
+- Measured (all floors kept except the one relaxed):
 
-**Goal:** on Default Light and High Contrast Light, the five session inks read as five different colours, no reset shade looks like a role ink, and the reset ramp's order can be read.
+  | Relaxation | Five-ink session set | Largest reset-end dE (Default Light / High Contrast Light) |
+  | --- | --- | --- |
+  | (a) L 0.35–0.60 | none | 8.3 / 6.9 |
+  | (b) row-fixed dE 12 | none | 8.3 / 6.9 |
+  | (c) hue gap 45° | none | 8.3 / 6.9 |
+  | (d) reset vs role dE 12 | none | 12.0 / 18.2 |
+  | (c)+(a) | none | 8.3 / 6.9 |
 
-**Source:** showrunner UX check of the phase 29 light shots, 2026-10-24, and rulings of the same date.
-- The light session inks read as near-black (OKLab L 0.21–0.37, C about 0.10) and fall into two groups: dark red/plum and dark navy/indigo. High Contrast Light (68,0,29) vs (81,12,0) is dE 6.4. Default Light (87,39,90) vs (110,6,54) is dE 8.2, and (0,35,86) vs (33,0,69) is dE 9.3.
-- The `showrunners` role ink (#7732FF, a management ink) is dE 5.3 from the reset end #7300eb and reads as the same violet.
-- Six reset shades step only dE 2.7–3.4 between neighbours, so their order cannot be read.
-
-**Constraints from prior phases:**
-- Phase 29 as built: light reset ends Default Light (115,0,235) → (73,0,158) and High Contrast Light (115,0,235) → (82,55,154), in `DEFAULT_LIGHT_ROLES` and `HIGH_CONTRAST_LIGHT_ROLES` (`crates/cargo-handler/src/theme/mod.rs` ≈337–395), `themes/default_light.toml` (≈56–57) and the light variant of `themes/high_contrast.toml` (≈118–119). The end separation is at the old floor, dE 12. The binding floors were end separation, account hue gap 30° and covered contrast 4.5.
-- Light `session_hues` today: Default Light (70,1,2) (87,39,90) (0,35,86) (110,6,54) (33,0,69); High Contrast Light (0,35,86) (68,0,29) (37,0,67) (81,12,0) (92,40,87). Root i takes entry i (mod 5); keep that assignment. Each tile title keeps its summary row's ink.
-- The reset ramp: `reset_colors` (`summary/accounts.rs` ≈142) sorts the distinct reset instants by time; `ResetRank::positions(n)` gives rank 0 (earliest instant, a past reset included) the `reset_nearest` end. Each shade draws through `footer_colors::readable_status_style` (≈679). Brighter means sooner.
-- Session rows draw only through `SessionRowInk::style()` (`theme/mod.rs` ≈58). `SessionRowInk::fixed_fields()` and `FooterColors::session_row_inks()` list every ink a row can draw, `Account(FooterColor)` and `Management(FooterColor)` included. Role-column inks in the accounts table are `FooterColor::management_style` (`footer_colors/mod.rs` ≈68).
-- Tests (`render/role_title_tests.rs`): `SessionPaletteFloors` with `SessionResetFloor` (`DarkNotMeasured`, `HeldLight(f64)`); `check_reset_shades` measures every session ink against `RESET_RAMP_POSITION_COUNT` (256) drawn shades within `NEAR_HUE_GAP_DEGREES` (45°), holding 14.7 / 15.3. `session_glyph_contrast` uses unrounded covered channels. Reset floors are in `summary/accounts_gradient_tests.rs`.
-- Dark themes are out of scope; they keep their lists and floor tests. The next item "Session colours stay apart" owns them and the full dE 20.
-
-**Spec:**
-1. Light session inks (showrunner, 2026-10-24): OKLCH C >= 0.14, OKLab L 0.40–0.52, covered contrast >= 4.5:1 (unrounded), consecutive top-level hues >= 60° apart, no session hue within the reset violet band (about 280–300°, measured on the drawn shades), session-to-session dE as large as the floors allow, row-fixed dE >= 15, and session-vs-reset dE within 45° of hue no lower than the held 14.7 / 15.3. If no five-ink set meets every floor, maximise the smallest session-pair dE under them and report it. Measure first; post the result to the unit director before production edits.
-2. Reset shades vs role inks: every drawn reset shade is dE >= 15 from every role ink on that theme: each `SessionRowInk` fixed field and `Management(c)` and `Account(c)` for every `FooterColor`. Move the reset ends, never a role ink.
-3. Reset ramp order (showrunner, 2026-10-24): the light ramp ends are dE >= 25 apart, so six shades step about 5. Keep every phase 29 reset floor (dE >= 20 from error red and the `left` warning and alarm inks, dE >= 15 from `Text`, C >= 0.10, >= 30° in hue from every account ink, covered contrast >= 4.5:1). If 25 does not fit with specs 1 and 2, land the largest separation that fits and report it; do not ask again.
-4. Change only light values: the light built-in `RolePalette` values and `session_hues` in `theme/mod.rs` and the light theme files. Starter holds only a dark variant.
-5. Tests, red first: spec 1 floors for both light themes; reset vs every role ink (spec 2); the end separation and the neighbour step for six shades (spec 3); and a summary test that reset times map to shades in time order (earliest = nearest end) through `reset_colors`. Update the held session-vs-reset values in `role_title_tests.rs` to what is measured. Every test under one second.
-6. CHANGELOG: one line naming the new light session and reset colours, and that a brighter reset shade means a sooner reset.
+- Why no session set exists: under the light floors (C >= 0.14, covered contrast >= 4.5:1 unrounded, row-fixed dE, clear of the reset violet band), the final High Contrast Light hues fit in an arc of 48–116°, which is less than twice the required gap. Five inks that step that gap around the cycle cannot fit in it. An exhaustive scan of all 16,777,216 final colours proves it.
+- The ramp order is now tested: `summary/accounts_gradient_tests.rs` draws six distinct reset times, one in the past, in two source orders on every built-in theme. Rank 0 (the earliest time) takes `reset_nearest`, the last rank takes `reset_farthest`, and the ranks between are evenly spaced.
+- CHANGELOG: reset shades follow time order. On dark themes they go from yellow-green (soonest) to sea green; on light themes a brighter violet means a sooner reset. The dark ends have the same lightness, so on dark themes the order is in hue only.
 
 **Files:**
-- `crates/cargo-handler/src/theme/mod.rs` — light `session_hues` and reset ends
-- `crates/cargo-handler/themes/default_light.toml`, `crates/cargo-handler/themes/high_contrast.toml` — the same light values
-- `crates/cargo-handler/src/render/role_title_tests.rs` — light session floors, held session-vs-reset values
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — reset vs role inks, end separation, neighbour step
-- `crates/cargo-handler/src/summary/accounts_tests.rs` — reset shades in time order
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the six-time ramp-order test
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the measurement, `theme/mod.rs`, the theme files and the CHANGELOG; hub: `crates/cargo-handler/src/theme/mod.rs`.
-- `test` — `render/role_title_tests.rs`, `summary/accounts_gradient_tests.rs`, `summary/accounts_tests.rs`.
+**Binds later work:** the open light defects (near-black session inks in two hue groups, the `showrunners` role ink dE 5.3 from the nearest reset end, reset steps of dE 2.7–3.4) move to the phase "Session colours stay apart". More floor tuning on one row cannot fix them; that phase changes what a session row draws.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: summary shots in Default Light and High Contrast Light with the agents table, the accounts table with six or more reset times and a `showrunners` role in view, with each session, role and reset ink read from the shot.
+**Ruled out:** each relaxation (a)–(d) and (c)+(a), as measured above. Evidence: the phase 30 measurement programs and logs (`relax_measure.py`, `relax_domain.cpp`, `relax_sessions.cpp`).
 
 ### Phase 28 — Accounts headers stay in view  · status: todo
 
@@ -845,7 +831,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Goal:** the agent tiles and the summary agents table stay readable when the terminal is narrow.
 
-**Source:** the phase 19 design check (2026-10-23, row 7). At 80 and 50 columns the agent tiles crush their headers ("sesrole", "rolstataccage") and cells touch with no gap; the narrow summary agents table cuts pids ("107206" for 1107206), headers ("accoun", "sessi"), names and directories with no "…". Showrunner ruling, 2026-10-23: next, as this phase, after phase 26 and ahead of phase 20. Before work starts, check main and write here whether main has the defect. Showrunner ruling, 2026-10-23 (after the phase 26 architect review): below the width that holds the remaining whole headers, the whole pid and the gaps after directory, branch and type drop, drop more whole columns in the order age, account, pid, so that the session name and the role stay. A column and its header go together: never draw a column with its header hidden. If the session name alone does not fit, cut it with "…"; it never drops.
+**Source:** the phase 19 design check (2026-10-23, row 7). At 80 and 50 columns the agent tiles crush their headers ("sesrole", "rolstataccage") and cells touch with no gap; the narrow summary agents table cuts pids ("107206" for 1107206), headers ("accoun", "sessi"), names and directories with no "…". Showrunner ruling, 2026-10-23: next, as this phase, after phase 26 and ahead of phase 20. Main has the defect (checked 2026-10-24 against origin/main 4527aae3): `summary::truncated` and `summary::cell_width` count characters, and `ColumnDrop` drops only directory, branch and type, as on this branch. Showrunner ruling, 2026-10-23 (after the phase 26 architect review): below the width that holds the remaining whole headers, the whole pid and the gaps after directory, branch and type drop, drop more whole columns in the order age, account, pid, so that the session name and the role stay. A column and its header go together: never draw a column with its header hidden. If the session name alone does not fit, cut it with "…"; it never drops.
 
 **Constraints from prior phases:**
 - The shipped drop order is `ColumnDrop::ORDER` (`agent_cell.rs` ≈478: Directory, Branch, Type) run by `GroupFitStep::ORDER` (≈809), which merges equal fitted column groups after each step. Keep shared `AgeLayout`s per group, the role and status widths measured from the painted rows (phases 24 and 16), and `prepare_frame`'s order: selection areas install only after shared metrics (`render/mod.rs` ≈469).
@@ -874,6 +860,44 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — the narrow-width buffers (`render/narrow_width_tests.rs`), the column-visibility regressions, the Unicode-width tests and the colour-preservation regressions.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` and phase 19's accounts tests pass unchanged. Phase 26's root and title colour checks pass unchanged: `root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts` (`render/role_title_tests.rs` ≈1066; five roots with different subtree sizes draw five distinct inks, and each tile title matches its summary row). Live: agent tiles and summary shots at 200, 80 and 50 columns in a dark and a light theme.
+
+### Phase 31 — Session colours stay apart  · status: todo
+
+**Depends on:** Phase 27, Phase 30
+
+#### Work Order
+
+**Goal:** in all four themes, the five session inks read as five different colours, and no session ink, role ink or reset shade on a row looks like another.
+
+**Source:** next item "Session colours stay apart" (phase 26, approved by the showrunner 2026-10-23 19:30 AST), widened by phases 29 and 30. Showrunner ruling, 2026-10-24: the root cause is too many inks on one row; this item becomes a phase right after phase 27, starting with options and shots for the showrunner.
+
+**Constraints from prior phases:**
+- Phase 26 (dark): the valid hue domain is about 92.5°, and at most 2–3 inks can be CIEDE2000 >= 20 apart; steps of 45°, OKLCH C >= 0.10, and both together also fail.
+- Phase 29 (light): light reset ends Default Light (115,0,235) → (73,0,158) and High Contrast Light (115,0,235) → (82,55,154) hold session-vs-reset dE 14.7 and 15.3 (`render/role_title_tests.rs`, `SessionResetFloor::HeldLight`). The drawn reset shades fall in one violet band (OKLCH h 291–294°).
+- Phase 30 (light): no five-ink light session set exists under the current row floors, even with any one floor relaxed; the light defects are near-black session inks in two hue groups, the `showrunners` role ink #7732FF dE 5.3 from the nearest reset end, and reset steps of dE 2.7–3.4. `summary/accounts_gradient_tests.rs` holds the reset time order.
+- Session rows draw only through `SessionRowInk::style()` (`theme/mod.rs` ≈58). `SessionRowInk::fixed_fields()` and `FooterColors::session_row_inks()` list every ink a row can draw. Root i takes entry i (mod 5) of `session_hues`, and each tile title keeps its summary row's ink.
+- Phase 21 adds two Astra role inks; this phase includes them in its assessment. Today `FooterColors::parse` (`footer_colors/mod.rs` ≈772) reads only `role.showrunner` and `role.unit-director`, so the `role.astra-*` keys are ignored, and `FooterColor` has no `mauve` variant. Assess the prospective sources by value: designer `mauve` = xterm 139 (#af87af), reviewer `bright-green`. Role inks resolve through `FooterColors::named_role` (≈818) and `FooterColor::management_style` (≈68), drawn as `SessionRowInk::Management`.
+- The accounts table draws role words through `role_words` (`summary/accounts.rs` ≈609): normal management ink for a fresh reading, subdued management ink (`Freshness::style`) for a stale or unread one. Reset shades draw after the readability correction (`footer_colors::readable_status_style`), not as raw `ResetRank::color`.
+- Covered contrast: the test oracle `session_glyph_contrast` (`render/role_title_tests.rs`) is already unrounded at 208/255. Production `footer_colors/mod.rs` (≈363) still blends in bytes until phase 18; the floors here are measured with the unrounded oracle.
+- Phase 27's column drops and truncation keep the style of each span they cut.
+
+**Spec:**
+1. Options first (showrunner, 2026-10-24): list what else can separate sessions. At least: fewer fixed inks on a session row (for example role, account or status drawn in the plain text ink), and a second visual channel the style guide allows (for example bold, a glyph or a background tint). For each option, give the inks a row draws, the measured smallest session-pair dE, session-vs-fixed dE and session-vs-reset dE in all four themes, and what the row loses. Include the accounts table: its role inks in the fresh and the subdued (stale or unread) style, against the drawn reset shades, with pane tint on and off. Each option also says how a user tells reset ranks apart with six or more reset times (today neighbouring light shades step only dE 2.7–3.4): a larger colour step, a second channel, or the time text alone, measured. Send the showrunner the options with shots of the summary agents table and the accounts table in a dark and a light theme, before any palette code. The showrunner's choice settles the rest of this spec. The unit director then adds the files the chosen option needs to **Files**.
+2. The showrunner's choice sets the final floors and the tests that hold them. A second visual channel separates by something other than colour, so the choice names which colour floor it replaces and the test that proves the channel instead. Measure the chosen option before production code. If no palette meets the chosen floors, report the measured values to the unit director and stop; never land a palette from an empty feasible set (phase 30's first fallback collapsed five inks to one). Without a replacement named by the choice, the completion condition holds: in all four themes, every session ink has CIEDE2000 >= 15 from each fixed ink that can share its row, every pair of session inks has CIEDE2000 >= 20, and covered contrast is >= 4.5:1 with the unrounded oracle. In both light themes, session-vs-reset CIEDE2000 is >= 20 within 45° of hue. Reset shades keep dE >= 15 from every role ink, in the fresh and the subdued style, and the light ramp ends are as far apart as that allows.
+3. Root i keeps entry i of the list, and each tile title keeps its summary row's ink.
+4. Tests, red first: the spec 2 floors in all four themes replace the held phase 26 and 29 limits. Rendered accounts tests compare role inks (fresh and subdued) with the drawn reset shades, pane tint on and off. A rendered test with six or more reset times proves the chosen way to tell reset ranks apart.
+5. CHANGELOG: one line for the visible change.
+
+**Files:**
+- `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/themes/` — inks of the chosen option
+- `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the spec 2 floors
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the option measurements and shots, then the chosen option's production code and the CHANGELOG; hub: `crates/cargo-handler/src/theme/mod.rs`.
+- `test` — the spec 2 floor tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: summary and accounts shots in all four themes, with each session, role and reset ink read from the shot.
 
 ### Phase 16 — Row selection in tiles  · status: done
 
@@ -906,7 +930,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 20 — Click a word to highlight every instance  · status: todo
 
-**Depends on:** Phase 16, Phase 27
+**Depends on:** Phase 16, Phase 27, Phase 31
 
 #### Work Order
 
@@ -947,7 +971,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
 
-**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20
+**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 31
 
 #### Work Order
 
@@ -966,7 +990,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
 - The run order is 18, 25, 26, 29, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19, 26, 29 and 20.
 - Colour limits for the Astra role inks, as built. Measure them through the production role API (`FooterColors::hierarchy_role` ≈827 with the new variants, `named_role` ≈818) and `SessionRowInk::Management`, not through fixed colors, on the final drawn output with the unrounded 208/255 coverage of phase 18.
-  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until the next item "Session colours stay apart" lands.
+  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until phase 31 ("Session colours stay apart") lands. Phase 31 runs first: its chosen row design (which fields draw in colour, any second channel) and its floors replace these temporary floors and the dark exemption below. Astra labels use the style path phase 31 chose; this phase does not restore the old exceptions.
   - Final targets, separate from those floors: row-fixed dE >= 15, session dE >= 20, covered contrast >= 4.5:1. This phase does not need the dE targets on dark themes. Covered contrast >= 4.5:1 applies now, in all four themes.
   - Consecutive session hue spacing applies only to the session inks, not to role inks.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
@@ -990,7 +1014,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
 9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the unrounded 208/255 coverage. Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
-10. Reset shades: each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme (phase 30's reset-vs-role-ink test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
+10. Reset shades: each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; phase 30 landed no reset-vs-role-ink test, and phase 31 owns that floor for the other role inks). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
 
 **Files:**
 - `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
@@ -1000,9 +1024,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/footer_colors/fixtures/statusline_astra.conf` — new fixture with `role.astra-designer=mauve`
 - `crates/cargo-handler/src/render/role_title_tests.rs` — the session palette checks measure both Astra inks
 - `crates/cargo-handler/src/render/word_contrast_tests.rs` — phase 20's contrast module, extended for both Astra inks
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the Astra-vs-reset test (spec 10)
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — the production files (hierarchy, scanner, probe, placement, color and rendering), `theme/mod.rs`, the registrations and the CHANGELOG; owns all shared module files; hub: `crates/cargo-handler/src/census/mod.rs` and `crates/cargo-handler/src/theme/mod.rs` (shared modules).
-- `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests and the Astra word-match tests in `render/word_contrast_tests.rs`.
+- `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests, the Astra word-match tests in `render/word_contrast_tests.rs`, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, and the Astra word-match tests in `render/word_contrast_tests.rs` pass. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
