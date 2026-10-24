@@ -133,12 +133,16 @@ struct ResetThemeFixture {
 
 impl ResetThemeFixture {
     fn install() -> Self {
-        let previous = tui_pane::theme();
         let variant = theme::builtins()
             .into_iter()
             .find(|variant| variant.id.as_str() == "Default Dark")
             .expect("default reset theme");
-        tui_pane::set_active_theme(Arc::new(variant.theme));
+        Self::with_theme(variant.theme)
+    }
+
+    fn with_theme(theme: Theme) -> Self {
+        let previous = tui_pane::theme();
+        tui_pane::set_active_theme(Arc::new(theme));
         Self { previous }
     }
 }
@@ -218,6 +222,40 @@ fn accounts_gradient_distinct_resets_draw_the_reset_palette_on_each_theme() {
         }
     }
     tui_pane::set_active_theme(previous);
+}
+
+#[test]
+fn reset_time_order_assigns_the_nearest_shade_to_the_earliest_instant() {
+    let times = [-3600, 60, 120, 3600, 7200, 86400];
+    for variant in theme::builtins() {
+        let name = variant.id.as_str().to_owned();
+        let _theme = ResetThemeFixture::with_theme(variant.theme);
+        let nearest = reset_role("reset_nearest");
+        let farthest = reset_role("reset_farthest");
+        let expected: Vec<_> = (0..times.len())
+            .map(|rank| {
+                let alpha = u8::try_from(rank * usize::from(u8::MAX) / (times.len() - 1))
+                    .expect("evenly spaced reset shade");
+                readable_rank(tui_pane::blend_color(nearest, farthest, alpha))
+            })
+            .collect();
+        for order in [[5, 1, 3, 0, 4, 2], [2, 4, 0, 3, 1, 5]] {
+            let app = app_with_accounts(
+                order
+                    .into_iter()
+                    .map(|rank| account(&format!("time-rank-{rank}"), reset(times[rank])))
+                    .collect(),
+            );
+            let buffer = drawn(&app);
+            for (rank, color) in expected.iter().enumerate() {
+                assert_eq!(
+                    reset_color(&buffer, &format!("time-rank-{rank}")),
+                    *color,
+                    "{name}: chronological rank {rank}, source order {order:?}, including a past instant"
+                );
+            }
+        }
+    }
 }
 
 #[test]

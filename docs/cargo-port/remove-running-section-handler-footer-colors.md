@@ -757,7 +757,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** light reset ends that reach session-vs-reset dE 20 with the session inks fixed (measured: none on the searched grid and local RGB neighbourhoods), and a one-session swap per theme.
 
-### Phase 30 — Light session inks and reset ramp read apart  · status: todo
+### Phase 30 — Light session inks and reset ramp read apart  · status: done
 
 **Depends on:** Phase 29
 
