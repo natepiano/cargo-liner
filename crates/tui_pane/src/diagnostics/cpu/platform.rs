@@ -728,7 +728,8 @@ impl GpuQuery {
             return None;
         }
         // Rate counters sampled by `PdhCollectQueryData` need two samples to cook a value; prime
-        // the baseline. SAFETY: `query` is a live, open query handle.
+        // the baseline.
+        // SAFETY: `query` is a live, open query handle.
         unsafe { PdhCollectQueryData(query) };
         Some(Self { query, counter })
     }

@@ -125,9 +125,8 @@ mod tests {
         // The event loop gates `crossbeam_channel::Select` registration on
         // `CpuMonitor::is_sampling`. A spawned worker holds the sample sender for the
         // monitor's life, so `CpuMonitor::receiver` stays connected (`try_recv` returns
-        // `crossbeam_channel::TryRecvError::Empty`,
-        // not `crossbeam_channel::TryRecvError::Disconnected`) and registering it will not
-        // busy-spin.
+        // `crossbeam_channel::TryRecvError::Empty`, not `TryRecvError::Disconnected`)
+        // and registering it will not busy-spin.
         let monitor = CpuMonitor::new(1000);
         assert!(monitor.is_sampling());
         assert!(matches!(
