@@ -231,8 +231,8 @@ fn flow_reports_the_exact_trailing_unseen_count() {
 fn flow_split_windows_are_contiguous_across_content_and_band_sizes() {
     for content_rows in 1..=150 {
         for band in 3..=40 {
-            // Even a three-row band shows one content row, so this gives every
-            // tile enough columns to finish without last-column clipping.
+            // Even a three-row `band` shows one content row, so `bands` gives
+            // every tile enough columns to finish without last-column clipping.
             let bands = vec![band; usize::from(content_rows) + 2];
             let layout = FlowLayout::pack(&bands, tiles(&[content_rows]));
             assert_eq!(layout.unseen, UnseenTiles::None);
