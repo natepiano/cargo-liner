@@ -298,9 +298,9 @@ impl Region {
     /// [`Placed`] entries to the walk in flattened-leaf order.
     fn place_into(&self, area: Rect, walk: &mut PlaceWalk<'_>) {
         match self {
-            // A bare rows box outside a stack (the tree root or a column
-            // child): `Fixed` and `Cap` take their claimed height at the top
-            // of the rect, `Fill` takes the whole rect.
+            // A `Region::Rows` box outside a `Region::Stack` (the root or a column
+            // child): `Size::Fixed` and `Size::Cap` take their claimed height at the
+            // top of the rect; `Size::Fill` takes the whole rect.
             Self::Rows(rows) => {
                 let outer = rows
                     .claimed_height(area.height)
@@ -361,8 +361,8 @@ fn place_stack(children: &[Region], area: Rect, walk: &mut PlaceWalk<'_>) {
             Region::Rows(rows) => rows.claimed_height(area.height).unwrap_or(fill_outer),
             Region::Stack(_) | Region::Columns(_) => fill_outer,
         };
-        // Clamp to the room left so a too-short area can't push later boxes
-        // off-screen; the trailing boxes shrink to nothing instead.
+        // Clamp `outer` to the room left in `area` so a too-short area can't push
+        // later boxes off-screen; the trailing boxes shrink to nothing instead.
         let outer = natural.min(area.bottom().saturating_sub(y));
         let child_area = Rect {
             x: area.x,
@@ -500,49 +500,49 @@ mod tests {
 
     #[test]
     fn total_selectable_sums_every_box() {
-        // 1 aggregate + 8 cores + 3 breakdown + 1 GPU.
+        // `cpu_tree(8).total_selectable()` counts 1 aggregate + 8 cores + 3 breakdown + 1 GPU.
         assert_eq!(cpu_tree(8).total_selectable(), 13);
     }
 
     #[test]
     fn locate_maps_the_cursor_to_box_and_row() {
         let tree = cpu_tree(8);
-        // Aggregate (box 0, row 0).
+        // `tree.locate(0)` selects the aggregate (box 0, row 0).
         assert_eq!(tree.locate(0), Some((0, 0)));
-        // First and last core (box 1).
+        // `tree.locate(1)` and `tree.locate(8)` select the first and last core (box 1).
         assert_eq!(tree.locate(1), Some((1, 0)));
         assert_eq!(tree.locate(8), Some((1, 7)));
-        // Breakdown System/User/Idle (box 2).
+        // `tree.locate(9)` through `tree.locate(11)` address breakdown System/User/Idle (box 2).
         assert_eq!(tree.locate(9), Some((2, 0)));
         assert_eq!(tree.locate(11), Some((2, 2)));
-        // GPU (box 3).
+        // `tree.locate(12)` selects the GPU (box 3).
         assert_eq!(tree.locate(12), Some((3, 0)));
-        // Past the end.
+        // `tree.locate(13)` is past the end.
         assert_eq!(tree.locate(13), None);
     }
 
     #[test]
     fn fixed_boxes_take_exact_rows_and_fill_takes_the_remainder() {
-        // Exactly sized: fixed total = 1 + (1+3) + (1+1) = 7, so a 15-row
-        // inner gives the 8-core band its 8 rows with no slack.
+        // `cpu_tree(8)` is exactly sized: fixed total = 1 + (1+3) + (1+1) = 7, so
+        // a 15-row inner gives the 8-core band its 8 rows with no slack.
         let placed = cpu_tree(8).place(inner(15), 0, &[0, 0, 0, 0]);
-        // Aggregate: 1 row at the top, no chrome.
+        // `placed[0]` holds the aggregate: 1 row at the top, no chrome.
         assert_eq!(placed[0].chrome.height, 0);
         assert_eq!(placed[0].content, Rect::new(0, 0, 20, 1));
-        // Cores: the Fill box takes the remainder (8 rows) right below.
+        // `placed[1]` holds the cores: the `Size::Fill` box takes the 8-row remainder below.
         assert_eq!(placed[1].content, Rect::new(0, 1, 20, 8));
-        // Breakdown: 1 chrome row (the rule) then 3 content rows.
+        // `placed[2]` holds the breakdown: 1 chrome row (the rule) then 3 content rows.
         assert_eq!(placed[2].chrome, Rect::new(0, 9, 20, 1));
         assert_eq!(placed[2].content, Rect::new(0, 10, 20, 3));
-        // GPU: 1 chrome row (the rule) then 1 content row, at the bottom.
+        // `placed[3]` holds the GPU: 1 chrome row (the rule), then 1 content row at the bottom.
         assert_eq!(placed[3].chrome, Rect::new(0, 13, 20, 1));
         assert_eq!(placed[3].content, Rect::new(0, 14, 20, 1));
     }
 
     #[test]
     fn fill_absorbs_extra_height_when_over_tall() {
-        // 20-row inner, 8 cores: 13 rows of remainder go to the Fill box, so
-        // the breakdown and GPU pin to the bottom border.
+        // With `inner(20)` and `cpu_tree(8)`, 13 rows of remainder go to the
+        // `Size::Fill` box, so the breakdown and GPU pin to the bottom border.
         let placed = cpu_tree(8).place(inner(20), 0, &[0, 0, 0, 0]);
         assert_eq!(placed[1].content, Rect::new(0, 1, 20, 13));
         assert_eq!(placed[2].chrome.y, 14);
@@ -551,8 +551,8 @@ mod tests {
 
     #[test]
     fn fill_box_scrolls_to_keep_the_highlight_visible() {
-        // Cramped: 10-row inner leaves the 15-core band only 3 rows. The
-        // cursor on the last core (global 15, band-local 14) scrolls to the
+        // `inner(10)` is cramped: the 15-core band in `cpu_tree(15)` has only 3 rows.
+        // The cursor on the last core (global 15, band-local 14) scrolls to the
         // last full page.
         let placed = cpu_tree(15).place(inner(10), 15, &[0, 0, 0, 0]);
         assert_eq!(placed[1].content.height, 3);
@@ -561,8 +561,8 @@ mod tests {
 
     #[test]
     fn fill_box_holds_prior_offset_while_the_cursor_is_elsewhere() {
-        // Cursor on the aggregate row (global 0, outside the band): the band
-        // holds its prior offset, clamped to its last page (15 - 3 = 12).
+        // With `Region::place`'s cursor on the aggregate (global 0, outside the band),
+        // the band holds its prior offset, clamped to its last page (15 - 3 = 12).
         let placed = cpu_tree(15).place(inner(10), 0, &[0, 7, 0, 0]);
         assert_eq!(placed[1].scroll_offset, 7);
         let pinned = cpu_tree(15).place(inner(10), 0, &[0, 20, 0, 0]);
@@ -571,8 +571,8 @@ mod tests {
 
     #[test]
     fn fixed_boxes_never_scroll() {
-        // Cursor deep in the breakdown box: the breakdown and GPU boxes keep a
-        // zero offset regardless of the prior values passed in.
+        // With `Region::place`'s cursor deep in the breakdown box, the breakdown and
+        // GPU boxes keep a zero offset regardless of the prior values passed in.
         let placed = cpu_tree(15).place(inner(10), 11, &[5, 5, 5, 5]);
         assert_eq!(placed[0].scroll_offset, 0);
         assert_eq!(placed[2].scroll_offset, 0);
@@ -582,7 +582,8 @@ mod tests {
     #[test]
     fn which_box_holds_the_highlight_at_box_boundaries() {
         let tree = cpu_tree(8);
-        // Last aggregate row, first core, last core, first breakdown row.
+        // `tree.locate` checks the last aggregate row, first core,
+        // last core, and first breakdown row.
         assert_eq!(tree.locate(0).map(|(box_index, _)| box_index), Some(0));
         assert_eq!(tree.locate(1).map(|(box_index, _)| box_index), Some(1));
         assert_eq!(tree.locate(8).map(|(box_index, _)| box_index), Some(1));
@@ -591,8 +592,8 @@ mod tests {
 
     #[test]
     fn degenerate_short_terminal_zeroes_the_fill_box() {
-        // Inner shorter than the fixed total: the Fill box collapses to zero
-        // rows and the fixed boxes still take their rooms (clamped by the
+        // `inner(4)` is shorter than the fixed total: the `Size::Fill` box collapses
+        // to zero rows and the fixed boxes still take their rooms (clamped by the
         // area), so nothing underflows.
         let placed = cpu_tree(8).place(inner(4), 0, &[0, 0, 0, 0]);
         assert_eq!(placed[1].content.height, 0);
@@ -601,10 +602,11 @@ mod tests {
     #[test]
     fn columns_flatten_left_column_before_right() {
         let tree = detail_tree();
-        // 1 description + 6 metadata + (3 + 5 + 2) right-column rows.
+        // `detail_tree().total_selectable()` counts 1 description, 6 metadata,
+        // and (3 + 5 + 2) right-column rows.
         assert_eq!(tree.total_selectable(), 17);
-        // Description, then the left column's rows, then the right column's
-        // boxes top to bottom.
+        // `tree.locate` walks the description, then the left column's rows, then the
+        // right column's boxes top to bottom.
         assert_eq!(tree.locate(0), Some((0, 0)));
         assert_eq!(tree.locate(1), Some((1, 0)));
         assert_eq!(tree.locate(6), Some((1, 5)));
@@ -616,7 +618,7 @@ mod tests {
 
     #[test]
     fn lines_override_reserves_the_rendered_height() {
-        // The description box is one selectable row rendered as a 4-line
+        // `detail_tree`'s description box is one selectable row rendered as a 4-line
         // block: the columns below start at y = 4, not y = 1.
         let placed = detail_tree().place(inner(20), 0, &[0; 5]);
         assert_eq!(placed[0].content, Rect::new(0, 0, 20, 4));
@@ -626,13 +628,13 @@ mod tests {
     #[test]
     fn columns_split_the_width_and_span_the_node_height() {
         let placed = detail_tree().place(inner(20), 0, &[0; 5]);
-        // Min(8) + Length(10) over a 20-wide area: the left column takes the
-        // 10 columns the fixed right column leaves.
+        // `Constraint::Min(8)` + `Constraint::Length(10)` over a 20-wide area: the
+        // left column takes the 10 columns the fixed right column leaves.
         let metadata = placed[1];
         assert_eq!(metadata.chrome, Rect::new(0, 4, 10, 1));
         assert_eq!(metadata.content, Rect::new(0, 5, 10, 15));
-        // The right column starts where the left ends and its first box sits
-        // at the columns node's top.
+        // `placed[2]` starts the right column where the left ends, with its first
+        // box at the columns node's top.
         assert_eq!(placed[2].chrome, Rect::new(10, 4, 10, 1));
         assert_eq!(placed[2].content, Rect::new(10, 5, 10, 3));
     }
@@ -640,8 +642,8 @@ mod tests {
     #[test]
     fn nested_stack_pins_its_tail_to_the_column_bottom() {
         let placed = detail_tree().place(inner(20), 0, &[0; 5]);
-        // Right column spans y 4..20. Head takes 4 (rule + 3 rows), the tail
-        // takes 4 (spacer + rule + 2 rows) at the bottom, the scrolling
+        // `detail_tree`'s right column spans y 4..20. Head takes 4 (rule + 3 rows),
+        // the tail takes 4 (spacer + rule + 2 rows) at the bottom, and the scrolling
         // middle takes the 8 between.
         assert_eq!(placed[3].chrome, Rect::new(10, 8, 10, 2));
         assert_eq!(placed[3].content, Rect::new(10, 10, 10, 6));
@@ -651,7 +653,7 @@ mod tests {
 
     #[test]
     fn each_column_scrolls_its_own_fill_box() {
-        // A 16-row inner leaves the right column's middle box 2 content rows
+        // `inner(16)` leaves the right column's middle box 2 content rows
         // (12 - 4 head - 4 tail - 2 chrome). The cursor on its last row
         // (global 14, box-local 4) scrolls it to its last page, while the
         // metadata column — whose 6 rows fit its 11 visible — re-clamps its
@@ -664,8 +666,8 @@ mod tests {
 
     #[test]
     fn fill_box_in_a_column_holds_prior_offset_while_the_cursor_is_elsewhere() {
-        // Cursor on the description row: the right column's middle box holds
-        // its prior offset, clamped to its scroll range (5 rows - 2 visible).
+        // With `Region::place`'s cursor on the description, the right column's middle
+        // box holds its prior offset, clamped to its scroll range (5 rows - 2 visible).
         let placed = detail_tree().place(inner(16), 0, &[0, 0, 0, 1, 0]);
         assert_eq!(placed[3].scroll_offset, 1);
         let pinned = detail_tree().place(inner(16), 0, &[0, 0, 0, 9, 0]);
@@ -684,8 +686,8 @@ mod tests {
 
     #[test]
     fn cap_box_takes_its_natural_height_under_the_cap() {
-        // 3 running rows + 2 chrome = 5 outer, well under 80% of 20; the
-        // table's Fill takes the other 15 (header chrome + 14 content rows).
+        // `targets_tree(10, 3)` has 3 running rows + 2 chrome = 5 outer, well under
+        // 80% of 20; `Size::Fill` gives the table 15 (header chrome + 14 content rows).
         let placed = targets_tree(10, 3).place(inner(20), 0, &[0, 0]);
         assert_eq!(placed[0].chrome, Rect::new(0, 0, 20, 1));
         assert_eq!(placed[0].content, Rect::new(0, 1, 20, 14));
@@ -695,8 +697,8 @@ mod tests {
 
     #[test]
     fn cap_box_clamps_to_its_percent_of_the_stack() {
-        // 30 running rows + 2 chrome = 32 outer, but 80% of 20 caps the box
-        // at 16; the table keeps the remaining 4 (its 20% floor).
+        // `targets_tree(10, 30)` has 30 running rows + 2 chrome = 32 outer, but 80%
+        // of 20 caps the box at 16; the table keeps the remaining 4 (its 20% floor).
         let placed = targets_tree(10, 30).place(inner(20), 0, &[0, 0]);
         assert_eq!(placed[1].chrome.y, 4);
         assert_eq!(placed[1].content.height, 14);
@@ -705,23 +707,23 @@ mod tests {
 
     #[test]
     fn cap_box_scrolls_to_keep_the_highlight_visible() {
-        // Cursor on the last running row (global 39, box-local 29) scrolls
-        // the 14-row window to the last page (30 - 14 = 16).
+        // `Region::place`'s cursor on the last running row (global 39, box-local 29)
+        // scrolls the 14-row window to the last page (30 - 14 = 16).
         let placed = targets_tree(10, 30).place(inner(20), 39, &[0, 0]);
         assert_eq!(placed[1].scroll_offset, 16);
     }
 
     #[test]
     fn cap_box_pins_to_its_bottom_while_the_cursor_is_elsewhere() {
-        // Cursor in the table: the Running box ignores any prior offset and
-        // pins to its bottom so the newest row stays visible.
+        // With `Region::place`'s cursor in the table, the Running box ignores any
+        // prior offset and pins to its bottom so the newest row stays visible.
         let placed = targets_tree(10, 30).place(inner(20), 0, &[0, 3]);
         assert_eq!(placed[1].scroll_offset, 16);
     }
 
     #[test]
     fn footer_reserves_the_bottom_row_of_the_box() {
-        // A Fill box with a header above and a footer below, over a fixed
+        // A `Size::Fill` box with a header above and a footer below, over a fixed
         // tail: outer = 12 - 4 = 8, split header 1 / content 6 / footer 1.
         let tree = Region::stack(vec![
             Region::rows(10, Size::Fill).header().footer(),
@@ -731,9 +733,9 @@ mod tests {
         assert_eq!(placed[0].chrome, Rect::new(0, 0, 20, 1));
         assert_eq!(placed[0].content, Rect::new(0, 1, 20, 6));
         assert_eq!(placed[0].footer, Rect::new(0, 7, 20, 1));
-        // The fixed tail starts right below the footer.
+        // The fixed tail's `placed[1].chrome` starts right below the footer.
         assert_eq!(placed[1].chrome.y, 8);
-        // Scrolling pages the content rows only — the footer is chrome, so
+        // `Region::place` scrolls content rows only — the footer is chrome, so
         // the cursor on the last row scrolls to 10 - 6 visible = 4.
         let scrolled = tree.place(inner(12), 9, &[0, 0]);
         assert_eq!(scrolled[0].scroll_offset, 4);
@@ -748,8 +750,8 @@ mod tests {
 
     #[test]
     fn rebuilding_the_tree_stays_well_under_the_frame_budget() {
-        // The pane rebuilds its tree every frame; guard that 10k rebuilds cost
-        // far less than a frame so per-frame construction is not a concern.
+        // The pane rebuilds its tree every frame; guard that 10k `cpu_tree` rebuilds
+        // cost far less than a frame so per-frame construction is not a concern.
         for _ in 0..10_000 {
             let placed = cpu_tree(64).place(inner(40), 20, &[0, 0, 0, 0]);
             assert_eq!(placed.len(), 4);

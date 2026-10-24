@@ -134,10 +134,10 @@ impl KeymapPane {
             .iter()
             .filter(|r| r.row_kind != KeymapHelpRowKind::Header)
             .count();
-        // Measured off the lines that were actually built rather than
-        // reckoned up from the parts, so a column fits whatever is in
-        // it -- the inline error that replaces a key while one is being
-        // captured included.
+        // `column_width` is measured from the built `OverlayRow::line`
+        // values rather than reckoned up from the parts, so a column
+        // fits whatever is in it -- the inline error that replaces a
+        // key while one is being captured included.
         let column_width = rows
             .iter()
             .map(|row| line_width(&row.line))
@@ -499,12 +499,12 @@ fn fill_columns(rows: &[OverlayRow], height: usize) -> Vec<Vec<usize>> {
                 push_section(&mut columns, section.heading, rest);
                 break;
             }
-            // It would fit a column of its own, so it gets one rather
+            // `section` would fit a column of its own, so it gets one rather
             // than being cut for the sake of the lines left here.
             let fits = room.saturating_sub(head);
             if (taken > 0 && height >= whole) || fits == 0 {
                 if taken == 0 {
-                    // Shorter than a heading and one row: nothing will
+                    // `height` is shorter than a heading and one row: nothing will
                     // ever fit, so draw it and let the popup scroll.
                     push_section(&mut columns, section.heading, rest);
                     break;
@@ -580,7 +580,7 @@ fn compose(
 ) -> KeymapLines {
     let stride = usize::from(column_width.saturating_add(gap));
     let height = columns.iter().map(Vec::len).max().unwrap_or(0);
-    // The blank line the popup opens with, which is why every span
+    // The `Line` the popup opens with is blank, which is why every span
     // below is recorded against `lines.len()` after it.
     let mut lines = vec![Line::from("")];
     let mut spans: Vec<KeymapRowSpan> = Vec::new();
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn a_section_that_does_not_fit_starts_the_next_column() {
         let rows = field(&[4, 4]);
-        // Room for the first section and one line more.
+        // `fill_columns(&rows, 6)` leaves room for the first section and one line more.
         let columns = fill_columns(&rows, 6);
 
         assert_eq!(columns.len(), 2, "the second section should start a column");
