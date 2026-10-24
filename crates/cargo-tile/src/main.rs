@@ -7,13 +7,13 @@
 #![cfg(not(test))]
 
 mod app;
+mod app_global_action;
 mod birth_stamp;
 mod capture;
 mod census;
 mod cli;
 mod config;
 mod constants;
-mod globals;
 mod hook;
 mod interaction;
 mod keymap;

@@ -33,6 +33,7 @@ use tui_pane::TileGridHost;
 use tui_pane::Updates;
 use tui_pane::VisualDeadline;
 
+use crate::app_global_action::AppGlobalAction;
 use crate::census::ExcludedCommands;
 use crate::census::InvocationId;
 use crate::config::CargoTile;
@@ -42,7 +43,6 @@ use crate::constants::KEYMAP_TOML_HEADER;
 use crate::constants::MIN_CELL_HEIGHT;
 use crate::constants::MIN_CELL_WIDTH;
 use crate::constants::PANIC_LOG_FILENAME;
-use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
