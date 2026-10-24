@@ -1,4 +1,4 @@
-// tui_pane src toasts format
+// Toast defaults and body formatting: `DEFAULT_MAX_VISIBLE_TOASTS` through `MAX_VISIBLE_ITEMS`.
 pub(super) const DEFAULT_MAX_VISIBLE_TOASTS: usize = 5;
 pub(super) const DEFAULT_TOAST_WIDTH: u16 = 60;
 pub(super) const ELLIPSIS: &str = "…";
