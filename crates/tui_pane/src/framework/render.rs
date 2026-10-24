@@ -110,11 +110,11 @@ pub fn render_panes<R: PaneRegistry>(
     let bounds = layout.bounds();
     let mut grid_lines = GridLines::new(bounds);
     for resolved in &layout.panes {
-        // Under `Shared`, each pane reaches one line onto the neighbours
-        // below and to the right of it, so the boundary between the two
-        // of them is a single line they share rather than two lines side
-        // by side. Under `Separate` the pane keeps the rect the layout
-        // resolved, and its neighbour's line sits beside its own.
+        // Under `PaneBorders::Shared`, `PaneBorders::pane_area` reaches one
+        // line onto the neighbours below and to the right, so the boundary
+        // is a single shared line rather than two lines side by side. Under
+        // `PaneBorders::Separate`, it keeps `resolved.area` as the layout
+        // resolved it, and the neighbour's line sits beside the pane's own.
         let area = borders.pane_area(resolved.area, bounds);
         let Some(pane) = registry.pane_mut(resolved.pane) else {
             continue;
