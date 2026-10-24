@@ -4,7 +4,7 @@
 
 use ratatui::style::Modifier;
 
-// repaint
+// `REPAINT_SENTINEL` and `FULL_REPAINT_SECONDS` control full repaints.
 /// Laid over the comparison buffer to make every cell differ from
 /// anything a frame can render, which is what turns the next draw into
 /// a full repaint.
@@ -31,7 +31,7 @@ pub(super) const REPAINT_SENTINEL: Modifier = Modifier::SLOW_BLINK
 /// takes to notice a smear.
 pub(super) const FULL_REPAINT_SECONDS: u64 = 2;
 
-// iterm2
+// `TERM_PROGRAM_ENV`, `ITERM2_TERM_PROGRAM`, and `ITERM2_PROFILE_ENV` identify iTerm2.
 /// Environment variable naming the terminal emulator in use.
 pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
 /// Value [`TERM_PROGRAM_ENV`] carries inside iTerm2.
@@ -40,7 +40,7 @@ pub(super) const ITERM2_TERM_PROGRAM: &str = "iTerm.app";
 /// session started on.
 pub(super) const ITERM2_PROFILE_ENV: &str = "ITERM_PROFILE";
 
-// panic log
+// `PANIC_LOCATION_UNKNOWN` and `PANIC_PAYLOAD_NOT_TEXT` supply panic-log fallbacks.
 /// Written in place of a panic's location when the hook is not given one.
 pub(super) const PANIC_LOCATION_UNKNOWN: &str = "an unknown location";
 /// Written in place of a panic's message when its payload is not text,
