@@ -180,7 +180,7 @@ mod tests {
             .collect::<String>();
         assert!(clicked_line.contains("part-3"), "{clicked_line}");
 
-        // Both inputs arrive before the terminal is drawn again.
+        // `pane.navigate` and `pane.row_at` receive both inputs before `terminal` redraws.
         pane.navigate(NavAction::Down);
         assert_eq!(pane.viewport().scroll_offset(), 3);
         assert_eq!(pane.viewport().pos(), 2);
