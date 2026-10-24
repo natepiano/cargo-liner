@@ -83,10 +83,10 @@ where
         };
         let keys = parse_toml_value(scope_name, action_key, value)?;
         if never_unbind && keys.is_empty() {
-            // A stale `home = ""` (or any empty navigation value) keeps
-            // the compiled default rather than unbinding the action. No
-            // warning: the entry names a real action, it just resolves
-            // to "leave the default in place."
+            // `never_unbind` keeps `defaults` for a stale `home = ""` or any
+            // empty navigation value instead of unbinding `action`. No warning:
+            // `action_key` names a real action, so an empty `keys` collection
+            // means "leave the default in place."
             continue;
         }
         check_in_array_duplicates(scope_name, action_key, &keys)?;
