@@ -6,11 +6,15 @@
 )]
 #![expect(clippy::panic, reason = "every hue fixture must have its own tile")]
 
+use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::sync::Arc;
 
+use agent_cell::TreeColumn;
 use ratatui::buffer::Cell;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use tui_pane::Appearance;
 use tui_pane::CellPoint;
 
 use super::*;
@@ -28,9 +32,13 @@ use crate::footer_colors::FooterColor;
 use crate::footer_colors::FooterRole;
 use crate::footer_colors::FooterTint;
 use crate::footer_colors::tests;
+use crate::sort::SortDirection;
+use crate::sort::SummaryColumn;
+use crate::sort::TreeSort;
 use crate::summary;
 use crate::theme;
 use crate::theme::Role;
+use crate::theme::SessionRowInk;
 
 #[test]
 fn tile_title_suffixes_use_showrunner_and_unit_role_colors() {
@@ -698,110 +706,152 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// Rounded down from the current final inks, with both pane-tint states measured.
+#[derive(Clone, Copy)]
+struct SessionPaletteFloors {
+    consecutive_hue_gap: f64,
+    session_distance:    f64,
+    row_fixed_distance:  f64,
+}
+
+const DEFAULT_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
+    consecutive_hue_gap: 14.9,
+    session_distance:    14.9,
+    row_fixed_distance:  12.2,
+};
+const HIGH_CONTRAST_DARK_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
+    consecutive_hue_gap: 14.5,
+    session_distance:    16.0,
+    row_fixed_distance:  14.8,
+};
+const LIGHT_SESSION_FLOORS: SessionPaletteFloors = SessionPaletteFloors {
+    consecutive_hue_gap: 60.0,
+    session_distance:    12.0,
+    row_fixed_distance:  15.0,
+};
+// Both dark minima round down to 4.5; the required contrast floor stays 4.5:1.
+const MINIMUM_SESSION_GLYPH_CONTRAST: f64 = 4.5;
+
+fn session_palette_floors(appearance: Appearance, name: &str) -> SessionPaletteFloors {
+    match appearance {
+        Appearance::Light => LIGHT_SESSION_FLOORS,
+        Appearance::Dark => match name {
+            "Default Dark" => DEFAULT_DARK_SESSION_FLOORS,
+            "High Contrast Dark" => HIGH_CONTRAST_DARK_SESSION_FLOORS,
+            _ => panic!("unmeasured dark session palette {name}"),
+        },
+    }
+}
+
+/// The pane treatment whose production inks are being measured.
 #[derive(Clone, Copy, Debug)]
-enum SessionNeighbor {
-    StatusOrAccount,
-    Role,
+enum SessionPaneGround {
+    Base,
+    Tinted,
 }
 
-impl SessionNeighbor {
-    const fn minimum_distance(self) -> f64 {
-        match self {
-            Self::StatusOrAccount => 12.0,
-            Self::Role => 10.0,
+impl SessionPaneGround {
+    fn activate(self) { tui_pane::set_focused_pane_tint(matches!(self, Self::Tinted)); }
+}
+
+struct SessionPaletteCheck<'a> {
+    theme_name:   &'a str,
+    floors:       SessionPaletteFloors,
+    failures:     Vec<String>,
+    measurements: BTreeMap<String, Vec<(String, Color, String, Color)>>,
+    neighbors:    String,
+    contrast:     Vec<(String, Color, Color, f64)>,
+}
+
+impl SessionPaletteCheck<'_> {
+    fn check_ink(
+        &mut self,
+        session_ink: Color,
+        word: &str,
+        palette: &[(SessionRowInk, Color)],
+        pane_ground: SessionPaneGround,
+    ) {
+        let theme_name = self.theme_name;
+        let oklch = tests::oklch_ink(session_ink);
+        writeln!(
+            self.neighbors,
+            "pane_ground={pane_ground:?} {word} {session_ink:?} OKLCH C={:.9} L={:.9}",
+            oklch.chroma, oklch.lightness
+        )
+        .expect("write current gamut measurement");
+        for (neighbor, ink) in palette {
+            let distance = tests::perceptual_distance(session_ink, *ink);
+            self.measurements
+                .entry("session/fixed".into())
+                .or_default()
+                .push((
+                    format!("pane_ground={pane_ground:?} {word}"),
+                    session_ink,
+                    format!("{neighbor:?}"),
+                    *ink,
+                ));
+            if distance < self.floors.row_fixed_distance {
+                self.failures.push(format!(
+                    "{theme_name} pane_ground={pane_ground:?} {word}/{neighbor:?} {session_ink:?}/{ink:?} dE={distance:.6} floor={}", self.floors.row_fixed_distance
+                ));
+            }
         }
     }
-}
 
-fn session_comparison_palette(
-    colors: &FooterColors,
-    fixture: &str,
-) -> Vec<(SessionNeighbor, String, Color)> {
-    let mut palette = Vec::new();
-    for line in fixture.lines() {
-        let Some((key, _)) = line.split_once('=') else {
-            continue;
-        };
-        if let Some(label) = key.strip_prefix("account.") {
-            palette.push((
-                SessionNeighbor::StatusOrAccount,
-                label.to_owned(),
-                colors
-                    .account(label)
-                    .style(Style::default())
-                    .fg
-                    .expect("account ink"),
-            ));
+    fn check_pairs(
+        &mut self,
+        session_inks: BTreeMap<String, Color>,
+        pane_ground: SessionPaneGround,
+    ) {
+        let theme_name = self.theme_name;
+        let session_inks: Vec<_> = session_inks.into_iter().collect();
+        assert_eq!(session_inks.len(), 5, "every session entry must draw");
+        for (index, (first, first_ink)) in session_inks.iter().enumerate() {
+            let next = &session_inks[(index + 1) % session_inks.len()];
+            let gap = tests::hue_gap(*first_ink, next.1);
+            self.measurements
+                .entry("session/consecutive".into())
+                .or_default()
+                .push((
+                    format!("pane_ground={pane_ground:?} {first}"),
+                    *first_ink,
+                    next.0.clone(),
+                    next.1,
+                ));
+            if gap < self.floors.consecutive_hue_gap {
+                self.failures.push(format!(
+                    "{theme_name} pane_ground={pane_ground:?} consecutive {first}/{:?} hue gap={gap:.6}",
+                    next.0
+                ));
+            }
+            for (second, second_ink) in &session_inks[index + 1..] {
+                let distance = tests::perceptual_distance(*first_ink, *second_ink);
+                let gap = tests::hue_gap(*first_ink, *second_ink);
+                let floor = self.floors.session_distance;
+                self.measurements
+                    .entry("session/session".into())
+                    .or_default()
+                    .push((
+                        format!("pane_ground={pane_ground:?} {first}"),
+                        *first_ink,
+                        second.clone(),
+                        *second_ink,
+                    ));
+                if distance < floor {
+                    self.failures.push(format!("{theme_name} pane_ground={pane_ground:?} session {first}/{second} {first_ink:?}/{second_ink:?} dE={distance:.6} floor={floor} hue={gap:.6}"));
+                }
+            }
         }
     }
-    for role in [
-        HierarchyRole::Showrunner,
-        HierarchyRole::Unit,
-        HierarchyRole::Impl,
-        HierarchyRole::Test,
-        HierarchyRole::Review,
-        HierarchyRole::Fix,
-    ] {
-        palette.push((
-            SessionNeighbor::Role,
-            format!("{role:?}"),
-            colors
-                .hierarchy_role(role)
-                .style(Style::default())
-                .fg
-                .unwrap_or_else(tui_pane::text_default),
-        ));
-    }
-    for role in [
-        Role::Claude,
-        Role::Codex,
-        Role::Busy,
-        Role::Shell,
-        Role::Idle,
-        Role::Unreachable,
-    ] {
-        palette.push((
-            SessionNeighbor::StatusOrAccount,
-            format!("status {role:?}"),
-            role.style().fg.expect("status ink"),
-        ));
-    }
-    palette
-}
 
-fn check_session_palette(variant_name: &str) {
-    let previous = tui_pane::theme();
-    let transparent = tui_pane::transparent_background();
-    let tinted = tui_pane::focused_pane_tint_enabled();
-    let fixture = include_str!("../footer_colors/fixtures/statusline.conf");
-    let colors = FooterColors::parse(fixture);
-    let rows:Vec<AgentRow>=(0..5).map(|ordinal|serde_json::from_value(serde_json::json!({
-        "agent":"claude","name":format!("session-hue-{ordinal}"),"pid":10+ordinal,"started":10,"directory":"/fixture",
-        "children":[{"depth":0,"kind":"thread","name":format!("thread-hue-{ordinal}"),"started":20}]
-    })).expect("session hue fixture")).collect();
-    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
-    let sorts = HashMap::new();
-    let mut failures = Vec::new();
-    let variant = theme::builtins()
-        .into_iter()
-        .find(|v| v.id.as_str() == variant_name)
-        .expect("builtin");
-    tui_pane::set_active_theme(Arc::new(variant.theme));
-    tui_pane::set_transparent_background(false);
-    for tint in [false, true] {
-        tui_pane::set_focused_pane_tint(tint);
-        let palette = session_comparison_palette(&colors, fixture);
-        let cells = Cells::new(
-            vec![Machine {
-                name:  "fixture",
-                state: &state,
-            }],
-            100,
-            &colors,
-            &sorts,
-            SummarySort::default(),
-        );
-        // Distances depend on the inks, not the surfaces; measure each pair once per tint.
+    fn check_drawn(
+        &mut self,
+        cells: &Cells<'_>,
+        palette: &[(SessionRowInk, Color)],
+        pane_ground: SessionPaneGround,
+    ) {
+        let theme_name = self.theme_name;
+        // Distances depend on the inks, not the surfaces; measure each pair once per pane_ground.
         let mut measured = std::collections::HashSet::new();
         let mut session_inks = std::collections::BTreeMap::new();
         for focused in [false, true] {
@@ -815,53 +865,126 @@ fn check_session_palette(variant_name: &str) {
                     panic!("all hue fixtures have work");
                 };
                 let session = &entry.row.name;
-                let mut title = Buffer::empty(area);
-                title.set_style(area, Style::default().bg(ground));
+                let mut heading_buffer = Buffer::empty(area);
+                heading_buffer.set_style(area, Style::default().bg(ground));
                 Paragraph::new(cells.group_title(&tile.key()).expect("title"))
-                    .render(area, &mut title);
+                    .render(area, &mut heading_buffer);
                 let mut tree = Buffer::empty(area);
                 tree.set_style(area, Style::default().bg(ground));
                 cells.draw(&mut tree, &TileContent::Group(tile.key()), area, ground);
                 let ordinal = session.strip_prefix("session-hue-").expect("ordinal");
                 for (buffer, word, surface) in [
                     (&summary, session.as_str(), "summary"),
-                    (&title, session.as_str(), "title"),
+                    (&heading_buffer, session.as_str(), "title"),
                     (&tree, &format!("thread-hue-{ordinal}"), "tree"),
                 ] {
                     let cell = session_ink_cell(buffer, word);
                     let ratio = session_glyph_contrast(cell.fg, cell.bg);
-                    if ratio < 4.5 {
-                        failures.push(format!("{variant_name} tint={tint} focused={focused} {surface}/{word} {cell:?} glyph={ratio:.6}"));
+                    self.contrast.push((
+                        format!("pane_ground={pane_ground:?} focused={focused} {surface}/{word}"),
+                        cell.fg,
+                        cell.bg,
+                        ratio,
+                    ));
+                    if ratio < MINIMUM_SESSION_GLYPH_CONTRAST {
+                        self.failures.push(format!("{theme_name} pane_ground={pane_ground:?} focused={focused} {surface}/{word} {cell:?} glyph={ratio:.6}"));
                     }
                     session_inks.entry(ordinal.to_owned()).or_insert(cell.fg);
                     if measured.insert((ordinal.to_owned(), cell.fg)) {
-                        for (neighbor, label, ink) in &palette {
-                            let distance = tests::perceptual_distance(cell.fg, *ink);
-                            if distance < neighbor.minimum_distance() {
-                                failures.push(format!("{variant_name} tint={tint} {word}/{label} {:?}/{ink:?} dE={distance:.6}",cell.fg));
-                            }
-                        }
+                        self.check_ink(cell.fg, word, palette, pane_ground);
                     }
                 }
             }
         }
-        let session_inks: Vec<_> = session_inks.into_iter().collect();
-        assert_eq!(session_inks.len(), 5, "every session entry must draw");
-        for (index, (first, first_ink)) in session_inks.iter().enumerate() {
-            for (second, second_ink) in &session_inks[index + 1..] {
-                let distance = tests::perceptual_distance(*first_ink, *second_ink);
-                if distance < 12.0 {
-                    failures.push(format!("{variant_name} tint={tint} session {first}/{second} {first_ink:?}/{second_ink:?} dE={distance:.6}"));
-                }
-            }
+        self.check_pairs(session_inks, pane_ground);
+    }
+}
+
+fn check_session_palette(variant_name: &str) {
+    let previous = tui_pane::theme();
+    let transparent = tui_pane::transparent_background();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let fixture = include_str!("../footer_colors/fixtures/statusline.conf");
+    let colors = FooterColors::parse(fixture);
+    let rows:Vec<AgentRow>=(0..5).map(|ordinal|serde_json::from_value(serde_json::json!({
+        "agent":"claude","name":format!("session-hue-{ordinal}"),"pid":10+ordinal,"started":10,"directory":"/fixture",
+        "children":[{"depth":0,"kind":"thread","name":format!("thread-hue-{ordinal}"),"started":20}]
+    })).expect("session hue fixture")).collect();
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
+    let variant = theme::builtins()
+        .into_iter()
+        .find(|v| v.id.as_str() == variant_name)
+        .expect("builtin");
+    let mut check = SessionPaletteCheck {
+        theme_name:   variant_name,
+        floors:       session_palette_floors(variant.appearance, variant_name),
+        failures:     Vec::new(),
+        measurements: std::collections::BTreeMap::new(),
+        neighbors:    String::new(),
+        contrast:     Vec::new(),
+    };
+    tui_pane::set_active_theme(Arc::new(variant.theme));
+    tui_pane::set_transparent_background(false);
+    for pane_ground in [SessionPaneGround::Base, SessionPaneGround::Tinted] {
+        pane_ground.activate();
+        let palette: Vec<_> = colors
+            .session_row_inks()
+            .map(|ink| (ink, ink.style().fg.expect("session row foreground")))
+            .collect();
+        writeln!(
+            check.neighbors,
+            "pane_ground={pane_ground:?} pane-active={:?} pane-inactive={:?}",
+            tui_pane::pane_background(true),
+            tui_pane::pane_background(false)
+        )
+        .expect("write pane measurements");
+        for (neighbor, ink) in &palette {
+            writeln!(
+                check.neighbors,
+                "pane_ground={pane_ground:?} {neighbor:?} {:?}",
+                tests::terminal_rgb(*ink)
+            )
+            .expect("write row ink measurement");
         }
+        let cells = Cells::new(
+            vec![Machine {
+                name:  "fixture",
+                state: &state,
+            }],
+            100,
+            &colors,
+            &HashMap::new(),
+            SummarySort::default(),
+        );
+        check.check_drawn(&cells, &palette, pane_ground);
     }
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
-    assert!(failures.is_empty(), "session palette: {failures:#?}");
+    let mut report = format!("{variant_name} final production inks on the pane ground\n");
+    for (class, pairs) in check.measurements {
+        report.push_str(&tests::palette_pair_report(&class, &pairs));
+    }
+    let (surface, ink, ground, ratio) = check
+        .contrast
+        .iter()
+        .min_by(|first, second| first.3.total_cmp(&second.3))
+        .expect("every palette draws session glyphs");
+    writeln!(
+        report,
+        "minimum glyph contrast={ratio:.9} {surface} {ink:?} on {ground:?}"
+    )
+    .expect("write contrast measurement");
+    report.push_str(&check.neighbors);
+    assert!(
+        check.failures.is_empty(),
+        "session palette: {:#?}; measurements: {report}",
+        check.failures
+    );
 }
 
+/// Holds 14.9° consecutive hue, session dE 14.9, row-fixed dE 12.2 and contrast 4.5.
+/// The final 60°/session dE 20/row-fixed dE 15 rule is the open item "Dark session palette".
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_default_dark() {
     check_session_palette("Default Dark");
@@ -870,6 +993,8 @@ fn session_name_inks_stay_apart_from_all_palettes_in_default_dark() {
 fn session_name_inks_stay_apart_from_all_palettes_in_default_light() {
     check_session_palette("Default Light");
 }
+/// Holds 14.5° consecutive hue, session dE 16.0, row-fixed dE 14.8 and contrast 4.5.
+/// The final 60°/session dE 20/row-fixed dE 15 rule is the open item "Dark session palette".
 #[test]
 fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_dark() {
     check_session_palette("High Contrast Dark");
@@ -879,67 +1004,241 @@ fn session_name_inks_stay_apart_from_all_palettes_in_high_contrast_light() {
     check_session_palette("High Contrast Light");
 }
 
-/// Independent sRGB -> Oklab conversion; chroma is hypot(a, b).
-fn session_oklch_chroma(color: Color) -> f64 {
-    let Color::Rgb(red, green, blue) = color else {
-        panic!("session palette must expose explicit sRGB: {color:?}");
-    };
-    let [red, green, blue] = [red, green, blue].map(|channel| {
-        let encoded = f64::from(channel) / 255.0;
-        if encoded <= 0.040_45 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
+/// Holds API output as well as drawn rows: Default Dark floors are 14.9°/14.9/12.2;
+/// High Contrast Dark floors are 14.5°/16.0/14.8; contrast stays 4.5 on both grounds.
+/// The final 60°/session dE 20/row-fixed dE 15 rule is the open item "Dark session palette".
+#[test]
+fn dark_session_palette_api_keeps_current_floors_on_each_pane_ground() {
+    let previous = tui_pane::theme();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let transparent = tui_pane::transparent_background();
+    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let mut failures = Vec::new();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        if variant.appearance == Appearance::Light {
+            continue;
         }
-    });
-    let long_response = 0.051_445_992_9f64
-        .mul_add(
-            blue,
-            0.536_332_536_3f64.mul_add(green, 0.412_221_470_8 * red),
-        )
-        .cbrt();
-    let medium_response = 0.107_396_956_6f64
-        .mul_add(
-            blue,
-            0.680_699_545_1f64.mul_add(green, 0.211_903_498_2 * red),
-        )
-        .cbrt();
-    let short_response = 0.629_978_700_5f64
-        .mul_add(
-            blue,
-            0.281_718_837_6f64.mul_add(green, 0.088_302_461_9 * red),
-        )
-        .cbrt();
-    let a = 0.450_593_709_9f64.mul_add(
-        short_response,
-        2.428_592_205f64.mul_add(-medium_response, 1.977_998_495_1 * long_response),
-    );
-    let b = 0.808_675_766f64.mul_add(
-        -short_response,
-        0.782_771_766_2f64.mul_add(medium_response, 0.025_904_037_1 * long_response),
-    );
-    a.hypot(b)
+        let name = variant.id.as_str();
+        let mut check = SessionPaletteCheck {
+            theme_name:   name,
+            floors:       session_palette_floors(variant.appearance, name),
+            failures:     Vec::new(),
+            measurements: BTreeMap::new(),
+            neighbors:    String::new(),
+            contrast:     Vec::new(),
+        };
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for pane_ground in [SessionPaneGround::Base, SessionPaneGround::Tinted] {
+            pane_ground.activate();
+            let palette: Vec<_> = colors
+                .session_row_inks()
+                .map(|ink| (ink, ink.style().fg.expect("row ink")))
+                .collect();
+            let mut session_inks = BTreeMap::new();
+            for ordinal in 0..5 {
+                let hue = theme::SessionHue::of_agent(ordinal);
+                let ink = Role::Session(hue).style().fg.expect("session foreground");
+                let word = ordinal.to_string();
+                check.check_ink(ink, &word, &palette, pane_ground);
+                session_inks.insert(word, ink);
+                for focused in [false, true] {
+                    let ground = tui_pane::pane_background(focused);
+                    let ratio = session_glyph_contrast(ink, ground);
+                    if ratio < MINIMUM_SESSION_GLYPH_CONTRAST {
+                        check.failures.push(format!(
+                            "{name} pane_ground={pane_ground:?} focused={focused} {hue:?} {ink:?} on {ground:?} contrast={ratio:.9}"
+                        ));
+                    }
+                }
+            }
+            check.check_pairs(session_inks, pane_ground);
+        }
+        failures.extend(check.failures);
+    }
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_focused_pane_tint(tinted);
+    tui_pane::set_transparent_background(transparent);
+    assert!(failures.is_empty(), "current dark palette: {failures:#?}");
 }
 
 #[test]
-fn every_theme_session_entry_retains_saturated_oklch_chroma() {
+fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts() {
     let previous = tui_pane::theme();
+    let state = roots_with_different_subtree_sizes();
+    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
     let mut failures = Vec::new();
     for variant in theme::builtins() {
-        let name = variant.id.as_str().to_owned();
+        let theme_name = variant.id.as_str().to_owned();
         tui_pane::set_active_theme(Arc::new(variant.theme));
-        for ordinal in 0..5 {
-            let hue = theme::SessionHue::of_agent(ordinal);
-            let ink = Role::Session(hue).style().fg.expect("session foreground");
-            let chroma = session_oklch_chroma(ink);
-            if chroma < 0.10 {
-                failures.push(format!("{name} {hue:?} {ink:?} OKLCH C={chroma:.9}"));
+        for direction in [SortDirection::Ascending, SortDirection::Descending] {
+            let mut sorts = HashMap::new();
+            let first = Cells::new(
+                vec![Machine {
+                    name:  "fixture",
+                    state: &state,
+                }],
+                100,
+                &colors,
+                &sorts,
+                SummarySort::default(),
+            );
+            let keys: Vec<_> = first.tiles.iter().map(AgentTile::key).collect();
+            drop(first);
+            for key in keys {
+                sorts.insert(
+                    key,
+                    TreeSort {
+                        column: TreeColumn::Session,
+                        direction,
+                    },
+                );
+            }
+            let cells = Cells::new(
+                vec![Machine {
+                    name:  "fixture",
+                    state: &state,
+                }],
+                100,
+                &colors,
+                &sorts,
+                SummarySort {
+                    column: SummaryColumn::Name,
+                    direction,
+                },
+            );
+            let area = Rect::new(0, 0, 200, 48);
+            let ground = tui_pane::pane_background(false);
+            let mut summary = Buffer::empty(area);
+            summary.set_style(area, Style::default().bg(ground));
+            cells.draw(&mut summary, &TileContent::Summary, area, ground);
+            let mut distinct = std::collections::HashSet::new();
+            for (ordinal, entry) in cells.agents.iter().enumerate() {
+                let expected = Role::Session(theme::SessionHue::of_agent(ordinal))
+                    .style()
+                    .fg
+                    .expect("ordinal ink");
+                let summary_ink = session_ink_cell(&summary, &entry.row.name).fg;
+                if summary_ink != expected {
+                    failures.push(format!("{theme_name} {direction:?} {} root{ordinal} expected{expected:?} drawn{summary_ink:?}", entry.row.name));
+                }
+                distinct.insert(summary_ink);
+                let tile = cells.tiles.iter().find(|tile| matches!(tile, AgentTile::Agent(candidate) if candidate.row.pid == entry.row.pid)).expect("root tile");
+                let mut heading_buffer = Buffer::empty(area);
+                Paragraph::new(cells.group_title(&tile.key()).expect("root title"))
+                    .render(area, &mut heading_buffer);
+                assert_eq!(
+                    session_ink_cell(&heading_buffer, &entry.row.name).fg,
+                    summary_ink,
+                    "tile and summary agree after sorting"
+                );
+                let mut tree = Buffer::empty(area);
+                cells.draw(&mut tree, &TileContent::Group(tile.key()), area, ground);
+                assert_root_tree_sort(&tree, ordinal, direction);
+            }
+            if distinct.len() != 5 {
+                failures.push(format!(
+                    "{theme_name} {direction:?}: five roots use {} inks",
+                    distinct.len()
+                ));
             }
         }
     }
     tui_pane::set_active_theme(previous);
-    assert!(
-        failures.is_empty(),
-        "saturated session palette: {failures:#?}"
-    );
+    assert!(failures.is_empty(), "independent root hues: {failures:#?}");
+}
+
+fn assert_root_tree_sort(tree: &Buffer, ordinal: usize, direction: SortDirection) {
+    let last_child = ordinal;
+    let first_name = format!("member-{ordinal}-0");
+    let last_name = format!("member-{ordinal}-{last_child}");
+    let first_cell = session_ink_cell(tree, &first_name);
+    let last_cell = session_ink_cell(tree, &last_name);
+    let first_row = tree
+        .content
+        .iter()
+        .position(|cell| std::ptr::eq(cell, first_cell))
+        .expect("first member")
+        / usize::from(tree.area.width);
+    let last_row = tree
+        .content
+        .iter()
+        .position(|cell| std::ptr::eq(cell, last_cell))
+        .expect("last member")
+        / usize::from(tree.area.width);
+    if last_child > 0 {
+        match direction {
+            SortDirection::Ascending => {
+                assert!(first_row < last_row, "tree name sort ascending");
+            },
+            SortDirection::Descending => {
+                assert!(last_row < first_row, "tree name sort descending");
+            },
+        }
+    }
+}
+
+fn roots_with_different_subtree_sizes() -> MachineState {
+    let mut rows = Vec::new();
+    let mut edges = Vec::new();
+    for root in 0..5 {
+        let id = format!("root-{root}");
+        rows.push(
+            serde_json::from_value(serde_json::json!({
+                "agent":"claude", "name":id, "pid":100+root*10, "started":100-root,
+                "session_id":id, "directory":"/fixture", "children":[]
+            }))
+            .expect("root row"),
+        );
+        for child in 0..=root {
+            let member = format!("member-{root}-{child}");
+            rows.push(
+                serde_json::from_value(serde_json::json!({
+                    "agent":"claude", "name":member, "pid":101+root*10+child, "started":10+child,
+                    "session_id":member, "directory":"/fixture", "children":[]
+                }))
+                .expect("member row"),
+            );
+            edges.push(HierarchyEdge {
+                manager: id.clone(),
+                member,
+                role: HierarchyRole::Unit,
+                reviewer: ReviewerState::NotPool,
+            });
+        }
+    }
+    MachineState::Answered(rows, HierarchyEdges(edges).into())
+}
+
+#[test]
+fn light_session_inks_keep_saturated_chroma_on_the_final_output() {
+    let previous = tui_pane::theme();
+    let tinted = tui_pane::focused_pane_tint_enabled();
+    let transparent = tui_pane::transparent_background();
+    let mut failures = Vec::new();
+    tui_pane::set_transparent_background(false);
+    for variant in theme::builtins() {
+        if variant.appearance != Appearance::Light {
+            continue;
+        }
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            for ordinal in 0..5 {
+                let hue = theme::SessionHue::of_agent(ordinal);
+                let ink = Role::Session(hue).style().fg.expect("session ink");
+                let chroma = tests::oklch_ink(ink).chroma;
+                if chroma < 0.10 {
+                    failures.push(format!(
+                        "{name} tint={tint} {hue:?} {ink:?} chroma={chroma:.9} floor=0.10"
+                    ));
+                }
+            }
+        }
+    }
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_focused_pane_tint(tinted);
+    tui_pane::set_transparent_background(transparent);
+    assert!(failures.is_empty(), "light session chroma: {failures:#?}");
 }

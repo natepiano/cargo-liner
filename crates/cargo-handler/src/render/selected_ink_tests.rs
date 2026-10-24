@@ -19,6 +19,8 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::theme;
+use crate::theme::Role;
+use crate::theme::SessionHue;
 
 const CLOCK: u64 = 1_000_000;
 
@@ -178,6 +180,8 @@ fn check_theme(theme_name: &str) {
             .into(),
             stage:     ScanStage::Completed,
         });
+        // Selection and the timer words change ink, not this fixture's row positions.
+        let layout = frame(&mut app, CLOCK);
         for (label, now, word) in [
             ("colored-session", CLOCK, "thinking"),
             ("timed-shell", CLOCK - 1, "0:01"),
@@ -185,12 +189,10 @@ fn check_theme(theme_name: &str) {
             ("timed-shell", CLOCK + 90, "running"),
             ("untimed-shell", CLOCK, "running"),
         ] {
-            let before = frame(&mut app, now);
-            app.click(position(&before, label));
+            app.click(position(&layout, label));
             for focused in [true, false] {
                 if !focused {
-                    let current = frame(&mut app, now);
-                    app.click(position(&current, "other-ground"));
+                    app.click(position(&layout, "other-ground"));
                 }
                 let drawn = frame(&mut app, now);
                 let point = position(&drawn, label);
@@ -234,11 +236,10 @@ fn check_theme(theme_name: &str) {
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
-    save_selected_measurements(
-        &format!("{}_coverage", theme_name.replace(' ', "_")),
-        &measurements,
+    assert!(
+        failures.is_empty(),
+        "selected ink failures: {failures:#?}; measurements: {measurements:#?}"
     );
-    assert!(failures.is_empty(), "selected ink failures: {failures:#?}");
 }
 
 fn selection_application(palette: &Path) -> App {
@@ -466,15 +467,15 @@ fn selected_rows_keep_the_unselected_hue_in_tinted_high_contrast_light() {
     check_selected_hues("High Contrast Light", true);
 }
 
-// Frozen from the committed main theme and ink solver before selected-row changes.
-// Order: session, Busy, Shell, unit role, claude1 account, plain text.
+// Fixed inks stay frozen across session palette changes. The session name uses
+// the first descendant entry, independent of the root ordinal.
+// Fixed ink order: Busy, Shell, unit role, claude1 account, plain text.
 #[test]
 fn unselected_rows_keep_main_inks_in_default_dark() {
     check_main_inks(
         "Default Dark",
         [
             [
-                Color::Rgb(218, 251, 142),
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(129, 129, 255),
@@ -482,7 +483,6 @@ fn unselected_rows_keep_main_inks_in_default_dark() {
                 Color::Rgb(255, 255, 255),
             ],
             [
-                Color::Rgb(218, 251, 142),
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(165, 165, 255),
@@ -499,7 +499,6 @@ fn unselected_rows_keep_main_inks_in_default_light() {
         "Default Light",
         [
             [
-                Color::Rgb(180, 20, 110),
                 Color::Rgb(0, 109, 0),
                 Color::Rgb(0, 104, 87),
                 Color::Rgb(62, 62, 255),
@@ -507,7 +506,6 @@ fn unselected_rows_keep_main_inks_in_default_light() {
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(159, 18, 97),
                 Color::Rgb(0, 90, 0),
                 Color::Rgb(0, 86, 72),
                 Color::Rgb(37, 37, 255),
@@ -524,7 +522,6 @@ fn unselected_rows_keep_main_inks_in_high_contrast_dark() {
         "High Contrast Dark",
         [
             [
-                Color::Rgb(205, 246, 140),
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(129, 129, 255),
@@ -532,7 +529,6 @@ fn unselected_rows_keep_main_inks_in_high_contrast_dark() {
                 Color::Rgb(255, 255, 255),
             ],
             [
-                Color::Rgb(205, 246, 140),
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(165, 165, 255),
@@ -549,7 +545,6 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
         "High Contrast Light",
         [
             [
-                Color::Rgb(203, 4, 119),
                 Color::Rgb(0, 100, 0),
                 Color::Rgb(0, 80, 65),
                 Color::Rgb(62, 62, 255),
@@ -557,7 +552,6 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(168, 4, 99),
                 Color::Rgb(0, 90, 0),
                 Color::Rgb(0, 80, 65),
                 Color::Rgb(37, 37, 255),
@@ -568,7 +562,7 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
     );
 }
 
-fn check_main_inks(theme_name: &str, expected: [[Color; 6]; 2]) {
+fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
     let previous = tui_pane::theme();
     let tinted = tui_pane::focused_pane_tint_enabled();
     let transparent = tui_pane::transparent_background();
@@ -580,8 +574,20 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 6]; 2]) {
     tui_pane::set_transparent_background(false);
     let directory = tempfile::tempdir().expect("main fixture");
     let mut failures = Vec::new();
-    for (tint, colors) in [false, true].into_iter().zip(expected) {
+    for (tint, fixed_colors) in [false, true].into_iter().zip(expected) {
         tui_pane::set_focused_pane_tint(tint);
+        let [busy, shell, unit, account, text] = fixed_colors;
+        let colors = [
+            Role::Session(SessionHue::First)
+                .style()
+                .fg
+                .expect("first descendant session ink"),
+            busy,
+            shell,
+            unit,
+            account,
+            text,
+        ];
         let mut app = selection_application(&directory.path().join("footer.conf"));
         for focused in [true, false] {
             let before = frame(&mut app, CLOCK - 1);
@@ -662,8 +668,7 @@ fn row_ink(buffer: &Buffer, label: &str, word: &str) -> Color {
     buffer[(x, point.y)].fg
 }
 
-/// Drawn ink measured in Oklab for independent hue and chroma checks.
-/// Conversion matrices: <https://bottosson.github.io/posts/oklab>/ .
+/// Cartesian hue coordinates from the production OKLCH conversion.
 struct OklabInk {
     lightness:   f64,
     red_green:   f64,
@@ -672,45 +677,12 @@ struct OklabInk {
 
 impl OklabInk {
     fn from_drawn(color: Color) -> Self {
-        let [red, green, blue] = drawn_rgb(color).map(|channel| {
-            let channel = channel / 255.0;
-            if channel <= 0.040_45 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        });
-        let long = 0.051_445_992_9f64
-            .mul_add(
-                blue,
-                0.536_332_536_3f64.mul_add(green, 0.412_221_470_8 * red),
-            )
-            .cbrt();
-        let medium = 0.107_396_956_6f64
-            .mul_add(
-                blue,
-                0.680_699_545_1f64.mul_add(green, 0.211_903_498_2 * red),
-            )
-            .cbrt();
-        let short = 0.629_978_700_5f64
-            .mul_add(
-                blue,
-                0.281_718_837_6f64.mul_add(green, 0.088_302_461_9 * red),
-            )
-            .cbrt();
+        let converted = crate::footer_colors::Oklch::from_color(color);
+        let angle = converted.hue.to_radians();
         Self {
-            lightness:   0.004_072_046_8f64.mul_add(
-                -short,
-                0.793_617_785_0f64.mul_add(medium, 0.210_454_255_3 * long),
-            ),
-            red_green:   0.450_593_709_9f64.mul_add(
-                short,
-                2.428_592_205_0f64.mul_add(-medium, 1.977_998_495_1 * long),
-            ),
-            yellow_blue: 0.808_675_766_0f64.mul_add(
-                -short,
-                0.782_771_766_2f64.mul_add(medium, 0.025_904_037_1 * long),
-            ),
+            lightness:   converted.lightness,
+            red_green:   converted.chroma * angle.cos(),
+            yellow_blue: converted.chroma * angle.sin(),
         }
     }
 
@@ -733,13 +705,6 @@ impl OklabInk {
         }
         tolerance
     }
-}
-
-fn drawn_rgb(color: Color) -> [f64; 3] {
-    let Color::Rgb(red, green, blue) = tui_pane::blend_color(color, color, 0) else {
-        panic!("concrete drawn ink");
-    };
-    [red, green, blue].map(f64::from)
 }
 
 /// Keep the measured hue ray; gamut mapping may reduce chroma, never increase it.
@@ -776,14 +741,6 @@ fn same_oklch_hue_away_from_ground(original: Color, selected: Color, ground: Col
         && along_hue >= -tolerance
         && across_hue.abs() <= tolerance
         && result_chroma <= source_chroma + tolerance
-}
-
-fn save_selected_measurements(name: &str, measurements: &[String]) {
-    let directory = std::env::temp_dir().join("cargo-handler-selected-ink-measurements");
-    std::fs::create_dir_all(&directory).expect("measurement artifact directory");
-    let path = directory.join(format!("{}_{name}.txt", std::process::id()));
-    std::fs::write(&path, measurements.join("\n")).expect("selected ink measurements");
-    eprintln!("selected ink measurements: {}", path.display());
 }
 
 /// Each family comes from the footer fixture or the active production hue table.
@@ -952,18 +909,9 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     tui_pane::set_active_theme(previous);
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
-    let name = match family {
-        FullPaletteRows::Roles => "roles",
-        FullPaletteRows::Accounts => "accounts",
-        FullPaletteRows::Sessions => "sessions",
-    };
-    save_selected_measurements(
-        &format!("full_{name}_tint{tint}_active{active}"),
-        &measurements,
-    );
     assert!(
         failures.is_empty(),
-        "full selected palette failures: {failures:#?}"
+        "full selected palette failures: {failures:#?}; measurements: {measurements:#?}"
     );
 }
 

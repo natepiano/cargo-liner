@@ -93,6 +93,7 @@ use crate::summary::age;
 use crate::summary::age::AgeLayout;
 use crate::theme::Role;
 use crate::theme::SessionHue;
+use crate::theme::SessionRowInk;
 use crate::tiles::AgentCell;
 use crate::tiles::TileKey;
 
@@ -1319,11 +1320,10 @@ fn work_branches<'a>(
 /// Cells from the placement shared with the summary.
 pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<AgentEntry<'a>> {
     let mut cells = Vec::new();
-    let mut agents = 0;
-    for root in placement.roots() {
+    let mut descendants = 0;
+    for (ordinal, root) in placement.roots().into_iter().enumerate() {
         let machine = root.identity.machine;
-        let hue = SessionHue::of_agent(agents);
-        agents += 1;
+        let hue = SessionHue::of_agent(ordinal);
         let mut lines = Vec::new();
         let context = TreeBuild {
             placement,
@@ -1335,7 +1335,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
             &context,
             root.identity,
             &mut Vec::new(),
-            &mut agents,
+            &mut descendants,
             hue,
             &mut lines,
         );
@@ -2467,7 +2467,7 @@ fn draw_tree(
         spans,
     } = header;
     debug_assert!(spans.iter().all(|span| span.row == area.y));
-    let text = Style::default().fg(text_default());
+    let text = SessionRowInk::Text.style();
     let rows = lines.iter().skip(offset).map(|line| {
         let status = line.status(now);
         Row::new(columns.iter().enumerate().map(|(index, &column)| {
@@ -2584,7 +2584,7 @@ fn above_tree(
                         Span::raw(SECTION_HEADER_INDENT),
                         Span::styled(
                             format!("{LAUNCHED_BY_LABEL} "),
-                            Style::default().fg(label_color()),
+                            SessionRowInk::LauncherLabel.style(),
                         ),
                         Span::styled(name, name_style(cells, entry.machine, launcher)),
                     ])
@@ -3989,9 +3989,8 @@ mod tests {
         );
     }
 
-    /// Every agent takes the next hue of the rainbow in cell order, a
-    /// session as much as a top-level agent, carrying on from one
-    /// machine to the next and starting over at red past blue.
+    /// Root and descendant sequences each continue across machines without
+    /// a subtree consuming the next root's session color.
     #[test]
     fn each_agent_takes_the_next_hue_of_the_rainbow() {
         let (natedev, mac) = natedev_and_mac();
@@ -4012,14 +4011,14 @@ mod tests {
             hues,
             [
                 ("boss of bosses", SessionHue::First),
-                ("trunk", SessionHue::Second),
-                ("under trunk", SessionHue::Third),
-                ("arrange", SessionHue::Fourth),
-                ("enh/handler", SessionHue::Fifth),
-                ("orphan", SessionHue::First),
-                ("left", SessionHue::Second),
-                ("right", SessionHue::Third),
-                ("natemccoy-30", SessionHue::Fourth),
+                ("trunk", SessionHue::First),
+                ("under trunk", SessionHue::Second),
+                ("arrange", SessionHue::Third),
+                ("enh/handler", SessionHue::Second),
+                ("orphan", SessionHue::Third),
+                ("left", SessionHue::Fourth),
+                ("right", SessionHue::Fourth),
+                ("natemccoy-30", SessionHue::Fifth),
             ]
         );
     }

@@ -56,6 +56,9 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
+reset_farthest = { r = 69, g = 196, b = 153 }
+reset_nearest  = { r = 125, g = 191, b = 110 }
+
 busy   = { r = 100, g = 220, b = 100 }
 claude = { r = 217, g = 119, b = 87 }
 codex  = { r = 175, g = 140, b = 255 }

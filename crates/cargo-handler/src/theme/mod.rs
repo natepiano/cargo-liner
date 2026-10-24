@@ -50,6 +50,57 @@ use crate::constants::IDLE_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 use crate::footer_colors;
+use crate::footer_colors::FooterColor;
+
+/// A fixed foreground drawn beside a session name in a tree, summary or launcher row.
+/// Quota, reset and failure-dot inks belong to separate accounts rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionRowInk {
+    Text,
+    LauncherLabel,
+    Claude,
+    Codex,
+    Busy,
+    Shell,
+    Idle,
+    Account(FooterColor),
+    Management(FooterColor),
+}
+
+impl SessionRowInk {
+    /// Fixed row fields, before the footer supplies its configured account and role inks.
+    #[cfg(test)]
+    pub(crate) fn fixed_fields() -> impl Iterator<Item = Self> {
+        std::iter::successors(Some(Self::Text), |field| match field {
+            Self::Text => Some(Self::LauncherLabel),
+            Self::LauncherLabel => Some(Self::Claude),
+            Self::Claude => Some(Self::Codex),
+            Self::Codex => Some(Self::Busy),
+            Self::Busy => Some(Self::Shell),
+            Self::Shell => Some(Self::Idle),
+            Self::Idle | Self::Account(_) | Self::Management(_) => None,
+        })
+    }
+
+    /// Resolve the same foreground used by the corresponding production row field.
+    pub(crate) fn style(self) -> Style {
+        let role = match self {
+            Self::Text => return Style::default().fg(tui_pane::text_default()),
+            Self::LauncherLabel => return Style::default().fg(tui_pane::label_color()),
+            Self::Account(color) => return color.account_style(),
+            Self::Management(color) => return color.management_style(),
+            Self::Claude => Role::Claude,
+            Self::Codex => Role::Codex,
+            Self::Busy => Role::Busy,
+            Self::Shell => Role::Shell,
+            Self::Idle => Role::Idle,
+        };
+        footer_colors::readable_status_style(tui_pane::role_style(
+            role.key(),
+            DEFAULT_DARK_ROLES.spec(role),
+        ))
+    }
+}
 
 /// A chronological rank constructed only within its set of distinct reset times.
 pub(crate) struct ResetRank {
@@ -66,22 +117,24 @@ impl ResetRank {
         })
     }
 
-    /// Blend in the active theme's color space, retaining exact endpoints.
+    /// Blend the reset-only theme roles, retaining exact endpoints.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "positions constructs ranks at most last, so the rounded alpha is at most 255"
     )]
     pub(crate) fn color(self) -> Color {
+        let nearest = tui_pane::role_color("reset_nearest", DEFAULT_DARK_ROLES.reset_nearest);
+        let farthest = tui_pane::role_color("reset_farthest", DEFAULT_DARK_ROLES.reset_farthest);
         if self.position == 0 {
-            return tui_pane::success_color();
+            return nearest;
         }
         if self.position == self.last {
-            return tui_pane::error_color();
+            return farthest;
         }
         let intervals = self.last as u128;
         let alpha =
             ((self.position as u128 * u128::from(u8::MAX) + intervals / 2) / intervals) as u8;
-        tui_pane::blend_color(tui_pane::success_color(), tui_pane::error_color(), alpha)
+        tui_pane::blend_color(nearest, farthest, alpha)
     }
 }
 
@@ -138,15 +191,20 @@ impl Role {
     /// The role's style in the active variant. A variant without the
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
-        let style = tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self));
         match self {
-            Self::Session(_) => footer_colors::readable_session_style(style),
-            Self::Claude
-            | Self::Codex
-            | Self::Busy
-            | Self::Shell
-            | Self::Idle
-            | Self::Unreachable => footer_colors::readable_status_style(style),
+            Self::Claude => SessionRowInk::Claude.style(),
+            Self::Codex => SessionRowInk::Codex.style(),
+            Self::Busy => SessionRowInk::Busy.style(),
+            Self::Shell => SessionRowInk::Shell.style(),
+            Self::Idle => SessionRowInk::Idle.style(),
+            Self::Session(_) => footer_colors::readable_session_style(tui_pane::role_style(
+                self.key(),
+                DEFAULT_DARK_ROLES.spec(self),
+            )),
+            Self::Unreachable => footer_colors::readable_status_style(tui_pane::role_style(
+                self.key(),
+                DEFAULT_DARK_ROLES.spec(self),
+            )),
         }
     }
 }
@@ -208,19 +266,22 @@ impl SessionHue {
 /// One built-in variant's value for each [`Role`].
 struct RolePalette {
     /// [`Role::Claude`].
-    claude:       StyleSpec,
+    claude:         StyleSpec,
     /// [`Role::Codex`].
-    codex:        StyleSpec,
+    codex:          StyleSpec,
     /// [`Role::Busy`].
-    busy:         StyleSpec,
+    busy:           StyleSpec,
     /// [`Role::Shell`].
-    shell:        StyleSpec,
+    shell:          StyleSpec,
     /// [`Role::Idle`].
-    idle:         StyleSpec,
+    idle:           StyleSpec,
     /// [`Role::Unreachable`].
-    unreachable:  StyleSpec,
+    unreachable:    StyleSpec,
     /// [`Role::Session`], one value per hue.
-    session_hues: [Color; SessionHue::ALL.len()],
+    session_hues:   [Color; SessionHue::ALL.len()],
+    /// Nearest and farthest reset ranks, independent of success and failure.
+    reset_nearest:  StyleSpec,
+    reset_farthest: StyleSpec,
 }
 
 impl RolePalette {
@@ -242,6 +303,10 @@ impl RolePalette {
         Role::ALL
             .into_iter()
             .map(|role| (role.key().to_string(), self.spec(role)))
+            .chain([
+                ("reset_nearest".to_owned(), self.reset_nearest),
+                ("reset_farthest".to_owned(), self.reset_farthest),
+            ])
             .collect()
     }
 }
@@ -249,75 +314,83 @@ impl RolePalette {
 /// [`default_dark`]'s roles, and the value a variant without a role
 /// falls back to.
 const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
-    claude:       StyleSpec::from_color(Color::Rgb(217, 119, 87)),
-    codex:        StyleSpec::from_color(Color::Rgb(175, 140, 255)),
-    busy:         StyleSpec::from_color(Color::Rgb(100, 220, 100)),
+    claude:         StyleSpec::from_color(Color::Rgb(217, 119, 87)),
+    codex:          StyleSpec::from_color(Color::Rgb(175, 140, 255)),
+    busy:           StyleSpec::from_color(Color::Rgb(100, 220, 100)),
     // Pale cyan stays apart from the account teal after focused-ground solving.
-    shell:        StyleSpec::from_color(Color::Rgb(140, 230, 240)),
-    idle:         StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-    unreachable:  StyleSpec::from_color(Color::Rgb(255, 100, 100)),
-    session_hues: [
+    shell:          StyleSpec::from_color(Color::Rgb(140, 230, 240)),
+    idle:           StyleSpec::from_color(Color::Rgb(140, 140, 140)),
+    unreachable:    StyleSpec::from_color(Color::Rgb(255, 100, 100)),
+    session_hues:   [
         Color::Rgb(245, 186, 38),
         Color::Rgb(218, 251, 142),
         Color::Rgb(73, 249, 195),
         Color::Rgb(41, 189, 172),
         Color::Rgb(249, 193, 253),
     ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(125, 191, 110)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(69, 196, 153)),
 };
 
 /// [`default_light`]'s roles: the same hues, darker, for a white
 /// background.
 const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
-    claude:       StyleSpec::from_color(Color::Rgb(190, 85, 50)),
-    codex:        StyleSpec::from_color(Color::Rgb(110, 60, 200)),
-    busy:         StyleSpec::from_color(Color::Rgb(0, 130, 0)),
+    claude:         StyleSpec::from_color(Color::Rgb(190, 85, 50)),
+    codex:          StyleSpec::from_color(Color::Rgb(110, 60, 200)),
+    busy:           StyleSpec::from_color(Color::Rgb(0, 130, 0)),
     // Green teal keeps the covered timer ink distinct from the account teal.
-    shell:        StyleSpec::from_color(Color::Rgb(0, 120, 100)),
-    idle:         StyleSpec::from_color(Color::Rgb(110, 110, 110)),
-    unreachable:  StyleSpec::from_color(Color::Rgb(190, 0, 0)),
-    session_hues: [
-        Color::Rgb(113, 0, 43),
-        Color::Rgb(180, 20, 110),
-        Color::Rgb(168, 92, 168),
-        Color::Rgb(69, 14, 100),
-        Color::Rgb(29, 42, 98),
+    shell:          StyleSpec::from_color(Color::Rgb(0, 120, 100)),
+    idle:           StyleSpec::from_color(Color::Rgb(110, 110, 110)),
+    unreachable:    StyleSpec::from_color(Color::Rgb(190, 0, 0)),
+    session_hues:   [
+        Color::Rgb(70, 1, 2),
+        Color::Rgb(87, 39, 90),
+        Color::Rgb(0, 35, 86),
+        Color::Rgb(110, 6, 54),
+        Color::Rgb(33, 0, 69),
     ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(136, 35, 253)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(28, 3, 61)),
 };
 
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
-    claude:       StyleSpec::bold(Color::Rgb(255, 150, 90)),
-    codex:        StyleSpec::bold(Color::LightMagenta),
-    busy:         StyleSpec::bold(Color::LightGreen),
-    shell:        StyleSpec::bold(Color::LightCyan),
-    idle:         StyleSpec::from_color(Color::Gray),
-    unreachable:  StyleSpec::bold(Color::LightRed),
-    session_hues: [
+    claude:         StyleSpec::bold(Color::Rgb(255, 150, 90)),
+    codex:          StyleSpec::bold(Color::LightMagenta),
+    busy:           StyleSpec::bold(Color::LightGreen),
+    shell:          StyleSpec::bold(Color::LightCyan),
+    idle:           StyleSpec::from_color(Color::Gray),
+    unreachable:    StyleSpec::bold(Color::LightRed),
+    session_hues:   [
         Color::Rgb(245, 186, 38),
         Color::Rgb(205, 246, 140),
         Color::Rgb(85, 185, 69),
         Color::Rgb(7, 229, 182),
         Color::Rgb(249, 193, 253),
     ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(125, 191, 110)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(69, 196, 153)),
 };
 
 /// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
-    claude:       StyleSpec::bold(Color::Rgb(160, 60, 0)),
-    codex:        StyleSpec::bold(Color::Rgb(100, 0, 160)),
-    busy:         StyleSpec::bold(Color::Rgb(0, 100, 0)),
-    shell:        StyleSpec::bold(Color::Rgb(0, 80, 65)),
-    idle:         StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-    unreachable:  StyleSpec::bold(Color::Rgb(180, 0, 0)),
-    session_hues: [
-        Color::Rgb(113, 0, 43),
-        Color::Rgb(250, 23, 154),
-        Color::Rgb(95, 4, 76),
-        Color::Rgb(141, 86, 172),
-        Color::Rgb(40, 42, 113),
+    claude:         StyleSpec::bold(Color::Rgb(160, 60, 0)),
+    codex:          StyleSpec::bold(Color::Rgb(100, 0, 160)),
+    busy:           StyleSpec::bold(Color::Rgb(0, 100, 0)),
+    shell:          StyleSpec::bold(Color::Rgb(0, 80, 65)),
+    idle:           StyleSpec::from_color(Color::Rgb(80, 80, 80)),
+    unreachable:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
+    session_hues:   [
+        Color::Rgb(0, 35, 86),
+        Color::Rgb(68, 0, 29),
+        Color::Rgb(37, 0, 67),
+        Color::Rgb(81, 12, 0),
+        Color::Rgb(92, 40, 87),
     ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(136, 35, 253)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(28, 3, 61)),
 };
 
 /// The variants cargo-handler compiles in, in the order the settings

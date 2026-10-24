@@ -259,13 +259,13 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let tiles = tile_order_sorted(&placement, &sorts, NOW);
         let buffer = draw_pool(pool(&tiles, "natedev"), 220);
         for (name, hue) in [
-            ("ups", SessionHue::Third),
-            ("opened-session", SessionHue::Fourth),
-            ("postmaster", SessionHue::Fifth),
+            ("ups", SessionHue::Second),
+            ("opened-session", SessionHue::Third),
+            ("postmaster", SessionHue::Fourth),
         ] {
             assert_eq!(
                 buffer[find(&buffer, name).expect("name drawn")].fg,
-                Role::Session(hue).style().fg.expect("rainbow color"),
+                Role::Session(hue).style().fg.expect("session color"),
                 "{name}"
             );
         }
@@ -275,7 +275,7 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let work = work_buffer("ups");
         assert_eq!(
             work[find(&work, "ups-codex").expect("ups worker")].fg,
-            Role::Session(SessionHue::Third)
+            Role::Session(SessionHue::Second)
                 .style()
                 .fg
                 .expect("owner hue")

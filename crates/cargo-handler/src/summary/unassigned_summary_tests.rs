@@ -356,9 +356,9 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
             .expect("director hue")
     );
     for (name, hue) in [
-        ("ups", SessionHue::Third),
-        ("postmaster", SessionHue::Fourth),
-        ("remote-session", SessionHue::Fifth),
+        ("ups", SessionHue::Second),
+        ("postmaster", SessionHue::Third),
+        ("remote-session", SessionHue::Fourth),
     ] {
         assert!(
             (0..AREA.height).all(|y| {

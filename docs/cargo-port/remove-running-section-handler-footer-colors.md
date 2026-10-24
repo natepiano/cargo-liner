@@ -258,7 +258,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 9 — Accurate clicks during motion  · status: todo
 
-**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 23, Phase 24, Phase 26, Phase 27
+**Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 23, Phase 24, Phase 26, Phase 27, Phase 28
 
 **Blocked by:** tile-fixes phase 24 merged on main (tui_pane grid overlap) — the showrunner says when (showrunner, 2026-10-21).
 
@@ -283,7 +283,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - cargo-handler `Cells::prepare_moving_frame` (`render/mod.rs` ≈461) supplies the motion measurement bounds to `Cells::prepare_frame` (≈469). `prepare_frame` resolves the selections, runs `agent_cell::shared_tree_metrics`, and only then installs each selection area (`SurfaceSelection::set_area`). Keep that order. Those areas come from preparation allocations, so they are not the final clipped paint record.
 - `draw_panes_at` (`render/mod.rs` ≈138) follows a moved selection: after the draw it finds the destination placement, takes the centre of its rect and calls `app.tiles.cell_at` (≈189) to get the index for `focus_cell`. When `cell_at` answers from painted geometry, that centre can name another moving piece.
 - The pointer payload `tui_pane::CellClick<Id>` (`tiles/host.rs` ≈35, exported in `tiles/mod.rs` ≈45 and `lib.rs`) carries presses (`TileGridHost::cell_clicked`) and wheel steps (`TileGridHost::cell_scrolled`, `handle_tile_scroll`). Its users: `crates/cargo-handler/src/app.rs`, `render/mod.rs`, `render/accounts_grid_tests.rs`, `render/role_title_tests.rs`, `summary/accounts_header_sort_tests.rs`, `summary/unassigned_summary_tests.rs`, and `crates/tui_pane/src/tiles/host_tests.rs`.
-- Phase 26 replaces the bare `Option` results of the selection API (`selected_span`, `containing`, `follow_focused`, `surface`, `surface_mut`, `Cells.focused`) with named results. Use those names; do not add a new bare `Option`.
+- Phase 28 replaces the bare `Option` results of the selection API (`selected_span`, `containing`, `follow_focused`, `surface`, `surface_mut`, `Cells.focused`) with named results. Use those names; do not add a new bare `Option`.
 - Phase 16's selected-row behavior (keys, clicks and the wheel; `render/selection_tests.rs`) stays as it is.
 - Tests in tui_pane tiles live in the inline `mod tests` of `tiles/grid.rs` (≈5732, motion tests), `tiles/draw.rs` (≈814, motion content tests) and `tiles/host.rs` (≈205), and in `tiles/host_tests.rs` (registered at `host.rs` ≈446). There is no `tiles/tests/` directory.
 - Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render/mod.rs` ≈177); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
@@ -691,7 +691,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** A new sortable header for the Stacked layout.
 
-### Phase 26 — Accounts table and session colour polish  · status: todo
+### Phase 26 — Accounts table and session colour polish  · status: done
 
 **Depends on:** Phase 19
 
@@ -734,6 +734,35 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` passes unchanged. Live: summary and agent tile shots in all four themes, with each session ink's covered contrast read from the shot, and an 80x16 shot after End with the accounts headers in view.
 
+### Phase 28 — Accounts headers stay in view  · status: todo
+
+**Depends on:** Phase 26, and tile-fixes phase 24 merged (it holds `render/mod.rs`).
+
+#### Work Order
+
+**Goal:** the accounts headers stay in view while account rows show, and selection results name their empty cases.
+
+**Source:** phase 26 specs 5, 6 and their tests, moved here 2026-10-23 because tile phase 24 holds `render/mod.rs`.
+
+**Constraints from prior phases:**
+- `AccountsLayout` (`summary/accounts.rs` ≈402) draws one column-header line in Full, two in TwoLine and none in Stacked, below the section heading. The summary scrolls one complete buffer with one offset (`render/mod.rs` ≈608); `SurfaceSelection::click` (`interaction.rs` ≈326) and `RowSpan::visible_lines` (≈200) use that one linear offset.
+- Selection API results that are a bare `Option` today: `SurfaceSelection::selected_span` (`interaction.rs` ≈250), `Selections::containing` (≈389), `follow_focused` (≈398), `surface` and `surface_mut` (≈404, ≈407), and `Cells.focused: RefCell<Option<SelectionSurface>>` (`render/mod.rs` ≈319).
+- Keep phase 19's reset outcomes and tests: a known past reset draws weekday and time or a date (`summary/accounts_tests.rs` ≈1161), an unavailable reset draws blank and unavailable quota draws `—` (≈1135).
+
+**Spec:**
+1. Pinned headers: while any account row is in the viewport, the accounts section heading and that layout's column-header lines (Full one line, TwoLine two, Stacked none; Stacked gets no new header) stay pinned at the top. Nothing pins when the viewport cannot hold the pinned lines plus one body line. One pinned-and-scrolling mapping serves drawing, the selection bands (`RowSpan::visible_lines`) and clicks (`SurfaceSelection::click`). The body's navigation and page height is reduced by the pinned lines.
+2. Named results replace the bare `Option` results listed in the constraints (for example a selected span that names "no rows", a row location that names "gone", a surface lookup that names "retired", and a focused surface that names "not selectable"). Convert to `Option` only where a framework signature requires it.
+3. Tests, red first: pinned headers in every layout, a header sort after End, a click on a continuation line, and an account taller than the viewport. Update `clipped_stacked_account_selection_bands_cover_facts_without_the_heading` (`render/accounts_grid_tests.rs` ≈547), which expects every visible line at End to be an account fact.
+
+**Files:**
+- `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`
+- `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — new pinned-header tests, registered in `render/mod.rs`
+
+**Workers:** 1 writer (`viewport`); hub: `crates/cargo-handler/src/render/mod.rs` (test registration).
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` passes unchanged. Live: an 80x16 shot after End with the accounts headers in view, in each layout.
+
 ### Phase 27 — Agent tables stay readable at narrow widths  · status: todo
 
 **Depends on:** Phase 26
@@ -748,7 +777,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The shipped drop order is `ColumnDrop::ORDER` (`agent_cell.rs` ≈478: Directory, Branch, Type) run by `GroupFitStep::ORDER` (≈809), which merges equal fitted column groups after each step. Keep shared `AgeLayout`s per group, the role and status widths measured from the painted rows (phases 24 and 16), and `prepare_frame`'s order: selection areas install only after shared metrics (`render/mod.rs` ≈469).
 - `summary::truncated` (`summary/mod.rs` ≈671) and `summary::cell_width` (≈819) count characters, not terminal cells. `FlatColumns::fitted` (`agent_cell.rs` ≈1961) returns `Option<Self>`.
 - Keep phase 19's measured Full/TwoLine/Stacked choice (`AccountsLayout::for_width`, `summary/accounts.rs` ≈402) and `account_name_indent()` (≈423) as the one source of the two-line prefix. Keep its reset outcomes through width changes: a known past reset draws weekday and time or a date (`summary/accounts_tests.rs` ≈1161), an unavailable reset draws blank and unavailable quota draws `—` (≈1135).
-- Phase 26 owns pinned navigation; this phase keeps it through width changes. Phase 16's selected rows stay as they are.
+- Phase 28 owns pinned navigation; when it is done first, this phase keeps it through width changes. Phase 16's selected rows stay as they are.
 
 **Spec:**
 1. Below the width that holds every column, drop whole columns in the shipped order of `ColumnDrop::ORDER` (directory, branch, type), with equal column groups merged after each step. The summary agents table uses the same order for the columns it has: it drops directory; it has no branch or type column, so those steps change nothing there.
@@ -857,7 +886,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Today `census/hierarchy.rs` drops an edge whose role it does not know (`HierarchyWireRole` `#[serde(other)] Unknown`); `HierarchyRole` is in `census/mod.rs`; `RoleLabel` is in `census/placement.rs`; `FooterRole` and its `role.*` keys are in `footer_colors/mod.rs`. Since phase 17 there is no `From<HierarchyRole> for FooterRole` and no `FooterRole::Worker`: management roles map in `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈548), specialist role words in `FooterColors::named_role` (≈539), and worker rows draw plain.
 - Phase 17 probe schema 3: `ProbeChildWork` sends the unit kind `subagent` with an optional `subagent_role`. Keep its compatibility tests beside the new hierarchy extension tests: a capable receiver keeps recorded subagent roles; an older receiver accepts the report without the extension.
 - The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
-- The run order is 18, 25, 26, 27, 20, 9, 21, so this phase runs after phases 19 and 26. The new Astra role inks meet phase 26's colour bounds (consecutive hue spacing, and CIEDE2000 >= 20 within 45° of OKLCH hue against role, account, status and reset inks), measured through the production role API (`FooterColors::hierarchy_role` ≈783 with the new variants, `named_role` ≈774), not through fixed colors.
+- The run order is 18, 25, 26, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19 and 26. The new Astra role inks meet phase 26's colour bounds (consecutive hue spacing, and CIEDE2000 >= 20 within 45° of OKLCH hue against role, account, status and reset inks), measured through the production role API (`FooterColors::hierarchy_role` ≈783 with the new variants, `named_role` ≈774), not through fixed colors.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 - The Codex thread lookup in `constants.rs` reads only `originator = 'codex-tui'` threads; `astra_review.py` runs `codex exec` (`originator` `codex_exec`).
 - The word `review` stays the pool reviewer's.

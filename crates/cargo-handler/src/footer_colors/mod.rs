@@ -26,6 +26,7 @@ use self::constants::SRGB_LINEAR_DIVISOR;
 use self::constants::SRGB_LINEAR_THRESHOLD;
 use self::constants::SRGB_POWER;
 use crate::census::HierarchyRole;
+use crate::theme::SessionRowInk;
 
 pub(crate) mod constants;
 
@@ -58,6 +59,16 @@ pub(crate) enum FooterColor {
 /// A name outside the footer's color table.
 #[derive(Debug)]
 pub(crate) struct UnknownFooterColor;
+
+impl FooterColor {
+    /// Foreground for an account field beside a session name.
+    pub(crate) fn account_style(self) -> Style { Style::default().fg(resolved(self).foreground) }
+
+    /// Management labels reserve additional contrast for antialiased glyph edges.
+    pub(crate) fn management_style(self) -> Style {
+        Style::default().fg(resolved_management(self).foreground)
+    }
+}
 
 impl FromStr for FooterColor {
     type Err = UnknownFooterColor;
@@ -139,8 +150,8 @@ impl FooterTint {
     /// Keep all theme attributes, replacing only a configured foreground.
     pub(crate) fn style(self, theme: Style) -> Style {
         match self {
-            Self::Footer(color) => theme.fg(resolved(color).foreground),
-            Self::Management(color) => theme.fg(resolved_management(color).foreground),
+            Self::Footer(color) => theme.patch(SessionRowInk::Account(color).style()),
+            Self::Management(color) => theme.patch(SessionRowInk::Management(color).style()),
             Self::Plain => theme,
         }
     }
@@ -569,6 +580,31 @@ fn search_lightness(
     best.1
 }
 
+/// A measurement of the production color conversion, before any lightness mapping.
+#[cfg(test)]
+pub(crate) struct Oklch {
+    pub(crate) lightness: f64,
+    pub(crate) chroma:    f64,
+    pub(crate) hue:       f64,
+}
+
+#[cfg(test)]
+impl Oklch {
+    /// Use the same conversion as selected inks, without a second set of matrices.
+    pub(crate) fn from_color(color: Color) -> Self {
+        let converted = SelectedHueChroma::from_color(color);
+        Self {
+            lightness: converted.lightness,
+            chroma:    converted.red_green.hypot(converted.yellow_blue),
+            hue:       converted
+                .yellow_blue
+                .atan2(converted.red_green)
+                .to_degrees()
+                .rem_euclid(360.0),
+        }
+    }
+}
+
 /// An OKLCH hue ray whose chroma contracts only at the sRGB gamut boundary.
 /// Conversion matrices: <https://bottosson.github.io/posts/oklab>/ .
 struct SelectedHueChroma {
@@ -724,6 +760,14 @@ pub(crate) struct FooterColors {
 }
 
 impl FooterColors {
+    /// Every fixed ink that can share a row with a session name under this configuration.
+    #[cfg(test)]
+    pub(crate) fn session_row_inks(&self) -> impl Iterator<Item = SessionRowInk> + '_ {
+        SessionRowInk::fixed_fields()
+            .chain(self.accounts.values().copied().map(SessionRowInk::Account))
+            .chain(self.roles.values().copied().map(SessionRowInk::Management))
+    }
+
     /// Read assignments as the footer does: comments, whitespace, then the first `=`.
     pub(crate) fn parse(text: &str) -> Self {
         let mut colors = Self::default();

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The accounts table matches the accounts board: nine columns with lower-case headers, a separate `read` age, `enabled` and `in use` credit columns, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
+- Reset times use their own green (dark) or violet-to-indigo (light) ramp, never error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files can set the ramp ends with `reset_nearest` and `reset_farthest`.
 - Selected rows keep their text hues and adjust lightness for readability, reducing chroma only at the color gamut boundary; unselected rows retain their theme inks.
 - Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
 - Role columns fit the roles visible in their tile group. Short tiles keep the branch column when it fits. Fitted column sets share widths and age slots after optional columns drop; the summary also omits columns without values. A shell still running after its timer expires reads `running` in the Busy ink.

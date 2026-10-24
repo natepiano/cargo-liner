@@ -19,11 +19,11 @@ appearance = "light"
 name       = "Default Light"
 
 session_hues = [
-  { r = 113, g = 0, b = 43 },
-  { r = 180, g = 20, b = 110 },
-  { r = 168, g = 92, b = 168 },
-  { r = 69, g = 14, b = 100 },
-  { r = 29, g = 42, b = 98 },
+  { r = 70, g = 1, b = 2 },
+  { r = 87, g = 39, b = 90 },
+  { r = 0, g = 35, b = 86 },
+  { r = 110, g = 6, b = 54 },
+  { r = 33, g = 0, b = 69 },
 ]
 
 [variants.pane_chrome]
@@ -53,6 +53,9 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 70, g = 70, b = 70 }
 
 [variants.roles]
+reset_farthest = { r = 28, g = 3, b = 61 }
+reset_nearest  = { r = 136, g = 35, b = 253 }
+
 busy   = { r = 0, g = 130, b = 0 }
 claude = { r = 190, g = 85, b = 50 }
 codex  = { r = 110, g = 60, b = 200 }

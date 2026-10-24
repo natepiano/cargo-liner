@@ -1260,8 +1260,8 @@ mod tests {
     /// with one agent; a remote whose probe failed; and one that has not
     /// answered. Each machine that lists agents repeats the label row
     /// under its heading, with the columns sized across both machines'
-    /// rows. Each name takes the hue of its cell: the launched session
-    /// has a cell but no row, so the hue after boss's goes to it.
+    /// rows. Each root name takes the next palette entry independently of
+    /// the launched session nested under the first root.
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
         let natedev = natedev();
@@ -1379,29 +1379,15 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [
-                Role::Session(crate::theme::SessionHue::First)
-                    .style()
-                    .fg
-                    .expect("red session"),
-                Role::Session(crate::theme::SessionHue::Third)
-                    .style()
-                    .fg
-                    .expect("green session"),
-                Role::Session(crate::theme::SessionHue::Fourth)
-                    .style()
-                    .fg
-                    .expect("cyan session"),
-                Role::Session(crate::theme::SessionHue::Fifth)
-                    .style()
-                    .fg
-                    .expect("blue session"),
-                Role::Session(crate::theme::SessionHue::First)
-                    .style()
-                    .fg
-                    .expect("wrapped red session"),
-            ],
-            "red, then green past trunk's orange, cyan, blue, and the mac's red"
+            (0..5)
+                .map(|ordinal| {
+                    Role::Session(crate::theme::SessionHue::of_agent(ordinal))
+                        .style()
+                        .fg
+                        .expect("root session color")
+                })
+                .collect::<Vec<_>>(),
+            "root ordinals continue across machines without counting launched descendants"
         );
     }
 
