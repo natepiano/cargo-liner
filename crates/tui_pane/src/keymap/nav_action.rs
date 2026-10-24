@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn page_keys_keep_named_default_and_ctrl_is_vim_only() {
         let map = default_bindings().into_scope_map();
-        // PageUp/PageDown keep their rebindable named-key default.
+        // `NavAction::PageUp` and `NavAction::PageDown` keep rebindable named-key defaults.
         assert_eq!(
             map.key_for(NavAction::PageUp)
                 .and_then(KeySequence::single_key),
@@ -215,8 +215,8 @@ mod tests {
                 .and_then(KeySequence::single_key),
             Some(KeyBind::from(KeyCode::PageDown)),
         );
-        // Ctrl-b/Ctrl-f are not compiled defaults — they arrive only via
-        // the vim extras.
+        // `KeyBind::ctrl('b')` and `KeyBind::ctrl('f')` are not compiled
+        // defaults; they arrive only through `vim_letter_extras`.
         assert_eq!(map.action_for(&ctrl('b')), None);
         assert_eq!(map.action_for(&ctrl('f')), None);
 
