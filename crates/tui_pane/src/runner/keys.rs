@@ -28,7 +28,7 @@ use crate::overlay_is_in_text_mode;
 /// overlay's. Then [`TerminalApp::attract_key`], then the framework
 /// globals, then the app's own globals scope.
 pub fn dispatch_key<A: TerminalApp>(app: &mut A, key: KeyEvent) {
-    // Re-borrowed every key: rebinding a key in the keymap overlay
+    // `keymap` is re-borrowed every key: rebinding in the keymap overlay
     // swaps the whole map out from under the dispatch.
     let keymap: Rc<Keymap<A>> = app.keymap();
     let bind = KeyBind::from(key);
