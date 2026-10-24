@@ -78,16 +78,16 @@ impl ToastSettings {
             self.status_toast_visible =
                 ToastDuration::try_from_value("status_toast_visible", value)?;
         } else if let Some(value) = table.get("default_timeout") {
-            // Legacy key (pre-`status_toast_visible` rename). Read
-            // it as a fall-through; the next save removes it via
-            // [`remove_legacy_toast_keys`].
+            // The legacy `table` key "default_timeout" predates
+            // `ToastSettings::status_toast_visible`. Read it as a fall-through;
+            // the next save removes it via `remove_legacy_toast_keys`.
             self.status_toast_visible = ToastDuration::try_from_value("default_timeout", value)?;
         }
         if let Some(value) = table.get("finished_task_visible") {
             self.finished_task_visible =
                 ToastDuration::try_from_value("finished_task_visible", value)?;
         } else if let Some(value) = table.get("task_linger") {
-            // Legacy key (pre-`finished_task_visible` rename).
+            // Legacy `table` key "task_linger" predates `ToastSettings::finished_task_visible`.
             self.finished_task_visible = ToastDuration::try_from_value("task_linger", value)?;
         }
         if let Some(value) = table.get("max_visible") {
@@ -366,10 +366,10 @@ pub(crate) fn remove_legacy_toast_keys(table: &mut Table) {
         tui.remove("task_linger_secs");
     }
     if let Some(Value::Table(toasts)) = table.get_mut("toasts") {
-        // One-shot migration: `default_timeout` →
-        // `status_toast_visible`, `task_linger` →
-        // `finished_task_visible`. Remove the old keys after the
-        // load path has copied their values into the new fields.
+        // `remove_legacy_toast_keys` completes the one-shot migration in `toasts`:
+        // "default_timeout" → "status_toast_visible", "task_linger" →
+        // "finished_task_visible". Remove the old keys after the load path has
+        // copied their values into the new fields.
         toasts.remove("default_timeout");
         toasts.remove("task_linger");
     }
