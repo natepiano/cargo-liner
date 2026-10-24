@@ -1210,8 +1210,8 @@ mod tests {
 
     #[test]
     fn toml_overlay_array_in_array_duplicate_rejected_at_build() {
-        // Cross-action collision in the [foo] table — the same key
-        // `x` is bound twice in the array for the same action.
+        // `KeymapError::InArrayDuplicate` rejects the `[foo]` array because
+        // `x` is bound twice to `FooAction::Activate`.
         let dir = TempDir::new().expect("create temp keymap dir");
         let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = [\"x\", \"x\"]\n").expect("write toml");
@@ -1906,7 +1906,7 @@ mod tests {
             ["unknown action 'frobnicate' in [foo] (ignored)"],
             "the skipped action must be recorded as a warning",
         );
-        // The scope's valid default binding survives the skipped entry.
+        // `FooPane`'s default Enter binding to `FooAction::Activate` survives the skipped entry.
         let mut app = fresh_app();
         assert_eq!(
             keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
