@@ -363,7 +363,8 @@ where
     F: Fn(Appearance),
 {
     let connection = backend.connect().await?;
-    // Install both watches before reading so a change during startup is queued.
+    // Install both watches with `B::watch` before `B::read` so a change
+    // during startup is queued.
     let mut observations = B::watch(&connection).await?;
     let initial = B::read(&connection).await?;
     Ok(follow(initial, &mut observations, history, recovery, on_change).await)

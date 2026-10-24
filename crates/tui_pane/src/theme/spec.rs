@@ -104,9 +104,9 @@ impl<'de> Visitor<'de> for StyleSpecVisitor {
     where
         A: MapAccess<'de>,
     {
-        // Buffer the table into a serde_json-style intermediate so we
-        // can distinguish "bare color form" from "full spec form" after
-        // seeing the keys.
+        // Buffer the table into `keys` and `values`, a serde_json-style
+        // intermediate, so `StyleSpecVisitor::visit_map` can distinguish
+        // "bare color form" from "full spec form" after seeing the keys.
         let mut keys: Vec<String> = Vec::new();
         let mut values: Vec<Value> = Vec::new();
         while let Some((k, v)) = map.next_entry::<String, Value>()? {
@@ -115,7 +115,7 @@ impl<'de> Visitor<'de> for StyleSpecVisitor {
         }
 
         if keys.contains(&"color".to_owned()) {
-            // Full spec form.
+            // `keys` containing "color" identifies the full `StyleSpec` form.
             let mut color: Option<Color> = None;
             let mut modifiers = Modifiers::empty();
             for (k, v) in keys.into_iter().zip(values) {
@@ -144,7 +144,7 @@ impl<'de> Visitor<'de> for StyleSpecVisitor {
             };
             Ok(StyleSpec { color, modifiers })
         } else {
-            // Bare color form: { r, g, b } or { indexed = N }.
+            // Build `Value::Table` for the bare color form: { r, g, b } or { indexed = N }.
             let table = Value::Table(keys.into_iter().zip(values).collect::<Map<String, Value>>());
             let color = parse_color_value(&table).map_err(A::Error::custom)?;
             Ok(StyleSpec::from_color(color))
