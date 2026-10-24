@@ -114,7 +114,8 @@ mod tests {
             &rendered("cancel", KeyBind::from(KeyCode::Esc)),
             &palette,
         );
-        // Two spans for the first slot, one separator, two for the second.
+        // `spans` contains two spans for the first slot, one `super::SEPARATOR`, two for the
+        // second.
         assert_eq!(spans.len(), 5);
         assert_eq!(spans[2].content.as_ref(), "  ");
     }

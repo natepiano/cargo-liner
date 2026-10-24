@@ -293,7 +293,7 @@ impl BackdropMonitor {
         };
         let (watches, asked) = crossbeam_channel::bounded(1);
         let (located, frames) = crossbeam_channel::bounded(1);
-        // A failed spawn leaves `frames` disconnected, no frame ever
+        // A failed `position_loop` spawn leaves `frames` disconnected, no frame ever
         // arrives, and `placement` stays `None` -- the drawing stops
         // rather than being placed somewhere it is not.
         drop(
@@ -380,15 +380,15 @@ impl BackdropMonitor {
         while let Ok(frame) = self.frames.try_recv() {
             self.frame = frame;
         }
-        // Ask where the window is for the next frame. A full channel
-        // means the position worker is still on the last ask -- which
+        // Send `window_id` on `watches` to ask where the window is for the next frame. A full
+        // channel means the position worker is still on the last ask -- which
         // is what a capture in flight ahead of it leaves -- and the
         // frame already in hand carries this frame instead.
         if let LastSuccessfulCaptureWindowId::Available { window_id } = self.captured_window_id() {
             let _ = self.watches.try_send(window_id);
         }
         let metrics = Metrics::read();
-        // A capture whose placement cannot be read is one whose window
+        // A capture whose `Desktop::placement` cannot be read is one whose window
         // has closed or moved to another display, and either way a
         // fresh one is what answers.
         let placement = match (
@@ -404,7 +404,7 @@ impl BackdropMonitor {
         {
             self.current = Some(Backdrop::read(desktop, placement, area));
         }
-        // A window that has moved since the last frame is one being
+        // A window whose `placement` has changed since the last frame is one being
         // dragged, and a drag is the one thing that changes nothing a
         // capture holds: the capture covers the whole display with this
         // window taken out of it, so where the window is does not enter
@@ -421,7 +421,7 @@ impl BackdropMonitor {
                 .available()
                 .is_some_and(|desktop| Some(desktop.metrics()) == metrics);
         let waited = self.capture_request_cadence.elapsed();
-        // A capture that cannot be used is worth asking to replace
+        // A capture for which `usable` is false is worth asking to replace
         // sooner than the routine cycle, but not every frame: each
         // attempt costs the worker the same long round trip whether or
         // not it succeeds.
@@ -882,8 +882,8 @@ mod tests {
         );
         assert_eq!(reads.get(), 2);
 
-        // Every new frame resets the settle duration, even after movement has lasted longer than
-        // it.
+        // `WindowPosition::observe` resets `unchanged_since` for each new frame, even after
+        // movement has lasted longer than `POSITION_SETTLE_DURATION`.
         let movement_start = now.get();
         while now.get().duration_since(movement_start) <= POSITION_SETTLE_DURATION {
             now.set(now.get() + step);
@@ -1182,10 +1182,10 @@ mod tests {
     fn a_replaced_worker_that_answers_restores_the_replacement_allowance() {
         let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
 
-        // Each pass replaces the worker -- two stalls with nothing returned in
-        // between -- and then has the replacement answer. More passes are made
-        // than the bound allows replacements, so reaching the end proves the
-        // answer restored the allowance rather than the run spending it once.
+        // Each `capture_test_driver` pass replaces the worker -- two stalls with nothing returned
+        // in between -- and then has the replacement answer. More passes are made
+        // than `MAX_CAPTURE_WORKER_REPLACEMENTS` allows replacements, so reaching the end proves
+        // the answer restored the allowance rather than the run spending it once.
         for _ in 0..=MAX_CAPTURE_WORKER_REPLACEMENTS {
             for _ in 0..2 {
                 assert_eq!(

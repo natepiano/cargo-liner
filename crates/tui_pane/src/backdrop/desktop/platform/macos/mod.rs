@@ -87,8 +87,8 @@ struct Display {
 )]
 fn active_displays() -> Vec<Display> {
     let mut count = 0_u32;
-    // SAFETY: `active_displays` is null for the count-only query, and `display_count` points to a
-    // live local `u32` for the duration of the call.
+    // SAFETY: `CGGetActiveDisplayList` receives a null display array for the count-only query, and
+    // `count` points to a live local `u32` for the duration of the call.
     let error =
         unsafe { CGGetActiveDisplayList(0, std::ptr::null_mut(), std::ptr::from_mut(&mut count)) };
     if error != CGError::Success || count == 0 {
@@ -156,9 +156,9 @@ pub(in crate::backdrop::desktop) fn capture(
         );
     }
     let terminal_window_candidates = terminal_windows(&windows);
-    // The number `identify` pinned to this app's own window is
-    // looked for across every window on the machine, not inside the
-    // set the terminal is thought to own. Which windows those are
+    // `capture_window_target` carries the number pinned to this app's own window,
+    // which `candidate::select_capture_window` looks for across all `windows`, not inside the
+    // `terminal_window_candidates` set the terminal is thought to own. Which windows those are
     // is a question that can be answered wrongly: an emulator
     // hosting its sessions in a server process is nowhere in this
     // app's parent chain, so the answer there is whichever
@@ -168,7 +168,7 @@ pub(in crate::backdrop::desktop) fn capture(
     // application has taken the front, and what is chosen instead
     // is one of *its* windows, on whichever display it sits on.
     //
-    // Falling back to size is for the run where the marker title
+    // Falling back to `frontmost_window` size matching is for the run where the marker title
     // never took, and for the window closed since it did.
     let selected = candidate::select_capture_window(
         &windows,
@@ -208,14 +208,14 @@ fn capture_selected_window(
     let display =
         CaptureFailure::DisplayNotFound.classify_option(display_under(displays, chosen.bounds))?;
     let display_frame = display_bounds(display);
-    // The capture is asked for at the display's own point size and
+    // `stream::capture_display_bgra` is asked for the display's point size and
     // comes back at it, so one cell in points serves both the grid
     // the capture is reduced against and the frame the window is
     // placed by. `Display::bounds` measures in points as the selected window's bounds do, which is
     // why there is no second unit here to convert to.
     //
     // What the terminal reports is the one thing here that is not in points -- it answers in the
-    // display's pixels -- so the scale divides it before a cell comes out of it. See
+    // display's pixels -- so `backing_scale(display)` divides it before a cell comes out of it. See
     // [`Metrics::cell_points`].
     let cell = metrics.cell_points(f64::from(backing_scale(display)));
     let output_size = (
@@ -224,7 +224,7 @@ fn capture_selected_window(
         CaptureFailure::DisplayCaptureFailed
             .classify_option(points_to_u32(display_frame.size.height))?,
     );
-    // The display is captured through a persistent ScreenCaptureKit stream -- one per display,
+    // `stream::capture_display_bgra` uses a persistent ScreenCaptureKit stream -- one per display,
     // opened once and shared -- rather than a fresh in-process screenshot each refresh, which
     // wedges process-to-process on macOS 26 the moment several instances overlap on the window
     // server. The stream's content filter leaves out every window the emulator owns, so what comes
@@ -377,7 +377,7 @@ fn away(frame: CoreGraphicsRect, origin: (f64, f64)) -> f64 {
 /// given up by asking the cheaper of them.
 pub(in crate::backdrop::desktop) fn window_frame(window: u32) -> Option<Frame> {
     let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionIncludingWindow, window)?;
-    // Gone, if the window has been closed since the capture.
+    // `entry(&list, 0)` returns `None` if the window has been closed since the capture.
     let described = entry(&list, 0)?;
     let rect = bounds(described)?;
     Some(Frame {
@@ -405,7 +405,7 @@ fn entry(list: &CFArray, index: isize) -> Option<&CFDictionary> {
     if !(0..list.count()).contains(&index) {
         return None;
     }
-    // SAFETY: `CFArrayGetValueAtIndex` is undefined outside the
+    // SAFETY: `list.value_at_index(index)` is undefined outside the
     // array's own index space, and the check above is what holds
     // `index` inside it -- both ends of it, since a `CFIndex` is
     // signed and a negative one is as far out of the space as a
@@ -413,7 +413,7 @@ fn entry(list: &CFArray, index: isize) -> Option<&CFDictionary> {
     // generic match its contents, which an untyped `CFArray` has no
     // way to fail.
     let value = unsafe { list.value_at_index(index) };
-    // SAFETY: the element is a Core Foundation object by this
+    // SAFETY: `value` is a Core Foundation object by this
     // function's invariant, so a non-null pointer to one points at a
     // live `CFType`; null is what `as_ref` answers `None` for. The
     // array owns a reference to that object for as long as the array
@@ -421,7 +421,7 @@ fn entry(list: &CFArray, index: isize) -> Option<&CFDictionary> {
     // lifetime elision, so nothing can read it after the array has
     // gone.
     let value = unsafe { value.cast::<CFType>().as_ref() }?;
-    // That the element is a dictionary in particular is asked rather
+    // That `value` is a dictionary in particular is asked rather
     // than assumed: `downcast_ref` compares `CFGetTypeID` and hands
     // back `None` for anything else.
     value.downcast_ref::<CFDictionary>()
@@ -457,7 +457,7 @@ impl Key {
                   comment below covers every one of them at once"
     )]
     fn name(self) -> &'static CFString {
-        // SAFETY: reading an `extern` static is unchecked because
+        // SAFETY: `Key::name` reads an `extern` static, which is unchecked because
         // nothing on this side knows the symbol was ever
         // initialised. These are `CFString` constants CoreGraphics
         // builds as the framework loads -- which is before any code
@@ -497,13 +497,13 @@ impl Key {
 )]
 fn value(described: &CFDictionary, key: Key) -> Option<&CFType> {
     let key = std::ptr::from_ref(key.name()).cast::<c_void>();
-    // SAFETY: `CFDictionaryGetValue` wants a valid key pointer,
+    // SAFETY: `described.value(key)` wants a valid key pointer,
     // which is what `key` was just made from a live constant, and a
     // dictionary whose generic matches its contents, which an
     // untyped `CFDictionary` has no way to fail. It answers null for
     // a key the dictionary does not hold.
     let value = unsafe { described.value(key) };
-    // SAFETY: the value is a Core Foundation object by this
+    // SAFETY: `value` is a Core Foundation object by this
     // function's invariant, so a non-null pointer to one points at a
     // live `CFType`, and `as_ref` answers `None` for the null.
     // `described` holds a reference to it and outlives this call.
@@ -554,7 +554,7 @@ enum DescribedWindowNumber {
 /// `described` must be one of [`entry`]'s dictionaries, and so must
 /// hold Core Foundation objects for the same reason its array does.
 fn number(described: &CFDictionary) -> DescribedWindowNumber {
-    // A window number is a `u32` that CoreGraphics reports as a
+    // `number` reads a `u32` window number that CoreGraphics reports as a
     // signed one.
     integer(described, Key::Number)
         .and_then(|number| u32::try_from(number).ok())
@@ -576,13 +576,13 @@ fn number(described: &CFDictionary) -> DescribedWindowNumber {
               caller supplies and the SAFETY comment below covers"
 )]
 fn bounds(described: &CFDictionary) -> Option<CoreGraphicsRect> {
-    // Documented to be a rect in dictionary form, and asked rather
+    // `Key::Bounds` is documented to be a rect in dictionary form, and asked rather
     // than assumed, because the call below is undefined on something
     // that is not a dictionary at all. Given one that is but does
     // not describe a rect, it answers false and writes nothing.
     let value = value(described, Key::Bounds)?.downcast_ref::<CFDictionary>()?;
     let mut rect = CoreGraphicsRect::default();
-    // SAFETY: the out pointer is to a live, aligned, already
+    // SAFETY: the `rect` out pointer is to a live, aligned, already
     // initialised `CGRect` in this frame, so it stays valid to write
     // for the whole of a call that cannot outlast the frame; and the
     // dictionary is the one type-checked just above.
@@ -696,7 +696,7 @@ fn terminal_windows<W: TerminalWindowCandidate + TerminalProgramWindowCandidate>
     // An emulator that hosts its sessions in a server process of its
     // own is nowhere in this app's parent chain: iTerm2's shell hangs
     // off `iTermServer`, and the process drawing the window is not an
-    // ancestor of anything running in it. Ask the emulator who it is
+    // ancestor of anything running in it. `named_emulator_windows` asks the emulator who it is
     // instead -- it says so in the environment it handed down.
     let named = named_emulator_windows(windows);
     candidate::terminal_window_candidates(
@@ -729,10 +729,10 @@ fn named_emulator_windows<W: TerminalProgramWindowCandidate>(windows: &[W]) -> V
         return Vec::new();
     };
     // `TERM_PROGRAM` names a bundle, extension and all: iTerm2 sets
-    // `iTerm.app`. Folding keeps every letter, so the extension
+    // `iTerm.app`. `folded` keeps every letter, so the extension
     // survives it as `itermapp` -- which is inside neither the
     // application's own name, `iterm2`, nor its bundle identifier,
-    // `comgooglecodeiterm2`. The containment test then fails in
+    // `comgooglecodeiterm2`. The `names_agree` containment test then fails in
     // both directions and every window of the emulator is passed
     // over, leaving whichever application stands in front to be
     // taken for the terminal.
@@ -797,7 +797,7 @@ fn frontmost_window<'a>(
     displays: &[Display],
     text_pixels: (u16, u16),
 ) -> Option<&'a Listed> {
-    // Each candidate is scored against the scale of the display it
+    // `score` compares each `Listed` candidate against the `backing_scale` of the display it
     // stands on rather than one scale for all of them, since a
     // machine with a Retina panel and an external monitor is
     // carrying both at once.
@@ -847,14 +847,14 @@ fn ancestor_pids() -> HashSet<i32> {
     let mut pids = HashSet::new();
     let mut current = Pid::from_u32(std::process::id());
     // A cycle in the parent chain would spin here forever, so a pid
-    // already seen ends the walk as surely as a missing parent does.
+    // already in `pids` ends the walk as surely as a missing parent does.
     while let Ok(pid) = i32::try_from(current.as_u32()) {
         if !pids.insert(pid) {
             break;
         }
         // sysinfo leaves the parent unset for a process it cannot
         // read, and `/usr/bin/login` between the emulator and the
-        // shell is exactly that -- so the kernel answers where the
+        // shell is exactly that -- so `process::kernel_parent` answers where the
         // scan will not, or the walk never reaches the emulator
         // whose window this capture is about.
         match system

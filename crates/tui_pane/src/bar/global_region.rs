@@ -37,7 +37,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     for slot in keymap.render_framework_globals_slots() {
-        // NextPane / PrevPane render in the nav region's pane-cycle
+        // `GlobalAction::NextPane` / `GlobalAction::PrevPane` render in the nav region's pane-cycle
         // row — drop them here so they don't render twice.
         if matches!(
             framework_action_for_label(slot.label),

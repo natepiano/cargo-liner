@@ -386,7 +386,7 @@ mod tests {
         )
     }
 
-    // ── Per-region rule fixture ──────────────────────────────────────────
+    // `navigable_mode_renders_every_region` and the following tests exercise region suppression.
 
     #[test]
     fn navigable_mode_renders_every_region() {
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn unregistered_pane_id_renders_empty_bar() {
-        // Nothing registered; the focus is on `Foo` but no scope answers
+        // Nothing registered; the focus is on `TestPaneId::Foo` but no scope answers
         // `mode_queries`, so `focused_pane_mode` returns `None`.
         let app = fresh_app(FocusedPane::App(TestPaneId::Foo));
         let keymap: Keymap<TestApp> = Keymap::new(None);
@@ -457,7 +457,7 @@ mod tests {
         assert!(bar.is_empty(), "None mode → empty bar (got {bar:?})");
     }
 
-    // ── Framework overlay panes ──────────────────────────────────────────
+    // `keymap_browse_renders_pane_actions_and_globals` and the following tests exercise overlays.
 
     #[test]
     fn keymap_browse_renders_pane_actions_and_globals() {
@@ -481,9 +481,9 @@ mod tests {
             "got pane_action={pane_action:?}"
         );
         assert!(!global.is_empty(), "Keymap Browse must show globals");
-        // Nav region: pane-cycle row from framework globals (NextPane/PrevPane)
-        // — even though no app pane is in focus, the cycle row resolves
-        // through the framework_globals scope.
+        // Nav region: pane-cycle row from `crate::GlobalAction::NextPane` /
+        // `crate::GlobalAction::PrevPane` — even though no app pane is in focus, the cycle
+        // row resolves through the `Keymap::framework_globals` scope.
         assert!(
             !nav.is_empty(),
             "Keymap Browse must show pane-cycle / nav row"
@@ -495,7 +495,7 @@ mod tests {
         let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
         let keymap = build_keymap_with_foo(&mut app.framework);
         app.framework_mut().dispatch_global_for_test_open_keymap();
-        // Replace the framework's keymap pane with one in Awaiting.
+        // Replace `app.framework_mut().keymap_pane` with one in Awaiting.
         app.framework_mut().keymap_pane =
             KeymapPane::for_test_awaiting(Some(PathBuf::from("/tmp/keys.toml")));
         let focused = *app.framework().focused();
@@ -559,7 +559,7 @@ mod tests {
         );
     }
 
-    // ── Focused Toasts ───────────────────────────────────────────────────
+    // `focused_toasts_renders_nav_pane_actions_and_globals` checks focused Toasts.
 
     #[test]
     fn focused_toasts_renders_nav_pane_actions_and_globals() {
@@ -594,8 +594,8 @@ mod tests {
             app.framework(),
         );
         let nav = flatten(&bar.nav);
-        // Default nav binds Up/Down to KeyCode::Up/Down → renders as ↑ /
-        // ↓ via `display_short`. The pane-cycle row uses Tab.
+        // Default nav binds `NavAction::Up`/`NavAction::Down` to `KeyCode::Up`/`KeyCode::Down` →
+        // renders as ↑ / ↓ via `display_short`. The pane-cycle row uses Tab.
         assert!(
             nav.contains('↑'),
             "default nav must show ↑ glyph (got {nav:?})"
@@ -606,7 +606,7 @@ mod tests {
         );
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
+    // `Framework<TestApp>` helpers install overlays for the bar tests.
 
     impl Framework<TestApp> {
         fn dispatch_global_for_test_open_keymap(&mut self) {
