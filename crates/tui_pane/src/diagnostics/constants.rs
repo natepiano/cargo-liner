@@ -1,12 +1,12 @@
 //! Domain strings for the diagnostics module's perf log.
 
-// perf log
+// `DEFAULT_PERF_LOG_FILTER`, `PERF_LOG_ENV`, and `PERF_LOG_TARGET` configure performance logging.
 pub(super) const DEFAULT_PERF_LOG_FILTER: &str = "info";
 pub(super) const PERF_LOG_ENV: &str = "TUI_PANE_LOG";
 /// Tracing target used for framework performance diagnostics.
 pub const PERF_LOG_TARGET: &str = "tui_pane::perf";
 
-// tui_pane src diagnostics cpu
+// `CPU_SMOOTHING_WINDOW_POLLS` and the following constants configure CPU/GPU sampling.
 /// How many poll samples a [`crate::diagnostics::RollingMean`] window averages.
 ///
 /// A workload running in ~1 s bursts aliases against a 1 s poll cadence
@@ -35,7 +35,7 @@ pub(super) const PDH_MORE_DATA: u32 = 0x8000_07D2;
 pub(super) const PDH_SUCCESS: u32 = 0x0000_0000;
 pub(super) const PERCENT_PER_CELL: usize = 10;
 
-// tui_pane src diagnostics perf_log
+// `SLOW_BG_BATCH_MS` and the following constants set performance-log thresholds.
 /// Background-message batch processing exceeding this is logged (ms).
 pub const SLOW_BG_BATCH_MS: u128 = 50;
 /// Frame paint exceeding this is logged as a slow frame (ms).
