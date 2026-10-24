@@ -45,10 +45,10 @@ pub(super) fn render_toast(
 
     let focused = focus == ToastFocus::PaneFocusedOn(toast.id());
     let toast_style = toast.style();
-    // Error and warning toasts keep the safety-pinned palette so they
-    // stay legible under any user theme. Plain (info) toasts mirror
-    // `default_pane_chrome` so their border and title match the
-    // framework pane chrome.
+    // `ToastStyle::Error` and `ToastStyle::Warning` keep the safety-pinned
+    // `fallback_toast_palette` so they stay legible under any user theme.
+    // Plain (info) `ToastStyle::Normal` toasts mirror `crate::default_pane_chrome`
+    // so their border and title match the framework pane chrome.
     let border_style = match toast_style {
         ToastStyle::Error => Style::default().fg(palette.error),
         ToastStyle::Success => Style::default().fg(palette.success),

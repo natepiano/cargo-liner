@@ -897,10 +897,10 @@ mod tests {
 
     #[test]
     fn fallback_toast_palette_is_pinned_to_safe_defaults() {
-        // Locks the safety-pinned toast colors against drift. Plain
-        // (info) toast borders and titles read from the active theme
-        // (see `default_pane_chrome`); only the always-legible error
-        // and warning colors live here.
+        // Locks `fallback_toast_palette`'s safety-pinned colors against drift.
+        // Plain (info) `crate::toasts::ToastStyle::Normal` borders and titles
+        // read the active theme (see `crate::default_pane_chrome`); only the
+        // always-legible error and warning colors live here.
         let p = fallback_toast_palette();
         assert_eq!(p.accent, Color::Cyan);
         assert_eq!(p.error, Color::Red);
