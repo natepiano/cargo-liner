@@ -87,7 +87,7 @@ impl CpuMonitor {
 
 impl Drop for CpuMonitor {
     fn drop(&mut self) {
-        // Wake the worker out of its timed wait so the join is prompt;
+        // `self.stop_sender` wakes the worker out of its timed wait so the join is prompt;
         // a closed channel (worker already exited) is fine to ignore.
         let _ = self.stop_sender.send(());
         if let Some(handle) = self.handle.take() {
@@ -106,8 +106,9 @@ fn cpu_poll_loop(
     stop: &Receiver<()>,
     interval: Duration,
 ) {
-    // `recv_timeout` returns `Timeout` each interval (sample and forward);
-    // `Ok`/`Disconnected` means stop was signaled or the monitor dropped.
+    // `stop.recv_timeout(interval)` returns `RecvTimeoutError::Timeout` each interval (sample and
+    // forward); `Ok`/`RecvTimeoutError::Disconnected` means stop was signaled or the monitor
+    // dropped.
     while stop.recv_timeout(interval) == Err(RecvTimeoutError::Timeout) {
         if samples.send(poller.poll()).is_err() {
             break;
@@ -121,10 +122,12 @@ mod tests {
 
     #[test]
     fn spawned_monitor_reports_sampling_with_a_connected_receiver() {
-        // The event loop gates `Select` registration on `is_sampling()`.
-        // A spawned worker holds the sample sender for the monitor's life,
-        // so the receiver is connected (try_recv is Empty, not
-        // Disconnected) and registering it will not busy-spin.
+        // The event loop gates `crossbeam_channel::Select` registration on
+        // `CpuMonitor::is_sampling`. A spawned worker holds the sample sender for the
+        // monitor's life, so `CpuMonitor::receiver` stays connected (`try_recv` returns
+        // `crossbeam_channel::TryRecvError::Empty`,
+        // not `crossbeam_channel::TryRecvError::Disconnected`) and registering it will not
+        // busy-spin.
         let monitor = CpuMonitor::new(1000);
         assert!(monitor.is_sampling());
         assert!(matches!(
