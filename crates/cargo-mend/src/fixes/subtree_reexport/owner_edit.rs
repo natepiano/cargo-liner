@@ -62,9 +62,15 @@ struct UsedLeaf<'a> {
 }
 
 /// What one edited `use` item becomes.
-struct ItemRewrite {
-    range:  Range<usize>,
-    pieces: Vec<String>,
+enum ItemRewrite {
+    Delete {
+        range: Range<usize>,
+    },
+    Replace {
+        range: Range<usize>,
+        first: String,
+        rest:  Vec<String>,
+    },
 }
 
 /// Removes every fact's re-export from the owner module in `file` (all facts
@@ -208,26 +214,32 @@ fn edit_region(
 
     let delete_module = emptied == EmptiedOwner::Delete
         && region_items.len() == rewrites.len()
-        && rewrites.iter().all(|rewrite| rewrite.pieces.is_empty());
+        && rewrites
+            .iter()
+            .all(|rewrite| matches!(rewrite, ItemRewrite::Delete { .. }));
     if let Some(item_mod) = enclosing.filter(|_| delete_module) {
         let range = lines.offset(item_mod.span().start())..lines.offset(item_mod.span().end());
         return Ok(vec![facade_redirect::line_deletion(file, source, range)]);
     }
     Ok(rewrites
         .into_iter()
-        .map(|rewrite| {
-            if rewrite.pieces.is_empty() {
-                facade_redirect::line_deletion(file, source, rewrite.range)
-            } else {
-                let separator = format!("\n{}", lines.indent_before(rewrite.range.start));
+        .map(|rewrite| match rewrite {
+            ItemRewrite::Delete { range } => facade_redirect::line_deletion(file, source, range),
+            ItemRewrite::Replace { range, first, rest } => {
+                let separator = format!("\n{}", lines.indent_before(range.start));
+                let mut replacement = first;
+                for piece in rest {
+                    replacement.push_str(&separator);
+                    replacement.push_str(&piece);
+                }
                 UseFix {
-                    path:         file.to_path_buf(),
-                    start:        rewrite.range.start,
-                    end:          rewrite.range.end,
-                    replacement:  rewrite.pieces.join(&separator),
+                    path: file.to_path_buf(),
+                    start: range.start,
+                    end: range.end,
+                    replacement,
                     import_group: None,
                 }
-            }
+            },
         })
         .collect())
 }
@@ -277,10 +289,16 @@ fn rewrite_item(
         };
         pieces.push(format!("{attributes}{gate}use {};", leaf.written_path));
     }
-    ItemRewrite {
-        range: start..end,
-        pieces,
-    }
+    let mut pieces = pieces.into_iter();
+    pieces
+        .next()
+        .map_or(ItemRewrite::Delete { range: start..end }, |first| {
+            ItemRewrite::Replace {
+                range: start..end,
+                first,
+                rest: pieces.collect(),
+            }
+        })
 }
 
 /// Finds the `use` item whose byte range holds the fact's position, and checks
@@ -451,6 +469,31 @@ mod tests {
             text.replace_range(fix.start..fix.end, &fix.replacement);
         }
         text
+    }
+
+    #[test]
+    fn replacing_multiple_locally_used_leaves_preserves_piece_order_and_indent() {
+        assert_eq!(
+            edited(
+                concat!(
+                    "mod panel {\n",
+                    "    pub use crate::source::{Widget, Other};\n",
+                    "    fn f(_: Widget, _: Other) {}\n",
+                    "}\n",
+                ),
+                &[
+                    fact(2, 5, "Widget", "panel", ModuleForm::Inline),
+                    fact(2, 5, "Other", "panel", ModuleForm::Inline)
+                ]
+            ),
+            concat!(
+                "mod panel {\n",
+                "    use crate::source::Widget;\n",
+                "    use crate::source::Other;\n",
+                "    fn f(_: Widget, _: Other) {}\n",
+                "}\n",
+            )
+        );
     }
 
     #[test]

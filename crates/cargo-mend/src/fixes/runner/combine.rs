@@ -122,15 +122,54 @@ fn subtree_reexport_ranges(fix_scans: FixScans<'_>) -> Vec<FileRange<'_>> {
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum FixOverlap {
+    Overlapping,
+    Clear,
+}
+
+impl FixOverlap {
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
+        if overlaps_any(fix, ranges) {
+            Self::Overlapping
+        } else {
+            Self::Clear
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MovedUseRelation {
+    Inside,
+    Outside,
+}
+
+impl MovedUseRelation {
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
+        if lies_inside_any(fix, ranges) {
+            Self::Inside
+        } else {
+            Self::Outside
+        }
+    }
+}
+
 /// Drops every fix that overlaps one of `ranges`, together with every fix
 /// sharing an `ImportGroup` with a dropped one: a `use` rewrite kept without
 /// its call-site rewrites, or an in-body `use` deleted without its insertion at
 /// the scope top, would not compile. An insertion at `k` overlaps `[s, e)` only
 /// when `s < k < e`.
 fn fixes_clear_of_ranges(fixes: Vec<TaggedFix>, ranges: &[FileRange<'_>]) -> Vec<TaggedFix> {
-    let overlapped_groups: BTreeSet<(PathBuf, String, String)> = fixes
+    let classified: Vec<_> = fixes
+        .into_iter()
+        .map(|tagged| (FixOverlap::for_fix(&tagged.fix, ranges), tagged))
+        .collect();
+    let overlapped_groups: BTreeSet<(PathBuf, String, String)> = classified
         .iter()
-        .filter(|tagged| overlaps_any(&tagged.fix, ranges))
+        .filter_map(|(overlap, tagged)| match overlap {
+            FixOverlap::Overlapping => Some(tagged),
+            FixOverlap::Clear => None,
+        })
         .filter_map(|tagged| {
             tagged.fix.import_group.as_ref().map(|group| {
                 (
@@ -141,17 +180,20 @@ fn fixes_clear_of_ranges(fixes: Vec<TaggedFix>, ranges: &[FileRange<'_>]) -> Vec
             })
         })
         .collect();
-    fixes
+    classified
         .into_iter()
-        .filter(|tagged| {
-            !overlaps_any(&tagged.fix, ranges)
-                && tagged.fix.import_group.as_ref().is_none_or(|group| {
+        .filter_map(|(overlap, tagged)| match overlap {
+            FixOverlap::Overlapping => None,
+            FixOverlap::Clear => {
+                let group_clear = tagged.fix.import_group.as_ref().is_none_or(|group| {
                     !overlapped_groups.contains(&(
                         tagged.fix.path.clone(),
                         group.bare_name.clone(),
                         group.full_path.clone(),
                     ))
-                })
+                });
+                group_clear.then_some(tagged)
+            },
         })
         .collect()
 }
@@ -192,10 +234,17 @@ fn module_import_fixes_outside_moved_uses<'a>(
     scan: &'a PreferModuleImportScan,
     moved_use_ranges: &[FileRange<'_>],
 ) -> Vec<&'a UseFix> {
-    let moved_groups: BTreeSet<(&Path, &str, &str)> = scan
+    let classified: Vec<_> = scan
         .fixes
         .iter()
-        .filter(|fix| lies_inside_any(fix, moved_use_ranges))
+        .map(|fix| (MovedUseRelation::for_fix(fix, moved_use_ranges), fix))
+        .collect();
+    let moved_groups: BTreeSet<(&Path, &str, &str)> = classified
+        .iter()
+        .filter_map(|(relation, fix)| match relation {
+            MovedUseRelation::Inside => Some(*fix),
+            MovedUseRelation::Outside => None,
+        })
         .filter_map(|fix| {
             fix.import_group.as_ref().map(|group| {
                 (
@@ -206,17 +255,20 @@ fn module_import_fixes_outside_moved_uses<'a>(
             })
         })
         .collect();
-    scan.fixes
-        .iter()
-        .filter(|fix| {
-            !lies_inside_any(fix, moved_use_ranges)
-                && fix.import_group.as_ref().is_none_or(|group| {
+    classified
+        .into_iter()
+        .filter_map(|(relation, fix)| match relation {
+            MovedUseRelation::Inside => None,
+            MovedUseRelation::Outside => {
+                let group_clear = fix.import_group.as_ref().is_none_or(|group| {
                     !moved_groups.contains(&(
                         fix.path.as_path(),
                         group.bare_name.as_str(),
                         group.full_path.as_str(),
                     ))
-                })
+                });
+                group_clear.then_some(fix)
+            },
         })
         .collect()
 }
@@ -447,6 +499,23 @@ mod tests {
 
     fn replacements(fixes: &ValidatedFixSet) -> Vec<&str> {
         fixes.iter().map(|fix| fix.replacement.as_str()).collect()
+    }
+
+    #[test]
+    fn overlap_filter_keeps_insertions_at_both_range_boundaries() {
+        let fixes = [10, 15, 20].map(|offset| TaggedFix {
+            fix_kind: None,
+            fix:      untagged("src/lib.rs", offset, "insert"),
+        });
+        let ranges = [(std::path::Path::new("src/lib.rs"), 10, 20)];
+        let remaining = super::fixes_clear_of_ranges(Vec::from(fixes), &ranges);
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|tagged| tagged.fix.start)
+                .collect::<Vec<_>>(),
+            [10, 20]
+        );
     }
 
     #[test]
