@@ -40,10 +40,6 @@ impl PathAnchor {
     pub(crate) const fn is_crate_relative(self) -> bool {
         matches!(self, Self::Crate | Self::Super)
     }
-
-    pub(crate) const fn is_explicit_self(self) -> bool {
-        matches!(self, Self::SelfMod | Self::SelfType)
-    }
 }
 
 impl From<&str> for PathAnchor {
