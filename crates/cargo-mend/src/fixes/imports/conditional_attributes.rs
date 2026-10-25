@@ -278,7 +278,8 @@ mod tests {
 
     #[test]
     fn nested_cfg_attr_keeps_only_gating_attributes_and_predicates() {
-        let source = "#[cfg_attr(feature = \"x\", allow(dead_code), cfg_attr(test, cfg(unix), inline), cfg(windows))]\nfn f() {}";
+        let source = "#[cfg_attr(feature = \"x\", allow(dead_code), \
+                      cfg_attr(test, cfg(unix), inline), cfg(windows))]\nfn f() {}";
         assert_eq!(
             gates(source),
             (
