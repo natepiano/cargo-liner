@@ -172,7 +172,7 @@ fn exact_boundary_narrowing(
         return ExactBoundaryNarrowing::NotRequired;
     };
     match required.boundary() {
-        ReachBoundary::Module => ExactBoundaryNarrowing::Required,
+        ReachBoundary::Module(_) => ExactBoundaryNarrowing::Required,
         ReachBoundary::Everywhere | ReachBoundary::CrateRoot => ExactBoundaryNarrowing::NotRequired,
     }
 }
