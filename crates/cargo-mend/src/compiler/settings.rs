@@ -115,6 +115,7 @@ mod tests {
     use anyhow::anyhow;
     use tempfile::tempdir;
 
+    use crate::compiler::constants::ANALYZING_DIR_NAME;
     use crate::config::VisibilityConfig;
 
     #[test]
@@ -143,7 +144,7 @@ mod tests {
             visibility_config:    VisibilityConfig::default(),
             config_fingerprint:   "test".to_string(),
             scope_fingerprint:    "scope".to_string(),
-            analyzing_dir:        PathBuf::from("/workspace/root/target/mend-analyzing"),
+            analyzing_dir:        PathBuf::from("/workspace/root/target").join(ANALYZING_DIR_NAME),
             package_root:         PathBuf::from("/workspace/root/mcp"),
             analysis_fingerprint: super::current_analysis_fingerprint(),
         };
@@ -170,7 +171,10 @@ mod tests {
             visibility_config: VisibilityConfig::default(),
             config_fingerprint: "test".to_string(),
             scope_fingerprint: "scope".to_string(),
-            analyzing_dir: temp.path().join("workspace/target/mend-analyzing"),
+            analyzing_dir: temp
+                .path()
+                .join("workspace/target")
+                .join(ANALYZING_DIR_NAME),
             package_root,
             analysis_fingerprint: super::current_analysis_fingerprint(),
         };
