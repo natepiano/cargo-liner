@@ -35,20 +35,9 @@ pub(super) fn analyze_use_tree(
         return None;
     }
 
-    let current_len = current_module_path.len();
-    let common = common_prefix_len(current_module_path, target_segments);
-    if common == 0 {
-        return None;
-    }
-    let up_count = current_len.saturating_sub(common);
-    if up_count > 1 {
-        return None;
-    }
-
-    let relative = build_relative_path(current_module_path, target_segments, &import)?;
-    if relative == import.original
-        || !(relative.starts_with("super::") || target_segments.starts_with(current_module_path))
-    {
+    let relation = LocalImportRelation::for_paths(current_module_path, target_segments);
+    let relative = relation.render(import.rename.as_deref())?;
+    if relative == import.original {
         return None;
     }
 
@@ -121,22 +110,42 @@ fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
     }
 }
 
-fn build_relative_path(
-    current_module_path: &[String],
-    target_segments: &[String],
-    import: &FlattenedImport,
-) -> Option<String> {
-    let common = common_prefix_len(current_module_path, target_segments);
-    let up_count = current_module_path.len().saturating_sub(common);
-    let mut relative_segments = Vec::new();
-    if up_count > 1 {
-        return None;
+/// Local boundaries within which a crate-qualified import can be shortened.
+enum LocalImportRelation<'a> {
+    Descendant { suffix: &'a [String] },
+    ParentSibling { suffix: &'a [String] },
+    OutsideBoundary,
+}
+
+impl<'a> LocalImportRelation<'a> {
+    fn for_paths(current: &[String], target: &'a [String]) -> Self {
+        let common = common_prefix_len(current, target);
+        if common == 0 {
+            return Self::OutsideBoundary;
+        }
+        match current.len().saturating_sub(common) {
+            0 => Self::Descendant {
+                suffix: &target[common..],
+            },
+            1 if common < target.len() => Self::ParentSibling {
+                suffix: &target[common..],
+            },
+            _ => Self::OutsideBoundary,
+        }
     }
-    if up_count == 1 {
-        relative_segments.push("super".to_string());
+
+    fn render(&self, rename: Option<&str>) -> Option<String> {
+        match self {
+            Self::Descendant { suffix } => Some(format_path(suffix, rename)),
+            Self::ParentSibling { suffix } => {
+                let segments = std::iter::once("super".to_string())
+                    .chain(suffix.iter().cloned())
+                    .collect::<Vec<_>>();
+                Some(format_path(&segments, rename))
+            },
+            Self::OutsideBoundary => None,
+        }
     }
-    relative_segments.extend(target_segments[common..].iter().cloned());
-    Some(format_path(&relative_segments, import.rename.as_deref()))
 }
 
 fn common_prefix_len(left: &[String], right: &[String]) -> usize {
@@ -171,4 +180,52 @@ pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
         .copied()
         .unwrap_or(0)
         + position.column
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use syn::ItemUse;
+
+    use super::analyze_use_tree;
+
+    fn module(path: &str) -> Vec<String> {
+        path.split("::")
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn local_imports_shorten_only_within_the_local_boundary() {
+        for (current, source, expected) in [
+            ("a", "use crate::a::b::Item;", Some("b::Item")),
+            (
+                "a::c",
+                "use crate::a::b::Item as Alias;",
+                Some("super::b::Item as Alias"),
+            ),
+            ("a::b", "use crate::a::b;", Some("")),
+            ("a::b::c", "use crate::a::b;", None),
+            ("a::b::c", "use crate::a::b as Parent;", None),
+            ("a::b::c", "use crate::a::Item;", None),
+            ("a", "use crate::x::Item;", None),
+            ("", "use crate::a::Item;", None),
+            ("a", "use crate::a;", None),
+            ("a", "use self::b::Item;", None),
+            ("a", "use crate::a::{First, Second};", None),
+        ] {
+            let item: ItemUse = syn::parse_str(source).expect("parse use");
+            assert_eq!(
+                analyze_use_tree(&module(current), &item.tree)
+                    .map(|candidate| candidate.replacement)
+                    .as_deref(),
+                expected,
+                "{current}: {source}"
+            );
+        }
+    }
 }
