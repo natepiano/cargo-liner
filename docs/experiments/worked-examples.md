@@ -199,7 +199,7 @@ The subject hook would show the instruction-loss finding before a reset-policy c
 
 This is a proposed protocol, not authority to run it. Its name is `history-site-startup-v1`. Its purpose is `framework_exercise`. The user chooses the first live study. This choice remains open in the framework's closing questions.
 
-The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. Registration must retain the later instruction that approves execution and its operator.
+The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. Registration must retain the request that starts execution and names its operator.
 
 The exercise checks registration, pair launch, receipts, condition rules, scoring, analysis, and result lookup. It uses an existing read-only command. No inspected source establishes a recurring report that uses sealed snapshots. This exercise therefore makes no production claim.
 
@@ -207,7 +207,7 @@ Subject: `process/history-command`, `~/.claude/commands/history.md`, and `~/.cla
 
 The proposed B adds `-S`. This option disables automatic `import site` at initialization. Source: `/run/current-system/sw/bin/python3`, `--help`, read on 2026-10-20. Retain the selected interpreter's help and version at registration. No speed or correctness result exists for B.
 
-The budget is 1,800 command wall seconds and 60 operator minutes within 28 calendar days. There are no model calls, reviewer calls, builds, tests, installations, holds, or Mac jobs. Tool implementation is separate work with its own approval. This budget buys evidence about the framework. It does not buy expected production savings.
+The study uses no model calls, reviewer calls, builds, tests, installations, holds, or Mac jobs. Tool implementation is separate work. The study gives evidence about the framework, not expected production savings.
 
 ### Question, claim, and commands
 
@@ -240,7 +240,7 @@ Each arm starts a new interpreter process. The program reads sealed data and ret
 
 The dependency group is the natedev UTC date. The analysis assumes residual timing errors are independent across selected dates after these controls. A date alone does not prove independence. A new shared dependency, persistent competing timing job, or tool change stops the study as `not_proven`. Do not remove selected dates after reading their differences. The exercise cannot establish general workload coverage from one fixed input.
 
-### Order, conditions, and budget limits
+### Order, conditions, and stop rules
 
 For A/A, run A twice per pair. Measure signed first-minus-second differences. For A/B, use this fixed order:
 
@@ -262,7 +262,7 @@ Use the framework section 6 failure table without exceptions:
 
 Allow at most two environmental replacement pairs in all. Preserve every collected arm and any prevented arm. Use the same order on the next eligible date. A source or runtime change is terminal, not replaceable. If missing evidence prevents proof of an environmental cause, do not use the replacement allowance.
 
-The target is eight valid A/A pairs and twelve valid A/B pairs. The deadline is 28 calendar days after registration. Each command has a 30-second timeout. Confirm that the timed-out process and its children ended before any later work. Reserve 60 command seconds before a pair launch. The total limit is 1,800 command wall seconds, including invalid attempts. Record active operator start and finish times for setup, import, scoring, recovery, and reporting. Count them against the 60 operator minutes. Exclude idle time. Stop at either exhausted budget or the deadline. Do not extend the study to obtain a preferred result.
+The target is eight valid A/A pairs and twelve valid A/B pairs. The deadline is 28 calendar days after registration. Each command has a 30-second timeout. Confirm that the timed-out process and its children ended before any later work. Stop at the deadline. Do not extend the study to obtain a preferred result.
 
 ### Completion and score gate
 
@@ -282,7 +282,7 @@ Use the framework's paired median and exact 95% order-statistic interval. Define
 
 For twelve A/B pairs, the interval uses the third and tenth sorted differences. Set `T = max(0.010, N)` seconds. Report whether the lower bound exceeds T. Require complete receipts, conditions, and score gates for that calculation. Report all pairs and losses. A secondary cost limit rejects B if any valid B command exceeds its paired A time by more than 0.050 seconds.
 
-The exercise succeeds as a procedure check when all registered steps produce complete, traceable records within budget. It need not show a faster B. Report that procedural outcome separately from the effect and interval. An incomplete exercise records which step failed and its evidence.
+The exercise succeeds as a procedure check when all registered steps produce complete, traceable records. It need not show a faster B. Report that procedural outcome separately from the effect and interval. An incomplete exercise records which step failed and its evidence.
 
 The record's production-gain decision is `not_proven`, even if the narrow timing threshold passes. A confirmed B correctness or cost failure instead gives `rejected`. Set `live_check` to `not_claimed`, frequency coverage to `not_required`, and adoption plan to `not_permitted`. Do not compute weekly savings. No recurring report or usage count is established by this protocol.
 
