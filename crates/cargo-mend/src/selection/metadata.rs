@@ -92,6 +92,34 @@ pub(crate) struct TargetMetadata {
     pub test:              TargetSupport,
 }
 
+enum SelectionManifest<'a> {
+    Workspace,
+    Package(&'a Package),
+}
+
+impl<'a> SelectionManifest<'a> {
+    fn resolve(
+        metadata: &'a Metadata,
+        manifest_path: &Path,
+        manifest_is_workspace_root: bool,
+    ) -> Result<Self> {
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.manifest_path.as_std_path() == manifest_path);
+        if manifest_is_workspace_root && (package.is_none() || metadata.workspace_members.len() > 1)
+        {
+            return Ok(Self::Workspace);
+        }
+        package.map(Self::Package).with_context(|| {
+            format!(
+                "manifest {} not found in cargo metadata",
+                manifest_path.display()
+            )
+        })
+    }
+}
+
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = explicit_manifest_path.map_or_else(
         || find_nearest_manifest(&env::current_dir()?),
@@ -107,38 +135,25 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .to_path_buf();
     let workspace_manifest = workspace_root.join("Cargo.toml");
     let manifest_is_workspace_root = manifest_path == workspace_manifest;
-    let manifest_matches_package = metadata
-        .packages
-        .iter()
-        .any(|pkg| pkg.manifest_path.as_std_path() == manifest_path);
-    let scope = if manifest_is_workspace_root
-        && (!manifest_matches_package || metadata.workspace_members.len() > 1)
-    {
-        SelectionScope::Workspace
-    } else {
-        SelectionScope::SinglePackage
+    let manifest =
+        SelectionManifest::resolve(&metadata, &manifest_path, manifest_is_workspace_root)?;
+    let (scope, selected_packages, analysis_root): (_, Vec<&Package>, _) = match manifest {
+        SelectionManifest::Workspace => (
+            SelectionScope::Workspace,
+            metadata
+                .workspace_members
+                .iter()
+                .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
+                .collect(),
+            workspace_root.clone(),
+        ),
+        SelectionManifest::Package(package) => (
+            SelectionScope::SinglePackage,
+            vec![package],
+            manifest_dir.clone(),
+        ),
     };
 
-    let selected_packages: Vec<&Package> = match scope {
-        SelectionScope::Workspace => metadata
-            .workspace_members
-            .iter()
-            .filter_map(|id| metadata.packages.iter().find(|pkg| &pkg.id == id))
-            .collect(),
-        SelectionScope::SinglePackage => {
-            let package = metadata
-                .packages
-                .iter()
-                .find(|pkg| pkg.manifest_path.as_std_path() == manifest_path)
-                .with_context(|| {
-                    format!(
-                        "manifest {} not found in cargo metadata",
-                        manifest_path.display()
-                    )
-                })?;
-            vec![package]
-        },
-    };
     let package_roots = selected_packages
         .iter()
         .copied()
@@ -148,11 +163,6 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .into_iter()
         .map(package_metadata_from_cargo)
         .collect::<Result<Vec<_>>>()?;
-
-    let analysis_root = match scope {
-        SelectionScope::Workspace => workspace_root.clone(),
-        SelectionScope::SinglePackage => manifest_dir.clone(),
-    };
 
     Ok(Selection {
         manifest_path,
@@ -542,5 +552,42 @@ mod tests {
                 .unwrap_or_else(|error| panic!("canonicalize manifest: {error}"))
         );
         assert_eq!(selection.scope, SelectionScope::SinglePackage);
+    }
+    #[test]
+    fn root_package_with_members_selects_workspace_but_member_selects_package() {
+        let temp = tempdir().unwrap_or_else(|error| panic!("create fixture: {error}"));
+        for dir in ["src", "member/src"] {
+            fs::create_dir_all(temp.path().join(dir))
+                .unwrap_or_else(|error| panic!("create source directory: {error}"));
+            fs::write(temp.path().join(dir).join("lib.rs"), "")
+                .unwrap_or_else(|error| panic!("write source: {error}"));
+        }
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            concat!(
+                "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n",
+                "[package]\nname = \"root_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("write root manifest: {error}"));
+        fs::write(
+            temp.path().join("member/Cargo.toml"),
+            concat!(
+                "[package]\nname = \"member_fixture\"\n",
+                "version = \"0.1.0\"\nedition = \"2024\"\n",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("write member manifest: {error}"));
+        let root = resolve_cargo_selection(Some(temp.path()))
+            .unwrap_or_else(|error| panic!("resolve workspace: {error}"));
+        assert_eq!(root.scope, SelectionScope::Workspace);
+        assert_eq!(root.packages.len(), 2);
+        assert_eq!(root.analysis_root, root.workspace_root);
+        let member = resolve_cargo_selection(Some(&temp.path().join("member")))
+            .unwrap_or_else(|error| panic!("resolve member: {error}"));
+        assert_eq!(member.scope, SelectionScope::SinglePackage);
+        assert_eq!(member.packages.len(), 1);
+        assert_eq!(member.analysis_root, member.manifest_dir);
+        assert_eq!(member.packages[0].root, member.manifest_dir);
     }
 }

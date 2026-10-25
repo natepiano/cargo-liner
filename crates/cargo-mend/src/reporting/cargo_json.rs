@@ -107,6 +107,67 @@ struct BuildFinished {
     success: BuildOutcome,
 }
 
+enum FindingAnnotation<'a> {
+    Note(&'a str),
+    InlineHelp(&'a str),
+    FixabilityHelp(&'static str),
+}
+
+struct FindingAnnotations<'a>(Vec<FindingAnnotation<'a>>);
+
+impl<'a> From<&'a Finding> for FindingAnnotations<'a> {
+    fn from(finding: &'a Finding) -> Self {
+        let mut entries = Vec::new();
+        if let Some(message) = diagnostics::finding_message_not_in_headline(finding) {
+            entries.push(FindingAnnotation::Note(message));
+        }
+        if let Some(related) = &finding.related {
+            entries.push(FindingAnnotation::Note(related));
+        }
+        if let Some(help) = diagnostics::resolved_inline_help_text(finding) {
+            entries.push(FindingAnnotation::InlineHelp(help));
+        }
+        if let Some(note) = diagnostics::fixability_note(finding) {
+            entries.push(FindingAnnotation::FixabilityHelp(note));
+        }
+        Self(entries)
+    }
+}
+
+enum FindingPath<'a> {
+    Absolute(&'a Path),
+    Relative(&'a Path),
+}
+
+impl<'a> From<&'a str> for FindingPath<'a> {
+    fn from(spelling: &'a str) -> Self {
+        let path = Path::new(spelling);
+        if path.is_absolute() {
+            Self::Absolute(path)
+        } else {
+            Self::Relative(path)
+        }
+    }
+}
+
+impl FindingPath<'_> {
+    fn absolute(&self, analysis_root: &Path) -> PathBuf {
+        match self {
+            Self::Absolute(path) => path.to_path_buf(),
+            Self::Relative(path) => analysis_root.join(path),
+        }
+    }
+
+    fn display(&self, spelling: &str, analysis_root: &Path) -> String {
+        match self {
+            Self::Absolute(path) => path
+                .strip_prefix(analysis_root)
+                .map_or_else(|_| spelling.to_string(), normalize_path),
+            Self::Relative(_) => spelling.to_string(),
+        }
+    }
+}
+
 pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<String> {
     let mut output = String::new();
     for finding in &report.findings {
@@ -126,12 +187,14 @@ fn compiler_message<'a>(
     finding: &Finding,
     selection: &'a Selection,
 ) -> Result<CompilerMessage<'a>> {
-    let absolute_path = absolute_finding_path(finding, selection);
+    let path = FindingPath::from(finding.path.as_str());
+    let absolute_path = path.absolute(&selection.analysis_root);
     let package = package_for_path(selection, &absolute_path)
         .context("selection did not include packages")?;
     let target =
         target_for_path(package, &absolute_path).context("package did not include targets")?;
-    let span = rustc_span(finding, selection, &absolute_path);
+    let display_path = path.display(&finding.path, &selection.analysis_root);
+    let span = rustc_span(finding, display_path, &absolute_path);
     let message = rustc_diagnostic(finding, span);
 
     Ok(CompilerMessage {
@@ -144,27 +207,26 @@ fn compiler_message<'a>(
 }
 
 fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
-    let mut children = Vec::new();
-    if let Some(message) = diagnostics::finding_message_not_in_headline(finding) {
-        children.push(child(RUSTC_LEVEL_NOTE, message.to_string(), Vec::new()));
-    }
-    if let Some(related) = &finding.related {
-        children.push(child(RUSTC_LEVEL_NOTE, related.clone(), Vec::new()));
-    }
-    if let Some(help) = diagnostics::resolved_inline_help_text(finding) {
-        children.push(child(
-            RUSTC_LEVEL_HELP,
-            help.to_string(),
-            vec![span.clone()],
-        ));
-    }
-    if let Some(note) = diagnostics::fixability_note(finding) {
-        children.push(child(RUSTC_LEVEL_HELP, note.to_string(), Vec::new()));
-    }
+    let annotations = FindingAnnotations::from(finding);
+    let children = annotations
+        .0
+        .iter()
+        .map(|annotation| match annotation {
+            FindingAnnotation::Note(text) => {
+                child(RUSTC_LEVEL_NOTE, (*text).to_string(), Vec::new())
+            },
+            FindingAnnotation::InlineHelp(text) => {
+                child(RUSTC_LEVEL_HELP, (*text).to_string(), vec![span.clone()])
+            },
+            FindingAnnotation::FixabilityHelp(text) => {
+                child(RUSTC_LEVEL_HELP, (*text).to_string(), Vec::new())
+            },
+        })
+        .collect();
 
     let level = severity_level(diagnostics::effective_severity(finding));
     RustcDiagnostic {
-        rendered: render_diagnostic(finding, &span, level),
+        rendered: render_diagnostic(finding, &span, level, &annotations),
         message_type: CARGO_MESSAGE_TYPE_DIAGNOSTIC,
         children,
         level,
@@ -192,43 +254,58 @@ const fn child(
     }
 }
 
-fn render_diagnostic(finding: &Finding, span: &RustcSpan, level: &str) -> String {
+fn render_diagnostic(
+    finding: &Finding,
+    span: &RustcSpan,
+    level: &str,
+    annotations: &FindingAnnotations<'_>,
+) -> String {
     let line_label = finding.line.to_string();
     let gutter_width = line_label.len();
     let gutter_pad = " ".repeat(gutter_width + 1);
     let marker_pad = " ".repeat(span.column_start.saturating_sub(1));
     let marker_len = span.column_end.saturating_sub(span.column_start).max(1);
     let marker = "^".repeat(marker_len);
-    let inline_help = diagnostics::resolved_inline_help_text(finding)
-        .map_or_else(String::new, |help| format!(" help: {help}"));
+    let inline_help = annotations
+        .0
+        .iter()
+        .filter_map(|annotation| match annotation {
+            FindingAnnotation::InlineHelp(text) => Some(format!(" help: {text}")),
+            FindingAnnotation::Note(_) | FindingAnnotation::FixabilityHelp(_) => None,
+        })
+        .collect::<String>();
     let mut rendered = format!(
-        "{level}: {}\n --> {}:{}:{}\n{gutter_pad}|\n{line_label} | {}\n{gutter_pad}| {marker_pad}{marker}{inline_help}\n",
+        concat!(
+            "{level}: {}\n --> {}:{}:{}\n{gutter_pad}|\n{line_label} | {}\n",
+            "{gutter_pad}| {marker_pad}{marker}{inline_help}\n",
+        ),
         diagnostics::finding_headline(finding),
         span.file_name,
         finding.line,
         finding.column,
         finding.source_line,
+        gutter_pad = gutter_pad,
+        line_label = line_label,
+        marker_pad = marker_pad,
+        marker = marker,
+        inline_help = inline_help,
+        level = level,
     );
-    if let Some(message) = diagnostics::finding_message_not_in_headline(finding) {
-        rendered.push_str("  = note: ");
-        rendered.push_str(message);
-        rendered.push('\n');
-    }
-    if let Some(related) = &finding.related {
-        rendered.push_str("  = note: ");
-        rendered.push_str(related);
-        rendered.push('\n');
-    }
-    if let Some(note) = diagnostics::fixability_note(finding) {
-        rendered.push_str("  = help: ");
-        rendered.push_str(note);
+    for annotation in &annotations.0 {
+        let (label, text) = match annotation {
+            FindingAnnotation::Note(text) => ("  = note: ", *text),
+            FindingAnnotation::FixabilityHelp(text) => ("  = help: ", *text),
+            FindingAnnotation::InlineHelp(_) => continue,
+        };
+        rendered.push_str(label);
+        rendered.push_str(text);
         rendered.push('\n');
     }
     rendered.push('\n');
     rendered
 }
 
-fn rustc_span(finding: &Finding, selection: &Selection, absolute_path: &Path) -> RustcSpan {
+fn rustc_span(finding: &Finding, display_path: String, absolute_path: &Path) -> RustcSpan {
     let byte_start =
         byte_offset_for_position(absolute_path, finding.line, finding.column).unwrap_or_default();
     let byte_end = byte_offset_for_position(
@@ -244,7 +321,7 @@ fn rustc_span(finding: &Finding, selection: &Selection, absolute_path: &Path) ->
         column_end,
         column_start: finding.column,
         expansion: None,
-        file_name: path_for_display(finding, selection),
+        file_name: display_path,
         is_primary: true,
         label: finding.item.clone(),
         line_end: finding.line,
@@ -256,16 +333,6 @@ fn rustc_span(finding: &Finding, selection: &Selection, absolute_path: &Path) ->
             highlight_start: finding.column,
             text:            finding.source_line.clone(),
         }],
-    }
-}
-
-fn path_for_display(finding: &Finding, selection: &Selection) -> String {
-    let path = Path::new(&finding.path);
-    if path.is_absolute() {
-        path.strip_prefix(selection.analysis_root.as_path())
-            .map_or_else(|_| finding.path.clone(), normalize_path)
-    } else {
-        finding.path.clone()
     }
 }
 
@@ -283,15 +350,6 @@ fn byte_offset_for_position(path: &Path, line: usize, column: usize) -> Option<u
         offset += source_line.len() + 1;
     }
     None
-}
-
-fn absolute_finding_path(finding: &Finding, selection: &Selection) -> PathBuf {
-    let path = Path::new(&finding.path);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        selection.analysis_root.join(path)
-    }
 }
 
 fn package_for_path<'a>(selection: &'a Selection, path: &Path) -> Option<&'a PackageMetadata> {
@@ -372,3 +430,82 @@ const fn severity_level(severity: Severity) -> &'static str {
 }
 
 fn normalize_path(path: &Path) -> String { path.to_string_lossy().replace('\\', "/") }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::FindingPath;
+    use super::rustc_diagnostic;
+    use super::rustc_span;
+    use crate::config::DiagnosticCode;
+    use crate::reporting::constants::HINT_WARNING_FIXABLE_WITH_FIX;
+    use crate::reporting::diagnostics::Finding;
+    use crate::reporting::diagnostics::FixSupport;
+    use crate::reporting::diagnostics::ItemVisibility;
+    use crate::reporting::diagnostics::Severity;
+
+    #[test]
+    fn finding_paths_preserve_relative_spelling_and_absolute_root_stripping() {
+        let root = Path::new("/repo");
+        for (spelling, absolute, display) in [
+            ("src/./lib.rs", "/repo/src/./lib.rs", "src/./lib.rs"),
+            ("/repo/src/lib.rs", "/repo/src/lib.rs", "src/lib.rs"),
+            (
+                "/elsewhere/lib.rs",
+                "/elsewhere/lib.rs",
+                "/elsewhere/lib.rs",
+            ),
+        ] {
+            let path = FindingPath::from(spelling);
+            assert_eq!(path.absolute(root), Path::new(absolute));
+            assert_eq!(path.display(spelling, root), display);
+        }
+    }
+
+    #[test]
+    fn shared_annotations_keep_child_order_spans_and_rendered_bytes() {
+        let finding = Finding {
+            severity:        Severity::Error,
+            diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
+            path:            "src/lib.rs".to_string(),
+            line:            1,
+            column:          1,
+            highlight_len:   4,
+            source_line:     "type".to_string(),
+            item:            None,
+            message:         "message".to_string(),
+            suggestion:      Some("replace".to_string()),
+            fix_support:     FixSupport::InlinePathQualifiedType,
+            related:         Some("related".to_string()),
+            item_visibility: ItemVisibility::default(),
+        };
+        let span = rustc_span(&finding, finding.path.clone(), Path::new(""));
+        let diagnostic = rustc_diagnostic(&finding, span);
+        let children = diagnostic
+            .children
+            .iter()
+            .map(|child| (child.level, child.message.as_str(), child.spans.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            children,
+            vec![
+                ("note", "message", 0),
+                ("note", "related", 0),
+                ("help", "replace", 1),
+                ("help", HINT_WARNING_FIXABLE_WITH_FIX, 0),
+            ]
+        );
+        assert_eq!(
+            diagnostic.rendered,
+            format!(
+                concat!(
+                    "warning: inline path-qualified type should use a `use` import\n",
+                    " --> src/lib.rs:1:1\n  |\n1 | type\n  | ^^^^ help: replace\n",
+                    "  = note: message\n  = note: related\n  = help: {}\n\n",
+                ),
+                HINT_WARNING_FIXABLE_WITH_FIX
+            )
+        );
+    }
+}

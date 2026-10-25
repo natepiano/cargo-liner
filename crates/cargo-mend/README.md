@@ -228,36 +228,17 @@ The usual review flow is:
 <a id="overbroad-pub-crate"></a>
 ### Overly broad `pub(crate)`
 
-`pub(crate)` lets any module in the crate touch the item, regardless of where the item lives.
-In a deep module tree that usually weakens the module boundaries the layout was meant to
-enforce.
+`pub(crate)` lets any module in the crate touch the item, regardless of where it lives. In a deep
+module tree that usually weakens the boundaries the layout was meant to enforce. Cargo-mend joins
+callers and signature requirements across every selected target and computes their deepest common
+module: a narrower common module makes the crate-wide annotation broader than required.
 
-This rule applies to declarations and struct and union fields. Cargo-mend joins callers and
-signature requirements across every selected target and computes their deepest common module. It
-accepts `pub(crate)` when that module is the crate root. When the common module is narrower, the
-`overbroad_pub_crate` diagnostic reports that the annotation is broader than required.
+This applies to declarations and struct and union fields. In the example, `helpers.rs` exists only
+to support `feature`, and every caller is under `feature`, so the helper only needs parent access.
+See [boundary selection and repair policy](#policy-selecting-a-visibility-boundary) for other reaches,
+field caller evidence, and coordinated fixes.
 
-Otherwise, prefer:
-
-- private items when they are local implementation details
-- `pub(super)` when the parent module owns the boundary
-- `pub(in crate::path)` when callers, signatures, or a parent facade require a wider ancestor
-- `pub(crate)` when uses genuinely span crate-root sibling branches
-- moving the item to a better common parent when `pub(super)` is too narrow
-
-`cargo mend --fix` writes each proven result directly: it removes an unnecessary annotation, uses
-`pub(super)` for the immediate parent, uses exact `pub(in crate::path)` for a wider ancestor, and
-uses `pub(crate)` for the crate root. It applies related declaration changes in one batch before the
-validation build, so a trait and its associated type can narrow together without an intermediate
-E0446 failure. Field construction, access, destructuring, and `offset_of!` computations contribute
-caller evidence for named and positional fields.
-
-When mend gives facade-specific advice, it quotes the facade's `use` spelling only when it can
-establish that spelling from the active item graph. A resolved reach alone never licenses quoting a
-modifier; otherwise the diagnostic calls it a re-export without naming a modifier.
-
-In this example, `feature` is a parent module and `helpers.rs` exists only to support it. The
-question is whether the helper should be available to the whole crate, or just to `feature`.
+**Before**
 
 ```rust
 // src/feature/mod.rs
@@ -267,15 +248,38 @@ mod helpers;
 pub(crate) fn helper() {}
 ```
 
-When every caller is under `feature`, the crate-wide annotation ignores that module boundary. A
-better version is:
+**After**
 
 ```rust
+// src/feature/mod.rs
+mod helpers;
+
 // src/feature/helpers.rs
 pub(super) fn helper() {}
 ```
 
-`helper` is now available to `feature` and nowhere else.
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Selecting a visibility boundary
+
+`helper` is now available to `feature` and nowhere else. Prefer:
+
+- private items when they are local implementation details
+- `pub(super)` when the parent module owns the boundary
+- `pub(in crate::path)` when callers, signatures, or a parent facade require a wider ancestor
+- `pub(crate)` when uses genuinely span crate-root sibling branches
+- moving the item to a better common parent when `pub(super)` is too narrow
+
+The fixer writes each proven result directly: it removes an unnecessary annotation, uses
+`pub(super)` for the immediate parent, uses exact `pub(in crate::path)` for a wider ancestor, and
+uses `pub(crate)` for the crate root. It applies related declaration changes in one batch before the
+validation build, so a trait and its associated type can narrow together without an intermediate
+E0446 failure. Field construction, access, destructuring, and `offset_of!` computations contribute
+caller evidence for named and positional fields.
+
+When mend gives facade-specific advice, it quotes the facade's `use` spelling only when it can
+establish that spelling from the active item graph. A resolved reach alone never licenses quoting a
+modifier; otherwise the diagnostic calls it a re-export without naming a modifier.
 
 `pub(crate)` remains correct when the item is reached from crate-root sibling branches:
 
@@ -294,14 +298,29 @@ accepts the annotation.
 <a id="forbidden-pub-in-crate"></a>
 ### Forbidden `pub(in ...)`
 
-Arbitrary `pub(in ...)` annotations are rejected because they can hide an ownership problem behind
-a long path. An exact crate-rooted `pub(in crate::path)` is accepted when `path` is the narrowest
-boundary required by callers, signatures, or a parent facade. Set `pub_in_path = "permitted"` (the
-less strict mode) or `"required"` (the default) to accept that exact boundary.
+Arbitrary `pub(in ...)` annotations can hide an ownership problem behind a long path. An exact
+crate-rooted `pub(in crate::path)` is accepted when `path` is the narrowest boundary required by
+callers, signatures, or a parent facade. Set `pub_in_path = "permitted"` (the less strict mode) or
+`"required"` (the default) to accept that exact boundary.
 
-A parent re-export is one case that requires this form. A `pub(super) use` can put the item's
-required reach above the module where it is declared: `pub(super)` at the declaration is then too
-narrow to compile, while bare `pub` is wider than required.
+A parent re-export can require this form: its `pub(super) use` reaches above the item's immediate
+parent, where a declaration's `pub(super)` would be too narrow. Spell the boundary from `crate::`
+instead of making readers count `super::` levels. The
+[boundary repair policy](#policy-restricted-visibility-boundaries) explains facade placement, manual
+repairs, and when findings become warnings.
+
+**Before**
+
+```rust
+// src/video_plane/plane/camera_panel.rs
+pub(in super::super) fn bind_camera_panel() {}
+
+// src/video_plane/plane/mod.rs
+mod camera_panel;
+pub(super) use camera_panel::bind_camera_panel;
+```
+
+**After**
 
 ```rust
 // src/video_plane/plane/camera_panel.rs
@@ -311,6 +330,10 @@ pub(in crate::video_plane) fn bind_camera_panel() {}
 mod camera_panel;
 pub(super) use camera_panel::bind_camera_panel;
 ```
+
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Restricted visibility boundaries
 
 Here the item lives in `video_plane::plane::camera_panel`, while the facade lives in
 `video_plane::plane`. The facade's `pub(super) use` must be visible to `video_plane`, but
@@ -331,7 +354,7 @@ earns the boundary on the same terms a declaration does. mend will not offer to 
 re-export's visibility, though: resolved paths name the imported item, not the alias, so it can see
 where the item is used but not where the alias is.
 
-#### When no facade covers the boundary
+##### When no facade covers the boundary
 
 The annotation grants visibility; it does not create a path. `pub(in crate::animation::sequence)`
 lets every module under `animation::sequence` *see* the item, but the item is only *nameable* where
@@ -372,7 +395,7 @@ the module holding it — `journey` above is a `sequence` concept living under `
 to `crate::animation::sequence` removes the need for a facade entirely. mend reports the gap and
 names the facade; which repair fits is a design decision, which is why this case has no `--fix`.
 
-#### When nothing outside the module uses the item
+##### When nothing outside the module uses the item
 
 A third case needs neither repair. If no use of the item was found outside the module that declares
 it, the item is already reachable there with no annotation at all, and the annotation is the whole
@@ -390,7 +413,7 @@ deleting one resolves no path and so needs no design decision. The repair applie
 and fields; a `mod` line and a `use` re-export keep the error, since a module's visibility caps
 every item inside it and a re-export exists to be named elsewhere.
 
-#### When the item needs a wider boundary than it has
+##### When the item needs a wider boundary than it has
 
 A fourth case is repaired by widening. An item can be used only from inside the module its
 annotation names and still need a wider boundary, because a `pub(crate)` field or signature carries
@@ -423,23 +446,49 @@ consider whether the intended decision is a `pub(crate) use` facade instead, and
 on the `use` line.
 
 <a id="review-pub-mod"></a>
-### Review `pub mod`
+### `pub mod` requires explicit review or allowlisting
 
-`pub mod` is disallowed by default — it publishes the module path as part of the crate's public
-API. Override per path via `allow_pub_mod` in `mend.toml` when the public path is intentional
-(e.g. macro or codegen constraints).
+Publishing a module path makes it part of the crate's public API, so `pub mod` is disallowed by
+default. Keep implementation modules private; when the public path is intentional, such as for macro
+or codegen constraints, use the [explicit allowlist alternative](#policy-intentional-public-module-paths).
+
+**Before**
 
 ```rust
 // src/lib.rs
-pub mod tools;   // module path is now part of the crate's public API
+pub mod tools;
+```
+
+**After**
+
+```rust
+// src/lib.rs
+mod tools;
+```
+
+#### Policy: Intentional public module paths
+
+If `tools` must remain public, keep `pub mod tools;` and allowlist the file containing that declaration:
+
+```toml
+# mend.toml
+[visibility]
+allow_pub_mod = ["src/lib.rs"]
 ```
 
 <a id="suspicious-pub"></a>
-### Suspicious `pub`
+### `pub` is broader than this nested module boundary
 
-A nested private module can declare `pub struct Helper;`, but if any parent module on the path
-is private, `Helper` cannot escape the crate — the bare `pub` is broader than the boundary the
-file actually participates in.
+Bare `pub` promises more access than a nested private module can provide: if a parent on the path is
+private, the item cannot escape the crate. Match the annotation to the callers rather than making
+readers walk the module tree. Here only `support` consumes `Helper`, so parent visibility is enough.
+
+Other resolutions are to make the item private, use the exact `pub(in crate::path)` or `pub(crate)`
+boundary mend reports for wider access, or move a genuinely shared item to a better common parent.
+See the [nested-module and parent-facade policy](#policy-nested-pub-and-parent-facades) for the checks
+and the paired cleanup that uses `--fix-pub-use`.
+
+**Before**
 
 ```rust
 // src/lib.rs
@@ -448,52 +497,84 @@ mod support;
 // src/support/mod.rs
 mod helpers;
 
+fn use_helper() {
+    let _ = std::mem::size_of::<helpers::Helper>();
+}
+
 // src/support/helpers.rs
 pub struct Helper;
 ```
 
-`Helper` is `pub`, but `support` is private, so `Helper` is unreachable from outside the crate.
-The declared visibility doesn't match the actual reach.
+**After**
 
-Resolutions:
+```rust
+// src/lib.rs
+mod support;
 
-- make the item private
-- change it to `pub(super)`
-- use the exact `pub(in crate::path)` or `pub(crate)` boundary Mend reports when wider access is
-  required
-- move it to a better common parent if it is genuinely shared across the crate
+// src/support/mod.rs
+mod helpers;
+
+fn use_helper() {
+    let _ = std::mem::size_of::<helpers::Helper>();
+}
+
+// src/support/helpers.rs
+pub(super) struct Helper;
+```
+
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Nested `pub` and parent facades
 
 At logical depth greater than one, `suspicious_pub` examines bare `pub` and accepted crate-rooted
 `pub(in crate::...)` declarations. Its parent-facade-boundary suggestion for a bare `pub` appears
 only when `pub_in_path = "required"`; accepted `pub(in ...)` declarations are also reviewed for a
 boundary that has become stale or no longer matches the facade.
 
-This warning does not fire at a top-level private module — [Narrow `pub` to
-`pub(crate)`](#narrow-to-pub-crate) covers that case. At the top level, bare `pub` is only
-correct when the crate root re-exports the item via `pub use`; otherwise, narrow it to
-`pub(crate)`.
+This warning does not fire at a top-level private module — [`pub` exceeds the item's effective
+reach](#narrow-to-pub-crate) covers that case. At the top level, bare `pub` is only correct when the
+crate root re-exports the item via `pub use`; otherwise, narrow it to `pub(crate)`.
 
-#### Parent-facade exception
+When a parent re-exports a child item for use outside the parent subtree, the child `pub` is
+intentional and the warning is suppressed. This applies whether the parent is a `mod.rs` file or an
+ordinary file module such as `markdown_file.rs`. If nothing outside the parent subtree uses that
+re-export, the warning still fires, and the compiler usually emits a paired `unused import` warning
+on the parent. Remove that unused facade and narrow the child together:
 
-When the parent module re-exports the child item, the child `pub` is intentional and the
-warning is suppressed:
+**Before**
 
 ```rust
 // src/private_parent/mod.rs
 mod child;
 pub use child::Helper;
+
+// src/private_parent/child.rs
+pub struct Helper;
 ```
 
-The exception applies whether the parent boundary is a `mod.rs` file or an ordinary file module
-like `markdown_file.rs`. If nothing outside the parent subtree uses that re-export, the warning
-still fires — and the compiler usually emits a paired `unused import` warning on the parent.
-`cargo mend --fix-pub-use` is designed to repair that paired case.
+**After**
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+
+// src/private_parent/child.rs
+pub(super) struct Helper;
+```
+
+`cargo mend --fix-pub-use` can rewrite these cases automatically.
 
 <a id="unused-pub"></a>
-### Unused `pub`
+### `pub` item is not used outside its defining module
 
-When a `pub` item is only used inside its defining module subtree, the modifier grants no useful
-access. Private visibility already lets the defining module and its descendants call the item.
+A modifier that grants no useful access obscures the module's boundary. Private visibility already
+lets the defining module and its descendants call the item, so an item used only in that subtree
+does not need to be visible to parents or siblings.
+
+This warning excludes `pub` items in a library crate root, items reached from outside their defining
+module subtree, and items structurally exposed through public signatures.
+
+**Before**
 
 ```rust
 // src/lib.rs
@@ -512,74 +593,82 @@ fn example() {
 }
 ```
 
-The item does not need to be visible to the parent or sibling modules:
+**After**
 
 ```rust
+// src/renderer/mod.rs
 fn normalize_label(label: &str) -> String {
     label.trim().to_string()
 }
 ```
 
-This warning does not fire for `pub` items in a library crate root, for items reached from outside
-their defining module subtree, or for items structurally exposed through public signatures.
-
-`cargo mend --fix` can remove these `pub` annotations automatically.
+`cargo mend --fix` can rewrite these cases automatically.
 
 <a id="prefer-module-import"></a>
-### Prefer module import
+### Function import should use module-qualified form
 
-This warning detects direct function imports and suggests importing the parent module instead,
-then calling the function with module qualification.
+Module qualification shows where a function belongs at each call site. Direct function imports hide
+that relationship; import the parent module instead. The fixer rewrites the `use` statement and
+qualifies its bare references in the file.
 
-Example:
+**Before**
 
 ```rust
-// Before:
+// src/tui/error_handler.rs
 use crate::error::report_to_mcp_error;
 
-fn example() {
+fn handle_error(err: std::io::Error) {
     let error = report_to_mcp_error(&err);
 }
+```
 
-// After:
+**After**
+
+```rust
+// src/tui/error_handler.rs
 use crate::error;
 
-fn example() {
+fn handle_error(err: std::io::Error) {
     let error = error::report_to_mcp_error(&err);
 }
 ```
 
-`cargo mend --fix` can rewrite these cases automatically. It rewrites the `use` statement and
-qualifies all bare references in the file.
+`cargo mend --fix` can rewrite these cases automatically.
 
 <a id="inline-path-qualified-type"></a>
-### Inline path-qualified type
+### Inline path-qualified type should use a `use` import
 
-This warning detects types used with inline path qualification — both intra-crate
-(`crate::module::MyType`, `super::module::MyType`) and external-crate
-(`ratatui::Frame`, `std::collections::BTreeMap`, `notify::WatcherKind::Variant`) —
-and suggests adding a `use` import at the top of the file instead. Trait paths in
-`impl Trait for Type` are also covered.
+Imports give a type one readable name throughout a file instead of repeating its full path. This
+covers intra-crate paths such as `crate::scene::CameraPose` and `super::scene::CameraPose`, external
+paths such as `ratatui::Frame`, `std::collections::BTreeMap`, and `notify::WatcherKind::Variant`, and
+trait paths in `impl Trait for Type`.
 
-Example:
+The fixer adds a `use` import at the top of the file and replaces inline occurrences with the bare
+type name. See the [import shadowing policy](#policy-inline-type-import-shadowing) for skipped cases.
+
+**Before**
 
 ```rust
-// Before:
-fn example() -> crate::module::MyType {
-    crate::module::MyType::new()
+// src/tui/camera_panel.rs
+fn initial_pose() -> crate::scene::CameraPose {
+    crate::scene::CameraPose::new()
 }
 
 fn render(frame: &mut ratatui::Frame<'_>) {}
 
 impl crate::pane::Hittable for ToastManager { /* ... */ }
+```
 
-// After:
-use crate::module::MyType;
+**After**
+
+```rust
+// src/tui/camera_panel.rs
+use crate::scene::CameraPose;
 use crate::pane::Hittable;
 use ratatui::Frame;
 
-fn example() -> MyType {
-    MyType::new()
+fn initial_pose() -> CameraPose {
+    CameraPose::new()
 }
 
 fn render(frame: &mut Frame<'_>) {}
@@ -587,120 +676,356 @@ fn render(frame: &mut Frame<'_>) {}
 impl Hittable for ToastManager { /* ... */ }
 ```
 
-`cargo mend --fix` can rewrite these cases automatically. It adds the `use` import and replaces
-all inline occurrences with the bare type name. The fix is skipped when adding the import would
-shadow a name the file already uses (e.g. it won't add `use io::Result;` if the file relies on
-the prelude `Result` via `Result::ok`).
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Inline type import shadowing
+
+The fix is skipped when adding an import would shadow a name the file already uses. For example, it
+will not add `use io::Result;` where the file relies on prelude `Result` through `Result::ok`.
 
 <a id="shorten-local-crate-import"></a>
-### Shorten local crate import
+### Crate-relative import can be shortened to a local-relative import
 
-A `crate::a::b::c::*` import that crosses no module boundary makes the path look more global
-than the relationship is. When the importer and the imported module share a parent, prefer the
-local-relative form.
+A crate-rooted import within one local module boundary makes the relationship look more global than
+it is. When importer and imported module share a parent, prefer the local-relative form. Here
+`cargo_detector` and `process` are peers under `support`.
+
+The fixer preserves the original `use` visibility (`use`, `pub use`, `pub(crate) use`, etc.) and rolls
+edits back if the follow-up `cargo check` fails.
+
+**Before**
 
 ```rust
 // src/app_tools/support/process.rs
-
-// flagged — `cargo_detector` is a peer of `process` under `support`
 use crate::app_tools::support::cargo_detector::TargetType;
+```
 
-// preferred
+**After**
+
+```rust
+// src/app_tools/support/process.rs
 use super::cargo_detector::TargetType;
 ```
 
-`cargo mend --fix` rewrites these cases automatically. It preserves the original `use`
-visibility (`use`, `pub use`, `pub(crate) use`, etc.) and rolls the edits back if the follow-up
-`cargo check` fails.
+`cargo mend --fix` can rewrite these cases automatically.
 
 <a id="replace-deep-super-import"></a>
-### Replace deep `super::` import
+### Deep `super::` chain should use a `crate::` path
 
-`super::super::` and deeper chains force the reader to count hops to figure out where the import
-lands. When a single `super::` is not enough, a named `crate::` path is immediately clear.
+`super::super::` and deeper chains force readers to count hops to locate an import. When one
+`super::` is not enough, a named `crate::` path makes the destination clear. Chains of any depth,
+including `super::super::super::` and beyond, are rewritten to the equivalent crate-rooted path.
 
-Example:
+**Before**
 
 ```rust
 // src/tui/columns/render.rs
-
-// flagged — deep super chain
 use super::super::ResolvedWidths;
-
-// preferred — named crate path
-use crate::tui::ResolvedWidths;
 ```
 
-This applies at any depth: `super::super::super::` and beyond are all rewritten to the equivalent
-`crate::` path.
+**After**
+
+```rust
+// src/tui/columns/render.rs
+use crate::tui::ResolvedWidths;
+```
 
 `cargo mend --fix` can rewrite these cases automatically.
 
 <a id="wildcard-parent-pub-use"></a>
-### Wildcard parent `pub use`
+### Parent module `pub use *` should be explicit
 
-This warning is about parent facade modules that re-export everything from a child with `*`.
+A parent facade that re-exports every child item hides what its boundary actually exports. Name the
+items explicitly so readers can see that boundary without opening the child module.
 
-That makes the boundary harder to read because the parent module no longer says what it is
-actually exporting.
-
-Prefer:
+**Before**
 
 ```rust
-pub use child::{Helper, OtherHelper};
-```
-
-instead of:
-
-```rust
+// src/private_parent/mod.rs
 pub use child::*;
 ```
 
-<a id="pub-use-outside-subtree"></a>
-### `pub use` outside the module's subtree
-
-This diagnostic flags a re-export whose path leaves the re-exporting module's own subtree: a
-`pub use super::sibling::item`, a `pub use crate::elsewhere::item`, or a `pub use super::Item` of
-the parent's own item.
-
-A re-export is a facade, and only a module whose subtree holds the item owns that path. Handing
-the item out from anywhere else turns one module into a back door into another, so callers reach
-the item under a module that has nothing to do with it.
-
-Example:
+**After**
 
 ```rust
+// src/private_parent/mod.rs
+pub use child::{Helper, OtherHelper};
+```
+
+<a id="internal-parent-pub-use-facade"></a>
+### Parent module re-export is acting as an internal facade
+
+Routing internal references through a parent's outward facade makes that boundary part of the
+implementation structure. When the parent `pub use` is not used outside its subtree, its children
+can name the defining child directly instead of using the parent as an internal namespace.
+
+That namespace can be intentional and deserves review; otherwise, remove the facade, repoint subtree
+references in both `use` statements and inline paths, and narrow the child declaration to
+`pub(super)`. See the [facade resolution policy](#policy-internal-facade-resolution) for cases left
+in place.
+
+**Before**
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+mod sibling;
+pub use child::Helper;
+
+// src/private_parent/child.rs
+pub struct Helper;
+
+// src/private_parent/sibling.rs
+fn use_helper() {
+    let _ = std::mem::size_of::<super::Helper>();
+}
+```
+
+**After**
+
+```rust
+// src/private_parent/mod.rs
+mod child;
+mod sibling;
+
+// src/private_parent/child.rs
+pub(super) struct Helper;
+
+// src/private_parent/sibling.rs
+fn use_helper() {
+    let _ = std::mem::size_of::<super::child::Helper>();
+}
+```
+
+`cargo mend --fix-pub-use` can rewrite these cases automatically.
+
+#### Policy: Internal facade resolution
+
+The facade stays in place when its re-export cannot be resolved to a single declaring module, such
+as a `pub use ... *` glob or a chain that leaves the crate.
+
+<a id="narrow-to-pub-crate"></a>
+### `pub` exceeds the item's effective reach — use `pub(crate)`
+
+Bare `pub` suggests access beyond the crate even when the module tree prevents it. Writing
+`pub(crate)` at the definition states that effective reach without making the reader trace every
+parent. This applies when the crate root does not re-export the item, or when a parent's
+`pub(crate) use` already caps its reach at the crate boundary.
+
+The example keeps the crate-root export public while narrowing the other declarations. See the
+[re-export policy](#policy-crate-reach-and-re-exports) for glob and widening exceptions.
+
+**Before**
+
+```rust
+// src/lib.rs
+mod helpers;
+mod keyboard;
+pub use helpers::exported_fn;
+
+pub fn entry() {
+    helpers::internal_fn();
+}
+
+// src/helpers.rs
+pub fn exported_fn() {}
+pub fn internal_fn() {}
+
+// src/keyboard/mod.rs
+mod keys;
+pub(crate) use keys::send_keys_handler;
+
+// src/keyboard/keys.rs
+pub fn send_keys_handler() {}
+```
+
+**After**
+
+```rust
+// src/lib.rs
+mod helpers;
+mod keyboard;
+pub use helpers::exported_fn;
+
+pub fn entry() {
+    helpers::internal_fn();
+}
+
+// src/helpers.rs
+pub fn exported_fn() {}
+pub(crate) fn internal_fn() {}
+
+// src/keyboard/mod.rs
+mod keys;
+pub(crate) use keys::send_keys_handler;
+
+// src/keyboard/keys.rs
+pub(crate) fn send_keys_handler() {}
+```
+
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Crate reach and re-exports
+
+Glob re-exports such as `pub(crate) use keys::*` are ignored: they neither trigger nor block this
+lint. Items widened by a `pub use` somewhere in the chain are left alone.
+
+<a id="field-visibility-wider-than-type"></a>
+### Field visibility is wider than its containing type
+
+A field annotation cannot grant access beyond a fully private containing type, so that annotation
+is dead. This warning covers struct, union, or enum-variant fields with `pub` or `pub(crate)` on a
+type with no `pub` annotation of its own; the fixer removes the dead field annotation.
+
+The [annotated-type policy](#policy-fields-of-annotated-types) explains why `pub` fields on
+`pub(crate)` or `pub(super)` types are allowed.
+
+**Before**
+
+```rust
+// src/cache/entry.rs
+struct Hidden {
+    pub leaked: u32,
+}
+```
+
+**After**
+
+```rust
+// src/cache/entry.rs
+struct Hidden {
+    leaked: u32,
+}
+```
+
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Fields of annotated types
+
+The lint deliberately does not fire on `pub` fields of `pub(crate)` or `pub(super)` structs. That
+combination is idiomatic Rust shorthand for fields as visible as their type:
+
+```rust
+// src/ci/run.rs
+pub(crate) struct GhRun {
+    pub id:        u64,
+    pub node_id:   String,
+}
+```
+
+<a id="imports-at-top"></a>
+### `use` statement should live at the top of the file or inline module
+
+Imports at the enclosing file or inline module's top give readers one place to see its dependencies.
+A `use` inside a function, closure, or other block expression hides that dependency until the reader
+reaches the body. Move it to the top of the file or enclosing `mod { ... }` block.
+
+The fixer lifts supported imports and removes duplicates without introducing name collisions. See
+the [lifting policy](#policy-lifting-imports-safely) for attributes, globs, and existing bindings.
+
+**Before**
+
+```rust
+// src/editor/drag.rs
+fn example() {
+    use crate::movable::Movable;
+    let m = Movable::default();
+}
+```
+
+**After**
+
+```rust
+// src/editor/drag.rs
+use crate::movable::Movable;
+
+fn example() {
+    let m = Movable::default();
+}
+```
+
+`cargo mend --fix` can rewrite these cases automatically.
+
+#### Policy: Lifting imports safely
+
+The fix is conservative because lifting an import can change scope under a different configuration
+or shadow a name at its destination:
+
+- Non-conditional attributes on a `use`, such as `#[allow(...)]` or doc comments, leave it in place.
+  `#[cfg(...)]` and `#[cfg_attr(...)]` gates on the import or its enclosing constructs travel with
+  a moved import so it stays conditionally compiled.
+- Glob imports inside a body are left in place because they may shadow arbitrary names.
+- When the bare name is already bound at the destination by an import of a different full path or
+  a struct, enum, function, or other item, the in-body import stays in place to avoid an `E0255`
+  collision. A gated import stays in place if any binding already has that bare name.
+- When an unconditional in-body import's bare name and full path match an existing unconditional
+  top-level `use`, the duplicate is deleted.
+
+<a id="pub-use-outside-subtree"></a>
+### Re-export reaches outside this module's subtree
+
+A facade belongs to a module whose subtree holds the item. Re-exporting from elsewhere turns one
+module into a back door into another, so callers reach an item through a module that does not own
+it. Re-export from the owning module, usually the parent `mod.rs`, or move the definition to the
+module that owns the concept and point callers there.
+
+This covers re-exports through `super::sibling::item`, `crate::elsewhere::item`, or `super::Item` of
+the parent's own item. A private sibling `use` is fine. A `prelude` module re-exporting its parent's
+items and re-exports from another crate are excluded.
+
+The fixer removes the facade, retaining a private `use` if its module still names the item, and
+redirects crate callers to the owning path. If callers outside the item's scope need one, it adds a
+re-export at the nearest module containing both modules, copying the original `#[cfg]` attributes.
+Here the private `reset_scene` module limits direct access to `tool`, so the crate-root caller needs
+the new facade. Fixable findings are warnings; see
+[unsupported repairs](#policy-subtree-re-export-repair-limits) for cases that stay errors.
+
+**Before**
+
+```rust
+// src/lib.rs
+mod tool;
+
+pub fn reset_tools() {
+    tool::tool_staging::build_device_recipe();
+}
+
 // src/tool/mod.rs
 mod reset_scene;
-mod tool_staging;
+pub(crate) mod tool_staging;
+
+// src/tool/reset_scene.rs
+pub(crate) fn build_device_recipe() {}
 
 // src/tool/tool_staging/mod.rs
-
-// flagged — `reset_scene` is a sibling, not part of `tool_staging`
 pub(crate) use super::reset_scene::build_device_recipe;
 ```
 
-Preferred — the parent that owns both children re-exports it:
+**After**
 
 ```rust
-// src/tool/mod.rs
-mod reset_scene;
-mod tool_staging;
+// src/lib.rs
+mod tool;
 
+pub fn reset_tools() {
+    tool::build_device_recipe();
+}
+
+// src/tool/mod.rs
 pub(crate) use reset_scene::build_device_recipe;
+mod reset_scene;
+pub(crate) mod tool_staging;
+
+// src/tool/reset_scene.rs
+pub(crate) fn build_device_recipe() {}
+
+// src/tool/tool_staging/mod.rs
+// The sideways re-export has been removed.
 ```
 
-A private `use` of a sibling is fine; only a re-export is flagged. A module named `prelude`
-re-exporting its parent's items, and re-exports of another crate's items, are not flagged.
+`cargo mend --fix` can rewrite these cases automatically.
 
-Help: re-export the item from the module whose subtree owns it — usually the parent `mod.rs` — or
-move the definition to the module that owns the concept, then point callers at that path.
-
-`cargo mend --fix` can rewrite these cases automatically. It removes the re-export (or keeps it as
-a private `use` when its own module still names the item), points every caller in the crate at the
-item's owning path, and, when a caller outside the item's own scope needs it, adds a re-export at
-the nearest module that holds both the re-exporting module and the item's module, copying the
-original's `#[cfg]` attributes. A fixable finding reports as a warning.
+#### Policy: Subtree re-export repair limits
 
 These cases stay errors with no automatic fix, and the finding's help says which one applies:
 
@@ -713,158 +1038,6 @@ These cases stay errors with no automatic fix, and the finding's help says which
   visibility
 - the rewrite would need a `pub(in …)` boundary
 - the re-exported item does not resolve to one target
-
-<a id="internal-parent-pub-use-facade"></a>
-### Internal parent `pub use` facade
-
-This warning is about a parent boundary module that is being used as an internal namespace facade
-inside its own subtree.
-
-In other words:
-
-- the parent `pub use` is not part of the outward boundary
-- but code inside the subtree is still referring to the parent path directly
-- that makes the parent boundary part of the implementation structure, not just the facade
-
-Example:
-
-```rust
-// src/private_parent/mod.rs
-mod child;
-pub use child::Helper;
-
-// src/private_parent/sibling.rs
-fn use_helper() {
-    let _ = std::mem::size_of::<super::Helper>();
-}
-```
-
-In this example, `super::Helper` is using the parent boundary itself as an internal facade.
-
-That can be intentional, but it is worth review because it usually means one of two things:
-
-- the parent boundary is acting as an internal namespace and should stay that way intentionally
-- or the subtree should import the child module directly instead of routing through the parent
-
-`cargo mend --fix-pub-use` can rewrite these cases automatically. It deletes the parent `pub use`,
-repoints every reference inside the subtree at the declaring child module — both `use` statements
-and paths written inline — and narrows the child declaration to `pub(super)`. The facade is left in
-place when the re-export cannot be resolved to a single declaring module, such as a `pub use ... *`
-glob or a chain that leaves the crate.
-
-<a id="narrow-to-pub-crate"></a>
-### Narrow `pub` to `pub(crate)`
-
-This warning flags bare `pub` items that can't actually escape the crate. Writing `pub(crate)` at
-the definition makes the real reach visible at a glance, instead of forcing the reader to walk up
-the module tree.
-
-It fires in two situations:
-
-**The crate root doesn't re-export the item.**
-
-```rust
-// src/lib.rs
-mod helpers;
-pub use helpers::exported_fn;
-
-// src/helpers.rs
-pub fn exported_fn() {}    // re-exported → must stay `pub`
-pub fn internal_fn() {}    // NOT re-exported → should be `pub(crate)`
-```
-
-**The parent re-exports the item as `pub(crate) use`.** The `pub(crate) use` already caps reach at
-the crate boundary, so the source modifier should match.
-
-```rust
-// src/keyboard/mod.rs
-mod keys;
-pub(crate) use keys::send_keys_handler;
-
-// src/keyboard/keys.rs
-pub fn send_keys_handler() {}   // → should be `pub(crate)`
-```
-
-Glob re-exports (`pub(crate) use foo::*`) are ignored — they neither trigger nor block this lint.
-Items widened by a `pub use` somewhere in the chain are left alone.
-
-Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
-
-<a id="field-visibility-wider-than-type"></a>
-### Field visibility wider than type
-
-This warning flags struct, union, or enum-variant fields with a `pub` or `pub(crate)` annotation
-on a **fully private type** (a type with no `pub` annotation of its own). The field annotation
-cannot grant any access because the containing type itself isn't visible — the annotation is
-dead.
-
-The lint deliberately does **not** fire on `pub` fields of `pub(crate)` or `pub(super)` structs:
-
-```rust
-// Allowed — `pub` on fields of a `pub(crate)` struct is idiomatic Rust shorthand
-pub(crate) struct GhRun {
-    pub id:        u64,
-    pub node_id:   String,
-}
-```
-
-What does get flagged: a `pub` field on a struct that has no visibility annotation at all.
-
-```rust
-// inside a private module
-struct Hidden {
-    pub leaked: u32,   // dead — Hidden is private, `pub` grants nothing
-}
-```
-
-After `cargo mend --fix`:
-
-```rust
-struct Hidden {
-    leaked: u32,
-}
-```
-
-Run `cargo mend --fix` to auto-remove dead field annotations.
-
-<a id="imports-at-top"></a>
-### Imports at top of file
-
-This warning flags `use` statements written inside function bodies, closures, and other block
-expressions. They should live at the top of the enclosing file or the enclosing inline
-`mod { ... }` block instead.
-
-```rust
-// before
-fn example() {
-    use crate::movable::Movable;
-    let m = Movable::default();
-}
-```
-
-```rust
-// after
-use crate::movable::Movable;
-
-fn example() {
-    let m = Movable::default();
-}
-```
-
-`cargo mend --fix` lifts the `use` to the top of the enclosing file or inline module. The
-fix is conservative:
-
-- `use` statements with any attribute (most importantly `#[cfg(...)]`) are left in place
-  because lifting them could change what's in scope under a different configuration.
-- Glob imports (`use foo::*;`) inside a body are left in place; they may shadow arbitrary
-  names at the destination.
-- When the bare name the in-body `use` introduces is already bound at the top of the
-  destination — by another `use` with a different full path, or by a struct/enum/fn/etc.
-  defined at that level — the in-body `use` is left in place to avoid an `E0255` collision.
-- When the bare name and full path already match an existing top-level `use`, the in-body
-  duplicate is deleted.
-
-Run `cargo mend --fix` to auto-lift `use` statements.
 
 ## License
 

@@ -896,13 +896,15 @@ mod tests {
     use super::SourceCache;
     use super::analysis_source_root_for;
     use super::module_path_from_source_file;
+    use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
+    use crate::compiler::constants::SOURCE_DIR_SRC;
     use crate::reporting::AllFeaturesCoverage;
 
     #[test]
     fn source_cache_excludes_cargo_target_directory() -> Result<()> {
         let temp = tempdir()?;
         let workspace_root = temp.path().join("workspace");
-        let source_directory = workspace_root.join("app/src");
+        let source_directory = workspace_root.join("app").join(SOURCE_DIR_SRC);
         let target_directory = workspace_root.join("target");
         let source_file = source_directory.join("lib.rs");
         let generated_source_directory = target_directory.join("debug/build");
@@ -967,7 +969,7 @@ emit!();
         expected_coverage: AllFeaturesCoverage,
     ) -> Result<()> {
         let temp = tempdir()?;
-        let source_directory = temp.path().join("src");
+        let source_directory = temp.path().join(SOURCE_DIR_SRC);
         fs::create_dir_all(&source_directory)?;
         let crate_root = source_directory.join("lib.rs");
         fs::write(&crate_root, crate_root_source)?;
@@ -984,7 +986,7 @@ emit!();
         module_name: &str,
     ) -> Result<()> {
         let temp = tempdir()?;
-        let source_directory = temp.path().join("src");
+        let source_directory = temp.path().join(SOURCE_DIR_SRC);
         let binary_directory = source_directory.join("bin");
         fs::create_dir_all(&binary_directory)?;
         let crate_root = source_directory.join("lib.rs");
@@ -1009,16 +1011,25 @@ emit!();
         let package_root = Path::new("/tmp/example-crate");
 
         assert_eq!(
-            analysis_source_root_for(&package_root.join("src/lib.rs"), package_root),
-            Some(package_root.join("src"))
+            analysis_source_root_for(
+                &package_root.join(SOURCE_DIR_SRC).join("lib.rs"),
+                package_root
+            ),
+            Some(package_root.join(SOURCE_DIR_SRC))
         );
         assert_eq!(
-            analysis_source_root_for(&package_root.join("src/bin/demo.rs"), package_root),
-            Some(package_root.join("src/bin"))
+            analysis_source_root_for(
+                &package_root.join(SOURCE_DIR_SRC).join("bin/demo.rs"),
+                package_root
+            ),
+            Some(package_root.join(SOURCE_DIR_SRC).join("bin"))
         );
         assert_eq!(
-            analysis_source_root_for(&package_root.join("examples/demo.rs"), package_root),
-            Some(package_root.join("examples"))
+            analysis_source_root_for(
+                &package_root.join(SOURCE_DIR_EXAMPLES).join("demo.rs"),
+                package_root
+            ),
+            Some(package_root.join(SOURCE_DIR_EXAMPLES))
         );
         assert_eq!(
             analysis_source_root_for(&package_root.join("build.rs"), package_root),
@@ -1029,7 +1040,7 @@ emit!();
     #[test]
     fn module_path_from_source_file_treats_main_rs_as_crate_root() -> Result<()> {
         let temp = tempdir()?;
-        let source_dir = temp.path().join("src");
+        let source_dir = temp.path().join(SOURCE_DIR_SRC);
         fs::create_dir_all(&source_dir)?;
         let main_rs = source_dir.join("main.rs");
         fs::write(&main_rs, "fn main() {}\n")?;
