@@ -537,14 +537,13 @@ impl VisibilityConstraintGroup {
             ));
             finding.related = None;
         }
-        // Whichever branch ran replaced the scan pass's suggestion, and its note
-        // with it: that note was written from one target's callers, and the
-        // repair above was reclassified over every target's. Rewriting the note
-        // from the surviving repair keeps it from arguing for a repair that is
-        // no longer being offered. `no_facade_caller_note` declines a boundary
-        // spanning the whole crate, and `apply_rewrite` is the branch with a
-        // resolved boundary to name there, so its note stands when this one has
-        // nothing to say.
+        // Whichever branch ran replaced `finding.suggestion` and its
+        // `finding.related` note: that note used one target's callers,
+        // while `repair` reflects every target's. Rebuild the note from
+        // `repair` so it cannot argue for a repair no longer offered.
+        // `visibility::no_facade_caller_note` declines a whole-crate
+        // boundary; `Self::apply_rewrite` has a resolved boundary to
+        // name, so preserve its note when this call has nothing to say.
         let resolved_boundary_note = finding.related.take();
         finding.related = visibility::no_facade_caller_note(
             repair,
@@ -728,14 +727,13 @@ impl VisibilityConstraintGroup {
             ExactBoundarySpelling::Private => String::from("consider removing the visibility"),
             ExactBoundarySpelling::Public => String::from("consider using: `pub`"),
         });
-        // `visibility::missing_facade_note` explains a suggestion that asks for
-        // a re-export. The suggestion just written asks for a visibility change
-        // instead, and the note's claim that nothing names the item at the
-        // boundary is what resolving one disproved. What replaces it says why
-        // this boundary; the caller prefers `visibility::no_facade_caller_note`
-        // wherever that has something to say, and keeps this where it does not.
-        // Removing an annotation names no visibility for the note to report, and
-        // `RemoveAnnotation` is the repair whose caller note always does.
+        // `visibility::missing_facade_note` explains a re-export suggestion,
+        // but `finding.suggestion` now asks for a visibility change: resolving
+        // `boundary` disproves the old note's claim that nothing names the item
+        // there. `finding.related` will explain why this boundary. The caller
+        // prefers `visibility::no_facade_caller_note` when available, otherwise
+        // keeping this note. Removing an annotation names no visibility to report,
+        // and `NoFacadeVisibilityRepair::RemoveAnnotation` always has a caller note.
         finding.related = interface_leak.map_or_else(
             || {
                 (matches!(finding.diagnostic_code, DiagnosticCode::ForbiddenPubInCrate)
@@ -762,20 +760,17 @@ impl VisibilityConstraintGroup {
                 "the narrowest proven visibility is {}",
                 replacement_spelling(spelling, boundary)
             ),
-            // Two scan-pass headlines arrive here and neither survives a
-            // resolved boundary. The structural one says nothing keeps this item
-            // reachable, which held for the single-crate view that wrote it;
-            // left alone it printed "`pub(super)` is too narrow" directly above
-            // "help: consider using: `pub(super)`" on 13 findings of one
-            // workspace. The policy one says the spelling sits outside an exact
-            // facade boundary, which stays true only while the repair is a
-            // facade — over a suggestion naming a wider visibility it explains
-            // nothing about why that visibility. So a replacement that changes
-            // the item's reach takes the headline naming the annotation, and a
-            // respelling of the same reach keeps the policy headline, which is
-            // what it is still about. `is_annotation_policy_headline` holds the
-            // line at those two: a headline naming what caps the item says more
-            // than either, and resolving a boundary does not contradict it.
+            // `DiagnosticCode::ForbiddenPubInCrate` has two scan-pass headlines superseded by a
+            // resolved boundary. The structural headline says nothing keeps the item reachable,
+            // true of the original single-crate view; retaining it printed "`pub(super)` is too
+            // narrow" directly above "help: consider using: `pub(super)`" on 13 findings of one
+            // workspace. The policy headline says the spelling lies outside an exact facade
+            // boundary, relevant only while the repair is a facade; it cannot explain why a
+            // suggestion names wider visibility. When `replacement_changes_reach` holds,
+            // `visibility::resolved_boundary_headline` names the annotation; respelling the
+            // same reach keeps the policy headline, which remains relevant. Restrict this
+            // through `visibility::is_annotation_policy_headline`: headlines naming what caps
+            // the item convey more and remain valid after boundary resolution.
             DiagnosticCode::ForbiddenPubInCrate => {
                 self.constraints.constraints.first().map_or_else(
                     || finding.message.clone(),
@@ -970,8 +965,9 @@ impl VisibilityConstraintGroup {
             return BoundaryDemand::BeyondSignature;
         }
         let demanded_beyond_signature = self.constraints.constraints.iter().any(|constraint| {
-            // A boundary a narrower canonical annotation already reaches is a
-            // spelling finding, not a facade demand, so it stays reported.
+            // If `requirement_repair` finds a narrower canonical annotation already
+            // reaches the boundary, keep reporting the spelling finding: it does
+            // not demand a facade.
             if !matches!(
                 requirement_repair(&constraint.declaration, required_reach),
                 NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
@@ -1122,9 +1118,9 @@ fn caller_repair(
 pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], callers: &CallerMap) {
     let mut groups: BTreeMap<VisibilityConstraintKey, VisibilityConstraintGroup> = BTreeMap::new();
     for (report_index, report) in reports.iter().enumerate() {
-        // Index the findings once per report rather than searching them for
-        // every constraint: both counts grow with project size, so the search
-        // costs the product of the two.
+        // Build `findings_by_key` once from `report.findings` rather than searching
+        // them for each `report.visibility_constraints` entry: both counts grow
+        // with project size, so searching costs their product.
         let mut findings_by_key: BTreeMap<VisibilityConstraintKey, &StoredFinding> =
             BTreeMap::new();
         for finding in &report.findings {
