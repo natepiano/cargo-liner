@@ -321,6 +321,7 @@ mod tests {
     use crate::compiler::constants::PROGRESS_BAR_FILL;
     use crate::compiler::constants::PROGRESS_BAR_HEAD;
     use crate::compiler::constants::PROGRESS_BAR_WIDTH;
+    use crate::compiler::constants::PROGRESS_FRAMES;
 
     #[test]
     fn quiet_mode_uses_validation_status_message() {
@@ -337,10 +338,17 @@ mod tests {
 
     #[test]
     fn progress_frame_and_clear_line_use_carriage_return() {
-        let frame = progress_frame("validating applied fixes", 1);
+        let frame_index = 1;
+        let frame = progress_frame("validating applied fixes", frame_index);
         let width = progress_line_width("validating applied fixes");
 
-        assert_eq!(frame, "\rmend: / validating applied fixes");
+        assert_eq!(
+            frame,
+            format!(
+                "\rmend: {} validating applied fixes",
+                PROGRESS_FRAMES[frame_index]
+            )
+        );
         assert_eq!(
             clear_progress_line(width),
             format!("\r{}\r", " ".repeat(width))

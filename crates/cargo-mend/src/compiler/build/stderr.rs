@@ -445,10 +445,30 @@ mod tests {
     use crate::compiler::build::BuildOutputMode;
     use crate::compiler::build::progress::ProgressDisplay;
     use crate::compiler::build::progress::UnitCounter;
+    use crate::compiler::constants::CARGO_PROGRESS_BAR_CLOSE;
+    use crate::compiler::constants::CARGO_PROGRESS_COUNTER_SEPARATOR;
+    use crate::compiler::constants::CARGO_PROGRESS_PREFIX_BUILDING;
+    use crate::compiler::constants::CARGO_PROGRESS_PREFIX_CHECKING;
+    use crate::compiler::constants::CARGO_PROGRESS_PREFIX_FINISHED;
+    use crate::compiler::constants::CARGO_UNUSED_IMPORT_WARNING;
+    use crate::compiler::constants::CARGO_WARNING_SUMMARY_PREFIX;
+    use crate::compiler::constants::CARGO_WARNING_SUMMARY_TOKEN_GENERATED;
+    use crate::compiler::constants::CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY;
+    use crate::compiler::constants::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
     use crate::reporting::CompilerWarningFacts;
 
-    const CAPTURED_FRAME: &str = "\u{1b}[1m\u{1b}[96m    Building\u{1b}[0m \
-                                  [========>                ] 149/403: globset, regex-automata\r";
+    fn styled_building_prefix() -> String {
+        let label = CARGO_PROGRESS_PREFIX_BUILDING.trim_end();
+        let spacing = &CARGO_PROGRESS_PREFIX_BUILDING[label.len()..];
+        format!("\u{1b}[1m\u{1b}[96m    {label}\u{1b}[0m{spacing}")
+    }
+
+    fn captured_frame() -> String {
+        let prefix = styled_building_prefix();
+        format!(
+            "{prefix}[========>                {CARGO_PROGRESS_BAR_CLOSE}149{CARGO_PROGRESS_COUNTER_SEPARATOR}403: globset, regex-automata\r"
+        )
+    }
 
     #[derive(Default)]
     struct ProgressRecorder {
@@ -510,18 +530,22 @@ mod tests {
 
     #[test]
     fn plain_building_progress_line_is_treated_as_progress() {
-        let line = "    Building [                             ] 0/1: cli_json_clean_fixture      \r    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s\n";
+        let line = format!(
+            "    {CARGO_PROGRESS_PREFIX_BUILDING}[                             {CARGO_PROGRESS_BAR_CLOSE}0{CARGO_PROGRESS_COUNTER_SEPARATOR}1: cli_json_clean_fixture      \r    {CARGO_PROGRESS_PREFIX_FINISHED}`dev` profile [unoptimized + debuginfo] target(s) in 0.16s\n"
+        );
         assert!(matches!(
-            CargoLineKind::from(line),
+            CargoLineKind::from(line.as_str()),
             CargoLineKind::OtherProgress
         ));
     }
 
     #[test]
     fn progress_line_with_embedded_warning_is_not_treated_as_progress() {
-        let line = "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n";
+        let line = format!(
+            "    {CARGO_PROGRESS_PREFIX_BUILDING}[                             {CARGO_PROGRESS_BAR_CLOSE}0{CARGO_PROGRESS_COUNTER_SEPARATOR}1: fixture...{CARGO_UNUSED_IMPORT_WARNING} `child::SpawnStats`\n"
+        );
         assert!(matches!(
-            CargoLineKind::from(line),
+            CargoLineKind::from(line.as_str()),
             CargoLineKind::DiagnosticOrText
         ));
     }
@@ -529,8 +553,9 @@ mod tests {
     #[test]
     fn classify_suppresses_unused_import_when_warning_follows_progress_prefix() {
         let block = vec![
-            "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n"
-                .to_string(),
+            format!(
+                "    {CARGO_PROGRESS_PREFIX_BUILDING}[                             {CARGO_PROGRESS_BAR_CLOSE}0{CARGO_PROGRESS_COUNTER_SEPARATOR}1: fixture...{CARGO_UNUSED_IMPORT_WARNING} `child::SpawnStats`\n"
+            ),
             " --> src/actor/mod.rs:2:9\n".to_string(),
             "  |\n".to_string(),
             "2 | pub use child::SpawnStats;\n".to_string(),
@@ -547,8 +572,9 @@ mod tests {
     #[test]
     fn quiet_builds_do_not_accumulate_compiler_warning_summary_counts() {
         let mut block = vec![
-            "warning: `fixture` (lib) generated 3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` to apply 1 suggestion)\n"
-                .to_string(),
+            format!(
+                "{CARGO_WARNING_SUMMARY_PREFIX}fixture` (lib){CARGO_WARNING_SUMMARY_TOKEN_GENERATED}3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` {CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY}1 suggestion)\n"
+            ),
             "\n".to_string(),
         ];
         let mut suppression_notice = SuppressionNotice::Pending;
@@ -572,8 +598,8 @@ mod tests {
 
     #[test]
     fn progress_lines_are_hidden_while_progress_status_is_active() {
-        let line = "    Checking fixture v0.1.0\n";
-        let kind = CargoLineKind::from(line);
+        let line = format!("    {CARGO_PROGRESS_PREFIX_CHECKING}fixture v0.1.0\n");
+        let kind = CargoLineKind::from(line.as_str());
 
         assert!(!kind.should_forward(
             BuildOutputMode::SuppressUnusedImportWarnings,
@@ -587,7 +613,10 @@ mod tests {
 
     #[test]
     fn forwarded_diagnostic_stops_progress_before_printing() {
-        let mut block = vec!["error: expected item\n".to_string(), "\n".to_string()];
+        let mut block = vec![
+            format!("{DIAGNOSTIC_SEVERITY_ERROR_PREFIX} expected item\n"),
+            "\n".to_string(),
+        ];
         let mut suppression_notice = SuppressionNotice::Pending;
         let mut compiler_warning_facts = CompilerWarningFacts::None;
         let mut compiler_warning_count = 0;
@@ -612,7 +641,7 @@ mod tests {
     #[test]
     fn suppression_notice_writes_progress_status_notice_without_stopping() {
         let mut block = vec![
-            "warning: unused import: `child::SpawnStats`\n".to_string(),
+            format!("{CARGO_UNUSED_IMPORT_WARNING} `child::SpawnStats`\n"),
             "\n".to_string(),
         ];
         let mut suppression_notice = SuppressionNotice::Pending;
@@ -652,9 +681,15 @@ mod tests {
 
     #[test]
     fn warning_summary_glued_to_a_progress_frame_is_counted_not_forwarded() {
-        let frame = "\u{1b}[1m\u{1b}[96m    Building\u{1b}[0m [    ] 0/2: fixture\r\u{1b}[K";
-        let summary = "\u{1b}[1m\u{1b}[33mwarning\u{1b}[0m: `fixture` (bin \"fixture\") generated 2 \
-                       warnings (run `cargo fix --bin \"fixture\"` to apply 1 suggestion)\n";
+        let styled_prefix = styled_building_prefix();
+        let frame = format!(
+            "{styled_prefix}[    {CARGO_PROGRESS_BAR_CLOSE}0{CARGO_PROGRESS_COUNTER_SEPARATOR}2: fixture\r\u{1b}[K"
+        );
+        let styled_warning_prefix = CARGO_WARNING_SUMMARY_PREFIX.replacen(':', "\u{1b}[0m:", 1);
+        let summary = format!(
+            "\u{1b}[1m\u{1b}[33m{styled_warning_prefix}fixture` (bin \"fixture\"){CARGO_WARNING_SUMMARY_TOKEN_GENERATED}2 \
+                       warnings (run `cargo fix --bin \"fixture\"` {CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY}1 suggestion)\n"
+        );
         let mut block = vec![collapse_carriage_returns(&format!("{frame}{summary}"))];
         let mut suppression_notice = SuppressionNotice::Pending;
         let mut compiler_warning_facts = CompilerWarningFacts::None;
@@ -680,26 +715,40 @@ mod tests {
     #[test]
     fn a_captured_bar_frame_yields_cargos_counter() {
         assert_eq!(
-            parse_unit_counter(CAPTURED_FRAME),
+            parse_unit_counter(&captured_frame()),
             UnitCounter::new(149, 403)
         );
     }
 
     #[test]
     fn only_a_building_frame_over_a_nonzero_total_is_a_counter() {
-        assert_eq!(parse_unit_counter("    Checking fixture v0.1.0\n"), None);
+        assert_eq!(
+            parse_unit_counter(&format!(
+                "    {CARGO_PROGRESS_PREFIX_CHECKING}fixture v0.1.0\n"
+            )),
+            None
+        );
         assert_eq!(
             parse_unit_counter("    Downloading [=====>   ] 3/10: serde\r"),
             None
         );
-        assert_eq!(parse_unit_counter("    Building [   ] 0/0: fixture"), None);
+        assert_eq!(
+            parse_unit_counter(&format!(
+                "    {CARGO_PROGRESS_PREFIX_BUILDING}[   {CARGO_PROGRESS_BAR_CLOSE}0{CARGO_PROGRESS_COUNTER_SEPARATOR}0: fixture"
+            )),
+            None
+        );
     }
 
     #[test]
     fn reader_reports_each_frame_and_splits_lines_as_read_line_does() {
-        let second_frame = CAPTURED_FRAME.replace("149/403", "150/403");
+        let captured_frame = captured_frame();
+        let second_frame = captured_frame.replace(
+            &format!("149{CARGO_PROGRESS_COUNTER_SEPARATOR}403"),
+            &format!("150{CARGO_PROGRESS_COUNTER_SEPARATOR}403"),
+        );
         let stderr = format!(
-            "    Checking fixture v0.1.0\n{CAPTURED_FRAME}{second_frame}\u{1b}[Kwarning: unused\n\
+            "    {CARGO_PROGRESS_PREFIX_CHECKING}fixture v0.1.0\n{captured_frame}{second_frame}\u{1b}[Kwarning: unused\n\
              trailing"
         );
         let mut reader = StderrReader::from(stderr.as_bytes());
@@ -713,8 +762,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "    Checking fixture v0.1.0\n".to_string(),
-                format!("{CAPTURED_FRAME}{second_frame}\u{1b}[Kwarning: unused\n"),
+                format!("    {CARGO_PROGRESS_PREFIX_CHECKING}fixture v0.1.0\n"),
+                format!("{captured_frame}{second_frame}\u{1b}[Kwarning: unused\n"),
                 "trailing".to_string(),
             ]
         );
