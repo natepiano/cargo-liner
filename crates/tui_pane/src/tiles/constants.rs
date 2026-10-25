@@ -65,6 +65,10 @@ pub(super) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 
 // motion
+/// Fade inks advance in two alpha units to avoid subpixel colour flicker.
+pub(super) const CELL_FADE_ALPHA_STEP: u8 = 2;
+/// Minimum entry contrast on the first actual painted frame.
+pub(super) const FIRST_VISIBLE_STEP: u8 = 8;
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(super) const PROGRESS_SCALE: u32 = 1000;
@@ -108,7 +112,7 @@ pub(super) const LENDING_TEST_GAP_HEIGHT: u16 = 4;
 pub(super) const LENDING_TEST_INITIAL_ROWS: usize = 12;
 /// The whole command's framed heights at the removal's two endpoints.
 #[cfg(test)]
-pub(super) const LENDING_TEST_ENDPOINT_HEIGHTS: [u16; 2] = [8, 9];
+pub(super) const LENDING_TEST_ENDPOINT_HEIGHTS: [u16; 2] = [6, 6];
 /// Title used by the spare-row motion fixture.
 #[cfg(test)]
 pub(super) const LENDING_TEST_SUMMARY_TITLE: &str = "summary";

@@ -23,7 +23,6 @@ use sysinfo::Process;
 
 use super::command_text;
 use super::process_identity::InvocationId;
-use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
 #[cfg(test)]
 use super::scan;
@@ -253,8 +252,6 @@ pub(super) struct InvocationCpuAccounting {
     pub(super) targets:         HashMap<InvocationId, HashSet<PathBuf>>,
     /// A compiler lifetime can never donate its accumulated history to another invocation.
     pub(super) cache_owners:    HashMap<ProcessIdentity, InvocationId>,
-    /// Unavailable lifetime reads retain rows only during continuous pid presence.
-    pub(super) identities:      ProcessIdentities,
     /// Bind the pre-refresh counters to the lifetime observed with their last sample.
     pub(super) observed:        HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.

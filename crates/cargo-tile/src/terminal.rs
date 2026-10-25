@@ -19,10 +19,12 @@ use tui_pane::run_terminal;
 use crate::app::App;
 use crate::capture;
 use crate::census;
-use crate::census::CargoGroup;
 use crate::census::CensusCadence;
 use crate::census::CensusScope;
+use crate::census::CensusStartError;
 use crate::census::ExcludedCommands;
+use crate::census::scan::PublicationAge;
+use crate::census::scan::PublishedInvocations;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
@@ -42,8 +44,9 @@ use crate::theme;
 /// what makes the answer free, and what keeps the summary's stats read
 /// from having to start a server to discover whether one is running.
 pub(crate) struct Scan {
-    /// The commands running, newest first.
-    pub(crate) groups:           Vec<CargoGroup>,
+    /// Explicit invocation states from one census publication.
+    pub(crate) invocations:      PublishedInvocations,
+    pub(crate) age:              PublicationAge,
     /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
     pub(crate) sccache:          SccacheServer,
     /// Settings reads these observations without reopening any capture path.
@@ -101,14 +104,14 @@ pub(crate) fn run_with_capture_parent(
             census::spawn_with_resolver(excluded, cadence, scope, move || {
                 crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
             })
-            .0
+            .map(|(scans, _)| scans)
         },
         grid_motion,
     )
 }
 
 fn run_with_scanner(
-    spawn: impl FnOnce(ExcludedCommands) -> Receiver<Scan>,
+    spawn: impl FnOnce(ExcludedCommands) -> Result<Receiver<Scan>, CensusStartError>,
     grid_motion: GridMotion,
 ) -> ExitCode {
     let loaded_config = LoadedConfig::load::<CargoTile>();
@@ -137,12 +140,15 @@ fn run_with_scanner(
     // the first frame, and a failure here is a notice, never an exit.
     capture::stand_up(&mut app);
 
-    run_terminal(&mut app, &iterm2_profile, |app| {
-        Workers::new(
-            spawn(app.excluded_commands.clone()),
-            appearances,
-            grid_motion,
-        )
+    let scans = match spawn(app.excluded_commands.clone()) {
+        Ok(scans) => scans,
+        Err(error) => {
+            eprintln!("cargo-tile: census: {error}");
+            return ExitCode::FAILURE;
+        },
+    };
+    run_terminal(&mut app, &iterm2_profile, |_| {
+        Workers::new(scans, appearances, grid_motion)
     })
 }
 
@@ -283,7 +289,9 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         app.root_status != scan.root_status || app.shared_directory != scan.shared_directory;
     app.shared_directory = scan.shared_directory;
     app.root_status = scan.root_status;
-    app.roster.observe(scan.groups, Instant::now()) || status_changed
+    app.roster
+        .observe_published_scan(&scan.invocations, scan.age.observed_at())
+        || status_changed
 }
 
 /// Take whatever the sccache workers have replied, reporting whether the
@@ -381,12 +389,31 @@ fraying = "leading"
             .collect()
     }
 
+    fn terminal_publication(app: &App, groups: Vec<CargoGroup>) -> PublishedInvocations {
+        let previous = app
+            .roster
+            .groups()
+            .iter()
+            .map(|group| CargoGroup {
+                lead:     group.lead.process.clone(),
+                rest:     group
+                    .rows()
+                    .skip(1)
+                    .map(|row| row.process.clone())
+                    .collect(),
+                ancestry: group.ancestry().clone(),
+            })
+            .collect::<Vec<_>>();
+        PublishedInvocations::fixture(groups, &[], &previous, Instant::now())
+    }
+
     /// Every recovery here leaves the command grid empty while settings changes.
     fn deliver_capture(app: &mut App, capture: Capture) -> bool {
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:           Vec::new(),
+                invocations:      PublishedInvocations::default(),
+                age:              PublicationAge::between(Instant::now(), Instant::now()),
                 sccache:          SccacheServer::Stopped,
                 root_status:      capture.root_status,
                 shared_directory: capture.shared_directory,
@@ -425,7 +452,7 @@ fraying = "leading"
         }
     }
 
-    /// PID reuse arrives through the channel as a new invocation and a second tile.
+    /// PID reuse preserves both records, but only the live replacement can get a first tile.
     #[test]
     fn reused_pid_scan_delivery_keeps_both_invocations() {
         let mut app = App::new_for_test().expect("test app");
@@ -445,11 +472,15 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
-                    groups:           vec![CargoGroup {
-                        lead:     process.clone(),
-                        rest:     Vec::new(),
-                        ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
-                    }],
+                    invocations:      terminal_publication(
+                        &app,
+                        vec![CargoGroup {
+                            lead:     process.clone(),
+                            rest:     Vec::new(),
+                            ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+                        }],
+                    ),
+                    age:              PublicationAge::between(Instant::now(), Instant::now()),
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
                     shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
@@ -460,10 +491,7 @@ fraying = "leading"
         assert_eq!(app.roster.groups().len(), 2);
         assert!(app.roster.groups()[0].lead.is_ended());
         assert_eq!(app.roster.groups()[1].lead.process, replacement);
-        assert_eq!(
-            app.roster.tiled_ids(&[]),
-            vec![first.invocation_id, replacement.invocation_id]
-        );
+        assert_eq!(app.roster.tiled_ids(&[]), vec![replacement.invocation_id]);
     }
 
     /// Availability changes must redraw and reach the roster without a stale value.
@@ -495,11 +523,15 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
-                    groups:           vec![CargoGroup {
-                        lead:     process.clone(),
-                        rest:     Vec::new(),
-                        ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
-                    }],
+                    invocations:      terminal_publication(
+                        &app,
+                        vec![CargoGroup {
+                            lead:     process.clone(),
+                            rest:     Vec::new(),
+                            ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+                        }],
+                    ),
+                    age:              PublicationAge::between(Instant::now(), Instant::now()),
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
                     shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
@@ -676,11 +708,15 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:           vec![CargoGroup {
-                    lead:     process.clone(),
-                    rest:     Vec::new(),
-                    ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
-                }],
+                invocations:      terminal_publication(
+                    &app,
+                    vec![CargoGroup {
+                        lead:     process.clone(),
+                        rest:     Vec::new(),
+                        ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+                    }],
+                ),
+                age:              PublicationAge::between(Instant::now(), Instant::now()),
                 sccache:          SccacheServer::Stopped,
                 root_status:      capture.root_status,
                 shared_directory: capture.shared_directory,

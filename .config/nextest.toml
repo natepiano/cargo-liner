@@ -2,6 +2,9 @@ nextest-version = { required = "0.9.138" }
 
 experimental = ["setup-scripts"]
 
+[profile.default]
+slow-timeout = { period = "15s", terminate-after = 2 }
+
 [scripts.setup.cargo-berth-templates]
 command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh", relative-to = "workspace-root" }
 

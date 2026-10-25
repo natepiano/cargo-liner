@@ -32,6 +32,7 @@ use crate::census::CensusCadence;
 use crate::census::CensusScope;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::READER_TIMESTAMPS_ENV;
+use crate::hook;
 use crate::render;
 use crate::settings;
 use crate::terminal::GridMotion;
@@ -142,6 +143,8 @@ fn run_reader_script(scenario: &str) {
 
 fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+    let shim_path = directory.path().join("capture-shim.sh");
+    fs::write(&shim_path, hook::shim_source()).expect("write rendered reader scenario shim");
     let stdout_path = directory.path().join("scenario.stdout");
     let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
@@ -152,10 +155,7 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
         .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
         .arg(std::env::current_exe().expect("integration reader executable"))
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/cargo-capture-shim.sh"
-        ))
+        .arg(&shim_path)
         .arg(scenario)
         .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
         .arg(cadence.smoothing.as_secs_f64().to_string())

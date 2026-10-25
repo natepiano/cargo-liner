@@ -44,6 +44,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::sync::LazyLock;
 use std::thread;
 
 use crate::constants::ACCOUNT_EXECUTABLE_MODE;
@@ -54,9 +55,11 @@ use crate::constants::ACCOUNT_GROUPS_MAX_CAPACITY;
 use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
 use crate::constants::CARGO_NAME;
+use crate::constants::COMMAND_VALUED_OPTIONS;
 use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
 use crate::constants::RUSTUP_HOME_ENV;
+use crate::constants::SHIM_GLOBAL_OPTIONS_PLACEHOLDER;
 use crate::constants::SHIM_LOCK_NAME;
 use crate::constants::SHIM_LOCK_RECOVERY;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
@@ -64,15 +67,29 @@ use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_MODE;
+use crate::constants::SHIM_OPTION_PATTERN_SEPARATOR;
 use crate::constants::SHIM_STAGING_NAME;
 use crate::constants::SHIM_VERSION_PREFIX;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::constants::TOOLCHAIN_BIN_DIR;
 use crate::constants::TOOLCHAINS_DIR;
+use crate::constants::ValuedOptionScope;
 
 /// The shim script, compiled in so the binary carries everything it
 /// installs and a copy on disk can never drift from it.
-const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
+pub(crate) fn shim_source() -> &'static str {
+    static SOURCE: LazyLock<String> = LazyLock::new(|| {
+        let options = COMMAND_VALUED_OPTIONS
+            .iter()
+            .filter_map(|(option, scope)| {
+                matches!(scope, ValuedOptionScope::Global).then_some(*option)
+            })
+            .collect::<Vec<_>>()
+            .join(SHIM_OPTION_PATTERN_SEPARATOR);
+        include_str!("cargo-capture-shim.sh").replace(SHIM_GLOBAL_OPTIONS_PLACEHOLDER, &options)
+    });
+    SOURCE.as_str()
+}
 
 /// The account database identity whose default rustup home is inspected.
 #[derive(Debug)]
@@ -750,7 +767,7 @@ impl Hook {
         match self.state()? {
             HookState::Installed => {
                 let contents = fs::read(&self.cargo)?;
-                if contents == SHIM_SOURCE.as_bytes() {
+                if contents == shim_source().as_bytes() {
                     return Ok(HookOperationOutcome::AlreadyCurrent);
                 }
                 if let ShimVersion::Versioned(installed) = shim_version(&contents)?
@@ -800,7 +817,7 @@ impl Hook {
             .create(true)
             .truncate(true)
             .open(&self.staging)?;
-        staging.write_all(SHIM_SOURCE.as_bytes())?;
+        staging.write_all(shim_source().as_bytes())?;
         staging.set_permissions(fs::Permissions::from_mode(SHIM_MODE))?;
         fs::rename(&self.staging, &self.cargo)
     }
@@ -1296,6 +1313,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::COMMAND_VALUED_OPTIONS;
     use crate::constants::HANDLER_SUBCOMMAND_NAME;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_CARGO;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_LINK;
@@ -1304,11 +1322,24 @@ mod tests {
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
+    use crate::constants::ValuedOptionScope;
+
+    #[test]
+    fn the_installed_shim_skips_every_valued_global_option() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        let installed = fs::read_to_string(&hook.cargo).unwrap();
+        for (option, scope) in COMMAND_VALUED_OPTIONS {
+            if matches!(scope, ValuedOptionScope::Global) {
+                assert!(installed.contains(option), "missing option {option}");
+            }
+        }
+    }
 
     #[test]
     fn embedded_shim_declares_the_supported_framing_version() {
         assert!(matches!(
-            shim_version(SHIM_SOURCE.as_bytes()).unwrap(),
+            shim_version(shim_source().as_bytes()).unwrap(),
             ShimVersion::Versioned(version) if version == SUPPORTED_REGISTRATION_VERSION
         ));
     }
@@ -1555,7 +1586,7 @@ mod tests {
 
     #[test]
     fn mutations_acquire_the_lock_before_classifying_an_orphaned_shim() {
-        let (_home, hook) = toolchain(SHIM_SOURCE);
+        let (_home, hook) = toolchain(shim_source());
         let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
         let _installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
 
@@ -1570,7 +1601,7 @@ mod tests {
                 "{outcome:?}"
             );
         }
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert!(!hook.real.exists());
         assert!(lock_path.exists());
     }
@@ -1835,24 +1866,24 @@ mod tests {
 
     #[test]
     fn the_shim_carries_the_marker_the_installer_looks_for() {
-        assert!(SHIM_SOURCE.contains(SHIM_MARKER));
+        assert!(shim_source().contains(SHIM_MARKER));
     }
 
     /// The shim runs in front of every cargo invocation on two operating
     /// systems, where the only shell that can be counted on is `sh`.
     #[test]
     fn the_shim_is_posix_sh_and_calls_both_script_implementations() {
-        assert!(SHIM_SOURCE.starts_with("#!/bin/sh\n"));
-        assert!(SHIM_SOURCE.contains("util-linux"));
+        assert!(shim_source().starts_with("#!/bin/sh\n"));
+        assert!(shim_source().contains("util-linux"));
         // util-linux exits with its own status without `-e`, which would
         // report every failed build as a success.
-        assert!(SHIM_SOURCE.contains("script -q -e -f -c"));
+        assert!(shim_source().contains("script -q -e -f -c"));
         // Neither implementation flushes the log per write on its own,
         // and the BSD one holds output for thirty seconds at a time --
         // longer than many runs last, and long enough that the single
         // line a blocked run prints reaches the grid after the wait it
         // announced is over.
-        assert!(SHIM_SOURCE.contains("script -q -t 0"));
+        assert!(shim_source().contains("script -q -t 0"));
     }
 
     /// A log is read only while the run writing it is alive, so the run
@@ -1861,7 +1892,7 @@ mod tests {
     /// what freed it from spelling out the reader's markers to answer.
     #[test]
     fn the_shim_retires_its_log_when_its_run_ends() {
-        let cleanup = SHIM_SOURCE
+        let cleanup = shim_source()
             .split_once("cleanup() {")
             .unwrap()
             .1
@@ -1872,9 +1903,9 @@ mod tests {
             line.trim_start().starts_with("rm -f ")
                 && line.split_whitespace().any(|word| word == r#""$log""#)
         }));
-        assert!(SHIM_SOURCE.contains("trap cleanup 0"));
+        assert!(shim_source().contains("trap cleanup 0"));
         assert!(
-            !SHIM_SOURCE.contains(LOCK_WAIT_MARKER),
+            !shim_source().contains(LOCK_WAIT_MARKER),
             "and no longer carries a copy of a marker the reader owns"
         );
     }
@@ -1892,7 +1923,7 @@ mod tests {
         let root = parent.join(rustix::process::getuid().as_raw().to_string());
         fs::write(
             &hook.cargo,
-            SHIM_SOURCE.replace(
+            shim_source().replace(
                 "capture_parent=/tmp/cargo-tile",
                 &format!("capture_parent='{}'", parent.display()),
             ),
@@ -1959,7 +1990,7 @@ mod tests {
     /// lists several, so what matters is that this one is among them
     /// rather than what the whole line reads.
     fn shim_passes_through(subcommand: &str) -> bool {
-        SHIM_SOURCE.lines().any(|line| {
+        shim_source().lines().any(|line| {
             line.strip_prefix("    ")
                 .and_then(|arm| arm.strip_suffix(')'))
                 .is_some_and(|arm| arm.split('|').any(|name| name.trim() == subcommand))
@@ -2072,7 +2103,7 @@ mod tests {
             ]
         ));
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
         assert!(matches!(
             inspect_shim(&hook.real).unwrap(),
@@ -2119,7 +2150,7 @@ mod tests {
             fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
             written
         );
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
     }
 
@@ -2131,7 +2162,7 @@ mod tests {
         hook.install().unwrap();
         let written = mark_old_mtime(&hook.cargo);
         let length = fs::metadata(&hook.cargo).unwrap().len();
-        let mut stale = SHIM_SOURCE.as_bytes().to_vec();
+        let mut stale = shim_source().as_bytes().to_vec();
         stale.rotate_right(1);
         fs::write(&hook.cargo, &stale).unwrap();
         assert_eq!(mark_old_mtime(&hook.cargo), written);
@@ -2139,7 +2170,7 @@ mod tests {
 
         assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Refreshed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
 
@@ -2158,7 +2189,7 @@ mod tests {
     /// and retain the saved binary's contents.
     fn assert_working_install(hook: &Hook) {
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert_eq!(
             fs::read_to_string(&hook.real).unwrap(),
             HOOK_TEST_REAL_CARGO
@@ -2230,7 +2261,7 @@ mod tests {
         fs::remove_dir(&hook.staging).unwrap();
         assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
         assert_eq!(hook.state().unwrap(), HookState::Installed);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
 
@@ -2273,7 +2304,7 @@ mod tests {
                 HOOK_TEST_REAL_CARGO
             );
             if state == HookState::Installed {
-                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
             } else {
                 assert!(!hook.cargo.exists());
             }
@@ -2328,7 +2359,7 @@ mod tests {
             HookState::Installed | HookState::Absent
         ));
         if hook.real.exists() {
-            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
             assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
         } else {
             assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
@@ -2408,7 +2439,7 @@ mod tests {
 
         assert_eq!(hook.state().unwrap(), HookState::Orphaned);
         assert_eq!(hook.install().unwrap(), HookOperationOutcome::Orphaned);
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
         assert!(!hook.real.exists());
         assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Orphaned);
     }
@@ -2422,7 +2453,7 @@ mod tests {
         hook.install().unwrap();
 
         assert!(!hook.staging.exists());
-        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), shim_source());
     }
 
     /// A rustup home holding one toolchain per entry, each with a cargo
@@ -2593,7 +2624,7 @@ mod tests {
         let startup = stand_up(&hooks);
 
         assert_eq!(startup.refreshed, vec!["stable-test".to_owned()]);
-        assert_eq!(fs::read_to_string(&hooks[0].cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hooks[0].cargo).unwrap(), shim_source());
         assert_eq!(
             fs::read_to_string(&hooks[0].real).unwrap(),
             "\u{7f}ELF stable"

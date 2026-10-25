@@ -1,19 +1,23 @@
 //! What the display holds between scans: the groups running now, and the
 //! ones that have finished but have not yet faded.
 //!
-//! A scan is a snapshot of what is running, so on its own it cannot say
-//! that something *stopped* -- a finished command is simply missing from
-//! the next one. The roster keeps the previous answer beside the new one
-//! and stamps whatever went away, which is what gives a finished row the
-//! grey spell it fades through before the display lets go of it.
+//! The census publishes live, missing and explicitly ended invocations. The roster
+//! projects those states into rows and retains departure receipts for the census.
 //!
 //! Every entry is keyed by invocation identity, so a row and its tile survive a scan
 //! unchanged rather than being rebuilt four times a second.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+
+use tui_pane::CellDeparture;
+use tui_pane::CellLifecycleTiming;
+use tui_pane::EndedCellDeparture;
+use tui_pane::PaintedRowSpan;
+use tui_pane::Theme;
 
 use crate::census::Ancestor;
 use crate::census::CargoGroup;
@@ -23,19 +27,16 @@ use crate::census::Measurement;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::census::scan;
+use crate::census::scan::AdmissibleInvocation;
 use crate::census::scan::AncestryWalk;
-use crate::constants::FADE_ALPHA_STEP;
+use crate::census::scan::LiveInvocation;
+use crate::census::scan::PublishedInvocation;
+use crate::census::scan::PublishedInvocations;
 use crate::render::SessionColumnWidths;
 use crate::theme;
 
-/// Whether a retained row still runs or is fading from its first missing scan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RowLifetime {
-    /// The latest scan still carries this invocation.
-    Live,
-    /// The invocation left the scan at this instant.
-    Finished(Instant),
-}
+/// Display lifetime is copied from census publication, never inferred from absence.
+type RowLifetime = PublishedInvocation;
 
 /// Whether an invocation heads a family whose children share its colour.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,12 +77,13 @@ pub(crate) struct TrackedRow {
     parent_family:      ParentFamily,
 }
 
+#[cfg(test)]
 impl From<CargoProcess> for TrackedRow {
     /// A row for a process the current scan carries.
     fn from(process: CargoProcess) -> Self {
         Self {
             process,
-            lifetime: RowLifetime::Live,
+            lifetime: RowLifetime::Live(scan::InvocationPresentation::default()),
             faded: 0,
             // Stamped by the roster once the whole scan is in: which
             // colours are free is a question about every group at
@@ -93,10 +95,19 @@ impl From<CargoProcess> for TrackedRow {
 }
 
 impl TrackedRow {
-    /// Whether the process behind this row has stopped.
-    pub(crate) const fn is_ended(&self) -> bool {
-        matches!(self.lifetime, RowLifetime::Finished(_))
+    /// A display row requires the census state of that same invocation.
+    const fn published(process: CargoProcess, lifetime: RowLifetime) -> Self {
+        Self {
+            process,
+            lifetime,
+            faded: 0,
+            family: FamilyHead::NoChildren,
+            parent_family: ParentFamily::NoFamily,
+        }
     }
+
+    /// Whether the process behind this row has stopped.
+    pub(crate) const fn is_ended(&self) -> bool { matches!(&self.lifetime, RowLifetime::Ended(_)) }
 
     /// How far the row's text has been carried toward the ground.
     pub(crate) const fn faded(&self) -> u8 { self.faded }
@@ -107,25 +118,61 @@ impl TrackedRow {
     /// The family of the cargo this invocation runs under.
     pub(crate) const fn parent_family(&self) -> ParentFamily { self.parent_family }
 
-    /// Take the scan's account of a process that is still running.
-    fn refresh(&mut self, process: CargoProcess) {
-        self.process = process;
-        self.lifetime = RowLifetime::Live;
+    /// Accept only a census row proven live, and never revive a finished row.
+    fn refresh_live(&mut self, live: LiveInvocation<'_>) {
+        if self.is_ended() {
+            return;
+        }
+        self.process = live.row.clone();
+        self.lifetime = live.published();
         self.faded = 0;
     }
 
-    /// Stamp the row as finished, leaving an earlier stamp alone so the
-    /// fade runs from when it actually stopped.
-    const fn finish(&mut self, now: Instant) {
-        if matches!(self.lifetime, RowLifetime::Live) {
-            self.lifetime = RowLifetime::Finished(now);
+    /// Explicit completion for legacy row fixtures.
+    #[cfg(test)]
+    fn finish(&mut self, now: Instant) {
+        if !self.is_ended() {
+            self.lifetime =
+                RowLifetime::Ended(scan::EndedInvocation::fixture(self.process.clone(), now));
+        }
+    }
+
+    /// The sole authority for a first painted cell.
+    pub(crate) fn admissible(&self) -> Result<AdmissibleInvocation, ()> {
+        self.lifetime.admissible()
+    }
+
+    pub(crate) fn presented(&self, span: PaintedRowSpan<InvocationId>) {
+        match &self.lifetime {
+            RowLifetime::Live(_) => {
+                if let Ok(admissible) = self.admissible() {
+                    admissible.painted(span);
+                }
+            },
+            RowLifetime::Ended(end) => end.painted(span),
+            RowLifetime::AwaitingCargo(presentation) | RowLifetime::Missing(presentation) => {
+                presentation.painted(span);
+            },
+            RowLifetime::Joined { .. } => {},
+        }
+    }
+
+    fn withdraw(&self) {
+        match &self.lifetime {
+            RowLifetime::Live(presentation)
+            | RowLifetime::AwaitingCargo(presentation)
+            | RowLifetime::Missing(presentation) => {
+                presentation.withdraw();
+            },
+            RowLifetime::Ended(end) => end.withdraw(),
+            RowLifetime::Joined { .. } => {},
         }
     }
 
     /// Move the fade on, reporting whether it went anywhere.
     ///
     /// A row that has not stopped has nothing to move: the whole travel
-    /// is measured from the stamp [`finish`](Self::finish) left.
+    /// is measured from the published end timestamp.
     fn advance(&mut self, now: Instant, fade: Duration) -> bool {
         let faded = self.faded_at(now, fade);
         let moved = faded != self.faded;
@@ -139,28 +186,21 @@ impl TrackedRow {
     /// `fade` of nothing gives on the poll that stamps the row -- there
     /// is no travel to make, and the row goes on that same poll.
     fn faded_at(&self, now: Instant, fade: Duration) -> u8 {
-        let RowLifetime::Finished(ended) = self.lifetime else {
+        let RowLifetime::Ended(ended) = &self.lifetime else {
             return 0;
         };
-        let elapsed = now.duration_since(ended);
+        let elapsed = now.saturating_duration_since(ended.at());
         if elapsed >= fade {
             return u8::MAX;
         }
-        // Both fit a u32: `fade` is clamped to `MAX_FADE_SECONDS`, and
-        // `elapsed` is shorter still to have reached here.
-        let elapsed = u64::from(u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX));
-        let whole = u64::from(u32::try_from(fade.as_millis()).unwrap_or(u32::MAX));
-        let travelled = elapsed
-            .saturating_mul(elapsed)
-            .saturating_mul(u64::from(u8::MAX))
-            / whole.saturating_mul(whole).max(1);
-        let alpha = u8::try_from(travelled).unwrap_or(u8::MAX);
-        alpha - alpha % FADE_ALPHA_STEP
+        tui_pane::CellLifecycleTiming::new(fade)
+            .fade_out(elapsed)
+            .amount()
     }
 
     /// Whether the row has been finished for longer than `fade`.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool {
-        matches!(self.lifetime, RowLifetime::Finished(ended) if now.duration_since(ended) >= fade)
+        matches!(&self.lifetime, RowLifetime::Ended(ended) if now.saturating_duration_since(ended.at()) >= fade)
     }
 }
 
@@ -179,6 +219,7 @@ pub(crate) struct TrackedGroup {
     ancestry:        AncestryWalk<Ancestor>,
 }
 
+#[cfg(test)]
 impl From<CargoGroup> for TrackedGroup {
     /// Track a group the current scan has just turned up.
     fn from(group: CargoGroup) -> Self {
@@ -192,6 +233,17 @@ impl From<CargoGroup> for TrackedGroup {
 }
 
 impl TrackedGroup {
+    /// Adapt only an explicit census end to the cell's departure evidence.
+    pub(crate) fn departure_evidence(&self, fade: Duration) -> Option<EndedCellDeparture> {
+        match &self.lead.lifetime {
+            RowLifetime::Ended(end) => Some(end.departure(fade)),
+            RowLifetime::Live(_)
+            | RowLifetime::AwaitingCargo(_)
+            | RowLifetime::Missing(_)
+            | RowLifetime::Joined { .. } => None,
+        }
+    }
+
     /// Every row the group's tile draws, the lead first.
     pub(crate) fn rows(&self) -> impl Iterator<Item = &TrackedRow> {
         std::iter::once(&self.lead).chain(self.rest.iter())
@@ -202,35 +254,75 @@ impl TrackedGroup {
         std::iter::once(&mut self.lead).chain(self.rest.iter_mut())
     }
 
+    /// Whole-cell departure exists only for a published end value.
+    pub(crate) fn departure(&self, fade: Duration) -> CellDeparture {
+        self.ended(fade)
+            .map_or(CellDeparture::Live, |end| CellDeparture::Fading {
+                started: end.0,
+                timing:  end.1,
+            })
+    }
+
+    /// Borrow the explicit end's clock for the drawing adapter.
+    const fn ended(&self, fade: Duration) -> Option<(Instant, CellLifecycleTiming)> {
+        match &self.lead.lifetime {
+            RowLifetime::Live(_)
+            | RowLifetime::AwaitingCargo(_)
+            | RowLifetime::Missing(_)
+            | RowLifetime::Joined { .. } => None,
+            RowLifetime::Ended(end) => Some((end.at(), tui_pane::CellLifecycleTiming::new(fade))),
+        }
+    }
+
     /// What stands above the command, outermost first.
     pub(crate) const fn ancestry(&self) -> &AncestryWalk<Ancestor> { &self.ancestry }
 
-    /// Fold in the scan's account of a group that is still running.
-    ///
-    /// Rows the scan no longer carries are stamped rather than dropped,
-    /// and stay where they sat: a sub-command finishing should fade out
-    /// of the place it occupied, not pull the rows under it upward.
-    fn refresh(&mut self, group: CargoGroup, now: Instant) {
-        self.lead.refresh(group.lead);
-        self.ancestry = group.ancestry;
-        let mut arriving = group.rest;
-        for tracked in &mut self.rest {
-            match arriving
-                .iter()
-                .position(|process| process.invocation_id == tracked.process.invocation_id)
-            {
-                Some(index) => tracked.refresh(arriving.remove(index)),
-                None => tracked.finish(now),
-            }
-        }
-        self.rest.extend(arriving.into_iter().map(TrackedRow::from));
+    /// Refreshing a group requires a live invocation value from the census.
+    fn refresh(&mut self, live: LiveInvocation<'_>, ancestry: &AncestryWalk<Ancestor>) {
+        self.lead.refresh_live(live);
+        self.ancestry = ancestry.clone();
     }
 
-    /// Stamp the whole group as finished.
-    fn finish(&mut self, now: Instant) {
-        self.lead.finish(now);
-        for row in &mut self.rest {
-            row.finish(now);
+    /// Census membership is authoritative; a finished lead keeps its frozen list.
+    fn apply_publication(&mut self, group: &CargoGroup, published: &PublishedInvocations) {
+        if !self.lead.is_ended() {
+            if let Ok(live) = published.live(&group.lead) {
+                self.refresh(live, &group.ancestry);
+            }
+            if let Some(state) = published.state(&group.lead.invocation_id) {
+                self.lead.lifetime = state.clone();
+            }
+        }
+        let previous = std::mem::take(&mut self.rest);
+        for mut row in previous {
+            let Some(process) = group
+                .rest
+                .iter()
+                .find(|process| process.invocation_id == row.process.invocation_id)
+            else {
+                continue;
+            };
+            let Some(state) = published.state(&process.invocation_id) else {
+                continue;
+            };
+            if !row.is_ended() {
+                if let Ok(live) = published.live(process) {
+                    row.refresh_live(live);
+                }
+                row.lifetime = state.clone();
+            }
+            self.rest.push(row);
+        }
+        for process in &group.rest {
+            if !self
+                .rest
+                .iter()
+                .any(|row| row.process.invocation_id == process.invocation_id)
+                && let Some(state) = published.state(&process.invocation_id)
+            {
+                self.rest
+                    .push(TrackedRow::published(process.clone(), state.clone()));
+            }
         }
     }
 
@@ -239,7 +331,16 @@ impl TrackedGroup {
     /// changed.
     fn advance(&mut self, now: Instant, fade: Duration) -> bool {
         let before = self.rest.len();
-        self.rest.retain(|row| !row.is_expired(now, fade));
+        self.rest.retain(|row| {
+            if row.is_expired(now, fade) {
+                if let RowLifetime::Ended(end) = &row.lifetime {
+                    end.departed();
+                }
+                false
+            } else {
+                true
+            }
+        });
         let mut changed = self.rest.len() != before;
         changed |= self.lead.advance(now, fade);
         for row in &mut self.rest {
@@ -254,6 +355,9 @@ impl TrackedGroup {
 
     /// Retain unlisted invocations and recompute readings after hidden subtrees leave.
     fn without_hidden_descendants(&self, hidden: &[String]) -> Self {
+        if hidden.is_empty() {
+            return self.clone();
+        }
         let parents: HashMap<_, _> = self
             .rows()
             .filter_map(|row| match &row.process.parent {
@@ -341,16 +445,46 @@ impl TrackedGroup {
     }
 }
 
+/// Family assignments use the palette computed for the complete active theme.
+#[derive(Clone, Default)]
+enum FamilyPalette {
+    #[default]
+    Unmeasured,
+    Measured {
+        theme: Arc<Theme>,
+        count: usize,
+    },
+}
+
+impl FamilyPalette {
+    fn count(&mut self) -> usize {
+        let active = tui_pane::theme();
+        if let Self::Measured { theme, count } = self
+            && Arc::ptr_eq(theme, &active)
+        {
+            return *count;
+        }
+        let count = theme::family_color_count().max(1);
+        *self = Self::Measured {
+            theme: active,
+            count,
+        };
+        count
+    }
+}
+
 /// Every group the display knows about, running or fading.
 #[derive(Clone)]
 pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
-    groups:        Vec<TrackedGroup>,
+    groups:         Vec<TrackedGroup>,
     /// The scan last folded in, kept so an identical one can be
     /// recognised and skipped. With nothing building, the display has no
     /// reason to repaint four times a second.
-    last:          Vec<CargoGroup>,
+    /// Missing evidence is part of the answer, including its eventual resolution.
+    publication:    PublishedInvocations,
+    observed_at:    Option<Instant>,
     /// The palette index each family holds, by the invocation heading it.
     ///
     /// Kept here rather than worked out per cell because the colour has
@@ -358,9 +492,10 @@ pub(crate) struct Roster {
     /// because which colours are free is a question about every group
     /// at once. An index is held while the family is on screen and the
     /// active palette contains it, fading rows included.
-    families:      HashMap<InvocationId, usize>,
+    families:       HashMap<InvocationId, usize>,
+    family_palette: FamilyPalette,
     /// Metadata columns keep the widest machine or session reading.
-    column_widths: SessionColumnWidths,
+    column_widths:  SessionColumnWidths,
 }
 
 impl Default for Roster {
@@ -371,10 +506,12 @@ impl Roster {
     /// An empty roster.
     pub(crate) fn new() -> Self {
         Self {
-            groups:        Vec::new(),
-            last:          Vec::new(),
-            families:      HashMap::new(),
-            column_widths: crate::render::SessionColumnWidths::machine(),
+            groups:         Vec::new(),
+            publication:    PublishedInvocations::default(),
+            observed_at:    None,
+            families:       HashMap::new(),
+            family_palette: FamilyPalette::Unmeasured,
+            column_widths:  crate::render::SessionColumnWidths::machine(),
         }
     }
 
@@ -391,6 +528,22 @@ impl Roster {
     #[cfg(test)]
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 
+    /// Inject a later ancestry reading without changing the invocation's lifetime.
+    #[cfg(test)]
+    pub(crate) fn observe_ancestry_for_test(
+        &mut self,
+        id: &InvocationId,
+        ancestry: AncestryWalk<Ancestor>,
+    ) -> Result<(), &'static str> {
+        let group = self
+            .groups
+            .iter_mut()
+            .find(|group| &group.id == id)
+            .ok_or("ancestry update requires a tracked command")?;
+        group.ancestry = ancestry;
+        Ok(())
+    }
+
     /// Metadata widths retained across every frame in this session.
     #[cfg(test)]
     pub(crate) const fn column_widths(&self) -> SessionColumnWidths { self.column_widths }
@@ -403,12 +556,34 @@ impl Roster {
 
     /// Remove hidden subtrees before observing readings or building any display layout.
     pub(crate) fn visible(&mut self, hidden: &[String]) -> VisibleRoster {
-        let mut groups: Vec<_> = self
-            .groups
-            .iter()
-            .filter(|group| !group.lead.process.command.is_hidden(hidden))
-            .map(|group| group.without_hidden_descendants(hidden))
-            .collect();
+        let mut groups = if hidden.is_empty() {
+            self.groups.clone()
+        } else {
+            for group in &self.groups {
+                if group.lead.process.command.is_hidden(hidden) {
+                    for row in group.rows() {
+                        row.withdraw();
+                    }
+                }
+            }
+            let groups: Vec<_> = self
+                .groups
+                .iter()
+                .filter(|group| !group.lead.process.command.is_hidden(hidden))
+                .map(|group| group.without_hidden_descendants(hidden))
+                .collect();
+            let visible_ids: HashSet<_> = groups
+                .iter()
+                .flat_map(TrackedGroup::rows)
+                .map(|row| &row.process.invocation_id)
+                .collect();
+            for row in self.groups.iter().flat_map(TrackedGroup::rows) {
+                if !visible_ids.contains(&row.process.invocation_id) {
+                    row.withdraw();
+                }
+            }
+            groups
+        };
         self.assign_families(&mut groups);
         let mut column_widths = self.column_widths;
         for row in groups.iter().flat_map(TrackedGroup::rows) {
@@ -426,27 +601,98 @@ impl Roster {
     /// A group the scan still carries keeps its place: the display is
     /// ordered by when a command started, and re-sorting on every scan
     /// would shuffle tiles under the reader for no reason.
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, scan: Vec<CargoGroup>, now: Instant) -> bool {
-        if scan == self.last {
+        self.observe_discovery(scan, &[], now)
+    }
+
+    /// Legacy fixtures publish their explicit end observations through the census adapter.
+    #[cfg(test)]
+    pub(crate) fn observe_discovery(
+        &mut self,
+        groups: Vec<CargoGroup>,
+        missing: &[InvocationId],
+        now: Instant,
+    ) -> bool {
+        let previous: Vec<_> = self
+            .groups
+            .iter()
+            .map(|group| CargoGroup {
+                lead:     group.lead.process.clone(),
+                rest:     group.rest.iter().map(|row| row.process.clone()).collect(),
+                ancestry: group.ancestry.clone(),
+            })
+            .collect();
+        let published = PublishedInvocations::fixture(groups, missing, &previous, now);
+        self.observe_invocations(&published)
+    }
+
+    /// Reject delayed answers without letting publication age alter the end evidence.
+    pub(crate) fn observe_published_scan(
+        &mut self,
+        published: &PublishedInvocations,
+        observed_at: Instant,
+    ) -> bool {
+        if self
+            .observed_at
+            .is_some_and(|previous| observed_at < previous)
+        {
             return false;
         }
-        self.last.clone_from(&scan);
-        let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
-        for group in scan {
-            match self
-                .groups
-                .iter_mut()
-                .find(|tracked| tracked.id == group.id())
-            {
-                Some(tracked) => tracked.refresh(group, now),
-                None => self.groups.push(TrackedGroup::from(group)),
-            }
+        self.observed_at = Some(observed_at);
+        self.observe_invocations(published)
+    }
+
+    /// Only published states can change a row's lifetime. Omission has no end meaning.
+    pub(crate) fn observe_invocations(&mut self, published: &PublishedInvocations) -> bool {
+        if &self.publication == published {
+            return false;
         }
-        for tracked in &mut self.groups {
-            if !arriving.contains(&tracked.id) {
-                tracked.finish(now);
-            }
-        }
+        let mut ordered = published.groups().iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|group| {
+            self.groups
+                .iter()
+                .position(|tracked| tracked.id == group.id())
+                .unwrap_or(self.groups.len())
+        });
+        let mut previous = std::mem::take(&mut self.groups);
+        self.groups = ordered
+            .into_iter()
+            .filter_map(|group| {
+                previous
+                    .iter()
+                    .position(|tracked| tracked.id == group.id())
+                    .map_or_else(
+                        || {
+                            published
+                                .state(&group.lead.invocation_id)
+                                .map(|state| TrackedGroup {
+                                    id:       group.id(),
+                                    lead:     TrackedRow::published(
+                                        group.lead.clone(),
+                                        state.clone(),
+                                    ),
+                                    rest:     group
+                                        .rest
+                                        .iter()
+                                        .filter_map(|row| {
+                                            published.state(&row.invocation_id).map(|state| {
+                                                TrackedRow::published(row.clone(), state.clone())
+                                            })
+                                        })
+                                        .collect(),
+                                    ancestry: group.ancestry.clone(),
+                                })
+                        },
+                        |index| {
+                            let mut tracked = previous.remove(index);
+                            tracked.apply_publication(group, published);
+                            Some(tracked)
+                        },
+                    )
+            })
+            .collect();
+        self.publication.clone_from(published);
         true
     }
 
@@ -505,7 +751,7 @@ impl Roster {
         // Asked of the theme rather than of the palette, because how
         // many colours are left depends on what the column headers are
         // drawn in and that is the reader's to change.
-        let count = theme::family_color_count().max(1);
+        let count = self.family_palette.count();
         families.retain(|id, index| heads.contains(id) && *index < count);
         for id in heads {
             if families.contains_key(&id) {
@@ -541,7 +787,18 @@ impl Roster {
     /// of it, not only on the row that has just been let go of.
     pub(crate) fn advance(&mut self, now: Instant, fade: Duration) -> bool {
         let before = self.groups.len();
-        self.groups.retain(|group| !group.is_expired(now, fade));
+        self.groups.retain(|group| {
+            if group.is_expired(now, fade) {
+                for row in group.rows() {
+                    if let RowLifetime::Ended(end) = &row.lifetime {
+                        end.departed();
+                    }
+                }
+                false
+            } else {
+                true
+            }
+        });
         let mut changed = self.groups.len() != before;
         for group in &mut self.groups {
             changed |= group.advance(now, fade);
@@ -569,7 +826,11 @@ impl VisibleRoster {
 
     /// Visible command cells, oldest work first.
     pub(crate) fn tiled_ids(&self) -> Vec<InvocationId> {
-        let mut groups: Vec<_> = self.groups.iter().collect();
+        let mut groups: Vec<_> = self
+            .groups
+            .iter()
+            .filter(|group| !group.lead.is_ended())
+            .collect();
         groups.sort_by_key(|group| group.began());
         groups.into_iter().map(|group| group.id.clone()).collect()
     }
@@ -602,6 +863,25 @@ mod tests {
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::progress::capture_read::CaptureLookup;
     use crate::registration::WorkingDirectoryIdentity;
+
+    #[test]
+    fn a_forwarding_join_leaves_one_cell_for_the_process() {
+        let mut roster = Roster::new();
+        let now = Instant::now();
+        let first = PublishedInvocations::fixture(vec![group(4100, &[])], &[], &[], now);
+        roster.observe_invocations(&first);
+        let joined = PublishedInvocations::fixture(vec![group(4200, &[4100])], &[], &[], now);
+        roster.observe_invocations(&joined);
+        assert_eq!(roster.groups().len(), 1);
+        assert_eq!(roster.groups()[0].id, InvocationId::for_test(4200));
+        assert_eq!(
+            roster.groups()[0]
+                .rows()
+                .filter(|row| row.process.pid == 4100)
+                .count(),
+            1
+        );
+    }
 
     /// A process replacement starts its own row while the old row finishes fading.
     #[test]
@@ -718,6 +998,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![first.clone()], start());
         assert!(identities.observe(&HashMap::new()).is_empty());
+        identities.finish(&crate::census::process_identity::ProvenProcessEnd::for_test(pid));
         roster.observe(Vec::new(), start());
         assert!(roster.visible(&[]).groups()[0].lead.is_ended());
 
@@ -1117,6 +1398,26 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_group_withdraws_while_its_last_rows_are_still_readable() {
+        let mut roster = Roster::new();
+        let now = start();
+        roster.observe(vec![group(10, &[])], now);
+        assert_eq!(roster.visible(&[]).tiled_ids().len(), 1);
+
+        roster.observe(Vec::new(), now);
+        let visible = roster.visible(&[]);
+        assert_eq!(visible.tiled_ids(), Vec::<InvocationId>::new());
+        let lead = &visible.groups()[0].lead;
+        assert!(lead.is_ended());
+        assert_eq!(lead.faded(), 0);
+        assert!(
+            matches!(visible.groups()[0].departure(Duration::from_secs(3)),
+            tui_pane::CellDeparture::Fading { started, timing }
+            if started == now && timing.duration() == Duration::from_secs(3))
+        );
+    }
+
+    #[test]
     fn a_stamped_group_goes_once_the_fade_has_run() {
         let mut roster = Roster::new();
         let now = start();
@@ -1128,17 +1429,16 @@ mod tests {
         assert!(roster.visible(&[]).groups().is_empty());
     }
 
-    /// A command that comes back with the same pid is the same command,
-    /// so the stamp has to lift rather than leaving it greyed forever.
+    /// A later live answer cannot revoke a published end for the same invocation.
     #[test]
-    fn a_group_that_returns_stops_being_ended() {
+    fn an_ended_group_cannot_be_revived_by_a_later_live_answer() {
         let mut roster = Roster::new();
         let now = start();
         roster.observe(vec![group(10, &[])], now);
         roster.observe(Vec::new(), now);
         roster.observe(vec![group(10, &[])], now);
 
-        assert!(!roster.visible(&[]).groups()[0].lead.is_ended());
+        assert!(roster.visible(&[]).groups()[0].lead.is_ended());
     }
 
     #[test]
@@ -1404,25 +1704,21 @@ mod tests {
         assert_eq!(roster.visible(&[]).groups()[0].lead.faded(), 0);
     }
 
-    /// A command that comes back with the same pid picks its colours
-    /// back up rather than carrying on from where the fade left it.
+    /// A delayed live answer cannot rewind an ended invocation's fade.
     #[test]
-    fn a_group_that_returns_loses_the_fade_it_had_made() {
+    fn an_ended_group_keeps_its_fade_after_a_delayed_live_answer() {
         let mut roster = Roster::new();
         let now = start();
         let fade = Duration::from_secs(3);
         roster.observe(vec![group(10, &[])], now);
         roster.observe(Vec::new(), now);
         roster.advance(now + Duration::from_secs(2), fade);
-        assert_ne!(
-            roster.visible(&[]).groups()[0].lead.faded(),
-            0,
-            "the fade had started"
-        );
+        let faded = roster.visible(&[]).groups()[0].lead.faded();
+        assert_ne!(faded, 0, "the fade had started");
 
         roster.observe(vec![group(10, &[])], now + Duration::from_secs(2));
 
-        assert_eq!(roster.visible(&[]).groups()[0].lead.faded(), 0);
+        assert_eq!(roster.visible(&[]).groups()[0].lead.faded(), faded);
     }
 
     #[test]

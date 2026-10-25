@@ -171,8 +171,6 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
-/// Distance between fade alpha levels that keep built-in ink contrast monotone.
-pub(crate) const FADE_ALPHA_STEP: u8 = 2;
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
@@ -389,6 +387,18 @@ pub(crate) const PID_COLUMN: usize = 0;
 /// fields for cargo processes only, so a quarter second stays cheap while
 /// keeping a freshly started build visible almost immediately.
 pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
+/// Maximum scans retaining an invocation whose absence cannot be probed.
+pub(crate) const MISSING_SCAN_LIMIT: u64 = 2;
+/// Thread publishing the process census.
+pub(crate) const CENSUS_THREAD_NAME: &str = "cargo-tile-census";
+/// Prefix for numbered process metadata reader threads.
+pub(crate) const CENSUS_DETAIL_THREAD_PREFIX: &str = "cargo-tile-detail";
+/// Thread refreshing the process snapshot.
+pub(crate) const CENSUS_REFRESH_THREAD_NAME: &str = "cargo-tile-refresh";
+/// Thread reading capture registrations.
+pub(crate) const CENSUS_CAPTURE_THREAD_NAME: &str = "cargo-tile-capture";
+/// Thread attributing process resource use.
+pub(crate) const CENSUS_ATTRIBUTION_THREAD_NAME: &str = "cargo-tile-attribution";
 /// What the status line says while every cell is spelling out its
 /// command lines in full. Stands alone like [`ATTRACT_NOTE_LABEL`] and
 /// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
@@ -529,6 +539,10 @@ pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
     ("--allow", ValuedOptionScope::RustcLint),
     ("--forbid", ValuedOptionScope::RustcLint),
 ];
+/// Template slot for Cargo's global options with separate values.
+pub(crate) const SHIM_GLOBAL_OPTIONS_PLACEHOLDER: &str = "@CARGO_GLOBAL_VALUED_OPTIONS@";
+/// Joins alternatives in the shell's option case pattern.
+pub(crate) const SHIM_OPTION_PATTERN_SEPARATOR: &str = " | ";
 /// Separates a flag from a value assigned in the same argv entry.
 pub(crate) const ARGUMENT_ASSIGNMENT: char = '=';
 /// Joins displayed argv entries without changing their boundaries.
