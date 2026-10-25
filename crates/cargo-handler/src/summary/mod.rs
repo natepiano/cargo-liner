@@ -14,7 +14,9 @@ pub(crate) mod age;
 mod constants;
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
+use accounts::AccountLines;
 use age::AgeLayout;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -110,23 +112,6 @@ pub(crate) fn width(
     ))
 }
 
-/// Account demand follows its drawn layout; machine tables retain their preferred width.
-pub(crate) fn width_at_width(frame: &SummaryFrame<'_, '_>, width: u16) -> u16 {
-    machine_width(
-        frame.machines,
-        frame.placement,
-        frame.now,
-        frame.account_column,
-        frame.sort,
-    )
-    .max(accounts::sorted_width_at_width(
-        frame.accounts,
-        frame.now,
-        frame.accounts_sort,
-        width,
-    ))
-}
-
 fn machine_width(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -179,7 +164,8 @@ pub(crate) fn height(
 }
 
 /// Measure account wrapping against the same width used for painting.
-pub(crate) fn height_at_width(
+#[cfg(test)]
+fn height_at_width(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
     accounts: &AccountsTable,
@@ -245,8 +231,110 @@ pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) sort:           SummarySort,
 }
 
+/// The summary allocation owns the account lines used by all frame readers.
+pub(crate) struct SummaryLayout {
+    width:        u16,
+    accounts:     AccountLines,
+    machine_rows: usize,
+}
+
+impl SummaryLayout {
+    pub(crate) fn new(frame: &SummaryFrame<'_, '_>, width: u16) -> Self {
+        Self {
+            width,
+            accounts: accounts::build_lines(
+                frame.accounts,
+                frame.now,
+                frame.footer_colors,
+                frame.accounts_sort,
+                width,
+            ),
+            machine_rows: machine_height(frame.machines, frame.placement),
+        }
+    }
+
+    pub(crate) const fn allocation_width(&self) -> u16 { self.width }
+
+    pub(crate) fn height(&self) -> usize {
+        self.machine_rows
+            + self.accounts.lines.len()
+            + if self.machine_rows > 0 && !self.accounts.lines.is_empty() {
+                usize::from(GROUP_GAP_HEIGHT)
+            } else {
+                0
+            }
+    }
+
+    pub(crate) fn preferred_width(&self, frame: &SummaryFrame<'_, '_>) -> u16 {
+        let accounts = self
+            .accounts
+            .lines
+            .iter()
+            .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+            .max()
+            .unwrap_or_default();
+        machine_width(
+            frame.machines,
+            frame.placement,
+            frame.now,
+            frame.account_column,
+            frame.sort,
+        )
+        .max(accounts)
+    }
+
+    fn accounts_area(&self, area: Rect) -> Rect {
+        let offset = self.machine_rows
+            + if self.machine_rows > 0 {
+                usize::from(GROUP_GAP_HEIGHT)
+            } else {
+                0
+            };
+        let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
+        Rect {
+            y: area.y.saturating_add(offset),
+            height: area.height.saturating_sub(offset),
+            ..area
+        }
+    }
+
+    pub(crate) fn accounts_header_spans(&self, area: Rect) -> Vec<HeaderSpan<AccountsColumn>> {
+        let area = self.accounts_area(area);
+        self.accounts
+            .headers
+            .iter()
+            .filter(|header| header.row < area.height)
+            .map(|header| HeaderSpan {
+                column:  header.column,
+                row:     area.y.saturating_add(header.row),
+                columns: area.x.saturating_add(header.columns.start)
+                    ..area.x.saturating_add(header.columns.end).min(area.right()),
+            })
+            .collect()
+    }
+}
+
+/// Header clicks retain the exact allocation that was last painted.
+#[derive(Default)]
+pub(crate) enum PaintedSummary {
+    #[default]
+    NotDrawn,
+    Drawn(Rc<SummaryLayout>),
+}
+
 /// Draw machine groups and accounts with the independent ordering in this frame.
+#[cfg(test)]
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
+    let layout = SummaryLayout::new(frame, area.width);
+    draw_measured(buffer, area, frame, &layout);
+}
+
+pub(crate) fn draw_measured(
+    buffer: &mut Buffer,
+    area: Rect,
+    frame: &SummaryFrame<'_, '_>,
+    layout: &SummaryLayout,
+) {
     let SummaryHeader {
         visible,
         constraints,
@@ -264,35 +352,20 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     for machine in machines {
         draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
-    accounts::draw_sorted(
-        buffer,
-        accounts_area(area, frame),
-        frame.accounts,
-        frame.now,
-        frame.footer_colors,
-        frame.accounts_sort,
-    );
+    Paragraph::new(layout.accounts.lines.clone()).render(layout.accounts_area(area), buffer);
 }
 
 /// Selectable rows use the very same sorted machine tables as drawing.
 pub(crate) fn selection_rows(
     frame: &SummaryFrame<'_, '_>,
-    width: u16,
+    layout: &SummaryLayout,
 ) -> Vec<(crate::interaction::RowIdentity, RowSpan)> {
     use crate::interaction::RowIdentity;
     let area = Rect::new(
         0,
         0,
-        width,
-        u16::try_from(height_at_width(
-            frame.machines,
-            frame.placement,
-            frame.accounts,
-            frame.now,
-            frame.accounts_sort,
-            width,
-        ))
-        .unwrap_or(u16::MAX),
+        layout.width,
+        u16::try_from(layout.height()).unwrap_or(u16::MAX),
     );
     let mut result = Vec::new();
     for mut machine in machine_tables(area, frame) {
@@ -312,10 +385,13 @@ pub(crate) fn selection_rows(
             ));
         }
     }
-    let accounts_y = usize::from(accounts_area(area, frame).y);
+    let accounts_y = usize::from(layout.accounts_area(area).y);
     result.extend(
-        accounts::selection_rows(frame.accounts, frame.accounts_sort, frame.now, width)
-            .into_iter()
+        layout
+            .accounts
+            .selections
+            .iter()
+            .cloned()
             .map(|(account, span)| {
                 (
                     RowIdentity::SummaryAccount { account },
@@ -324,36 +400,6 @@ pub(crate) fn selection_rows(
             }),
     );
     result
-}
-
-/// Accounts begin after the machine groups and their section gap, clipped to the cell.
-fn accounts_area(area: Rect, frame: &SummaryFrame<'_, '_>) -> Rect {
-    let agent_height = machine_height(frame.machines, frame.placement);
-    let offset = agent_height
-        + if agent_height > 0 {
-            usize::from(GROUP_GAP_HEIGHT)
-        } else {
-            0
-        };
-    let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
-    Rect {
-        y: area.y.saturating_add(offset),
-        height: area.height.saturating_sub(offset),
-        ..area
-    }
-}
-
-/// Account headers use the same section offset and measured lines as drawing.
-pub(crate) fn accounts_header_spans(
-    area: Rect,
-    frame: &SummaryFrame<'_, '_>,
-) -> Vec<HeaderSpan<AccountsColumn>> {
-    accounts::header_spans(
-        accounts_area(area, frame),
-        frame.accounts,
-        frame.now,
-        frame.accounts_sort,
-    )
 }
 
 /// A visible machine group with its heading, table and rows resolved together.
@@ -430,7 +476,11 @@ fn draw_machine(
     let mut rows = machine.rows;
     rows.sort_by(|left, right| compare_rows(left, right, columns.sort, columns.account_column));
     let label = Style::default().fg(label_color());
-    Paragraph::new(heading(&machine.machine, rows.len())).render(machine.heading, buffer);
+    Paragraph::new(truncated_line(
+        heading(&machine.machine, rows.len()),
+        usize::from(machine.heading.width),
+    ))
+    .render(machine.heading, buffer);
     Table::new(
         rows.iter().map(|row| {
             agent_row(
@@ -679,6 +729,41 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
     let mut cut = prefix.trim_end().to_owned();
     cut.push(TRUNCATION_MARK);
     cut
+}
+
+/// Use the shared cut result while retaining every visible span's style.
+pub(super) fn truncated_line(line: Line<'_>, max: usize) -> Line<'static> {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let cut = truncated(&text, max);
+    if cut == text {
+        return Line::from(
+            line.spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                .collect::<Vec<_>>(),
+        )
+        .style(line.style);
+    }
+    let mut remaining = cut.chars().count().saturating_sub(1);
+    let mut spans = Vec::new();
+    let mut last_style = line.style;
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let content: String = span.content.chars().take(remaining).collect();
+        remaining = remaining.saturating_sub(content.chars().count());
+        last_style = span.style;
+        spans.push(Span::styled(content, span.style));
+    }
+    if !cut.is_empty() {
+        spans.push(Span::styled(TRUNCATION_MARK.to_string(), last_style));
+    }
+    Line::from(spans).style(line.style)
 }
 
 /// Column widths fitted to the widest cell across every machine's rows.

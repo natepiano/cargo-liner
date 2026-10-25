@@ -1,6 +1,7 @@
 //! `App`: the state the framework borrows itself back through, per
 //! [`AppContext`].
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -63,6 +64,7 @@ use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::startup_log;
 use crate::startup_log::StartupProbe;
+use crate::summary::PaintedSummary;
 #[cfg(test)]
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
@@ -120,6 +122,8 @@ pub(crate) struct App {
     pub(crate) selections:        Selections,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
+    /// The summary allocation retained for header clicks until the next paint.
+    pub(crate) painted_summary:   RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:      SummarySort,
     /// Account ordering is independent of the machine-group agent ordering.
@@ -207,6 +211,7 @@ impl App {
             selection_area: Rect::ZERO,
             tree_sorts: HashMap::new(),
             tree_layouts: HashMap::new(),
+            painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
             inline_error: None,

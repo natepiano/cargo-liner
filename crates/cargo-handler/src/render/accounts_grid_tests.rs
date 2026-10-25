@@ -32,6 +32,12 @@ use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
 
 const NOW: u64 = 1_792_166_400;
+// Optional columns leave before layout selection. These widths force the kept
+// columns onto two lines or into stacked facts, including the pane frame.
+const TWO_LINE_ACCOUNTS_WIDTH: u16 = 36;
+const STACKED_ACCOUNTS_WIDTH: u16 = 18;
+// The final account and its heading must fit the five-row viewport together.
+const COMPLETE_STACKED_ACCOUNT_WIDTH: u16 = 26;
 
 fn locate(buffer: &Buffer, label: &str) -> CellPoint {
     for y in buffer.area.y..buffer.area.bottom() {
@@ -102,6 +108,7 @@ fn draw_grid(app: &mut App) -> Buffer {
             content[(x, y)] = buffer[(x, y)].clone();
         }
     }
+    *app.painted_summary.borrow_mut() = cells.painted_summary.into_inner();
     content
 }
 
@@ -388,21 +395,25 @@ fn assert_account_continuations_select(width: u16) {
 
 #[test]
 fn two_line_accounts_end_reveals_the_final_continuation() {
-    assert_account_tail_reachable(80, "2m");
+    // Spec 1 drops read age before TwoLine; reset is the final kept fact.
+    assert_account_tail_reachable(TWO_LINE_ACCOUNTS_WIDTH, "Sat 10:00");
 }
 
 #[test]
 fn stacked_accounts_end_reveals_the_final_fact() {
-    assert_account_tail_reachable(34, "read 2m ago");
+    // Spec 1 drops read age before Stacked; reset is the final kept fact.
+    assert_account_tail_reachable(COMPLETE_STACKED_ACCOUNT_WIDTH, "10:00");
 }
 
 #[test]
 fn two_line_account_continuation_clicks_select_the_account() {
-    assert_account_continuations_select(80);
+    assert_account_continuations_select(TWO_LINE_ACCOUNTS_WIDTH);
 }
 
 #[test]
-fn stacked_account_fact_clicks_select_the_account() { assert_account_continuations_select(34); }
+fn stacked_account_fact_clicks_select_the_account() {
+    assert_account_continuations_select(STACKED_ACCOUNTS_WIDTH);
+}
 
 #[test]
 fn full_accounts_keep_one_selectable_line_per_account() {
@@ -440,7 +451,7 @@ fn full_accounts_keep_one_selectable_line_per_account() {
 #[test]
 fn stacked_account_taller_than_viewport_exposes_every_fact_with_arrows_and_end() {
     let mut app = interactive_accounts();
-    let width = 34;
+    let width = STACKED_ACCOUNTS_WIDTH;
     let complete = paint_accounts_viewport(&mut app, width, 64);
     let first = locate(&complete, "account-0");
     let second = locate(&complete, "account-1");
@@ -519,12 +530,12 @@ fn assert_middle_account_band(width: u16) -> u16 {
 
 #[test]
 fn two_line_account_selection_bands_cover_both_lines_and_stop_at_neighbors() {
-    assert_eq!(assert_middle_account_band(80), 2);
+    assert_eq!(assert_middle_account_band(TWO_LINE_ACCOUNTS_WIDTH), 2);
 }
 
 #[test]
 fn stacked_account_selection_bands_cover_every_fact_and_stop_at_neighbors() {
-    assert!(assert_middle_account_band(34) > 2);
+    assert!(assert_middle_account_band(STACKED_ACCOUNTS_WIDTH) > 2);
 }
 
 #[test]
@@ -547,7 +558,7 @@ fn full_account_selection_bands_cover_exactly_one_line() {
 #[test]
 fn clipped_stacked_account_selection_bands_cover_facts_without_the_heading() {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, 34, 64);
+    let complete = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 64);
     let heading = locate(&complete, "account-5");
     let last = (heading.row..complete.area.bottom())
         .rev()
@@ -558,10 +569,10 @@ fn clipped_stacked_account_selection_bands_cover_facts_without_the_heading() {
         .collect();
     let first = locate(&complete, "account-0");
     app.click(Position::new(first.column, first.row));
-    let short = paint_accounts_viewport(&mut app, 34, 6);
+    let short = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 6);
     assert!(facts.len() >= usize::from(short.area.height));
     account_key(&mut app, KeyCode::End);
-    let end = paint_accounts_viewport(&mut app, 34, 6);
+    let end = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 6);
     for y in end.area.y..end.area.bottom() {
         let line = account_line(&end, y);
         assert!(facts.contains(&line), "visible account fact: {line:?}");
@@ -579,7 +590,14 @@ fn first_account_glyph(buffer: &Buffer, y: u16) -> u16 {
 #[test]
 fn two_line_account_continuations_and_headers_align_with_account_names() {
     let mut app = interactive_accounts();
-    let buffer = paint_accounts_viewport(&mut app, 80, 64);
+    let buffer = paint_accounts_viewport(&mut app, TWO_LINE_ACCOUNTS_WIDTH, 64);
+    // Spec 1 drops credits and read age before choosing TwoLine.
+    for y in buffer.area.y..buffer.area.bottom() {
+        let line = account_line(&buffer, y);
+        for dropped in ["13,446", "2m"] {
+            assert!(!line.contains(dropped), "dropped {dropped}: {line}");
+        }
+    }
     let header = locate(&buffer, "account  ");
     let resets = locate(&buffer, "resets");
     assert_eq!(resets.row, header.row + 1, "two header lines");
@@ -589,8 +607,8 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
         let name = locate(&buffer, &format!("account-{index}"));
         let continuation = name.row + 1;
         assert!(
-            account_line(&buffer, continuation).contains("13,446"),
-            "the second line contains credit facts"
+            account_line(&buffer, continuation).contains("Sat 10:00"),
+            "the second line contains the kept reset fact"
         );
         assert_eq!(
             first_account_glyph(&buffer, continuation),

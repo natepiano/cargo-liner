@@ -194,7 +194,7 @@ impl AccountsColumn {
     ];
 
     /// Position in the measured account row.
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::Account => 0,
             Self::Roles => 1,

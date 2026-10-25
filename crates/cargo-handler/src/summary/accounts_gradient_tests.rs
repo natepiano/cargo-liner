@@ -7,6 +7,7 @@
 #![expect(clippy::panic, reason = "a missing rendered label fails the fixture")]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use chrono::DateTime;
@@ -17,6 +18,7 @@ use ratatui::style::Color;
 use tui_pane::CellPoint;
 use tui_pane::Theme;
 
+use super::PaintedSummary;
 use super::SummaryFrame;
 use crate::agent_cell;
 use crate::app::App;
@@ -90,7 +92,9 @@ fn drawn_in(app: &App, area: Rect) -> Buffer {
         area,
         ratatui::style::Style::default().bg(tui_pane::pane_background(false)),
     );
-    super::draw(&mut buffer, area, &frame);
+    let layout = Rc::new(super::SummaryLayout::new(&frame, area.width));
+    super::draw_measured(&mut buffer, area, &frame, &layout);
+    *app.painted_summary.borrow_mut() = PaintedSummary::Drawn(layout);
     buffer
 }
 

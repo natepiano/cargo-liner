@@ -2,20 +2,23 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Local;
 use chrono::Utc;
+#[cfg(test)]
 use ratatui::buffer::Buffer;
+#[cfg(test)]
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+#[cfg(test)]
 use ratatui::widgets::Paragraph;
+#[cfg(test)]
 use ratatui::widgets::Widget;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
@@ -202,13 +205,14 @@ pub(super) fn height(table: &AccountsTable) -> usize {
 }
 
 /// Measure exactly the lines drawn at this width, including wrapped accounts.
+#[cfg(test)]
 pub(super) fn height_at_width(
     table: &AccountsTable,
     now: u64,
     sort: AccountsSort,
     width: u16,
 ) -> usize {
-    measured_lines(table, now, &FooterColors::default(), sort, width)
+    build_lines(table, now, &FooterColors::default(), sort, width)
         .lines
         .len()
 }
@@ -219,13 +223,14 @@ pub(super) fn sorted_width(table: &AccountsTable, now: u64, sort: AccountsSort) 
     sorted_width_at_width(table, now, sort, u16::MAX)
 }
 
+#[cfg(test)]
 pub(super) fn sorted_width_at_width(
     table: &AccountsTable,
     now: u64,
     sort: AccountsSort,
     width: u16,
 ) -> u16 {
-    measured_lines(table, now, &FooterColors::default(), sort, width)
+    build_lines(table, now, &FooterColors::default(), sort, width)
         .lines
         .iter()
         .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
@@ -234,6 +239,7 @@ pub(super) fn sorted_width_at_width(
 }
 
 /// The same measured lines supply painting and demand at the actual table width.
+#[cfg(test)]
 pub(super) fn draw_sorted(
     buffer: &mut Buffer,
     area: Rect,
@@ -242,20 +248,26 @@ pub(super) fn draw_sorted(
     colors: &FooterColors,
     sort: AccountsSort,
 ) {
-    Paragraph::new(measured_lines(table, now, colors, sort, area.width).lines).render(area, buffer);
+    Paragraph::new(
+        build_lines(table, now, colors, sort, area.width)
+            .lines
+            .clone(),
+    )
+    .render(area, buffer);
 }
 
 /// Both header lines use the coordinates recorded while building the drawing.
+#[cfg(test)]
 pub(super) fn header_spans(
     area: Rect,
     table: &AccountsTable,
     now: u64,
     sort: AccountsSort,
 ) -> Vec<HeaderSpan<AccountsColumn>> {
-    measured_lines(table, now, &FooterColors::default(), sort, area.width)
+    build_lines(table, now, &FooterColors::default(), sort, area.width)
         .headers
-        .into_iter()
-        .filter(|header| header.row < area.height)
+        .iter()
+        .filter(|&header| header.row < area.height)
         .map(|header| HeaderSpan {
             column:  header.column,
             row:     area.y.saturating_add(header.row),
@@ -405,16 +417,81 @@ enum AccountsLayout {
     Stacked,
 }
 
-impl AccountsLayout {
+/// A checked column set and its presentation always travel together.
+struct AccountsFit {
+    columns: Vec<AccountsColumn>,
+    layout:  AccountsLayout,
+    widths:  [u16; AccountsColumn::ALL.len()],
+}
+
+/// Keeps the start of a management role readable when one-line rows need room.
+const MINIMUM_ROLES_WIDTH: u16 = 6;
+
+impl AccountsFit {
     fn for_width(width: u16, widths: &[u16; AccountsColumn::ALL.len()]) -> Self {
-        let first = column_width(widths, 0..3, account_name_indent());
-        let second = column_width(widths, 3..8, account_name_indent());
-        if column_width(widths, 0..8, account_name_indent()) <= width {
-            Self::Full
-        } else if first <= width && second <= width {
-            Self::TwoLine
+        let mut widths = *widths;
+        let mut columns = AccountsColumn::ALL.to_vec();
+        for drop in AccountsColumnDrop::ORDER {
+            if column_width(&widths, &columns, account_name_indent()) <= width {
+                break;
+            }
+            columns.retain(|&column| column != drop.column());
+        }
+        let full_width = column_width(&widths, &columns, account_name_indent());
+        let roles = &mut widths[AccountsColumn::Roles.index()];
+        *roles = roles
+            .saturating_sub(full_width.saturating_sub(width))
+            .max(MINIMUM_ROLES_WIDTH.min(*roles));
+        let layout = if column_width(&widths, &columns, account_name_indent()) <= width {
+            AccountsLayout::Full
         } else {
-            Self::Stacked
+            let split = columns.partition_point(|column| on_first_line(*column));
+            if column_width(&widths, &columns[..split], account_name_indent()) <= width
+                && column_width(&widths, &columns[split..], account_name_indent()) <= width
+            {
+                AccountsLayout::TwoLine
+            } else {
+                AccountsLayout::Stacked
+            }
+        };
+        Self {
+            columns,
+            layout,
+            widths,
+        }
+    }
+}
+
+/// The continuation starts at Resets; account, role and quota share the first line.
+const fn on_first_line(column: AccountsColumn) -> bool {
+    match column {
+        AccountsColumn::Account | AccountsColumn::Roles | AccountsColumn::WeeklyLeft => true,
+        AccountsColumn::Resets
+        | AccountsColumn::Credits
+        | AccountsColumn::Enabled
+        | AccountsColumn::InUse
+        | AccountsColumn::Read => false,
+    }
+}
+
+/// Only these columns can leave the accounts table, in this order.
+#[derive(Clone, Copy)]
+enum AccountsColumnDrop {
+    InUse,
+    Enabled,
+    Read,
+    Credits,
+}
+
+impl AccountsColumnDrop {
+    const ORDER: [Self; 4] = [Self::InUse, Self::Enabled, Self::Read, Self::Credits];
+
+    const fn column(self) -> AccountsColumn {
+        match self {
+            Self::InUse => AccountsColumn::InUse,
+            Self::Enabled => AccountsColumn::Enabled,
+            Self::Read => AccountsColumn::Read,
+            Self::Credits => AccountsColumn::Credits,
         }
     }
 }
@@ -426,22 +503,22 @@ fn account_name_indent() -> u16 {
 
 fn column_width(
     widths: &[u16; AccountsColumn::ALL.len()],
-    range: Range<usize>,
+    columns: &[AccountsColumn],
     indent: u16,
 ) -> u16 {
-    let count = u16::try_from(range.len()).unwrap_or(u16::MAX);
-    widths[range]
+    let count = u16::try_from(columns.len()).unwrap_or(u16::MAX);
+    columns
         .iter()
-        .copied()
+        .map(|column| widths[column.index()])
         .fold(indent, u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(count.saturating_sub(1)))
 }
 
 /// Coordinates belong to the very lines supplying demand and painting.
-struct AccountLines {
-    lines:      Vec<Line<'static>>,
-    headers:    Vec<HeaderSpan<AccountsColumn>>,
-    selections: Vec<(String, RowSpan)>,
+pub(super) struct AccountLines {
+    pub(super) lines:      Vec<Line<'static>>,
+    pub(super) headers:    Vec<HeaderSpan<AccountsColumn>>,
+    pub(super) selections: Vec<(String, RowSpan)>,
 }
 
 /// Each line set uses its own indentation and the same numeric alignment.
@@ -449,11 +526,11 @@ fn column_line(
     prefix: Vec<Span<'static>>,
     cells: &[Line<'static>; AccountsColumn::ALL.len()],
     widths: &[u16; AccountsColumn::ALL.len()],
-    range: Range<usize>,
+    columns: &[AccountsColumn],
 ) -> Line<'static> {
     let mut spans = prefix;
-    for index in range.clone() {
-        let column = AccountsColumn::ALL[index];
+    for (position, &column) in columns.iter().enumerate() {
+        let index = column.index();
         let value = &cells[index];
         let padding =
             widths[index].saturating_sub(u16::try_from(value.width()).unwrap_or(u16::MAX));
@@ -468,7 +545,7 @@ fn column_line(
             spans.push(Span::raw(" ".repeat(usize::from(padding))));
         }
         spans.extend(value.spans.iter().cloned());
-        if index + 1 < range.end {
+        if position + 1 < columns.len() {
             let padding = if right { 0 } else { padding };
             spans.push(Span::raw(
                 " ".repeat(usize::from(TABLE_COLUMN_SPACING + padding)),
@@ -478,30 +555,55 @@ fn column_line(
     Line::from(spans)
 }
 
-/// Wrap only overlong headings/facts; retain the ink of each source span.
+/// Pack styled words; punctuation belongs to the preceding word.
 fn wrap_line(line: Line<'static>, width: u16, indent: u16) -> Vec<Line<'static>> {
     let room = width.saturating_sub(indent).max(1);
-    let mut result = Vec::new();
-    let mut spans = vec![Span::raw(" ".repeat(usize::from(indent)))];
-    let mut used = 0;
+    let mut words: Vec<Line<'static>> = Vec::new();
+    let mut word = Line::default();
     for span in line.spans {
-        let mut chunk = String::new();
-        for ch in span.content.chars() {
-            let size = cell_width(&ch.to_string());
-            if used + size > room && used > 0 {
-                spans.push(Span::styled(std::mem::take(&mut chunk), span.style));
-                result.push(Line::from(std::mem::take(&mut spans)));
-                spans.push(Span::raw(" ".repeat(usize::from(indent))));
-                used = 0;
+        for part in span.content.split_inclusive(char::is_whitespace) {
+            let text = part.trim_end_matches(char::is_whitespace);
+            if !text.is_empty() {
+                word.spans.push(Span::styled(text.to_owned(), span.style));
             }
-            chunk.push(ch);
-            used += size;
-        }
-        if !chunk.is_empty() {
-            spans.push(Span::styled(chunk, span.style));
+            if part.ends_with(char::is_whitespace) && !word.spans.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
         }
     }
-    result.push(Line::from(spans));
+    if !word.spans.is_empty() {
+        words.push(word);
+    }
+    let mut attached: Vec<Line<'static>> = Vec::new();
+    for word in words {
+        let punctuation = word
+            .spans
+            .iter()
+            .all(|span| span.content.chars().all(|ch| matches!(ch, ',' | ':' | '·')));
+        if punctuation && let Some(previous) = attached.last_mut() {
+            previous.spans.extend(word.spans);
+        } else {
+            attached.push(word);
+        }
+    }
+    let mut result = Vec::new();
+    let mut line = Line::default();
+    for word in attached {
+        let word = super::truncated_line(word, usize::from(room));
+        let gap = usize::from(!line.spans.is_empty());
+        if line.width() + gap + word.width() > usize::from(room) && !line.spans.is_empty() {
+            line.spans
+                .insert(0, Span::raw(" ".repeat(usize::from(indent))));
+            result.push(std::mem::take(&mut line));
+        }
+        if !line.spans.is_empty() {
+            line.spans.push(Span::raw(" "));
+        }
+        line.spans.extend(word.spans);
+    }
+    line.spans
+        .insert(0, Span::raw(" ".repeat(usize::from(indent))));
+    result.push(line);
     result
 }
 
@@ -509,23 +611,27 @@ fn wrap_line(line: Line<'static>, width: u16, indent: u16) -> Vec<Line<'static>>
 fn stacked_facts(
     cells: &[Line<'static>; AccountsColumn::ALL.len()],
     width: u16,
+    fit: &AccountsFit,
 ) -> Vec<Line<'static>> {
     let mut facts = Vec::new();
-    for (index, prefix, suffix) in [
-        (2, "", " left"),
-        (3, "resets ", ""),
-        (4, "credits ", ""),
-        (5, "", ""),
-        (6, "", ""),
-        (7, "read ", " ago"),
+    for (column, prefix, suffix) in [
+        (AccountsColumn::WeeklyLeft, "", " left"),
+        (AccountsColumn::Resets, "resets ", ""),
+        (AccountsColumn::Credits, "credits ", ""),
+        (AccountsColumn::Enabled, "", ""),
+        (AccountsColumn::InUse, "", ""),
+        (AccountsColumn::Read, "read ", " ago"),
     ] {
-        if cells[index].width() == 0 {
+        let index = column.index();
+        if !fit.columns.contains(&column) || cells[index].width() == 0 {
             continue;
         }
         let mut fact = cells[index].clone();
-        match index {
-            5 => fact = Line::from(Span::styled("enabled", fact.spans[0].style)),
-            6 => fact = Line::from(Span::styled("in use", fact.spans[0].style)),
+        match column {
+            AccountsColumn::Enabled => {
+                fact = Line::from(Span::styled("enabled", fact.spans[0].style));
+            },
+            AccountsColumn::InUse => fact = Line::from(Span::styled("in use", fact.spans[0].style)),
             _ => {
                 let style = fact
                     .spans
@@ -562,21 +668,50 @@ fn stacked_facts(
 }
 
 impl AccountLines {
+    /// Build the section heading and fitted column headers with their hit regions.
+    fn push_headers(&mut self, fit: &AccountsFit, sort: AccountsSort) {
+        self.lines.push(Line::from(Span::styled(
+            format!("{SECTION_HEADER_INDENT}{ACCOUNTS_HEADING}"),
+            Style::default()
+                .fg(text_default())
+                .add_modifier(Modifier::BOLD),
+        )));
+        let headers = std::array::from_fn(|index| {
+            let column = AccountsColumn::ALL[index];
+            let mut header = super::truncated_line(
+                Line::from(Span::styled(
+                    sort.header(column),
+                    Style::default().fg(label_color()),
+                )),
+                usize::from(fit.widths[index]),
+            );
+            if matches!(fit.layout, AccountsLayout::TwoLine) && column == AccountsColumn::Resets {
+                // The continuation header anchors the line; reset values stay right-aligned.
+                let padding = usize::from(fit.widths[index]).saturating_sub(header.width());
+                header.spans.push(Span::raw(" ".repeat(padding)));
+            }
+            header
+        });
+        self.push_columns(fit, &Span::raw(" "), &headers, true);
+    }
+
     fn push_columns(
         &mut self,
-        layout: AccountsLayout,
+        fit: &AccountsFit,
         dot: &Span<'static>,
         cells: &[Line<'static>; AccountsColumn::ALL.len()],
-        widths: &[u16; AccountsColumn::ALL.len()],
         headers: bool,
     ) {
-        let sets: &[(usize, usize)] = match layout {
-            AccountsLayout::Full => &[(0, 8)],
-            AccountsLayout::TwoLine => &[(0, 3), (3, 8)],
+        let widths = &fit.widths;
+        let split = fit.columns.partition_point(|column| on_first_line(*column));
+        let sets: &[&[AccountsColumn]] = match fit.layout {
+            AccountsLayout::Full => &[&fit.columns],
+            AccountsLayout::TwoLine => &[&fit.columns[..split], &fit.columns[split..]],
             AccountsLayout::Stacked => &[],
         };
-        for &(start, end) in sets {
-            let prefix = if start == 0 {
+        for &columns in sets {
+            let start = columns[0];
+            let prefix = if start == AccountsColumn::Account {
                 vec![
                     Span::raw(SECTION_ITEM_INDENT),
                     dot.clone(),
@@ -590,17 +725,17 @@ impl AccountLines {
                     .iter()
                     .map(|span| cell_width(&span.content))
                     .sum::<u16>();
-                for (index, &width) in widths.iter().enumerate().take(end).skip(start) {
+                for &column in columns {
+                    let width = widths[column.index()];
                     self.headers.push(HeaderSpan {
-                        column:  AccountsColumn::ALL[index],
+                        column,
                         columns: x..x.saturating_add(width),
-                        row:     u16::try_from(self.lines.len()).unwrap_or(u16::MAX),
+                        row: u16::try_from(self.lines.len()).unwrap_or(u16::MAX),
                     });
                     x = x.saturating_add(width).saturating_add(TABLE_COLUMN_SPACING);
                 }
             }
-            self.lines
-                .push(column_line(prefix, cells, widths, start..end));
+            self.lines.push(column_line(prefix, cells, widths, columns));
         }
     }
 }
@@ -639,16 +774,6 @@ fn ordered_rows(reading: &AccountsReading, sort: AccountsSort) -> Vec<(usize, &A
         });
     }
     ordered
-}
-
-/// Selectable account rows retain their recorded labels through sorting and reading updates.
-pub(super) fn selection_rows(
-    table: &AccountsTable,
-    sort: AccountsSort,
-    now: u64,
-    width: u16,
-) -> Vec<(String, RowSpan)> {
-    measured_lines(table, now, &FooterColors::default(), sort, width).selections
 }
 
 /// Apply the account, role and readable numeric inks before choosing row geometry.
@@ -692,7 +817,7 @@ fn row_cells(
 }
 
 /// Resolve one reading into ordered, measured lines for drawing and hit testing.
-fn measured_lines(
+pub(super) fn build_lines(
     table: &AccountsTable,
     now: u64,
     colors: &FooterColors,
@@ -730,38 +855,25 @@ fn measured_lines(
                 u16::max,
             )
     });
-    let layout = AccountsLayout::for_width(width, &widths);
-    result.lines.push(Line::from(Span::styled(
-        format!("{SECTION_HEADER_INDENT}{ACCOUNTS_HEADING}"),
-        Style::default()
-            .fg(text_default())
-            .add_modifier(Modifier::BOLD),
-    )));
-    let headers = std::array::from_fn(|index| {
-        let column = AccountsColumn::ALL[index];
-        let mut header = Line::from(Span::styled(
-            sort.header(column),
-            Style::default().fg(label_color()),
-        ));
-        if matches!(layout, AccountsLayout::TwoLine) && column == AccountsColumn::Resets {
-            // The continuation header anchors the line; reset values stay right-aligned.
-            let padding = usize::from(widths[index]).saturating_sub(header.width());
-            header.spans.push(Span::raw(" ".repeat(padding)));
-        }
-        header
-    });
-    result.push_columns(layout, &Span::raw(" "), &headers, &widths, true);
+    let fit = AccountsFit::for_width(width, &widths);
+    let widths = &fit.widths;
+    result.push_headers(&fit, sort);
     for ((_, row), (values, freshness)) in ordered.into_iter().zip(rows) {
-        let cells = row_cells(row, values, &freshness, colors, &palette);
+        let mut cells = row_cells(row, values, &freshness, colors, &palette);
+        let roles = &mut cells[AccountsColumn::Roles.index()];
+        *roles = super::truncated_line(
+            std::mem::take(roles),
+            usize::from(widths[AccountsColumn::Roles.index()]),
+        );
         let dot = match row.read_status {
             AccountReadStatus::Ok => tui_pane::success_color(),
             AccountReadStatus::Failed => tui_pane::error_color(),
         };
         let first = result.lines.len();
         let dot = Span::styled(ACCOUNT_READ_DOT, Style::default().fg(dot));
-        match layout {
+        match fit.layout {
             AccountsLayout::Full | AccountsLayout::TwoLine => {
-                result.push_columns(layout, &dot, &cells, &widths, false);
+                result.push_columns(&fit, &dot, &cells, false);
             },
             AccountsLayout::Stacked => {
                 let mut heading = vec![dot, Span::raw(" ")];
@@ -775,7 +887,7 @@ fn measured_lines(
                     width,
                     cell_width(SECTION_ITEM_INDENT).min(width.saturating_sub(1)),
                 ));
-                result.lines.extend(stacked_facts(&cells, width));
+                result.lines.extend(stacked_facts(&cells, width, &fit));
             },
         }
         result.selections.push((

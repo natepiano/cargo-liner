@@ -9,27 +9,155 @@
     reason = "a missing rendered account label fails the fixture"
 )]
 
+use std::collections::BTreeSet;
 use std::ops::Range;
+use std::sync::Arc;
 
 use chrono::DateTime;
 use chrono::Local;
 use chrono::Timelike;
 use ratatui::style::Color;
 use serde_json::Value;
+use tui_pane::Theme;
 
 use super::*;
+use crate::app::App;
+use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::census::scan::ScanStage;
+use crate::footer_colors::FooterColor;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
+use crate::render;
 use crate::sort::AccountsSort;
 use crate::theme;
 
 const NOW: u64 = 1_792_166_400;
 const RESET: &str = "2026-10-19T06:00:00Z";
+
+/// Restore the caller's appearance even when a redraw assertion fails.
+struct SummaryAppearanceGuard {
+    theme:       Arc<Theme>,
+    transparent: bool,
+    tinted:      bool,
+}
+
+impl SummaryAppearanceGuard {
+    fn save() -> Self {
+        Self {
+            theme:       tui_pane::theme(),
+            transparent: tui_pane::transparent_background(),
+            tinted:      tui_pane::focused_pane_tint_enabled(),
+        }
+    }
+}
+
+impl Drop for SummaryAppearanceGuard {
+    fn drop(&mut self) {
+        tui_pane::set_active_theme(std::sync::Arc::clone(&self.theme));
+        tui_pane::set_transparent_background(self.transparent);
+        tui_pane::set_focused_pane_tint(self.tinted);
+    }
+}
+
+fn redraw_account_summary(table: &AccountsTable, colors: &FooterColors) -> Buffer {
+    let machines = [];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = agent_cell::cell_order_placed(&placement);
+    let area = Rect::new(0, 0, 200, 20);
+    let mut buffer = Buffer::empty(area);
+    buffer.set_style(area, Style::default().bg(tui_pane::pane_background(true)));
+    draw(
+        &mut buffer,
+        area,
+        &SummaryFrame {
+            accounts_sort:  AccountsSort::SourceOrder,
+            machines:       &machines,
+            placement:      &placement,
+            cells:          &cells,
+            now:            NOW,
+            account_column: AccountColumn::Hidden,
+            footer_colors:  colors,
+            sort:           SummarySort::default(),
+            accounts:       table,
+        },
+    );
+    buffer
+}
+
+fn assert_current_account_summary_inks(buffer: &Buffer) -> [Color; 2] {
+    let expected = [
+        FooterColor::Magenta
+            .account_style()
+            .fg
+            .expect("account ink"),
+        FooterColor::Magenta
+            .management_style()
+            .fg
+            .expect("role ink"),
+    ];
+    let ground = tui_pane::pane_background(true);
+    for (word, ink) in ["claude1", "showrunners"].into_iter().zip(expected) {
+        let (x, y) = at(buffer, word);
+        for offset in 0..cell_width(word) {
+            let cell = &buffer[(x + offset, y)];
+            assert_eq!(cell.fg, ink, "current {word} ink: {cell:?}");
+            assert_eq!(cell.bg, ground, "current {word} ground: {cell:?}");
+        }
+    }
+    expected
+}
+
+#[test]
+fn account_summary_redraw_resolves_inks_after_focused_tint_and_theme_changes() {
+    let _appearance = SummaryAppearanceGuard::save();
+    let dark = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == "Default Dark")
+        .expect("dark redraw theme");
+    let light = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == "Default Light")
+        .expect("light redraw theme");
+    tui_pane::set_active_theme(std::sync::Arc::new(dark.theme));
+    tui_pane::set_transparent_background(false);
+    tui_pane::set_focused_pane_tint(false);
+    let table = contract_table(&[usage(
+        "claude1",
+        &["showrunners"],
+        &serde_json::json!(60),
+        &serde_json::json!(13_446),
+        true,
+        0,
+    )]);
+    let colors = FooterColors::parse("account.claude1=magenta\nrole.showrunner=magenta");
+    let first = redraw_account_summary(&table, &colors);
+    let first_inks = assert_current_account_summary_inks(&first);
+
+    tui_pane::set_focused_pane_tint(true);
+    let tinted = redraw_account_summary(&table, &colors);
+    let tinted_inks = assert_current_account_summary_inks(&tinted);
+    assert_eq!(first.area, tinted.area, "tint redraw keeps the width");
+    assert_ne!(
+        first[at(&first, "claude1")].bg,
+        tinted[at(&tinted, "claude1")].bg
+    );
+    for (before, after) in first_inks.into_iter().zip(tinted_inks) {
+        assert_ne!(before, after, "tint case must detect reused foregrounds");
+    }
+
+    tui_pane::set_active_theme(std::sync::Arc::new(light.theme));
+    let light = redraw_account_summary(&table, &colors);
+    let light_inks = assert_current_account_summary_inks(&light);
+    assert_eq!(tinted.area, light.area, "theme redraw keeps the width");
+    for (before, after) in tinted_inks.into_iter().zip(light_inks) {
+        assert_ne!(before, after, "theme case must detect reused foregrounds");
+    }
+}
 
 fn usage(
     label: &str,
@@ -1041,36 +1169,44 @@ fn eighty_column_summary_keeps_every_account_value_whole() {
         }
     }
     assert_eq!(output.matches("showrunners, units").count(), 2);
-    assert_eq!(output.matches("yes").count(), 3);
+    assert_eq!(output.matches("yes").count(), 2);
+    assert!(!lines[1].contains("in use"), "first optional column drops");
     assert!(lines.iter().all(|line| line.chars().count() <= 80));
 }
 
 #[test]
-fn two_line_accounts_align_read_values_under_the_second_header() {
+fn two_line_accounts_align_resets_after_optional_columns_drop() {
     let table = narrow_accounts();
-    let buffer = narrow_draw(&table, 80, 40);
+    // Roles may now shrink to six cells before the kept columns wrap.
+    let buffer = narrow_draw(&table, 32, 40);
     let lines = text(&buffer);
-    let first_header = at(&buffer, "account").1;
-    // The section heading also says "accounts"; locate the complete first header.
-    let first_header = (first_header..buffer.area.bottom())
-        .find(|&y| lines[usize::from(y)].contains("role") && lines[usize::from(y)].contains("left"))
-        .expect("first header");
-    let (read_x, read_y) = at(&buffer, "read");
-    assert_eq!(
-        read_y,
-        first_header + 1,
-        "two distinct header lines: {lines:#?}"
-    );
-    assert!(lines[usize::from(read_y)].starts_with("  "));
-    assert!(!lines[usize::from(first_header)].contains("credits"));
-    for (label, age) in [("first", "2h"), ("second", "45s")] {
-        let name_y = at(&buffer, label).1;
-        let (x, y) = at(&buffer, age);
-        assert_eq!(y, name_y + 1, "{label} facts follow its name");
+    let (_, header_y) = at(&buffer, "role");
+    let (reset_x, reset_y) = at(&buffer, "resets");
+    assert_eq!(reset_y, header_y + 1, "two header lines: {lines:#?}");
+    for omitted in ["credits", "enabled", "in use", "read"] {
+        assert!(
+            !lines.iter().any(|line| line.contains(omitted)),
+            "{lines:#?}"
+        );
+    }
+    for (label, instant) in [
+        ("first", "2026-10-17T14:00:00Z"),
+        ("second", "2026-10-18T14:00:00Z"),
+    ] {
+        let reset = DateTime::parse_from_rfc3339(instant)
+            .expect("reset fixture")
+            .with_timezone(&Local)
+            .format("%a %H:%M")
+            .to_string();
+        let (x, y) = at(&buffer, &reset);
         assert_eq!(
-            x + u16::try_from(age.len()).expect("age width"),
-            read_x + 4,
-            "right-aligned read for {label}"
+            y,
+            at(&buffer, label).1 + 1,
+            "{label} reset follows its name"
+        );
+        assert_eq!(
+            x + cell_width(&reset),
+            reset_x + cell_width("resets").max(cell_width(&reset))
         );
     }
 }
@@ -1078,18 +1214,13 @@ fn two_line_accounts_align_read_values_under_the_second_header() {
 #[test]
 fn stacked_accounts_wrap_whole_facts_with_board_words_and_separators() {
     let table = narrow_accounts();
-    // Enough for the complete account heading, but less than either table half.
-    let width = u16::try_from("● second  showrunners, units".chars().count())
-        .expect("heading width")
-        + u16::try_from(tui_pane::SECTION_ITEM_INDENT.len()).expect("indent");
+    // The first table half no longer fits even with the six-cell roles floor.
+    let width = 23;
     let buffer = narrow_draw(&table, width, 40);
     let lines = text(&buffer);
     let first = usize::from(at(&buffer, "first").1);
     let second = usize::from(at(&buffer, "second").1);
-    assert!(
-        lines[first].contains("● first  showrunners, units"),
-        "{lines:#?}"
-    );
+    assert!(lines[first].contains("● first showr…"), "{lines:#?}");
     let facts: Vec<_> = lines[first + 1..second]
         .iter()
         .filter(|line| !line.trim().is_empty())
@@ -1099,14 +1230,7 @@ fn stacked_accounts_wrap_whole_facts_with_board_words_and_separators() {
         .with_timezone(&Local)
         .format("%a %H:%M")
         .to_string();
-    let expected = [
-        "60% left".to_owned(),
-        format!("resets {reset}"),
-        "credits 13,446".to_owned(),
-        "enabled".to_owned(),
-        "in use".to_owned(),
-        "read 2h ago".to_owned(),
-    ];
+    let expected = ["60% left".to_owned(), format!("resets {reset}")];
     let actual: Vec<_> = facts
         .iter()
         .flat_map(|line| line.trim().split(" · "))
@@ -1117,17 +1241,26 @@ fn stacked_accounts_wrap_whole_facts_with_board_words_and_separators() {
     );
     assert!(facts.iter().all(|line| line.starts_with("  ")));
     assert!(
-        facts.iter().any(|line| line.contains(" · ")),
-        "facts share available rows"
+        facts
+            .iter()
+            .all(|line| !line.trim_start().starts_with([',', ':', '·']))
     );
+    for omitted in ["credits", "enabled", "in use", "read"] {
+        assert!(
+            !lines.iter().any(|line| line.contains(omitted)),
+            "{lines:#?}"
+        );
+    }
     assert!(
         lines
             .iter()
             .all(|line| line.chars().count() <= usize::from(width))
     );
     assert!(
-        lines.iter().any(|line| line.contains("read 45s ago")),
-        "final account is complete"
+        lines[second + 1..]
+            .iter()
+            .any(|line| line.contains("24% left")),
+        "final account keeps its mandatory facts"
     );
 }
 
@@ -1208,13 +1341,11 @@ fn past_resets_use_weekdays_within_six_days_and_dates_afterwards() {
 fn summary_height_matches_every_drawn_row_in_full_two_line_and_stacked_layouts() {
     let table = narrow_accounts();
     let full = accounts::sorted_width(&table, NOW, AccountsSort::SourceOrder);
-    let stacked = u16::try_from("● second  showrunners, units".chars().count())
-        .expect("heading width")
-        + u16::try_from(tui_pane::SECTION_ITEM_INDENT.len()).expect("indent");
+    let stacked = 23;
     let machines = [];
     let placement = AgentPlacement::from_machines(&machines);
     let mut heights = Vec::new();
-    for width in [full, 80, stacked] {
+    for width in [full, 80, 32, stacked] {
         let generous = narrow_draw(&table, width, 40);
         let lines = text(&generous);
         let painted_height = lines
@@ -1246,13 +1377,14 @@ fn summary_height_matches_every_drawn_row_in_full_two_line_and_stacked_layouts()
             "exact demand retains the final row at width {width}"
         );
         assert!(
-            text(&exact).last().expect("final row").contains("45s"),
-            "final read survives measurement"
+            text(&exact).iter().any(|line| line.contains("second")),
+            "final account survives measurement"
         );
         heights.push(measured);
     }
     assert!(
-        heights.windows(2).all(|pair| pair[0] < pair[1]),
+        heights.windows(2).all(|pair| pair[0] <= pair[1])
+            && heights[0] < *heights.last().expect("layout heights"),
         "narrower layouts require more measured rows: {heights:?}"
     );
 }
@@ -1275,4 +1407,370 @@ fn stacked_accounts_omit_unavailable_facts_and_disabled_credit_flags() {
         lines.iter().map(|line| line.trim()).collect::<Vec<_>>(),
         ["accounts", "● empty", "— left"]
     );
+}
+
+const COMPACT_ACCOUNT_LABELS: [&str; 4] = ["claude1", "claude2", "codex1", "codex2"];
+const COMPACT_ACCOUNT_ERROR: &str = "claude1: scratch reading failed";
+
+const LIVE_ACCOUNT_LABELS: [&str; 7] = [
+    "claude1", "claude2", "claude3", "claude4", "claude5", "codex1", "codex2",
+];
+
+fn live_accounts_grid() -> App {
+    let mut app = crate::app::App::new_for_test().expect("live account app");
+    app.loaded_config.config.tiles.initial_rows =
+        serde_json::from_value(serde_json::json!(8)).expect("six tiles in one grid column");
+    app.loaded_config.config.tiles.widen_summary = false;
+    let rows = (1..=10)
+        .map(|pid| {
+            // Busy agent tiles compete for rows with the complete summary.
+            let commands = (0..8)
+                .map(|index| {
+                    serde_json::json!({
+                        "depth":0, "kind":"shell", "pid":1000+pid*10+index,
+                        "name":format!("command-{index}"), "started":100
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::from_value(serde_json::json!({
+                "agent":"claude", "pid":pid, "name":format!("session-{pid}"),
+                "session_id":format!("session-{pid}"), "started":100,
+                "directory":"/fixture", "children":commands
+            }))
+            .expect("live session")
+        })
+        .collect();
+    let hierarchy = (1..=9)
+        .step_by(2)
+        .map(|pid| {
+            serde_json::json!({
+                "manager":format!("session-{pid}"),
+                "member":format!("session-{}", pid+1), "role":"unit"
+            })
+        })
+        .collect::<Vec<_>>();
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: HierarchyEdges(
+            serde_json::from_value(serde_json::json!(hierarchy)).expect("five managed trees"),
+        )
+        .into(),
+        stage: ScanStage::Completed,
+    });
+    let rows = LIVE_ACCOUNT_LABELS.map(|label| {
+        let mut row = contract_row(label, &serde_json::json!(60), &serde_json::json!(13_446), 0);
+        row["roles"] = if label == "claude1" {
+            serde_json::json!(["showrunners", "units"])
+        } else {
+            serde_json::json!(["workers"])
+        };
+        row["resets_at"] = serde_json::json!("2026-12-01T10:00:00Z");
+        row
+    });
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "accounts":rows, "problems":[COMPACT_ACCOUNT_ERROR]
+            }))
+            .expect("live account JSON"),
+        )
+        .expect("live account wire"),
+    );
+    app
+}
+
+fn settled_live_summary(app: &mut App, width: u16) -> (Buffer, Rect, usize) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 50))
+        .expect("live terminal");
+    let keymap = app.keymap.clone();
+    terminal
+        .draw(|frame| render::draw_at_for_test(frame, app, &keymap, NOW))
+        .expect("live first draw");
+    app.tiles.settle_for_test();
+    terminal
+        .draw(|frame| render::draw_at_for_test(frame, app, &keymap, NOW))
+        .expect("live settled draw");
+    let placements = app
+        .tiles
+        .placements(app.selection_area, app.loaded_config.config.tiles.growth());
+    let summary = placements
+        .iter()
+        .find(|tile| matches!(tile.content, crate::tiles::TileContent::Summary))
+        .expect("live summary")
+        .frame
+        .inner();
+    let needed = match &*app.painted_summary.borrow() {
+        PaintedSummary::Drawn(layout) => layout.height(),
+        PaintedSummary::NotDrawn => panic!("live summary was not painted"),
+    };
+    assert_eq!(
+        placements.len(),
+        6,
+        "one summary and five agent tiles; summary={summary:?}, needed={needed}"
+    );
+    let buffer = terminal.backend().buffer();
+    let mut content = Buffer::empty(summary);
+    for y in summary.y..summary.bottom() {
+        for x in summary.x..summary.right() {
+            content[(x, y)] = buffer[(x, y)].clone();
+        }
+    }
+    (content, summary, needed)
+}
+
+fn assert_live_accounts_visible(buffer: &Buffer) -> Vec<usize> {
+    let lines = text(buffer);
+    let rows = LIVE_ACCOUNT_LABELS.map(|label| {
+        lines
+            .iter()
+            .position(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("missing {label}, area={:?}: {lines:#?}", buffer.area))
+    });
+    assert!(
+        lines.join("\n").contains(COMPACT_ACCOUNT_ERROR),
+        "lost error: {lines:#?}"
+    );
+    rows.into()
+}
+
+#[test]
+fn live_accounts_at_40_columns_keep_seven_single_rows_and_the_error_before_tiles() {
+    let mut app = live_accounts_grid();
+    let wide = text(&narrow_draw(&app.accounts.table, 200, 20)).join("\n");
+    assert!(
+        wide.contains("13,446"),
+        "fixture has a whole grouped credit number"
+    );
+    let (buffer, area, needed) = settled_live_summary(&mut app, 40);
+    assert!(
+        usize::from(area.height) >= needed,
+        "complete summary before busy tiles: {area:?}, needed={needed}: {:?}",
+        text(&buffer)
+    );
+    let lines = text(&buffer);
+    let rows = assert_live_accounts_visible(&buffer);
+    assert!(
+        rows.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "one row per account: {lines:#?}"
+    );
+    assert!(
+        // Main's row budget counts content, excluding the frame and readout.
+        needed <= 19,
+        "main budget: {area:?}, needed={needed}: {lines:#?}"
+    );
+    assert!(
+        usize::from(area.height) >= needed,
+        "all measured lines fit: {area:?}, needed={needed}"
+    );
+    assert!(
+        lines[rows[0]].contains('…'),
+        "cut roles have an ellipsis: {lines:#?}"
+    );
+    for row in rows {
+        assert!(lines[row].contains("60%"), "whole percent: {lines:#?}");
+        assert!(
+            lines[row].contains("01 Dec"),
+            "whole reset date: {lines:#?}"
+        );
+    }
+    assert!(
+        !lines.join("\n").contains("credits"),
+        "credits drop before roles shorten"
+    );
+}
+
+fn compact_accounts() -> AccountsTable {
+    let rows = COMPACT_ACCOUNT_LABELS.map(|label| {
+        let mut row = contract_row(
+            label,
+            &serde_json::json!(60),
+            &serde_json::json!(13_446),
+            7200,
+        );
+        row["resets_at"] = serde_json::json!("2026-10-17T14:00:00Z");
+        row["credits_in_use"] = serde_json::json!(true);
+        if label == "codex2" {
+            row["credits"] = serde_json::json!("unlimited");
+        }
+        row
+    });
+    AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "accounts": rows, "problems": [COMPACT_ACCOUNT_ERROR]
+            }))
+            .expect("compact fixture JSON"),
+        )
+        .expect("compact accounts wire"),
+    )
+}
+
+#[test]
+fn compact_accounts_use_one_row_per_account_at_200_80_and_50_columns() {
+    let table = compact_accounts();
+    for width in [200, 80, 50] {
+        let buffer = narrow_draw(&table, width, 7);
+        let lines = text(&buffer);
+        assert_eq!(
+            accounts::height_at_width(&table, NOW, AccountsSort::SourceOrder, width),
+            7,
+            "section, header, four accounts and error at {width}: {lines:#?}"
+        );
+        for (index, label) in COMPACT_ACCOUNT_LABELS.iter().enumerate() {
+            assert!(lines[index + 2].contains(label), "{width}: {lines:#?}");
+        }
+        assert_eq!(
+            lines[6].trim(),
+            COMPACT_ACCOUNT_ERROR,
+            "{width}: {lines:#?}"
+        );
+        if width == 200 {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains("13,446")).count(),
+                3
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_accounts_keep_every_account_error_and_whole_word_at_40_columns() {
+    let table = compact_accounts();
+    let buffer = narrow_draw(&table, 40, 19);
+    let lines = text(&buffer);
+    let output = lines.join("\n");
+    for label in COMPACT_ACCOUNT_LABELS {
+        assert!(output.contains(label), "missing {label}: {lines:#?}");
+    }
+    assert!(
+        output.contains(COMPACT_ACCOUNT_ERROR),
+        "lost error: {lines:#?}"
+    );
+    let wide = text(&narrow_draw(&table, 200, 19)).join(" ");
+    let mut words: BTreeSet<_> = wide.split_whitespace().collect();
+    words.extend(["left", "resets", "ago", "enabled", "in", "use", "·"]);
+    for line in &lines {
+        let line = line.trim();
+        assert!(
+            !line.starts_with([',', ':', '·']),
+            "punctuation starts line: {lines:#?}"
+        );
+        for word in line.split_whitespace() {
+            assert!(
+                words.contains(word)
+                    || word.strip_suffix('…').is_some_and(
+                        |prefix| !prefix.is_empty() && "showrunners".starts_with(prefix)
+                    ),
+                "broken word or number {word:?}: {lines:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_accounts_drop_optional_columns_in_use_enabled_read_then_credits() {
+    let table = compact_accounts();
+    let optional = [
+        AccountsColumn::InUse,
+        AccountsColumn::Enabled,
+        AccountsColumn::Read,
+        AccountsColumn::Credits,
+    ];
+    let mut seen = [false; 5];
+    let mut previous_dropped = 0;
+    for width in (50..=140).rev() {
+        let headers = accounts::header_spans(
+            Rect::new(0, 0, width, 19),
+            &table,
+            NOW,
+            AccountsSort::SourceOrder,
+        );
+        let dropped = optional
+            .iter()
+            .take_while(|column| !headers.iter().any(|header| header.column == **column))
+            .count();
+        for (index, column) in optional.iter().enumerate() {
+            assert_eq!(
+                headers.iter().any(|header| header.column == *column),
+                index >= dropped,
+                "drop order at {width}"
+            );
+        }
+        assert!(dropped >= previous_dropped, "columns reappear at {width}");
+        previous_dropped = dropped;
+        seen[dropped] = true;
+        for column in [
+            AccountsColumn::Account,
+            AccountsColumn::Roles,
+            AccountsColumn::WeeklyLeft,
+            AccountsColumn::Resets,
+        ] {
+            assert!(
+                headers.iter().any(|header| header.column == column),
+                "kept {column:?} at {width}"
+            );
+        }
+    }
+    assert_eq!(seen, [true; 5], "each optional drop has a measured width");
+}
+
+#[test]
+fn compact_summary_marks_a_cut_machine_title_with_an_ellipsis() {
+    let state = MachineState::Answered(agents(), HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = agent_cell::cell_order_placed(&placement);
+    let colors = FooterColors::default();
+    let table = AccountsTable::NotConfigured;
+    let frame = SummaryFrame {
+        accounts_sort:  AccountsSort::SourceOrder,
+        machines:       &machines,
+        placement:      &placement,
+        cells:          &cells,
+        now:            NOW,
+        account_column: AccountColumn::Hidden,
+        footer_colors:  &colors,
+        sort:           SummarySort::default(),
+        accounts:       &table,
+    };
+    let area = Rect::new(0, 0, 8, 8);
+    let mut buffer = Buffer::empty(area);
+    draw(&mut buffer, area, &frame);
+    let lines = text(&buffer);
+    assert!(lines[0].ends_with('…'), "cut title: {lines:#?}");
+}
+
+#[test]
+fn compact_accounts_wrap_error_words_without_leading_separators() {
+    let problem = "claude1: scratch reading failed, all units need another attempt after reset";
+    let table = AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({"accounts": [], "problems": [problem]}))
+                .expect("word wrap JSON"),
+        )
+        .expect("word wrap wire"),
+    );
+    let lines = text(&narrow_draw(&table, 40, 19));
+    let first = lines
+        .iter()
+        .position(|line| line.contains("claude1:"))
+        .expect("error starts");
+    let words: Vec<_> = lines[first..]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect();
+    assert_eq!(
+        words,
+        problem.split_whitespace().collect::<Vec<_>>(),
+        "{lines:#?}"
+    );
+    for line in &lines[first..] {
+        assert!(
+            !line.trim_start().starts_with([',', ':', '·']),
+            "{lines:#?}"
+        );
+    }
 }
