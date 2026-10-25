@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerFixture;
@@ -175,7 +176,7 @@ fn run_berth(root: &Path, args: &[&str]) -> Output {
         .current_dir(root)
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
-        .output()
+        .bounded_output()
         .expect("target pair setup command should run");
     assert!(
         output.status.success(),

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::claim_id;
@@ -84,7 +85,7 @@ fn build_recorded_projection(root: &Path) {
             "--json",
         ])
         .current_dir(root)
-        .output()
+        .bounded_output()
         .expect("fixture claim should run");
     assert_success(&claim);
 }
@@ -408,7 +409,7 @@ fn run_berth(root: &Path, args: &[&str]) -> Output {
     berth_command(BERTH_EXECUTABLE)
         .args(args)
         .current_dir(root)
-        .output()
+        .bounded_output()
         .expect("fixture command should run")
 }
 fn dirty_source(root: &Path, path: &str) { write_file(root, path, "// uncommitted holder work\n"); }

@@ -129,6 +129,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use cargo_berth_test_support::ChildDeadlineExt as _;
     use tempfile::tempdir;
 
     use super::MutationLock;
@@ -169,7 +170,9 @@ mod tests {
         }
         assert!(ready_path.is_file());
         holder.kill().expect("lock holder should terminate");
-        holder.wait().expect("terminated holder should reap");
+        holder
+            .bounded_wait()
+            .expect("terminated holder should reap");
 
         assert!(MutationLock::acquire(&lock_path, LOCK_ACQUISITION_TIMEOUT).is_ok());
     }

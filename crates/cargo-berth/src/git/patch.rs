@@ -1161,6 +1161,8 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::HistoricalIntegrationCandidateDiscovery;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
@@ -1847,7 +1849,7 @@ mod tests {
     #[test]
     fn scoped_patch_command_spawn_failure_is_unavailable() -> Result<(), Box<dyn Error>> {
         let spawn_failure = Command::new("cargo-berth-missing-git")
-            .output()
+            .bounded_output()
             .err()
             .ok_or_else(|| io::Error::other("the missing git fixture should fail to spawn"))?;
         let expected_kind = spawn_failure.kind();

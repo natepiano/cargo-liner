@@ -20,6 +20,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::SystemTime;
 
+#[cfg(not(target_os = "linux"))]
+use super::child;
 use super::command::GitCommandOutputAvailability;
 use super::constants::GIT_LOCK_EXTENSION;
 use super::constants::GIT_LOCK_REFUSAL_PREFIX;
@@ -390,14 +392,15 @@ fn inspect_git_lock_holders(process_root: &Path, path: &Path, lock_owner: u32) -
 
 #[cfg(not(target_os = "linux"))]
 fn git_lock_holders(path: &Path) -> GitLockHolders {
-    let Ok(output) = std::process::Command::new(super::constants::LSOF_BINARY)
-        .args([
-            super::constants::LSOF_PROCESS_IDS_ARG,
-            super::constants::GIT_PATHSPEC_SEPARATOR,
-        ])
-        .arg(path)
-        .output()
-    else {
+    let Ok(output) = child::command_output(
+        std::process::Command::new(super::constants::LSOF_BINARY)
+            .args([
+                super::constants::LSOF_PROCESS_IDS_ARG,
+                super::constants::GIT_PATHSPEC_SEPARATOR,
+            ])
+            .arg(path),
+        super::protocol::CONTROL_REPLY_DEADLINE,
+    ) else {
         return GitLockHolders::Unavailable;
     };
     let holders = String::from_utf8_lossy(&output.stdout)

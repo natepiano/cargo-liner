@@ -7,6 +7,8 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(test)]
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
@@ -440,7 +442,7 @@ fn git(repository_root: &Path, arguments: &[&str]) -> FixtureResult<String> {
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
-        .output()?;
+        .bounded_output()?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "git {} failed: {}",

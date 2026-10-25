@@ -623,6 +623,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
@@ -1483,7 +1484,7 @@ mod tests {
         let output = cargo_berth_test_support::fixture_git_command()
             .args(arguments)
             .current_dir(root)
-            .output()?;
+            .bounded_output()?;
         if !output.status.success() {
             return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr)).into());
         }

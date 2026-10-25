@@ -1725,6 +1725,7 @@ mod tests {
     use std::thread;
     use std::thread::JoinHandle;
 
+    use cargo_berth_test_support::ChildDeadlineExt as _;
     use serde_json::Value;
 
     use super::CommittedActionValidation;
@@ -1805,7 +1806,7 @@ mod tests {
         }
         let prepared_while_locked = repository.path().join("prepared").is_file();
         holder.unlock()?;
-        let output = child.wait_with_output()?;
+        let output = child.bounded_wait_with_output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(ready.exists(), "child must reach the acquire signal");
         assert!(
@@ -1878,7 +1879,7 @@ mod tests {
                 .spawn()?;
             while !ready.exists() {
                 if child.try_wait()?.is_some() {
-                    let output = child.wait_with_output()?;
+                    let output = child.bounded_wait_with_output()?;
                     panic!("{mode} exited before signaling preparation: {output:?}");
                 }
                 thread::sleep(std::time::Duration::from_millis(1));
@@ -1887,7 +1888,7 @@ mod tests {
             // Publishing the already prepared change must preserve the unrelated mapping.
             fs::write(&index, b"unreadable disposable index")?;
             lock.unlock()?;
-            let output = child.wait_with_output()?;
+            let output = child.bounded_wait_with_output()?;
             assert!(output.status.success(), "{mode}: {output:?}");
             let actual: Value = serde_json::from_slice(&fs::read(&index)?)?;
             assert_eq!(

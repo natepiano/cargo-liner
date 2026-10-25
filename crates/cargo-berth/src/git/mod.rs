@@ -7,14 +7,17 @@
 //! pending worktree operations.
 //! This root declares them and re-exports the names the rest of the crate uses.
 
+mod child;
 mod command;
 mod conflict;
 mod constants;
 mod discovery;
 mod error;
+mod installation;
 mod object;
 mod patch;
 mod paths;
+mod protocol;
 mod reachability;
 mod read;
 mod refs;

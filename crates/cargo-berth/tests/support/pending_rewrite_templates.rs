@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -405,6 +406,6 @@ fn run_berth(root: &Path, args: &[&str]) -> Output {
         .env_remove("CARGO_BERTH_BYPASS")
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
-        .output()
+        .bounded_output()
         .expect("pending rewrite setup should run")
 }
