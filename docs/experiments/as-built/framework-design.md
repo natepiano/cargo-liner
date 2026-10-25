@@ -2,14 +2,14 @@
 
 ## What it is
 
-This set of documents holds a design for an experiment framework. Agents use it to run experiments on any code base and on the work process. The goal is results that are reliable and repeatable, so that a good result can safely become a default. The design follows the scientific method. It goes from question and hypothesis, through pre-registration, a control, noise measurement and a paired comparison, to a recorded decision, adoption and a later check. It fits natedev and the Mac: build holds, load, `verify.sh`, berth, units and showrunners, and the test-time rules. The design is a proposal. Nothing is built. `cargo-experiment` is only a proposed name. Building it is new work, and the user must approve it.
+This set of documents holds a design for an experiment framework. Agents use it to run experiments on any code base and on the work process. The goal is results that are reliable and repeatable, so that a good result can safely become a default. The design follows the scientific method. It goes from question and hypothesis, through pre-registration, a control, noise measurement and a paired comparison, to a recorded decision, adoption and a later check. It fits natedev and the Mac: build holds, load, `verify.sh`, berth, units and showrunners, and the test-time rules. The design is a proposal. Nothing is built. `cargo-experiment` is only a proposed name. Building it is new work that the user has not asked for yet.
 
 ## How it is organized
 
-- [`../framework.md`](../framework.md) is the design. It has a summary, a one-page procedure, sections 1-13, and the open questions for the user.
+- [`../framework.md`](../framework.md) is the design. It has a summary, a one-page procedure, sections 1-13, the user's decisions, and the open question for the user.
 - [`../worked-examples.md`](../worked-examples.md) applies the design to five past studies. It also gives one complete protocol for a first live study.
 
-framework.md sections: 1. Question and hypothesis. 2. Pre-registration. 3. Baseline and control. 4. Conditions. 5. Measures and existing evidence. 6. Repeat runs and noise floor. 7. Live effect and daily value. 8. Acceptance and authority. 9. Adoption and keeping the result. 10. Repeatability. 11. Place in a production. 12. Records and tools. 13. Tooling. Then "Open questions for the user".
+framework.md sections: 1. Question and hypothesis. 2. Pre-registration. 3. Baseline and control. 4. Conditions. 5. Measures and existing evidence. 6. Repeat runs and noise floor. 7. Live effect and daily value. 8. Acceptance and decision owner. 9. Adoption and keeping the result. 10. Repeatability. 11. Place in a production. 12. Records and tools. 13. Tooling. Then "Decisions from the user" and "Open questions for the user".
 
 worked-examples.md sections: 1. Mend and clippy in one compile. 2. Review regime trial. 3. Cargo-berth test-time reduction. 4. Director model study. 5. Review-pool reset and fork probes. 6. First live protocol: a history-command framework exercise.
 
@@ -24,7 +24,7 @@ Key design elements:
 - Phase elapsed time comes from `phase_started` and `phase_finished` events joined by `phase_instance_id`, not from summed stage seconds (§5).
 - Protocol fields, attempt fields and named states (§12).
 - Proposed tools: one binary, CLI, JSON envelope, two hook adapters and a cargo-handler view (§12 "Smallest new tool set", §13).
-- Three open questions for the user (end of framework.md).
+- The user's decisions and one open question (end of framework.md).
 
 ## Invariants
 
@@ -59,7 +59,7 @@ Key design elements:
 - The Codex `PreToolUse` hook is silent on allow. Send Codex context through the launcher (§13).
 - The proposed hook budget is 50 ms. Do not add a repository scan to each edit (§13).
 - In `review_regime.py`, the code-finding field changed meaning on 2026-10-07. Do not combine the two meanings (worked-examples §2).
-- The worked-examples §6 protocol refuses registration until the pair adapter and the score importer exist. Running it also needs a separate instruction that approves execution and names the operator.
+- The worked-examples §6 protocol refuses registration until the pair adapter and the score importer exist. Running it also needs a request that starts execution and names the operator.
 
 ## Why
 
@@ -70,10 +70,8 @@ Key design elements:
 - Wall clock and a live check: in the mend and clippy work, selected benchmark runs projected one hour per day. The live gain was 5-25 minutes per day.
 - Ruled out, a reset-reviewer first study: units keep their reviewer and never reset it, so its control arm is not current policy.
 - Ruled out, marking Mac measurements unsupported: the design must fit natedev and the Mac.
-- The first live study (worked-examples §6) only tests the framework. It compares the history command with and without `python3 -S`. The limits are 1,800 command seconds and 60 operator minutes in 28 days. No recurring workload is known for it. Its 0.010 s threshold saves only about 0.070 s per week. Its purpose is fixed as `framework_exercise`, with `live_check` `not_claimed` and adoption `not_permitted`. It therefore closes as `not_proven` for production gain, or `rejected` if B fails. It cannot authorize adoption.
+- The first live study (worked-examples §6), chosen by the user on 2026-10-25, only tests the framework. It compares the history command with and without `python3 -S`. No recurring workload is known for it. Its 0.010 s threshold saves only about 0.070 s per week. Its purpose is fixed as `framework_exercise`, with `live_check` `not_claimed` and adoption `not_permitted`. It therefore closes as `not_proven` for production gain, or `rejected` if B fails. It cannot authorize adoption.
 
 ## Open questions
 
-1. Which first live study should run after approval? The history proposal tests the framework only. The retained-context review study is unsupported in the first version.
-2. What recurring spending limit can a showrunner approve without a separate user decision?
-3. How long must raw evidence that was not adopted stay after closure? The design keeps it until an explicit retention decision.
+1. How long must raw evidence that was not adopted stay after closure? The design keeps it until an explicit retention decision.
