@@ -39,17 +39,10 @@ pub(super) enum ReachBoundary {
     /// Capped at the crate root — `pub(crate)`.
     CrateRoot,
     /// Capped at a module below the crate root — `pub(in crate::…)`.
-    Module,
-}
-
-#[derive(Clone, Copy)]
-enum ResolvedReachBoundary {
-    Everywhere,
-    CrateRoot,
     Module(DefId),
 }
 
-impl From<VisibilityReach> for ResolvedReachBoundary {
+impl From<VisibilityReach> for ReachBoundary {
     fn from(reach: VisibilityReach) -> Self {
         match reach.0 {
             Visibility::Public => Self::Everywhere,
@@ -239,19 +232,13 @@ impl VisibilityReach {
 
     pub(super) fn is_public(self) -> bool { self.0.is_public() }
 
-    pub(super) fn boundary(self) -> ReachBoundary {
-        match ResolvedReachBoundary::from(self) {
-            ResolvedReachBoundary::Everywhere => ReachBoundary::Everywhere,
-            ResolvedReachBoundary::CrateRoot => ReachBoundary::CrateRoot,
-            ResolvedReachBoundary::Module(_) => ReachBoundary::Module,
-        }
-    }
+    pub(super) fn boundary(self) -> ReachBoundary { ReachBoundary::from(self) }
 
     pub(super) fn to_source(self, tcx: TyCtxt<'_>) -> String {
-        match ResolvedReachBoundary::from(self) {
-            ResolvedReachBoundary::Everywhere => String::from("pub"),
-            ResolvedReachBoundary::CrateRoot => String::from("pub(crate)"),
-            ResolvedReachBoundary::Module(boundary) => {
+        match self.boundary() {
+            ReachBoundary::Everywhere => String::from("pub"),
+            ReachBoundary::CrateRoot => String::from("pub(crate)"),
+            ReachBoundary::Module(boundary) => {
                 format!("pub(in crate::{})", tcx.def_path_str(boundary))
             },
         }
@@ -373,7 +360,6 @@ mod tests {
 
     use super::PathSpelling;
     use super::ReachBoundary;
-    use super::ResolvedReachBoundary;
     use super::ScopeReach;
     use super::VisibilityAnnotation;
     use super::VisibilityReach;
@@ -427,22 +413,9 @@ mod tests {
         };
         let module = VisibilityReach::from(Visibility::Restricted(module_id));
 
-        assert!(matches!(
-            ResolvedReachBoundary::from(public),
-            ResolvedReachBoundary::Everywhere
-        ));
-        assert!(matches!(
-            ResolvedReachBoundary::from(root),
-            ResolvedReachBoundary::CrateRoot
-        ));
-        let resolved_module = match ResolvedReachBoundary::from(module) {
-            ResolvedReachBoundary::Module(id) => Some(id),
-            ResolvedReachBoundary::Everywhere | ResolvedReachBoundary::CrateRoot => None,
-        };
-        assert_eq!(resolved_module, Some(module_id));
         assert_eq!(public.boundary(), ReachBoundary::Everywhere);
         assert_eq!(root.boundary(), ReachBoundary::CrateRoot);
-        assert_eq!(module.boundary(), ReachBoundary::Module);
+        assert_eq!(module.boundary(), ReachBoundary::Module(module_id));
     }
 
     #[test]
