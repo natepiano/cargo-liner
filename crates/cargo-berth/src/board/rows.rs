@@ -946,7 +946,8 @@ fn unresolved_overlaps(
     {
         let deferred = &constraints.reservation(deferral.deferred)?.lifecycle;
         let blocker = &constraints.reservation(deferral.blocker)?.lifecycle;
-        // The gate skips released reservations, so a pair whose sides both ended holds nothing.
+        // The gate skips `ReservationLifecycle::Released`, so a pair
+        // whose sides both ended holds nothing.
         let DeferralIntegrationOutcome::Held(consequence) =
             DeferralConsequence::from_lifecycles(deferred, blocker)
         else {
@@ -1821,8 +1822,8 @@ mod tests {
 
     fn assert_trunk_rewritten_action() -> FixtureResult<()> {
         let rewritten = OrderedBoardFixture::new()?;
-        // The phase must protect real scoped work: a rewrite only costs a reservation its
-        // evidence when trunk actually loses the content that evidence rested on.
+        // `OrderedBoardFixture::commit_predecessor` must create real scoped work: a rewrite costs
+        // a reservation its evidence only when trunk loses the content that evidence rested on.
         let protected_tip = rewritten.commit_predecessor()?;
         rewritten.merge_predecessor()?;
         let integrated_trunk = rewritten.board.trunk()?;
