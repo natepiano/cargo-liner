@@ -197,7 +197,7 @@ The subject hook would show the instruction-loss finding before a reset-policy c
 
 ### Status, purpose, and owner
 
-This is a proposed protocol, not authority to run it. Its name is `history-site-startup-v1`. Its purpose is `framework_exercise`. The user chooses the first live study. This choice remains open in the framework's closing questions.
+This is a proposed protocol, not authority to run it. Its name is `history-site-startup-v1`. Its purpose is `framework_exercise`. The user chose it as the first live study on 2026-10-25. It starts after the user's design review is complete.
 
 The experiment-framework unit director owns this exercise. The unit ID is `6d3359af-b72b-4918-9168-c05dc60a142b`. SDLC owns the process design. Registration must retain the request that starts execution and names its operator.
 

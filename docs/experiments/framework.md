@@ -689,7 +689,11 @@ Use `loading`, `current`, `stale`, and `unavailable` display states. Take freshn
 
 SDLC must confirm the binary name and the owner of the shared index. These are process assignments.
 
+## Decisions from the user
+
+- First live study (2026-10-25): the history-command trial in `worked-examples.md` §6, with and without `python3 -S`, runs first. It exercises the framework only. It claims no recurring savings and cannot authorize adoption. It starts after the user's design review is complete.
+- Spending (2026-10-25): experiment work is normal work. Work the user asks for is approved. There is no spending limit (section 8).
+
 ## Open questions for the user
 
-1. Which first live study, if any, should run? The history proposal in `worked-examples.md` exercises the framework only. It claims no recurring savings and cannot authorize adoption. This design has not verified a recurring workload for that protocol. The retained-context review study is unsupported in the first tool version.
-2. How long should non-adopted raw evidence remain after closure? This design retains it until an explicit retention decision.
+1. How long should non-adopted raw evidence remain after closure? This design retains it until an explicit retention decision.
