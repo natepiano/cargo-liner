@@ -969,7 +969,7 @@ fn build_drained_checkpoint(root: &Path, change: SplitRefChange) {
     let state =
         serde_json::from_slice(&fs::read(root.join(STATE_PATH)).expect("split state should read"))
             .expect("split state should decode");
-    let editor_directory = tempdir().expect("split editor directory should exist");
+    let editor_directory = cargo_berth_test_support::fixture_tempdir("split-editor-");
     let state = prepare_split_checkpoint(
         &fixture,
         state,

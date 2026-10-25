@@ -677,7 +677,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `TestProcessGroup` drops a duplicate cleanup shell. It keeps the whole-group kill, the drain of both pipes and the bounded reap.
 - The process-start pin went from 46,393 to 38,741 starts, from a complete Mac capture with no unresolved product start. `lock_diagnostic` (macOS `lsof` on a lock refusal) is its own origin, with 18 starts in 15 tests and ceiling 18. `berth` stays at 3,262 starts, above the original 3,174 but below the 3,281 that phase 22 accepted.
 - A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
-- Spec 8, partial (229 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.7, reconcile 51.1, claim 31.7, post-tool-use 46.8, release 50.6, gate 41.0 ms), against before medians of 3.0–8.8 s. Full table: `docs/cargo-berth/as-built/check-under-load.md`.
+- Spec 8, partial (229 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.7, reconcile 51.1, claim 31.7, post-tool-use 46.8, release 50.6, gate 41.0 ms), against before medians of 3.0–8.8 s. The full table goes into `docs/cargo-berth/as-built/check-under-load.md` with the last 11 samples.
 
 **Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the last 11 lock-hold samples, the cold Mac timing compared with 88.730 s and 114.970 s, and the cold Mac run with every test under 1 s. hana's tests kept the Mac above load 10. The `mac` seat runs them when the Mac is quiet and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
 
@@ -719,3 +719,25 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Ruled out:**
 - Allowing `--defer` beside a widening answer: a defer takes no paths, so one claim cannot both defer and widen.
+
+### Phase 26 — The cargo-berth test-support suite passes when `/tmp` is on another filesystem  · status: done
+
+**Why:** every main CI run since 2026-10-23 23:31 UTC fails `directory_snapshot::tests::shared_script_replacement_keeps_its_other_copy_and_mutable_files_private` (`directory_snapshot.rs:252`, inode assert). `ubuntu-latest` moved from 24.04 to 26.04. On 26.04, `/tmp` is on a filesystem other than `target`. `ImmutableShellExecutable::link` then copies the script for each name, by design, but the test asserts a hard link.
+
+**Work Order:**
+1. The test's root is a private directory on the fixture cache's filesystem (`tempfile::tempdir_in` under `fixture_cache_root`'s target, or a shared helper for it), so the hard link is the path under test on every host. The cross-filesystem copy keeps its own test (`shared_shell_scripts_restore_across_filesystems`).
+2. Find every other fixture that hard-links from the cache into a `TMPDIR` directory. On a host where `/tmp` is on another device, each of them copies the file for each test, which costs time. Put their roots on the cache's device too, through the same helper.
+3. Any other test that asserts a hard link to a `TMPDIR` destination gets the same fix.
+
+**Verification:** `cargo-berth-test-support` and `cargo-berth` suites pass, each test under 1 s. One test proves the fix with `TMPDIR` on another filesystem (`/dev/shm` on Linux).
+
+### Phase 27 — A cargo-berth wait on a child process fails fast with a clear message  · status: todo
+
+**Why:** a phase 22 drift test (`session_mapping_attributes_post_commit_widening_with_two_active_reservations`) hung on the Mac for 5 days. Its `cargo-berth drift --full --json` child waited in `gix::open_opts` for the installation-config probe's output. A concurrent `git cat-file --batch-check` child held an inherited copy of the probe's pipe writer, so EOF never came. Phase 24 removed this cause (`with_spawn_lock` around `gix::open_opts`). But nothing bounds the wait: the next cause of the same kind hangs again with no message. Showrunner, 2026-10-25: a hang is a defect; it must fail fast with a clear message, under 1 s.
+
+**Work Order:**
+1. Every place where cargo-berth waits for a child process's output or exit has a deadline. When the deadline passes, cargo-berth stops the child and returns an error that names the command and what it waited for. It never waits without a bound.
+2. A regression test makes a child keep the pipe open (an inherited writer that never closes) and proves that cargo-berth returns the error in under 1 s.
+3. A test that hangs ends with its own name and a clear message. Bound the test-support process waits (`TestProcessGroup` and the fixture builders) and set a nextest `slow-timeout` with `terminate-after` for the cargo-berth packages.
+
+**Verification:** `cargo-berth` and `cargo-berth-test-support` suites pass, each test under 1 s. The regression test fails on the tree before the fix.

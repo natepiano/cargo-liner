@@ -7773,7 +7773,7 @@ fn run_berth_with_git_wrapper(
     arguments: &[&str],
     wrapper: &str,
 ) -> TracedBoard {
-    let directory = tempdir().expect("git wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("board-wrapper-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
     DirectorySnapshot::write_shared_shell_script(&wrapper_path, wrapper);
