@@ -41,8 +41,8 @@ impl From<PathAnchor> for PathOrigin {
     fn from(anchor: PathAnchor) -> Self {
         match anchor {
             PathAnchor::Crate | PathAnchor::Super => Self::IntraCrate,
-            anchor if anchor.is_explicit_self() => Self::ExplicitSelf,
-            _ => Self::External,
+            PathAnchor::SelfMod | PathAnchor::SelfType => Self::ExplicitSelf,
+            PathAnchor::Name => Self::External,
         }
     }
 }
