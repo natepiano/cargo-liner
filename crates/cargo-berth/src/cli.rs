@@ -2517,6 +2517,7 @@ mod tests {
     use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
     use crate::ledger::OrderingDirection;
     use crate::output;
+    use crate::output::HOLDER_RESERVATION_ID_PLACEHOLDER;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
@@ -3565,7 +3566,7 @@ mod tests {
             .into_iter()
             .map(|argument| match argument.as_str() {
                 "<paths...>" => "src/lib.rs".to_owned(),
-                output::HOLDER_RESERVATION_ID_PLACEHOLDER => RESERVATION_ID.to_owned(),
+                HOLDER_RESERVATION_ID_PLACEHOLDER => RESERVATION_ID.to_owned(),
                 "<reason>" => "the overlap is coordinated".to_owned(),
                 _ => argument,
             })
