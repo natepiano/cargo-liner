@@ -5,6 +5,7 @@ use syn::ExprPath;
 use syn::ExprStruct;
 use syn::GenericParam;
 use syn::Generics;
+use syn::Ident;
 use syn::ImplItemFn;
 use syn::ItemConst;
 use syn::ItemEnum;
@@ -29,6 +30,62 @@ use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
 use crate::fixes::imports::GateTracking;
 use crate::rust_syntax::PathAnchor;
+
+enum PathOrigin {
+    IntraCrate,
+    External,
+    ExplicitSelf,
+}
+
+impl From<PathAnchor> for PathOrigin {
+    fn from(anchor: PathAnchor) -> Self {
+        match anchor {
+            PathAnchor::Crate | PathAnchor::Super => Self::IntraCrate,
+            anchor if anchor.is_explicit_self() => Self::ExplicitSelf,
+            _ => Self::External,
+        }
+    }
+}
+
+enum BareNameFootprint {
+    SingleType(String),
+    QualifiedType(String),
+    SelfReference,
+}
+
+impl BareNameFootprint {
+    fn for_path(path: &Path, name: String) -> Self {
+        match (path.segments.len(), name.as_str()) {
+            (1, _) => Self::SingleType(name),
+            (_, "Self") => Self::SelfReference,
+            _ => Self::QualifiedType(name),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ModuleNesting {
+    FileRoot,
+    Nested { depth: usize },
+}
+
+impl ModuleNesting {
+    const fn depth(self) -> usize {
+        match self {
+            Self::FileRoot => 0,
+            Self::Nested { depth } => depth,
+        }
+    }
+}
+
+impl From<usize> for ModuleNesting {
+    fn from(depth: usize) -> Self {
+        match depth {
+            0 => Self::FileRoot,
+            _ => Self::Nested { depth },
+        }
+    }
+}
 
 pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
@@ -64,6 +121,15 @@ pub(super) struct InlinePathVisitor<'a> {
 }
 
 impl InlinePathVisitor<'_> {
+    fn register_root_name(&mut self, name: &Ident) {
+        match ModuleNesting::from(self.mod_depth) {
+            ModuleNesting::FileRoot => {
+                self.bare_type_names.insert(name.to_string());
+            },
+            ModuleNesting::Nested { .. } => {},
+        }
+    }
+
     fn push_generics(&mut self, generics: &Generics) {
         let mut params = BTreeSet::new();
         for param in &generics.params {
@@ -103,40 +169,20 @@ impl InlinePathVisitor<'_> {
         }
 
         let first = &segments[0];
-        let path_anchor = PathAnchor::from(first.as_str());
-        let is_intra_crate = path_anchor.is_crate_relative();
-
-        // `InlinePathVisitor::check_path` requires `segments.len() >= 3` for `is_intra_crate`:
-        // `crate::Foo` and `super::Foo` are already short, so adding a `use` would not
-        // shorten the call site. For external-crate paths (`ratatui::Frame`,
-        // `std::collections::BTreeMap`), 2 segments is the minimum rewrite.
-        if is_intra_crate && segments.len() < 3 {
-            return;
-        }
-
-        // `PathAnchor::is_explicit_self` filters `self::`, which is a same-module reference,
-        // not a candidate for a `use`.
-        if path_anchor.is_explicit_self() {
-            return;
-        }
-
-        // For non-intra-crate paths, the first segment must look like a crate
-        // name (snake_case / lowercase). A PascalCase first segment means this
-        // is `Type::Variant` (enum variant pattern), `Type::AssocType`, or
-        // `Type::CONST` — not a crate-qualified path. Suggesting `use Type;`
-        // for those cases is wrong and confusing.
-        if !is_intra_crate && is_pascal_case(first) {
-            return;
-        }
-
-        // Associated-item references on a generic type parameter in scope
-        // (`S::Ok` inside `fn serialize<S>(...)`, `B::Item` inside
-        // `impl<B: Bucket>`) are not crate paths — `use S::Ok;` would be
-        // nonsense. Skip if the first segment matches a generic param visible
-        // at this point of the traversal. This is robust regardless of the
-        // generic's naming convention (`T`, `B`, `Idx`, lowercase, etc.).
-        if !is_intra_crate && self.is_active_generic(first) {
-            return;
+        // Intra-crate paths need three segments; external paths need two and a crate name.
+        // Generic associated items and explicit self references are never import candidates.
+        match PathOrigin::from(PathAnchor::from(first.as_str())) {
+            PathOrigin::IntraCrate => {
+                if segments.len() < 3 {
+                    return;
+                }
+            },
+            PathOrigin::External => {
+                if is_pascal_case(first) || self.is_active_generic(first) {
+                    return;
+                }
+            },
+            PathOrigin::ExplicitSelf => return,
         }
 
         let leaf = &segments[segments.len() - 1];
@@ -201,14 +247,11 @@ impl InlinePathVisitor<'_> {
         if !is_pascal_case(&name) {
             return;
         }
-        if path.segments.len() == 1 {
-            self.bare_type_names.insert(name);
-        } else if name != "Self" {
-            // `record_bare_name_footprint` excludes `name == "Self"`: a bare `Self::method` is fine
-            // — `Self` isn't a name we'd ever import. Anything else PascalCase as the
-            // first segment is a real type reference whose meaning would change under a
-            // same-named import.
-            self.bare_type_names.insert(name);
+        match BareNameFootprint::for_path(path, name) {
+            BareNameFootprint::SingleType(name) | BareNameFootprint::QualifiedType(name) => {
+                self.bare_type_names.insert(name);
+            },
+            BareNameFootprint::SelfReference => {},
         }
     }
 }
@@ -264,51 +307,42 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         // `InlinePathVisitor::mod_depth` tracks nesting depth so item-name registration below can
         // gate on "is this at the file's top level". Names defined inside nested
         // modules don't collide with imports added at the top level.
-        self.mod_depth += 1;
+        let nesting = ModuleNesting::from(self.mod_depth);
+        self.mod_depth = nesting.depth() + 1;
         visit::visit_item_mod(self, node);
-        self.mod_depth -= 1;
+        self.mod_depth = nesting.depth();
     }
 
     fn visit_item_struct(&mut self, node: &ItemStruct) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         self.push_generics(&node.generics);
         visit::visit_item_struct(self, node);
         self.pop_generics();
     }
 
     fn visit_item_enum(&mut self, node: &ItemEnum) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         self.push_generics(&node.generics);
         visit::visit_item_enum(self, node);
         self.pop_generics();
     }
 
     fn visit_item_type(&mut self, node: &ItemType) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         self.push_generics(&node.generics);
         visit::visit_item_type(self, node);
         self.pop_generics();
     }
 
     fn visit_item_trait(&mut self, node: &ItemTrait) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         self.push_generics(&node.generics);
         visit::visit_item_trait(self, node);
         self.pop_generics();
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.sig.ident.to_string());
-        }
+        self.register_root_name(&node.sig.ident);
         // `InlinePathVisitor::visit_item_fn` calls `push_generics` and `pop_generics` around the
         // entire item — signature AND body. Bodies contain closure parameter types and
         // locals that may reference these generics (e.g. `let f = |x: &T::Item| ...` inside
@@ -332,16 +366,12 @@ impl Visit<'_> for InlinePathVisitor<'_> {
     }
 
     fn visit_item_const(&mut self, node: &ItemConst) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         visit::visit_item_const(self, node);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
-        if self.mod_depth == 0 {
-            self.bare_type_names.insert(node.ident.to_string());
-        }
+        self.register_root_name(&node.ident);
         visit::visit_item_static(self, node);
     }
 
@@ -382,7 +412,73 @@ pub(super) fn is_pascal_case(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use syn::visit::Visit;
+
+    use super::InlinePathVisitor;
     use super::is_pascal_case;
+    use crate::fixes::imports::ConditionalAttributes;
+
+    fn inspect(text: &str) -> syn::Result<InlinePathVisitor<'_>> {
+        let syntax = syn::parse_file(text)?;
+        let mut visitor = InlinePathVisitor {
+            occurrences: Vec::new(),
+            bare_type_names: BTreeSet::new(),
+            mod_depth: 0,
+            generic_scopes: Vec::new(),
+            text,
+            offsets: &[],
+            conditional_attributes: ConditionalAttributes::default(),
+        };
+        visitor.visit_file(&syntax);
+        Ok(visitor)
+    }
+
+    #[test]
+    fn origin_policy_keeps_length_self_and_generic_exclusions() -> syn::Result<()> {
+        let visitor = inspect(concat!(
+            "fn f<lower>() { crate::Widget; crate::types::Widget; ",
+            "super::Widget; super::types::Widget; self::types::Widget; ",
+            "Self::Assoc; ext::Widget; Type::Assoc; lower::Assoc; }",
+        ))?;
+        let paths: Vec<_> = visitor
+            .occurrences
+            .iter()
+            .map(|occ| occ.full_path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "crate::types::Widget",
+                "super::types::Widget",
+                "ext::Widget"
+            ]
+        );
+        assert!(visitor.bare_type_names.contains("Type"));
+        assert!(!visitor.bare_type_names.contains("Self"));
+        Ok(())
+    }
+
+    #[test]
+    fn root_registration_resumes_after_nested_modules() -> syn::Result<()> {
+        let visitor = inspect(concat!(
+            "struct Root; mod child { struct Nested; mod deeper { enum Deep {} } } ",
+            "enum After {} type Alias = u8; trait Trait {} fn function() {} ",
+            "const VALUE: u8 = 0; static STATIC: u8 = 0;",
+        ))?;
+        assert_eq!(visitor.mod_depth, 0);
+        assert_eq!(
+            visitor.bare_type_names,
+            BTreeSet::from_iter(
+                [
+                    "Root", "After", "Alias", "Trait", "function", "VALUE", "STATIC"
+                ]
+                .map(str::to_string)
+            )
+        );
+        Ok(())
+    }
 
     #[test]
     fn pascal_case_detects_types() {

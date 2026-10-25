@@ -74,9 +74,81 @@ pub(super) struct ScopedModuleImport {
     pub(super) absolute_module: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+enum FunctionImportPolicy<'a> {
+    Parent { name: &'a str },
+    Module { name: &'a str },
+}
+
+impl<'a> From<(&'a str, ImportTarget)> for FunctionImportPolicy<'a> {
+    fn from((name, target): (&'a str, ImportTarget)) -> Self {
+        match target {
+            ImportTarget::ParentModule => Self::Parent { name },
+            ImportTarget::OtherModule => Self::Module { name },
+        }
+    }
+}
+
+impl FunctionImportPolicy<'_> {
+    fn finding_text(self, function: &RawCandidate) -> (String, String) {
+        match self {
+            Self::Parent { .. } => (
+                format!(
+                    "drop the import and call `super::{}` directly",
+                    function.function_name
+                ),
+                format!(
+                    "remove this `use` and call `super::{}` at the use sites",
+                    function.function_name
+                ),
+            ),
+            Self::Module { name } => (
+                format!(
+                    "import the module `{name}` instead of the function `{}`",
+                    function.function_name
+                ),
+                format!("consider using: `{}`", function.replacement_use),
+            ),
+        }
+    }
+
+    fn reference(self, name: &str, inline_mod_depth: usize) -> String {
+        match self {
+            Self::Parent { .. } => format!("{}{name}", "super::".repeat(inline_mod_depth + 1)),
+            Self::Module { name: module } => format!("{module}::{name}"),
+        }
+    }
+
+    fn import_plan(
+        self,
+        module: ScopedModuleImport,
+        existing: &BTreeSet<ScopedModuleImport>,
+        rewritten: &mut BTreeSet<ScopedModuleImport>,
+    ) -> ImportRewritePlan {
+        match self {
+            Self::Parent { .. } => ImportRewritePlan::DeleteRedundant,
+            Self::Module { .. } => {
+                if existing.contains(&module) {
+                    ImportRewritePlan::DeleteRedundant
+                } else if rewritten.insert(module) {
+                    ImportRewritePlan::ReplaceWithModule
+                } else {
+                    ImportRewritePlan::DeleteDuplicate
+                }
+            },
+        }
+    }
+}
+
+enum ImportRewritePlan {
+    DeleteRedundant,
+    ReplaceWithModule,
+    DeleteDuplicate,
+}
+
 pub(super) struct ImportFindingInputs<'a> {
     module_to_functions:     &'a BTreeMap<String, Vec<RawCandidate>>,
-    func_to_module:          &'a BTreeMap<&'a str, (&'a str, ImportTarget)>,
+    func_to_module:          &'a BTreeMap<&'a str, FunctionImportPolicy<'a>>,
     references:              &'a [BareReference],
     /// Modules the file already imports with a bare `use module;`, keyed by
     /// scope. A function import whose target module is in this set at the same
@@ -209,12 +281,12 @@ fn scan_file(
     let mut collector = ReferenceCollector::new(&offsets, &imported_names);
     Visit::visit_file(&mut collector, syntax);
 
-    let mut func_to_module: BTreeMap<&str, (&str, ImportTarget)> = BTreeMap::new();
+    let mut func_to_module: BTreeMap<&str, FunctionImportPolicy<'_>> = BTreeMap::new();
     for functions in module_to_functions.values() {
         for function in functions {
             func_to_module.insert(
                 function.function_name.as_str(),
-                (function.module_name.as_str(), function.import_target),
+                FunctionImportPolicy::from((function.module_name.as_str(), function.import_target)),
             );
         }
     }
@@ -691,16 +763,20 @@ fn build_findings_and_fixes(
 
     for functions in import_inputs.module_to_functions.values() {
         for function in functions {
+            let policy =
+                FunctionImportPolicy::from((function.module_name.as_str(), function.import_target));
             findings.push(build_function_finding(
                 function,
                 &display_path,
                 file_context,
+                policy,
             ));
             fixes.push(build_function_use_fix(
                 function,
                 file_context,
                 import_inputs.existing_module_imports,
                 &mut rewritten_modules,
+                policy,
             ));
         }
     }
@@ -714,6 +790,7 @@ fn build_function_finding(
     function: &RawCandidate,
     display_path: &str,
     file_context: &ScanFileContext<'_>,
+    policy: FunctionImportPolicy<'_>,
 ) -> Finding {
     let source_line = file_context
         .text
@@ -722,26 +799,7 @@ fn build_function_finding(
         .unwrap_or_default()
         .to_string();
 
-    let (message, suggestion) = if function.import_target == ImportTarget::ParentModule {
-        (
-            format!(
-                "drop the import and call `super::{}` directly",
-                function.function_name
-            ),
-            Some(format!(
-                "remove this `use` and call `super::{}` at the use sites",
-                function.function_name
-            )),
-        )
-    } else {
-        (
-            format!(
-                "import the module `{}` instead of the function `{}`",
-                function.module_name, function.function_name
-            ),
-            Some(format!("consider using: `{}`", function.replacement_use)),
-        )
-    };
+    let (message, suggestion) = policy.finding_text(function);
 
     Finding {
         severity: Severity::Warning,
@@ -753,7 +811,7 @@ fn build_function_finding(
         source_line,
         item: None,
         message,
-        suggestion,
+        suggestion: Some(suggestion),
         fix_support: FixSupport::PreferModuleImport,
         related: None,
         item_visibility: ItemVisibility::default(),
@@ -765,6 +823,7 @@ fn build_function_use_fix(
     file_context: &ScanFileContext<'_>,
     existing_module_imports: &BTreeSet<ScopedModuleImport>,
     rewritten_modules: &mut BTreeSet<ScopedModuleImport>,
+    policy: FunctionImportPolicy<'_>,
 ) -> UseFix {
     let byte_start = support::offset(file_context.offsets, function.span_start);
     let byte_end = support::offset(file_context.offsets, function.span_end);
@@ -782,37 +841,21 @@ fn build_function_use_fix(
         absolute_module: function.absolute_module.clone(),
     };
 
-    if function.import_target == ImportTarget::ParentModule
-        || existing_module_imports.contains(&scoped_module)
-    {
-        // Either call sites become `super::fn(...)` (parent module, no `use`
-        // needed), or the same scope already imports the target module — so
-        // the function import is redundant. Delete the line in both cases;
-        // rewriting it to `use module;` when the module is already imported
-        // would produce a duplicate import (E0252).
-        UseFix {
+    match policy.import_plan(scoped_module, existing_module_imports, rewritten_modules) {
+        ImportRewritePlan::DeleteRedundant | ImportRewritePlan::DeleteDuplicate => UseFix {
             path:         file_context.path.to_path_buf(),
             start:        byte_start,
             end:          byte_end_with_newline,
             replacement:  String::new(),
             import_group: group,
-        }
-    } else if rewritten_modules.insert(scoped_module) {
-        UseFix {
+        },
+        ImportRewritePlan::ReplaceWithModule => UseFix {
             path:         file_context.path.to_path_buf(),
             start:        byte_start,
             end:          byte_end,
             replacement:  replacement_use_with_conditional_attributes(function),
             import_group: group,
-        }
-    } else {
-        UseFix {
-            path:         file_context.path.to_path_buf(),
-            start:        byte_start,
-            end:          byte_end_with_newline,
-            replacement:  String::new(),
-            import_group: group,
-        }
+        },
     }
 }
 
@@ -833,9 +876,12 @@ fn build_reference_fixes(
 ) -> Vec<UseFix> {
     let mut fixes = Vec::new();
     for reference in import_inputs.references {
-        if let Some(&(module_name, import_target)) =
-            import_inputs.func_to_module.get(reference.name.as_str())
-        {
+        if let Some(&policy) = import_inputs.func_to_module.get(reference.name.as_str()) {
+            let module_name = match policy {
+                FunctionImportPolicy::Parent { name } | FunctionImportPolicy::Module { name } => {
+                    name
+                },
+            };
             let group = import_inputs
                 .module_to_functions
                 .values()
@@ -845,15 +891,7 @@ fn build_reference_fixes(
                     bare_name: function.module_name.clone(),
                     full_path: function.absolute_module.join("::"),
                 });
-            let replacement = if import_target == ImportTarget::ParentModule {
-                // `reference.inline_mod_depth` determines `supers`: inside an inline `mod` (e.g.
-                // `#[cfg(test)] mod tests`) the file's parent is one `super`
-                // further away per nesting level.
-                let supers = "super::".repeat(reference.inline_mod_depth + 1);
-                format!("{supers}{}", reference.name)
-            } else {
-                format!("{module_name}::{}", reference.name)
-            };
+            let replacement = policy.reference(&reference.name, reference.inline_mod_depth);
             fixes.push(UseFix {
                 path: file_context.path.to_path_buf(),
                 start: reference.byte_start,
@@ -864,4 +902,60 @@ fn build_reference_fixes(
         }
     }
     fixes
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::FunctionImportPolicy;
+    use super::ImportRewritePlan;
+    use super::ScopedModuleImport;
+
+    #[test]
+    fn import_plans_preserve_scope_and_only_reserve_replacements() {
+        let module = ScopedModuleImport {
+            inline_scope:    Vec::new(),
+            absolute_module: vec!["tool".to_string()],
+        };
+        let nested = ScopedModuleImport {
+            inline_scope: vec!["tests".to_string()],
+            ..module.clone()
+        };
+        let mut rewritten = BTreeSet::new();
+        let parent = FunctionImportPolicy::Parent { name: "tool" };
+        let other = FunctionImportPolicy::Module { name: "tool" };
+        assert!(matches!(
+            parent.import_plan(module.clone(), &BTreeSet::new(), &mut rewritten),
+            ImportRewritePlan::DeleteRedundant
+        ));
+        assert!(rewritten.is_empty());
+        assert!(matches!(
+            other.import_plan(
+                module.clone(),
+                &BTreeSet::from([module.clone()]),
+                &mut rewritten
+            ),
+            ImportRewritePlan::DeleteRedundant
+        ));
+        assert!(rewritten.is_empty());
+        assert!(matches!(
+            other.import_plan(
+                module.clone(),
+                &BTreeSet::from([nested.clone()]),
+                &mut rewritten
+            ),
+            ImportRewritePlan::ReplaceWithModule
+        ));
+        assert!(matches!(
+            other.import_plan(module, &BTreeSet::new(), &mut rewritten),
+            ImportRewritePlan::DeleteDuplicate
+        ));
+        assert!(matches!(
+            other.import_plan(nested, &BTreeSet::new(), &mut rewritten),
+            ImportRewritePlan::ReplaceWithModule
+        ));
+        assert_eq!(parent.reference("run", 2), "super::super::super::run");
+        assert_eq!(other.reference("run", 2), "tool::run");
+    }
 }

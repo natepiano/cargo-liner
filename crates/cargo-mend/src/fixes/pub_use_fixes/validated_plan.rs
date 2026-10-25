@@ -99,17 +99,54 @@ fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+enum SourceEntryKind {
+    Directory,
+    RustFile,
+    Other,
+}
+
+impl From<&Path> for SourceEntryKind {
+    fn from(path: &Path) -> Self {
+        if path.is_dir() {
+            Self::Directory
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
+            Self::RustFile
+        } else {
+            Self::Other
+        }
+    }
+}
+
 fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)
         .with_context(|| format!("failed to read source directory {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
-            files.push(path);
+        match SourceEntryKind::from(path.as_path()) {
+            SourceEntryKind::Directory => collect_rust_source_files(&path, files)?,
+            SourceEntryKind::RustFile => files.push(path),
+            SourceEntryKind::Other => {},
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn source_collection_recurses_through_directories_with_rust_extensions() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("nested.rs");
+        std::fs::create_dir(&nested)?;
+        std::fs::write(nested.join("child.rs"), "")?;
+        std::fs::write(dir.path().join("root.rs"), "")?;
+        std::fs::write(dir.path().join("notes.txt"), "")?;
+        let mut files = super::rust_source_files(dir.path())?;
+        files.sort();
+        let mut expected = vec![nested.join("child.rs"), dir.path().join("root.rs")];
+        expected.sort();
+        assert_eq!(files, expected);
+        Ok(())
+    }
 }
