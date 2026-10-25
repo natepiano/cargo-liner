@@ -24,7 +24,17 @@ use super::command::GitCommandOutputAvailability;
 use super::constants::GIT_LOCK_EXTENSION;
 use super::constants::GIT_LOCK_REFUSAL_PREFIX;
 use super::constants::GIT_LOCK_REFUSAL_SUFFIX;
+#[cfg(not(target_os = "linux"))]
+use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_UPDATE_REF_COMMAND;
+#[cfg(not(target_os = "linux"))]
+use super::constants::LSOF_BINARY;
+#[cfg(not(target_os = "linux"))]
+use super::constants::LSOF_PROCESS_IDS_ARG;
+#[cfg(target_os = "linux")]
+use super::constants::PROCESS_DESCRIPTORS_DIRECTORY;
+#[cfg(target_os = "linux")]
+use super::constants::PROCESS_DIRECTORY;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::InvalidReservationScopePath;
@@ -321,11 +331,7 @@ fn git_lock_holders(path: &Path) -> GitLockHolders {
     let Ok(metadata) = std::fs::metadata(&path) else {
         return GitLockHolders::Unavailable;
     };
-    inspect_git_lock_holders(
-        Path::new(super::constants::PROCESS_DIRECTORY),
-        &path,
-        metadata.uid(),
-    )
+    inspect_git_lock_holders(Path::new(PROCESS_DIRECTORY), &path, metadata.uid())
 }
 
 /// An incomplete inspection of a lock-owner process cannot establish absence.
@@ -359,11 +365,8 @@ fn inspect_git_lock_holders(process_root: &Path, path: &Path, lock_owner: u32) -
             },
         };
         let owned = metadata.uid() == lock_owner;
-        let Ok(descriptors) = std::fs::read_dir(
-            process
-                .path()
-                .join(super::constants::PROCESS_DESCRIPTORS_DIRECTORY),
-        ) else {
+        let Ok(descriptors) = std::fs::read_dir(process.path().join(PROCESS_DESCRIPTORS_DIRECTORY))
+        else {
             incomplete |= owned && process.path().exists();
             continue;
         };
@@ -390,11 +393,8 @@ fn inspect_git_lock_holders(process_root: &Path, path: &Path, lock_owner: u32) -
 
 #[cfg(not(target_os = "linux"))]
 fn git_lock_holders(path: &Path) -> GitLockHolders {
-    let Ok(output) = std::process::Command::new(super::constants::LSOF_BINARY)
-        .args([
-            super::constants::LSOF_PROCESS_IDS_ARG,
-            super::constants::GIT_PATHSPEC_SEPARATOR,
-        ])
+    let Ok(output) = std::process::Command::new(LSOF_BINARY)
+        .args([LSOF_PROCESS_IDS_ARG, GIT_PATHSPEC_SEPARATOR])
         .arg(path)
         .output()
     else {
