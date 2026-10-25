@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::num::NonZeroUsize;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -125,6 +126,49 @@ enum FixOutcome {
     NoneAvailable,
     PreviewApplied(usize),
     Applied(usize),
+}
+
+enum AppliedEditCount {
+    NoneAvailable,
+    Positive(NonZeroUsize),
+}
+
+impl AppliedEditCount {
+    const fn classify(count: usize) -> Self {
+        match NonZeroUsize::new(count) {
+            Some(count) => Self::Positive(count),
+            None => Self::NoneAvailable,
+        }
+    }
+}
+
+enum NoticeEffect {
+    Applied,
+    EmptyNoop,
+    RetainedWithoutEdits,
+}
+
+impl From<&NoticeKind> for NoticeEffect {
+    fn from(kind: &NoticeKind) -> Self {
+        match kind {
+            NoticeKind::Fixes(FixNotice {
+                outcome: FixOutcome::PreviewApplied(_) | FixOutcome::Applied(_),
+                ..
+            })
+            | NoticeKind::PubUseFixes(
+                PubUseNotice::PreviewApplied { .. } | PubUseNotice::Applied { .. },
+            ) => Self::Applied,
+            NoticeKind::Fixes(FixNotice {
+                outcome: FixOutcome::NoneAvailable,
+                ..
+            })
+            | NoticeKind::PubUseFixes(PubUseNotice::NoneAvailable {
+                skipped_unsupported: 0,
+            }) => Self::EmptyNoop,
+            NoticeKind::PubUseFixes(PubUseNotice::NoneAvailable { .. })
+            | NoticeKind::SubtreeReexportSkipped(_) => Self::RetainedWithoutEdits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,11 +310,18 @@ impl ExecutionNotice {
 
     pub(crate) fn merge(&mut self, additional: Self) {
         for kind in additional.kinds {
-            if kind.has_applied_edits() {
-                self.kinds.retain(|existing| !existing.is_empty_noop());
-            }
-            if kind.is_empty_noop() && self.kinds.iter().any(NoticeKind::has_applied_edits) {
-                continue;
+            match NoticeEffect::from(&kind) {
+                NoticeEffect::Applied => self.kinds.retain(|existing| {
+                    !matches!(NoticeEffect::from(existing), NoticeEffect::EmptyNoop)
+                }),
+                NoticeEffect::EmptyNoop => {
+                    if self.kinds.iter().any(|existing| {
+                        matches!(NoticeEffect::from(existing), NoticeEffect::Applied)
+                    }) {
+                        continue;
+                    }
+                },
+                NoticeEffect::RetainedWithoutEdits => {},
             }
             let existing = self
                 .kinds
@@ -304,36 +355,6 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 }
 
 impl NoticeKind {
-    const fn has_applied_edits(&self) -> bool {
-        match self {
-            Self::Fixes(FixNotice {
-                outcome: FixOutcome::PreviewApplied(_) | FixOutcome::Applied(_),
-                ..
-            })
-            | Self::PubUseFixes(
-                PubUseNotice::PreviewApplied { .. } | PubUseNotice::Applied { .. },
-            ) => true,
-            Self::Fixes(FixNotice {
-                outcome: FixOutcome::NoneAvailable,
-                ..
-            })
-            | Self::PubUseFixes(PubUseNotice::NoneAvailable { .. })
-            | Self::SubtreeReexportSkipped(_) => false,
-        }
-    }
-
-    const fn is_empty_noop(&self) -> bool {
-        matches!(
-            self,
-            Self::Fixes(FixNotice {
-                outcome: FixOutcome::NoneAvailable,
-                ..
-            }) | Self::PubUseFixes(PubUseNotice::NoneAvailable {
-                skipped_unsupported: 0,
-            })
-        )
-    }
-
     fn merge(&mut self, additional: Self) {
         match (self, additional) {
             (Self::Fixes(current), Self::Fixes(additional)) => current.merge(additional),
@@ -416,21 +437,15 @@ impl FixNotice {
         fix_kind: FixKind,
         count: usize,
     ) -> Self {
-        let outcome = match intent {
-            OperationIntent::ReadOnly => FixOutcome::NoneAvailable,
-            OperationIntent::DryRun => {
-                if count == 0 {
-                    FixOutcome::NoneAvailable
-                } else {
-                    FixOutcome::PreviewApplied(count)
-                }
+        let outcome = match (intent, AppliedEditCount::classify(count)) {
+            (OperationIntent::ReadOnly, _) | (_, AppliedEditCount::NoneAvailable) => {
+                FixOutcome::NoneAvailable
             },
-            OperationIntent::Apply => {
-                if count == 0 {
-                    FixOutcome::NoneAvailable
-                } else {
-                    FixOutcome::Applied(count)
-                }
+            (OperationIntent::DryRun, AppliedEditCount::Positive(count)) => {
+                FixOutcome::PreviewApplied(count.get())
+            },
+            (OperationIntent::Apply, AppliedEditCount::Positive(count)) => {
+                FixOutcome::Applied(count.get())
             },
         };
         Self { fix_kind, outcome }
@@ -516,33 +531,21 @@ impl PubUseNotice {
         applied: usize,
         skipped_unsupported: usize,
     ) -> Self {
-        match intent {
-            OperationIntent::ReadOnly => Self::NoneAvailable {
+        match (intent, AppliedEditCount::classify(applied)) {
+            (OperationIntent::ReadOnly, _) | (_, AppliedEditCount::NoneAvailable) => {
+                Self::NoneAvailable {
+                    skipped_unsupported,
+                }
+            },
+            (OperationIntent::DryRun, AppliedEditCount::Positive(applied)) => {
+                Self::PreviewApplied {
+                    applied: applied.get(),
+                    skipped_unsupported,
+                }
+            },
+            (OperationIntent::Apply, AppliedEditCount::Positive(applied)) => Self::Applied {
+                applied: applied.get(),
                 skipped_unsupported,
-            },
-            OperationIntent::DryRun => {
-                if applied == 0 {
-                    Self::NoneAvailable {
-                        skipped_unsupported,
-                    }
-                } else {
-                    Self::PreviewApplied {
-                        applied,
-                        skipped_unsupported,
-                    }
-                }
-            },
-            OperationIntent::Apply => {
-                if applied == 0 {
-                    Self::NoneAvailable {
-                        skipped_unsupported,
-                    }
-                } else {
-                    Self::Applied {
-                        applied,
-                        skipped_unsupported,
-                    }
-                }
             },
         }
     }
@@ -617,6 +620,86 @@ mod tests {
     fn import_fix_notice_respects_operation_intent() {
         let preview = FixNotice::from_intent(OperationIntent::DryRun, FixKind::Import, 2);
         assert_eq!(preview.render(), "would apply 2 import fix(es) in dry run");
+    }
+
+    #[test]
+    fn notice_counts_preserve_read_only_zero_preview_and_applied_outcomes() {
+        for (intent, count, expected_fix, expected_pub_use) in [
+            (
+                OperationIntent::ReadOnly,
+                0,
+                "no import fixes available",
+                "no `pub use` fixes available",
+            ),
+            (
+                OperationIntent::ReadOnly,
+                2,
+                "no import fixes available",
+                "no `pub use` fixes available",
+            ),
+            (
+                OperationIntent::DryRun,
+                0,
+                "no import fixes available",
+                "no `pub use` fixes available",
+            ),
+            (
+                OperationIntent::Apply,
+                0,
+                "no import fixes available",
+                "no `pub use` fixes available",
+            ),
+            (
+                OperationIntent::DryRun,
+                2,
+                "would apply 2 import fix(es) in dry run",
+                "would apply 2 `pub use` fix(es) in dry run",
+            ),
+            (
+                OperationIntent::Apply,
+                2,
+                "applied 2 import fix(es)",
+                "applied 2 `pub use` fix(es)",
+            ),
+        ] {
+            assert_eq!(
+                FixNotice::from_intent(intent, FixKind::Import, count).render(),
+                expected_fix
+            );
+            assert_eq!(
+                PubUseNotice::from_intent(intent, count, 0).render(),
+                expected_pub_use
+            );
+            assert_eq!(
+                PubUseNotice::from_intent(intent, count, 3).render(),
+                format!("{expected_pub_use}; skipped 3 unsupported `pub use` candidate(s)")
+            );
+        }
+    }
+
+    #[test]
+    fn merging_applied_notices_prunes_noops_but_keeps_skipped_work() {
+        let mut notice = ExecutionNotice::from(vec![
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Import,
+                0,
+            )),
+            NoticeKind::PubUseFixes(PubUseNotice::NoneAvailable {
+                skipped_unsupported: 3,
+            }),
+        ]);
+        notice.merge(ExecutionNotice::from(NoticeKind::Fixes(
+            FixNotice::from_intent(OperationIntent::DryRun, FixKind::Annotation, 2),
+        )));
+        assert_eq!(
+            notice.render(),
+            concat!(
+                "mend: no `pub use` fixes available; ",
+                "skipped 3 unsupported `pub use` candidate(s); ",
+                "would apply 2 annotation rewrite(s) in dry run",
+            )
+        );
     }
 
     #[test]
