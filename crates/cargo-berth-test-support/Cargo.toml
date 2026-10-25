@@ -12,6 +12,7 @@ version              = "0.1.0-dev"
 workspace = true
 
 [dependencies]
+rustix     = { workspace = true, features = ["process"] }
 serde_json = { workspace = true }
 tempfile   = { workspace = true }
 uuid       = { workspace = true }

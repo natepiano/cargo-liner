@@ -221,20 +221,11 @@ impl<Cleanup: DescendantCleanup> Drop for ChildProcess<Cleanup> {
     fn drop(&mut self) { self.stop(); }
 }
 
-#[allow(
-    unsafe_code,
-    reason = "POSIX kill has no Rust standard-library process-group equivalent"
-)]
 fn signal_group(group: u32) {
-    unsafe extern "C" {
-        fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
-    }
-    // SIGKILL is 9 on the supported Linux and macOS hosts. ChildProcess creates
-    // this group itself; a negative PID addresses only that owned process group.
-    const SIGKILL: std::ffi::c_int = 9;
-    if let Ok(group) = std::ffi::c_int::try_from(group) {
-        // SAFETY: kill takes scalar integers, and accesses no Rust memory.
-        let _ = unsafe { kill(-group, SIGKILL) };
+    if let Ok(group) = i32::try_from(group)
+        && let Some(group) = rustix::process::Pid::from_raw(group)
+    {
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
     }
 }
 

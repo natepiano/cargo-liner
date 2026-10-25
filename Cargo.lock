@@ -462,6 +462,7 @@ dependencies = [
  "crossterm",
  "gix",
  "ratatui",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
@@ -476,6 +477,7 @@ dependencies = [
 name = "cargo-berth-test-support"
 version = "0.1.0-dev"
 dependencies = [
+ "rustix",
  "serde_json",
  "tempfile",
  "uuid",
