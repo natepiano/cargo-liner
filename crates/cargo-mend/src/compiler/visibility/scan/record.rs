@@ -65,6 +65,26 @@ use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
+enum PubCrateNarrowing {
+    Ineligible,
+    Shallow,
+    Nested,
+}
+
+impl PubCrateNarrowing {
+    const fn classify(
+        syntax: VisibilitySyntax,
+        parent_visibility: ParentVisibility,
+        logical_module_depth: usize,
+    ) -> Self {
+        match (syntax, parent_visibility, logical_module_depth) {
+            (VisibilitySyntax::Public, ParentVisibility::Private, 1) => Self::Shallow,
+            (VisibilitySyntax::Public, ParentVisibility::Private, 2..) => Self::Nested,
+            _ => Self::Ineligible,
+        }
+    }
+}
+
 pub(super) fn record_visibility_findings(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
@@ -106,22 +126,24 @@ pub(super) fn record_visibility_findings(
         sink,
     )?;
 
-    let should_consider_narrow_to_pub_crate =
-        matches!(annotation.syntax(), VisibilitySyntax::Public)
-            && finding_context.parent_visibility == ParentVisibility::Private;
-
-    if should_consider_narrow_to_pub_crate && finding_context.logical_module_depth == 1 {
-        maybe_record_narrow_to_pub_crate(ctx, item, signature_exposure, sink)?;
-    }
-
-    if should_consider_narrow_to_pub_crate && finding_context.logical_module_depth > 1 {
-        maybe_record_narrow_to_pub_crate_nested(
-            ctx,
-            item,
-            parent_facade_analysis.as_ref(),
-            signature_exposure,
-            sink,
-        )?;
+    match PubCrateNarrowing::classify(
+        annotation.syntax(),
+        finding_context.parent_visibility,
+        finding_context.logical_module_depth,
+    ) {
+        PubCrateNarrowing::Ineligible => {},
+        PubCrateNarrowing::Shallow => {
+            maybe_record_narrow_to_pub_crate(ctx, item, signature_exposure, sink)?;
+        },
+        PubCrateNarrowing::Nested => {
+            maybe_record_narrow_to_pub_crate_nested(
+                ctx,
+                item,
+                parent_facade_analysis.as_ref(),
+                signature_exposure,
+                sink,
+            )?;
+        },
     }
 
     if matches!(
@@ -1509,6 +1531,52 @@ fn canonical_pub_in_spelling_advice(
     }
 }
 
+/// The advice selected by the resolved boundary and the project's spelling policy.
+enum RestrictedVisibilityAdviceCase {
+    CrateBoundaryExact,
+    ForbiddenExactPath,
+    ExactRestrictedSpelling { required: VisibilityReach },
+    SignatureRequiresWider { required: VisibilityReach },
+    AnnotationTooWide { required: VisibilityReach },
+    BoundaryMismatch { required: VisibilityReach },
+}
+
+impl RestrictedVisibilityAdviceCase {
+    fn for_boundary(
+        ctx: &VisibilityContext<'_, '_>,
+        item: &ItemInfo<'_>,
+        annotation: &VisibilityAnnotation<'_>,
+        annotation_reach: VisibilityReach,
+        facade_reach: VisibilityReach,
+        required: VisibilityReach,
+    ) -> Self {
+        match annotation_reach.compare(required, ctx.tcx) {
+            Some(Ordering::Equal) => {
+                if reach_is_pub_crate(required, ctx) {
+                    return Self::CrateBoundaryExact;
+                }
+                match (
+                    annotation.syntax(),
+                    item.category,
+                    ctx.settings.visibility_config.pub_in_path,
+                ) {
+                    (
+                        VisibilitySyntax::InPath(PathSpelling::CrateRooted),
+                        ItemCategory::Declaration | ItemCategory::Use,
+                        PubInPath::Forbidden,
+                    ) => Self::ForbiddenExactPath,
+                    _ => Self::ExactRestrictedSpelling { required },
+                }
+            },
+            comparison => match (annotation_reach.compare(facade_reach, ctx.tcx), comparison) {
+                (Some(Ordering::Equal), _) => Self::SignatureRequiresWider { required },
+                (_, Some(Ordering::Greater)) => Self::AnnotationTooWide { required },
+                _ => Self::BoundaryMismatch { required },
+            },
+        }
+    }
+}
+
 fn resolved_pub_in_advice(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
@@ -1518,69 +1586,72 @@ fn resolved_pub_in_advice(
     signature_exposure: SignatureExposure,
 ) -> ForbiddenPubInAdvice {
     let required = signature_exposure.combined_with(facade_reach, ctx);
-    let comparison = annotation_reach.compare(required, ctx.tcx);
-    if comparison == Some(Ordering::Equal) && reach_is_pub_crate(required, ctx) {
-        return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
-            message:    String::from("parent facade caps reach at `pub(crate)`"),
-            suggestion: policy::consider_using("pub(crate)"),
-        };
-    }
-    if matches!(
-        annotation.syntax(),
-        VisibilitySyntax::InPath(PathSpelling::CrateRooted)
-    ) && comparison == Some(Ordering::Equal)
-        && matches!(item.category, ItemCategory::Declaration | ItemCategory::Use)
-        && matches!(
-            ctx.settings.visibility_config.pub_in_path,
-            PubInPath::Forbidden
-        )
-    {
-        // `resolved_pub_in_advice` finds `comparison == Some(Ordering::Equal)`,
-        // so the annotation already sits at the exact boundary. The spelling is
-        // the entire complaint and the setting that permits it is the whole
-        // answer. A declaration can also widen to `pub` and let the facade cap
-        // the reach; a `use` item is not offered that, because a `pub use` of a
-        // narrower item is E0364 and proving the target wide enough is not work
-        // this function does.
-        let suggestion = match item.category {
-            ItemCategory::Declaration => format!(
-                "{}; or {}",
-                policy::consider_using("pub"),
-                policy::permit_pub_in_path()
-            ),
-            ItemCategory::Module | ItemCategory::Use => policy::permit_pub_in_path(),
-        };
-        return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
-            message: format!(
-                "use of `{}` is disabled by project visibility policy",
-                annotation.display_source()
-            ),
-            suggestion,
-        };
-    }
-    if comparison == Some(Ordering::Equal) {
-        exact_restricted_spelling_advice(ctx, annotation, required)
-    } else {
-        let message = if annotation_reach.compare(facade_reach, ctx.tcx) == Some(Ordering::Equal) {
+    let advice_case = RestrictedVisibilityAdviceCase::for_boundary(
+        ctx,
+        item,
+        annotation,
+        annotation_reach,
+        facade_reach,
+        required,
+    );
+    let (message, required) = match advice_case {
+        RestrictedVisibilityAdviceCase::CrateBoundaryExact => {
+            return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
+                message:    String::from("parent facade caps reach at `pub(crate)`"),
+                suggestion: policy::consider_using("pub(crate)"),
+            };
+        },
+        RestrictedVisibilityAdviceCase::ForbiddenExactPath => {
+            // The annotation already sits at the exact boundary. The spelling is
+            // the entire complaint and the setting that permits it is the whole
+            // answer. A declaration can also widen to `pub` and let the facade cap
+            // the reach; a `use` item is not offered that, because a `pub use` of a
+            // narrower item is E0364 and proving the target wide enough is not work
+            // this function does.
+            let suggestion = match item.category {
+                ItemCategory::Declaration => format!(
+                    "{}; or {}",
+                    policy::consider_using("pub"),
+                    policy::permit_pub_in_path()
+                ),
+                ItemCategory::Module | ItemCategory::Use => policy::permit_pub_in_path(),
+            };
+            return ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
+                message: format!(
+                    "use of `{}` is disabled by project visibility policy",
+                    annotation.display_source()
+                ),
+                suggestion,
+            };
+        },
+        RestrictedVisibilityAdviceCase::ExactRestrictedSpelling { required } => {
+            return exact_restricted_spelling_advice(ctx, annotation, required);
+        },
+        RestrictedVisibilityAdviceCase::SignatureRequiresWider { required } => (
             format!(
                 "signature exposure requires the wider `{}` annotation",
                 required.to_source(ctx.tcx)
-            )
-        } else if comparison == Some(Ordering::Greater) {
+            ),
+            required,
+        ),
+        RestrictedVisibilityAdviceCase::AnnotationTooWide { required } => (
             format!(
                 "`{}` is wider than the exact parent facade boundary",
                 annotation.display_source()
-            )
-        } else {
+            ),
+            required,
+        ),
+        RestrictedVisibilityAdviceCase::BoundaryMismatch { required } => (
             format!(
                 "use of `{}` does not match the parent facade boundary",
                 annotation.display_source()
-            )
-        };
-        ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
-            message,
-            suggestion: policy::consider_using(&required.to_source(ctx.tcx)),
-        }
+            ),
+            required,
+        ),
+    };
+    ForbiddenPubInAdvice::SuggestionWithoutCallerRefinement {
+        message,
+        suggestion: policy::consider_using(&required.to_source(ctx.tcx)),
     }
 }
 
@@ -2431,6 +2502,36 @@ fn record_suspicious_pub_use_fact(
     });
 }
 
+enum FacadeCleanup<'analysis, 'facade> {
+    NoStaleFacade,
+    Blocked {
+        analysis: &'analysis ParentFacadeAnalysis<'facade>,
+    },
+    Resolvable {
+        retained_requirement: RetainedFacadeRequirement,
+    },
+}
+
+impl<'analysis, 'facade> FacadeCleanup<'analysis, 'facade> {
+    const fn classify(
+        stale_parent_facade: Option<&ParentFacadeExportStatus>,
+        parent_facade_analysis: Option<&'analysis ParentFacadeAnalysis<'facade>>,
+    ) -> Self {
+        match (stale_parent_facade, parent_facade_analysis) {
+            (None, _) => Self::NoStaleFacade,
+            (Some(_), Some(analysis)) => match analysis.chain {
+                FacadeChainResolution::Unresolvable { .. } => Self::Blocked { analysis },
+                FacadeChainResolution::Resolved { .. } => Self::Resolvable {
+                    retained_requirement: analysis.retained_facade_requirement,
+                },
+            },
+            (Some(_), None) => Self::Resolvable {
+                retained_requirement: RetainedFacadeRequirement::Absent,
+            },
+        }
+    }
+}
+
 fn suspicious_pub_advice(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
@@ -2441,49 +2542,51 @@ fn suspicious_pub_advice(
     stale_parent_facade: Option<&ParentFacadeExportStatus>,
 ) -> SuspiciousPubAdvice {
     let parent_scope_def_path = use_sites::parent_module_def_path(ctx.tcx, input.def_id);
-    if stale_parent_facade.is_some()
-        && parent_facade_analysis.is_some_and(|analysis| {
-            matches!(analysis.chain, FacadeChainResolution::Unresolvable { .. })
-        })
-    {
-        return structural_unresolvable_facade_cleanup_advice(
-            ctx,
-            kind_label,
-            parent_facade_analysis,
-        );
-    }
-    if stale_parent_facade.is_some() {
-        let retained_facade_reach = parent_facade_analysis.and_then(|analysis| {
-            match analysis.retained_facade_requirement {
+    match FacadeCleanup::classify(stale_parent_facade, parent_facade_analysis) {
+        FacadeCleanup::NoStaleFacade => {},
+        FacadeCleanup::Blocked { analysis } => {
+            return structural_unresolvable_facade_cleanup_advice(ctx, kind_label, Some(analysis));
+        },
+        FacadeCleanup::Resolvable {
+            retained_requirement,
+        } => {
+            let retained_facade_reach = match retained_requirement {
                 RetainedFacadeRequirement::Absent => None,
                 RetainedFacadeRequirement::Required(reach) => Some(reach),
+            };
+            let required_reach =
+                joined_required_reach(ctx, retained_facade_reach, signature_exposure);
+            if !matches!(annotation.syntax(), VisibilitySyntax::Public) && required_reach.is_none()
+            {
+                return SuspiciousPubAdvice::Narrowing {
+                    suggestion:              format!(
+                        "remove the parent facade and the now-unneeded `{}` annotation",
+                        annotation.display_source()
+                    ),
+                    narrower_scope_def_path: parent_scope_def_path,
+                    replacement:             NarrowingReplacement::Unavailable,
+                };
             }
-        });
-        let required_reach = joined_required_reach(ctx, retained_facade_reach, signature_exposure);
-        if !matches!(annotation.syntax(), VisibilitySyntax::Public) && required_reach.is_none() {
+            let pub_super_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
+            if let Some(required_reach) = required_reach
+                && !matches!(
+                    pub_super_reach.compare(required_reach, ctx.tcx),
+                    Some(Ordering::Equal | Ordering::Greater)
+                )
+            {
+                return structural_facade_cleanup_advice(
+                    ctx,
+                    kind_label,
+                    required_reach,
+                    input.def_id,
+                );
+            }
             return SuspiciousPubAdvice::Narrowing {
-                suggestion:              format!(
-                    "remove the parent facade and the now-unneeded `{}` annotation",
-                    annotation.display_source()
-                ),
+                suggestion:              policy::consider_using("pub(super)"),
                 narrower_scope_def_path: parent_scope_def_path,
                 replacement:             NarrowingReplacement::Unavailable,
             };
-        }
-        let pub_super_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
-        if let Some(required_reach) = required_reach
-            && !matches!(
-                pub_super_reach.compare(required_reach, ctx.tcx),
-                Some(Ordering::Equal | Ordering::Greater)
-            )
-        {
-            return structural_facade_cleanup_advice(ctx, kind_label, required_reach, input.def_id);
-        }
-        return SuspiciousPubAdvice::Narrowing {
-            suggestion:              policy::consider_using("pub(super)"),
-            narrower_scope_def_path: parent_scope_def_path,
-            replacement:             NarrowingReplacement::Unavailable,
-        };
+        },
     }
     if let Some(parent_facade_analysis) = parent_facade_analysis
         && let FacadeChainResolution::Resolved { required } = parent_facade_analysis.chain
@@ -2587,5 +2690,131 @@ fn structural_signature_advice(
             &boundary_path,
             &use_sites::def_path_string(ctx.tcx, def_id),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use rustc_middle::ty::Visibility;
+    use rustc_span::DUMMY_SP;
+    use rustc_span::def_id::CRATE_DEF_ID;
+    use rustc_span::def_id::DefId;
+    use rustc_span::def_id::DefIndex;
+    use rustc_span::def_id::LOCAL_CRATE;
+
+    use super::FacadeCleanup;
+    use super::PubCrateNarrowing;
+    use crate::compiler::facade::ParentFacadeExportStatus;
+    use crate::compiler::facade::ParentFacadeFixSupport;
+    use crate::compiler::facade::ParentFacadeReach;
+    use crate::compiler::facade::ParentFacadeSpelling;
+    use crate::compiler::facade::ParentFacadeUsage;
+    use crate::compiler::visibility::annotation::VisibilityReach;
+    use crate::compiler::visibility::annotation::VisibilitySyntax;
+    use crate::compiler::visibility::scan::classify::ParentVisibility;
+    use crate::compiler::visibility::use_sites::FacadeChainBlocker;
+    use crate::compiler::visibility::use_sites::FacadeChainResolution;
+    use crate::compiler::visibility::use_sites::FacadeUseKind;
+    use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
+    use crate::compiler::visibility::use_sites::ParentFacadeOccurrences;
+    use crate::compiler::visibility::use_sites::ReexportOccurrence;
+    use crate::compiler::visibility::use_sites::RetainedFacadeRequirement;
+
+    #[test]
+    fn pub_crate_narrowing_classifies_depth_boundaries() {
+        assert!(matches!(
+            PubCrateNarrowing::classify(VisibilitySyntax::Public, ParentVisibility::Private, 0),
+            PubCrateNarrowing::Ineligible
+        ));
+        assert!(matches!(
+            PubCrateNarrowing::classify(VisibilitySyntax::Public, ParentVisibility::Private, 1),
+            PubCrateNarrowing::Shallow
+        ));
+        assert!(matches!(
+            PubCrateNarrowing::classify(VisibilitySyntax::Public, ParentVisibility::Private, 2),
+            PubCrateNarrowing::Nested
+        ));
+        for depth in 0..=2 {
+            assert!(matches!(
+                PubCrateNarrowing::classify(
+                    VisibilitySyntax::Crate,
+                    ParentVisibility::Private,
+                    depth
+                ),
+                PubCrateNarrowing::Ineligible
+            ));
+            assert!(matches!(
+                PubCrateNarrowing::classify(
+                    VisibilitySyntax::Public,
+                    ParentVisibility::Public,
+                    depth
+                ),
+                PubCrateNarrowing::Ineligible
+            ));
+        }
+    }
+
+    #[test]
+    fn facade_cleanup_without_analysis_preserves_absent_requirement() {
+        let stale = ParentFacadeExportStatus {
+            usage:               ParentFacadeUsage::Unused,
+            fix_support:         ParentFacadeFixSupport::Unsupported,
+            parent_facade_reach: ParentFacadeReach {
+                reaches_parent:    true,
+                spelling:          ParentFacadeSpelling::Crate,
+                spelling_conflict: false,
+            },
+            parent_path:         "src/lib.rs".into(),
+            parent_rel_path:     "src/lib.rs".into(),
+            parent_line:         1,
+            boundary_def_path:   "crate".into(),
+        };
+        assert!(matches!(
+            FacadeCleanup::classify(Some(&stale), None),
+            FacadeCleanup::Resolvable {
+                retained_requirement: RetainedFacadeRequirement::Absent,
+            }
+        ));
+        let module_id = DefId {
+            krate: LOCAL_CRATE,
+            index: DefIndex::from_u32(1),
+        };
+        let visibility = Visibility::Restricted(module_id);
+        let occurrence = ReexportOccurrence {
+            use_def_id: CRATE_DEF_ID,
+            owner_module: CRATE_DEF_ID,
+            visibility,
+            facade_spelling: ParentFacadeSpelling::Crate,
+            spelling_conflict: false,
+            use_kind: FacadeUseKind::Glob,
+            alias: None,
+            export_names: Vec::new(),
+            span: DUMMY_SP,
+            usage_by_name: Rc::default(),
+        };
+        let analysis = ParentFacadeAnalysis {
+            nearest:                     ParentFacadeOccurrences {
+                selected:          &occurrence,
+                matching:          vec![&occurrence],
+                spelling_conflict: false,
+            },
+            chain:                       FacadeChainResolution::Unresolvable {
+                blocker: FacadeChainBlocker::Glob(&occurrence),
+            },
+            retained_facade_requirement: RetainedFacadeRequirement::Required(
+                VisibilityReach::from(visibility),
+            ),
+        };
+        assert!(matches!(
+            FacadeCleanup::classify(Some(&stale), Some(&analysis)),
+            FacadeCleanup::Blocked { analysis: blocked }
+                if std::ptr::eq(blocked, &raw const analysis)
+        ));
+        assert!(matches!(
+            FacadeCleanup::classify(None, Some(&analysis)),
+            FacadeCleanup::NoStaleFacade
+        ));
     }
 }
