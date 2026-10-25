@@ -69,8 +69,8 @@ fn board_replays_a_recorded_template_without_its_projection() {
 
 #[test]
 fn initialized_main_copies_keep_independent_owners_and_hook_contexts() {
-    let first = tempdir().expect("first repository should exist");
-    let second = tempdir().expect("second repository should exist");
+    let first = cargo_berth_test_support::fixture_tempdir("first-repository-");
+    let second = cargo_berth_test_support::fixture_tempdir("second-repository-");
     IntegrationRepository::build_main_template(first.path(), BERTH_EXECUTABLE);
     IntegrationRepository::build_main_template(second.path(), BERTH_EXECUTABLE);
     assert_eq!(
@@ -2964,7 +2964,7 @@ fn run_berth_with_git_trace(
     arguments: &[&str],
     unavailable_target: &str,
 ) -> TracedBerth {
-    let directory = tempdir().expect("git wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
     cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
@@ -3077,7 +3077,7 @@ fn run_berth_with_stale_marker(
     alert_branch: &str,
     arguments: &[&str],
 ) -> Output {
-    let wrapper_directory = tempdir().expect("git wrapper directory should exist");
+    let wrapper_directory = cargo_berth_test_support::fixture_tempdir("git-marker-");
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
     cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
         &wrapper_path,

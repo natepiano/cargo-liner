@@ -20,6 +20,7 @@
 
 mod berth_command;
 mod directory_snapshot;
+mod fixture_directory;
 mod git_driver;
 mod integration_repository;
 mod journal_records;
@@ -30,6 +31,7 @@ pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
 pub use berth_command::use_git_read_subprocess;
 pub use directory_snapshot::DirectorySnapshot;
+pub use fixture_directory::fixture_tempdir;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
 pub use git_driver::OptionalLocks;
