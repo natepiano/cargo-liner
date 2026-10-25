@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn shared_script_replacement_keeps_its_other_copy_and_mutable_files_private() {
-        let root = tempfile::tempdir().expect("script test directory should exist");
+        let root = crate::fixture_tempdir("shared-script-");
         let first = root.path().join("first");
         let second = root.path().join("second");
         let script = "#!/bin/sh\nprintf '%s' original\n";

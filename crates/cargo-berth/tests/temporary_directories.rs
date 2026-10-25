@@ -21,7 +21,7 @@ const TEST_NAME: &str = "repository_builders_leave_no_temporary_directory_after_
 fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
     use std::os::unix::fs::MetadataExt;
 
-    let temporary = tempfile::tempdir().expect("script destination should exist");
+    let temporary = cargo_berth_test_support::fixture_tempdir("shared-script-");
     let script = temporary.path().join("script");
     DirectorySnapshot::write_shared_shell_script(&script, "#!/bin/sh\nprintf cache-root\n");
     let installed = fs::metadata(&script).expect("installed script should exist");
@@ -36,13 +36,12 @@ fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
                 return false;
             }
             let metadata = fs::metadata(path).expect("cached executable should exist");
-            if metadata.dev() == installed.dev() {
-                assert_eq!(
-                    metadata.ino(),
-                    installed.ino(),
-                    "same-device installation should hard link"
-                );
-            }
+            assert_eq!(metadata.dev(), installed.dev());
+            assert_eq!(
+                metadata.ino(),
+                installed.ino(),
+                "same-device installation should hard link"
+            );
             true
         });
     assert!(
@@ -111,7 +110,7 @@ fn repository_builders_leave_no_temporary_directory_after_return_or_panic() {
             "unknown fixture exit: {exit}"
         );
         let result = panic::catch_unwind(|| {
-            let repository = tempfile::tempdir().expect("repository destination should exist");
+            let repository = cargo_berth_test_support::fixture_tempdir("repository-builder-");
             IntegrationRepository::build_main_template(
                 repository.path(),
                 env!("CARGO_BIN_EXE_cargo-berth"),

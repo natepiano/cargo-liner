@@ -280,7 +280,7 @@ fn assert_drift_revalidates_marker_after_observation(marker_repository: &TempDir
         "changed\n",
     )
     .expect("marker observation path should write");
-    let wrapper_directory = tempdir().expect("marker wrapper directory should exist");
+    let wrapper_directory = cargo_berth_test_support::fixture_tempdir("marker-release-");
     let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
     let release_output_path = wrapper_directory.path().join("release.json");
     let release_trigger_path = wrapper_directory.path().join("release-triggered");
@@ -1022,7 +1022,7 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
     )
     .expect("colliding path should write");
 
-    let directory = tempdir().expect("wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("drift-wrapper-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
         &wrapper_path,
@@ -4693,7 +4693,7 @@ fn a_rebase_anchors_each_phase_sharing_a_branch_below_its_own_commits() {
 }
 
 fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
-    let directory = tempdir().expect("wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("drift-wrapper-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
     cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(

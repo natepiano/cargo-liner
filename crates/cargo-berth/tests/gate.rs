@@ -6475,7 +6475,7 @@ fn run_command_with_raw_git_behavior(
     arguments: &[&str],
     raw_git_behavior: RawGitBehavior,
 ) -> (Output, Vec<RawGitInvocation>) {
-    let directory = tempdir().expect("wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("raw-git-wrapper-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("raw-trace");
     fs::create_dir(&trace_path).expect("raw git trace directory should exist");

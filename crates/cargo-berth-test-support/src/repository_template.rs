@@ -23,10 +23,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use tempfile::tempdir;
 use uuid::Uuid;
 
 use crate::DirectorySnapshot;
+use crate::fixture_tempdir;
 
 /// Beside a template's builds, the file whose lock one builder at a time holds.
 const BUILD_LOCK_FILE_NAME: &str = "build.lock";
@@ -243,7 +243,7 @@ impl LedgerTemplate {
     /// Panics when the fixture cannot be built, copied or relocated.
     #[must_use]
     pub fn instantiate(self) -> TempDir {
-        let repository = tempdir().expect("temporary repository should exist");
+        let repository = fixture_tempdir("repository-");
         self.restore_into(repository.path());
         repository
     }
@@ -404,6 +404,8 @@ fn remove_stale_builds(builds: &Path) {
 mod tests {
     use std::process::Command;
 
+    use tempfile::tempdir;
+
     use super::*;
     use crate::git_driver;
 
@@ -420,7 +422,7 @@ mod tests {
                 .into_iter()
                 .zip(["", "M  staged.txt\n M working.txt\n"])
             {
-                let repository = tempdir().expect("restore destination should exist");
+                let repository = fixture_tempdir("restore-");
                 template.repository.restore_into(repository.path());
                 let output = Command::new(&git)
                     .current_dir(repository.path())

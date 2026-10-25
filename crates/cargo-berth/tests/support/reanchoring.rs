@@ -74,7 +74,7 @@ impl RewriteFixture {
         let checkout = RewriteRepository::at_root(repository.path());
         Self {
             repository,
-            worktrees: tempdir().expect("linked checkout parent should exist"),
+            worktrees: cargo_berth_test_support::fixture_tempdir("rewrite-worktrees-"),
             checkout,
         }
     }
