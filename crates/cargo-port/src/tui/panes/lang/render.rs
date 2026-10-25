@@ -27,7 +27,7 @@ use crate::tui::theme_roles;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
 pub fn language_icon(language: &str) -> &'static str {
-    // Each trailing comment shows the glyph its escape renders.
+    // Each trailing comment shows the glyph rendered by its escape in `language_icon`.
     match language.to_ascii_lowercase().as_str() {
         "rust" => "\u{1f980}",                                                 // 🦀
         "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", // 🌊
