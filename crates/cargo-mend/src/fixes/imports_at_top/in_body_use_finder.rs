@@ -37,8 +37,55 @@ use crate::reporting::Severity;
 /// this scope is treated as a hard collision and the in-body `use` is left
 /// alone.
 enum ExistingBinding {
-    Use { full: String, gated: bool },
+    Use { full: String, gate: ImportGate },
     Item,
+}
+
+/// The collision and duplicate policy carried by an import's compile gate.
+#[derive(Clone, Copy)]
+enum ImportGate {
+    Conditional,
+    Unconditional,
+}
+
+impl From<&ConditionalAttributes> for ImportGate {
+    fn from(attributes: &ConditionalAttributes) -> Self {
+        if attributes.is_empty() {
+            Self::Unconditional
+        } else {
+            Self::Conditional
+        }
+    }
+}
+
+impl From<&[Attribute]> for ImportGate {
+    fn from(attributes: &[Attribute]) -> Self {
+        if ConditionalAttributes::contains(attributes) {
+            Self::Conditional
+        } else {
+            Self::Unconditional
+        }
+    }
+}
+
+impl ImportGate {
+    fn blocks(self, existing: Option<&ExistingBinding>, full: &str) -> bool {
+        match self {
+            Self::Conditional => existing.is_some(),
+            Self::Unconditional => unconditional_collision(existing, full),
+        }
+    }
+
+    fn all_duplicates(self, scope: &Scope, bare_paths: &[(String, String)]) -> bool {
+        match self {
+            Self::Conditional => false,
+            Self::Unconditional => bare_paths.iter().all(|(bare, full)| {
+                matches!(scope.existing.get(bare),
+                    Some(ExistingBinding::Use { full: existing, gate: Self::Unconditional })
+                        if existing == full)
+            }),
+        }
+    }
 }
 
 struct Scope {
@@ -102,7 +149,7 @@ impl InBodyUseFinder<'_> {
         // conditionally compiled and the attributes travel with it to the top.
         let mut conditional_attributes = self.conditional_attributes.clone();
         conditional_attributes.extend(self.attributes(&use_item.attrs));
-        let gated = !conditional_attributes.is_empty();
+        let gate = ImportGate::from(&conditional_attributes);
 
         let Some(scope) = self.scope_stack.last() else {
             return;
@@ -112,15 +159,9 @@ impl InBodyUseFinder<'_> {
         // same name (even the same path double-imports when both are active),
         // so skip when the name is taken. An unconditional `use` skips only on
         // a real collision. Leaving it in place is safe on every target.
-        let blocked = if gated {
-            bare_paths
-                .iter()
-                .any(|(bare, _)| scope.existing.contains_key(bare))
-        } else {
-            bare_paths
-                .iter()
-                .any(|(bare, full)| unconditional_collision(scope.existing.get(bare), full))
-        };
+        let blocked = bare_paths
+            .iter()
+            .any(|(bare, full)| gate.blocks(scope.existing.get(bare), full));
         if blocked {
             return;
         }
@@ -128,19 +169,13 @@ impl InBodyUseFinder<'_> {
         // `all_duplicates` means every bare name is already imported unconditionally with the
         // same full path. The fix collapses to a pure deletion (no insertion).
         // A gated use is never a plain duplicate — its gate must be preserved.
-        let all_duplicates = !gated
-            && bare_paths.iter().all(|(bare, full)| {
-                matches!(
-                    scope.existing.get(bare),
-                    Some(ExistingBinding::Use { full: existing, gated: false }) if existing == full
-                )
-            });
+        let all_duplicates = gate.all_duplicates(scope, &bare_paths);
 
         self.emit_move(
             use_item,
             &bare_paths,
             &conditional_attributes,
-            gated,
+            gate,
             all_duplicates,
         );
     }
@@ -154,7 +189,7 @@ impl InBodyUseFinder<'_> {
         use_item: &ItemUse,
         bare_paths: &[(String, String)],
         conditional_attributes: &ConditionalAttributes,
-        gated: bool,
+        gate: ImportGate,
         all_duplicates: bool,
     ) {
         let use_span = use_item.span();
@@ -211,7 +246,7 @@ impl InBodyUseFinder<'_> {
             self.emit_insertion(
                 bare_paths,
                 conditional_attributes,
-                gated,
+                gate,
                 use_kw_start,
                 use_end,
                 group.as_ref(),
@@ -229,13 +264,13 @@ impl InBodyUseFinder<'_> {
 
     /// Insert the moved `use` (with its carried gate) at the scope top and
     /// record the newly imported names so later in-body uses in this pass see
-    /// them as already imported. The `gated` flag stays with the binding so a
+    /// them as already imported. The `gate` stays with the binding so a
     /// conditional move never dedups against an unconditional import of the same name.
     fn emit_insertion(
         &mut self,
         bare_paths: &[(String, String)],
         conditional_attributes: &ConditionalAttributes,
-        gated: bool,
+        gate: ImportGate,
         use_kw_start: usize,
         use_end: usize,
         group: Option<&ImportGroup>,
@@ -265,7 +300,7 @@ impl InBodyUseFinder<'_> {
                     bare.clone(),
                     ExistingBinding::Use {
                         full: full.clone(),
-                        gated,
+                        gate,
                     },
                 );
             }
@@ -391,9 +426,9 @@ fn compute_scope_for_items(
         }
         match item {
             Item::Use(item_use) => {
-                let gated = ConditionalAttributes::contains(&item_use.attrs);
+                let gate = ImportGate::from(item_use.attrs.as_slice());
                 for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
-                    existing.insert(bare, ExistingBinding::Use { full, gated });
+                    existing.insert(bare, ExistingBinding::Use { full, gate });
                 }
                 let end = offset(offsets, item_use.span().end());
                 let end = if text.as_bytes().get(end) == Some(&b'\n') {
@@ -526,10 +561,16 @@ fn item_gate_attrs(item: &Item) -> &[Attribute] {
 /// an unconditional use of a different path.
 fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
     match existing {
-        Some(ExistingBinding::Item | ExistingBinding::Use { gated: true, .. }) => true,
+        Some(
+            ExistingBinding::Item
+            | ExistingBinding::Use {
+                gate: ImportGate::Conditional,
+                ..
+            },
+        ) => true,
         Some(ExistingBinding::Use {
             full: existing_full,
-            gated: false,
+            gate: ImportGate::Unconditional,
         }) => existing_full != full,
         None => false,
     }
@@ -618,6 +659,70 @@ mod tests {
         assert_eq!(
             flatten_use_to_bare_paths(&tree),
             vec![("*".to_string(), "crate::foo::*".to_string())]
+        );
+    }
+    #[test]
+    fn moving_imports_preserves_gate_collisions_and_duplicate_deletion() {
+        for (existing, nested, findings, fixes) in [
+            ("use crate::a::Thing;", "use crate::a::Thing;", 1, 1),
+            (
+                "use crate::a::Thing;",
+                "#[cfg(test)] use crate::a::Thing;",
+                0,
+                0,
+            ),
+            (
+                "#[cfg(test)] use crate::a::Thing;",
+                "use crate::a::Thing;",
+                0,
+                0,
+            ),
+            ("use crate::b::Thing;", "use crate::a::Thing;", 0, 0),
+            ("struct Thing;", "use crate::a::Thing;", 0, 0),
+            ("", "#[cfg(test)] use crate::a::Thing;", 1, 2),
+            ("", "use crate::a::Thing;", 1, 2),
+        ] {
+            let source = format!("{existing}\nfn f() {{ {nested} }}\n");
+            let syntax = syn::parse_file(&source).expect("parse import fixture");
+            let (actual_findings, actual_fixes) = super::scan(
+                &syntax,
+                &source,
+                std::path::Path::new("fixture.rs"),
+                "fixture.rs",
+            );
+            assert_eq!(
+                (actual_findings.len(), actual_fixes.len()),
+                (findings, fixes),
+                "{source}"
+            );
+            if existing.is_empty() {
+                let insertion = &actual_fixes[0].replacement;
+                assert!(insertion.contains("use crate::a::Thing;"), "{insertion}");
+                assert_eq!(
+                    insertion.contains("#[cfg(test)]"),
+                    nested.starts_with("#[cfg(test)]")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_moved_gated_import_blocks_a_later_import_of_the_same_name() {
+        let source =
+            "fn f() { #[cfg(test)] use crate::a::Thing; }\nfn g() { use crate::a::Thing; }\n";
+        let syntax = syn::parse_file(source).expect("parse import fixture");
+        let (findings, fixes) = super::scan(
+            &syntax,
+            source,
+            std::path::Path::new("fixture.rs"),
+            "fixture.rs",
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(fixes.len(), 2);
+        assert!(
+            fixes[0]
+                .replacement
+                .starts_with("#[cfg(test)]\nuse crate::a::Thing;")
         );
     }
 }
