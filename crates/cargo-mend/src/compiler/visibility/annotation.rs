@@ -31,6 +31,7 @@ pub(super) enum VisibilitySyntax {
 }
 
 /// The kind of boundary limiting a reach, independent of its written annotation.
+/// Policy asks about the boundary through this type, so it never reads rendered text back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReachBoundary {
     /// Reachable from other crates — `pub`.
@@ -434,9 +435,11 @@ mod tests {
             ResolvedReachBoundary::from(root),
             ResolvedReachBoundary::CrateRoot
         ));
-        assert!(
-            matches!(ResolvedReachBoundary::from(module), ResolvedReachBoundary::Module(id) if id == module_id)
-        );
+        let resolved_module = match ResolvedReachBoundary::from(module) {
+            ResolvedReachBoundary::Module(id) => Some(id),
+            ResolvedReachBoundary::Everywhere | ResolvedReachBoundary::CrateRoot => None,
+        };
+        assert_eq!(resolved_module, Some(module_id));
         assert_eq!(public.boundary(), ReachBoundary::Everywhere);
         assert_eq!(root.boundary(), ReachBoundary::CrateRoot);
         assert_eq!(module.boundary(), ReachBoundary::Module);
