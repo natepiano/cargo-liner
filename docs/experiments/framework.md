@@ -475,7 +475,7 @@ Lookup takes a nonblocking shared owner-store lock. It reads the publication rec
 
 Hooks and the app consume this checked projection. Stale rows may be shown only as historical evidence with their generation. They cannot supply defaults or establish that no prior result exists. Mac mirrors are historical snapshots: their timestamps and hashes do not prove current owner state. A fresh owner lookup through the launcher supplies a dated answer for that action. Offline hooks must label the mirror `stale`. Do not add a database or a second writable index.
 
-Back up the authoritative root with the owner's durable data. Before adoption, archive the sealed protocol, final report, and evidence manifest in the owning repository's `docs/experiments/results/<id>/`. This is a fixed export, not a second writable record. Its hashes must match the owner record. Keep raw evidence for the life of an adopted result. Record a retention decision before removing any other evidence.
+Back up the authoritative root with the owner's durable data. Before adoption, archive the sealed protocol, final report, and evidence manifest in the owning repository's `docs/experiments/results/<id>/`. This is a fixed export, not a second writable record. Its hashes must match the owner record. Keep raw evidence for the life of an adopted result. Keep the raw evidence of a result that is not adopted for 90 days after closure, then remove it. The journal, protocol, report, and evidence manifest stay.
 
 ### Protocol fields
 
@@ -693,7 +693,4 @@ SDLC must confirm the binary name and the owner of the shared index. These are p
 
 - First live study (2026-10-25): the history-command trial in `worked-examples.md` §6, with and without `python3 -S`, runs first. It exercises the framework only. It claims no recurring savings and cannot authorize adoption. It starts after the user's design review is complete.
 - Spending (2026-10-25): experiment work is normal work. Work the user asks for is approved. There is no spending limit (section 8).
-
-## Open questions for the user
-
-1. How long should non-adopted raw evidence remain after closure? This design retains it until an explicit retention decision.
+- Evidence retention (2026-10-25): the raw evidence of a result that is not adopted stays for 90 days after closure (section 12).
