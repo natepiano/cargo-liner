@@ -174,10 +174,10 @@ macro_rules! bindings {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __bindings_arms {
-    // Base case: empty input.
+    // `__bindings_arms!` ends when no arms follow `$table`.
     ( $table:ident ; ) => {};
 
-    // Multi-key list arm with trailing comma.
+    // `__bindings_arms!` binds a `$key` list with a trailing comma, then recurses on `$rest`.
     ( $table:ident ; [ $( $key:expr ),+ $(,)? ] => $action:expr , $( $rest:tt )* ) => {
         $table.bind_many(
             [ $( $crate::KeyBind::from($key) ),+ ],
@@ -186,7 +186,7 @@ macro_rules! __bindings_arms {
         $crate::__bindings_arms!($table; $( $rest )*);
     };
 
-    // Multi-key list arm without trailing comma (last arm).
+    // `__bindings_arms!` binds the final `$key` list without a trailing comma.
     ( $table:ident ; [ $( $key:expr ),+ $(,)? ] => $action:expr ) => {
         $table.bind_many(
             [ $( $crate::KeyBind::from($key) ),+ ],
@@ -194,13 +194,13 @@ macro_rules! __bindings_arms {
         );
     };
 
-    // Single-key arm with trailing comma.
+    // `__bindings_arms!` binds one `$key` with a trailing comma, then recurses on `$rest`.
     ( $table:ident ; $key:expr => $action:expr , $( $rest:tt )* ) => {
         $table.bind($key, $action);
         $crate::__bindings_arms!($table; $( $rest )*);
     };
 
-    // Single-key arm without trailing comma (last arm).
+    // `__bindings_arms!` binds the final single `$key` without a trailing comma.
     ( $table:ident ; $key:expr => $action:expr ) => {
         $table.bind($key, $action);
     };

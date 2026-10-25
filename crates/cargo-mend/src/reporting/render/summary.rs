@@ -179,8 +179,8 @@ pub(super) fn summary_line(
         ));
     }
 
-    // When fixables span multiple flag categories, append a `--fix-all` entry
-    // to the last warning row so the single-command convergent option is
+    // When `categories > 1`, `summary_line` appends a `SummaryFixable` with `CARGO_MEND_FIX_ALL`
+    // to the last warning row in `rows` so the single-command convergent option is
     // always one click away.
     if categories > 1
         && let Some(last) = rows.last_mut()
@@ -205,8 +205,8 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
         .unwrap_or(0);
     let prefix = color::dim(SUMMARY_LABEL, color_mode);
     let indent = " ".repeat(SUMMARY_LABEL.len());
-    // Continuation indent fills the count + description columns so the dash
-    // aligns with the inline fixable on the parent row.
+    // `cont_indent` fills the `count_width` and `desc_width` columns so the dash
+    // aligns with the inline `SummaryFixable` on the parent `SummaryRow`.
     let cont_indent = format!("{indent} {:>count_width$} {:<desc_width$}", "", "");
 
     let mut result = String::new();
@@ -360,8 +360,9 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        // Compiler row gets `--fix-compiler`; mend row gets `--fix` plus the
-        // continuation `--fix-all` line because two categories are fixable.
+        // `output` gives the compiler row `CARGO_MEND_FIX_COMPILER` and the mend row
+        // `CARGO_MEND_FIX` plus the `CARGO_MEND_FIX_ALL` continuation because two
+        // categories are fixable.
         assert!(
             output.contains(&format!(
                 "{SUMMARY_LABEL} 3 compiler warnings - 1 fixable with `{CARGO_MEND_FIX_COMPILER}`\n"
@@ -375,8 +376,8 @@ mod tests {
             )),
             "mend row missing/misaligned:\n{output}"
         );
-        // The `--fix-all` continuation line aligns under the inline fixable
-        // (its dash sits in the same column as the mend row's dash).
+        // `fix_all_row_dash` must equal `mend_row_dash`: the `CARGO_MEND_FIX_ALL` continuation
+        // aligns under the inline fixable, with its dash in the mend row's dash column.
         let mend_row_dash = output
             .lines()
             .find(|line| line.contains("mend warning"))
@@ -473,8 +474,9 @@ mod tests {
 
     #[test]
     fn summary_never_emits_combined_fix_pub_use_string() {
-        // Both mend and pub-use have fixables; each flag should render on its
-        // own line plus `--fix-all`, never `cargo mend --fix --fix-pub-use`.
+        // `report` has both mend and pub-use fixables; `output` should render `CARGO_MEND_FIX`
+        // and `CARGO_MEND_FIX_PUB_USE` on separate lines plus `CARGO_MEND_FIX_ALL`, never `cargo
+        // mend --fix --fix-pub-use`.
         let report = Report {
             summary: ReportSummary {
                 warnings: 2,
@@ -511,8 +513,8 @@ mod tests {
 
     #[test]
     fn summary_lists_one_line_per_fix_flag_plus_fix_all_aggregate() {
-        // Bug-report scenario: 213 mend warnings split 1-and-1 across `--fix`
-        // and `--fix-pub-use`. Three lines required.
+        // `report` models the bug: 213 mend warnings split 1-and-1 across
+        // `CARGO_MEND_FIX` and `CARGO_MEND_FIX_PUB_USE`; `output` requires three lines.
         let report = Report {
             summary: ReportSummary {
                 warnings: 213,
@@ -553,7 +555,7 @@ mod tests {
         );
 
         assert!(output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")));
-        // Single category means no `--fix-all` line.
+        // `output` has a single fixable category, so it must omit `CARGO_MEND_FIX_ALL`.
         assert!(!output.contains("--fix-all"));
     }
 
@@ -599,7 +601,7 @@ mod tests {
             output.contains("not auto-fixable"),
             "errors block must say errors are not auto-fixable:\n{output}"
         );
-        // Errors must never show up in the "X fixable" summary count.
+        // `output` must never include errors in the "X fixable" warning summary count.
         assert!(!output.contains("mend errors -"));
     }
 

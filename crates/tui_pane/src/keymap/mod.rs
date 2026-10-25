@@ -595,9 +595,9 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     ) -> Vec<(&'static str, Vec<&'static str>)> {
         let mut out: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
 
-        // The "global" section combines framework globals and app
-        // globals. The keymap writer emits them under one [global]
-        // table, so list both action-key collections.
+        // `global_keys` combines `GlobalAction::ALL` with the keys from
+        // `app_globals_toml_keys_fn`. The keymap writer emits framework and
+        // app globals under one `[global]` table, so list both collections.
         let mut global_keys: Vec<&'static str> =
             GlobalAction::ALL.iter().map(|a| a.toml_key()).collect();
         if let Some(collect) = self.app_globals_toml_keys_fn {

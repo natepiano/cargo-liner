@@ -1476,6 +1476,17 @@ pub trait TileCells<Id> {
     /// Areas exclude borders and foot rows, using the same calculation as painting.
     fn prepare_frame(&self, _: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>) {}
 
+    /// Prepare widths using destination geometry by default. Providers whose widths
+    /// depend on visible rows can opt into the tallest source/destination heights.
+    /// The second callback retains destination positions and widths.
+    fn prepare_moving_frame(
+        &self,
+        destination: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+        _: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+    ) {
+        self.prepare_frame(destination);
+    }
+
     /// Rows each cell's contents would take given all the room they
     /// want, each measured at the width `widths` gives that cell.
     ///
@@ -1595,14 +1606,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         departures: &departures,
     };
     let cells = &provider;
-    let summary_rows = cells_demands
-        .summary
-        .required()
-        .get()
-        .saturating_sub(rows_readout_height(measured_width(
-            &cells_widths,
-            &TileContent::Summary,
-        )));
+    let summary_rows = summary_body_rows(&cells_demands, &cells_widths);
     grid.measure_row_steps(
         area,
         growth,
@@ -1641,6 +1645,9 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     let drawing = grid.start_painted_entries(drawing, &retained);
     let drawing = grid.publish_painted_drawing(drawing);
     let frames = if drawing.allocation == DrawingAllocation::Capacity {
+        prepare_capacity_frame(source_cells, &drawing, || {
+            grid.motion_preparation_allocations(area, growth)
+        });
         paint_capacity_viewport(
             buffer,
             area,
@@ -1655,6 +1662,18 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     };
     fade_cell_ink(buffer, area, &drawing);
     grid.record_painted_summary_frames(frames);
+}
+
+/// Required summary rows exclude the readout reserved by the grid.
+fn summary_body_rows<Id: Eq>(demands: &TileDemands<Id>, widths: &[(TileContent<Id>, u16)]) -> u16 {
+    demands
+        .summary
+        .required()
+        .get()
+        .saturating_sub(rows_readout_height(measured_width(
+            widths,
+            &TileContent::Summary,
+        )))
 }
 
 /// A retained departure cannot reacquire admission through its old live demand.
@@ -1687,7 +1706,10 @@ fn prepare_frame_cells<Id: Clone + Eq + Debug>(
             cell.painted_prefix_rows(),
         );
     }
-    cells.prepare_frame(|| grid.preparation_allocations(area, growth));
+    cells.prepare_moving_frame(
+        || grid.preparation_allocations(area, growth),
+        || grid.motion_preparation_allocations(area, growth),
+    );
     required
 }
 
@@ -1892,17 +1914,13 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     )
 }
 
-/// Capacity owns the allocations used to prepare, measure and paint its bodies.
-fn paint_capacity_viewport<Id: Clone + Eq + Debug>(
-    buffer: &mut Buffer,
-    area: Rect,
-    drawing: &ViewportDrawing<Id>,
-    contents: TileGridContents,
-    cells: &impl TileCells<Id>,
+/// Capacity fixes positions and widths; moving providers retain both endpoint heights.
+fn prepare_capacity_frame<Id: Clone + Eq + Debug>(
     source: &impl TileCells<Id>,
-    probes: &[CellDemandProbe<'_, Id>],
-) -> Vec<Rect> {
-    source.prepare_frame(|| {
+    drawing: &ViewportDrawing<Id>,
+    motion_bounds: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+) {
+    let allocations = || {
         drawing
             .pieces
             .iter()
@@ -1912,8 +1930,32 @@ fn paint_capacity_viewport<Id: Clone + Eq + Debug>(
                     content_area(frame_inner(piece.placement.frame.rect())),
                 )
             })
+            .collect::<Vec<_>>()
+    };
+    source.prepare_moving_frame(allocations, || {
+        let bounds = motion_bounds();
+        allocations()
+            .into_iter()
+            .map(|(content, mut area)| {
+                if let Some((_, bound)) = bounds.iter().find(|(id, _)| id == &content) {
+                    area.height = area.height.max(bound.height);
+                }
+                (content, area)
+            })
             .collect()
     });
+}
+
+/// Capacity owns the allocations used to measure and paint its bodies.
+fn paint_capacity_viewport<Id: Clone + Eq + Debug>(
+    buffer: &mut Buffer,
+    area: Rect,
+    drawing: &ViewportDrawing<Id>,
+    contents: TileGridContents,
+    cells: &impl TileCells<Id>,
+    source: &impl TileCells<Id>,
+    probes: &[CellDemandProbe<'_, Id>],
+) -> Vec<Rect> {
     let widths = drawing
         .pieces
         .iter()

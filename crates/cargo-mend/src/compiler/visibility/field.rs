@@ -33,6 +33,22 @@ use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
+#[derive(Clone, Copy)]
+enum VisibilitySpelling<'source> {
+    Private,
+    Annotated(&'source str),
+}
+
+impl<'source> From<&'source str> for VisibilitySpelling<'source> {
+    fn from(source: &'source str) -> Self {
+        if source.is_empty() {
+            Self::Private
+        } else {
+            Self::Annotated(source)
+        }
+    }
+}
+
 pub(super) fn check_item(
     ctx: &VisibilityContext<'_, '_>,
     item: &Item<'_>,
@@ -80,7 +96,8 @@ fn check_field(
     let Some(field_visibility_text) = source::visibility_text(ctx.tcx, field.vis_span)? else {
         return Ok(());
     };
-    // A field with no `pub` annotation is private; nothing to narrow.
+    // `check_field` skips an empty `field_visibility_text`: a field with no `pub`
+    // annotation is private, so there is nothing to narrow.
     if field_visibility_text.is_empty() {
         return Ok(());
     }
@@ -109,15 +126,19 @@ fn check_field(
     let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
         return Ok(());
     };
-    // Only fire on truly-dead cases: the containing type has no `pub`
-    // annotation at all (private to its parent module). The conventional
+    // `check_field` reports only when `type_visibility_annotation_text` is empty:
+    // the containing type has no `pub` annotation at all (private to its parent
+    // module). The conventional
     // pattern of `pub` fields on a `pub(crate)` or `pub(super)` struct is
     // idiomatic Rust shorthand for "as wide as the type allows" — flagging
     // it would push users toward a non-idiomatic style. We only flag when
     // the field's `pub` cannot grant any access at all because the type
     // itself is private.
-    if !type_visibility_annotation_text.is_empty() {
-        return Ok(());
+    let type_visibility_spelling =
+        VisibilitySpelling::from(type_visibility_annotation_text.as_str());
+    match type_visibility_spelling {
+        VisibilitySpelling::Private => {},
+        VisibilitySpelling::Annotated(_) => return Ok(()),
     }
 
     let field_declared: VisibilityReach = ctx.tcx.visibility(field_def_id.to_def_id()).into();
@@ -126,8 +147,9 @@ fn check_field(
     if !field_declared.is_strictly_wider(type_declared, ctx.tcx) {
         return Ok(());
     }
-    // Re-export refinement: if the type is reachable through a `pub use`, the
-    // field annotation matches the type's effective visibility and should not
+    // `effective_type_visibility` accounts for `pub use` re-exports: if the type
+    // is reachable through one, the field annotation matches the type's effective
+    // visibility and should not
     // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
     if type_effective.is_at_least(field_declared, ctx.tcx) {
@@ -144,9 +166,9 @@ fn check_field(
             item:                    Some(StoredFinding::render_item("field", &field_name)),
             message:                 format_message(
                 &field_visibility_text,
-                &type_visibility_annotation_text,
+                type_visibility_spelling,
             ),
-            suggestion:              Some(suggested_replacement(&type_visibility_annotation_text)),
+            suggestion:              Some(suggested_replacement(type_visibility_spelling)),
             fix_support:             FixSupport::FieldVisibility,
             related:                 None,
             visibility_annotation:   None,
@@ -199,11 +221,10 @@ fn field_highlight_span(field: &FieldDef<'_>) -> Span {
     }
 }
 
-fn format_message(field_visibility_text: &str, type_visibility_annotation_text: &str) -> String {
-    let type_label = if type_visibility_annotation_text.is_empty() {
-        "private (no `pub` annotation)".to_string()
-    } else {
-        format!("`{type_visibility_annotation_text}`")
+fn format_message(field_visibility_text: &str, type_visibility: VisibilitySpelling<'_>) -> String {
+    let type_label = match type_visibility {
+        VisibilitySpelling::Private => "private (no `pub` annotation)".to_string(),
+        VisibilitySpelling::Annotated(source) => format!("`{source}`"),
     };
     format!(
         "field is declared `{field_visibility_text}` but the containing type is \
@@ -212,10 +233,42 @@ fn format_message(field_visibility_text: &str, type_visibility_annotation_text: 
     )
 }
 
-fn suggested_replacement(type_visibility_annotation_text: &str) -> String {
-    if type_visibility_annotation_text.is_empty() {
-        "remove the field's visibility annotation".to_string()
-    } else {
-        format!("consider using: `{type_visibility_annotation_text}`")
+fn suggested_replacement(type_visibility: VisibilitySpelling<'_>) -> String {
+    match type_visibility {
+        VisibilitySpelling::Private => "remove the field's visibility annotation".to_string(),
+        VisibilitySpelling::Annotated(source) => format!("consider using: `{source}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VisibilitySpelling;
+    use super::format_message;
+    use super::suggested_replacement;
+
+    #[test]
+    fn private_type_diagnostic_keeps_its_text_and_removal_suggestion() {
+        let spelling = VisibilitySpelling::from("");
+        assert_eq!(
+            format_message("pub", spelling),
+            "field is declared `pub` but the containing type is private (no `pub` annotation); the wider field annotation is dead because the type's visibility caps it"
+        );
+        assert_eq!(
+            suggested_replacement(spelling),
+            "remove the field's visibility annotation"
+        );
+    }
+
+    #[test]
+    fn annotated_type_diagnostic_preserves_the_written_annotation() {
+        let spelling = VisibilitySpelling::from("pub(in crate::parent)");
+        assert_eq!(
+            format_message("pub", spelling),
+            "field is declared `pub` but the containing type is `pub(in crate::parent)`; the wider field annotation is dead because the type's visibility caps it"
+        );
+        assert_eq!(
+            suggested_replacement(spelling),
+            "consider using: `pub(in crate::parent)`"
+        );
     }
 }

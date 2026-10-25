@@ -32,7 +32,7 @@ use crate::title_color;
 /// lines are painted.
 pub fn draw_settings<S: Copy>(frame: &mut Frame, pane: &mut SettingsPane, rows: &SettingsRows<S>) {
     let area = frame.area();
-    // The popup centers itself and clamps to the frame, so the rows have
+    // `PopupFrame::render_with_areas` centers and clamps to the frame, so `rows` have
     // to be laid out for the width that survives that clamp.
     let width = fitted_width(rows.widest_row()).min(area.width);
     let content_width = usize::from(width.saturating_sub(POPUP_BORDER_WIDTH));

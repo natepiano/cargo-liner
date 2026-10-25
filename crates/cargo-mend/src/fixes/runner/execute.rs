@@ -31,9 +31,9 @@ pub(super) struct CheckedSelection {
 /// The syntax scans whose diagnostics are enabled; a fix kind is enabled only
 /// with one of its diagnostics, so each fix scan finds its scan here.
 pub(super) struct SyntaxScans {
-    pub(super) imports:              Option<ImportScan>,
     pub(super) prefer_module_import: Option<PreferModuleImportScan>,
     pub(super) inline_path:          Option<InlinePathScan>,
+    pub(super) imports:              Option<ImportScan>,
     pub(super) imports_at_top:       Option<ImportsAtTopScan>,
 }
 
@@ -55,7 +55,7 @@ impl MendRunner<'_> {
                 pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
-                // Count the validated set, not the scans: a dry run must
+                // Count `previewed` from `Self::combined_fixes`, not the scans: a dry run must
                 // preview the edits an apply would write, and combining is
                 // where conflicting groups are dropped and duplicates collapse.
                 let fix_scans = planned.fix_scans();
@@ -93,8 +93,8 @@ impl MendRunner<'_> {
             output_mode,
             self.color_mode,
         )?;
-        // Created after the check, which `cargo fix` may have rewritten files
-        // during.
+        // Create `ParsedSources` after `compiler::run_selection` because `cargo fix`
+        // may rewrite files during that check.
         let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
@@ -125,12 +125,12 @@ impl MendRunner<'_> {
         };
         let report = &mut result.report;
         let scan_findings = [
-            scans.imports.as_ref().map(|scan| &scan.findings),
             scans
                 .prefer_module_import
                 .as_ref()
                 .map(|scan| &scan.findings),
             scans.inline_path.as_ref().map(|scan| &scan.findings),
+            scans.imports.as_ref().map(|scan| &scan.findings),
             scans.imports_at_top.as_ref().map(|scan| &scan.findings),
         ];
         report
@@ -168,7 +168,8 @@ impl MendRunner<'_> {
                 && a.item == b.item
                 && a.suggestion == b.suggestion
         });
-        // Filter out disabled diagnostics
+        // `report.findings.retain` removes findings whose `diagnostic_code` is disabled in
+        // `self.loaded_config.diagnostics_config`.
         report.findings.retain(|f| {
             self.loaded_config
                 .diagnostics_config

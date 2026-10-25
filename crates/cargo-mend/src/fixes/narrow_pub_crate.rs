@@ -28,7 +28,8 @@ pub(super) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
         else {
             continue;
         };
-        // Only a bare `pub` is widened past the crate. A restricted annotation
+        // `VisibilityAnnotationForm::Bare` identifies the only annotation widened
+        // past the crate, a bare `pub`. A restricted annotation
         // is already at most `pub(crate)`, so rewriting it would be a no-op at
         // best and a widening at worst.
         if site.form != VisibilityAnnotationForm::Bare {

@@ -50,6 +50,44 @@ enum ParentFacadeReferenceUsage {
     DirectPath(PathOrigin),
 }
 
+#[derive(Clone, Copy)]
+enum FacadeCallerLocation {
+    InsideSubtree,
+    OutsideSubtree,
+}
+
+impl FacadeCallerLocation {
+    fn for_module(current_module: &[String], facade_module: &[String]) -> Self {
+        if module_path_is_descendant(current_module, facade_module) {
+            Self::InsideSubtree
+        } else {
+            Self::OutsideSubtree
+        }
+    }
+
+    const fn usage(self, reference: ParentFacadeReferenceUsage) -> ParentFacadeUsage {
+        match (self, reference) {
+            (_, ParentFacadeReferenceUsage::None) => ParentFacadeUsage::Unused,
+            (
+                Self::OutsideSubtree,
+                ParentFacadeReferenceUsage::Import(_) | ParentFacadeReferenceUsage::DirectPath(_),
+            ) => ParentFacadeUsage::UsedOutsideSubtree,
+            (Self::InsideSubtree, ParentFacadeReferenceUsage::Import(PathOrigin::Relative)) => {
+                ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
+            },
+            (Self::InsideSubtree, ParentFacadeReferenceUsage::Import(PathOrigin::Crate)) => {
+                ParentFacadeUsage::UsedInsideSubtreeByCrateImport
+            },
+            (Self::InsideSubtree, ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative)) => {
+                ParentFacadeUsage::UsedInsideSubtreeByRelativePath
+            },
+            (Self::InsideSubtree, ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate)) => {
+                ParentFacadeUsage::UsedInsideSubtreeByCratePath
+            },
+        }
+    }
+}
+
 struct LiteralModuleContext {
     root_path:     Vec<String>,
     inline_ranges: Vec<ModuleRange>,
@@ -121,40 +159,12 @@ pub(super) fn scan_facade_usage(
                 &parent_boundary.module_path,
                 &explicit_names,
             );
-            let inside_subtree =
-                module_path_is_descendant(&module_context.path, &parent_boundary.module_path);
+            let caller_location = FacadeCallerLocation::for_module(
+                &module_context.path,
+                &parent_boundary.module_path,
+            );
             for (name, reference_usage) in reference_usage_by_name {
-                let next_usage = match reference_usage {
-                    ParentFacadeReferenceUsage::None => ParentFacadeUsage::Unused,
-                    ParentFacadeReferenceUsage::Import(PathOrigin::Relative) => {
-                        if inside_subtree {
-                            ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
-                        } else {
-                            ParentFacadeUsage::UsedOutsideSubtree
-                        }
-                    },
-                    ParentFacadeReferenceUsage::Import(PathOrigin::Crate) => {
-                        if inside_subtree {
-                            ParentFacadeUsage::UsedInsideSubtreeByCrateImport
-                        } else {
-                            ParentFacadeUsage::UsedOutsideSubtree
-                        }
-                    },
-                    ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative) => {
-                        if inside_subtree {
-                            ParentFacadeUsage::UsedInsideSubtreeByRelativePath
-                        } else {
-                            ParentFacadeUsage::UsedOutsideSubtree
-                        }
-                    },
-                    ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate) => {
-                        if inside_subtree {
-                            ParentFacadeUsage::UsedInsideSubtreeByCratePath
-                        } else {
-                            ParentFacadeUsage::UsedOutsideSubtree
-                        }
-                    },
-                };
+                let next_usage = caller_location.usage(reference_usage);
                 merge_usage_for_name(&mut usage_by_name, &name, next_usage);
             }
         }
@@ -593,8 +603,9 @@ fn matching_export_name_indexed<'name>(
     module_path: &[String],
     exported_names: &ExportNameIndex<'name>,
 ) -> Option<&'name str> {
-    // Rejecting here keeps path resolution off every path that cannot name an
-    // export, the overwhelming majority on a whole-crate sweep.
+    // `matching_export_name_indexed` uses `ExportNameIndex::could_match_final_segment`
+    // to reject paths before resolution because they cannot name an export,
+    // the overwhelming majority on a whole-crate sweep.
     if !exported_names.could_match_final_segment(raw) {
         return None;
     }
@@ -967,7 +978,62 @@ fn module_path_is_descendant(candidate: &[String], parent: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::ExportNameIndex;
+    use super::FacadeCallerLocation;
+    use super::ParentFacadeReferenceUsage;
+    use super::ParentFacadeUsage;
+    use super::PathOrigin;
     use super::matching_export_name_indexed;
+
+    #[test]
+    fn facade_reference_usage_preserves_location_and_origin() {
+        let facade = [String::from("parent")];
+        let descendant = [String::from("parent"), String::from("child")];
+        let sibling = [String::from("sibling")];
+        let cases = [
+            (ParentFacadeReferenceUsage::None, ParentFacadeUsage::Unused),
+            (
+                ParentFacadeReferenceUsage::Import(PathOrigin::Relative),
+                ParentFacadeUsage::UsedInsideSubtreeByRelativeImport,
+            ),
+            (
+                ParentFacadeReferenceUsage::Import(PathOrigin::Crate),
+                ParentFacadeUsage::UsedInsideSubtreeByCrateImport,
+            ),
+            (
+                ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative),
+                ParentFacadeUsage::UsedInsideSubtreeByRelativePath,
+            ),
+            (
+                ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate),
+                ParentFacadeUsage::UsedInsideSubtreeByCratePath,
+            ),
+        ];
+        for (reference, expected) in cases {
+            assert_eq!(
+                FacadeCallerLocation::for_module(&facade, &facade).usage(reference),
+                expected
+            );
+            assert_eq!(
+                FacadeCallerLocation::for_module(&descendant, &facade).usage(reference),
+                expected
+            );
+        }
+        let outside = FacadeCallerLocation::for_module(&sibling, &facade);
+        assert_eq!(
+            outside.usage(ParentFacadeReferenceUsage::None),
+            ParentFacadeUsage::Unused
+        );
+        for origin in [PathOrigin::Relative, PathOrigin::Crate] {
+            assert_eq!(
+                outside.usage(ParentFacadeReferenceUsage::Import(origin)),
+                ParentFacadeUsage::UsedOutsideSubtree
+            );
+            assert_eq!(
+                outside.usage(ParentFacadeReferenceUsage::DirectPath(origin)),
+                ParentFacadeUsage::UsedOutsideSubtree
+            );
+        }
+    }
 
     #[test]
     fn parsed_path_matches_raw_module_segments() {

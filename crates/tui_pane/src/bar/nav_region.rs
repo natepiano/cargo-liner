@@ -42,7 +42,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Navigation scope: the status bar advertises the compact row
+    // `navigation_slots` supplies the compact navigation row in the status bar
     // ("↑/↓ nav"), not every scroll/navigation key.
     let navigation_slots = keymap.render_navigation_slots();
     if let (Some(up), Some(down)) = (
@@ -52,13 +52,13 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         support::push_paired(&mut spans, &up.key, &down.key, "nav", palette);
     }
 
-    // Pane-emitted nav slots (rare — most panes leave nav to the
+    // `pane_slots` supplies pane-emitted nav slots (rare — most panes leave nav to the
     // navigation scope, but `bar_slots` is allowed to add extras).
     for slot in pane_slots.iter().filter(|s| s.region == BarRegion::Nav) {
         support::push_slot(&mut spans, slot, palette);
     }
 
-    // Pane-cycle row from the framework globals. Advertises the
+    // `GlobalAction::NextPane` supplies the pane-cycle row from framework globals. Advertises the
     // forward key only ("Tab pane") even though Shift+Tab also works,
     // and only when the step has somewhere to land.
     if let Some(next) = keymap

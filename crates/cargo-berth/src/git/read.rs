@@ -18,6 +18,7 @@ use gix::status::UntrackedFiles;
 use gix::status::index_worktree::iter::Summary;
 use gix::status::tree_index::TrackRenames;
 
+use super::command;
 use super::constants::GIT_BRANCH_CONFIGURATION_SECTION;
 use super::constants::GIT_BRANCH_MERGE_KEY;
 use super::constants::GIT_BRANCH_REMOTE_KEY;
@@ -202,12 +203,17 @@ fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
     }
     let mut permissions = gix::open::Permissions::default();
     permissions.config.git_binary = true;
-    match gix::open_opts(
-        root,
-        gix::open::Options::default()
-            .permissions(permissions)
-            .strict_config(true),
-    ) {
+    // gix discovers installation configuration with its own piped Git command.
+    // Share the spawn boundary: on platforms without atomic close-on-exec pipes,
+    // a concurrent persistent child must not inherit that probe's pipe writer.
+    match command::with_spawn_lock(|| {
+        gix::open_opts(
+            root,
+            gix::open::Options::default()
+                .permissions(permissions)
+                .strict_config(true),
+        )
+    })? {
         Ok(repository) => match repository_format(repository.config_snapshot().plumbing()) {
             RepositoryRead::InProcess(()) => Ok(RepositoryRead::InProcess(repository)),
             RepositoryRead::GitRequired(reason) => Ok(RepositoryRead::GitRequired(reason)),
@@ -737,6 +743,12 @@ pub(super) fn branches_at(
 mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use cargo_berth_test_support::TestProcessGroup;
 
     use super::GitReadRequirement;
     use super::RepositoryRead;
@@ -942,6 +954,96 @@ mod tests {
             "{output:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn installation_probe_seals_its_pipes_before_another_git_child_starts() -> FixtureResult {
+        const TEST: &str = "installation_probe_seals_its_pipes_before_another_git_child_starts";
+        if let Some(root) = std::env::var_os("CARGO_BERTH_PROBE_SERIALIZATION_ROOT") {
+            return check_installation_probe_serialization(Path::new(&root));
+        }
+        let fixture = PatchEquivalenceFixture::new()?;
+        let shim = tempfile::tempdir()?;
+        let git = std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?)
+            .map(|path| path.join("git"))
+            .find(|path| path.is_file())
+            .ok_or("git missing")?;
+        let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        let executable = shim.path().join("git");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = config ]; then\n  : > {}\n  while [ ! -e {} ]; do sleep 0.005; done\nfi\nexec {} \"$@\"\n",
+                quote(&shim.path().join("ready")),
+                quote(&shim.path().join("continue")),
+                quote(&git),
+            ),
+        )?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+        let path = std::env::join_paths(std::iter::once(shim.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?),
+        ))?;
+        let mut process = TestProcessGroup::spawn(
+            std::process::Command::new(std::env::current_exe()?)
+                .args([TEST, "--nocapture"])
+                .env("CARGO_BERTH_PROBE_SERIALIZATION_ROOT", fixture.root())
+                .env("CARGO_BERTH_PROBE_SERIALIZATION_SHIM", shim.path())
+                .env("PATH", path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )?;
+        let deadline = Instant::now() + Duration::from_millis(750);
+        while process.child_mut().try_wait()?.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "installation probe test did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let output = process.wait_with_output()?;
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+        Ok(())
+    }
+
+    fn check_installation_probe_serialization(root: &Path) -> FixtureResult {
+        let shim = std::path::PathBuf::from(
+            std::env::var_os("CARGO_BERTH_PROBE_SERIALIZATION_SHIM").ok_or("shim missing")?,
+        );
+        std::thread::scope(|scope| -> FixtureResult {
+            let observation = scope.spawn(|| super::worktrees(root));
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while !shim.join("ready").exists() {
+                if Instant::now() >= deadline {
+                    std::fs::write(shim.join("continue"), "")?;
+                    return Err("installation probe did not start".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (started, attempting) = mpsc::channel();
+            let (finished, completed) = mpsc::channel();
+            let other = scope.spawn(move || {
+                started.send(()).map_err(std::io::Error::other)?;
+                let output = command::git_output(root, ["--version"]);
+                finished.send(()).map_err(std::io::Error::other)?;
+                output
+            });
+            let attempted = attempting.recv_timeout(Duration::from_millis(100));
+            let premature = completed.recv_timeout(Duration::from_millis(25));
+            // Always continue before asserting, so a failing proof also joins both workers.
+            std::fs::write(shim.join("continue"), "")?;
+            let observed = observation.join().map_err(|_| "observation panicked")?;
+            let output = other.join().map_err(|_| "Git worker panicked")??;
+            attempted?;
+            assert!(
+                premature.is_err(),
+                "another child started during the installation probe"
+            );
+            assert!(output.status.success(), "{output:?}");
+            assert_ne!(in_process(observed?)?, [] as [u8; 0]);
+            Ok(())
+        })
     }
 
     #[test]

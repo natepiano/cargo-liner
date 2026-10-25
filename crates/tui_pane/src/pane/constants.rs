@@ -1,4 +1,4 @@
-// pane tint
+// Pane tint: `PANE_TINT_BRIGHTNESS_MIDPOINT` through `PANE_TINT_LIGHT_OVERLAY`.
 //
 // Painted only while the screen is not transparent: under
 // `[appearance] transparent`, the default, nothing paints a background
@@ -47,6 +47,6 @@ pub(super) const PANE_TINT_DARK_OVERLAY: (u8, u8, u8) = (180, 180, 220);
 /// pane settles away from white the way it lifts away from black.
 pub(super) const PANE_TINT_LIGHT_OVERLAY: (u8, u8, u8) = (100, 100, 145);
 
-// shared pane frame
+// `BORDER_LINE_WIDTH` sizes the shared pane frame.
 /// Cells one border line occupies, on one side of a pane.
 pub(super) const BORDER_LINE_WIDTH: u16 = 1;

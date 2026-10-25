@@ -9,6 +9,8 @@
 
 #[path = "../src/app.rs"]
 mod app;
+#[path = "../src/app_global_action.rs"]
+mod app_global_action;
 #[path = "../src/birth_stamp/mod.rs"]
 mod birth_stamp;
 #[path = "../src/capture.rs"]
@@ -21,8 +23,6 @@ mod cli;
 mod config;
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/globals.rs"]
-mod globals;
 #[path = "../src/hook.rs"]
 mod hook;
 #[path = "../src/interaction.rs"]

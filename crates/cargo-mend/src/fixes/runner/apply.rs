@@ -19,8 +19,8 @@ impl MendRunner<'_> {
         let compiler_fixable = planned.compiler_fixable;
         let fix_scans = planned.fix_scans();
         let applied_pub_use = fix_scans.pub_use.map_or(0, |scan| scan.applied);
-        // The subtree re-export pass wins every overlap, so its scanned fixes
-        // are the ones written.
+        // `fix_scans.subtree_reexports` wins every overlap in `Self::combined_fixes`, so its
+        // scanned fixes are the ones written.
         let applied_subtree_reexport = fix_scans
             .subtree_reexports
             .is_some_and(|scan| !scan.fixes.is_empty());
@@ -46,8 +46,8 @@ impl MendRunner<'_> {
             });
         }
 
-        // Recorded before the write, and into a snapshot the runner keeps for
-        // the whole invocation: an earlier pass's edits are already on disk and
+        // `self.session_snapshot.record` runs before the write, into a snapshot the runner keeps
+        // for the whole invocation: an earlier pass's edits are already on disk and
         // a rollback owes the user the tree they started with.
         self.session_snapshot
             .record(&fixes)

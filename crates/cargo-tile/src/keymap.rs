@@ -7,7 +7,7 @@
 //! `register_navigation` folds in the movement scope
 //! ([`SettingsNavigation`], which moves through the settings overlay),
 //! `register_globals` this app's own globals
-//! scope (empty in the template, see [`crate::globals`]),
+//! scope (empty in the template, see [`crate::app_global_action`]),
 //! `register_overlay` the overlay-local scope, and `register_pane`
 //! installs each app pane in the framework's pane registry.
 //! `keymap.toml`, when present, overrides any of it.
@@ -34,7 +34,7 @@ use tui_pane::SettingsNavigation;
 use tui_pane::TileGridPane;
 
 use crate::app::App;
-use crate::globals::AppGlobalAction;
+use crate::app_global_action::AppGlobalAction;
 
 const fn cargo_tile_framework_global_shortcut_visibility(
     action: GlobalAction,

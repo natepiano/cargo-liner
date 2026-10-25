@@ -8,6 +8,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use super::CycleClosingEdge;
 use super::DeferralOrigin;
 use super::EdgeDeclaration;
 use super::IntegrationConstraintProjection;
@@ -18,6 +19,8 @@ use super::IntegrationOrderingConstraint;
 use super::IntegrationReservationFacts;
 use super::IntegrationSubject;
 use super::MissingReadinessFact;
+use super::OrderingCycleRepairPlan;
+use super::OrderingDeclarationError;
 use super::OrderingEdge;
 use super::OrderingOverlapScopeSet;
 use super::OrderingReason;
@@ -76,6 +79,25 @@ struct OverriddenOverlap {
     scopes:    OrderingOverlapScopeSet,
 }
 
+/// Ordering work performed on the current test thread, counted at its execution sites.
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OrderingWork {
+    pub(crate) graph_replays: usize,
+    pub(crate) cycle_checks:  usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ORDERING_WORK: std::cell::Cell<OrderingWork> = const {
+        std::cell::Cell::new(OrderingWork { graph_replays: 0, cycle_checks: 0 })
+    };
+}
+
+/// Observe actual replay and whole-operation check counts without resetting other work.
+#[cfg(test)]
+pub(crate) fn ordering_work() -> OrderingWork { ORDERING_WORK.get() }
+
 /// Adjacency, unresolved deferrals, and override answers rebuilt from append-only facts.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OrderingGraph {
@@ -92,23 +114,85 @@ pub(crate) struct OrderingGraph {
 impl OrderingGraph {
     /// Rebuild vertices, unresolved deferrals, edges, and adjacency in append order.
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
+        #[cfg(test)]
+        ORDERING_WORK.update(|mut work| {
+            work.graph_replays += 1;
+            work
+        });
+        let graph = Self::replay_allowing_cycle(events)?;
+        if cycle::contains_cycle(&graph.adjacency) {
+            return Err(EdgeReplayError::Cycle);
+        }
+        Ok(graph)
+    }
+
+    /// Find the first cycle-closing edge still live after every journalled replacement.
+    /// Historical cycles already retired by a later fact require no further repair.
+    pub(crate) fn cycle_repair_plan(
+        events: &[JournalEvent],
+    ) -> Result<OrderingCycleRepairPlan, EdgeReplayError> {
+        let graph = Self::replay_allowing_cycle(events)?;
+        let mut adjacency: HashMap<ReservationId, Vec<ReservationId>> = HashMap::new();
+        for edge in graph.edges {
+            if cycle::would_create_cycle(&adjacency, edge.before, edge.after) {
+                return Ok(OrderingCycleRepairPlan::Retire(CycleClosingEdge {
+                    edge_id:              edge.edge_id,
+                    declaration_event_id: edge.declaration_event_id,
+                    predecessor:          edge.before,
+                    successor:            edge.after,
+                }));
+            }
+            adjacency.entry(edge.before).or_default().push(edge.after);
+        }
+        Ok(OrderingCycleRepairPlan::Acyclic)
+    }
+
+    fn replay_allowing_cycle(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
         let mut graph = Self::default();
         for event in events {
-            match &event.operation {
+            graph.apply_operation(&event.operation, event.event_id())?;
+        }
+        for edge in &graph.edges {
+            if !graph.vertices.contains(&edge.before) {
+                return Err(EdgeReplayError::UnknownEndpoint(edge.before));
+            }
+            if !graph.vertices.contains(&edge.after) {
+                return Err(EdgeReplayError::UnknownEndpoint(edge.after));
+            }
+        }
+        Ok(graph)
+    }
+
+    /// Check the graph after applying one complete declaration, including replacements.
+    pub(super) fn check_acyclic(&self) -> Result<(), OrderingDeclarationError> {
+        #[cfg(test)]
+        ORDERING_WORK.update(|mut work| {
+            work.cycle_checks += 1;
+            work
+        });
+        cycle::ensure_acyclic(&self.adjacency).map_err(OrderingDeclarationError::Cycle)
+    }
+
+    pub(super) fn apply_operation(
+        &mut self,
+        operation: &JournalOperation,
+        event_id: EventId,
+    ) -> Result<(), EdgeReplayError> {
+        match operation {
                 JournalOperation::Claim {
                     reservation_id,
                     authorization,
                     ..
                 } => {
-                    graph.add_vertex(*reservation_id);
-                    graph.apply_authorization(*reservation_id, authorization, event.event_id())?;
+                    self.add_vertex(*reservation_id);
+                    self.apply_authorization(*reservation_id, authorization, event_id)?;
                 },
                 JournalOperation::Widen {
                     reservation_id,
                     authorization,
                     ..
                 } => {
-                    graph.apply_authorization(*reservation_id, authorization, event.event_id())?;
+                    self.apply_authorization(*reservation_id, authorization, event_id)?;
                 },
                 JournalOperation::Answer {
                     reservation_id: Some(reservation_id),
@@ -116,10 +200,10 @@ impl OrderingGraph {
                     ..
                 } => {
                     for authorization in authorizations {
-                        graph.apply_authorization(
+                        self.apply_authorization(
                             *reservation_id,
                             authorization,
-                            event.event_id(),
+                            event_id,
                         )?;
                     }
                 },
@@ -129,13 +213,13 @@ impl OrderingGraph {
                     edge_id,
                     direction,
                     reason,
-                } => graph.apply_resolution(
+                } => self.apply_resolution(
                     *deferred_reservation_id,
                     *blocker_reservation_id,
                     *edge_id,
                     *direction,
                     reason.clone(),
-                    event.event_id(),
+                    event_id,
                 )?,
                 JournalOperation::Sequence {
                     predecessor,
@@ -143,15 +227,18 @@ impl OrderingGraph {
                     edge_id,
                     scopes,
                     reason,
-                } => graph.add_edge(OrderingEdge {
+                } => self.add_edge(OrderingEdge {
                     edge_id:              *edge_id,
                     before:               *predecessor,
                     after:                *successor,
                     scopes:               OrderingOverlapScopeSet(scopes.clone()),
                     reason:               reason.clone(),
-                    declaration_event_id: event.event_id(),
+                    declaration_event_id: event_id,
                     declaration:          EdgeDeclaration::Sequence,
                 })?,
+                JournalOperation::RetireCyclicOrderingEdge { edge } => {
+                    self.retire_cyclic_edge(edge)?;
+                },
                 JournalOperation::OverlapRefused { .. }
                 | JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
@@ -181,19 +268,7 @@ impl OrderingGraph {
                     ..
                 } => {},
             }
-        }
-        for edge in &graph.edges {
-            if !graph.vertices.contains(&edge.before) {
-                return Err(EdgeReplayError::UnknownEndpoint(edge.before));
-            }
-            if !graph.vertices.contains(&edge.after) {
-                return Err(EdgeReplayError::UnknownEndpoint(edge.after));
-            }
-        }
-        if cycle::contains_cycle(&graph.adjacency) {
-            return Err(EdgeReplayError::Cycle);
-        }
-        Ok(graph)
+        Ok(())
     }
 
     /// Return the number of durable ordering relationships.
@@ -338,9 +413,9 @@ impl OrderingGraph {
         if self.endpoint_pairs.contains(&(before, after)) {
             return Err(EdgeDeclarationRejection::Duplicate);
         }
-        if cycle::would_create_cycle(&self.adjacency, before, after) {
-            return Err(EdgeDeclarationRejection::Cycle);
-        }
+        let mut proposed = self.adjacency.clone();
+        proposed.entry(before).or_default().push(after);
+        cycle::ensure_acyclic(&proposed).map_err(EdgeDeclarationRejection::Cycle)?;
         let (scopes, declaration) =
             if let Some(resolution) = self.deferred_overlap_between(before, after)? {
                 (
@@ -725,19 +800,36 @@ impl OrderingGraph {
         replaced: &[ContradictedOrdering],
     ) -> Result<(), EdgeReplayError> {
         for contradicted_ordering in replaced {
-            let edge_id = contradicted_ordering.edge_id;
-            let index = self
-                .edges
-                .iter()
-                .position(|edge| edge.edge_id == edge_id)
-                .ok_or(EdgeReplayError::UnknownReplacedEdge(edge_id))?;
-            let edge = self.edges.remove(index);
-            self.endpoint_pairs.remove(&(edge.before, edge.after));
-            if let Some(successors) = self.adjacency.get_mut(&edge.before) {
-                successors.retain(|successor| *successor != edge.after);
-            }
+            self.remove_edge(contradicted_ordering.edge_id)?;
         }
         Ok(())
+    }
+
+    /// Remove one live relationship while retaining its non-recyclable edge identity.
+    fn remove_edge(&mut self, edge_id: EdgeId) -> Result<(), EdgeReplayError> {
+        let index = self
+            .edges
+            .iter()
+            .position(|edge| edge.edge_id == edge_id)
+            .ok_or(EdgeReplayError::UnknownReplacedEdge(edge_id))?;
+        let edge = self.edges.remove(index);
+        self.endpoint_pairs.remove(&(edge.before, edge.after));
+        if let Some(successors) = self.adjacency.get_mut(&edge.before) {
+            successors.retain(|successor| *successor != edge.after);
+        }
+        Ok(())
+    }
+
+    /// Bind a repair retirement to the exact journalled relationship it reviewed.
+    fn retire_cyclic_edge(&mut self, edge: &CycleClosingEdge) -> Result<(), EdgeReplayError> {
+        if !self.edges.iter().any(|existing| {
+            existing.edge_id == edge.edge_id
+                && existing.declaration_event_id == edge.declaration_event_id
+                && (existing.before, existing.after) == (edge.predecessor, edge.successor)
+        }) {
+            return Err(EdgeReplayError::UnknownReplacedEdge(edge.edge_id));
+        }
+        self.remove_edge(edge.edge_id)
     }
 
     fn add_edge(&mut self, edge: OrderingEdge) -> Result<(), EdgeReplayError> {
@@ -898,7 +990,7 @@ struct DeferredOverlapResolution {
 }
 
 /// A request to create an edge cannot be admitted to the current graph.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EdgeDeclarationRejection {
     /// At least one endpoint does not name a retained reservation.
     UnknownEndpoint(ReservationId),
@@ -907,7 +999,7 @@ pub(crate) enum EdgeDeclarationRejection {
     /// The exact directed relationship already exists.
     Duplicate,
     /// Adding the relationship would make the graph cyclic.
-    Cycle,
+    Cycle(super::OrderingCycle),
     /// An endpoint has ended and no pending deferral joins the two endpoints.
     TerminalEndpoint(ReservationId),
     /// Deferrals in both requester directions make the journal operation ambiguous.
@@ -922,7 +1014,9 @@ impl Display for EdgeDeclarationRejection {
             },
             Self::SameEndpoint => formatter.write_str("an ordering edge requires two reservations"),
             Self::Duplicate => formatter.write_str("that ordering edge already exists"),
-            Self::Cycle => formatter.write_str("that ordering edge would create a cycle"),
+            Self::Cycle(cycle) => {
+                write!(formatter, "that ordering edge would create cycle {cycle}")
+            },
             Self::TerminalEndpoint(reservation_id) => write!(
                 formatter,
                 "reservation {reservation_id} has ended, and no pending deferral joins it to the \
@@ -936,7 +1030,7 @@ impl Display for EdgeDeclarationRejection {
 }
 
 /// Journal facts cannot be reconstructed as a valid ordering graph.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum EdgeReplayError {
     /// A scope authorization did not match a live edge identity, direction and reason.
     InvalidExistingEdge(EdgeId),
@@ -964,6 +1058,8 @@ pub(crate) enum EdgeReplayError {
     UnknownEndpoint(ReservationId),
     /// A `--replace` answer retired an edge that was not live when it was recorded.
     UnknownReplacedEdge(EdgeId),
+    /// A repair could not bind a live edge to its original journal record.
+    MissingDeclaration(EventId),
 }
 
 impl Display for EdgeReplayError {
@@ -1003,6 +1099,10 @@ impl Display for EdgeReplayError {
             Self::UnknownReplacedEdge(edge_id) => write!(
                 formatter,
                 "replaced ordering edge {edge_id} is not a live edge"
+            ),
+            Self::MissingDeclaration(event_id) => write!(
+                formatter,
+                "ordering edge declaration {event_id} is absent from the journal"
             ),
         }
     }

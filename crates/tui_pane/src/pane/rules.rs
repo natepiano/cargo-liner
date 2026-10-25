@@ -28,7 +28,7 @@ pub fn rule_title_label(
     title: RuleTitle<'_>,
     connector_x: Option<u16>,
 ) -> Option<PaneFrameLabel> {
-    // The label carries its own space on each side, so it starts on the
+    // `PaneFrameLabel::text` carries a space on each side, so `label_x` starts on the
     // column before the title: right after the `┬` a vertical rule makes,
     // or two past the left end, where `├─` runs.
     let label_x = match connector_x {
@@ -50,7 +50,7 @@ pub fn rule_title_label(
 }
 
 fn fits_title(width: u16, title: &str) -> bool {
-    // Layout budget: "├─ " + title + " " + "┤" = title.width() + 5.
+    // `fits_title` budgets "├─ " + title + " " + "┤" = title.width() + 5.
     usize::from(width) >= title.width() + 5
 }
 
@@ -61,7 +61,8 @@ const fn connector_in_area(area: Rect, connector_x: u16) -> bool {
 }
 
 fn fits_title_after_connector(area: Rect, connector_x: u16, title: &str) -> bool {
-    // Space right of the connector: " Title ─...─┤" needs at least title.width() + 3 columns.
+    // `fits_title_after_connector` budgets space right of the connector:
+    // " Title ─...─┤" needs at least title.width() + 3 columns.
     let right_of_connector = area
         .x
         .saturating_add(area.width)

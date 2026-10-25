@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::symbols::line;
+use ratatui::symbols::line::VERTICAL;
+use ratatui::symbols::line::VERTICAL_LEFT;
+use ratatui::symbols::line::VERTICAL_RIGHT;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
@@ -45,10 +47,10 @@ pub(super) fn render_toast(
 
     let focused = focus == ToastFocus::PaneFocusedOn(toast.id());
     let toast_style = toast.style();
-    // Error and warning toasts keep the safety-pinned palette so they
-    // stay legible under any user theme. Plain (info) toasts mirror
-    // `default_pane_chrome` so their border and title match the
-    // framework pane chrome.
+    // `ToastStyle::Error` and `ToastStyle::Warning` keep the safety-pinned
+    // `fallback_toast_palette` so they stay legible under any user theme.
+    // Plain (info) `ToastStyle::Normal` toasts mirror `crate::default_pane_chrome`
+    // so their border and title match the framework pane chrome.
     let border_style = match toast_style {
         ToastStyle::Error => Style::default().fg(palette.error),
         ToastStyle::Success => Style::default().fg(palette.success),
@@ -178,16 +180,16 @@ fn join_adjacent_frame_columns(frame: &mut Frame, area: Rect, card: Rect) {
             && area.left() > frame_area.left()
         {
             let cell = &mut frame.buffer_mut()[(area.left() - 1, y)];
-            if cell.symbol() == line::VERTICAL_RIGHT {
-                cell.set_symbol(line::VERTICAL);
+            if cell.symbol() == VERTICAL_RIGHT {
+                cell.set_symbol(VERTICAL);
             }
         }
         if card.right().saturating_add(TOAST_SIDE_GAP) == area.right()
             && area.right() < frame_area.right()
         {
             let cell = &mut frame.buffer_mut()[(area.right(), y)];
-            if cell.symbol() == line::VERTICAL_LEFT {
-                cell.set_symbol(line::VERTICAL);
+            if cell.symbol() == VERTICAL_LEFT {
+                cell.set_symbol(VERTICAL);
             }
         }
     }

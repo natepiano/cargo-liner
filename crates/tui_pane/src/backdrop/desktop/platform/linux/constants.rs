@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
-// connection recovery
+// `DESKTOP_RETRY_INTERVAL` configures connection recovery.
 /// Failed desktop services retry slowly without creating traffic on every capture tick.
 pub(super) const DESKTOP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
-// desktop commands
+// `DESKTOP_READ_POLL_INTERVAL` and the constants after it configure desktop commands.
 /// Check subprocess completion promptly without spinning while a backend is busy.
 pub(super) const DESKTOP_READ_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Bound each stdout read so continuous output returns to the deadline check.
@@ -14,7 +14,7 @@ pub(super) const DESKTOP_STDOUT_CHUNK_BYTES: usize = 8192;
 /// Allow either desktop command five seconds to answer before terminating it.
 pub(super) const TOPOLOGY_READ_DEADLINE: Duration = Duration::from_secs(5);
 
-// desktop configuration
+// `DEFAULT_LOOK_AND_FEEL_PACKAGE` and the constants after it configure the desktop.
 pub(super) const DEFAULT_LOOK_AND_FEEL_PACKAGE: &str = "org.kde.breeze.desktop";
 pub(super) const DEFAULT_WALLPAPER_PACKAGE: &str = "Next";
 pub(super) const KDE_GLOBALS_FILE: &str = "kdeglobals";
@@ -24,7 +24,7 @@ pub(super) const XDG_CONFIG_DEFAULT: &str = ".config";
 pub(super) const XDG_DATA_DEFAULT: &str = ".local/share";
 pub(super) const XDG_DATA_DIRS_DEFAULT: &str = "/usr/local/share:/usr/share";
 
-// display composite
+// `COMPOSITE_ANSWER_DEADLINE` and the constants after it configure display compositing.
 /// How long `KWin` has to run a script and call back.
 ///
 /// Measured at well under a second for a stack of twenty-nine windows, so five seconds leaves room
@@ -80,7 +80,7 @@ workspace.stackingOrder.map(w => [
 ].join("\t")).join("\n")
 "#;
 
-// display topology
+// `DBUS_OWNER_CHANGED_SIGNAL` and the constants after it configure display topology.
 pub(super) const DBUS_OWNER_CHANGED_SIGNAL: &str = "NameOwnerChanged";
 pub(super) const DBUS_SERVICE: &str = "org.freedesktop.DBus";
 pub(super) const KSCREEN_CHANGE_SIGNAL: &str = "configChanged";
@@ -94,7 +94,7 @@ pub(super) const KSCREEN_SERVICE: &str = "org.kde.KScreen";
 /// Buffer layout and owner changes while a topology read is in progress.
 pub(super) const TOPOLOGY_SIGNAL_CAPACITY: usize = 64;
 
-// image selection
+// `ASPECT_RATIO_DISTANCE_WEIGHT` and the constants after it configure image selection.
 pub(super) const ASPECT_RATIO_DISTANCE_WEIGHT: f64 = 25_000.0;
 /// Plasma classifies a palette as dark below this `qGray` value.
 pub(super) const DARK_PALETTE_THRESHOLD: u32 = 192;
@@ -105,7 +105,7 @@ pub(super) const QGRAY_GREEN_WEIGHT: u32 = 16;
 pub(super) const QGRAY_RED_WEIGHT: u32 = 11;
 pub(super) const UPSCALE_DISTANCE_MULTIPLIER: f64 = 2.0;
 
-// KWin screenshots
+// `SCREENSHOT_DECORATION_OPTION` and the constants after it configure KWin screenshots.
 /// Capture the title bar and borders with the window, so what comes back covers the whole frame
 /// rather than the client area inside it.
 pub(super) const SCREENSHOT_DECORATION_OPTION: &str = "include-decoration";
@@ -129,7 +129,7 @@ pub(super) const SCREENSHOT_STRIDE_RESULT: &str = "stride";
 pub(super) const SCREENSHOT_WIDTH_RESULT: &str = "width";
 pub(super) const SCREENSHOT_WINDOW_METHOD: &str = "CaptureWindow";
 
-// KWin scripting
+// `KWIN_LOAD_SCRIPT_METHOD` and the constants after it configure KWin scripting.
 pub(super) const KWIN_LOAD_SCRIPT_METHOD: &str = "loadScript";
 pub(super) const KWIN_RUN_SCRIPT_METHOD: &str = "run";
 pub(super) const KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
@@ -139,13 +139,13 @@ pub(super) const KWIN_SCRIPT_INTERFACE: &str = "org.kde.kwin.Script";
 pub(super) const KWIN_SCRIPT_PATH_PREFIX: &str = "/Scripting/Script";
 pub(super) const KWIN_UNLOAD_SCRIPT_METHOD: &str = "unloadScript";
 
-// Plasma D-Bus
+// `IMAGE_PLUGIN` and the constants after it configure Plasma D-Bus calls.
 pub(super) const IMAGE_PLUGIN: &str = "org.kde.image";
 pub(super) const PLASMA_INTERFACE: &str = "org.kde.PlasmaShell";
 pub(super) const PLASMA_PATH: &str = "/PlasmaShell";
 pub(super) const PLASMA_SERVICE: &str = "org.kde.plasmashell";
 
-// terminal windows
+// `KDO_TOOL_ALL_MATCHES_ARGUMENT` and the constants after it configure terminal-window queries.
 /// The default getwindowid target is only the first match; the inventory needs every UUID.
 pub(super) const KDO_TOOL_ALL_MATCHES_ARGUMENT: &str = "%@";
 pub(super) const KDO_TOOL_ALL_WINDOWS_ARGUMENT: &str = "--name";

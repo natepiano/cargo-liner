@@ -17,6 +17,9 @@ mod git_configuration;
 #[path = "support/timing.rs"]
 mod timing;
 
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+
 #[path = "support/reanchoring_templates.rs"]
 mod reanchoring_templates;
 

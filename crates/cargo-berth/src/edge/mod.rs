@@ -1,6 +1,8 @@
 //! Durable ordering edges and the readiness they derive from a repository snapshot.
 
 mod cycle;
+mod cycle_repair;
+mod declaration;
 mod graph;
 mod snapshot;
 
@@ -10,10 +12,17 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::str::FromStr;
 
+pub(crate) use cycle::OrderingCycle;
+pub(crate) use cycle_repair::CycleClosingEdge;
+pub(crate) use cycle_repair::OrderingCycleRepairPlan;
+pub(crate) use declaration::CycleFreeOrderingOperation;
+pub(crate) use declaration::OrderingDeclarationError;
 pub(crate) use graph::EdgeDeclarationRejection;
 pub(crate) use graph::EdgeReplayError;
 pub(crate) use graph::OrderingGraph;
 pub(crate) use graph::PreparedOrderingEdge;
+#[cfg(test)]
+pub(crate) use graph::ordering_work;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;

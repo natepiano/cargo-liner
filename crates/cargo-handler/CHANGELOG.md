@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Tile summary demand explicitly reserves the rows required by its summary through `SummaryDemand`.
+- Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
+- Role columns fit the roles visible in their tile group. Short tiles keep the branch column when it fits. Fitted column sets share widths and age slots after optional columns drop; the summary also omits columns without values. A shell still running after its timer expires reads `running` in the Busy ink.
 - Tiles omit columns with no recorded values. Tiles with the same columns share their positions within a screen column; other tiles fit independently. Shell timers show the remaining time as digits, avoiding undersized pie glyphs. `thinking` and `running` draw in one green in every theme.
 - Shell rows show `running` or their timer in the status column, with `shell` only in the type column. Status inks retain readable glyph coverage. Session-name sorting in tiles and the summary ignores case, with original spelling breaking ties.
 - Footer role and account ink and status words remain readable on focused and unfocused tile backgrounds. Worker job labels skip worktree and director context; shortened labels omit whitespace before the ellipsis.

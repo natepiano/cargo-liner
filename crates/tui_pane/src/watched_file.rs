@@ -112,14 +112,14 @@ mod tests {
         let path = dir.path().join("watched.txt");
         write_synced_file(&path, "v0");
         let mut wf = WatchedFile::new(Some(path.clone()), "seed".to_string());
-        // No change yet.
+        // `wf.take_stamp_change()` sees no change yet.
         assert!(wf.take_stamp_change().is_none());
         std::thread::sleep(Duration::from_millis(20));
         write_synced_file(&path, "v1");
-        // First call after change returns the path and updates the
+        // `wf.take_stamp_change()` first returns the changed path and updates the
         // cached stamp.
         assert_eq!(wf.take_stamp_change(), Some(path.as_path()));
-        // Subsequent call sees the same stamp again.
+        // `wf.take_stamp_change()` sees the same stamp on the subsequent call.
         assert!(wf.take_stamp_change().is_none());
     }
 
@@ -130,8 +130,8 @@ mod tests {
         write_synced_file(&path, "before");
         let mut wf = WatchedFile::new(Some(path.clone()), "before".to_string());
         std::thread::sleep(Duration::from_millis(20));
-        // Caller writes the file itself and updates the stamp so
-        // the next take_stamp_change doesn't see its own write.
+        // `write_synced_file` performs the caller's own write and `wf.sync_stamp` updates the stamp
+        // so the next take_stamp_change doesn't see its own write.
         write_synced_file(&path, "self-written");
         wf.sync_stamp();
         assert!(wf.take_stamp_change().is_none());

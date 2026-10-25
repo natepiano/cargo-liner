@@ -78,9 +78,9 @@ fn resolves_to_module(
         } else if dir_mod.is_file() {
             module_file = Some(dir_mod);
         } else {
-            // No file backs this segment, so the remaining path can only exist
-            // as inline `mod` blocks or a `use` re-export inside the last
-            // file-backed module.
+            // `resolves_to_module` calls `declares_module` when no file backs this segment, so the
+            // remaining path can only exist as inline `mod` blocks or a `use` re-export
+            // inside the last file-backed module.
             let remainder = &absolute_segments[index..];
             return module_file.is_some_and(|module_file| {
                 declares_module(

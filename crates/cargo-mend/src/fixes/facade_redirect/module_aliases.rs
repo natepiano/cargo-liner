@@ -95,8 +95,9 @@ impl ModuleAliases {
 
     fn resolve_prefixes(&self, path: Vec<String>, last_segment: LastSegment) -> Vec<String> {
         let mut resolved = path;
-        // A binding whose target runs back through itself would loop, so the
-        // substitutions stop once each binding could have been used once.
+        // `ModuleAliases::resolve_prefixes` bounds substitutions by `self.targets.len()` because a
+        // binding whose target runs back through itself would loop, so the substitutions
+        // stop once each binding could have been used once.
         for _ in 0..=self.targets.len() {
             let longest = match last_segment {
                 LastSegment::Kept => resolved.len().saturating_sub(1),

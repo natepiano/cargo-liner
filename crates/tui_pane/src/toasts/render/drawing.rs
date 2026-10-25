@@ -10,6 +10,7 @@ use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
 use crate::constants::TOAST_ROW_GAP;
+use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastView;
@@ -129,7 +130,7 @@ impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
         let left = area
             .right()
             .saturating_sub(width)
-            .saturating_sub(crate::constants::TOAST_SIDE_GAP.saturating_mul(2))
+            .saturating_sub(TOAST_SIDE_GAP.saturating_mul(2))
             .max(area.x);
         for frame in frames {
             if frame.right() <= left
@@ -168,6 +169,8 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Style;
     use ratatui::symbols::line;
+    use ratatui::symbols::line::VERTICAL_LEFT;
+    use ratatui::symbols::line::VERTICAL_RIGHT;
     use ratatui::text::Line;
     use ratatui::widgets::Paragraph;
     use toml::Table;
@@ -673,8 +676,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 for row in area.top()..area.bottom() {
-                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
-                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(VERTICAL_LEFT);
                 }
                 Renderable::render(
                     &mut toasts,
@@ -719,8 +722,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 for row in area.top()..area.bottom() {
-                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
-                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(VERTICAL_LEFT);
                 }
                 Renderable::render(
                     &mut toasts,
@@ -897,10 +900,10 @@ mod tests {
 
     #[test]
     fn fallback_toast_palette_is_pinned_to_safe_defaults() {
-        // Locks the safety-pinned toast colors against drift. Plain
-        // (info) toast borders and titles read from the active theme
-        // (see `default_pane_chrome`); only the always-legible error
-        // and warning colors live here.
+        // Locks `fallback_toast_palette`'s safety-pinned colors against drift.
+        // Plain (info) `crate::toasts::ToastStyle::Normal` borders and titles
+        // read the active theme (see `crate::default_pane_chrome`); only the
+        // always-legible error and warning colors live here.
         let p = fallback_toast_palette();
         assert_eq!(p.accent, Color::Cyan);
         assert_eq!(p.error, Color::Red);

@@ -108,8 +108,8 @@ fn edit_owner_source(
         return Ok(RegionEdit::Unmatched(unmatched));
     }
 
-    // Two copies of one inline module under different `#[cfg]`s are two
-    // regions of the same module path.
+    // `regions` keeps two copies of one inline module under different `#[cfg]`s
+    // separate: they are two regions of the same module path.
     let mut regions: BTreeMap<Option<usize>, Vec<Located<'_, '_>>> = BTreeMap::new();
     for found in located {
         let key = found
@@ -154,15 +154,16 @@ fn edit_region(
         None => (0..source.len(), file_items),
     };
 
-    // Group the facts by the `use` item holding them, keyed by its start.
+    // `items` groups the facts by the `use` item holding them, keyed by its start.
     let mut items: BTreeMap<usize, Vec<&Located<'_, '_>>> = BTreeMap::new();
     for found in region {
         let (start, _) = facade_redirect::item_use_byte_range(lines, found.item_use);
         items.entry(start).or_default().push(found);
     }
 
-    // Blank the region's edited items and its nested inline modules, and
-    // everything outside the region, before looking for local uses.
+    // `excluded` identifies the region's edited items, its nested inline modules,
+    // and everything outside the region for `facade_redirect::word_occurs_outside`
+    // to blank before looking for local uses.
     let mut excluded = vec![0..region_range.start, region_range.end..source.len()];
     for group in items.values() {
         let (start, end) = facade_redirect::item_use_byte_range(lines, group[0].item_use);

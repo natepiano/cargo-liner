@@ -15,6 +15,13 @@ use std::process::Stdio;
 pub struct TestProcessGroup {
     group:   u32,
     process: Child,
+    cleanup: DescendantCleanup,
+}
+
+/// Whether group termination still belongs to this guard.
+enum DescendantCleanup {
+    Required,
+    Completed,
 }
 
 impl TestProcessGroup {
@@ -27,6 +34,7 @@ impl TestProcessGroup {
         Ok(Self {
             group:   child.id(),
             process: child,
+            cleanup: DescendantCleanup::Required,
         })
     }
 
@@ -60,6 +68,9 @@ impl TestProcessGroup {
     }
 
     fn signal_group(&mut self) {
+        if matches!(self.cleanup, DescendantCleanup::Completed) {
+            return;
+        }
         let signalled = Command::new("/bin/sh")
             .args([
                 "-c",
@@ -72,9 +83,12 @@ impl TestProcessGroup {
             .stderr(Stdio::null())
             .status();
         // An already exited group is normal after collecting its complete output.
-        if !matches!(signalled, Ok(status) if status.success())
-            && !matches!(self.process.try_wait(), Ok(Some(_)))
+        // Once termination is complete, Drop only has to reap the owned child.
+        if matches!(signalled, Ok(status) if status.success())
+            || matches!(self.process.try_wait(), Ok(Some(_)))
         {
+            self.cleanup = DescendantCleanup::Completed;
+        } else {
             eprintln!(
                 "could not signal test process group {}: {signalled:?}",
                 self.group

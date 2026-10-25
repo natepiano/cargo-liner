@@ -22,6 +22,8 @@ use cargo_berth_test_support::write_file;
 mod edges_templates;
 #[path = "support/linked_checkout.rs"]
 mod linked_checkout;
+#[path = "support/successor_templates.rs"]
+mod successor_templates;
 pub use edges_templates::COVER_LANDING;
 pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
 pub use edges_templates::CROSS_TARGET_PAIR;
@@ -860,7 +862,6 @@ struct RewrittenSuccessorFixture {
 
 struct SuccessorScaleFixture {
     repository:      TempDir,
-    _worktrees:      TempDir,
     successor_heads: Vec<String>,
 }
 
@@ -881,6 +882,141 @@ enum ObservedPredecessorLiveness {
     Unavailable,
     OrphanCandidate,
     Unknown,
+}
+
+/// Three independent holders whose scopes can be answered by one claim.
+struct CycleClaimFixture {
+    repository: TempDir,
+    worktrees:  Vec<TempDir>,
+    holders:    [String; 3],
+}
+
+fn cycle_claim_fixture() -> CycleClaimFixture {
+    let repository = initialized_repository();
+    let mut worktrees = Vec::new();
+    let mut holders = Vec::new();
+    for (name, run) in [("a", SECOND_RUN), ("b", THIRD_RUN), ("c", FOURTH_RUN)] {
+        let (directory, root) = foreign_worktree(&repository, name);
+        let path = format!("src/{name}.rs");
+        dirty_source(&root, &path);
+        let output = claim(&root, &format!("file:{path}"), run);
+        assert_success(&output);
+        holders.push(reservation_id(&output));
+        worktrees.push(directory);
+    }
+    CycleClaimFixture {
+        repository,
+        worktrees,
+        holders: holders.try_into().expect("three holders should be built"),
+    }
+}
+
+#[test]
+fn widening_claim_refuses_an_indirect_cycle_without_changing_the_journal() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    let subject = claim(root, "file:tests/base.rs", FIRST_RUN);
+    assert_success(&subject);
+    let subject = reservation_id(&subject);
+    assert_success(&sequence(root, &subject, b, "subject before B"));
+    assert_success(&sequence(root, b, a, "B before A"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "--reservation",
+            &subject,
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--after",
+            a,
+            "--before",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "order all three holders",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, &subject, b]);
+    drop(fixture.worktrees);
+}
+
+#[test]
+fn one_claim_checks_its_new_edges_together_before_appending() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    assert_success(&sequence(root, a, b, "A before B"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--before",
+            a,
+            "--after",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "check this answer as one set",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, b]);
+    drop(fixture.worktrees);
+}
+
+fn assert_cycle_claim_refused(root: &Path, output: &Output, before: &[u8], cycle: &[&str]) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "cycle-closing claim should be refused: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope = json(output);
+    assert_eq!(envelope["status"], "ordering_cycle");
+    assert_eq!(envelope["exit_code"], 2);
+    let message = envelope["message"]
+        .as_str()
+        .expect("refusal should explain the cycle");
+    let traversal = message
+        .strip_prefix("The requested ordering would create cycle ")
+        .and_then(|message| message.strip_suffix(". No ordering was recorded."))
+        .expect("refusal should name a complete cycle")
+        .split(" -> ")
+        .collect::<Vec<_>>();
+    assert_eq!(traversal.len(), 4, "three reservations close this cycle");
+    assert_eq!(traversal.first(), traversal.last(), "cycle must close");
+    let ring = &traversal[..traversal.len() - 1];
+    let start = ring
+        .iter()
+        .position(|reservation| *reservation == cycle[0])
+        .expect("cycle should contain its first expected reservation");
+    for (offset, reservation) in cycle.iter().enumerate() {
+        assert_eq!(
+            ring[(start + offset) % ring.len()],
+            *reservation,
+            "cycle reservations must follow directed edges: {message}"
+        );
+    }
+    assert_eq!(
+        fs::read(root.join(JOURNAL_PATH)).expect("journal should read"),
+        before
+    );
+    assert_success(&run_berth(root, &["board", "--json"]));
 }
 
 #[test]
@@ -1980,12 +2116,12 @@ fn unavailable_successor_comparison_is_retried_instead_of_cached() {
 
 #[test]
 fn successor_board_has_fixed_cold_cost() {
-    let one = successor_scale_fixture(1);
+    let one = successor_scale_fixture(successor_templates::ONE_SUCCESSOR);
     let one_cold = run_berth_with_git_trace(one.repository.path(), &["board", "--json"], "*");
     assert!(one_cold.output.status.success());
     let one_argv = git_trace(&one_cold);
 
-    let two = successor_scale_fixture(2);
+    let two = successor_scale_fixture(successor_templates::TWO_SUCCESSORS);
     let two_cold = run_berth_with_git_trace(two.repository.path(), &["board", "--json"], "*");
     assert!(two_cold.output.status.success());
     let two_argv = git_trace(&two_cold);
@@ -2005,7 +2141,7 @@ fn successor_board_has_fixed_cold_cost() {
 
 #[test]
 fn successor_round_robin_covers_every_head() {
-    let four = successor_scale_fixture(4);
+    let four = successor_scale_fixture(successor_templates::FOUR_SUCCESSORS);
     let mut latest_unavailable =
         run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
     assert!(latest_unavailable.output.status.success());
@@ -2516,164 +2652,19 @@ fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
     edges_templates::retain_release(fixture.repository.path(), &fixture.predecessor_id);
 }
 
-/// Start successor scale fixtures with the same tracked scope files, committed without hooks
-/// before any reservation exists.
-fn successor_scope_repository(successor_count: usize) -> TempDir {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
-    fs::create_dir_all(repository.path().join("successors"))
-        .expect("successor scope directory should exist");
-    for successor_index in 0..successor_count {
-        fs::write(
-            repository
-                .path()
-                .join(format!("successors/successor-{successor_index}.rs")),
-            format!("// reserved successor scope {successor_index}\n"),
-        )
-        .expect("successor scope source should write");
-    }
-    git(repository.path(), &["add", "successors"]);
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "successor reservation scopes",
-        ],
-    );
-    repository
-}
-
-fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
-    let repository = successor_scope_repository(successor_count);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    for index in 0..successor_count {
-        dirty_source(
-            &predecessor_root,
-            &format!("successors/successor-{index}.rs"),
-        );
-    }
-    let predecessor = claim(&predecessor_root, "tree:successors", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let predecessor_claim = last_journal_event(repository.path());
-    let protected_content = "pub fn protected_predecessor() {}\n";
-    // The placeholder dirt establishes overlap during claims, then must not block integration.
-    git(
-        &predecessor_root,
-        &["restore", "--worktree", "--", "successors"],
-    );
-    fs::create_dir_all(predecessor_root.join("successors"))
-        .expect("predecessor source directory should exist");
-    fs::write(
-        predecessor_root.join("successors/protected.rs"),
-        protected_content,
+fn successor_scale_fixture(
+    template: cargo_berth_test_support::LedgerTemplate,
+) -> SuccessorScaleFixture {
+    let repository = template.instantiate();
+    let successor_heads = serde_json::from_slice(
+        &fs::read(repository.path().join(".git/successor-heads.json"))
+            .expect("recorded successor heads should read"),
     )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "successors/protected.rs"]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "protected predecessor"],
-    );
-    assert!(
-        run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
-            .status
-            .success()
-    );
-    // Finish the predecessor before adding the scale population, so its commit hook and
-    // release do not repeatedly observe every successor during setup.
-    let mut successor_heads = Vec::new();
-    for successor_index in 0..successor_count {
-        let branch = format!("successor-{successor_index}");
-        let successor_root = add_worktree(repository.path(), worktrees.path(), &branch);
-        commit_successor_fixture_file(
-            &successor_root,
-            "successors/protected.rs",
-            protected_content,
-            &format!("successor {successor_index}"),
-        );
-        let head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
-        record_scale_successor(
-            repository.path(),
-            &successor_root,
-            &branch,
-            &head,
-            &predecessor_claim,
-        );
-        successor_heads.push(head);
-    }
-
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "merge",
-            "--quiet",
-            "predecessor",
-        ],
-    );
-
+    .expect("recorded successor heads should decode");
     SuccessorScaleFixture {
         repository,
-        _worktrees: worktrees,
         successor_heads,
     }
-}
-
-/// Replay setup for the scale tests: each live successor owns its file and one edge to the
-/// predecessor. Claim acquisition has separate command tests; these tests measure board reads.
-fn record_scale_successor(
-    root: &Path,
-    successor_root: &Path,
-    branch: &str,
-    head: &str,
-    predecessor: &serde_json::Value,
-) {
-    let previous = last_journal_event(root);
-    let mut event = predecessor.clone();
-    let worktree_id = uuid::Uuid::now_v7().to_string();
-    let administrative_directory = linked_worktree_administrative_directory(successor_root);
-    fs::write(
-        administrative_directory.join("cargo-berth-worktree-id"),
-        &worktree_id,
-    )
-    .expect("successor identity should write");
-    let scopes = serde_json::json!([{"path": format!("successors/{branch}.rs"), "kind": "file"}]);
-    event["actor"]["worktree"] = serde_json::json!(worktree_id);
-    event["actor"]["run"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
-    event["event_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
-    event["reservation_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
-    event["projection_generation"] = serde_json::json!(
-        previous["projection_generation"]
-            .as_u64()
-            .expect("generation should exist")
-            + 1
-    );
-    event["scopes"] = scopes.clone();
-    event["head_snapshot"] = serde_json::json!({
-        "kind": "branch", "full_ref": format!("refs/heads/{branch}"), "head": head,
-    });
-    event["phase_start_head"] = serde_json::json!(head);
-    event["worktree_root"] = serde_json::json!(successor_root);
-    event["worktree_administrative_locator"] = serde_json::json!(
-        linked_checkout::ResolvedLinkedAdministration::read(successor_root).locator()
-    );
-    event["authorization"] = serde_json::json!({
-        "kind": "sequence",
-        "overlaps": [{"reservation_id": predecessor["reservation_id"],
-                      "scope_revision": predecessor["scopes"], "scopes": scopes}],
-        "blocker": predecessor["reservation_id"],
-        "direction": "holder_before_requester",
-        "edge_id": uuid::Uuid::now_v7().to_string(),
-        "reason": "predecessor lands before this successor",
-    });
-    let mut journal = journal_text(root);
-    journal.push_str(&event.to_string());
-    journal.push('\n');
-    fs::write(root.join(JOURNAL_PATH), journal).expect("successor scale claim should append");
 }
 
 fn predecessor_scale_fixture(

@@ -1,9 +1,10 @@
-// application paths
+// `APP_NAME` identifies cargo-mend; `CONFIG_FILE_NAME` and `GLOBAL_CONFIG_FILE`
+// name its configuration files.
 pub(super) const APP_NAME: &str = "cargo-mend";
 pub(super) const CONFIG_FILE_NAME: &str = "mend.toml";
 pub(super) const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
-// global config
+// `CONFIG_VERSION` through `VISIBILITY_TABLE_KEY` define global configuration metadata and keys.
 /// Stamped into every global config so one-time migrations run once. Bump when a
 /// shipped default changes and the value already on disk must be rewritten.
 pub(super) const CONFIG_VERSION: i64 = 1;

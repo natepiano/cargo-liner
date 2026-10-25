@@ -84,7 +84,8 @@ fn analyze_function_import(
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
 ) -> Option<RawCandidate> {
-    // A `use` with a visibility is a re-export: other modules call the function
+    // `analyze_function_import` rejects `node.vis` other than `Visibility::Inherited`: a `use` with
+    // visibility is a re-export, and other modules call the function
     // as `this_module::function`. Rewriting it to re-export the module would
     // change that path (and fail outright when the module is private).
     if !matches!(node.vis, Visibility::Inherited) {

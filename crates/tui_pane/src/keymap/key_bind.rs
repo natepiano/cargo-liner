@@ -197,7 +197,7 @@ impl KeyBind {
             return self.display();
         }
         let key_name = key_name(self.code);
-        // Only a character key is engraved in capitals. `key_name` answers
+        // Only `KeyCode::Char` is engraved in capitals. `key_name` answers
         // with a word for every other code, and `Option-ESCAPE` is not how a
         // keyboard spells it.
         let key = match self.code {
@@ -231,8 +231,8 @@ impl KeyBind {
             KeyCode::Down => "↓",
             KeyCode::Left => "←",
             KeyCode::Right => "→",
-            // Compact "Esc" in the bar; the TOML form stays "escape"
-            // (via `display`), which the parser also round-trips.
+            // `KeyCode::Esc` renders as compact `Esc` in the bar; `KeyBind::display`
+            // keeps the TOML spelling `escape`, which the parser round-trips.
             KeyCode::Esc => "Esc",
             _ => return with_short_modifier_prefix(self.mods, &key_name(self.code)),
         };
@@ -735,8 +735,8 @@ mod tests {
 
     #[test]
     fn display_short_abbreviates_escape_but_display_keeps_full_form() {
-        // The bar shows the compact "Esc"; the keymap TOML keeps the
-        // full "escape" form, which the parser also round-trips.
+        // `KeyBind::display_short` shows compact `Esc`; `KeyBind::display` keeps
+        // the full TOML form `escape`, which `KeyBind::parse` round-trips.
         assert_eq!(KeyBind::from(KeyCode::Esc).display_short(), "Esc");
         assert_eq!(KeyBind::from(KeyCode::Esc).display(), "escape");
         assert_eq!(KeyBind::parse("Esc").unwrap(), KeyBind::from(KeyCode::Esc));

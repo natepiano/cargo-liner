@@ -172,7 +172,7 @@ fn exact_boundary_narrowing(
         return ExactBoundaryNarrowing::NotRequired;
     };
     match required.boundary() {
-        ReachBoundary::Module => ExactBoundaryNarrowing::Required,
+        ReachBoundary::Module(_) => ExactBoundaryNarrowing::Required,
         ReachBoundary::Everywhere | ReachBoundary::CrateRoot => ExactBoundaryNarrowing::NotRequired,
     }
 }
@@ -292,7 +292,7 @@ pub(super) fn classify_suspicious_pub(
     })
 }
 
-// Items at depth 1 (`crate::foo`) and depth 2 (`crate::foo::bar`) both map to
+// `resolve_module_location` maps items at depth 1 (`crate::foo`) and depth 2 (`crate::foo::bar`) to
 // `ShallowPrivate`. Depth 2 covers the common `src/<top>/<child>.rs` library
 // layout. Depth 3+ maps to `Nested`.
 pub(super) fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
@@ -590,13 +590,13 @@ pub(super) fn missing_facade_note(boundary_path: &str, item_def_path: &str) -> O
     // that sets `crate::a` beside `a::b` reads as two unrelated modules.
     let item_path = crate_rooted_def_path(item_def_path);
     let item_module = parent_scope_def_path(&item_path);
-    // Both halves of the note name the item, so a path rustc generated leaves
-    // nothing to say: `{use#0}` is not a spelling the reader can compare.
+    // `missing_facade_note` names the item in both halves of the note, so a path rustc generated
+    // leaves nothing to say: `{use#0}` is not a spelling the reader can compare.
     if is_synthetic_segment(last_def_path_segment(&item_path)) {
         return None;
     }
     (boundary_path != item_module).then(|| {
-        // Both halves of the gap are named as paths the reader can go and look
+        // `missing_facade_note` names both halves of the gap as paths the reader can go and look
         // at: the one callers are stuck writing, and the one a re-export would
         // give them. Saying it in the abstract -- "publishes the item at the
         // boundary" -- leaves them to work out both.
@@ -763,9 +763,10 @@ pub(in crate::compiler) fn classify_no_facade_callers(
     parent_scope: &str,
     callers: &BTreeSet<String>,
 ) -> NoFacadeVisibilityRepair {
-    // An empty scope has no callers outside it, so it never rules a repair out.
-    // `parent_scope` is empty for a crate-root item, whose callers all satisfy
-    // the `item_module` test above first.
+    // In `classify_no_facade_callers`, an empty scope has no outside callers,
+    // so it never excludes a repair. For a crate-root item, `parent_scope` is
+    // empty and every caller satisfies the `item_module` check first, yielding
+    // `NoFacadeVisibilityRepair::RemoveAnnotation`.
     if item_module.is_empty()
         || callers
             .iter()

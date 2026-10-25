@@ -77,6 +77,10 @@ use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 /// Overlap answers one [`JournalOperation::Answer`] recorded without acquiring a reservation.
 ///
@@ -958,7 +962,11 @@ impl RetainedReservationSet {
         let reservation_ids = self
             .reservations
             .iter()
-            .filter(|charged| charged.actor.has_coordination_identity(worktree, run))
+            .filter(|charged| {
+                #[cfg(test)]
+                test_work::record(Work::IncursionReservation);
+                charged.actor.has_coordination_identity(worktree, run)
+            })
             .map(|charged| charged.id)
             .collect::<HashSet<_>>();
         self.incursion_incidents
@@ -1084,6 +1092,7 @@ impl RetainedReservationSet {
             JournalOperation::OverlapRefused { .. }
             | JournalOperation::ResolveDefer { .. }
             | JournalOperation::Sequence { .. }
+            | JournalOperation::RetireCyclicOrderingEdge { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
             | JournalOperation::Bypass { .. } => Ok(()),
@@ -2068,8 +2077,6 @@ impl IncursionIncident {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-    use std::time::Instant;
 
     use serde_json::Error;
     use serde_json::Value;
@@ -3119,9 +3126,8 @@ mod tests {
     }
 
     #[test]
-    fn keyed_drift_coverage_of_thirteen_holders_is_under_250_ms()
+    fn keyed_drift_queries_reuse_thirteen_holders_scope_keys()
     -> Result<(), Box<dyn std::error::Error>> {
-        let started = Instant::now();
         let reservations = thirteen_mixed_scope_holders()?;
         let drift_coverage_probe = reservations.drift_coverage_probe(
             SECOND_WORKTREE_ID.parse()?,
@@ -3137,6 +3143,7 @@ mod tests {
                 .sum::<usize>(),
             4732
         );
+        let work = crate::test_work::WorkCounter::start();
         for index in 0..100 {
             let path = if index % 2 == 0 {
                 format!("mixed/scope-{index:03}")
@@ -3166,11 +3173,10 @@ mod tests {
                 DriftBlockingCoverage::Unclaimed
             ));
         }
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(250),
-            "indexed coverage took {elapsed:?}"
-        );
+        let counts = work.finish();
+        // 200 candidate keys and at most 1,300 reported overlap keys; held scopes stay indexed.
+        assert!(counts.scope_keys <= 1_500, "{counts:?}");
+        assert_eq!(counts.scope_comparisons, 0, "{counts:?}");
         Ok(())
     }
 
@@ -3207,9 +3213,7 @@ mod tests {
     }
 
     #[test]
-    fn drift_coverage_of_the_reported_shape_ends_well_under_a_second()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let started = Instant::now();
+    fn drift_queries_reuse_representative_scope_keys() -> Result<(), Box<dyn std::error::Error>> {
         let merge_scopes = (0..364)
             .map(|index| json!({"path": format!("merge/file-{index:03}.rs"), "kind": "file"}))
             .collect::<Vec<_>>();
@@ -3254,6 +3258,7 @@ mod tests {
             PathCase::Sensitive,
         );
         let representative_id = holder_ids[0].parse::<ReservationId>()?;
+        let work = crate::test_work::WorkCounter::start();
         for index in 0..100 {
             let inside = serde_json::from_value::<ReservationScopeSet>(json!([
                 {"path": format!("merge/file-{index:03}.rs"), "kind": "file"}
@@ -3274,11 +3279,10 @@ mod tests {
                 DriftBlockingCoverage::Unclaimed
             ));
         }
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "coverage took {elapsed:?}"
-        );
+        let counts = work.finish();
+        // Shared protection is indexed once, then each candidate and reported overlap once.
+        assert!(counts.scope_keys <= 300, "{counts:?}");
+        assert_eq!(counts.scope_comparisons, 0, "{counts:?}");
         Ok(())
     }
 
@@ -3737,7 +3741,7 @@ mod tests {
     }
 
     #[test]
-    fn incursion_observation_of_hundreds_of_incidents_is_under_250_ms()
+    fn incursion_observation_scans_reservations_once_for_hundreds_of_incidents()
     -> Result<(), Box<dyn std::error::Error>> {
         let reservations = hundreds_of_incursion_incidents()?;
         assert_eq!(reservations.reservations.len(), 600);
@@ -3755,9 +3759,8 @@ mod tests {
                 })
                 .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,
         )?;
-        let started = Instant::now();
+        let work = crate::test_work::WorkCounter::start();
         let observation = reservations.observe_incursion(entering, &observed);
-        let elapsed = started.elapsed();
         let IncursionObservation::AlreadyOutstanding {
             incident_id,
             blocked_paths,
@@ -3767,10 +3770,8 @@ mod tests {
         };
         assert_eq!(incident_id, reservations.incursion_incidents[599].id());
         assert_eq!(blocked_paths, observed);
-        assert!(
-            elapsed < Duration::from_millis(250),
-            "incursion observation took {elapsed:?}"
-        );
+        // The 64 paths share one identity scan across the 600 retained reservations.
+        assert_eq!(work.finish().incursion_reservations, 600);
         Ok(())
     }
 

@@ -1322,7 +1322,7 @@ mod tests {
         }
 
         fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure> {
-            // This fixture uses real reconciliation and BoardModel::build.
+            // `ReconciledFixtureSource::rebuild` uses real reconciliation and `BoardModel::build`.
             Ok(self
                 .fixture
                 .model()
@@ -1439,7 +1439,8 @@ mod tests {
             let position = source.current_position()?;
             assert!(matches!(position, JournalPosition::Undecodable { .. }));
             assert_ne!(position, application.journal_position);
-            // A movement check must leave the cache untouched until the rebuild.
+            // `source.current_position` must leave the cache at `projection_path`
+            // untouched until the rebuild.
             assert_eq!(fs::read_to_string(&projection_path)?, invalid_projection);
             application.refresh(&mut source);
             assert!(matches!(
@@ -1509,7 +1510,8 @@ mod tests {
         let mut application = BoardApplication::new(&initial)?;
         let mut terminal = Terminal::new(TestBackend::new(50, 8))?;
         let mut offsets = Vec::new();
-        // Start at valid offsets in the old documents, including panes that will shrink.
+        // Start `application.viewports` at valid offsets in the old `application.documents`,
+        // including panes that will shrink.
         for pane in BoardPaneId::ALL {
             assert_eq!(application.framework.focused(), &FocusedPane::App(pane));
             terminal.draw(|frame| draw(frame, &mut application))?;
@@ -1551,7 +1553,7 @@ mod tests {
             &FocusedPane::App(BoardPaneId::Reservations)
         );
         for (pane, old_vertical, old_horizontal) in offsets {
-            // Draw each pane at the same size, as when the user next visits it.
+            // Draw each `pane` with `terminal` at the same size, as when the user next visits it.
             while application.framework.focused() != &FocusedPane::App(pane) {
                 handle_key(
                     &mut application,

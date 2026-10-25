@@ -3176,6 +3176,40 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             )
     }
 
+    /// Destination allocations with enough rows for either endpoint of a move.
+    /// Source geometry is retained for the whole transition, so intermediate
+    /// heights cannot change a provider's measured visible slice.
+    pub(super) fn motion_preparation_allocations(
+        &self,
+        area: Rect,
+        growth: TileGrowth,
+    ) -> Vec<(TileContent<Id>, Rect)> {
+        let mut allocations = self.preparation_allocations(area, growth);
+        let destination = self.resolved_grid(area, &self.demand_measurement_held(), growth);
+        let destination_cells = cells(&self.slots);
+        for (content, allocation) in &mut allocations {
+            if let Some((_, index)) = destination_cells.iter().find(|(cell, _)| cell == content)
+                && let Some(rect) = destination.cell(*index)
+            {
+                allocation.height = allocation
+                    .height
+                    .max(draw::content_area(frame_inner(rect)).height);
+            }
+        }
+        if let GridMotion::Moving(transition) = &self.motion {
+            let source_cells = cells(&transition.from);
+            for (content, allocation) in &mut allocations {
+                if let Some((_, index)) = source_cells.iter().find(|(source, _)| source == content)
+                    && let Some(source) = transition.source.cell(*index)
+                {
+                    let source = draw::content_area(frame_inner(source));
+                    allocation.height = allocation.height.max(source.height);
+                }
+            }
+        }
+        allocations
+    }
+
     /// Destination state used to ask cells for their wrapped row demands.
     fn demand_measurement_held(&self) -> HeldCellLayout {
         let mut held = self.drawn_held();
@@ -12368,7 +12402,7 @@ mod tests {
     }
 
     /// Unused rows from the measured five-cell column at each considered height.
-    const fn measured_column_unused(index: usize, rows: u16, _purpose: RowUsePurpose) -> u16 {
+    const fn measured_column_unused(index: usize, rows: u16, _: RowUsePurpose) -> u16 {
         match (index, rows) {
             (0 | 2 | 3, 6) => 1,
             _ => 0,

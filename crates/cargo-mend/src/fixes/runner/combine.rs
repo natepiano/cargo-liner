@@ -24,8 +24,8 @@ impl MendRunner<'_> {
             .flat_map(|scan| scan.fixes.iter())
             .map(file_range)
             .collect();
-        // The deletion half of every imports-at-top move: the whole in-body
-        // `use` line. The insertion half is an empty range at the scope top,
+        // `moved_use_ranges` collects the deletion half of every imports-at-top move: the whole
+        // in-body `use` line. The insertion half is an empty range at the scope top,
         // so `start < end` keeps only the deletions.
         let moved_use_ranges: Vec<FileRange<'_>> = fix_scans
             .imports_at_top
@@ -35,7 +35,7 @@ impl MendRunner<'_> {
             .map(file_range)
             .collect();
 
-        // Each pass tags its fixes with the notice they report under here,
+        // `tag` pairs each pass's fixes with `FixKind` in `TaggedFix` here,
         // where the pass is still known. The tag stays on each fix through the
         // conflicting-group drop and through dedup, so what the run announces
         // is what it wrote rather than what it scanned.
@@ -73,15 +73,15 @@ impl MendRunner<'_> {
         if let Some(scan) = fix_scans.imports_at_top {
             fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
         }
-        // `pub_use` tallies its own applied and skipped edits at scan time and
+        // `FixScans::pub_use` tallies its own applied and skipped edits at scan time and
         // renders its own notice, so its fixes carry no kind and are counted
         // nowhere else.
         if let Some(scan) = fix_scans.pub_use {
             fixes.extend(tag(None, scan.fixes.iter()));
         }
 
-        // The subtree re-export pass wins every overlap: its owner edit, caller
-        // rewrites, and ancestor re-export compile only together, while a fix
+        // `fixes_clear_of_ranges` gives `FixScans::subtree_reexports` every overlap: its owner
+        // edit, caller rewrites, and ancestor re-export compile only together, while a fix
         // dropped from another pass is proposed again on the next convergence
         // pass.
         let mut fixes = fixes_clear_of_ranges(fixes, &subtree_reexport_ranges(fix_scans));

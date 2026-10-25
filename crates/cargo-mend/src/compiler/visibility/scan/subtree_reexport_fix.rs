@@ -156,6 +156,48 @@ struct InsertionAnchor {
     indent: String,
 }
 
+/// How a module occupies its source file, shared by insertion and removal planning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModulePlacement {
+    CrateRoot,
+    OutOfLine,
+    Inline,
+}
+
+impl ModulePlacement {
+    fn for_module(module: LocalDefId, item_span: Span, inner_span: Span) -> Self {
+        if module == CRATE_DEF_ID {
+            return Self::CrateRoot;
+        }
+        if item_span.contains(inner_span) {
+            Self::Inline
+        } else {
+            Self::OutOfLine
+        }
+    }
+
+    const fn form(self) -> ModuleForm {
+        match self {
+            Self::CrateRoot | Self::OutOfLine => ModuleForm::File,
+            Self::Inline => ModuleForm::Inline,
+        }
+    }
+
+    fn source_file(
+        self,
+        tcx: TyCtxt<'_>,
+        inner_span: Span,
+        crate_root_file: &Path,
+    ) -> Result<PathBuf, NoFixReason> {
+        match self {
+            Self::CrateRoot => Ok(crate_root_file.to_path_buf()),
+            Self::OutOfLine | Self::Inline => {
+                source::real_file_path(tcx, inner_span).ok_or(NoFixReason::Unresolved)
+            },
+        }
+    }
+}
+
 /// Decides whether `--fix` can rewrite `reexport`, and computes the rewrite.
 ///
 /// The target scope is the widest scope every caller of the item can sit in.
@@ -183,7 +225,8 @@ pub(super) fn classify(
     if matches!(reexport.path_walk, PathWalk::Interrupted) {
         return Err(NoFixReason::PathThroughEnumOrTrait);
     }
-    // A `use` in a function body is scoped to that body, not to the module.
+    // `classify` rejects a non-`DefKind::Mod` parent because a function-body `use`
+    // is scoped to that body, not the module.
     if tcx.def_kind(tcx.local_parent(reexport.item.owner_id.def_id)) != DefKind::Mod {
         return Err(NoFixReason::Unresolved);
     }
@@ -335,8 +378,8 @@ fn ancestor_reexport(
     crate_root_file: &Path,
 ) -> Result<StoredAncestorReexport, NoFixReason> {
     let use_visibility = tcx.local_visibility(reexport.item.owner_id.def_id);
-    // The owner module is not exported, so a crate-wide target scope already
-    // holds every caller.
+    // `ancestor_reexport` receives an unexported `reexport.owner_module`, so a
+    // crate-wide `target_scope` already holds every caller.
     let callers_inside_target_scope = target_scope == CRATE_DEF_ID
         || matches!(use_visibility, Visibility::Restricted(scope)
             if tcx.is_descendant_of(scope.to_def_id(), target_scope.to_def_id()));
@@ -514,12 +557,9 @@ fn insertion_anchor(
     module: LocalDefId,
     crate_root_file: &Path,
 ) -> Result<InsertionAnchor, NoFixReason> {
-    let (hir_module, _, _) = tcx.hir_get_module(LocalModId::new_unchecked(module));
-    let file = if module == CRATE_DEF_ID {
-        crate_root_file.to_path_buf()
-    } else {
-        source::real_file_path(tcx, hir_module.spans.inner_span).ok_or(NoFixReason::Unresolved)?
-    };
+    let (hir_module, item_span, _) = tcx.hir_get_module(LocalModId::new_unchecked(module));
+    let placement = ModulePlacement::for_module(module, item_span, hir_module.spans.inner_span);
+    let file = placement.source_file(tcx, hir_module.spans.inner_span, crate_root_file)?;
     let source_map = tcx.sess.source_map();
     let last_use = hir_module
         .item_ids
@@ -594,13 +634,53 @@ fn line_indent(source_map: &SourceMap, position: BytePos) -> Result<String, NoFi
 }
 
 fn module_form(tcx: TyCtxt<'_>, module: LocalDefId) -> ModuleForm {
-    if module == CRATE_DEF_ID {
-        return ModuleForm::File;
-    }
     let (hir_module, item_span, _) = tcx.hir_get_module(LocalModId::new_unchecked(module));
-    if item_span.contains(hir_module.spans.inner_span) {
-        ModuleForm::Inline
-    } else {
-        ModuleForm::File
+    ModulePlacement::for_module(module, item_span, hir_module.spans.inner_span).form()
+}
+
+#[cfg(test)]
+mod tests {
+    use rustc_span::BytePos;
+    use rustc_span::Span;
+    use rustc_span::def_id::CRATE_DEF_ID;
+    use rustc_span::def_id::DefId;
+    use rustc_span::def_id::DefIndex;
+    use rustc_span::def_id::LOCAL_CRATE;
+
+    use super::ModulePlacement;
+    use crate::reporting::ModuleForm;
+
+    #[test]
+    fn module_placement_distinguishes_root_inline_and_out_of_line() {
+        let item_span = Span::with_root_ctxt(BytePos(1), BytePos(10));
+        let inline_span = Span::with_root_ctxt(BytePos(2), BytePos(9));
+        let file_span = Span::with_root_ctxt(BytePos(20), BytePos(30));
+        let module = DefId {
+            krate: LOCAL_CRATE,
+            index: DefIndex::from_u32(1),
+        }
+        .as_local();
+
+        assert_eq!(
+            ModulePlacement::for_module(CRATE_DEF_ID, item_span, inline_span),
+            ModulePlacement::CrateRoot,
+        );
+        assert_eq!(
+            module.map(|module| ModulePlacement::for_module(module, item_span, inline_span)),
+            Some(ModulePlacement::Inline),
+        );
+        assert_eq!(
+            module.map(|module| ModulePlacement::for_module(module, item_span, file_span)),
+            Some(ModulePlacement::OutOfLine),
+        );
+        assert!(matches!(
+            ModulePlacement::CrateRoot.form(),
+            ModuleForm::File
+        ));
+        assert!(matches!(
+            ModulePlacement::OutOfLine.form(),
+            ModuleForm::File
+        ));
+        assert!(matches!(ModulePlacement::Inline.form(), ModuleForm::Inline));
     }
 }

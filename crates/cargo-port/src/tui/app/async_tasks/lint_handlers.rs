@@ -31,10 +31,11 @@ impl App {
         if !self.startup.lint_count.complete_once(now) {
             return;
         }
-        // All startup lint statuses collected — compute cache size once.
-        // `lint_count` is internal cardinality (the cached-status load), not
-        // a panel row; the lint *row* tracks `lint_phase`. The panel is
-        // closed by `maybe_complete_startup_ready`, not here.
+        // `App::maybe_complete_startup_lint_cache` calls `App::refresh_lint_cache_usage_from_disk`
+        // exactly once after all startup lint statuses are collected. `self.startup.lint_count` is
+        // internal cardinality (the cached-status load), not a panel row; the lint row tracks
+        // `self.startup.lint_phase`. `App::maybe_complete_startup_ready` closes the panel, not
+        // here.
         self.refresh_lint_cache_usage_from_disk();
         if let Some(scan_complete_at) = self.startup.scan_complete_at {
             tracing::trace!(
@@ -70,8 +71,9 @@ impl App {
             return;
         };
         let owner_abs = owner_path;
-        // Include `LintStatus::Waiting` in `status_is_terminal`, so `reload_lint_history` replaces
-        // a deferred run's in-flight row with the restored prior result.
+        // Include `LintStatus::Waiting` in `status_is_terminal`, so
+        // `App::reload_lint_history` replaces the deferred run's `lint::LintRunStatus::Running`
+        // history entry with its restored prior result.
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_)

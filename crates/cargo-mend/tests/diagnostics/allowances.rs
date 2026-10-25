@@ -2135,6 +2135,56 @@ edition = "2024"
 }
 
 #[test]
+fn wider_signature_with_nonmatching_facade_keeps_boundary_mismatch_advice() {
+    let temp = tempdir().expect("create nonmatching facade signature fixture dir");
+    write_allowance_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "wider_signature_nonmatching_facade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\npub use a::expose;\n"),
+            ("src/a.rs", "mod b;\npub use b::expose;\n"),
+            (
+                "src/a/b.rs",
+                // pub(self) is excluded from facade analysis; this has the same reach.
+                "mod c;\npub(in crate::a::b) use c::Target;\npub use c::expose;\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in crate::a) struct Target;\npub fn expose() -> Target { Target }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let target_finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::ForbiddenPubInCrate
+        })
+        .unwrap_or_else(|| panic!("missing nonmatching facade signature finding: {report:#?}"));
+    assert_eq!(
+        target_finding.headline,
+        "use of `pub(in crate::a)` does not match the parent facade boundary"
+    );
+    assert!(
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub`"),
+        "the mismatch must preserve the wider signature requirement: {report:#?}",
+    );
+}
+
+#[test]
 fn narrower_signature_exposure_keeps_the_facade_boundary_required() {
     let temp = tempdir().expect("create narrower exposure fixture dir");
     write_allowance_sources(
@@ -2875,10 +2925,11 @@ edition = "2024"
             .any(|line| line == "consider using: `pub(crate)`"),
         "the outer glob must widen the nested signature requirement to pub(crate): {report:#?}",
     );
-    // `pub(in crate::a)` is contained in `pub(crate)`, so writing the widened
-    // boundary keeps every name that already resolved. A use the caller pass did
-    // not see still compiles, which is what makes this an edit `--fix` applies
-    // rather than advice for a person. A retarget that narrows stays manual.
+    // `target_finding` can advertise an automatic widening: `pub(in crate::a)`
+    // is contained in `pub(crate)`, so the edit keeps every name that already
+    // resolved. A use the caller pass missed still compiles, which makes this
+    // an edit `--fix` applies rather than advice for a person. A retarget that
+    // narrows stays manual.
     assert!(
         target_finding
             .help
@@ -3135,9 +3186,9 @@ edition = "2024"
             .any(|line| line == "consider using: `pub`"),
         "the independent public glob must require bare pub: {report:#?}",
     );
-    // The control: `RestrictedCarrier` reaches only `crate::a`, so its field type
-    // declares exactly the reach its signature demands and stands as written. Only
-    // the independent public glob above pushes a target past `crate::a`.
+    // The control `RestrictedCarrier` reaches only `crate::a`, so `RestrictedTarget`
+    // declares exactly the reach the carrier's field signature demands and stands
+    // as written. Only the independent public glob for `Target` pushes `Target` past `crate::a`.
     assert!(
         report.findings.iter().all(|finding| {
             finding.path != "src/a/b/restricted/target.rs"
@@ -4251,12 +4302,13 @@ fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
                     && finding.line_start == line_start
             })
         };
-        // The reach each re-export contributes is read off whether the
-        // declaration is left alone. Lines 1 and 3 declare exactly the
-        // `crate::api` reach their carriers' public fields demand, so they stand;
-        // line 2 has no reach at all and must lose its annotation. Were the
-        // `pub(super)` sibling re-export to contribute nothing, line 1 would be
-        // told to remove its annotation too.
+        // `target_finding` checks re-export reach by whether each declaration stays:
+        // `RestrictedTarget` (line 1) and `UnrelatedTarget` (line 3) declare exactly
+        // the `crate::api` reach demanded by the public fields of `Carrier` and
+        // `UnrelatedCarrier`, so they stand. `PrivateTarget` (line 2) has no reach
+        // and must lose its annotation. If the `pub(super)` sibling re-export
+        // contributed nothing, `RestrictedTarget` would also be told to remove
+        // its annotation.
         assert!(
             target_finding(1).is_none(),
             "the restricted sibling re-export must contribute crate::api reach: {report:#?}",
@@ -5031,11 +5083,11 @@ pub fn require(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 }
 
-// An attribute argument is metadata, not a signature. `#[require(Target)]`
-// names a type in token position, and whether that type reaches public API
-// depends on what the macro expands to — which only the post-expansion HIR
-// knows. Bevy's real `#[require]` registers the named component from a function
-// body and never places it in a signature.
+// `Marker`'s `#[require(AttributeTarget)]` argument is metadata, not a signature.
+// `AttributeTarget` is named in token position; whether it reaches public API
+// depends on what `require` expands to, which only post-expansion HIR knows.
+// Bevy's real `#[require]` registers the named component from a function body
+// and never places it in a signature.
 #[test]
 fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature() {
     let temp = tempdir().expect("create attribute exposure fixture dir");
@@ -5051,9 +5103,9 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
             })
             .unwrap_or_else(|| panic!("missing overbroad_pub_crate finding at {path}: {report:#?}"))
     };
-    // The attribute-named target may keep an overbroad_pub_crate finding for an
-    // unrelated reason, or lose it entirely once the false exposure is gone.
-    // What must never appear is the claim that a public signature carries it.
+    // `AttributeTarget` may keep a `DiagnosticCode::OverbroadPubCrate` finding
+    // for an unrelated reason, or lose it entirely once the false exposure is gone.
+    // `claims_public_signature_exposure` must never claim a public signature carries it.
     let claims_public_signature_exposure = |path: &str| {
         report
             .findings

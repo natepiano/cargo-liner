@@ -199,7 +199,7 @@ fn restart_self<I: AppIdentity>() {
 
     #[cfg(unix)]
     {
-        // `exec` only returns on failure.
+        // `Command::exec` only returns on failure.
         let error = Command::new(&exe).args(&args).exec();
         eprintln!("{}: restart: {error}", I::BINARY_NAME);
     }

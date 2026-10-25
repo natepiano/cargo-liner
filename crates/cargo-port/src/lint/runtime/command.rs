@@ -357,10 +357,10 @@ pub(super) fn run_commands_for_project(
             return Ok(RunAttempt::Ended);
         },
         CommandsResult::Deferred => {
-            // The restored record is terminal, so the `RunFinalizeGuard` drop
-            // is a no-op. Its `started_at` predates this run, so another
-            // instance waiting on the run lock never adopts the deferral as a
-            // result.
+            // `read_write::restore_latest_under` restores a terminal record, so the
+            // `RunFinalizeGuard` drop is a no-op. Its `LintRun::started_at` predates
+            // this run, so another instance waiting on the run lock never adopts the
+            // deferral as a result.
             read_write::restore_latest_under(cache_root, project_root, prior_latest.as_deref())?;
             finalize.publish(LintStatus::Waiting);
             return Ok(RunAttempt::Deferred);
@@ -529,8 +529,9 @@ pub(super) fn publish_status(
         let key = paths::project_key(project_root);
         match status {
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::EnvUnavailable(_) => {
-                // A display status lacks the run's start. Hydrate the complete
-                // record from disk on the next cache read instead of assuming a start.
+                // `LintStatus::Passed`, `LintStatus::Failed` and `LintStatus::EnvUnavailable` lack
+                // the run's start. Remove the `statuses` entry so the next cache
+                // read hydrates the complete `LintRun` from disk instead of assuming a start.
                 statuses.remove(&key);
             },
             LintStatus::NoLog => {
@@ -913,7 +914,8 @@ mod tests {
         let latest = std::fs::read_to_string(latest_path).expect("read latest report");
         let history = std::fs::read_to_string(history_path).expect("read history report");
 
-        // `cmd`'s `echo` emits `\r\n`; normalize so the check is host-agnostic.
+        // `cmd`'s `echo` emits `\r\n`; `report.replace` normalizes them so the check is
+        // host-agnostic.
         assert_eq!(report.replace("\r\n", "\n"), "lint ok\n");
         assert!(latest.contains("\"status\": \"passed\""));
         assert!(history.contains("\"status\":\"passed\""));

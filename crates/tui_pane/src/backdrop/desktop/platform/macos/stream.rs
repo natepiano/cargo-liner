@@ -86,8 +86,8 @@ impl ScreenCaptureStream {
 
 impl Drop for ScreenCaptureStream {
     fn drop(&mut self) {
-        // stop_capture starts the stop eagerly; the future is dropped unawaited so a slow or wedged
-        // stop never blocks this thread.
+        // `AsyncSCStream::stop_capture` starts the stop eagerly; the future is dropped unawaited so
+        // a slow or wedged stop never blocks this thread.
         drop(self.stream.stop_capture());
     }
 }
@@ -172,10 +172,11 @@ fn open_stream(
     excluded_ids: &[u32],
     output_size: (u32, u32),
 ) -> Result<ScreenCaptureStream, ()> {
-    // Held until this returns, so stream opens across every capturing process (and this process's
-    // other displays) run one at a time -- simultaneous opens are what wedge a registration into a
-    // stream that confirms its start but never delivers a frame. Taken before the deadline starts,
-    // so time spent waiting for another open is not charged to this one.
+    // `_lock` is held until `open_stream` returns, so opens across every capturing process (and
+    // this process's other displays) run one at a time -- simultaneous opens are what wedge a
+    // registration into a stream that confirms its start but never delivers a frame. Taken
+    // before the deadline starts, so time spent waiting for another open is not charged to this
+    // one.
     let _lock = acquire_open_lock();
     let deadline = Instant::now() + OPEN_DEADLINE;
 
@@ -304,7 +305,7 @@ pub(super) fn capture_display_bgra(
     let streams = STREAMS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = streams.lock().unwrap_or_else(PoisonError::into_inner);
 
-    // A stream is reopened when there is none yet, when the windows it excludes or its output size
+    // `reopen` requests a new `DisplayStream` when none exists, when its exclusions or output size
     // no longer match what is asked for, or when the system has stopped it.
     let reopen = map.get(&display_id).is_none_or(|entry| {
         entry.excluded != excluded
@@ -331,16 +332,17 @@ pub(super) fn capture_display_bgra(
         );
     }
 
-    // Present by construction -- just inserted, or the pre-existing entry that did not reopen. The
-    // fallback keeps this lint-clean without an `expect`, and never triggers.
+    // `entry` is present by construction -- just inserted, or the pre-existing entry that did not
+    // reopen. The fallback keeps this lint-clean without an `expect`, and never triggers.
     let Some(entry) = map.get_mut(&display_id) else {
         return Err(CaptureFailure::DisplayCaptureFailed);
     };
 
-    // A freshly opened stream has delivered nothing yet, so its first pull is polled up to the
-    // first-frame deadline. `ScreenCaptureKit` only delivers a frame when the content changes (or
-    // at the capped rate), so a later pull over a static desktop returns nothing and the last good
-    // frame stands in -- keeping every attempt a success while a genuine change still refreshes it.
+    // A freshly opened `entry.stream` has delivered nothing yet, so its first pull is polled up to
+    // the `FIRST_FRAME_DEADLINE`. `ScreenCaptureKit` only delivers a frame when the content
+    // changes (or at the capped rate), so a later pull over a static desktop returns nothing
+    // and `entry.last` stands in -- keeping every attempt a success while a genuine change
+    // still refreshes it.
     let fresh = entry.last.is_none();
     let mut frame = try_frame(&entry.stream);
     if frame.is_none() && fresh {
@@ -354,8 +356,8 @@ pub(super) fn capture_display_bgra(
         entry.last = Some(new_frame);
     }
 
-    // The frame is cloned out of the guarded map into owned bytes, then the guard is dropped before
-    // returning -- the registry mutex is held no longer than the copy needs it.
+    // `captured` clones the frame out of the guarded `map` into owned bytes, then the guard is
+    // dropped before returning -- the registry mutex is held no longer than the copy needs it.
     let captured = entry
         .last
         .as_ref()

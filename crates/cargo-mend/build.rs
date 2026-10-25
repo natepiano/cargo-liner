@@ -13,11 +13,11 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 fn main() {
-    // Without these `rerun-if-changed` directives cargo treats build.rs as
+    // Without these `rerun-if-changed` directives from `main`, Cargo treats build.rs as
     // an opaque dependency-free script and reuses the previous run's env
-    // output. New commits then ship with stale `MEND_GIT_HASH` / driver
-    // build_id values — the binary works, but mend's findings cache is
-    // keyed on the build_id and silently reuses stale results.
+    // output. New commits then ship with stale `MEND_GIT_HASH` / `MEND_BUILD_ID`
+    // values — the binary works, but mend's findings cache is
+    // keyed on `MEND_BUILD_ID` and silently reuses stale results.
     // Resolved relative to the package root, which is `crates/cargo-mend/` in
     // this workspace — the git directory is two levels up.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
@@ -70,10 +70,10 @@ fn configure_unix_rpath() -> Result<(), String> {
     let target_lib_dir = sysroot.join("lib").join("rustlib").join(host).join("lib");
 
     // `librustc_driver` is NEEDED-linked against the bundled LLVM shared library,
-    // which lives in `<sysroot>/lib` — not in the rustlib lib dir that rustc adds
-    // to the link search path. Without this `-L`, the linker cannot resolve
+    // which lives in `rustc_lib_dir` (`<sysroot>/lib`), outside the rustlib library
+    // directory rustc searches. Without this `-L`, the linker cannot resolve
     // `-lLLVM-*` and the build fails with `cannot find -lLLVM-...`. The rpath
-    // below covers the runtime lookup; this covers link time.
+    // below covers runtime lookup; `configure_unix_rpath` emits this link-time search path.
     println!("cargo:rustc-link-search=native={}", rustc_lib_dir.display());
 
     println!(

@@ -82,11 +82,9 @@ use super::process_identity::RunId;
 use super::process_identity::TerminalIdentities;
 use super::process_identity::VisibleParent;
 use crate::birth_stamp;
-use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::LifetimeEvidence;
 #[cfg(test)]
 use crate::birth_stamp::ProcessLifetime;
-use crate::birth_stamp::Verification;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_JSON_FORMAT_PREFIX;
@@ -1705,13 +1703,41 @@ impl PartialEq for EndedInvocation {
     }
 }
 
+/// A live row carries lifetime evidence for its own process, independent of its owner.
+#[derive(Clone)]
+struct InvocationProcessRow {
+    process:  CargoProcess,
+    lifetime: LifetimeEvidence,
+}
+
+impl InvocationProcessRow {
+    fn observed(process: CargoProcess, census: &Census) -> Self {
+        let lifetime = census
+            .lifetimes
+            .get(&Pid::from_u32(process.pid))
+            .cloned()
+            .unwrap_or(LifetimeEvidence::Unavailable);
+        Self { process, lifetime }
+    }
+
+    fn refreshed(&self, process: CargoProcess, census: &Census) -> Self {
+        let mut next = Self::observed(process, census);
+        if next.process.pid == self.process.pid
+            && matches!(next.lifetime, LifetimeEvidence::Unavailable)
+        {
+            next.lifetime = self.lifetime.clone();
+        }
+        next
+    }
+}
+
 /// The only state machine that owns invocation presence, frozen rows and completion.
 enum InvocationState {
     Live {
-        rows: Vec<CargoProcess>,
+        row: InvocationProcessRow,
     },
     Missing {
-        rows:  Vec<CargoProcess>,
+        row:   InvocationProcessRow,
         since: ScanNumber,
     },
     Ended(EndedInvocation),
@@ -1720,7 +1746,7 @@ enum InvocationState {
 impl InvocationState {
     fn rows(&self) -> &[CargoProcess] {
         match self {
-            Self::Live { rows } | Self::Missing { rows, .. } => rows,
+            Self::Live { row } | Self::Missing { row, .. } => std::slice::from_ref(&row.process),
             Self::Ended(end) => end.rows(),
         }
     }
@@ -1734,7 +1760,6 @@ struct InvocationRecord {
     processes:    Vec<(Pid, KnownCommandProcess)>,
     ancestry:     KnownAncestry,
     presentation: InvocationPresentation,
-    lifetime:     LifetimeEvidence,
     cargo:        CargoReadiness,
 }
 
@@ -1942,22 +1967,13 @@ enum InvocationProbe {
 }
 
 impl InvocationProbe {
-    fn kernel(pid: Pid, identity: &InvocationId, evidence: &LifetimeEvidence) -> Self {
-        if let LifetimeEvidence::Available(previous) = evidence
+    fn kernel(row: &InvocationProcessRow) -> Self {
+        let pid = Pid::from_u32(row.process.pid);
+        if let LifetimeEvidence::Available(previous) = &row.lifetime
             && let LifetimeEvidence::Available(current) = birth_stamp::lifetime(pid.as_u32())
             && previous != &current
         {
             return Self::Ended;
-        }
-        if let InvocationId::Captured(run) = identity {
-            let observation = birth_stamp::observe(pid.as_u32());
-            if observation.compare(
-                pid.as_u32(),
-                &IdentityEvidence::Available(run.birth.clone()),
-            ) == Verification::Ended
-            {
-                return Self::Ended;
-            }
         }
         if process_identity::ProvenProcessEnd::probe(pid).is_ok() {
             return Self::Ended;
@@ -1988,12 +2004,6 @@ impl InvocationProbe {
             {
                 return Self::Ended;
             }
-        }
-        if let InvocationId::Process(ProcessIdentity::Known { lifetime, .. }) = identity
-            && let LifetimeEvidence::Available(current) = birth_stamp::lifetime(pid.as_u32())
-            && lifetime != &current
-        {
-            return Self::Ended;
         }
         Self::Uncertain
     }
@@ -2063,9 +2073,13 @@ impl Invocations {
             VisibleParent::Ancestor(_) | VisibleParent::None => Membership::Lead,
         };
         if let Some(record) = self.records.get_mut(&id) {
-            if !matches!(record.state, InvocationState::Ended(_)) {
+            if let InvocationState::Live { row: previous }
+            | InvocationState::Missing { row: previous, .. } = &record.state
+            {
                 record.cargo = CargoReadiness::of(&row, census, capture);
-                record.state = InvocationState::Live { rows: vec![row] };
+                record.state = InvocationState::Live {
+                    row: previous.refreshed(row, census),
+                };
             }
         } else if let Some(node) = tree
             .nodes
@@ -2078,7 +2092,7 @@ impl Invocations {
                     owner: node.invocation.clone(),
                     membership,
                     state: InvocationState::Live {
-                        rows: vec![row.clone()],
+                        row: InvocationProcessRow::observed(row.clone(), census),
                     },
                     processes: Vec::new(),
                     ancestry: KnownAncestry {
@@ -2087,11 +2101,6 @@ impl Invocations {
                         walk:      AncestryWalk::Ended(Vec::new()),
                     },
                     presentation: InvocationPresentation::default(),
-                    lifetime: census
-                        .lifetimes
-                        .get(&Pid::from_u32(row.pid))
-                        .cloned()
-                        .unwrap_or(LifetimeEvidence::Unavailable),
                     cargo: CargoReadiness::of(&row, census, capture),
                 },
             );
@@ -2105,7 +2114,7 @@ impl Invocations {
         groups: Vec<CargoGroup>,
         capture: &Capture,
         now: Instant,
-        mut probe: impl FnMut(Pid, &InvocationId, &LifetimeEvidence) -> InvocationProbe,
+        mut probe: impl FnMut(&InvocationProcessRow) -> InvocationProbe,
     ) -> PublishedInvocations {
         let mut observed = HashSet::new();
         let mut ancestry = HashMap::new();
@@ -2138,46 +2147,36 @@ impl Invocations {
                 record.ancestry.walk = walk;
             }
             record.processes = process_evidence.remove(id).unwrap_or_default();
-            if let Some(row) = record.state.rows().first()
-                && let Some(evidence @ LifetimeEvidence::Available(_)) =
-                    census.lifetimes.get(&Pid::from_u32(row.pid))
-            {
-                record.lifetime = evidence.clone();
-            }
             if observed.contains(id) {
                 continue;
             }
-            let rows = record.state.rows().to_vec();
-            let Some(row) = rows.first() else {
-                continue;
+            let (row, since) = match &record.state {
+                InvocationState::Live { row } => (row.clone(), self.scan),
+                InvocationState::Missing { row, since } => (row.clone(), *since),
+                InvocationState::Ended(_) => continue,
             };
-            let pid = Pid::from_u32(row.pid);
+            let pid = Pid::from_u32(row.process.pid);
             let replaced = census.identities.get(&pid).is_some_and(|new| {
                 new != id && !record.processes.iter().any(|(_, p)| &p.native == new)
             });
             let registration_gone =
                 matches!(id, InvocationId::Captured(run) if !registered.contains(&run.shim_pid));
-            let since = match record.state {
-                InvocationState::Missing { since, .. } => since,
-                InvocationState::Live { .. } => self.scan,
-                InvocationState::Ended(_) => continue,
-            };
             if replaced
                 || registration_gone
-                || matches!(probe(pid, id, &record.lifetime), InvocationProbe::Ended)
+                || matches!(probe(&row), InvocationProbe::Ended)
                 || self.scan.0.saturating_sub(since.0) >= MISSING_SCAN_LIMIT
             {
                 probe::invocation_ended(id, now);
                 self.terminal.end(pid, id);
                 record.state = InvocationState::Ended(EndedInvocation {
                     id:           record.owner.identity.clone(),
-                    rows:         rows.into(),
+                    rows:         vec![row.process].into(),
                     at:           now,
                     presentation: record.presentation.clone(),
                     published:    self.scan,
                 });
             } else {
-                record.state = InvocationState::Missing { rows, since };
+                record.state = InvocationState::Missing { row, since };
             }
         }
         self.reconcile_memberships(tree);
@@ -5031,7 +5030,7 @@ impl CensusSequence {
         capture: &Capture,
         now: Instant,
     ) {
-        self.publish_fixture(records, capture, now, |_, _, _| InvocationProbe::Uncertain);
+        self.publish_fixture(records, capture, now, |_| InvocationProbe::Uncertain);
     }
 
     /// Exercise the production absence probe with a real process or confirmed exit.
@@ -5044,7 +5043,7 @@ impl CensusSequence {
         records: &ProcessObservations<'_>,
         capture: &Capture,
         now: Instant,
-        probe: impl FnMut(Pid, &InvocationId, &LifetimeEvidence) -> InvocationProbe,
+        probe: impl FnMut(&InvocationProcessRow) -> InvocationProbe,
     ) {
         let mut census = Census::take(records.records.values());
         census.identities = self.fixture_identities.observe(&census.lifetimes);
@@ -5152,7 +5151,7 @@ impl CensusSequence {
             groups.clone(),
             capture,
             Instant::now(),
-            |_, _, _| InvocationProbe::Uncertain,
+            |_| InvocationProbe::Uncertain,
         );
         groups
     }
@@ -5203,7 +5202,7 @@ impl CensusSequence {
             groups.clone(),
             capture,
             Instant::now(),
-            |_, _, _| InvocationProbe::Uncertain,
+            |_| InvocationProbe::Uncertain,
         );
         groups
     }
@@ -5285,6 +5284,28 @@ mod tests {
     use crate::root_scan::RootOwner;
     use crate::roster::FamilyHead;
     use crate::tiles::TileContent;
+
+    #[test]
+    fn a_forwarded_process_is_not_ended_by_its_owners_birth() {
+        let pid = Pid::from_u32(std::process::id());
+        let lifetime = birth_stamp::lifetime(pid.as_u32());
+        assert!(matches!(lifetime, LifetimeEvidence::Available(_)));
+        let owner = InvocationId::Process(ProcessIdentity::Known {
+            pid:      pid.as_u32().saturating_add(1),
+            lifetime: ProcessLifetime::for_test(1),
+        });
+        let argv = [OsString::from("cargo"), OsString::from("build")];
+        let observation = ProcessObservation::cargo(pid.as_u32(), &argv).with_lifetime(lifetime);
+        let census = Census::take([&observation]);
+        let mut process = directory_row();
+        process.pid = pid.as_u32();
+        process.invocation_id = owner;
+        let row = InvocationProcessRow::observed(process, &census);
+        assert!(matches!(
+            InvocationProbe::kernel(&row),
+            InvocationProbe::Uncertain
+        ));
+    }
 
     /// Reap the metadata fixture even if an assertion fails before its exec transition.
     struct MetadataProcess {

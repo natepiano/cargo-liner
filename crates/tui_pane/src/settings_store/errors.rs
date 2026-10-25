@@ -289,7 +289,8 @@ mod tests {
     fn save_removes_legacy_default_timeout_and_task_linger_keys() {
         let dir = TempDir::new().expect("create temp settings dir");
         let path = dir.path().join("migrate.toml");
-        // Seed an on-disk settings file carrying the legacy keys.
+        // `std::fs::write` seeds the settings file's `[toasts]` table with the
+        // legacy keys `default_timeout` and `task_linger`.
         std::fs::write(
             &path,
             "[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
@@ -302,8 +303,8 @@ mod tests {
         )
         .expect("load settings");
 
-        // Re-save and confirm legacy keys are gone and new keys
-        // are written in their place.
+        // `ToastSettings::write_to_table` and `SettingsStore::save` re-save the file;
+        // confirm legacy keys are gone and new keys are written in their place.
         loaded
             .toast_settings
             .write_to_table(loaded.store.table_mut());

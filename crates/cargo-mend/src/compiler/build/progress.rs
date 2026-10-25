@@ -5,6 +5,7 @@ use std::fmt::Formatter;
 use std::io;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -42,8 +43,18 @@ pub(super) trait ProgressDisplay {
 /// counter covers mend's work as well as the compiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct UnitCounter {
-    pub(super) done:  usize,
-    pub(super) total: usize,
+    done:  usize,
+    total: NonZeroUsize,
+}
+
+impl UnitCounter {
+    /// Returns no counter when Cargo reports a zero-total build plan.
+    pub(super) const fn new(done: usize, total: usize) -> Option<Self> {
+        let Some(total) = NonZeroUsize::new(total) else {
+            return None;
+        };
+        Some(Self { done, total })
+    }
 }
 
 /// Whether the status line is drawn, read from cargo's own
@@ -234,14 +245,11 @@ impl ProgressWhen {
 /// is also the shape `cargo tile` reads a captured run's progress out of.
 impl Display for UnitCounter {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        let filled = PROGRESS_BAR_WIDTH
-            .saturating_mul(self.done)
-            .checked_div(self.total)
-            .unwrap_or(0)
+        let filled = (PROGRESS_BAR_WIDTH.saturating_mul(self.done) / self.total.get())
             .min(PROGRESS_BAR_WIDTH);
         let head = match filled {
             0 => "",
-            _ if self.done >= self.total => PROGRESS_BAR_FILL,
+            _ if self.done >= self.total.get() => PROGRESS_BAR_FILL,
             _ => PROGRESS_BAR_HEAD,
         };
         write!(
@@ -298,6 +306,10 @@ fn progress_line_width(message: &str) -> usize { progress_frame(message, 0).char
 fn clear_progress_line(width: usize) -> String { format!("\r{}\r", " ".repeat(width)) }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::UnitCounter;
     use super::analyzing_status;
@@ -336,8 +348,18 @@ mod tests {
     }
 
     #[test]
+    fn unit_counter_rejects_a_zero_total() {
+        assert_eq!(UnitCounter::new(0, 0), None);
+        assert_eq!(UnitCounter::new(1, 0), None);
+    }
+
+    #[test]
     fn unit_counter_draws_cargos_bar_at_a_fixed_width() {
-        let counter = |done, total| UnitCounter { done, total }.to_string();
+        let counter = |done, total| {
+            UnitCounter::new(done, total)
+                .expect("nonzero total")
+                .to_string()
+        };
         let half = PROGRESS_BAR_WIDTH / 2;
 
         assert_eq!(
@@ -365,10 +387,7 @@ mod tests {
         let status = analyzing_status(
             &["cargo_mend".to_string()],
             "analyzing",
-            Some(UnitCounter {
-                done:  149,
-                total: 403,
-            }),
+            Some(UnitCounter::new(149, 403).expect("nonzero total")),
         );
 
         assert!(status.starts_with('['));

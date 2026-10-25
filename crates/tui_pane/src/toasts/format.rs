@@ -28,11 +28,11 @@ fn format_single(item: &str, max_width: usize) -> String {
     if width <= max_width {
         return item.to_string();
     }
-    // Fits on two lines?
+    // Does `width` fit within `max_width * 2`?
     if width <= max_width * 2 {
         return item.to_string();
     }
-    // Truncate to two lines worth, with ellipsis on the second.
+    // `truncate_to_width` limits `item` to two lines, with `ELLIPSIS` on the second.
     let target = max_width * 2 - ELLIPSIS_WIDTH;
     truncate_to_width(item, target, true)
 }
@@ -70,17 +70,17 @@ fn truncate_ellipsis(text: &str, max_width: usize) -> String {
 /// Returns `"text suffix"` if it fits, otherwise `"tex… suffix"`.
 fn truncate_with_suffix(text: &str, suffix: &str, max_width: usize) -> String {
     let suffix_width = UnicodeWidthStr::width(suffix);
-    let gap = 1; // space between text and suffix
+    let gap = 1; // `gap` reserves the space between `text` and `suffix`.
     let full_width = UnicodeWidthStr::width(text) + gap + suffix_width;
 
     if full_width <= max_width {
         return format!("{text} {suffix}");
     }
 
-    // How much room is left for text (+ ellipsis)?
+    // `text_budget` leaves room for `text` plus ellipsis after `suffix` and `gap`.
     let text_budget = max_width.saturating_sub(suffix_width + gap + ELLIPSIS_WIDTH);
     if text_budget == 0 {
-        // Suffix alone fills the line.
+        // `suffix` alone fills `max_width`.
         return suffix.to_string();
     }
 
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn single_item_wraps_to_two_lines() {
-        // 70 chars, fits in 2 × 58 = 116
+        // `long` fits in two lines of `width()`: 70 chars in 2 × 58 = 116.
         let long = "~/rust/this-is-a-very-long-project-name-that-exceeds-the-toast-width";
         let result = format_toast_items(&[long], width());
         assert_eq!(result, long);

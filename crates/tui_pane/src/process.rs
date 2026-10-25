@@ -31,10 +31,10 @@ use sysinfo::Pid;
 pub fn kernel_parent(pid: Pid) -> Option<Pid> {
     let size = i32::try_from(std::mem::size_of::<libc::proc_bsdshortinfo>()).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
-    // SAFETY: `proc_pidinfo` writes at most the byte count it is handed,
-    // and that count is the size of the very struct the pointer is to.
-    // It answers how many bytes it wrote, and the read below is claimed
-    // only on the whole struct having been written.
+    // SAFETY: `libc::proc_pidinfo` writes at most `size` bytes into `info`,
+    // which has space for one `libc::proc_bsdshortinfo` of that size.
+    // Its result `written` is checked against `size` before `info.assume_init()`
+    // reads the fully initialized struct.
     let written = unsafe {
         libc::proc_pidinfo(
             i32::try_from(pid.as_u32()).ok()?,
@@ -47,7 +47,7 @@ pub fn kernel_parent(pid: Pid) -> Option<Pid> {
     if written != size {
         return None;
     }
-    // SAFETY: the call above reported writing the whole struct.
+    // SAFETY: `libc::proc_pidinfo` reported writing all `size` bytes into `info`.
     let parent = unsafe { info.assume_init() }.pbsi_ppid;
     (parent > 0).then(|| Pid::from_u32(parent))
 }

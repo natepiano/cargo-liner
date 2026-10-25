@@ -72,6 +72,7 @@ fn annotation_form_and_byte_len(text: &str) -> Option<(VisibilityAnnotationForm,
     let rest = text.strip_prefix("pub")?;
     match rest.chars().next() {
         Some('(') => {
+            // `annotation_form_and_byte_len` uses `rest.find(')')` because
             // `pub(in crate::foo)` may contain colons and identifiers but never
             // nested parens, so the first `)` closes the annotation.
             let close = rest.find(')')?;
@@ -178,8 +179,9 @@ mod tests {
 
     #[test]
     fn unterminated_restricted_annotation_has_no_site() {
-        // A `pub(\n    in crate::a\n)` annotation reaches this parser as the
-        // first physical line only; half of it is not a fixable span.
+        // A `pub(\n    in crate::a\n)` annotation reaches
+        // `annotation_form_and_byte_len` as the first physical line only; half of
+        // it is not a fixable span.
         let source = "pub(\n    in crate::a\n) fn wide() {}\n";
         assert_eq!(VisibilityAnnotationSite::locate(source, 1, 1), None);
     }

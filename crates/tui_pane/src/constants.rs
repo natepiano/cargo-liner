@@ -58,7 +58,7 @@ pub const SECTION_HEADER_INDENT: &str = " ";
 /// Indent for the items under a popup section header.
 pub const SECTION_ITEM_INDENT: &str = " ";
 
-// tui_pane src activity
+// `ACTIVITY_SPINNER` uses `ACTIVITY_SPINNER_FRAMES` for framework activity.
 /// Default framework activity-spinner cycle.
 pub const ACTIVITY_SPINNER: FrameCycle =
     FrameCycle::new(ACTIVITY_SPINNER_FRAMES, Duration::from_millis(1200));

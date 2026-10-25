@@ -20,6 +20,7 @@ use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::hierarchy::HierarchyError;
+use crate::footer_colors;
 use crate::footer_colors::FooterTint;
 use crate::footer_colors::constants::MINIMUM_CONTRAST;
 use crate::footer_colors::tests;
@@ -193,8 +194,14 @@ fn accounts_table_measured_demand_draws_both_tables_source_order_and_local_reset
     assert!(!joined.contains("/private/account-home"), "{joined}");
     assert_eq!(
         buffer[at(&buffer, "weekly left")].fg,
-        buffer[at(&buffer, "status")].fg,
+        buffer[at(&buffer, "session")].fg,
         "both tables share the header style"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.split_whitespace().any(|word| word == "status")),
+        "{joined}"
     );
 }
 
@@ -251,9 +258,12 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
     let buffer = drawn(&AccountsTable::Ready(reading()));
     assert_eq!(buffer[at(&buffer, "codex2")].fg, Color::Indexed(208));
     assert_eq!(buffer[at(&buffer, "claude1")].fg, Color::LightCyan);
-    assert_eq!(buffer[at(&buffer, "10%")].fg, Color::Red);
-    assert_eq!(buffer[at(&buffer, "9%")].fg, Color::Red);
-    assert_ne!(buffer[at(&buffer, "10.1%")].fg, Color::Red);
+    let low_quota = footer_colors::readable_status_style(Style::default().fg(Color::Red))
+        .fg
+        .expect("low-quota foreground");
+    assert_eq!(buffer[at(&buffer, "10%")].fg, low_quota);
+    assert_eq!(buffer[at(&buffer, "9%")].fg, low_quota);
+    assert_ne!(buffer[at(&buffer, "10.1%")].fg, low_quota);
     assert!(
         buffer[at(&buffer, "unlimited")]
             .modifier
@@ -318,6 +328,60 @@ fn accounts_table_threshold_footer_credits_staleness_and_unavailable_cells_draw_
             .modifier
             .contains(Modifier::DIM)
     );
+}
+
+#[test]
+fn zero_weekly_quota_remains_readable_on_every_drawn_theme_ground() {
+    let previous = tui_pane::theme();
+    let mut row = usage(
+        "claude1",
+        &["units"],
+        &serde_json::json!(0),
+        &Value::Null,
+        false,
+        0,
+    );
+    row["resets_at"] = Value::Null;
+    let table = AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({"accounts":[row],"problems":[]}))
+                .expect("zero-quota fixture encodes"),
+        )
+        .expect("zero-quota fixture parses"),
+    );
+    for variant in theme::builtins() {
+        tui_pane::set_active_theme(std::sync::Arc::new(variant.theme));
+        for ground in [
+            tui_pane::theme().text.bg_focus.color,
+            tui_pane::pane_background(false),
+            tui_pane::pane_background(true),
+        ] {
+            let area = Rect::new(0, 0, 90, 3);
+            let mut buffer = Buffer::empty(area);
+            buffer.set_style(area, Style::default().bg(ground));
+            accounts::draw_sorted(
+                &mut buffer,
+                area,
+                &table,
+                NOW,
+                &FooterColors::default(),
+                AccountsSort::SourceOrder,
+            );
+            let (x, y) = at(&buffer, "0%");
+            for column in x..x + 2 {
+                let cell = &buffer[(column, y)];
+                let ratio = tests::contrast_ratio(cell.fg, cell.bg);
+                assert!(
+                    ratio >= MINIMUM_CONTRAST,
+                    "{} zero quota: {:?} on {:?} is {ratio:.2}:1",
+                    variant.id.as_str(),
+                    cell.fg,
+                    cell.bg,
+                );
+            }
+        }
+    }
+    tui_pane::set_active_theme(previous);
 }
 
 #[test]

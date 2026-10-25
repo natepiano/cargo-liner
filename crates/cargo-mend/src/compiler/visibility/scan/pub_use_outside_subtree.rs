@@ -54,7 +54,8 @@ pub(super) fn record(
     crate_root_file: &Path,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    // A `use` a macro wrote has no source line of its own to rewrite.
+    // `record` skips `item.span.from_expansion()` because a macro-written `use`
+    // has no source line of its own to rewrite.
     if item.span.from_expansion() {
         return Ok(());
     }
@@ -69,8 +70,8 @@ pub(super) fn record(
     {
         return Ok(());
     }
-    // A single import names an item after its last segment; a glob names the
-    // module it opens with every segment.
+    // `module_segments` excludes the last segment of a single import, which names
+    // an item; a glob names the module it opens with every segment.
     let module_segments = match use_kind {
         UseKind::Glob => path.segments,
         _ => path
@@ -177,9 +178,9 @@ fn entered_module(
                 match child.map(|child| child.res) {
                     Some(Res::Def(DefKind::Mod, def_id)) => module = def_id.as_local()?,
                     None if segment_index == 0 => return None,
-                    // An enum or trait on the way to the item, or a name the
-                    // module does not list: the path has entered its last
-                    // module already.
+                    // `entered_module` returns `PathWalk::Interrupted` for an enum
+                    // or trait on the way to the item, or a name the module does
+                    // not list: the path has entered its last module already.
                     _ => {
                         return Some(EnteredModule {
                             module,

@@ -750,8 +750,8 @@ mod tests {
             .expect("start_task should create a task toast")
             .id();
 
-        // First dismiss: phase transitions to Exiting with the
-        // initial started_at.
+        // The first `Toasts::dismiss` enters `ToastPhase::Exiting` with the
+        // initial `started_at`.
         assert!(toasts.dismiss(id));
         let first_started_at = match toasts
             .toast_for_task(task)
@@ -764,8 +764,8 @@ mod tests {
             },
         };
 
-        // Spin a touch to make sure Instant::now() advances, then
-        // dismiss again — the started_at must not reset.
+        // Let `Instant::now()` advance through `std::thread::sleep`, then call
+        // `Toasts::dismiss` again — `started_at` must not reset.
         std::thread::sleep(Duration::from_millis(2));
         assert!(toasts.dismiss(id));
         let second_started_at = match toasts
@@ -786,16 +786,15 @@ mod tests {
         let mut toasts = toasts();
         let task = toasts.start_task("scan", "running");
 
-        // User clicks [x].
+        // The user clicks [x], closing the toast through `Toasts::dismiss`.
         let toast_id = toasts
             .toast_for_task(task)
             .expect("start_task should create a task toast")
             .id();
         assert!(toasts.dismiss(toast_id));
 
-        // Tracker keeps reporting work; we ask reactivate_task to
-        // re-show the toast. The user-dismissed flag suppresses
-        // reactivation.
+        // The tracker keeps reporting work; we ask `Toasts::reactivate_task` to
+        // re-show the toast. The user-dismissed flag suppresses reactivation.
         assert_eq!(
             toasts.reactivate_task(task),
             super::super::ReactivateOutcome::DismissedByUser,
@@ -858,9 +857,9 @@ mod tests {
 
     #[test]
     fn reactivate_task_revives_non_dismissed_finished_toast() {
-        // Linger covers an item so finish_task records the toast
-        // as still-finished rather than instantly-zero, which is
-        // what `reactivate_task` is meant to recover from.
+        // Linger covers a `TrackedItem` so `Toasts::finish_task` records
+        // the toast as still-finished rather than instantly-zero, which
+        // is what `Toasts::reactivate_task` is meant to recover from.
         let mut toasts = toasts_with_linger(30.0);
         let task = toasts.start_task("scan", "running");
         assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", "a")]));
@@ -880,7 +879,7 @@ mod tests {
     fn reactivate_task_returns_not_found_for_unknown_task() {
         let mut toasts = toasts();
         let task = toasts.start_task("scan", "running");
-        // No tracked items → finish_task uses Duration::ZERO.
+        // Without tracked items, `Toasts::finish_task` uses `Duration::ZERO`.
         assert!(toasts.finish_task(task));
         let after_linger = Instant::now() + Duration::from_secs(2);
         toasts.prune(after_linger);
@@ -896,7 +895,7 @@ mod tests {
     fn task_toast_lingers_after_finish_then_prunes() {
         let mut toasts = toasts_with_linger(1.0);
         let task = toasts.start_task("scan", "running");
-        // Tracked item is what makes `finish_task` honor the
+        // A `TrackedItem` makes `Toasts::finish_task` honor the
         // settings-driven linger.
         assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", "a")]));
 
@@ -1026,9 +1025,9 @@ mod tests {
         let mut toasts = toasts_with_linger(5.0);
         let task = toasts.start_task("empty", "body");
 
-        // No items were ever added. Auto-finish must not fire on its
-        // own — an empty task toast stays Running until the embedding
-        // calls `finish_task` explicitly.
+        // No `TrackedItem`s were added, so `Toasts::recompute_task_status` must not
+        // auto-finish on its own. An empty task toast stays `ToastTaskStatus::Running`
+        // until the embedding calls `Toasts::finish_task` explicitly.
         assert!(!toasts.is_task_finished(task));
 
         assert!(toasts.finish_task(task));
@@ -1058,9 +1057,9 @@ mod tests {
         };
 
         std::thread::sleep(Duration::from_millis(5));
-        // Calling finish_task again must not bump `finished_at` forward —
-        // the anchor is `max(item.completed_at)`, which hasn't moved
-        // because no item was re-marked. The countdown stays stable.
+        // Calling `Toasts::finish_task` again must not bump `finished_at` forward
+        // — the anchor is `max(item.completed_at)`, which hasn't moved because no
+        // item was re-marked. The countdown stays stable.
         assert!(toasts.finish_task(task));
 
         let toast = toasts
@@ -1086,18 +1085,20 @@ mod tests {
         let task = toasts.start_task("phase", "body");
         assert!(toasts.set_tracked_items(task, &[TrackedItem::new("first", "first")]));
 
-        // Mark the only item completed → toast auto-finishes.
+        // `Toasts::mark_tracked_item_completed` completes the only item, so the toast
+        // auto-finishes.
         assert!(toasts.mark_tracked_item_completed(task, "first"));
         assert!(toasts.is_task_finished(task));
 
-        // A new incomplete item arrives after auto-finish (e.g. a
-        // tracker queues a late phase). The toast must revert to
-        // Running so the countdown re-anchors when the new item
-        // eventually completes.
+        // A new incomplete `TrackedItem` arrives after auto-finish
+        // (e.g. a tracker queues a late phase). The toast must revert
+        // to `ToastTaskStatus::Running` so the countdown re-anchors
+        // when the new item eventually completes.
         assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
         assert!(!toasts.is_task_finished(task));
 
-        // When the late item finally completes, auto-finish re-fires.
+        // When `Toasts::mark_tracked_item_completed` completes the late item,
+        // auto-finish re-fires.
         assert!(toasts.mark_tracked_item_completed(task, "late"));
         assert!(toasts.is_task_finished(task));
     }
@@ -1124,7 +1125,8 @@ mod tests {
             unreachable!("first completed task toast should use task lifetime");
         };
 
-        // Add a second incomplete item, sleep, mark it completed.
+        // Add a second incomplete item with `Toasts::add_new_tracked_items`, sleep,
+        // then complete it with `Toasts::mark_tracked_item_completed`.
         assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
         std::thread::sleep(Duration::from_millis(5));
         assert!(toasts.mark_tracked_item_completed(task, "late"));
@@ -1155,8 +1157,8 @@ mod tests {
         let task = toasts.start_task("phase", "body");
         assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
         assert!(toasts.mark_tracked_item_completed(task, "only"));
-        // finished_at + linger(=0) <= now, so should_exit is true on
-        // the next prune. Task toasts skip the Exiting render phase
+        // `finished_at + linger` (zero) is at or before now, so `Toast::should_exit`
+        // is true on the next prune. `ToastLifetime::Task` skips `ToastPhase::Exiting`
         // entirely: the toast is removed in the same prune pass.
         toasts.prune(Instant::now());
         assert!(!toasts.is_task_finished(task));
@@ -1172,8 +1174,8 @@ mod tests {
         assert!(toasts.mark_tracked_item_completed(task, "a"));
         assert!(toasts.is_task_finished(task));
 
-        // Restarting clears the item's `completed_at` — the toast
-        // reverts to Running until the item completes again.
+        // `Toasts::restart_tracked_item` clears the item's `completed_at` — the toast
+        // reverts to `ToastTaskStatus::Running` until the item completes again.
         assert!(toasts.restart_tracked_item(task, &key, Instant::now()));
         assert!(!toasts.is_task_finished(task));
     }

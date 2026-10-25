@@ -474,3 +474,55 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         assert_ne!(timer_status.fg, shell_status.fg);
     }
 }
+
+#[test]
+fn spent_shell_timers_draw_running_in_busy_ink_at_the_deadline_and_later() {
+    let mut owner = agent(10, "timer-owner", HOUR, None);
+    owner.children = vec![
+        child(0, ChildKind::Shell, Some(21), "ordinary-build", MINUTE),
+        ChildRow {
+            timer: Some(Timer {
+                started:  NOW - MINUTE,
+                deadline: NOW,
+            }),
+            ..child(0, ChildKind::Shell, Some(22), "deadline-build", MINUTE)
+        },
+        ChildRow {
+            timer: Some(Timer {
+                started:  NOW - MINUTE,
+                deadline: NOW + 600,
+            }),
+            ..child(0, ChildKind::Shell, Some(23), "live-countdown", MINUTE)
+        },
+    ];
+    let entry = entry(&owner, None);
+    for width in [65, 180] {
+        for now in [NOW - 1, NOW, NOW + 90] {
+            let rect = area(width, 12);
+            let mut buffer = Buffer::empty(rect);
+            draw(
+                &mut buffer,
+                rect,
+                &entry,
+                &[],
+                now,
+                AccountColumn::Hidden,
+                &FooterColors::default(),
+            );
+            let x = find(&buffer, "status").expect("status header").0;
+            let y = find(&buffer, "deadline-build").expect("timed shell").1;
+            let text: String = (x..x + 7).map(|x| buffer[(x, y)].symbol()).collect();
+            let untimed = status_at(&buffer, "ordinary-build");
+            let counting = status_at(&buffer, "live-countdown");
+            assert_eq!(untimed.symbol(), "r");
+            assert_ne!(counting.fg, untimed.fg, "countdown and Busy ink differ");
+            if now < NOW {
+                assert_eq!(text.trim_end(), "0:01", "width={width}, now={now}");
+                assert_eq!(buffer[(x, y)].fg, counting.fg);
+            } else {
+                assert_eq!(text, "running", "width={width}, now={now}");
+                assert_eq!(buffer[(x, y)].fg, untimed.fg, "width={width}, now={now}");
+            }
+        }
+    }
+}

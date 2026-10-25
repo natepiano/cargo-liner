@@ -174,6 +174,38 @@ struct UseItemLines {
     removed:    bool,
 }
 
+/// The completed edit for a use item, before source text is emitted.
+enum UseRewritePlan {
+    Unchanged,
+    Delete,
+    Replace { lines: Vec<String> },
+}
+
+impl From<UseItemLines> for UseRewritePlan {
+    fn from(lines: UseItemLines) -> Self {
+        if lines.redirected.is_empty() && !lines.removed {
+            return Self::Unchanged;
+        }
+        if lines.kept.is_empty() && lines.redirected.is_empty() {
+            return Self::Delete;
+        }
+        Self::Replace {
+            lines: lines
+                .kept
+                .into_iter()
+                .chain(lines.redirected.into_values().flatten())
+                .collect(),
+        }
+    }
+}
+
+/// What happens to a leaf after removal and redirect lookup, in that order.
+enum UseLeafDisposition<'a> {
+    Removed,
+    Redirected { target: &'a [String] },
+    Kept { path: Vec<String> },
+}
+
 struct CallerRewriter<'a> {
     file:                &'a Path,
     source:              &'a str,
@@ -225,8 +257,9 @@ impl Visit<'_> for CallerRewriter<'_> {
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
-        // A leading `::` anchors the path at an extern crate, never at a
-        // module of the crate under analysis.
+        // `CallerRewriter::visit_item_use` skips `node.leading_colon` because a leading `::`
+        // anchors the path at an extern crate, never at a module of the crate under
+        // analysis.
         if node.leading_colon.is_some() {
             return;
         }
@@ -253,14 +286,15 @@ impl Visit<'_> for CallerRewriter<'_> {
                 .collect::<Vec<_>>();
             self.rewrite_path_prefix(&idents);
         }
-        // Keep walking: a match replaces only the leading segments, so a facade
-        // name nested in the generic arguments (`Vec<super::Widget>`) is still
-        // ahead of the cursor.
+        // `CallerRewriter::visit_path` keeps walking after `rewrite_path_prefix`: a match replaces
+        // only the leading segments, so a facade name nested in the generic arguments
+        // (`Vec<super::Widget>`) is still ahead of the cursor.
         visit::visit_path(self, node);
     }
 
     fn visit_item_macro(&mut self, node: &ItemMacro) {
-        // A `macro_rules!` body is a pattern language, not caller code.
+        // `CallerRewriter::visit_item_macro` skips `macro_rules!` bodies because they are a pattern
+        // language, not caller code.
         if !node.mac.path.is_ident("macro_rules") {
             visit::visit_item_macro(self, node);
         }
@@ -362,29 +396,29 @@ impl<'a> CallerRewriter<'a> {
     fn rewrite_use_item(&mut self, node: &ItemUse, removed: &[BoundLeaf]) {
         let mut lines = UseItemLines::default();
         self.plan_use_tree(&[], &node.tree, removed, &mut lines);
-        if lines.redirected.is_empty() && !lines.removed {
-            return;
+        match UseRewritePlan::from(lines) {
+            UseRewritePlan::Unchanged => {},
+            UseRewritePlan::Delete => {
+                let (start, end) = source_text::item_use_byte_range(&self.lines, node);
+                self.fixes.push(source_text::line_deletion(
+                    self.file,
+                    self.source,
+                    start..end,
+                ));
+            },
+            UseRewritePlan::Replace { lines } => {
+                let (start, end) = source_text::item_use_byte_range(&self.lines, node);
+                let tree_start = self.lines.offset(node.tree.span().start());
+                let header = &self.source[start..tree_start];
+                let separator = format!("\n{}", self.lines.indent_before(start));
+                let replacement = lines
+                    .into_iter()
+                    .map(|path| format!("{header}{path};"))
+                    .collect::<Vec<_>>()
+                    .join(&separator);
+                self.push_fix(start, end, replacement);
+            },
         }
-        let (start, end) = source_text::item_use_byte_range(&self.lines, node);
-        if lines.kept.is_empty() && lines.redirected.is_empty() {
-            self.fixes.push(source_text::line_deletion(
-                self.file,
-                self.source,
-                start..end,
-            ));
-            return;
-        }
-        let tree_start = self.lines.offset(node.tree.span().start());
-        let header = &self.source[start..tree_start];
-        let separator = format!("\n{}", self.lines.indent_before(start));
-        let replacement = lines
-            .kept
-            .into_iter()
-            .chain(lines.redirected.into_values().flatten())
-            .map(|path| format!("{header}{path};"))
-            .collect::<Vec<_>>()
-            .join(&separator);
-        self.push_fix(start, end, replacement);
     }
 
     /// Records, for each leaf of `tree` written through an owner import,
@@ -539,21 +573,38 @@ impl<'a> CallerRewriter<'a> {
         lines: &mut UseItemLines,
     ) {
         let leaf = leaf_path(written, ident);
-        if removed.contains(&bound_leaf(leaf.clone(), alias)) {
-            lines.removed = true;
-        } else if let Some(target) = self.redirect_target(&leaf) {
-            lines
-                .redirected
-                .entry(target[..target.len().saturating_sub(1)].to_vec())
-                .or_default()
-                .push(module_path::import_path(&self.module_path, target, alias));
-        } else {
-            let rendered = self.absolute(&leaf).map_or_else(
-                || render_written(&leaf, alias),
-                |absolute| module_path::import_path(&self.module_path, &absolute, alias),
-            );
-            lines.kept.push(rendered);
+        match self.use_leaf_disposition(leaf, alias, removed) {
+            UseLeafDisposition::Removed => lines.removed = true,
+            UseLeafDisposition::Redirected { target } => {
+                lines
+                    .redirected
+                    .entry(target[..target.len().saturating_sub(1)].to_vec())
+                    .or_default()
+                    .push(module_path::import_path(&self.module_path, target, alias));
+            },
+            UseLeafDisposition::Kept { path } => {
+                let rendered = self.absolute(&path).map_or_else(
+                    || render_written(&path, alias),
+                    |absolute| module_path::import_path(&self.module_path, &absolute, alias),
+                );
+                lines.kept.push(rendered);
+            },
         }
+    }
+
+    fn use_leaf_disposition(
+        &mut self,
+        leaf: Vec<String>,
+        alias: Option<&str>,
+        removed: &[BoundLeaf],
+    ) -> UseLeafDisposition<'a> {
+        if removed.contains(&bound_leaf(leaf.clone(), alias)) {
+            return UseLeafDisposition::Removed;
+        }
+        self.redirect_target(&leaf)
+            .map_or(UseLeafDisposition::Kept { path: leaf }, |target| {
+                UseLeafDisposition::Redirected { target }
+            })
     }
 
     /// Whether a leaf of `tree` is redirected or in `removed`.
@@ -605,8 +656,9 @@ impl<'a> CallerRewriter<'a> {
                 .map(|target| (length, target))
         });
         let anchored = found.and_then(|(_, target)| self.anchored_path(&segments[0], target));
-        // A module import is only ever a path's first segment of several; a
-        // path still written through it keeps it used.
+        // `record_owner_import_path` tracks module imports only for paths with several segments: a
+        // module import is only ever their first segment; a path still written through it
+        // keeps it used.
         if segments.len() > 1 {
             self.record_owner_import_path(&segments, found.is_some() && anchored.is_none());
         }
@@ -740,7 +792,11 @@ fn ident_after_path_separator(trees: &[TokenTree], index: usize) -> Option<Ident
 )]
 mod tests {
     use std::cmp::Reverse;
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::path::Path;
+
+    use syn::Ident;
 
     use super::CallerBuilds;
     use super::FileRedirects;
@@ -1064,5 +1120,60 @@ mod tests {
             named_owner_modules(source),
             vec![path("tool::tool_staging")]
         );
+    }
+    #[test]
+    fn removing_a_leaf_precedes_redirect_and_outside_use_accounting() {
+        let redirects = [scoped_redirect()];
+        let aliases = ModuleAliases::default();
+        let mut rewriter = super::CallerRewriter {
+            file:                Path::new("caller.rs"),
+            source:              "",
+            lines:               super::SourceLines::new(""),
+            module_path:         path("app"),
+            scopes:              Vec::new(),
+            redirects:           &redirects,
+            module_aliases:      &aliases,
+            fixes:               Vec::new(),
+            outside_used:        BTreeMap::default(),
+            named_owner_modules: BTreeSet::default(),
+            cfg_test_depth:      0,
+        };
+        let ident: Ident = syn::parse_str("stage").expect("parse name");
+        let removed = [super::bound_leaf(
+            path("crate::tool::tool_staging::stage"),
+            Some("alias"),
+        )];
+        let mut lines = super::UseItemLines::default();
+        rewriter.plan_use_leaf(
+            &path("crate::tool::tool_staging"),
+            &ident,
+            Some("alias"),
+            &removed,
+            &mut lines,
+        );
+        assert!(lines.removed);
+        assert!(lines.redirected.is_empty());
+        assert!(rewriter.outside_used.is_empty());
+        rewriter.plan_use_leaf(
+            &path("crate::tool::tool_staging"),
+            &ident,
+            Some("other_alias"),
+            &removed,
+            &mut lines,
+        );
+        assert_eq!(
+            rewriter.outside_used.into_iter().collect::<Vec<_>>(),
+            vec![(0, CallerBuilds::Every)]
+        );
+        assert_eq!(
+            lines.redirected.into_values().flatten().collect::<Vec<_>>(),
+            vec!["crate::tool::stage as other_alias"]
+        );
+    }
+
+    #[test]
+    fn an_untouched_group_retains_its_original_spelling() {
+        let source = "use crate::other::{Second, First as Alias};\n";
+        assert_eq!(rewritten(source, "app", &[scoped_redirect()]), source);
     }
 }

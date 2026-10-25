@@ -1,4 +1,4 @@
-// cargo target kinds
+// `CARGO_TARGET_KIND_BENCH` through `CARGO_TARGET_KIND_TEST` identify Cargo target kinds.
 pub(crate) const CARGO_TARGET_KIND_BENCH: &str = "bench";
 pub(crate) const CARGO_TARGET_KIND_BIN: &str = "bin";
 pub(crate) const CARGO_TARGET_KIND_EXAMPLE: &str = "example";

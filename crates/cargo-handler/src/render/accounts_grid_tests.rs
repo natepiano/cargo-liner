@@ -56,7 +56,8 @@ fn draw_grid(app: &mut App) -> Buffer {
     let area = Rect::new(
         0,
         0,
-        demand.summary_width + 2,
+        // A header click can add a sort arrow; the terminal keeps its width.
+        80,
         demand
             .summary
             .required()

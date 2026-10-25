@@ -28,8 +28,9 @@ pub(super) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
         else {
             continue;
         };
-        // This fix deletes the annotation outright, so it applies to a bare
-        // `pub` only. Deleting a `pub(crate)` or `pub(in ...)` would throw away
+        // `scan_from_report` plans annotation deletion only for
+        // `VisibilityAnnotationForm::Bare`, a bare `pub`. Deleting a `pub(crate)`
+        // or `pub(in ...)` would throw away
         // a narrower visibility the author wrote deliberately.
         if site.form != VisibilityAnnotationForm::Bare {
             continue;

@@ -214,6 +214,14 @@ struct AccumulatedDeferralApprovals {
     deferral_reasons:      Vec<OverlapAuthorizationReason>,
 }
 
+/// The journal fact that ended an ordering edge while preserving its recorded answer.
+enum OrderingEdgeRetirement {
+    /// A later answer selected a different order for this reservation.
+    Replaced { reservation_id: ReservationId },
+    /// Explicit repair cancelled only the relationship that closed a cycle.
+    CycleRepair,
+}
+
 /// The ordering edge `edge_id` a recorded answer or resolution names, or
 /// [`BoardError::MissingOrderingEdge`] when replay holds no such edge.
 fn recorded_ordering_edge(
@@ -228,18 +236,23 @@ fn recorded_ordering_edge(
 }
 
 /// The consequence of the sequence answer that recorded `edge_id`:
-/// [`OrderingConsequence::Replaced`] once a later `--replace` answer retired the edge, so replay
-/// holds no such edge, or the live edge's readiness otherwise.
+/// A replaced edge retains its replacement, an explicitly repaired edge is cancelled, and
+/// an edge that is still live reports its readiness.
 fn sequence_consequence(
     constraints: &IntegrationConstraintProjection,
-    replaced_edges: &HashMap<EdgeId, ReservationId>,
+    retired_edges: &HashMap<EdgeId, OrderingEdgeRetirement>,
     edge_id: EdgeId,
 ) -> Result<OrderingConsequence, BoardError> {
-    replaced_edges.get(&edge_id).map_or_else(
+    retired_edges.get(&edge_id).map_or_else(
         || recorded_ordering_edge(constraints, edge_id).map(ordering_consequence),
-        |reservation_id| {
-            Ok(OrderingConsequence::Replaced {
-                reservation_id: *reservation_id,
+        |retirement| {
+            Ok(match retirement {
+                OrderingEdgeRetirement::Replaced { reservation_id } => {
+                    OrderingConsequence::Replaced {
+                        reservation_id: *reservation_id,
+                    }
+                },
+                OrderingEdgeRetirement::CycleRepair => OrderingConsequence::Cancelled,
             })
         },
     )
@@ -275,7 +288,7 @@ pub(super) fn board_overlap_answers(
     live_reservations: &HashSet<ReservationId>,
 ) -> Result<BoardOverlapAnswers, BoardError> {
     let resolved_pairs = resolved_defer_pairs(events);
-    let replaced_edges = replaced_edges(events);
+    let retired_edges = retired_edges(events);
     let mut answers = AnswerSplit {
         live_reservations,
         live: Vec::new(),
@@ -295,7 +308,7 @@ pub(super) fn board_overlap_answers(
                     acquisition: claim_acquisition(authorization),
                 },
                 &resolved_pairs,
-                &replaced_edges,
+                &retired_edges,
                 constraints,
             )?,
             JournalOperation::Widen {
@@ -316,7 +329,7 @@ pub(super) fn board_overlap_answers(
                     },
                 },
                 &resolved_pairs,
-                &replaced_edges,
+                &retired_edges,
                 constraints,
             )?,
             // `JournalOperation::Answer` without a `reservation_id` has no answering row to list.
@@ -333,7 +346,7 @@ pub(super) fn board_overlap_answers(
                         acquisition: AnswerAcquisition::Answer,
                     },
                     &resolved_pairs,
-                    &replaced_edges,
+                    &retired_edges,
                     constraints,
                 )
             })?,
@@ -354,7 +367,7 @@ pub(super) fn board_overlap_answers(
                     *deferred_reservation_id,
                     *blocker_reservation_id,
                 );
-                let consequence = sequence_consequence(constraints, &replaced_edges, *edge_id)?;
+                let consequence = sequence_consequence(constraints, &retired_edges, *edge_id)?;
                 answers.record(*deferred_reservation_id, || {
                     Ok(RecordedOverlapAnswer::OrderingCreatedFromDeferral {
                         edge_id: *edge_id,
@@ -384,9 +397,9 @@ const fn claim_acquisition(authorization: &ConflictAuthorization) -> AnswerAcqui
     }
 }
 
-/// Map each edge a `--replace` answer retired to the reservation whose answer retired it.
-fn replaced_edges(events: &[JournalEvent]) -> HashMap<EdgeId, ReservationId> {
-    events
+/// Keep the reason each retired edge no longer appears in the live ordering constraints.
+fn retired_edges(events: &[JournalEvent]) -> HashMap<EdgeId, OrderingEdgeRetirement> {
+    let replacements = events
         .iter()
         .flat_map(|event| reservation_answers(&event.operation).bound())
         .flat_map(|(reservation_id, authorizations)| {
@@ -395,11 +408,20 @@ fn replaced_edges(events: &[JournalEvent]) -> HashMap<EdgeId, ReservationId> {
                     .replaced()
                     .iter()
                     .map(move |contradicted_ordering| {
-                        (contradicted_ordering.edge_id, reservation_id)
+                        (
+                            contradicted_ordering.edge_id,
+                            OrderingEdgeRetirement::Replaced { reservation_id },
+                        )
                     })
             })
-        })
-        .collect()
+        });
+    let repairs = events.iter().filter_map(|event| match &event.operation {
+        JournalOperation::RetireCyclicOrderingEdge { edge } => {
+            Some((edge.edge_id, OrderingEdgeRetirement::CycleRepair))
+        },
+        _ => None,
+    });
+    replacements.chain(repairs).collect()
 }
 
 fn resolved_defer_pairs(events: &[JournalEvent]) -> HashSet<(ReservationId, ReservationId)> {
@@ -533,7 +555,7 @@ fn append_authorization_answer(
     answers: &mut AnswerSplit<'_>,
     row: RecordedAuthorizationRow<'_>,
     resolved_pairs: &HashSet<(ReservationId, ReservationId)>,
-    replaced_edges: &HashMap<EdgeId, ReservationId>,
+    retired_edges: &HashMap<EdgeId, OrderingEdgeRetirement>,
     constraints: &IntegrationConstraintProjection,
 ) -> Result<(), BoardError> {
     match row.authorization {
@@ -553,7 +575,7 @@ fn append_authorization_answer(
             reason,
             replaced,
         } => {
-            let consequence = sequence_consequence(constraints, replaced_edges, *edge_id)?;
+            let consequence = sequence_consequence(constraints, retired_edges, *edge_id)?;
             answers.record(row.reservation_id, || {
                 Ok(RecordedOverlapAnswer::Sequence {
                     edge_id: *edge_id,
@@ -582,7 +604,7 @@ fn append_authorization_answer(
             overlaps,
             holders.iter().map(|holder| (holder, reason)),
             replaced,
-            replaced_edges,
+            retired_edges,
             constraints,
         )?,
         ConflictAuthorization::SequenceWithExistingEdges {
@@ -597,7 +619,7 @@ fn append_authorization_answer(
                 .iter()
                 .map(|binding| (binding.holder(), binding.reason())),
             replaced,
-            replaced_edges,
+            retired_edges,
             constraints,
         )?,
         ConflictAuthorization::Defer {
@@ -691,7 +713,7 @@ fn append_holder_sequence_answers<'authorization>(
         ),
     >,
     replaced: &[ContradictedOrdering],
-    replaced_edges: &HashMap<EdgeId, ReservationId>,
+    retired_edges: &HashMap<EdgeId, OrderingEdgeRetirement>,
     constraints: &IntegrationConstraintProjection,
 ) -> Result<(), BoardError> {
     let RecordedAuthorizationRow {
@@ -700,7 +722,7 @@ fn append_holder_sequence_answers<'authorization>(
         ..
     } = row;
     for (holder, reason) in holders {
-        let consequence = sequence_consequence(constraints, replaced_edges, holder.edge_id)?;
+        let consequence = sequence_consequence(constraints, retired_edges, holder.edge_id)?;
         let exact_approved_scopes = overlaps
             .of_holder(holder.blocker)
             .map_err(|_| EdgeReplayError::MissingAuthorizedScopes(holder.blocker))?;
@@ -775,6 +797,7 @@ mod tests {
     use crate::answer::AuthorizedOverlapSet;
     use crate::answer::ConflictAuthorization;
     use crate::answer::OverlapScopeRevision;
+    use crate::answer::SequencedHolder;
     use crate::board::rows::BoardModel;
     use crate::board::rows::DeferralConsequence;
     use crate::board::rows::WaitingAction;
@@ -788,6 +811,8 @@ mod tests {
     use crate::ids::EdgeId;
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
+    use crate::ledger::Ledger;
+    use crate::ledger::OrderingCycleRepair;
     use crate::ledger::OrderingDirection;
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeAdditionSet;
@@ -798,6 +823,93 @@ mod tests {
     use crate::reservation::AbandonmentReason;
     use crate::reservation::EditBlockingStatus;
     use crate::reservation::ReleaseDisposition;
+
+    #[test]
+    fn repaired_cycle_keeps_the_cancelled_answer_and_every_reservation_on_the_board()
+    -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let actor = fixture.main_actor();
+        let first = fixture.claim(&actor, "shared.rs", ConflictAuthorization::NoConflict)?;
+        let second = fixture.claim(
+            &actor,
+            "shared.rs",
+            test_support::conflict_authorization(OverlapAnswerFixture::Sequence, &first)?,
+        )?;
+        let closing_edge = EdgeId::new();
+        let ledger = Ledger::open(fixture.repository.path())?;
+        let second_claim = ledger
+            .read_validated_journal()?
+            .into_coordination_events()
+            .into_iter()
+            .find(|event| {
+                matches!(event.operation, JournalOperation::Claim { reservation_id, .. }
+                if reservation_id == second.reservation_id)
+            })
+            .ok_or("second claim must be recorded")?;
+        let third = ReservationId::new();
+        let mut legacy_claim = second_claim.operation;
+        let JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        } = &mut legacy_claim
+        else {
+            return Err("fixture must copy a claim".into());
+        };
+        *reservation_id = third;
+        **authorization = ConflictAuthorization::SequencePerHolder {
+            overlaps: enrollment_overlaps([first.reservation_id, second.reservation_id])?,
+            holders:  vec![
+                SequencedHolder {
+                    blocker:   second.reservation_id,
+                    direction: OrderingDirection::HolderBeforeRequester,
+                    edge_id:   EdgeId::new(),
+                },
+                SequencedHolder {
+                    blocker:   first.reservation_id,
+                    direction: OrderingDirection::RequesterBeforeHolder,
+                    edge_id:   closing_edge,
+                },
+            ],
+            reason:   "pin a cycle for explicit repair".parse()?,
+            replaced: Vec::new(),
+        };
+        ledger.append_legacy_journal_operation(second_claim.actor, legacy_claim)?;
+        let before = fixture
+            .model()
+            .err()
+            .ok_or("cyclic board must be unreadable")?;
+        assert!(
+            before
+                .to_string()
+                .contains("ordering edges contain a cycle")
+        );
+        let OrderingCycleRepair::Retired { edge, .. } =
+            Ledger::repair_ordering_cycle(fixture.repository.path())?
+        else {
+            return Err("cyclic board must retire one edge".into());
+        };
+        assert_eq!(edge.edge_id, closing_edge);
+        let model = fixture.model()?;
+        for id in [first.reservation_id, second.reservation_id, third] {
+            let snapshot = test_support::board_reservation_snapshot(&model, id)?;
+            let wire = serde_json::to_value(snapshot)?;
+            assert_eq!(
+                wire["scopes"],
+                serde_json::json!([{"path": "shared.rs", "kind": "file"}])
+            );
+        }
+        let repaired_answer = model.live_overlap_answers.entries.iter().find(|answer| {
+            matches!(answer, RecordedOverlapAnswer::Sequence { edge_id, .. } if *edge_id == closing_edge)
+        }).ok_or("retired ordering answer must remain auditable")?;
+        assert!(matches!(repaired_answer, RecordedOverlapAnswer::Sequence {
+            reservation_id,
+            blocker,
+            consequence: OrderingConsequence::Cancelled,
+            ..
+        } if *reservation_id == third && *blocker == first.reservation_id));
+        Ok(())
+    }
 
     #[test]
     fn unbound_answers_never_become_live_reservation_answers() -> FixtureResult<()> {

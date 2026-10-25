@@ -245,7 +245,7 @@ fn read_system_appearance(runtime: &Runtime) -> AppearanceObservation {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_system_appearance(_runtime: &Runtime) -> AppearanceObservation {
+fn read_system_appearance(_: &Runtime) -> AppearanceObservation {
     dark_light::detect().map_or(
         AppearanceObservation::Unspecified,
         AppearanceObservation::from,
@@ -363,7 +363,8 @@ where
     F: Fn(Appearance),
 {
     let connection = backend.connect().await?;
-    // Install both watches before reading so a change during startup is queued.
+    // Install both watches with `B::watch` before `B::read` so a change
+    // during startup is queued.
     let mut observations = B::watch(&connection).await?;
     let initial = B::read(&connection).await?;
     Ok(follow(initial, &mut observations, history, recovery, on_change).await)

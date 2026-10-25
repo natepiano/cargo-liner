@@ -132,6 +132,7 @@ use std::cell::OnceCell;
 
 use tui_pane::Theme;
 
+use crate::app_global_action::AppGlobalAction;
 use crate::census;
 use crate::census::Ancestor;
 use crate::census::CargoProcess;
@@ -201,7 +202,6 @@ use crate::constants::TABLE_CONTINUATION_CLEARANCE;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
-use crate::globals::AppGlobalAction;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -7612,11 +7612,11 @@ mod tests {
     }
 
     fn press_argument_key(app: &mut App, key: char) {
-        let action = crate::globals::AppGlobalAction::defaults()
+        let action = crate::app_global_action::AppGlobalAction::defaults()
             .into_scope_map()
             .action_for(&tui_pane::KeyBind::from(key))
             .expect("bound display key");
-        crate::globals::AppGlobalAction::dispatcher()(action, app);
+        crate::app_global_action::AppGlobalAction::dispatcher()(action, app);
     }
 
     #[test]

@@ -39,8 +39,18 @@ fn locate(buffer: &Buffer, label: &str) -> (u16, u16) {
     panic!("missing {label}: {buffer:?}");
 }
 
+fn age_header_row(buffer: &Buffer) -> u16 {
+    (0..buffer.area.height)
+        .find(|&y| {
+            row_text(buffer, y)
+                .split_whitespace()
+                .any(|word| word == "age")
+        })
+        .expect("drawn age header")
+}
+
 fn assert_unit_slots(buffer: &Buffer) -> Vec<String> {
-    let (_, header_y) = locate(buffer, "status");
+    let header_y = age_header_row(buffer);
     let header = row_text(buffer, header_y);
     let age_header = cell_width(&header[..header.find("age").expect("age header")]);
     let age_end = AGES
@@ -266,7 +276,7 @@ fn summary_age_header_ends_at_the_last_unit_used_by_its_rows() {
             },
         },
     );
-    let (_, header_y) = locate(&buffer, "status");
+    let header_y = age_header_row(&buffer);
     let header = row_text(&buffer, header_y);
     let header_x = cell_width(&header[..header.find("age").expect("age column header")]);
     let end = header_x + 3;

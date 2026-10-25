@@ -57,21 +57,16 @@ pub(super) fn import_path(
     target_path: &[String],
     rename: Option<&str>,
 ) -> String {
-    let common = common_prefix_len(current_module_path, target_path);
-    let up_count = current_module_path.len() - common;
-    let remainder = target_path[common..].iter().map(String::as_str);
-    let segments: Vec<&str> = if up_count == 0 {
-        if common == target_path.len() {
-            vec!["self"]
-        } else {
-            remainder.collect()
-        }
-    } else if up_count == 1 && common > 0 {
-        iter::once("super").chain(remainder).collect()
-    } else {
-        iter::once("crate")
-            .chain(target_path.iter().map(String::as_str))
-            .collect()
+    let segments: Vec<&str> = match ImportPathRelation::for_paths(current_module_path, target_path)
+    {
+        ImportPathRelation::CurrentModule => vec!["self"],
+        ImportPathRelation::Descendant { suffix } => suffix.iter().map(String::as_str).collect(),
+        ImportPathRelation::SharedParent { suffix } => iter::once("super")
+            .chain(suffix.iter().map(String::as_str))
+            .collect(),
+        ImportPathRelation::CrateRooted { target } => iter::once("crate")
+            .chain(target.iter().map(String::as_str))
+            .collect(),
     };
     let mut path = segments.join("::");
     if let Some(rename) = rename {
@@ -79,6 +74,31 @@ pub(super) fn import_path(
         path.push_str(rename);
     }
     path
+}
+
+/// The relationship that determines an import's accepted spelling.
+enum ImportPathRelation<'a> {
+    CurrentModule,
+    Descendant { suffix: &'a [String] },
+    SharedParent { suffix: &'a [String] },
+    CrateRooted { target: &'a [String] },
+}
+
+impl<'a> ImportPathRelation<'a> {
+    fn for_paths(current: &[String], target: &'a [String]) -> Self {
+        let common = common_prefix_len(current, target);
+        let up_count = current.len() - common;
+        match (up_count, common == target.len(), common > 0) {
+            (0, true, _) => Self::CurrentModule,
+            (0, false, _) => Self::Descendant {
+                suffix: &target[common..],
+            },
+            (1, _, true) => Self::SharedParent {
+                suffix: &target[common..],
+            },
+            _ => Self::CrateRooted { target },
+        }
+    }
 }
 
 fn common_prefix_len(left: &[String], right: &[String]) -> usize {
@@ -170,6 +190,16 @@ mod tests {
         assert_eq!(
             absolute_use_path(&path("a"), &path("super::super::x")),
             None
+        );
+    }
+    #[test]
+    fn empty_root_and_ancestor_targets_keep_their_spelling() {
+        assert_eq!(import_path(&[], &[], Some("root")), "self as root");
+        assert_eq!(import_path(&path("a::b"), &path("a"), None), "super");
+        assert_eq!(import_path(&path("a"), &[], None), "crate");
+        assert_eq!(
+            import_path(&path("a::b"), &path("x::Item"), None),
+            "crate::x::Item"
         );
     }
 }

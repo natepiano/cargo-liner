@@ -78,7 +78,7 @@ impl ConditionalAttributes {
 }
 
 pub(in crate::fixes) fn is_conditional(attribute: &Attribute) -> bool {
-    attribute.path().is_ident("cfg") || cfg_attr_applies_cfg(attribute)
+    ConditionalMeta::from(&attribute.meta).applies_cfg()
 }
 
 /// Attributes written on a statement attach to the statement's expression:
@@ -156,23 +156,74 @@ pub(in crate::fixes) fn item_attributes(item: &Item) -> &[Attribute] {
     }
 }
 
-fn cfg_attr_applies_cfg(attribute: &Attribute) -> bool {
-    cfg_attr_meta_applies_cfg(&attribute.meta)
+/// Parsed conditional meaning, shared by gate detection and source rendering.
+enum ConditionalMeta {
+    Cfg {
+        source: Span,
+    },
+    CfgAttr {
+        predicate: Span,
+        nested:    Vec<Self>,
+    },
+    Other,
 }
 
-fn cfg_attr_meta_applies_cfg(meta: &Meta) -> bool {
-    if !meta.path().is_ident("cfg_attr") {
-        return false;
+impl From<&Meta> for ConditionalMeta {
+    fn from(meta: &Meta) -> Self {
+        if meta.path().is_ident("cfg") {
+            return Self::Cfg {
+                source: meta.span(),
+            };
+        }
+        if !meta.path().is_ident("cfg_attr") {
+            return Self::Other;
+        }
+        let Meta::List(list) = meta else {
+            return Self::Other;
+        };
+        let Ok(metas) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        else {
+            return Self::Other;
+        };
+        let Some(predicate) = metas.first() else {
+            return Self::Other;
+        };
+        Self::CfgAttr {
+            predicate: predicate.span(),
+            nested:    metas.iter().skip(1).map(Self::from).collect(),
+        }
     }
-    let Meta::List(list) = meta else {
-        return false;
-    };
-    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .is_ok_and(|metas| metas.iter().skip(1).any(meta_applies_cfg))
 }
 
-fn meta_applies_cfg(meta: &Meta) -> bool {
-    meta.path().is_ident("cfg") || cfg_attr_meta_applies_cfg(meta)
+impl ConditionalMeta {
+    fn applies_cfg(&self) -> bool {
+        match self {
+            Self::Cfg { .. } => true,
+            Self::CfgAttr { nested, .. } => nested.iter().any(Self::applies_cfg),
+            Self::Other => false,
+        }
+    }
+
+    fn gating_source(&self, text: &str, line_offsets: &[usize]) -> Option<String> {
+        match self {
+            Self::Cfg { source } => Some(source_for_span(text, line_offsets, *source).to_string()),
+            Self::CfgAttr { predicate, nested } => {
+                let gating_attributes = nested
+                    .iter()
+                    .filter_map(|nested| nested.gating_source(text, line_offsets))
+                    .collect::<Vec<_>>();
+                if gating_attributes.is_empty() {
+                    return None;
+                }
+                Some(format!(
+                    "cfg_attr({}, {})",
+                    source_for_span(text, line_offsets, *predicate),
+                    gating_attributes.join(", ")
+                ))
+            },
+            Self::Other => None,
+        }
+    }
 }
 
 fn conditional_attribute_source(
@@ -180,39 +231,15 @@ fn conditional_attribute_source(
     line_offsets: &[usize],
     attribute: &Attribute,
 ) -> Option<String> {
-    if attribute.path().is_ident("cfg") {
-        return Some(source_for_span(text, line_offsets, attribute.span()).to_string());
+    let conditional = ConditionalMeta::from(&attribute.meta);
+    match conditional {
+        ConditionalMeta::Cfg { .. } => {
+            Some(source_for_span(text, line_offsets, attribute.span()).to_string())
+        },
+        ConditionalMeta::CfgAttr { .. } | ConditionalMeta::Other => conditional
+            .gating_source(text, line_offsets)
+            .map(|meta| format!("#[{meta}]")),
     }
-    gating_meta_source(text, line_offsets, &attribute.meta).map(|meta| format!("#[{meta}]"))
-}
-
-fn gating_meta_source(text: &str, line_offsets: &[usize], meta: &Meta) -> Option<String> {
-    if meta.path().is_ident("cfg") {
-        return Some(source_for_span(text, line_offsets, meta.span()).to_string());
-    }
-    if !meta.path().is_ident("cfg_attr") {
-        return None;
-    }
-    let Meta::List(list) = meta else {
-        return None;
-    };
-    let metas = list
-        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .ok()?;
-    let predicate = metas.first()?;
-    let gating_attributes = metas
-        .iter()
-        .skip(1)
-        .filter_map(|nested| gating_meta_source(text, line_offsets, nested))
-        .collect::<Vec<_>>();
-    if gating_attributes.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "cfg_attr({}, {})",
-        source_for_span(text, line_offsets, predicate.span()),
-        gating_attributes.join(", ")
-    ))
 }
 
 fn source_for_span<'a>(text: &'a str, line_offsets: &[usize], span: Span) -> &'a str {
@@ -228,4 +255,60 @@ fn byte_offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usiz
         .unwrap_or(text.len())
         .saturating_add(position.column)
         .min(text.len())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use syn::ItemFn;
+
+    use super::ConditionalAttributes;
+
+    fn gates(source: &str) -> (bool, String) {
+        let item: ItemFn = syn::parse_str(source).expect("parse attributed function");
+        let offsets = crate::fixes::imports::path::line_offsets(source);
+        (
+            ConditionalAttributes::contains(&item.attrs),
+            ConditionalAttributes::from_attributes(source, &offsets, &item.attrs).render(""),
+        )
+    }
+
+    #[test]
+    fn nested_cfg_attr_keeps_only_gating_attributes_and_predicates() {
+        let source = "#[cfg_attr(feature = \"x\", allow(dead_code), \
+                      cfg_attr(test, cfg(unix), inline), cfg(windows))]\nfn f() {}";
+        assert_eq!(
+            gates(source),
+            (
+                true,
+                "#[cfg_attr(feature = \"x\", cfg_attr(test, cfg(unix)), cfg(windows))]\n"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            gates("#[cfg( any(unix, windows) )]\nfn f() {}"),
+            (true, "#[cfg( any(unix, windows) )]\n".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_or_nongating_meta_does_not_create_an_import_gate() {
+        for attribute in [
+            "#[cfg_attr()]",
+            "#[cfg_attr(test)]",
+            "#[cfg_attr = \"test\"]",
+            "#[cfg_attr(test, cfg_attr(broken => cfg(unix)))]",
+            "#[cfg_attr(test, allow(dead_code))]",
+            "#[allow(dead_code)]",
+        ] {
+            assert_eq!(
+                gates(&format!("{attribute}\nfn f() {{}}")),
+                (false, String::new()),
+                "{attribute}"
+            );
+        }
+    }
 }
