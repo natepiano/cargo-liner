@@ -42,6 +42,125 @@ impl RustLexicalState {
     }
 }
 
+enum RustCodeOpening {
+    LineComment,
+    BlockComment,
+    RawString {
+        hashes:        usize,
+        content_start: usize,
+    },
+    NormalString,
+    CharLiteral,
+    CodeCharacter {
+        utf8_width: usize,
+    },
+}
+
+impl RustCodeOpening {
+    fn at(source: &str, offset: usize, end: usize) -> Self {
+        let bytes = source.as_bytes();
+        if bytes.get(offset..offset + 2) == Some(b"//") {
+            return Self::LineComment;
+        }
+        if bytes.get(offset..offset + 2) == Some(b"/*") {
+            return Self::BlockComment;
+        }
+        if let Some((hashes, content_start)) = raw_string_opening(bytes, offset, end) {
+            return Self::RawString {
+                hashes,
+                content_start,
+            };
+        }
+        if bytes.get(offset) == Some(&b'"') {
+            return Self::NormalString;
+        }
+        if bytes.get(offset) == Some(&b'\'') {
+            match apostrophe_role(source, offset, end) {
+                ApostropheRole::CharacterLiteral => return Self::CharLiteral,
+                ApostropheRole::LifetimeOrUnclosed => {},
+            }
+        }
+        Self::CodeCharacter {
+            utf8_width: source[offset..]
+                .chars()
+                .next()
+                .unwrap_or_default()
+                .len_utf8(),
+        }
+    }
+}
+
+impl RustCodeOpening {
+    const fn advance(self, offset: &mut usize) -> RustLexicalState {
+        match self {
+            Self::LineComment => {
+                *offset += 2;
+                RustLexicalState::LineComment
+            },
+            Self::BlockComment => {
+                *offset += 2;
+                RustLexicalState::BlockComment { depth: 1 }
+            },
+            Self::RawString {
+                hashes,
+                content_start,
+            } => {
+                *offset = content_start;
+                RustLexicalState::RawString { hashes }
+            },
+            Self::NormalString => {
+                *offset += 1;
+                RustLexicalState::NormalString
+            },
+            Self::CharLiteral => {
+                *offset += 1;
+                RustLexicalState::CharLiteral
+            },
+            Self::CodeCharacter { utf8_width } => {
+                *offset += utf8_width;
+                RustLexicalState::Code
+            },
+        }
+    }
+}
+
+enum BlockCommentToken {
+    Open,
+    Close,
+    Content,
+}
+
+impl From<&[u8]> for BlockCommentToken {
+    fn from(bytes: &[u8]) -> Self {
+        match bytes {
+            [b'/', b'*', ..] => Self::Open,
+            [b'*', b'/', ..] => Self::Close,
+            _ => Self::Content,
+        }
+    }
+}
+
+enum CharacterLiteralToken {
+    Escape,
+    Close,
+    Content,
+}
+
+impl From<char> for CharacterLiteralToken {
+    fn from(character: char) -> Self {
+        match character {
+            '\\' => Self::Escape,
+            '\'' => Self::Close,
+            _ => Self::Content,
+        }
+    }
+}
+
+enum ApostropheRole {
+    CharacterLiteral,
+    LifetimeOrUnclosed,
+}
+
 /// Where every comment and literal in one source file starts and ends.
 ///
 /// Rust cannot be lexed backward: a `//` inside a string literal is spelled the
@@ -70,30 +189,7 @@ impl From<&str> for LexicalRegions {
             state = match previous {
                 RustLexicalState::Code => {
                     region_start = offset;
-                    let character = source[offset..].chars().next().unwrap_or_default();
-                    if bytes.get(offset..offset + 2) == Some(b"//") {
-                        offset += 2;
-                        RustLexicalState::LineComment
-                    } else if bytes.get(offset..offset + 2) == Some(b"/*") {
-                        offset += 2;
-                        RustLexicalState::BlockComment { depth: 1 }
-                    } else if let Some((hashes, content_start)) =
-                        raw_string_opening(bytes, offset, end)
-                    {
-                        offset = content_start;
-                        RustLexicalState::RawString { hashes }
-                    } else if bytes.get(offset) == Some(&b'"') {
-                        offset += 1;
-                        RustLexicalState::NormalString
-                    } else if bytes.get(offset) == Some(&b'\'')
-                        && starts_char_literal(source, offset, end)
-                    {
-                        offset += 1;
-                        RustLexicalState::CharLiteral
-                    } else {
-                        offset += character.len_utf8();
-                        RustLexicalState::Code
-                    }
+                    RustCodeOpening::at(source, offset, end).advance(&mut offset)
                 },
                 RustLexicalState::NormalString => match bytes.get(offset) {
                     Some(b'\\') => {
@@ -144,19 +240,23 @@ impl From<&str> for LexicalRegions {
                     }
                 },
                 RustLexicalState::BlockComment { depth } => {
-                    if bytes.get(offset..offset + 2) == Some(b"/*") {
-                        offset += 2;
-                        RustLexicalState::BlockComment { depth: depth + 1 }
-                    } else if bytes.get(offset..offset + 2) == Some(b"*/") {
-                        offset += 2;
-                        if depth == 1 {
-                            RustLexicalState::Code
-                        } else {
-                            RustLexicalState::BlockComment { depth: depth - 1 }
-                        }
-                    } else {
-                        offset += 1;
-                        RustLexicalState::BlockComment { depth }
+                    match BlockCommentToken::from(&bytes[offset..]) {
+                        BlockCommentToken::Open => {
+                            offset += 2;
+                            RustLexicalState::BlockComment { depth: depth + 1 }
+                        },
+                        BlockCommentToken::Close => {
+                            offset += 2;
+                            if depth == 1 {
+                                RustLexicalState::Code
+                            } else {
+                                RustLexicalState::BlockComment { depth: depth - 1 }
+                            }
+                        },
+                        BlockCommentToken::Content => {
+                            offset += 1;
+                            RustLexicalState::BlockComment { depth }
+                        },
                     }
                 },
             };
@@ -248,13 +348,13 @@ fn raw_string_closes(bytes: &[u8], offset: usize, end: usize, hashes: usize) -> 
             .is_some_and(|closing_hashes| closing_hashes.iter().all(|byte| *byte == b'#'))
 }
 
-fn starts_char_literal(source: &str, quote_offset: usize, end: usize) -> bool {
+fn apostrophe_role(source: &str, quote_offset: usize, end: usize) -> ApostropheRole {
     let content_start = quote_offset + 1;
     let line_end = source[content_start..end]
         .find('\n')
         .map_or(end, |offset| content_start + offset);
     let Some(first_character) = source[content_start..line_end].chars().next() else {
-        return false;
+        return ApostropheRole::LifetimeOrUnclosed;
     };
     if identifier_character(first_character) {
         let identifier_end = source[content_start..line_end]
@@ -264,20 +364,27 @@ fn starts_char_literal(source: &str, quote_offset: usize, end: usize) -> bool {
             .map_or(content_start, |(offset, character)| {
                 content_start + offset + character.len_utf8()
             });
-        return source
+        return if source
             .get(identifier_end..line_end)
-            .is_some_and(|tail| tail.starts_with('\''));
+            .is_some_and(|tail| tail.starts_with('\''))
+        {
+            ApostropheRole::CharacterLiteral
+        } else {
+            ApostropheRole::LifetimeOrUnclosed
+        };
     }
 
     let mut characters = source[content_start..line_end].chars();
     while let Some(character) = characters.next() {
-        if character == '\\' {
-            characters.next();
-        } else if character == '\'' {
-            return true;
+        match CharacterLiteralToken::from(character) {
+            CharacterLiteralToken::Escape => {
+                characters.next();
+            },
+            CharacterLiteralToken::Close => return ApostropheRole::CharacterLiteral,
+            CharacterLiteralToken::Content => {},
         }
     }
-    false
+    ApostropheRole::LifetimeOrUnclosed
 }
 
 #[cfg(test)]
@@ -353,5 +460,39 @@ mod tests {
     fn an_unterminated_block_comment_runs_to_the_end_of_the_file() {
         let source = "crate:: /* never closed";
         assert_eq!(trivia_start(source, source.len()), 7);
+    }
+    #[test]
+    fn lexical_regions_preserve_delimiters_utf8_and_unterminated_content() {
+        for (source, expected) in [
+            ("é/* outer /* nested */ end */", Some((2, "comment"))),
+            (r###"r##"/* " still raw"##"###, Some((0, "literal"))),
+            ("'é'", Some((0, "literal"))),
+            (r"'\''", Some((0, "literal"))),
+            ("'!x'", Some((0, "literal"))),
+            ("'life ", None),
+            ("'", None),
+            ("'!", None),
+            ("\"//", Some((0, "literal"))),
+            ("r#\"/*", Some((0, "literal"))),
+            ("//tail", Some((0, "comment"))),
+            ("/*tail", Some((0, "comment"))),
+        ] {
+            let regions = LexicalRegions::from(source)
+                .regions
+                .into_iter()
+                .map(|region| {
+                    let kind = match region.kind {
+                        super::LexicalRegionKind::Comment => "comment",
+                        super::LexicalRegionKind::Literal => "literal",
+                    };
+                    (region.bytes, kind)
+                })
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|(start, kind)| (start..source.len(), kind))
+                .collect::<Vec<_>>();
+            assert_eq!(regions, expected, "{source:?}");
+        }
     }
 }

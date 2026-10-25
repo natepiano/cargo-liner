@@ -571,25 +571,53 @@ edition = "2024"
 }
 
 #[test]
-fn visibility_cases_under_forbidden() { assert_visibility_setting("forbidden"); }
+fn visibility_cases_under_forbidden() { assert_visibility_setting(VisibilityPolicy::Forbidden); }
 
 #[test]
-fn visibility_cases_under_permitted() { assert_visibility_setting("permitted"); }
+fn visibility_cases_under_permitted() { assert_visibility_setting(VisibilityPolicy::Permitted); }
 
 #[test]
-fn visibility_cases_under_required() { assert_visibility_setting("required"); }
+fn visibility_cases_under_required() { assert_visibility_setting(VisibilityPolicy::Required); }
 
-fn assert_visibility_setting(pub_in_path: &str) {
+#[derive(Clone, Copy)]
+enum VisibilityPolicy {
+    Forbidden,
+    Permitted,
+    Required,
+}
+
+impl VisibilityPolicy {
+    const fn spelling(self) -> &'static str {
+        match self {
+            Self::Forbidden => "forbidden",
+            Self::Permitted => "permitted",
+            Self::Required => "required",
+        }
+    }
+
+    fn exact_boundary_expectation(self, declaration: &str) -> (Vec<DiagnosticCode>, &str) {
+        match self {
+            Self::Required => (
+                vec![DiagnosticCode::SuspiciousPub],
+                "pub(in crate::a) fn exact() {}\n",
+            ),
+            Self::Forbidden | Self::Permitted => (Vec::new(), declaration),
+        }
+    }
+
+    const fn mismatch_headline(self) -> &'static str {
+        match self {
+            Self::Forbidden => "`pub(in crate)` is wider than the exact parent facade boundary",
+            Self::Permitted | Self::Required => "`pub(crate)` is broader than required",
+        }
+    }
+}
+
+fn assert_visibility_setting(policy: VisibilityPolicy) {
+    let pub_in_path = policy.spelling();
     let declaration = "pub fn exact() {}\n";
-    let (expected_codes, expected_declaration) = if pub_in_path == "required" {
-        (
-            vec![DiagnosticCode::SuspiciousPub],
-            "pub(in crate::a) fn exact() {}\n",
-        )
-    } else {
-        (Vec::new(), declaration)
-    };
-    let batch = visibility_batch(pub_in_path, declaration);
+    let (expected_codes, expected_declaration) = policy.exact_boundary_expectation(declaration);
+    let batch = visibility_batch(policy, declaration);
     let workspace_report = batch.report();
     {
         let report = &member_report(&workspace_report, "exact_boundary");
@@ -610,11 +638,7 @@ fn assert_visibility_setting(pub_in_path: &str) {
         assert_headline_and_help(
             report,
             "boundary_mismatch/src/a/b/c.rs",
-            if pub_in_path == "forbidden" {
-                "`pub(in crate)` is wider than the exact parent facade boundary"
-            } else {
-                "`pub(crate)` is broader than required"
-            },
+            policy.mismatch_headline(),
             "consider using: `pub(in crate::a)`",
         );
     }
@@ -658,7 +682,8 @@ fn assert_visibility_setting(pub_in_path: &str) {
     );
 }
 
-fn visibility_batch(pub_in_path: &str, declaration: &str) -> DiagnosticBatch {
+fn visibility_batch(policy: VisibilityPolicy, declaration: &str) -> DiagnosticBatch {
+    let pub_in_path = policy.spelling();
     let mut batch =
         DiagnosticBatch::new(&format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"));
     batch.add_member(
