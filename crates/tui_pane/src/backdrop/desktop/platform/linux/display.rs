@@ -16,7 +16,6 @@ use zbus::blocking::Proxy;
 use zbus::message::Type;
 use zbus::zvariant::OwnedValue;
 
-use super::SessionBus;
 use super::constants::DBUS_OWNER_CHANGED_SIGNAL;
 use super::constants::DBUS_SERVICE;
 use super::constants::DESKTOP_RETRY_INTERVAL;
@@ -30,8 +29,9 @@ use super::constants::KSCREEN_REQUEST_BACKEND;
 use super::constants::KSCREEN_SERVICE;
 use super::constants::TOPOLOGY_READ_DEADLINE;
 use super::constants::TOPOLOGY_SIGNAL_CAPACITY;
-use super::read_desktop_command;
-use super::session_connection;
+use super::desktop_subprocess::read_desktop_command;
+use super::session_connection::SessionBus;
+use super::session_connection::session_connection;
 use crate::backdrop::desktop::Frame;
 
 /// One enabled `KScreen` output.
