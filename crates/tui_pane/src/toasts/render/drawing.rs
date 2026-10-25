@@ -10,6 +10,7 @@ use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
 use crate::constants::TOAST_ROW_GAP;
+use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastView;
@@ -129,7 +130,7 @@ impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
         let left = area
             .right()
             .saturating_sub(width)
-            .saturating_sub(crate::constants::TOAST_SIDE_GAP.saturating_mul(2))
+            .saturating_sub(TOAST_SIDE_GAP.saturating_mul(2))
             .max(area.x);
         for frame in frames {
             if frame.right() <= left
@@ -168,6 +169,8 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Style;
     use ratatui::symbols::line;
+    use ratatui::symbols::line::VERTICAL_LEFT;
+    use ratatui::symbols::line::VERTICAL_RIGHT;
     use ratatui::text::Line;
     use ratatui::widgets::Paragraph;
     use toml::Table;
@@ -673,8 +676,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 for row in area.top()..area.bottom() {
-                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
-                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(VERTICAL_LEFT);
                 }
                 Renderable::render(
                     &mut toasts,
@@ -719,8 +722,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 for row in area.top()..area.bottom() {
-                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
-                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(VERTICAL_LEFT);
                 }
                 Renderable::render(
                     &mut toasts,
