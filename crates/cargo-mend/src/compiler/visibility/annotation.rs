@@ -30,9 +30,7 @@ pub(super) enum VisibilitySyntax {
     InPath(PathSpelling),
 }
 
-/// How far a reach extends, independent of how any annotation spells it. The
-/// three variants are exactly the three forms `VisibilityReach::to_source`
-/// renders, so policy can ask the question without reading rendered text back.
+/// The kind of boundary limiting a reach, independent of its written annotation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReachBoundary {
     /// Reachable from other crates — `pub`.
@@ -41,6 +39,25 @@ pub(super) enum ReachBoundary {
     CrateRoot,
     /// Capped at a module below the crate root — `pub(in crate::…)`.
     Module,
+}
+
+#[derive(Clone, Copy)]
+enum ResolvedReachBoundary {
+    Everywhere,
+    CrateRoot,
+    Module(DefId),
+}
+
+impl From<VisibilityReach> for ResolvedReachBoundary {
+    fn from(reach: VisibilityReach) -> Self {
+        match reach.0 {
+            Visibility::Public => Self::Everywhere,
+            Visibility::Restricted(boundary) if boundary == CRATE_DEF_ID.to_def_id() => {
+                Self::CrateRoot
+            },
+            Visibility::Restricted(boundary) => Self::Module(boundary),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -222,22 +239,18 @@ impl VisibilityReach {
     pub(super) fn is_public(self) -> bool { self.0.is_public() }
 
     pub(super) fn boundary(self) -> ReachBoundary {
-        match self.0 {
-            Visibility::Public => ReachBoundary::Everywhere,
-            Visibility::Restricted(boundary) if boundary == CRATE_DEF_ID.to_def_id() => {
-                ReachBoundary::CrateRoot
-            },
-            Visibility::Restricted(_) => ReachBoundary::Module,
+        match ResolvedReachBoundary::from(self) {
+            ResolvedReachBoundary::Everywhere => ReachBoundary::Everywhere,
+            ResolvedReachBoundary::CrateRoot => ReachBoundary::CrateRoot,
+            ResolvedReachBoundary::Module(_) => ReachBoundary::Module,
         }
     }
 
     pub(super) fn to_source(self, tcx: TyCtxt<'_>) -> String {
-        match self.0 {
-            Visibility::Public => String::from("pub"),
-            Visibility::Restricted(boundary) if boundary == CRATE_DEF_ID.to_def_id() => {
-                String::from("pub(crate)")
-            },
-            Visibility::Restricted(boundary) => {
+        match ResolvedReachBoundary::from(self) {
+            ResolvedReachBoundary::Everywhere => String::from("pub"),
+            ResolvedReachBoundary::CrateRoot => String::from("pub(crate)"),
+            ResolvedReachBoundary::Module(boundary) => {
                 format!("pub(in crate::{})", tcx.def_path_str(boundary))
             },
         }
@@ -352,9 +365,14 @@ mod tests {
     use std::cmp::Ordering;
 
     use rustc_middle::ty::Visibility;
+    use rustc_span::def_id::CRATE_DEF_ID;
     use rustc_span::def_id::DefId;
+    use rustc_span::def_id::DefIndex;
+    use rustc_span::def_id::LOCAL_CRATE;
 
     use super::PathSpelling;
+    use super::ReachBoundary;
+    use super::ResolvedReachBoundary;
     use super::ScopeReach;
     use super::VisibilityAnnotation;
     use super::VisibilityReach;
@@ -397,6 +415,32 @@ mod tests {
     }
 
     type TestReach = ScopeReach<TestModule>;
+
+    #[test]
+    fn resolved_boundaries_preserve_module_identity_and_policy_kind() {
+        let public = VisibilityReach::from(Visibility::<DefId>::Public);
+        let root = VisibilityReach::from(Visibility::Restricted(CRATE_DEF_ID.to_def_id()));
+        let module_id = DefId {
+            krate: LOCAL_CRATE,
+            index: DefIndex::from_u32(1),
+        };
+        let module = VisibilityReach::from(Visibility::Restricted(module_id));
+
+        assert!(matches!(
+            ResolvedReachBoundary::from(public),
+            ResolvedReachBoundary::Everywhere
+        ));
+        assert!(matches!(
+            ResolvedReachBoundary::from(root),
+            ResolvedReachBoundary::CrateRoot
+        ));
+        assert!(
+            matches!(ResolvedReachBoundary::from(module), ResolvedReachBoundary::Module(id) if id == module_id)
+        );
+        assert_eq!(public.boundary(), ReachBoundary::Everywhere);
+        assert_eq!(root.boundary(), ReachBoundary::CrateRoot);
+        assert_eq!(module.boundary(), ReachBoundary::Module);
+    }
 
     #[test]
     fn classifies_visibility_annotation_variants() {
