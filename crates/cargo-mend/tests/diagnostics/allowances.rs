@@ -2135,6 +2135,56 @@ edition = "2024"
 }
 
 #[test]
+fn wider_signature_with_nonmatching_facade_keeps_boundary_mismatch_advice() {
+    let temp = tempdir().expect("create nonmatching facade signature fixture dir");
+    write_allowance_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "wider_signature_nonmatching_facade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\npub use a::expose;\n"),
+            ("src/a.rs", "mod b;\npub use b::expose;\n"),
+            (
+                "src/a/b.rs",
+                // pub(self) is excluded from facade analysis; this has the same reach.
+                "mod c;\npub(in crate::a::b) use c::Target;\npub use c::expose;\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in crate::a) struct Target;\npub fn expose() -> Target { Target }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let target_finding = report
+        .findings
+        .iter()
+        .find(|finding| {
+            finding.path == "src/a/b/c.rs" && finding.code == DiagnosticCode::ForbiddenPubInCrate
+        })
+        .unwrap_or_else(|| panic!("missing nonmatching facade signature finding: {report:#?}"));
+    assert_eq!(
+        target_finding.headline,
+        "use of `pub(in crate::a)` does not match the parent facade boundary"
+    );
+    assert!(
+        target_finding
+            .help
+            .iter()
+            .any(|line| line == "consider using: `pub`"),
+        "the mismatch must preserve the wider signature requirement: {report:#?}",
+    );
+}
+
+#[test]
 fn narrower_signature_exposure_keeps_the_facade_boundary_required() {
     let temp = tempdir().expect("create narrower exposure fixture dir");
     write_allowance_sources(

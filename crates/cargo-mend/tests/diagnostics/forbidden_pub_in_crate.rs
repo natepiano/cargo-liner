@@ -815,6 +815,44 @@ edition = "2024"
 }
 
 #[test]
+fn resolved_restricted_annotation_too_wide_keeps_exact_boundary_advice() {
+    // A module keeps the exact suggestion; declaration rewrites shorten it to pub(super).
+    let temp = tempdir().expect("create overbroad restricted annotation fixture dir");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "resolved_annotation_too_wide_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\n"),
+            // pub(self) imports are private, so spell b's reach as an explicit facade.
+            ("src/a/b.rs", "mod c;\npub(in crate::a::b) use c::wide;\n"),
+            ("src/a/b/c.rs", "pub(in crate::a) mod wide {}\n"),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(
+        &report,
+        "src/a/b/c.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        &report,
+        "src/a/b/c.rs",
+        "`pub(in crate::a)` is wider than the exact parent facade boundary",
+        "consider using: `pub(in crate::a::b)`",
+    );
+}
+
+#[test]
 fn declaration_narrower_than_facade_is_rejected_by_rustc() {
     let temp = tempdir().expect("create too-narrow compile fixture dir");
     write_sources(
