@@ -264,8 +264,8 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
                 finding.item.as_deref().map(|item| PubUseNarrowingSite {
                     path:      finding.path.clone(),
                     line:      finding.line,
-                    // `StoredFinding::item` is a rendering; the fact stores the
-                    // bare name, so recover it the sanctioned way.
+                    // `StoredFinding::item` is a rendering; `PubUseNarrowingSite::item_name`
+                    // stores the bare name, so recover it with `StoredFinding::item_name`.
                     item_name: StoredFinding::item_name(item).to_string(),
                 })
             })
