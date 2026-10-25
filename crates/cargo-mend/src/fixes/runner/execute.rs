@@ -31,9 +31,9 @@ pub(super) struct CheckedSelection {
 /// The syntax scans whose diagnostics are enabled; a fix kind is enabled only
 /// with one of its diagnostics, so each fix scan finds its scan here.
 pub(super) struct SyntaxScans {
-    pub(super) imports:              Option<ImportScan>,
     pub(super) prefer_module_import: Option<PreferModuleImportScan>,
     pub(super) inline_path:          Option<InlinePathScan>,
+    pub(super) imports:              Option<ImportScan>,
     pub(super) imports_at_top:       Option<ImportsAtTopScan>,
 }
 
@@ -125,12 +125,12 @@ impl MendRunner<'_> {
         };
         let report = &mut result.report;
         let scan_findings = [
-            scans.imports.as_ref().map(|scan| &scan.findings),
             scans
                 .prefer_module_import
                 .as_ref()
                 .map(|scan| &scan.findings),
             scans.inline_path.as_ref().map(|scan| &scan.findings),
+            scans.imports.as_ref().map(|scan| &scan.findings),
             scans.imports_at_top.as_ref().map(|scan| &scan.findings),
         ];
         report
