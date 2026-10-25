@@ -292,11 +292,11 @@ mod tests {
 
         fn keymap_file_path(&self) -> Option<PathBuf> { None }
 
-        fn set_keymap_inline_error(&mut self, _message: String) {}
+        fn set_keymap_inline_error(&mut self, _: String) {}
 
         fn clear_keymap_inline_error(&mut self) {}
 
-        fn reload_keymap(&mut self, _content: &str) {}
+        fn reload_keymap(&mut self, _: &str) {}
     }
 
     impl SettingsHost for TestApp {
@@ -313,11 +313,11 @@ mod tests {
 
         fn keymap(&self) -> Rc<Keymap<Self>> { Rc::clone(&self.keymap) }
 
-        fn draw(&mut self, _frame: &mut Frame, _keymap: &Keymap<Self>) {}
+        fn draw(&mut self, _: &mut Frame, _: &Keymap<Self>) {}
 
-        fn click(&mut self, _position: Position) {}
+        fn click(&mut self, _: Position) {}
 
-        fn modal_key(&mut self, _keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        fn modal_key(&mut self, _: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
             if !self.modal_open {
                 return KeyOutcome::Unhandled;
             }
