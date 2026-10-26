@@ -6,16 +6,37 @@ use std::mem;
 use crossterm::event::KeyCode;
 
 use super::FavoritesHost;
-use super::FavoritesOverlayActionOutcome;
-use super::close_overlay;
+use super::FavoritesOverlay;
 use super::constants::FAVORITES_SCOPE;
 use super::constants::FAVORITES_SECTION;
-use super::report_application_outcome;
+use super::globals::push_scheduled_toast;
+use super::globals::report_closed_overlay_adjustment;
+use super::notice::deletion_refusal_message;
+use super::notice::favorite_adjustment_message;
+use crate::AppContext;
+use crate::AttractSettings;
 use crate::Bindings;
+use crate::FavoriteRemovalTarget;
+use crate::FavoritesMutationError;
+use crate::FavoritesRetryInstruction;
 use crate::Mode;
 use crate::Pane;
+use crate::SettingsApplicationOutcome;
 use crate::Shortcuts;
 use crate::TabStop;
+use crate::ToastStyle;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FavoritesOverlayActionOutcome {
+    Quiet,
+    Load(AttractSettings),
+    Close,
+}
+
+pub(super) struct FavoritesOverlayCloseCommit {
+    pub(super) removal_targets: Vec<FavoriteRemovalTarget>,
+    pub(super) retry:           FavoritesRetryInstruction,
+}
 
 crate::action_enum! {
     /// One thing a key asks the open favorites modal to do.
@@ -96,6 +117,45 @@ fn default_bindings() -> Bindings<FavoritesOverlayAction> {
         'x' => FavoritesOverlayAction::Delete,
         KeyCode::Esc => FavoritesOverlayAction::Close,
     }
+}
+
+fn close_overlay<A: FavoritesHost>(overlay: &mut FavoritesOverlay, app: &mut A) {
+    close_overlay_with(overlay, app, crate::remove_favorite::<A::Identity>);
+}
+
+pub(super) fn close_overlay_with<A: AppContext>(
+    overlay: &mut FavoritesOverlay,
+    app: &mut A,
+    mut remove: impl FnMut(FavoriteRemovalTarget) -> Result<(), FavoritesMutationError>,
+) {
+    let close_commit = overlay.begin_close();
+    for removal_target in close_commit.removal_targets {
+        if let Err(error) = remove(removal_target) {
+            let message = deletion_refusal_message(&close_commit.retry, &error);
+            push_scheduled_toast(app, "Favorite not deleted", &message, ToastStyle::Error);
+        }
+    }
+    overlay.finish_close();
+}
+
+fn report_application_outcome<A: AppContext>(
+    overlay: &mut FavoritesOverlay,
+    app: &mut A,
+    outcome: SettingsApplicationOutcome,
+) {
+    if !overlay.is_open() {
+        report_closed_overlay_adjustment(app, outcome);
+        return;
+    }
+    let SettingsApplicationOutcome::AppliedWithAdjustments {
+        requested,
+        effective,
+    } = outcome
+    else {
+        return;
+    };
+    let message = favorite_adjustment_message(requested, effective);
+    overlay.set_adjustment_notice(message);
 }
 
 #[cfg(test)]
