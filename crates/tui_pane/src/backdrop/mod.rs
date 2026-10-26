@@ -34,13 +34,13 @@ mod monitor;
 mod pixels;
 mod query;
 mod random;
+mod support;
 mod text;
 
 pub use band::BandDirection;
 pub use band::BandFraying;
 pub use band::BandSettings;
 pub use band::TravelingBand;
-use crossterm::terminal;
 pub use desktop::CaptureAttemptResult;
 pub use desktop::CaptureAttemptSequence;
 pub use desktop::CaptureAttemptTestCase;
@@ -72,8 +72,6 @@ pub use text::DriftingText;
 pub use text::TextDrift;
 pub use text::TextFill;
 pub use text::TextSettings;
-
-use self::constants::PIXEL_PRECISION;
 
 /// One captured colour per character cell over some rectangle of the
 /// terminal grid.
@@ -183,42 +181,4 @@ impl Backdrop {
             colors: vec![color; usize::from(area.width) * usize::from(area.height)],
         }
     }
-}
-
-/// How many pixels one character cell measures across and down, each
-/// scaled by [`PIXEL_PRECISION`], or [`None`] where the terminal will
-/// not say.
-///
-/// Wanted by any animation that has to hold a distance steady across
-/// the two axes: a cell is taller than it is wide, so the same count of
-/// them is a different distance on the screen depending on which way
-/// they stack. [`TravelingBand`] reads it to keep its depth when it
-/// turns, and [`ResolvingPixels`] to make a block read square.
-fn cell_pixels() -> Option<(u32, u32)> {
-    let size = terminal::window_size().ok()?;
-    if size.width == 0 || size.height == 0 || size.columns == 0 || size.rows == 0 {
-        return None;
-    }
-    Some((
-        u32::from(size.width) * PIXEL_PRECISION / u32::from(size.columns),
-        u32::from(size.height) * PIXEL_PRECISION / u32::from(size.rows),
-    ))
-}
-
-/// Smoothstep across `unit`: both ends where they were, and the travel
-/// between them slowest at either end and fastest in the middle.
-///
-/// The scale comes from the caller because the two readers hold their
-/// fractions on different ones -- [`DriftingText`] interpolates its
-/// lanes in a fixed point fine enough for a lane hundreds of lines
-/// deep, and [`ResolvingPixels`] carries its coarseness on the same
-/// byte the alpha it becomes is written on.
-fn smoothstep(fraction: u32, unit: u32) -> u32 {
-    let unit = u64::from(unit);
-    let along = u64::from(fraction).min(unit);
-    if unit == 0 {
-        return 0;
-    }
-    let eased = along * along * (3 * unit - 2 * along) / (unit * unit);
-    u32::try_from(eased).unwrap_or(fraction)
 }

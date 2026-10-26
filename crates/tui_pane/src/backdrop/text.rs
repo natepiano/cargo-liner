@@ -75,7 +75,7 @@ use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::TEXT_WAVE_SUBLINES_PER_SECOND;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
-use super::smoothstep;
+use super::support::smoothstep;
 use crate::theme;
 
 /// Whether the lines of a [`DriftingText`] travel as one or at speeds
