@@ -5,15 +5,11 @@ use super::constants::BLUE;
 use super::constants::BYTES_PER_PIXEL;
 use super::constants::GREEN;
 use super::constants::RED;
+use super::display;
 use super::display::Display;
-use super::display::active_displays;
-use super::display::backing_scale;
-use super::display::display_bounds;
-use super::display::display_under;
 use super::stream;
+use super::window;
 use super::window::Listed;
-use super::window::frontmost_window;
-use super::window::terminal_windows;
 use crate::backdrop::desktop::CaptureAttemptResult;
 use crate::backdrop::desktop::CaptureAttemptSequence;
 use crate::backdrop::desktop::CaptureAttemptWindowSelection;
@@ -38,7 +34,7 @@ pub(in crate::backdrop::desktop) fn capture(
     sequence: CaptureAttemptSequence,
 ) -> CaptureAttemptResult {
     let windows = Listed::on_screen();
-    let displays = active_displays();
+    let displays = display::active_displays();
     if displays.is_empty() {
         return candidate::capture_failure_before_window_selection(
             sequence,
@@ -51,7 +47,7 @@ pub(in crate::backdrop::desktop) fn capture(
             CaptureFailure::TerminalWindowNotFound,
         );
     }
-    let terminal_window_candidates = terminal_windows(&windows);
+    let terminal_window_candidates = window::terminal_windows(&windows);
     // `capture_window_target` carries the number pinned to this app's own window,
     // which `candidate::select_capture_window` looks for across all `windows`, not inside the
     // `terminal_window_candidates` set the terminal is thought to own. Which windows those are
@@ -72,7 +68,7 @@ pub(in crate::backdrop::desktop) fn capture(
         &terminal_window_candidates,
         |window: &Listed| window.number,
         || {
-            frontmost_window(
+            window::frontmost_window(
                 &terminal_window_candidates.windows,
                 &displays,
                 metrics.text_area,
@@ -101,9 +97,9 @@ fn capture_selected_window(
     displays: &[Display],
 ) -> Result<Desktop, CaptureFailure> {
     let window_id = chosen.number;
-    let display =
-        CaptureFailure::DisplayNotFound.classify_option(display_under(displays, chosen.bounds))?;
-    let display_frame = display_bounds(display);
+    let display = CaptureFailure::DisplayNotFound
+        .classify_option(display::display_under(displays, chosen.bounds))?;
+    let display_frame = display::display_bounds(display);
     // `stream::capture_display_bgra` is asked for the display's point size and
     // comes back at it, so one cell in points serves both the grid
     // the capture is reduced against and the frame the window is
@@ -113,7 +109,7 @@ fn capture_selected_window(
     // What the terminal reports is the one thing here that is not in points -- it answers in the
     // display's pixels -- so `backing_scale(display)` divides it before a cell comes out of it. See
     // [`Metrics::cell_points`].
-    let cell = metrics.cell_points(f64::from(backing_scale(display)));
+    let cell = metrics.cell_points(f64::from(display::backing_scale(display)));
     let output_size = (
         CaptureFailure::DisplayCaptureFailed
             .classify_option(points_to_u32(display_frame.size.width))?,

@@ -23,9 +23,8 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 
+use super::display;
 use super::display::Display;
-use super::display::backing_scale;
-use super::display::display_under;
 use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
@@ -525,7 +524,7 @@ pub(super) fn frontmost_window<'a>(
     // carrying both at once.
     let score = |window: &Listed| {
         let frame = window.bounds;
-        let scale = display_under(displays, frame).map_or(1, backing_scale);
+        let scale = display::display_under(displays, frame).map_or(1, display::backing_scale);
         mismatch(frame, text_pixels, scale)
     };
     windows

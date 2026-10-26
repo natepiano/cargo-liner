@@ -12,7 +12,6 @@ mod stream;
 mod window;
 
 pub(in crate::backdrop::desktop) use self::capture::capture;
-use self::capture::screen_capture_access_is_granted;
 use self::constants::BYTES_PER_PIXEL;
 pub(in crate::backdrop::desktop) use self::window::window_at;
 pub(in crate::backdrop::desktop) use self::window::window_frame;

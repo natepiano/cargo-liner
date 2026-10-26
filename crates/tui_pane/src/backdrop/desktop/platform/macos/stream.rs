@@ -291,7 +291,7 @@ static STREAMS: OnceLock<Mutex<HashMap<u32, DisplayStream>>> = OnceLock::new();
 /// single worker thread, so there is no contention to optimize, and holding it keeps the
 /// per-display entry consistent.
 ///
-/// [`screen_capture_access_is_granted`]: super::screen_capture_access_is_granted
+/// [`screen_capture_access_is_granted`]: super::capture::screen_capture_access_is_granted
 pub(super) fn capture_display_bgra(
     display_id: u32,
     output_size: (u32, u32),
