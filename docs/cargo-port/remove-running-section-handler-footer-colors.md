@@ -853,42 +853,24 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 33 — Every settings row you can scroll to, you can select  · status: done
 
-**Depends on:** Phase 32
+#### As-built
 
-#### Work Order
-
-**Goal:** in every cargo-liner app, when the settings list is taller than the screen, each row that you can scroll to can also be selected and activated, by key and by click.
-
-**Source:** the user, 2026-10-25, in cargo-port: "when i make it so the settings don't all fit on screen then scrolling is broken - i can't seem to select any row that is below the last row that fits on screen even though i can scroll to them". Showrunner ruling, 2026-10-25: a phase of its own after phase 32 and before phase 27. Fix the defect where it lives, in the shared code, so that all apps run one path.
-
-**Constraints from prior phases:**
-- The settings overlay is shared: `crates/tui_pane/src/overlays/settings.rs` (≈1196 lines). It owns `Viewport` (`viewport()` ≈261), `DrawnScrollOffset::{Undrawn, Drawn}` (≈132–170), the click mapping (≈294–301: drawn offset + row in the content area), `update_scroll` (≈325), `select_row` (≈353), page and home/end movement (≈363–387), line-wise up/down (≈392–412) and `viewport.set_len(selectable_count)` (≈433).
-- cargo-port has its own `crates/cargo-port/src/tui/settings.rs` (≈2327 lines): it adds padding after `render_rows`, computes its own scroll offset, and changes the selection through its own input and interaction paths. `crates/tui_pane/src/app_settings/draw.rs` draws the shared app settings. cargo-tile (`src/capture.rs`) and cargo-handler (`src/render/mod.rs`) reach the overlay through tui_pane. The defect can be in any of these; find it before naming the place.
-- The shared and port settings tests today are inline in implementation files. The tester writes new separate test modules.
-- tui_pane `CHANGELOG.md` and cargo-handler `CHANGELOG.md` are held by tile-fixes (reservation 01a16327): claim them `--after 01a16327`.
-
-**Spec:**
-1. Find the defect first, with red tests: reproduce it through cargo-port's real input path, then in tui_pane. A settings list taller than the viewport: scroll to the end, select and activate a row below the first screen by key, and then by click. Name the cause in the summary (for example, the selection clamped to the visible rows, or the scroll offset not added to the key or click index).
-2. Fix it where it lives. When the cause is in shared code (`tui_pane/src/overlays/settings.rs` or `tui_pane/src/app_settings/draw.rs`), fix it there, not in each app.
-3. If cargo-port has its own copy of the scroll, padding or selection code, remove it and use the shared code, so that all apps run one path.
-4. If the fix changes which record owns the scroll offset, write a short state model in this Work Order before the code: the record, and each path that changes it.
-5. Tests: the tests of spec 1, now green, in a separate shared settings regression module. One check in each of cargo-port, cargo-tile and cargo-handler, through the app's real settings dispatcher, that the app's settings list goes through that shared path (a list taller than the viewport: select and activate a row below the first screen by key and by click). Every test under one second.
-6. CHANGELOG lines (tui_pane and each app that changes): settings rows below the first screen can be selected.
+- cargo-port's settings overlay uses the shared settings scroll, navigation and selection. It adds no padding after `render_rows` and keeps no scroll offset of its own, so the painted rows and the click targets match.
+- `SettingsPane::change_selection` (`tui_pane/src/overlays/settings.rs`) is the one row-change path for `select_row`, navigation and row-count clamps. A row change ends an open edit, so a wheel move, a key or a forced selection cannot save the edit text into another setting.
+- `SettingsPane` keeps its `Viewport` private: `viewport()` is read-only, and `set_content_area`, `set_scroll_offset` and `set_hovered` set layout and hover. No caller outside tui_pane can change the selected row or the row count.
+- `SettingsHost::settings_row_count` is required. `SettingsNavigation::dispatcher` sets the count before movement, so a key pressed before the first draw reaches every row. `SettingsRows` gives the selectable count in O(1).
+- cargo-port `force_settings_if_unconfigured` keeps settings that are already open open, and selects IncludeDirs with `select_row`.
 
 **Files:**
-- `crates/tui_pane/src/overlays/settings.rs`, `crates/tui_pane/src/app_settings/draw.rs`, `crates/tui_pane/CHANGELOG.md`
-- `crates/tui_pane/src/overlays/settings_scroll_tests.rs` — new shared settings regression module, registered in `overlays/settings.rs`
-- `crates/cargo-port/src/tui/settings.rs`, `crates/cargo-port/src/tui/input/dispatch.rs`, `crates/cargo-port/src/tui/interaction.rs`, `crates/cargo-port/CHANGELOG.md` — the settings drawing, input and interaction adapters
-- `crates/cargo-port/src/tui/settings_scroll_tests.rs`, `crates/cargo-tile/src/settings_scroll_tests.rs`, `crates/cargo-handler/src/settings_scroll_tests.rs` — new app tests through each real settings dispatcher, registered in each app's settings module (`crates/cargo-tile/src/settings.rs`, `crates/cargo-handler/src/settings.rs`)
-- `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — only if that app's code changes
+- `crates/tui_pane/src/overlays/settings.rs` — settings pane, row-change path, layout setters
+- `crates/tui_pane/src/app_settings/navigation.rs`, `crates/tui_pane/src/app_settings/rows.rs`, `crates/tui_pane/src/app_settings/draw.rs` — row count before movement; drawing through the layout setters
+- `crates/cargo-port/src/tui/settings.rs`, `crates/cargo-port/src/tui/input/dispatch.rs`, `crates/cargo-port/src/tui/interaction.rs`, `crates/cargo-port/src/tui/app/mod.rs` — cargo-port adapters on the shared path
+- `crates/cargo-tile/src/app.rs`, `crates/cargo-handler/src/app.rs` — `settings_row_count`
+- `crates/tui_pane/src/overlays/settings_scroll_tests.rs` and `settings_scroll_tests.rs` in cargo-port, cargo-tile and cargo-handler — regressions through each real settings dispatcher; `crates/tui_pane/tests/settings_scroll.rs` uses the public API
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the shared settings behavior, the cargo-port drawing, input and interaction adapters, the test module registrations and the CHANGELOGs; hub: `crates/tui_pane/src/overlays/settings.rs`.
-- `test` — the separate shared settings regression module and the app tests through each app's real settings dispatcher.
+**Gotchas:** `GlobalAction::OpenSettings` toggles; a caller that must keep settings open checks first. In cargo-port the wheel moves the selection, not the view.
 
-**Acceptance gate:** `verify.sh lint` and `verify.sh test` clean for tui_pane, cargo-port, cargo-tile and cargo-handler. No test takes a second. Live in cargo-port: make the settings list taller than the screen, scroll down, select and change a row below the first screen.
-
-**Change-Review:** cargo-port settings rows below the first screen can be selected | On the Mac or natedev, run cargo-port in a short terminal, open settings, scroll down | A row below the first screen can be selected and changed
+**Ruled out:** per-call-site `select_row` fixes without removing `viewport_mut` (the type removal closes the whole class).
 
 ### Phase 27 — Narrow tiles keep their core columns  · status: todo
 
