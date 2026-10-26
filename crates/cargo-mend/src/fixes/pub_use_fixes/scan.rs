@@ -8,6 +8,7 @@ use anyhow::Result;
 use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
+use super::validated_plan::ParentModuleFile;
 use super::validated_plan::ValidatedPubUsePlan;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
@@ -184,10 +185,7 @@ fn analyze_pub_use_candidates(
         target_item_path.push(fact.child_module.clone());
         target_item_path.push(fact.child_item_name.clone());
 
-        let parent_boundary = ParentBoundaryKey {
-            parent_module: fact.parent_module.clone(),
-            ..parent_export.parent_boundary
-        };
+        let parent_boundary = parent_export.boundary(fact.parent_module.clone());
         let candidate = PubUseCandidate {
             child_file: fact.child_file.clone(),
             child_line: fact.child_line,
@@ -198,7 +196,7 @@ fn analyze_pub_use_candidates(
         };
         match screen_candidate(candidate, &fact.child_item_name, child_source.text())? {
             CandidateScreening::Accept(narrowable) => {
-                supported_plans.push(build_validated_plan(narrowable, parent_boundary));
+                supported_plans.push(build_validated_plan(narrowable, parent_boundary)?);
             },
             // `CandidateScreening::Skip` increments `skipped`: a screened-out candidate still
             // reaches the user as a skip because the finding advertised `FixSupport::PubUse`;
@@ -239,7 +237,7 @@ fn screen_candidate(
 fn build_validated_plan(
     narrowable: NarrowablePubUseCandidate,
     parent_boundary: ParentBoundaryKey,
-) -> ValidatedPubUsePlan {
+) -> Result<ValidatedPubUsePlan> {
     let NarrowablePubUseCandidate {
         candidate,
         bare_pub_keyword,
@@ -251,15 +249,15 @@ fn build_validated_plan(
         replacement:  "pub(super)".to_string(),
         import_group: None,
     };
-    ValidatedPubUsePlan {
-        parent_boundary,
+    Ok(ValidatedPubUsePlan {
+        parent_boundary: ParentModuleFile::new(parent_boundary)?,
         child_file: candidate.child_file,
         child_module: candidate.child_module,
         exported_name: candidate.exported_name,
         parent_module_path: candidate.parent_module_path,
         target_item_path: candidate.target_item_path,
         child_narrowing,
-    }
+    })
 }
 
 fn child_visibility_state(source: &str, line: usize) -> Result<ChildVisibilityState> {
@@ -310,7 +308,7 @@ fn group_parent_pub_use_plans(
     let mut groups = BTreeMap::new();
     for plan in plans {
         groups
-            .entry(plan.parent_boundary.clone())
+            .entry(plan.parent_boundary.boundary().clone())
             .or_insert_with(Vec::new)
             .push((plan.child_module.clone(), plan.exported_name.clone()));
     }
@@ -319,4 +317,61 @@ fn group_parent_pub_use_plans(
 
 fn normalize_rel_path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::BarePubKeyword;
+    use super::NarrowablePubUseCandidate;
+    use super::PubUseCandidate;
+    use super::build_validated_plan;
+    use super::group_parent_pub_use_plans;
+    use crate::fixes::pub_use_fixes::parent_boundary::ParentBoundaryKey;
+
+    #[test]
+    fn plan_validation_preserves_narrowing_and_parent_export_groups() -> anyhow::Result<()> {
+        let mut plans = Vec::new();
+        for (name, start) in [("First", 0), ("Second", 30)] {
+            let candidate = PubUseCandidate {
+                child_file:         PathBuf::from("src/child.rs"),
+                child_line:         1,
+                child_module:       "child".to_string(),
+                exported_name:      name.to_string(),
+                parent_module_path: Vec::new(),
+                target_item_path:   vec!["child".to_string(), name.to_string()],
+            };
+            let boundary = ParentBoundaryKey {
+                parent_module: PathBuf::from("src/lib.rs"),
+                item_start:    start,
+                item_end:      start + 20,
+            };
+            let plan = build_validated_plan(
+                NarrowablePubUseCandidate {
+                    candidate,
+                    bare_pub_keyword: BarePubKeyword { start: 0, end: 3 },
+                },
+                boundary.clone(),
+            )?;
+            assert_eq!(plan.parent_boundary.boundary(), &boundary);
+            assert_eq!(plan.child_narrowing.path, PathBuf::from("src/child.rs"));
+            assert_eq!(
+                (plan.child_narrowing.start, plan.child_narrowing.end),
+                (0, 3)
+            );
+            assert_eq!(plan.child_narrowing.replacement, "pub(super)");
+            assert!(plan.child_narrowing.import_group.is_none());
+            plans.push(plan);
+        }
+        let groups = group_parent_pub_use_plans(&plans);
+        assert_eq!(groups.len(), 2);
+        for plan in &plans {
+            assert_eq!(
+                groups[plan.parent_boundary.boundary()],
+                vec![(plan.child_module.clone(), plan.exported_name.clone())]
+            );
+        }
+        Ok(())
+    }
 }

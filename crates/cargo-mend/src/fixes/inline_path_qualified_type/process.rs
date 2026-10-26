@@ -3,13 +3,17 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::offsets;
+use anyhow::Context;
+use anyhow::Result;
+use proc_macro2::LineColumn;
+
 use super::scope;
 use super::scope::ScopeInfo;
 use super::visitor::InlinePathOccurrence;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
@@ -20,8 +24,6 @@ use crate::rust_syntax::PathAnchor;
 pub(super) struct OccurrenceContext<'a> {
     pub(super) path:            &'a Path,
     pub(super) display_path:    &'a str,
-    pub(super) text:            &'a str,
-    pub(super) offsets:         &'a [usize],
     pub(super) scopes:          &'a [ScopeInfo],
     pub(super) collision_names: &'a BTreeSet<String>,
 }
@@ -36,9 +38,33 @@ impl ImportAttributePlan {
     fn get(&self, key: &ImportKey) -> Option<&ConditionalAttributes> { self.attributes.get(key) }
 }
 
-pub(super) struct ResolvedOccurrence {
-    byte_start:             usize,
-    byte_end:               usize,
+/// An occurrence span checked against the source that supplies its diagnostic line.
+/// Missing lines must be rejected during resolution, rather than reported with fabricated
+/// empty diagnostic text. Byte offsets and character coordinates describe that same span.
+struct OccurrenceLocation<'a> {
+    byte_start:  usize,
+    byte_end:    usize,
+    start:       LineColumn,
+    source_line: &'a str,
+}
+
+impl<'a> OccurrenceLocation<'a> {
+    fn new(source: &ImportSource<'a>, start: LineColumn, end: LineColumn) -> Result<Self> {
+        let location = source
+            .locate(start, end)
+            .context("invalid inline path source span")?;
+        Ok(Self {
+            byte_start: location.start(),
+            byte_end: location.end(),
+            start,
+            source_line: location.source_line(),
+        })
+    }
+}
+
+pub(super) struct ResolvedOccurrence<'a> {
+    occurrence:             &'a InlinePathOccurrence,
+    location:               OccurrenceLocation<'a>,
     scope_id:               Option<usize>,
     pub(super) import_path: String,
     conditional_attributes: ConditionalAttributes,
@@ -73,19 +99,17 @@ impl ImportResolution {
 }
 
 pub(super) fn plan_import_attributes(
-    occurrences: &[InlinePathOccurrence],
-    ctx: &OccurrenceContext<'_>,
+    occurrences: &[ResolvedOccurrence<'_>],
 ) -> ImportAttributePlan {
     let mut grouped: BTreeMap<ImportKey, BTreeSet<ConditionalAttributes>> = BTreeMap::new();
     for occurrence in occurrences {
-        let resolved = resolve_occurrence(occurrence, ctx);
-        let Some(scope_id) = resolved.scope_id else {
+        let Some(scope_id) = occurrence.scope_id else {
             continue;
         };
         grouped
-            .entry((scope_id, resolved.import_path))
+            .entry((scope_id, occurrence.import_path.clone()))
             .or_default()
-            .insert(resolved.conditional_attributes);
+            .insert(occurrence.conditional_attributes.clone());
     }
 
     let mut attributes = BTreeMap::new();
@@ -98,13 +122,14 @@ pub(super) fn plan_import_attributes(
 }
 
 pub(super) fn process_occurrence(
-    occ: &InlinePathOccurrence,
+    resolved: &ResolvedOccurrence<'_>,
     ctx: &OccurrenceContext<'_>,
     import_attribute_plan: &ImportAttributePlan,
     inserted_use_paths: &mut BTreeSet<(usize, String)>,
     findings: &mut Vec<Finding>,
     fixes: &mut Vec<UseFix>,
 ) {
+    let occ = resolved.occurrence;
     if ctx.collision_names.contains(&occ.import_name) {
         return;
     }
@@ -119,7 +144,6 @@ pub(super) fn process_occurrence(
         return;
     }
 
-    let resolved = resolve_occurrence(occ, ctx);
     let import_path = &resolved.import_path;
     let occurrence_scope = match resolved.scope_id {
         Some(id) => {
@@ -137,7 +161,7 @@ pub(super) fn process_occurrence(
 
     match occurrence_scope {
         OccurrenceScope::Unscoped => {
-            record_occurrence(occ, ctx, &resolved, findings, fixes);
+            record_occurrence(ctx, resolved, findings, fixes);
         },
         OccurrenceScope::Scoped {
             id,
@@ -155,7 +179,7 @@ pub(super) fn process_occurrence(
             ) {
                 return;
             }
-            let group = record_occurrence(occ, ctx, &resolved, findings, fixes);
+            let group = record_occurrence(ctx, resolved, findings, fixes);
             if !scope.existing_imports.contains_key(import_path)
                 && !scope.existing_reexport_names.contains_key(&occ.import_name)
                 && inserted_use_paths.insert((id, import_path.clone()))
@@ -176,37 +200,30 @@ pub(super) fn process_occurrence(
 }
 
 fn record_occurrence(
-    occ: &InlinePathOccurrence,
     ctx: &OccurrenceContext<'_>,
-    resolved: &ResolvedOccurrence,
+    resolved: &ResolvedOccurrence<'_>,
     findings: &mut Vec<Finding>,
     fixes: &mut Vec<UseFix>,
 ) -> ImportGroup {
+    let occ = resolved.occurrence;
     let import_path = &resolved.import_path;
 
-    let source_line = ctx
-        .text
-        .lines()
-        .nth(occ.span_start.line.saturating_sub(1))
-        .unwrap_or_default()
-        .to_string();
-
     findings.push(Finding {
-        severity: Severity::Warning,
+        severity:        Severity::Warning,
         diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
-        path: ctx.display_path.to_string(),
-        line: occ.span_start.line,
-        column: occ.span_start.column + 1,
-        highlight_len: occ.full_path.len().max(1),
-        source_line,
-        item: None,
-        message: format!(
+        path:            ctx.display_path.to_string(),
+        line:            resolved.location.start.line,
+        column:          resolved.location.start.column + 1,
+        highlight_len:   occ.full_path.len().max(1),
+        source_line:     resolved.location.source_line.to_string(),
+        item:            None,
+        message:         format!(
             "use a `use` import for `{}` instead of inline path",
             occ.import_name
         ),
-        suggestion: Some(format!("consider adding: `use {import_path};`")),
-        fix_support: FixSupport::InlinePathQualifiedType,
-        related: None,
+        suggestion:      Some(format!("consider adding: `use {import_path};`")),
+        fix_support:     FixSupport::InlinePathQualifiedType,
+        related:         None,
         item_visibility: ItemVisibility::default(),
     });
 
@@ -219,8 +236,8 @@ fn record_occurrence(
 
     fixes.push(UseFix {
         path:         ctx.path.to_path_buf(),
-        start:        resolved.byte_start,
-        end:          resolved.byte_end,
+        start:        resolved.location.byte_start,
+        end:          resolved.location.byte_end,
         replacement:  occ.replacement.clone(),
         import_group: Some(group.clone()),
     });
@@ -228,13 +245,13 @@ fn record_occurrence(
     group
 }
 
-pub(super) fn resolve_occurrence(
-    occurrence: &InlinePathOccurrence,
+pub(super) fn resolve_occurrence<'a>(
+    occurrence: &'a InlinePathOccurrence,
     ctx: &OccurrenceContext<'_>,
-) -> ResolvedOccurrence {
-    let byte_start = offsets::offset(ctx.text, ctx.offsets, occurrence.span_start);
-    let byte_end = offsets::offset(ctx.text, ctx.offsets, occurrence.span_end);
-    let scope_id = scope::find_innermost_scope(ctx.scopes, byte_start);
+    source: &ImportSource<'a>,
+) -> Result<ResolvedOccurrence<'a>> {
+    let location = OccurrenceLocation::new(source, occurrence.span_start, occurrence.span_end)?;
+    let scope_id = scope::find_innermost_scope(ctx.scopes, location.byte_start);
     let scope = scope_id.map(|id| &ctx.scopes[id]);
 
     // `absolutize_import_path` resolves a partial path (`fmt::Display` written because `use
@@ -275,13 +292,13 @@ pub(super) fn resolve_occurrence(
     let (import_path, mut conditional_attributes) = import_path.into_parts();
     conditional_attributes.extend(occurrence.conditional_attributes.clone());
 
-    ResolvedOccurrence {
-        byte_start,
-        byte_end,
+    Ok(ResolvedOccurrence {
+        occurrence,
+        location,
         scope_id,
         import_path,
         conditional_attributes,
-    }
+    })
 }
 
 /// Names with prelude meaning. Importing any of these from a non-prelude
@@ -454,9 +471,12 @@ mod tests {
     use super::ImportAttributePlan;
     use super::ImportResolution;
     use super::OccurrenceContext;
+    use super::OccurrenceLocation;
     use super::absolutize_import_path;
     use super::process_occurrence;
+    use super::resolve_occurrence;
     use crate::fixes::imports::ConditionalAttributes;
+    use crate::fixes::imports::ImportSource;
     use crate::fixes::inline_path_qualified_type::visitor::InlinePathOccurrence;
 
     #[test]
@@ -479,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unscoped_occurrence_rewrites_without_inserting_an_import() {
+    fn an_unscoped_occurrence_rewrites_without_inserting_an_import() -> anyhow::Result<()> {
         let text = "ext::Widget";
         let occurrence = InlinePathOccurrence {
             full_path:              text.to_string(),
@@ -497,17 +517,17 @@ mod tests {
             conditional_attributes: ConditionalAttributes::default(),
         };
         let ctx = OccurrenceContext {
-            path: Path::new("src/lib.rs"),
-            display_path: "src/lib.rs",
-            text,
-            offsets: &[0],
-            scopes: &[],
+            path:            Path::new("src/lib.rs"),
+            display_path:    "src/lib.rs",
+            scopes:          &[],
             collision_names: &BTreeSet::new(),
         };
         let mut findings = Vec::new();
         let mut fixes = Vec::new();
+        let source = ImportSource::new(text);
+        let resolved = resolve_occurrence(&occurrence, &ctx, &source)?;
         process_occurrence(
-            &occurrence,
+            &resolved,
             &ctx,
             &ImportAttributePlan {
                 attributes: BTreeMap::new(),
@@ -520,5 +540,29 @@ mod tests {
         assert_eq!(fixes.len(), 1);
         assert_eq!((fixes[0].start, fixes[0].end), (0, text.len()));
         assert_eq!(fixes[0].replacement, "Widget");
+        assert_eq!(findings[0].source_line, text);
+        Ok(())
+    }
+
+    #[test]
+    fn occurrence_locations_reject_invalid_coordinates_and_keep_real_lines() -> anyhow::Result<()> {
+        let text = "// é\nα::Widget\n";
+        let source = ImportSource::new(text);
+        let at = |line, column| LineColumn { line, column };
+        for (start, end) in [
+            (at(0, 0), at(1, 0)),
+            (at(4, 0), at(4, 0)),
+            (at(2, 10), at(2, 10)),
+            (at(2, 2), at(2, 1)),
+        ] {
+            assert!(OccurrenceLocation::new(&source, start, end).is_err());
+        }
+        let location = OccurrenceLocation::new(&source, at(2, 0), at(2, 9))?;
+        assert_eq!(location.source_line, "α::Widget");
+        assert_eq!(&text[location.byte_start..location.byte_end], "α::Widget");
+        let empty = OccurrenceLocation::new(&source, at(3, 0), at(3, 0))?;
+        assert_eq!(empty.source_line, "");
+        assert_eq!(empty.byte_start, text.len());
+        Ok(())
     }
 }
