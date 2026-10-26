@@ -46,7 +46,6 @@ use ratatui::style::Color;
 
 use super::Backdrop;
 use super::BandDirection;
-use super::cell_pixels;
 use super::constants::DEFAULT_BLOCK_COLUMNS;
 use super::constants::DEFAULT_PIXEL_SPEED;
 use super::constants::DEFAULT_PIXEL_WAVE_PERCENT;
@@ -64,7 +63,8 @@ use super::constants::SHADES;
 use super::constants::SUBCELLS_PER_CELL;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
-use super::smoothstep;
+use super::support::cell_pixels;
+use super::support::smoothstep;
 use crate::theme;
 
 /// Which of the grid's two axes a wave of coarseness sweeps along.

@@ -20,9 +20,12 @@
 
 mod candidate;
 mod capture_attempt;
+mod placement;
 mod platform;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod reduction;
+mod support;
+mod window_frame;
 
 use std::fmt::Formatter;
 
@@ -42,8 +45,11 @@ pub use self::capture_attempt::CaptureFailure;
 pub use self::capture_attempt::CaptureWindowSelectionMethod;
 pub use self::capture_attempt::CompletedCaptureAttemptDiagnostic;
 pub use self::capture_attempt::TerminalWindowCandidateSource;
+pub(super) use self::placement::Placement;
 #[cfg(target_os = "linux")]
 pub use self::platform::kwin_evaluate;
+use self::support::cell_index;
+pub(super) use self::window_frame::Frame;
 
 /// What the terminal reports about its own grid.
 ///
@@ -114,32 +120,6 @@ impl Metrics {
             f64::from(self.text_area.1) / scale / f64::from(self.cells.1),
         )
     }
-}
-
-/// Where a window stands, in the window server's global point space.
-///
-/// A rectangle of four numbers rather than the platform's own type, so
-/// that the thread asking the window server where the terminal is can
-/// hand the answer back without any platform handle crossing with it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Frame {
-    /// The frame's top-left corner.
-    pub(super) origin: (f64, f64),
-    /// The frame's width and height.
-    pub(super) size:   (f64, f64),
-}
-
-/// Where this terminal's character grid sits on the display a
-/// [`Desktop`] covers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Placement {
-    /// The column of the display's grid that the terminal's own column
-    /// zero falls in. Signed, because a window dragged past the left
-    /// edge puts its first column off the display.
-    column: i32,
-    /// The row of the display's grid that the terminal's own row zero
-    /// falls in.
-    row:    i32,
 }
 
 /// One display's desktop, reduced to one colour per character cell.
@@ -311,22 +291,6 @@ pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
 pub(super) fn window_at(origin: (f64, f64)) -> TerminalWindowSearchOutcome {
     platform::window_at(origin)
 }
-
-/// A distance measured in cells, as a whole number of them.
-///
-/// The window server measures in floating-point points, and a
-/// character cell is a font advance that divides into them evenly
-/// only by accident, so a cell index is arrived at as a float and
-/// has to be met as one somewhere. This is that place, and the
-/// rounding it does is the reason a window dragged by less than a
-/// cell does not change what is drawn.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "rounding points to whole cells is what this converts, and \
-              a float too large to be a cell index saturates to one no \
-              display can hold, which the bounds check rejects"
-)]
-fn cell_index(cells: f64) -> Option<i32> { cells.is_finite().then(|| cells.round() as i32) }
 
 impl std::fmt::Debug for Desktop {
     /// Without the colours, which run to tens of thousands of entries
