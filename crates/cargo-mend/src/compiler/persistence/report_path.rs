@@ -21,14 +21,19 @@ mod tests {
     use std::path::Path;
 
     use super::report_path_for_metadata;
+    use crate::compiler::constants::METADATA_FILE_EXTENSION;
+    use crate::compiler::constants::REPORT_FILE_EXTENSION;
 
     #[test]
     fn report_path_keeps_the_unit_id_and_directory() {
-        let metadata_path = Path::new("/target/debug/deps/libmember-cc3113e9bc221183.rmeta");
+        let metadata_path =
+            format!("/target/debug/deps/libmember-cc3113e9bc221183.{METADATA_FILE_EXTENSION}");
 
         assert_eq!(
-            report_path_for_metadata(metadata_path),
-            Path::new("/target/debug/deps/libmember-cc3113e9bc221183.mend.json")
+            report_path_for_metadata(Path::new(&metadata_path)),
+            Path::new(&format!(
+                "/target/debug/deps/libmember-cc3113e9bc221183.{REPORT_FILE_EXTENSION}"
+            ))
         );
     }
 }
