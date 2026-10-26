@@ -677,9 +677,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `TestProcessGroup` drops a duplicate cleanup shell. It keeps the whole-group kill, the drain of both pipes and the bounded reap.
 - The process-start pin went from 46,393 to 38,741 starts, from a complete Mac capture with no unresolved product start. `lock_diagnostic` (macOS `lsof` on a lock refusal) is its own origin, with 18 starts in 15 tests and ceiling 18. `berth` stays at 3,262 starts, above the original 3,174 but below the 3,281 that phase 22 accepted.
 - A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
-- Spec 8, partial (229 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.7, reconcile 51.1, claim 31.7, post-tool-use 46.8, release 50.6, gate 41.0 ms), against before medians of 3.0–8.8 s. The full table goes into `docs/cargo-berth/as-built/check-under-load.md` with the last 11 samples.
+- Spec 8 (240 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.5, reconcile 33.5, claim 27.5, post-tool-use 29.4, release 49.2, gate 35.0 ms), against before medians of 2.9–8.7 s. The full table is in `docs/cargo-berth/as-built/check-under-load.md`.
 
-**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the last 11 lock-hold samples, the cold Mac timing compared with 88.730 s and 114.970 s, and the cold Mac run with every test under 1 s. hana's tests kept the Mac above load 10. The `mac` seat runs them when the Mac is quiet and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
+**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the cold Mac timing on `bf27c025` compared with 88.730 s and 114.970 s, and the cold Mac run on `fde451aa` with every test under 1 s. The first attempt found a phase 22 drift test hung for four days (the cause phase 24 fixed; phase 27 bounds the wait). The `mac` seat runs both when the Mac is free and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
 
 **Files:**
 - `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/support/` — shared seeds and recorded histories
@@ -722,34 +722,39 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 26 — The cargo-berth test-support suite passes when `/tmp` is on another filesystem  · status: done
 
-**Why:** every main CI run since 2026-10-23 23:31 UTC fails `directory_snapshot::tests::shared_script_replacement_keeps_its_other_copy_and_mutable_files_private` (`directory_snapshot.rs:252`, inode assert). `ubuntu-latest` moved from 24.04 to 26.04. On 26.04, `/tmp` is on a filesystem other than `target`. `ImmutableShellExecutable::link` then copies the script for each name, by design, but the test asserts a hard link.
+#### As-built
 
-**Work Order:**
-1. The test's root is a private directory on the fixture cache's filesystem (`tempfile::tempdir_in` under `fixture_cache_root`'s target, or a shared helper for it), so the hard link is the path under test on every host. The cross-filesystem copy keeps its own test (`shared_shell_scripts_restore_across_filesystems`).
-2. Find every other fixture that hard-links from the cache into a `TMPDIR` directory. On a host where `/tmp` is on another device, each of them copies the file for each test, which costs time. Put their roots on the cache's device too, through the same helper.
-3. Any other test that asserts a hard link to a `TMPDIR` destination gets the same fix.
+- Main CI failed from 2026-10-23 because `ubuntu-latest` 26.04 puts `/tmp` on a filesystem other than `target`. There the shared script installer copies instead of hard-linking, by design, but its test asserted a hard link.
+- `fixture_tempdir` (`crates/cargo-berth-test-support/src/fixture_directory.rs`) gives a private `TempDir` beside `fixture_cache_root`, so cached executables hard-link on every host. The failing test, the repository templates, the Git seed copies, the prepared integration pairs and the wrapper-script roots in `board`, `drift`, `edges`, `gate` and the reanchoring fixtures use it. No fixture copies a cached executable for each test.
+- The cross-filesystem copy keeps its own test on `/dev/shm`. With `TMPDIR` on `/dev/shm` the old test fails (inode mismatch) and the new one passes with 3 hard links and 0 copies. Checkpoint `3ffeb199`, merged as `10a7caef`.
 
-**Verification:** `cargo-berth-test-support` and `cargo-berth` suites pass, each test under 1 s. One test proves the fix with `TMPDIR` on another filesystem (`/dev/shm` on Linux).
+**Binds later work:** A test root that receives a hard link from the fixture cache comes from `fixture_tempdir`, never from `tempfile::tempdir`.
 
 ### Phase 27 — A cargo-berth wait on a child process fails fast with a clear message  · status: done
 
-**Why:** a phase 22 drift test (`session_mapping_attributes_post_commit_widening_with_two_active_reservations`) hung on the Mac for 5 days. Its `cargo-berth drift --full --json` child waited in `gix::open_opts` for the installation-config probe's output. A concurrent `git cat-file --batch-check` child held an inherited copy of the probe's pipe writer, so EOF never came. Phase 24 removed this cause (`with_spawn_lock` around `gix::open_opts`). But nothing bounds the wait: the next cause of the same kind hangs again with no message. Showrunner, 2026-10-25: a hang is a defect; it must fail fast with a clear message, under 1 s.
+#### As-built
 
-**Work Order:**
-1. Every place where cargo-berth waits for a child process's output or exit has a deadline. When the deadline passes, cargo-berth stops the child and returns an error that names the command and what it waited for. It never waits without a bound.
-2. A regression test makes a child keep the pipe open (an inherited writer that never closes) and proves that cargo-berth returns the error in under 1 s.
-3. A test that hangs ends with its own name and a clear message. Bound the test-support process waits (`TestProcessGroup` and the fixture builders) and set a nextest `slow-timeout` with `terminate-after` for the cargo-berth packages.
+- Cause: a phase 22 drift test hung for 5 days on the Mac. `gix`'s installation-config probe waited for EOF while a concurrent `cat-file` child held an inherited copy of its pipe writer. Phase 24 removed that cause; this phase bounds every wait, so the next cause fails with a message.
+- `src/git/child.rs` is one shared child runtime: process-group ownership, output and exit collection with a deadline, and a named timeout error that kills the process group (`rustix::process::kill_process_group`, no unsafe code) and reaps the child. `cargo-berth-test-support` uses the same runtime (`command_deadline.rs`, `TestProcessGroup`).
+- `src/git/protocol.rs` bounds the persistent request and reply exchanges (`cat-file`, retention transactions). `src/git/installation.rs` runs the installation-config discovery as a bounded child and passes the path to `gix`, so `gix` starts no probe of its own. The phase 24 spawn lock stays.
+- Deadlines: `GIT_COMMAND_DEADLINE` 30 s for Git commands and object reads (slow Git under load still passes); `CONTROL_REPLY_DEADLINE` 750 ms for config discovery, control replies and the macOS `lsof` scan; `PIPE_EOF_DEADLINE` and `REAP_DEADLINE` 250 ms after the child exits.
+- `.config/nextest.toml` ends a hung `cargo-berth` or `cargo-berth-test-support` test after 40 s (5 s × 8) and names it.
+- `inherited_child_pipe_returns_a_named_timeout` fails on the old tree and passes in 0.27 s. Checkpoints `e0466d16` and `1dc9c3f7`, merged with main as `11a4771f`, integrated as `c889a5e6`.
 
-**Verification:** `cargo-berth` and `cargo-berth-test-support` suites pass, each test under 1 s. The regression test fails on the tree before the fix.
+**Binds later work:** A new wait on a child process goes through `git/child.rs` with a named deadline. A persistent Git exchange goes through `git/protocol.rs`. No product code calls `Command::output` or `wait` on a child directly.
+
+**Gotchas:**
+- At natedev load 50–80, `eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue` once waited 2.24 s against its 2 s bound; alone it passed.
 
 ### Phase 28 — A lost phase reservation record is restored from berth's ledger, never by hand  · status: done
 
-**Why:** demo's phase 34h record (`phases/34h/delegated_phase_reservation_state.json`) went missing, so the berth edit hook refused demo's test edit. Demo then wrote the record by hand, and auto mode refused it as a forged guard record. User (via hana): "Then we need an ability built into berth to allow fixing things like this." Showrunner, 2026-10-25: this phase comes before phase 27.
+#### As-built
 
-**Work Order:**
-1. `phase_reservation.py repair --session-dir S --phase P --repo R` writes the record only from berth's ledger. It reads berth's session map for the phase session, confirms on the board that the reservation is active, and writes `Active`. The caller cannot name a reservation. Each repair appends one line to `phases/<P>/reservation_repairs.log`.
-2. When there is no live reservation, it writes nothing, exits 2, and prints the exact commands that open the phase again.
-3. The edit hook's refusal for a phase with no record names the repair command.
-4. The record and the hook live in `~/.claude/scripts`, which natedev owns. The worker builds the change on a scratch copy and the showrunner routes the patch to natedev.
+- `phase_reservation.py repair --session-dir S --phase P --repo R` writes the phase record only from berth's ledger. It reads berth's session map for the phase session, confirms on the board that the reservation is active, and writes `Active`. The caller cannot name a reservation. Each repair appends one line to `phases/<P>/reservation_repairs.log`.
+- With no live reservation it writes nothing, exits 2 and prints the commands that open the phase again.
+- The edit hook (`hooks/pre-tool-use-berth.py`) names the repair command when it refuses an edit for a phase with no record. A finished phase, the checkpoint window and a final-gate phase do not count as a lost record, and an unreadable recorder state does not crash the hook.
+- `OpenPhase.phase` changed meaning; `review_tree.py` and `guilds/roles.py` were updated with it.
+- Built in `~/.claude` by natedev's builds unit from this unit's patch, with 3 review fixes: `644ef5d6`, merged as `fa8a7bb5`.
 
-**Verification:** `test_phase_reservation.py` and `test_berth_hook.py` pass on the scratch copy, with new tests for a lost record with a live reservation, no reservation and a released reservation.
+**Gotchas:**
+- A change to what a shared type or field means in `~/.claude/scripts` needs a search of every user first; the first patch broke two callers outside its file set.
