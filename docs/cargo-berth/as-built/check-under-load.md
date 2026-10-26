@@ -203,3 +203,38 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 - **Observation stays under the lock.** Moving it out would shorten the hold further but needs a preflight-and-validate design; whether that follows depends on a new trace of the remaining cost.
 - **Busy answers as busy.** Reporting a reconcile failure as `blocked_by_overlap` with no holder sent the caller to resolve an overlap that did not exist. `contention`, exit 6, tells it to retry.
 - **One fix point.** Both harnesses reach `check::execute`, so a change there covers Claude Code and Codex.
+
+## Phase 24: Mac measurements
+
+The quiet lock-hold measurement is complete. It has 20 pairs for each of six paths, or 240 samples. The before tree is `0dd75d3c`. The after tree is the exact phase-start archive `bf27c025`. A resumed run recovered records saved before an SSH failure. No sample process remained alive when the run resumed.
+
+Each value is the longest lock hold in one command. The p95 is the nearest-rank percentile of 20 samples. All accepted samples have load below 10. All valid outliers are included. Reconstruction commands are excluded. Each after-change p95 is below 100 ms.
+
+| Path | Side | Samples | Median (ms) | p95 (ms) | Maximum (ms) | Load range | Expected decision |
+|---|---|---:|---:|---:|---:|---|---|
+| repair | before | 20 | 5498.762 | 8650.217 | 8772.874 | 2.768–9.518 | Exit 0; success |
+| repair | after | 20 | 5.972 | 7.518 | 7.729 | 2.961–7.541 | Exit 0; success |
+| reconcile | before | 20 | 8726.289 | 13238.593 | 16550.776 | 2.604–7.184 | Exit 0; success |
+| reconcile | after | 20 | 25.889 | 33.458 | 51.062 | 1.453–9.398 | Exit 0; success |
+| claim | before | 20 | 3584.033 | 5400.983 | 7373.506 | 2.555–9.800 | Exit 0; success |
+| claim | after | 20 | 20.573 | 27.461 | 31.683 | 1.530–9.401 | Exit 0; success |
+| post-tool-use | before | 20 | 2935.513 | 4505.761 | 4529.078 | 2.555–7.931 | Exit 0; success |
+| post-tool-use | after | 20 | 20.673 | 29.381 | 46.813 | 1.487–9.209 | Exit 0; success |
+| release | before | 20 | 3119.932 | 4330.964 | 18480.283 | 2.670–7.937 | Exit 0; success |
+| release | after | 20 | 33.312 | 49.213 | 50.611 | 1.487–9.192 | Exit 0; success |
+| gate | before | 20 | 4119.927 | 5939.525 | 6252.985 | 3.045–7.937 | Exit 0; observe-only refusal, five held reservations |
+| gate | after | 20 | 22.741 | 35.000 | 41.006 | 1.487–9.329 | Exit 0; observe-only refusal, five held reservations |
+
+### The cold Mac runs and the hung drift test
+
+The cold timing on `bf27c025` did not start. The Mac coordinator refused the claim because an old phase 22 drift test was still alive after more than four days: `session_mapping_attributes_post_commit_widening_with_two_active_reservations`, its `cargo-berth drift --full --json` child and a `git cat-file --batch-check` child.
+
+A stack and pipe capture found the cause. The drift child waited in `gix::open_opts` → `gix_path::env::git::config_paths_from_executable_at` → `Command::output` for EOF from the installation-config probe. The `cat-file` child held an inherited copy of that probe's pipe writer, so EOF never came. Phase 24 removed this cause with the spawn lock around `gix::open_opts`; the hung test ran on a tree before that change. Phase 27 then put a deadline on every cargo-berth wait for a child process, so the next cause of this kind fails with a named error instead of a hang.
+
+Still open, and run when the Mac is quiet again:
+
+- removal of the leftover process group from the hung test;
+- the cold timing on `bf27c025`, compared with the reference runs of 88.730 s and 114.970 s;
+- the cold full run on `fde451aa`, with every test under 1.000 s.
+
+A slowdown found there becomes a new phase. The cold natedev run on `fde451aa` passed all 1,269 tests in 9.239 s at load 12.68–14.32, with the slowest test at 0.667 s; it does not establish Mac performance.
