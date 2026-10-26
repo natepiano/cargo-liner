@@ -141,7 +141,7 @@ mod tests {
     fn bare_pub_is_measured_without_its_separator() {
         assert_eq!(
             annotation_form_and_byte_len("pub leaked: u32"),
-            Some((VisibilityAnnotationForm::Bare, 3))
+            Some((VisibilityAnnotationForm::Bare, "pub".len()))
         );
     }
 
