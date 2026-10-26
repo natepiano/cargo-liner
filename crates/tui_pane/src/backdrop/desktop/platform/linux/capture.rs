@@ -1,9 +1,9 @@
-use super::cached_wallpaper::reconstructed_wallpaper;
+use super::cached_wallpaper;
 use super::display;
 use super::display::Output;
 use super::display::OutputSelection;
 use super::display::TopologyRead;
-use super::held_composite::composited_display;
+use super::held_composite;
 use super::window;
 use super::window::ListedWindow;
 use crate::backdrop::desktop::CaptureAttemptResult;
@@ -66,10 +66,11 @@ fn capture_selected_window(
         OutputSelection::NoActiveOutputs => return Err(CaptureFailure::DisplayNotFound),
     };
     let cell = metrics.cell_points(output.scale);
-    let (columns, rows, colors) = match composited_display(metrics, chosen.handle, output) {
-        Some(reduced) => reduced,
-        None => reconstructed_wallpaper(metrics, output)?,
-    };
+    let (columns, rows, colors) =
+        match held_composite::composited_display(metrics, chosen.handle, output) {
+            Some(reduced) => reduced,
+            None => cached_wallpaper::reconstructed_wallpaper(metrics, output)?,
+        };
     Ok(Desktop {
         window_id: chosen.handle,
         metrics,

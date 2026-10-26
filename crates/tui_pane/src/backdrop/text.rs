@@ -75,7 +75,7 @@ use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::TEXT_WAVE_SUBLINES_PER_SECOND;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
-use super::support::smoothstep;
+use super::support;
 use crate::theme;
 
 /// Whether the lines of a [`DriftingText`] travel as one or at speeds
@@ -991,7 +991,10 @@ fn nudged(value: u8, toward: u8, percent: u32) -> u8 {
 fn toward_the_ends(value: u8) -> u8 {
     let whole = u32::from(u8::MAX);
     let along = u32::from(value).saturating_mul(LANE_FRACTION_UNIT) / whole;
-    let eased = smoothstep(smoothstep(along, LANE_FRACTION_UNIT), LANE_FRACTION_UNIT);
+    let eased = support::smoothstep(
+        support::smoothstep(along, LANE_FRACTION_UNIT),
+        LANE_FRACTION_UNIT,
+    );
     u8::try_from(eased.saturating_mul(whole) / LANE_FRACTION_UNIT).unwrap_or(u8::MAX)
 }
 
@@ -1003,7 +1006,7 @@ fn toward_the_ends(value: u8) -> u8 {
 /// meeting at an edge. See that constant.
 fn merged(fraction: u32) -> u32 {
     let along = u64::from(fraction.min(LANE_FRACTION_UNIT));
-    let eased = u64::from(smoothstep(fraction, LANE_FRACTION_UNIT));
+    let eased = u64::from(support::smoothstep(fraction, LANE_FRACTION_UNIT));
     let body = u64::from(TEXT_LANE_BODY_PERCENT);
     let whole = u64::from(WHOLE_PERCENT);
     let blended = (eased * body + along * whole.saturating_sub(body)) / whole;
@@ -1541,7 +1544,7 @@ mod tests {
         let high = LANE_FRACTION_UNIT / 2 + tenth;
         let crossed = |curve: &dyn Fn(u32) -> u32| curve(high).abs_diff(curve(low));
         let ramp = crossed(&merged);
-        let curve = crossed(&|fraction| smoothstep(fraction, LANE_FRACTION_UNIT));
+        let curve = crossed(&|fraction| support::smoothstep(fraction, LANE_FRACTION_UNIT));
         let straight = high - low;
         assert!(
             ramp < curve,

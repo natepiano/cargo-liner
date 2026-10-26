@@ -22,13 +22,13 @@ use super::constants::KWIN_INTERFACE;
 use super::constants::KWIN_PATH;
 use super::constants::KWIN_SERVICE;
 use super::constants::TOPOLOGY_READ_DEADLINE;
+use super::desktop_subprocess;
 use super::desktop_subprocess::DesktopReadFailure;
-use super::desktop_subprocess::read_desktop_command;
 use super::display;
 use super::display::Output;
 use super::display::OutputSelection;
+use super::session_connection;
 use super::session_connection::SessionBus;
-use super::session_connection::session_connection;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
 use crate::backdrop::desktop::CaptureWindowTarget;
@@ -466,7 +466,7 @@ fn search_uuids() -> Result<Vec<String>, WindowSearchFailure> {
     let _access = KDO_TOOL_ACCESS
         .lock()
         .map_err(|_| WindowSearchFailure::AccessPoisoned)?;
-    let bytes = read_desktop_command(
+    let bytes = desktop_subprocess::read_desktop_command(
         Command::new(KDO_TOOL_COMMAND).args(search_arguments()),
         TOPOLOGY_READ_DEADLINE,
     )
@@ -492,7 +492,7 @@ const fn search_arguments() -> [&'static str; 5] {
 
 /// Read `KWin`'s current facts for one UUID.
 fn query_window(uuid: &str) -> Option<WindowInfo> {
-    let connection = match session_connection() {
+    let connection = match session_connection::session_connection() {
         SessionBus::Connected(connection) => connection,
         SessionBus::Unavailable(failure) => {
             tracing::debug!(%failure, "desktop query has no session bus");
