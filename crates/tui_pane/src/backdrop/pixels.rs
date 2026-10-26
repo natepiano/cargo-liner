@@ -63,8 +63,7 @@ use super::constants::SHADES;
 use super::constants::SUBCELLS_PER_CELL;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
-use super::support::cell_pixels;
-use super::support::smoothstep;
+use super::support;
 use crate::theme;
 
 /// Which of the grid's two axes a wave of coarseness sweeps along.
@@ -693,7 +692,7 @@ impl ResolvingPixels {
         }
         let whole = u32::from(u8::MAX);
         let across = whole.saturating_sub(whole.saturating_mul(away - coarse) / (sharp - coarse));
-        u8::try_from(smoothstep(across, whole)).unwrap_or(u8::MAX)
+        u8::try_from(support::smoothstep(across, whole)).unwrap_or(u8::MAX)
     }
 
     /// How many cells one block covers across and down at its coarsest.
@@ -823,7 +822,7 @@ impl ResolvingPixels {
         }
         self.columns = area.width;
         self.rows = area.height;
-        if let Some(measured) = cell_pixels() {
+        if let Some(measured) = support::cell_pixels() {
             self.cell_pixels = measured;
         }
         self.middle = self.span().saturating_mul(PIXEL_WAVE_START_PERCENT) / WHOLE_PERCENT;
