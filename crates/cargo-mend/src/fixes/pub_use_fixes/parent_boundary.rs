@@ -50,7 +50,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
         let Some(use_prefix) = facade_use_prefix(&item_use.vis) else {
             continue;
         };
-        let (start, end) = facade_redirect::item_use_byte_range(&lines, item_use);
+        let (start, end) = facade_redirect::item_use_byte_range(&lines, item_use)?;
         if start != parent_boundary.item_start || end != parent_boundary.item_end {
             continue;
         }
@@ -104,7 +104,7 @@ pub(super) fn resolve_parent_pub_use_export(
             // authoritative.
             continue;
         }
-        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use);
+        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use)?;
         return Ok(Some(ParentExportResolution {
             exported_name:   item_name.to_string(),
             parent_boundary: ParentBoundaryKey {
@@ -213,4 +213,48 @@ fn locally_used_exports(
         }
     }
     locally_used
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::build_parent_pub_use_edit_for_exports;
+    use super::resolve_parent_pub_use_export;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn resolved_parent_range_rewrites_only_the_exported_leaf() {
+        let directory = tempdir().expect("temporary source");
+        let path = directory.path().join("lib.rs");
+        let source = "// é\npub use child::{Widget, Other};\n";
+        fs::write(&path, source).expect("write parent");
+        let sources = ParsedSources::default();
+        let parent = sources.source(&path).expect("read parent");
+        let mut resolved = resolve_parent_pub_use_export(&parent, 2, "child", "Widget")
+            .expect("valid span")
+            .expect("matching export");
+        assert_eq!(resolved.exported_name, "Widget");
+        let boundary = &mut resolved.parent_boundary;
+        assert_eq!(
+            &source[boundary.item_start..boundary.item_end],
+            "pub use child::{Widget, Other};"
+        );
+        boundary.parent_module = path;
+        let fix = build_parent_pub_use_edit_for_exports(
+            boundary,
+            &[("child".to_string(), "Widget".to_string())],
+            &sources,
+        )
+        .expect("parent edit");
+        assert_eq!(fix.start, boundary.item_start);
+        assert_eq!(fix.end, boundary.item_end);
+        assert_eq!(fix.replacement, "pub use child::Other;");
+    }
 }

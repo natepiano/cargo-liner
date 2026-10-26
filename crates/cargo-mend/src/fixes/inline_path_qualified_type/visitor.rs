@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use proc_macro2::LineColumn;
 use syn::ExprPath;
 use syn::ExprStruct;
+use syn::File;
 use syn::GenericParam;
 use syn::Generics;
 use syn::Ident;
@@ -29,6 +30,7 @@ use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
 use crate::fixes::imports::GateTracking;
+use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
 
 enum PathOrigin {
@@ -106,7 +108,7 @@ pub(super) struct InlinePathOccurrence {
     pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-pub(super) struct InlinePathVisitor<'a> {
+pub(super) struct InlinePathVisitor {
     pub(super) occurrences:            Vec<InlinePathOccurrence>,
     pub(super) bare_type_names:        BTreeSet<String>,
     pub(super) mod_depth:              usize,
@@ -115,12 +117,10 @@ pub(super) struct InlinePathVisitor<'a> {
     /// active generic (`S::Ok` inside `fn serialize<S>(...)`) is an
     /// associated-item reference, not a crate-qualified path — skip it.
     pub(super) generic_scopes:         Vec<BTreeSet<String>>,
-    pub(super) text:                   &'a str,
-    pub(super) offsets:                &'a [usize],
     pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-impl InlinePathVisitor<'_> {
+impl InlinePathVisitor {
     fn register_root_name(&mut self, name: &Ident) {
         match ModuleNesting::from(self.mod_depth) {
             ModuleNesting::FileRoot => {
@@ -147,20 +147,19 @@ impl InlinePathVisitor<'_> {
     }
 }
 
-impl GateTracking for InlinePathVisitor<'_> {
-    fn gate_source(&self) -> GateSource<'_> {
+impl GateTracking for GatedInlinePaths<'_, '_> {
+    fn gate_source(&self) -> GateSource<'_, '_> {
         GateSource {
-            text:         self.text,
-            line_offsets: self.offsets,
+            indexed: self.source,
         }
     }
 
     fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
-        &mut self.conditional_attributes
+        &mut self.visitor.conditional_attributes
     }
 }
 
-impl InlinePathVisitor<'_> {
+impl InlinePathVisitor {
     fn check_path(&mut self, path: &Path) {
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
 
@@ -229,7 +228,7 @@ impl InlinePathVisitor<'_> {
     }
 }
 
-impl InlinePathVisitor<'_> {
+impl InlinePathVisitor {
     /// Register a path's bare-name footprint for shadow detection.
     ///
     /// A single-segment path (`Result<T, E>`) clearly puts `Result` in use as
@@ -256,49 +255,65 @@ impl InlinePathVisitor<'_> {
     }
 }
 
-impl Visit<'_> for InlinePathVisitor<'_> {
+/// A traversal borrowing the file scan's checked index for all gate extraction.
+struct GatedInlinePaths<'visit, 'source> {
+    visitor: &'visit mut InlinePathVisitor,
+    source:  &'visit ImportSource<'source>,
+}
+
+impl InlinePathVisitor {
+    pub(super) fn visit_file(&mut self, node: &File, source: &ImportSource<'_>) {
+        GatedInlinePaths {
+            visitor: self,
+            source,
+        }
+        .visit_file(node);
+    }
+}
+
+impl Visit<'_> for GatedInlinePaths<'_, '_> {
     imports::gate_tracking_visit!();
 
     fn visit_item_use(&mut self, _: &ItemUse) {
-        // `InlinePathVisitor::visit_item_use` skips `ItemUse` because use statements are imports,
+        // `GatedInlinePaths::visit_item_use` skips `ItemUse` because use statements are imports,
         // not inline code.
     }
 
     fn visit_type_path(&mut self, node: &TypePath) {
         if node.qself.is_none() {
-            self.check_path(&node.path);
-            self.record_bare_name_footprint(&node.path);
+            self.visitor.check_path(&node.path);
+            self.visitor.record_bare_name_footprint(&node.path);
         }
         visit::visit_type_path(self, node);
     }
 
     fn visit_expr_path(&mut self, node: &ExprPath) {
         if node.qself.is_none() {
-            self.check_path(&node.path);
-            self.record_bare_name_footprint(&node.path);
+            self.visitor.check_path(&node.path);
+            self.visitor.record_bare_name_footprint(&node.path);
         }
-        // `InlinePathVisitor::visit_expr_path` does not recurse because `node.path` segments do not
+        // `GatedInlinePaths::visit_expr_path` does not recurse because `node.path` segments do not
         // contain sub-expressions.
     }
 
     fn visit_expr_struct(&mut self, node: &ExprStruct) {
-        // `InlinePathVisitor::visit_expr_struct` handles `node.path` in `Foo { .. }` and
+        // `GatedInlinePaths::visit_expr_struct` handles `node.path` in `Foo { .. }` and
         // `crate::foo::Bar { .. }` — the path of a struct literal isn't reached by
         // `visit_expr_path` / `visit_type_path`, so handle it explicitly.
         if node.qself.is_none() {
-            self.check_path(&node.path);
-            self.record_bare_name_footprint(&node.path);
+            self.visitor.check_path(&node.path);
+            self.visitor.record_bare_name_footprint(&node.path);
         }
         visit::visit_expr_struct(self, node);
     }
 
     fn visit_pat_struct(&mut self, node: &PatStruct) {
-        // `InlinePathVisitor::visit_pat_struct` handles `node.path` in `Foo { .. }` and
+        // `GatedInlinePaths::visit_pat_struct` handles `node.path` in `Foo { .. }` and
         // `crate::foo::Bar { .. }` in pattern position (`let Bar { .. } = ...`, match arms)
         // — also not visited by `visit_expr_path` / `visit_type_path`.
         if node.qself.is_none() {
-            self.check_path(&node.path);
-            self.record_bare_name_footprint(&node.path);
+            self.visitor.check_path(&node.path);
+            self.visitor.record_bare_name_footprint(&node.path);
         }
         visit::visit_pat_struct(self, node);
     }
@@ -307,97 +322,97 @@ impl Visit<'_> for InlinePathVisitor<'_> {
         // `InlinePathVisitor::mod_depth` tracks nesting depth so item-name registration below can
         // gate on "is this at the file's top level". Names defined inside nested
         // modules don't collide with imports added at the top level.
-        let nesting = ModuleNesting::from(self.mod_depth);
-        self.mod_depth = nesting.depth() + 1;
+        let nesting = ModuleNesting::from(self.visitor.mod_depth);
+        self.visitor.mod_depth = nesting.depth() + 1;
         visit::visit_item_mod(self, node);
-        self.mod_depth = nesting.depth();
+        self.visitor.mod_depth = nesting.depth();
     }
 
     fn visit_item_struct(&mut self, node: &ItemStruct) {
-        self.register_root_name(&node.ident);
-        self.push_generics(&node.generics);
+        self.visitor.register_root_name(&node.ident);
+        self.visitor.push_generics(&node.generics);
         visit::visit_item_struct(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_item_enum(&mut self, node: &ItemEnum) {
-        self.register_root_name(&node.ident);
-        self.push_generics(&node.generics);
+        self.visitor.register_root_name(&node.ident);
+        self.visitor.push_generics(&node.generics);
         visit::visit_item_enum(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_item_type(&mut self, node: &ItemType) {
-        self.register_root_name(&node.ident);
-        self.push_generics(&node.generics);
+        self.visitor.register_root_name(&node.ident);
+        self.visitor.push_generics(&node.generics);
         visit::visit_item_type(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_item_trait(&mut self, node: &ItemTrait) {
-        self.register_root_name(&node.ident);
-        self.push_generics(&node.generics);
+        self.visitor.register_root_name(&node.ident);
+        self.visitor.push_generics(&node.generics);
         visit::visit_item_trait(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
-        self.register_root_name(&node.sig.ident);
-        // `InlinePathVisitor::visit_item_fn` calls `push_generics` and `pop_generics` around the
+        self.visitor.register_root_name(&node.sig.ident);
+        // `GatedInlinePaths::visit_item_fn` calls `push_generics` and `pop_generics` around the
         // entire item — signature AND body. Bodies contain closure parameter types and
         // locals that may reference these generics (e.g. `let f = |x: &T::Item| ...` inside
         // `fn foo<T>`). A `visit_signature`-only push pops before the body is visited, so
         // those references would be misread as crate paths.
-        self.push_generics(&node.sig.generics);
+        self.visitor.push_generics(&node.sig.generics);
         visit::visit_item_fn(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
-        self.push_generics(&node.sig.generics);
+        self.visitor.push_generics(&node.sig.generics);
         visit::visit_impl_item_fn(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_trait_item_fn(&mut self, node: &TraitItemFn) {
-        self.push_generics(&node.sig.generics);
+        self.visitor.push_generics(&node.sig.generics);
         visit::visit_trait_item_fn(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_item_const(&mut self, node: &ItemConst) {
-        self.register_root_name(&node.ident);
+        self.visitor.register_root_name(&node.ident);
         visit::visit_item_const(self, node);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
-        self.register_root_name(&node.ident);
+        self.visitor.register_root_name(&node.ident);
         visit::visit_item_static(self, node);
     }
 
     fn visit_item_impl(&mut self, node: &ItemImpl) {
         // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
         // `syn::Path` not visited as a `TypePath`. Inspect it directly.
-        self.push_generics(&node.generics);
+        self.visitor.push_generics(&node.generics);
         if let Some((trait_path, _)) = &node.trait_ {
-            self.check_path(trait_path);
+            self.visitor.check_path(trait_path);
             if trait_path.segments.len() == 1 {
                 let name = trait_path.segments[0].ident.to_string();
                 if is_pascal_case(&name) {
-                    self.bare_type_names.insert(name);
+                    self.visitor.bare_type_names.insert(name);
                 }
             }
         }
         visit::visit_item_impl(self, node);
-        self.pop_generics();
+        self.visitor.pop_generics();
     }
 
     fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {
-        // `InlinePathVisitor::visit_pat_tuple_struct` checks `node.path` in `Foo(..)` patterns —
+        // `GatedInlinePaths::visit_pat_tuple_struct` checks `node.path` in `Foo(..)` patterns —
         // e.g. `let Foo(x) = ...` or `Some(Enum::Variant(x))` match arms.
         if node.qself.is_none() {
-            self.check_path(&node.path);
-            self.record_bare_name_footprint(&node.path);
+            self.visitor.check_path(&node.path);
+            self.visitor.record_bare_name_footprint(&node.path);
         }
         visit::visit_pat_tuple_struct(self, node);
     }
@@ -414,25 +429,56 @@ pub(super) fn is_pascal_case(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use syn::visit::Visit;
-
     use super::InlinePathVisitor;
     use super::is_pascal_case;
     use crate::fixes::imports::ConditionalAttributes;
 
-    fn inspect(text: &str) -> syn::Result<InlinePathVisitor<'_>> {
+    fn inspect(text: &str) -> syn::Result<InlinePathVisitor> {
         let syntax = syn::parse_file(text)?;
         let mut visitor = InlinePathVisitor {
-            occurrences: Vec::new(),
-            bare_type_names: BTreeSet::new(),
-            mod_depth: 0,
-            generic_scopes: Vec::new(),
-            text,
-            offsets: &[],
+            occurrences:            Vec::new(),
+            bare_type_names:        BTreeSet::new(),
+            mod_depth:              0,
+            generic_scopes:         Vec::new(),
             conditional_attributes: ConditionalAttributes::default(),
         };
-        visitor.visit_file(&syntax);
+        visitor.visit_file(&syntax, &crate::fixes::imports::ImportSource::new(text));
         Ok(visitor)
+    }
+
+    #[test]
+    fn many_ungated_nodes_share_one_checked_source_index() -> syn::Result<()> {
+        let statements = "crate::types::Widget;".repeat(512);
+        let text = format!("fn f() {{ {statements} }}");
+        let before = crate::fixes::imports::ImportSource::construction_count();
+        let visitor = inspect(&text)?;
+        assert_eq!(
+            crate::fixes::imports::ImportSource::construction_count() - before,
+            1
+        );
+        assert_eq!(visitor.occurrences.len(), 512);
+        assert!(
+            visitor
+                .occurrences
+                .iter()
+                .all(|site| site.conditional_attributes.is_empty())
+        );
+
+        let gated = format!("#[cfg(unix)] fn f() {{ {statements} }}");
+        let before = crate::fixes::imports::ImportSource::construction_count();
+        let visitor = inspect(&gated)?;
+        assert_eq!(
+            crate::fixes::imports::ImportSource::construction_count() - before,
+            1
+        );
+        assert_eq!(visitor.occurrences.len(), 512);
+        assert!(
+            visitor
+                .occurrences
+                .iter()
+                .all(|site| { site.conditional_attributes.render("") == "#[cfg(unix)]\n" })
+        );
+        Ok(())
     }
 
     #[test]
