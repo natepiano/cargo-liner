@@ -25,9 +25,23 @@ pub(super) struct ParentBoundaryKey {
     pub(super) item_end:      usize,
 }
 
-pub(super) struct ParentExportResolution {
-    pub(super) exported_name:   String,
-    pub(super) parent_boundary: ParentBoundaryKey,
+/// An export resolved within parsed source, before its owning file is attached.
+/// This phase carries only the real span; it cannot masquerade as a file boundary
+/// by supplying an empty parent path that the scan must later overwrite.
+pub(super) struct ParentExportSpan {
+    pub(super) exported_name: String,
+    item_start:               usize,
+    item_end:                 usize,
+}
+
+impl ParentExportSpan {
+    pub(super) const fn boundary(&self, parent_module: PathBuf) -> ParentBoundaryKey {
+        ParentBoundaryKey {
+            parent_module,
+            item_start: self.item_start,
+            item_end: self.item_end,
+        }
+    }
 }
 
 pub(super) fn build_parent_pub_use_edit_for_exports(
@@ -80,7 +94,7 @@ pub(super) fn resolve_parent_pub_use_export(
     line: usize,
     child_module_name: &str,
     item_name: &str,
-) -> Result<Option<ParentExportResolution>> {
+) -> Result<Option<ParentExportSpan>> {
     let file = parent
         .syntax()
         .context("failed to parse parent module file")?;
@@ -105,13 +119,10 @@ pub(super) fn resolve_parent_pub_use_export(
             continue;
         }
         let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use)?;
-        return Ok(Some(ParentExportResolution {
-            exported_name:   item_name.to_string(),
-            parent_boundary: ParentBoundaryKey {
-                parent_module: PathBuf::new(),
-                item_start,
-                item_end,
-            },
+        return Ok(Some(ParentExportSpan {
+            exported_name: item_name.to_string(),
+            item_start,
+            item_end,
         }));
     }
     Ok(None)
@@ -237,18 +248,18 @@ mod tests {
         fs::write(&path, source).expect("write parent");
         let sources = ParsedSources::default();
         let parent = sources.source(&path).expect("read parent");
-        let mut resolved = resolve_parent_pub_use_export(&parent, 2, "child", "Widget")
+        let resolved = resolve_parent_pub_use_export(&parent, 2, "child", "Widget")
             .expect("valid span")
             .expect("matching export");
         assert_eq!(resolved.exported_name, "Widget");
-        let boundary = &mut resolved.parent_boundary;
+        let boundary = resolved.boundary(path.clone());
+        assert_eq!(boundary.parent_module, path);
         assert_eq!(
             &source[boundary.item_start..boundary.item_end],
             "pub use child::{Widget, Other};"
         );
-        boundary.parent_module = path;
         let fix = build_parent_pub_use_edit_for_exports(
-            boundary,
+            &boundary,
             &[("child".to_string(), "Widget".to_string())],
             &sources,
         )
