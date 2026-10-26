@@ -15,6 +15,21 @@ pub(super) struct FieldVisibilityFixScan {
     pub fixes: Vec<UseFix>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FieldVisibilityReplacement {
+    Remove,
+    Replace { annotation: String },
+}
+
+impl FieldVisibilityReplacement {
+    fn into_source(self) -> String {
+        match self {
+            Self::Remove => String::new(),
+            Self::Replace { annotation } => format!("{annotation} "),
+        }
+    }
+}
+
 pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan> {
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
@@ -39,16 +54,11 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         else {
             continue;
         };
-        let replacement_text = if replacement_visibility.is_empty() {
-            String::new()
-        } else {
-            format!("{replacement_visibility} ")
-        };
         fixes.push(UseFix {
             path:         absolute_path,
             start:        site.start,
             end:          site.end_with_separator,
-            replacement:  replacement_text,
+            replacement:  replacement_visibility.into_source(),
             import_group: None,
         });
     }
@@ -56,20 +66,28 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
 }
 
 /// Parse the suggestion text emitted by the `field_visibility_wider_than_type`
-/// lint. Returns the new visibility annotation (empty string when the
-/// suggestion is to remove the annotation entirely).
-fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String> {
+/// lint, keeping removal distinct from an annotation replacement.
+fn parse_replacement_from_suggestion(
+    suggestion: Option<&str>,
+) -> Option<FieldVisibilityReplacement> {
     let text = suggestion?;
     if text == RUSTC_FIELD_VIS_REMOVE_SUGGESTION {
-        return Some(String::new());
+        return Some(FieldVisibilityReplacement::Remove);
     }
     let rest = text.strip_prefix(RUSTC_LINT_SUGGESTION_PREFIX)?;
     let end = rest.find('`')?;
-    Some(rest[..end].to_string())
+    Some(if end == 0 {
+        FieldVisibilityReplacement::Remove
+    } else {
+        FieldVisibilityReplacement::Replace {
+            annotation: rest[..end].to_string(),
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::FieldVisibilityReplacement;
     use super::RUSTC_FIELD_VIS_REMOVE_SUGGESTION;
     use super::RUSTC_LINT_SUGGESTION_PREFIX;
     use super::parse_replacement_from_suggestion;
@@ -80,7 +98,9 @@ mod tests {
             parse_replacement_from_suggestion(Some(&format!(
                 "{RUSTC_LINT_SUGGESTION_PREFIX}pub(crate)`"
             ))),
-            Some("pub(crate)".to_string())
+            Some(FieldVisibilityReplacement::Replace {
+                annotation: "pub(crate)".to_string(),
+            })
         );
     }
 
@@ -90,7 +110,9 @@ mod tests {
             parse_replacement_from_suggestion(Some(&format!(
                 "{RUSTC_LINT_SUGGESTION_PREFIX}pub(super)`"
             ))),
-            Some("pub(super)".to_string())
+            Some(FieldVisibilityReplacement::Replace {
+                annotation: "pub(super)".to_string(),
+            })
         );
     }
 
@@ -98,12 +120,34 @@ mod tests {
     fn parses_remove_annotation() {
         assert_eq!(
             parse_replacement_from_suggestion(Some(RUSTC_FIELD_VIS_REMOVE_SUGGESTION)),
+            Some(FieldVisibilityReplacement::Remove)
+        );
+    }
+
+    #[test]
+    fn empty_annotation_suggestion_removes_visibility_without_a_separator() {
+        let suggestion = format!("{RUSTC_LINT_SUGGESTION_PREFIX}`");
+        let replacement = parse_replacement_from_suggestion(Some(&suggestion));
+        assert_eq!(replacement, Some(FieldVisibilityReplacement::Remove));
+        assert_eq!(
+            replacement.map(FieldVisibilityReplacement::into_source),
             Some(String::new())
         );
     }
 
     #[test]
+    fn replacement_source_preserves_annotation_and_one_separator() {
+        let replacement = FieldVisibilityReplacement::Replace {
+            annotation: "pub(super)".to_string(),
+        };
+        assert_eq!(replacement.into_source(), "pub(super) ");
+        assert_eq!(FieldVisibilityReplacement::Remove.into_source(), "");
+    }
+
+    #[test]
     fn rejects_other_suggestion_text() {
+        let unterminated = format!("{RUSTC_LINT_SUGGESTION_PREFIX}pub(crate)");
+        assert_eq!(parse_replacement_from_suggestion(Some(&unterminated)), None);
         assert_eq!(
             parse_replacement_from_suggestion(Some("something else")),
             None
