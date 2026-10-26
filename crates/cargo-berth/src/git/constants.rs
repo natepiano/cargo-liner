@@ -12,7 +12,7 @@ pub(super) const GIT_REPOSITORY_ENVIRONMENT: [&str; 5] = [
     "GIT_PREFIX",
 ];
 
-// configuration
+// Configuration spellings: `GIT_BRANCH_CONFIGURATION_SECTION` through `GIT_SPLIT_INDEX_KEY`.
 /// Configuration section for branch tracking rules.
 pub(super) const GIT_BRANCH_CONFIGURATION_SECTION: &str = "branch";
 /// Branch upstream merge reference key.
@@ -46,11 +46,11 @@ pub(super) const GIT_SPARSE_CHECKOUT_KEY: &str = "core.sparseCheckout";
 /// Split index configuration.
 pub(super) const GIT_SPLIT_INDEX_KEY: &str = "core.splitIndex";
 
-// file modes
+// File-mode bits: `GIT_FILE_TYPE_MASK`.
 /// Bits distinguishing regular files, symlinks, trees and gitlinks.
 pub(super) const GIT_FILE_TYPE_MASK: u32 = 0o170_000;
 
-// commands
+// Command spellings: `GIT_BINARY` through `GIT_WORKTREE_COMMAND`.
 /// The git executable.
 pub(super) const GIT_BINARY: &str = "git";
 /// The `cat-file` subcommand.
@@ -80,7 +80,7 @@ pub(super) const GIT_UPDATE_REF_COMMAND: &str = "update-ref";
 /// The `worktree` subcommand.
 pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 
-// flags
+// Argument spellings: `GIT_BATCH_CHECK_OBJECT_FORMAT_ARG` through `GIT_WORKTREE_LIST_ARG`.
 /// Ask `cat-file` to classify one object per input line.
 /// Ask `cat-file` for the resolved object id and object type of each input expression.
 pub(super) const GIT_BATCH_CHECK_OBJECT_FORMAT_ARG: &str =
@@ -154,12 +154,12 @@ pub(super) const GIT_WRITE_TREE_ARG: &str = "--write-tree";
 /// List registered worktrees.
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
-// invocation counts
+// Invocation count: `UNMERGED_BRANCH_PATH_GIT_QUERIES`.
 /// Git invocations one `unmerged_branch_paths` read of two different commits makes:
 /// `merge-tree`, then the diff from trunk to its result tree.
 pub(super) const UNMERGED_BRANCH_PATH_GIT_QUERIES: u64 = 2;
 
-// output
+// Output spellings: `GIT_AMBIGUOUS_OBJECT_SUFFIX` through `GIT_RIGHT_COMMIT_MARK`.
 /// Suffix reported by `cat-file --batch-check` for an ambiguous object expression.
 pub(super) const GIT_AMBIGUOUS_OBJECT_SUFFIX: &str = " ambiguous";
 /// Object type required by commit-resolution queries.
@@ -173,11 +173,11 @@ pub(super) const GIT_MISSING_OBJECT_SUFFIX: &str = " missing";
 /// Prefix `--left-right` gives a commit found only on the right side.
 pub(super) const GIT_RIGHT_COMMIT_MARK: char = '>';
 
-// pathspecs
+// Pathspec spelling: `GIT_LITERAL_TOP_PATHSPEC_PREFIX`.
 /// Prefix that makes a repository-root-relative pathspec literal.
 pub(super) const GIT_LITERAL_TOP_PATHSPEC_PREFIX: &str = ":(top,literal)";
 
-// references
+// Reference spellings: `GIT_ANCESTOR_RANGE_INFIX` through `RESERVATION_RETENTION_REF_PREFIX`.
 /// Infix selecting the commits reachable from the second revision but not the first.
 pub(super) const GIT_ANCESTOR_RANGE_INFIX: &str = "..";
 /// Git's per-worktree marker for a stopped cherry-pick.
@@ -208,7 +208,7 @@ pub(super) const GIT_SYMMETRIC_RANGE_INFIX: &str = "...";
 /// The private namespace used to retain reservation commits.
 pub(super) const RESERVATION_RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 
-// statuses
+// Exit statuses: `GIT_NO_MERGE_BASE_EXIT_CODE` through `GIT_NOT_ANCESTOR_EXIT_CODE`.
 /// Git's documented result when two commits have no merge base.
 pub(super) const GIT_NO_MERGE_BASE_EXIT_CODE: i32 = 1;
 /// Git's documented result when `merge-tree` completes without conflicts.
