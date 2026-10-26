@@ -291,11 +291,37 @@ pub(super) fn module_path(tcx: TyCtxt<'_>, module: LocalDefId) -> Result<Vec<Str
 
 /// The source module's children the re-export resolved to, one per namespace
 /// the `use` bound.
+struct NonEmptySourceBindings<'tcx> {
+    first:     &'tcx ModChild,
+    remaining: Vec<&'tcx ModChild>,
+}
+
+impl<'tcx> TryFrom<Vec<&'tcx ModChild>> for NonEmptySourceBindings<'tcx> {
+    type Error = NoFixReason;
+
+    fn try_from(bindings: Vec<&'tcx ModChild>) -> Result<Self, Self::Error> {
+        let mut bindings = bindings.into_iter();
+        let first = bindings.next().ok_or(NoFixReason::Unresolved)?;
+        Ok(Self {
+            first,
+            remaining: bindings.collect(),
+        })
+    }
+}
+
+impl<'tcx> NonEmptySourceBindings<'tcx> {
+    fn iter(&self) -> impl Iterator<Item = &'tcx ModChild> {
+        iter::once(self.first).chain(self.remaining.iter().copied())
+    }
+
+    const fn len(&self) -> usize { 1 + self.remaining.len() }
+}
+
 fn source_bindings<'tcx>(
     tcx: TyCtxt<'tcx>,
     reexport: &SubtreeReexport<'_, '_>,
     name: Symbol,
-) -> Result<Vec<&'tcx ModChild>, NoFixReason> {
+) -> Result<NonEmptySourceBindings<'tcx>, NoFixReason> {
     let children = tcx.module_children_local(reexport.source_module);
     let bindings = reexport
         .path
@@ -313,10 +339,7 @@ fn source_bindings<'tcx>(
                 .ok_or(NoFixReason::Unresolved)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if bindings.is_empty() {
-        return Err(NoFixReason::Unresolved);
-    }
-    Ok(bindings)
+    NonEmptySourceBindings::try_from(bindings)
 }
 
 /// The nearest ancestor of `owner_module` whose subtree holds `source_module`.
@@ -339,7 +362,7 @@ fn common_ancestor(
 fn target_scope(
     tcx: TyCtxt<'_>,
     source_module: LocalDefId,
-    bindings: &[&ModChild],
+    bindings: &NonEmptySourceBindings<'_>,
 ) -> Result<LocalDefId, NoFixReason> {
     let scopes: Vec<Visibility<ModId>> = iter::successors(Some(source_module), |&module| {
         (module != CRATE_DEF_ID).then(|| tcx.parent_module_from_def_id(module).into())
@@ -372,7 +395,7 @@ fn ancestor_reexport(
     tcx: TyCtxt<'_>,
     reexport: &SubtreeReexport<'_, '_>,
     exported_name: Ident,
-    bindings: &[&ModChild],
+    bindings: &NonEmptySourceBindings<'_>,
     common_ancestor: LocalDefId,
     target_scope: LocalDefId,
     crate_root_file: &Path,
@@ -427,7 +450,7 @@ fn reexport_visibility(
     tcx: TyCtxt<'_>,
     use_visibility: Visibility<LocalModId>,
     common_ancestor: LocalDefId,
-    bindings: &[&ModChild],
+    bindings: &NonEmptySourceBindings<'_>,
 ) -> Result<ReexportVisibility, NoFixReason> {
     let Visibility::Restricted(scope) = use_visibility else {
         return Ok(ReexportVisibility::Public);
@@ -472,12 +495,12 @@ fn ancestor_binding(
     tcx: TyCtxt<'_>,
     common_ancestor: LocalDefId,
     name: Symbol,
-    bindings: &[&ModChild],
+    bindings: &NonEmptySourceBindings<'_>,
     intended: Visibility<DefId>,
 ) -> Result<AncestorBinding, NoFixReason> {
     let children = tcx.module_children_local(common_ancestor);
     let mut explicit = Vec::new();
-    for binding in bindings {
+    for binding in bindings.iter() {
         let Some(child) = children
             .iter()
             .find(|child| child.ident.name == name && child.res.ns() == binding.res.ns())
@@ -640,15 +663,57 @@ fn module_form(tcx: TyCtxt<'_>, module: LocalDefId) -> ModuleForm {
 
 #[cfg(test)]
 mod tests {
+    use rustc_hir::def::DefKind;
+    use rustc_hir::def::Res;
+    use rustc_middle::metadata::ModChild;
+    use rustc_middle::ty::Visibility;
     use rustc_span::BytePos;
+    use rustc_span::Ident;
     use rustc_span::Span;
     use rustc_span::def_id::CRATE_DEF_ID;
     use rustc_span::def_id::DefId;
     use rustc_span::def_id::DefIndex;
     use rustc_span::def_id::LOCAL_CRATE;
+    use rustc_span::kw::Crate;
 
     use super::ModulePlacement;
+    use super::NoFixReason;
+    use super::NonEmptySourceBindings;
     use crate::reporting::ModuleForm;
+
+    #[test]
+    fn source_bindings_reject_empty_resolution() {
+        assert!(matches!(
+            NonEmptySourceBindings::try_from(Vec::new()),
+            Err(NoFixReason::Unresolved),
+        ));
+    }
+
+    #[test]
+    fn source_bindings_preserve_single_and_multiple_binding_order() -> Result<(), String> {
+        let module_binding = || ModChild {
+            ident:          Ident::with_dummy_span(Crate),
+            res:            Res::Def(DefKind::Mod, CRATE_DEF_ID.to_def_id()),
+            vis:            Visibility::Public,
+            reexport_chain: Vec::new().into(),
+        };
+        let first = module_binding();
+        let second = module_binding();
+        let third = module_binding();
+        for expected in [vec![&first], vec![&first, &second, &third]] {
+            let bindings = NonEmptySourceBindings::try_from(expected.clone())
+                .map_err(|reason| reason.to_string())?;
+
+            assert_eq!(bindings.len(), expected.len());
+            assert!(
+                bindings
+                    .iter()
+                    .zip(expected)
+                    .all(|(left, right)| std::ptr::eq(left, right))
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn module_placement_distinguishes_root_inline_and_out_of_line() {
