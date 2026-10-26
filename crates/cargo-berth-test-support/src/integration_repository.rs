@@ -19,6 +19,7 @@ use std::process::Output;
 use serde_json::Value;
 use tempfile::TempDir;
 
+use crate::CommandDeadlineExt as _;
 use crate::DirectorySnapshot;
 use crate::LedgerTemplate;
 use crate::RepositoryTemplate;
@@ -173,7 +174,7 @@ impl IntegrationRepository {
             .current_dir(root)
             .env_remove("CARGO_BERTH_RUN")
             .env_remove("CARGO_BERTH_SESSION_ID")
-            .output()
+            .bounded_output()
             .expect("cargo-berth init should run");
         assert_success(&initialized);
         git.run(root, ["add", "--force", ".claude/config/berth.toml"]);
@@ -213,7 +214,7 @@ impl IntegrationRepository {
             .env("CARGO_BERTH_RUN", "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b")
             .env_remove("CARGO_BERTH_SESSION_ID")
             .env_remove("CARGO_BERTH_BYPASS")
-            .output()
+            .bounded_output()
             .expect("fixture init should run");
         assert_success(&initialized);
         let mut contents =
@@ -325,7 +326,7 @@ impl IntegrationRepository {
                 .current_dir(checkout)
                 .env_remove("CARGO_BERTH_RUN")
                 .env_remove("CARGO_BERTH_SESSION_ID")
-                .output()
+                .bounded_output()
                 .expect("pair command should run");
             assert_success(&output);
             output
@@ -703,7 +704,7 @@ impl IntegrationRepository {
             .current_dir(checkout)
             .env_remove("CARGO_BERTH_RUN")
             .env_remove("CARGO_BERTH_SESSION_ID")
-            .output()
+            .bounded_output()
             .expect("cargo-berth runs")
     }
 

@@ -11,6 +11,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+#[cfg(test)]
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use tempfile::TempDir;
 
 use super::error::GitError;
@@ -157,7 +159,7 @@ fn run_git(repository_root: &Path, arguments: &[&str]) -> io::Result<()> {
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
-        .output()?;
+        .bounded_output()?;
     if output.status.success() {
         Ok(())
     } else {

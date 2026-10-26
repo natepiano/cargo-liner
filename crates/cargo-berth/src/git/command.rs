@@ -2,16 +2,13 @@
 
 use std::io;
 use std::io::Error;
-use std::io::ErrorKind;
-use std::io::Write;
 use std::path::Path;
-use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
-use std::sync::Mutex;
-use std::thread;
 
+use super::child;
+use super::child::ChildProcess;
 use super::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 use super::constants::GIT_BINARY;
 use super::constants::GIT_CONFIG_COUNT_ENVIRONMENT;
@@ -24,33 +21,19 @@ use super::constants::GIT_REPOSITORY_ENVIRONMENT;
 use super::constants::RETENTION_MAINTENANCE_CONFIG;
 use super::constants::RETENTION_REF_CONFIG;
 
-// Pipe creation and child spawn form one critical section. A persistent child
-// must never inherit another concurrent command's not-yet-sealed pipe ends.
-static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
-
 /// Seal every piped stream before another child can inherit file descriptors.
-pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<Child> {
-    with_spawn_lock(|| {
-        command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    })?
+pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<ChildProcess> {
+    with_spawn_lock(|| ChildProcess::spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped())))?
 }
 
 /// Include dependency-owned Git probes in the pipe-creation critical section.
 pub(super) fn with_spawn_lock<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
-    let spawn = PROCESS_SPAWN
-        .lock()
-        .map_err(|_| io::Error::other("Git spawn lock was poisoned"))?;
-    let result = operation();
-    drop(spawn);
-    Ok(result)
+    child::with_spawn_lock(operation)
 }
 
 /// Capture output without holding the spawn lock while the child runs.
 pub(super) fn command_output(command: &mut Command) -> io::Result<Output> {
-    spawn_with_piped_output(command.stdin(Stdio::null()))?.wait_with_output()
+    child::command_output(command, child::GIT_COMMAND_DEADLINE)
 }
 
 /// Whether a git invocation may execute repository hooks.
@@ -209,31 +192,8 @@ fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<O
 }
 
 /// Finish an already started command while draining its output and supplying its input.
-pub(super) fn child_output_with_input(mut child: Child, input: &[u8]) -> io::Result<Output> {
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("git child standard input was not piped"))?;
-    thread::scope(|scope| {
-        let input_writer = scope.spawn(move || {
-            let result = stdin.write_all(input);
-            drop(stdin);
-            result
-        });
-        let output = child.wait_with_output();
-        let written = input_writer
-            .join()
-            .map_err(|_| io::Error::other("git child standard input writer panicked"))?;
-        let output = output?;
-        match written {
-            // A git that fails before reading all of its input closes the pipe under the writer;
-            // its exit status and standard error, not the broken pipe, say why it failed.
-            Err(error) if error.kind() == ErrorKind::BrokenPipe && !output.status.success() => {
-                Ok(output)
-            },
-            written => written.map(|()| output),
-        }
-    })
+pub(super) fn child_output_with_input(child: ChildProcess, input: &[u8]) -> io::Result<Output> {
+    child.output(input.to_vec(), child::GIT_COMMAND_DEADLINE, |_| {})
 }
 
 #[cfg(test)]
@@ -241,8 +201,15 @@ mod tests {
     use std::error::Error;
     use std::ffi::OsStr;
     use std::io::ErrorKind;
+    use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::Command;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use cargo_berth_test_support::CommandDeadlineExt as _;
 
     use super::GitHookExecutionPolicy;
     use super::command_output_with_input;
@@ -253,6 +220,88 @@ mod tests {
     /// Input past every default pipe capacity, so a child that exits without reading it always
     /// leaves the writer facing a closed pipe.
     const UNREAD_INPUT_BYTES: usize = 256 * 1024;
+
+    #[test]
+    fn stalled_child_exit_is_named_and_the_child_is_reaped() -> Result<(), Box<dyn Error>> {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 30"]);
+        let mut child = super::spawn_with_piped_output(&mut command)?;
+        let error = child
+            .wait(Duration::from_millis(100))
+            .err()
+            .ok_or("child must time out")?;
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert!(
+            error.to_string().contains("/bin/sh -c exec sleep 30"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("child exit"), "{error}");
+        assert!(
+            child.child_mut().try_wait()?.is_some(),
+            "timed-out child was not reaped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stalled_protocol_reply_stops_and_reaps_the_child() -> Result<(), Box<dyn Error>> {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "read request; exec sleep 30"])
+            .stdin(Stdio::piped());
+        let mut child = super::spawn_with_piped_output(&mut command)?;
+        let input = child.child_mut().stdin.take().ok_or("missing stdin")?;
+        let output = child.child_mut().stdout.take().ok_or("missing stdout")?;
+        let pipes = crate::git::protocol::LineExchange::new(input, output)?;
+        let error = child
+            .exchange(&pipes, "HEAD", Duration::from_millis(100))
+            .err()
+            .ok_or("protocol reply must time out")?;
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert!(
+            error.to_string().contains("read request; exec sleep 30"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("protocol reply"), "{error}");
+        assert!(
+            child.child_mut().try_wait()?.is_some(),
+            "timed-out child was not reaped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_child_pipe_returns_a_named_timeout() -> Result<(), Box<dyn Error>> {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 30 & exit 0"])
+            .process_group(0)
+            .stdin(Stdio::piped());
+        let mut child = super::spawn_with_piped_output(&mut command)?;
+        let group = child.child_mut().id();
+        let (sender, receiver) = mpsc::channel();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            let result = super::child_output_with_input(child, b"");
+            let _ = sender.send(result);
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(500));
+        // This watchdog also ends the old implementation's inherited-pipe hang.
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{group}")])
+            .bounded_status();
+        let result = result.map_err(|error| {
+            format!("child output wait exceeded the regression watchdog: {error}")
+        })?;
+        let error = result
+            .err()
+            .ok_or("an inherited pipe writer must time out")?;
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert!(error.to_string().contains("child"), "{error}");
+        assert!(error.to_string().contains("output"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        Ok(())
+    }
 
     #[test]
     fn enabled_hooks_use_current_berth_when_override_is_missing_or_empty()
@@ -321,7 +370,7 @@ mod tests {
             GitHookExecutionPolicy::DeferrableRetentionMaintenance,
         )?
         .args(["init", "--quiet"])
-        .output()?;
+        .bounded_output()?;
         assert!(
             initialized.status.success(),
             "test repository did not initialize: {}",
@@ -363,7 +412,9 @@ mod tests {
             );
         }
 
-        let output = command.args(["config", "--get", "user.name"]).output()?;
+        let output = command
+            .args(["config", "--get", "user.name"])
+            .bounded_output()?;
         assert!(
             output.status.success(),
             "git rejected the inherited config overlay: {}",
@@ -445,7 +496,7 @@ mod tests {
                 GitHookExecutionPolicy::SuppressedForRetentionRef,
             )?
             .args(["config", "--get", key])
-            .output()?;
+            .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
             assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
         }
@@ -496,7 +547,7 @@ mod tests {
             .env(CHILD_PROCESS_ENVIRONMENT, test_filter)
             .env_remove(BERTH_EXECUTABLE_ENVIRONMENT)
             .envs(environment.iter().copied())
-            .output()?;
+            .bounded_output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),

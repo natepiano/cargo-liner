@@ -731,7 +731,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Verification:** `cargo-berth-test-support` and `cargo-berth` suites pass, each test under 1 s. One test proves the fix with `TMPDIR` on another filesystem (`/dev/shm` on Linux).
 
-### Phase 27 — A cargo-berth wait on a child process fails fast with a clear message  · status: todo
+### Phase 27 — A cargo-berth wait on a child process fails fast with a clear message  · status: done
 
 **Why:** a phase 22 drift test (`session_mapping_attributes_post_commit_widening_with_two_active_reservations`) hung on the Mac for 5 days. Its `cargo-berth drift --full --json` child waited in `gix::open_opts` for the installation-config probe's output. A concurrent `git cat-file --batch-check` child held an inherited copy of the probe's pipe writer, so EOF never came. Phase 24 removed this cause (`with_spawn_lock` around `gix::open_opts`). But nothing bounds the wait: the next cause of the same kind hangs again with no message. Showrunner, 2026-10-25: a hang is a defect; it must fail fast with a clear message, under 1 s.
 
@@ -741,3 +741,15 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 3. A test that hangs ends with its own name and a clear message. Bound the test-support process waits (`TestProcessGroup` and the fixture builders) and set a nextest `slow-timeout` with `terminate-after` for the cargo-berth packages.
 
 **Verification:** `cargo-berth` and `cargo-berth-test-support` suites pass, each test under 1 s. The regression test fails on the tree before the fix.
+
+### Phase 28 — A lost phase reservation record is restored from berth's ledger, never by hand  · status: done
+
+**Why:** demo's phase 34h record (`phases/34h/delegated_phase_reservation_state.json`) went missing, so the berth edit hook refused demo's test edit. Demo then wrote the record by hand, and auto mode refused it as a forged guard record. User (via hana): "Then we need an ability built into berth to allow fixing things like this." Showrunner, 2026-10-25: this phase comes before phase 27.
+
+**Work Order:**
+1. `phase_reservation.py repair --session-dir S --phase P --repo R` writes the record only from berth's ledger. It reads berth's session map for the phase session, confirms on the board that the reservation is active, and writes `Active`. The caller cannot name a reservation. Each repair appends one line to `phases/<P>/reservation_repairs.log`.
+2. When there is no live reservation, it writes nothing, exits 2, and prints the exact commands that open the phase again.
+3. The edit hook's refusal for a phase with no record names the repair command.
+4. The record and the hook live in `~/.claude/scripts`, which natedev owns. The worker builds the change on a scratch copy and the showrunner routes the patch to natedev.
+
+**Verification:** `test_phase_reservation.py` and `test_berth_hook.py` pass on the scratch copy, with new tests for a lost record with a live reservation, no reservation and a released reservation.

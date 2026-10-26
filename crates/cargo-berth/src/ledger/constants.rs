@@ -125,6 +125,8 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::MUTATING_VERB_CONTENTION_TOLERANCE;
     use super::MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
     use super::shortened_by_environment;
@@ -190,7 +192,7 @@ mod tests {
             };
             let output = command
                 .env(EXPECTED_MILLISECONDS, expected.as_millis().to_string())
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
         }
         Ok(())

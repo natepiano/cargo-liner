@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::LedgerTemplate;
@@ -229,7 +230,7 @@ fn run_berth(root: &Path, args: &[&str]) -> Output {
     berth_command(BERTH_EXECUTABLE)
         .args(args)
         .current_dir(root)
-        .output()
+        .bounded_output()
         .expect("fixture command should run")
 }
 
