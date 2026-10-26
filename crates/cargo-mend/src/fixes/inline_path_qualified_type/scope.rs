@@ -10,6 +10,7 @@ use syn::spanned::Spanned;
 use super::offsets;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
 
 pub(super) struct ScopeInfo {
@@ -97,8 +98,8 @@ struct ScopeImports {
 }
 
 impl ScopeImports {
-    fn record(&mut self, text: &str, offsets: &[usize], item_use: &ItemUse) {
-        let attributes = ConditionalAttributes::from_attributes(text, offsets, &item_use.attrs);
+    fn record(&mut self, source: &ImportSource<'_>, item_use: &ItemUse) {
+        let attributes = ConditionalAttributes::from_attributes(source, &item_use.attrs);
         for binding in imports::collect_use_bindings(&item_use.tree) {
             let Some(name) = binding.name() else {
                 continue;
@@ -136,6 +137,7 @@ pub(super) fn collect_scopes(
     span: ScopeSpan,
     module_path: &[String],
     scope_collection_context: &mut ScopeCollectionContext<'_>,
+    source: &ImportSource<'_>,
 ) {
     let mut scope_imports = ScopeImports::default();
     let mut last_use_start = None;
@@ -151,11 +153,7 @@ pub(super) fn collect_scopes(
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
-            scope_imports.record(
-                scope_collection_context.text,
-                scope_collection_context.offsets,
-                item_use,
-            );
+            scope_imports.record(source, item_use);
             last_use_start = Some(item_start);
             let item_end = offsets::offset(
                 scope_collection_context.text,
@@ -209,6 +207,7 @@ pub(super) fn collect_scopes(
                 ),
                 &child_module_path,
                 scope_collection_context,
+                source,
             );
         }
     }

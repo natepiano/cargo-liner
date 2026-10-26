@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
+use syn::File;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::Visibility;
@@ -11,6 +12,7 @@ use syn::visit::visit_item_mod;
 use super::support;
 use super::support::CrateSources;
 use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,36 +41,51 @@ pub(super) struct RawCandidate {
 
 pub(super) struct ImportDetector<'a> {
     pub(super) crate_sources:       CrateSources<'a>,
-    pub(super) text:                &'a str,
-    pub(super) offsets:             &'a [usize],
     pub(super) current_module_path: Vec<String>,
     pub(super) inline_scope:        Vec<String>,
     pub(super) declared_modules:    &'a BTreeSet<String>,
     pub(super) candidates:          Vec<RawCandidate>,
 }
 
-impl Visit<'_> for ImportDetector<'_> {
+/// Function-import analysis borrowing the file scan's checked index.
+struct FunctionImportVisitor<'visit, 'source> {
+    detector: &'visit mut ImportDetector<'source>,
+    source:   &'visit ImportSource<'source>,
+}
+
+impl<'source> ImportDetector<'source> {
+    pub(super) fn visit_file(&mut self, node: &File, source: &ImportSource<'source>) {
+        FunctionImportVisitor {
+            detector: self,
+            source,
+        }
+        .visit_file(node);
+    }
+}
+
+impl Visit<'_> for FunctionImportVisitor<'_, '_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(candidate) = analyze_function_import(
-            self.crate_sources,
-            self.text,
-            self.offsets,
-            &self.current_module_path,
-            &self.inline_scope,
-            self.declared_modules,
+            self.detector.crate_sources,
+            self.source,
+            &self.detector.current_module_path,
+            &self.detector.inline_scope,
+            self.detector.declared_modules,
             node,
         ) {
-            self.candidates.push(candidate);
+            self.detector.candidates.push(candidate);
         }
     }
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
-            self.current_module_path.push(node.ident.to_string());
-            self.inline_scope.push(node.ident.to_string());
+            self.detector
+                .current_module_path
+                .push(node.ident.to_string());
+            self.detector.inline_scope.push(node.ident.to_string());
             visit_item_mod(self, node);
-            self.inline_scope.pop();
-            self.current_module_path.pop();
+            self.detector.inline_scope.pop();
+            self.detector.current_module_path.pop();
         } else {
             visit_item_mod(self, node);
         }
@@ -77,8 +94,7 @@ impl Visit<'_> for ImportDetector<'_> {
 
 fn analyze_function_import(
     crate_sources: CrateSources<'_>,
-    text: &str,
-    offsets: &[usize],
+    source: &ImportSource<'_>,
     current_module_path: &[String],
     inline_scope: &[String],
     declared_modules: &BTreeSet<String>,
@@ -145,7 +161,7 @@ fn analyze_function_import(
     };
     let span = node.span();
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
-    let conditional_attributes = ConditionalAttributes::from_attributes(text, offsets, &node.attrs);
+    let conditional_attributes = ConditionalAttributes::from_attributes(source, &node.attrs);
 
     Some(RawCandidate {
         function_name: leaf.clone(),

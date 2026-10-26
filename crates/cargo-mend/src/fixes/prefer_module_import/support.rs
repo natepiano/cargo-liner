@@ -315,16 +315,6 @@ pub(super) fn is_snake_case_function_name(name: &str) -> bool {
 
 pub(super) fn is_snake_case_module_name(name: &str) -> bool { is_snake_case_function_name(name) }
 
-pub(super) fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (index, character) in text.char_indices() {
-        if character == '\n' {
-            offsets.push(index + 1);
-        }
-    }
-    offsets
-}
-
 pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     line_offsets
         .get(position.line.saturating_sub(1))

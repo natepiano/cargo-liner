@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
 use syn::ExprPath;
+use syn::File;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
@@ -20,6 +21,7 @@ use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
 use crate::fixes::imports::GateTracking;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
@@ -47,8 +49,6 @@ pub(super) struct InlineCallCandidate {
 
 pub(super) struct InlineCallDetector<'a> {
     pub(super) crate_sources:          CrateSources<'a>,
-    pub(super) text:                   &'a str,
-    pub(super) offsets:                &'a [usize],
     pub(super) current_module_path:    &'a [String],
     pub(super) declared_modules:       &'a BTreeSet<String>,
     pub(super) candidates:             Vec<InlineCallCandidate>,
@@ -56,46 +56,61 @@ pub(super) struct InlineCallDetector<'a> {
     pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-impl GateTracking for InlineCallDetector<'_> {
-    fn gate_source(&self) -> GateSource<'_> {
+impl GateTracking for GatedInlineCalls<'_, '_> {
+    fn gate_source(&self) -> GateSource<'_, '_> {
         GateSource {
-            text:         self.text,
-            line_offsets: self.offsets,
+            indexed: self.source,
         }
     }
 
     fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
-        &mut self.conditional_attributes
+        &mut self.visitor.conditional_attributes
     }
 }
 
-impl Visit<'_> for InlineCallDetector<'_> {
+/// A traversal borrowing the file scan's checked index for all gate extraction.
+struct GatedInlineCalls<'visit, 'source> {
+    visitor: &'visit mut InlineCallDetector<'source>,
+    source:  &'visit ImportSource<'source>,
+}
+
+impl<'source> InlineCallDetector<'source> {
+    pub(super) fn visit_file(&mut self, node: &File, source: &ImportSource<'source>) {
+        GatedInlineCalls {
+            visitor: self,
+            source,
+        }
+        .visit_file(node);
+    }
+}
+
+impl Visit<'_> for GatedInlineCalls<'_, '_> {
     imports::gate_tracking_visit!();
 
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
-            self.inline_mod_depth += 1;
+            self.visitor.inline_mod_depth += 1;
             visit::visit_item_mod(self, node);
-            self.inline_mod_depth -= 1;
+            self.visitor.inline_mod_depth -= 1;
         } else {
             visit::visit_item_mod(self, node);
         }
     }
 
     fn visit_expr_path(&mut self, node: &ExprPath) {
-        if self.inline_mod_depth > 0 || node.qself.is_some() {
+        if self.visitor.inline_mod_depth > 0 || node.qself.is_some() {
             return;
         }
         if let Some(candidate) = analyze_inline_call(
-            self.crate_sources,
-            self.current_module_path,
-            self.declared_modules,
+            self.visitor.crate_sources,
+            self.visitor.current_module_path,
+            self.visitor.declared_modules,
             node,
-            self.conditional_attributes.clone(),
+            self.visitor.conditional_attributes.clone(),
         ) {
-            self.candidates.push(candidate);
+            self.visitor.candidates.push(candidate);
         }
     }
 }

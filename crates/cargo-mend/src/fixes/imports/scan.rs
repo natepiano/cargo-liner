@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use import_path::ImportSource;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
@@ -65,8 +66,7 @@ impl From<ShortenImportFact> for Finding {
 struct UseVisitor<'a> {
     analysis_root:       &'a Path,
     path:                &'a Path,
-    text:                &'a str,
-    offsets:             &'a [usize],
+    source:              ImportSource<'a>,
     current_module_path: Vec<String>,
     findings:            Vec<ImportFinding>,
 }
@@ -89,17 +89,14 @@ impl Visit<'_> for UseVisitor<'_> {
             let span = node.span();
             let start = span.start();
             let end = span.end();
-            let start_offset = import_path::offset(self.offsets, start);
-            let end_offset = import_path::offset(self.offsets, end);
-            let original_item = &self.text[start_offset..end_offset];
+            let Some(location) = self.source.locate(start, end) else {
+                return;
+            };
             let replacement =
-                original_item.replacen(&candidate.original, &candidate.replacement, 1);
-            let source_line = self
-                .text
-                .lines()
-                .nth(start.line.saturating_sub(1))
-                .unwrap_or_default()
-                .to_string();
+                location
+                    .text()
+                    .replacen(&candidate.original, &candidate.replacement, 1);
+            let source_line = location.source_line().to_string();
             let display_path = self
                 .path
                 .strip_prefix(self.analysis_root)
@@ -119,8 +116,8 @@ impl Visit<'_> for UseVisitor<'_> {
                 },
                 use_fix:             UseFix {
                     path: self.path.to_path_buf(),
-                    start: start_offset,
-                    end: end_offset,
+                    start: location.start(),
+                    end: location.end(),
                     replacement,
                     import_group: None,
                 },
@@ -218,12 +215,10 @@ fn scan_file(
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
-    let offsets = import_path::line_offsets(text);
     let mut visitor = UseVisitor {
         analysis_root,
         path,
-        text,
-        offsets: &offsets,
+        source: import_path::ImportSource::new(text),
         current_module_path: base_module_path,
         findings: Vec::new(),
     };
