@@ -593,8 +593,13 @@ fn record_overbroad_pub_crate(
     {
         return Ok(false);
     }
-    let resolved_chain_reach = resolved_facade_reach(parent_facade_analysis);
-    let required_reach = joined_required_reach(ctx, resolved_chain_reach, signature_exposure);
+    let reach_requirements = ReachRequirements::for_analysis(
+        ctx,
+        resolved_facade_reach(parent_facade_analysis),
+        signature_exposure,
+    );
+    let resolved_chain_reach = reach_requirements.facade_reach();
+    let required_reach = reach_requirements.required_reach();
     let exact_restricted_boundary =
         resolved_chain_reach
             .zip(required_reach)
@@ -926,16 +931,12 @@ fn record_forbidden_pub_in_crate(
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
 ) -> Result<bool> {
-    let resolved_chain_reach = resolved_facade_reach(parent_facade_analysis);
-    let required_reach = joined_required_reach(ctx, resolved_chain_reach, signature_exposure);
-    if exact_pub_in_boundary_is_allowed(
+    let reach_requirements = ReachRequirements::for_analysis(
         ctx,
-        item,
-        annotation,
-        resolved_chain_reach,
-        required_reach,
-        sink,
-    ) {
+        resolved_facade_reach(parent_facade_analysis),
+        signature_exposure,
+    );
+    if exact_pub_in_boundary_is_allowed(ctx, item, annotation, &reach_requirements, sink) {
         record_visibility_constraint(
             ctx,
             item,
@@ -1190,6 +1191,71 @@ fn forbidden_pub_in_advice(
     }
 }
 
+enum ReachRequirements {
+    Facade {
+        facade:   VisibilityReach,
+        required: VisibilityReach,
+    },
+    SignatureOnly {
+        required: VisibilityReach,
+    },
+    Unconstrained,
+}
+
+impl ReachRequirements {
+    fn for_analysis(
+        ctx: &VisibilityContext<'_, '_>,
+        facade_reach: Option<VisibilityReach>,
+        signature_exposure: SignatureExposure,
+    ) -> Self {
+        facade_reach.map_or_else(
+            || match signature_exposure {
+                SignatureExposure::ExposedAt(required) => Self::SignatureOnly { required },
+                SignatureExposure::Contained => Self::Unconstrained,
+            },
+            |facade| Self::Facade {
+                facade,
+                required: signature_exposure.combined_with(facade, ctx),
+            },
+        )
+    }
+
+    const fn facade_reach(&self) -> Option<VisibilityReach> {
+        match self {
+            Self::Facade {
+                facade,
+                required: _,
+            } => Some(*facade),
+            Self::SignatureOnly { required: _ } | Self::Unconstrained => None,
+        }
+    }
+
+    const fn required_reach(&self) -> Option<VisibilityReach> {
+        match self {
+            Self::Facade {
+                facade: _,
+                required,
+            }
+            | Self::SignatureOnly { required } => Some(*required),
+            Self::Unconstrained => None,
+        }
+    }
+
+    fn exact_facade_boundary_matches(
+        &self,
+        annotation_reach: VisibilityReach,
+        ctx: &VisibilityContext<'_, '_>,
+    ) -> bool {
+        match self {
+            Self::Facade {
+                facade: _,
+                required,
+            } => annotation_reach.compare(*required, ctx.tcx) == Some(Ordering::Equal),
+            Self::SignatureOnly { required: _ } | Self::Unconstrained => false,
+        }
+    }
+}
+
 /// Whether `pub_in_path` accepts this annotation as written.
 ///
 /// Both `permitted` and `required` — the default — accept an exact,
@@ -1204,8 +1270,7 @@ fn exact_pub_in_boundary_is_allowed(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
-    resolved_facade_reach: Option<VisibilityReach>,
-    required_reach: Option<VisibilityReach>,
+    reach_requirements: &ReachRequirements,
     sink: &FindingsSink,
 ) -> bool {
     matches!(
@@ -1216,13 +1281,8 @@ fn exact_pub_in_boundary_is_allowed(
             annotation.syntax(),
             VisibilitySyntax::InPath(PathSpelling::CrateRooted)
         )
-        && (resolved_facade_reach.is_some()
-            && required_reach.is_some_and(|required| {
-                annotation
-                    .reach(item.def_id, ctx.tcx)
-                    .compare(required, ctx.tcx)
-                    == Some(Ordering::Equal)
-            })
+        && (reach_requirements
+            .exact_facade_boundary_matches(annotation.reach(item.def_id, ctx.tcx), ctx)
             || facade_less_boundary_matches_callers(ctx, item, annotation, sink)
             || pub_in_boundary_is_the_items_own_module(ctx, item, annotation))
 }
@@ -1754,13 +1814,9 @@ fn no_facade_pub_in_advice(
         .explained_by(policy::missing_facade_note(&boundary_path, &display_path));
     }
 
-    let parent_scope = if finding_context.logical_module_depth == 0 {
-        ""
-    } else {
-        policy::parent_scope_def_path(&item_module)
-    };
+    let parent_scope = ParentScope::for_module(&item_module, finding_context.logical_module_depth);
     let callers = current_pass_callers(sink, &item_def_path);
-    let caller_repair = policy::classify_no_facade_callers(&item_module, parent_scope, &callers);
+    let caller_repair = parent_scope.classify_callers(&item_module, &callers);
     let repair = merge_no_facade_signature_reach(ctx, item, caller_repair, signature_exposure);
     let boundary_path = match repair {
         NoFacadeVisibilityRepair::StructuralMigrationForSignatureReach { required } => {
@@ -1789,7 +1845,7 @@ fn no_facade_pub_in_advice(
         },
         NoFacadeVisibilityRepair::RemoveAnnotation
         | NoFacadeVisibilityRepair::UseParentVisibility => {
-            policy::no_facade_caller_note(repair, &item_module, parent_scope)
+            parent_scope.caller_note(repair, &item_module)
         },
     };
     match repair {
@@ -1814,6 +1870,78 @@ fn no_facade_pub_in_advice(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ParentScope<'path> {
+    CrateRoot,
+    Enclosing { def_path: &'path str },
+}
+
+impl<'path> ParentScope<'path> {
+    fn for_module(item_module: &'path str, logical_module_depth: usize) -> Self {
+        match logical_module_depth {
+            0 | 1 => Self::CrateRoot,
+            2.. => Self::Enclosing {
+                def_path: policy::parent_scope_def_path(item_module),
+            },
+        }
+    }
+
+    fn classify_callers(
+        self,
+        item_module: &str,
+        callers: &BTreeSet<String>,
+    ) -> NoFacadeVisibilityRepair {
+        match self {
+            // The policy API spells the crate-root scope as an empty path.
+            Self::CrateRoot => policy::classify_no_facade_callers(item_module, "", callers),
+            Self::Enclosing { def_path } => {
+                policy::classify_no_facade_callers(item_module, def_path, callers)
+            },
+        }
+    }
+
+    fn caller_note(self, repair: NoFacadeVisibilityRepair, item_module: &str) -> Option<String> {
+        match self {
+            Self::CrateRoot => policy::no_facade_caller_note(repair, item_module, ""),
+            Self::Enclosing { def_path } => {
+                policy::no_facade_caller_note(repair, item_module, def_path)
+            },
+        }
+    }
+}
+
+enum DisplayDefPath<'path> {
+    AtRoot {
+        name: &'path str,
+    },
+    WithinModule {
+        module: &'path str,
+        name:   &'path str,
+    },
+}
+
+impl<'path> From<&'path str> for DisplayDefPath<'path> {
+    fn from(def_path: &'path str) -> Self {
+        match def_path.rsplit_once("::") {
+            Some((module, name)) => Self::WithinModule { module, name },
+            None => Self::AtRoot { name: def_path },
+        }
+    }
+}
+
+impl DisplayDefPath<'_> {
+    fn with_item_name(self, item_name: Option<&str>) -> String {
+        let name = match self {
+            Self::AtRoot { name } | Self::WithinModule { module: _, name } => name,
+        };
+        let name = item_name.filter(|_| name.starts_with('{')).unwrap_or(name);
+        match self {
+            Self::AtRoot { name: _ } => String::from(name),
+            Self::WithinModule { module, name: _ } => format!("{module}::{name}"),
+        }
+    }
+}
+
 /// The def path to print for `item`, as the reader would write it.
 ///
 /// `def_path_str` renders a `use` binding as `{use#0}`: the import introduces a
@@ -1823,16 +1951,7 @@ fn no_facade_pub_in_advice(
 /// under.
 fn display_def_path(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> String {
     let def_path = use_sites::def_path_string(ctx.tcx, item.def_id);
-    let (module, last) = def_path
-        .rsplit_once("::")
-        .unwrap_or(("", def_path.as_str()));
-    let Some(name) = item.name.filter(|_| last.starts_with('{')) else {
-        return def_path;
-    };
-    if module.is_empty() {
-        return String::from(name);
-    }
-    format!("{module}::{name}")
+    DisplayDefPath::from(def_path.as_str()).with_item_name(item.name)
 }
 
 fn current_pass_callers(sink: &FindingsSink, item_def_path: &str) -> BTreeSet<String> {
@@ -2158,24 +2277,37 @@ struct SuspiciousWarningInput<'borrow, 'syntax, 'facade> {
     warning:                SuspiciousWarning,
 }
 
-/// Whether the narrowing advice resolved an exact module boundary that `--fix`
-/// can write in place of a bare `pub`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NarrowingReplacement {
-    /// `narrower_scope_def_path` is the exact boundary the item needs, so
-    /// `pub(in crate::<path>)` is a correct rewrite.
-    ExactBoundary,
-    /// The advice names no writable annotation — `narrower_scope_def_path` is
-    /// the enclosing module recorded for caller-aware suppression, not a
-    /// boundary to write.
-    Unavailable,
+/// A crate-relative restricted boundary that can be written by the annotation fixer.
+struct ValidatedRestrictedBoundary(String);
+
+impl ValidatedRestrictedBoundary {
+    fn from_crate_rooted(boundary: &str) -> Option<Self> {
+        let boundary = boundary.strip_prefix("crate::")?;
+        if boundary.is_empty() {
+            return None;
+        }
+        Some(Self(String::from(boundary)))
+    }
+}
+
+enum NarrowingTarget {
+    Exact(ValidatedRestrictedBoundary),
+    CallerSuppression { enclosing_module: String },
+}
+
+impl NarrowingTarget {
+    fn into_scope_def_path(self) -> String {
+        match self {
+            Self::Exact(boundary) => boundary.0,
+            Self::CallerSuppression { enclosing_module } => enclosing_module,
+        }
+    }
 }
 
 enum SuspiciousPubAdvice {
     Narrowing {
-        suggestion:              String,
-        narrower_scope_def_path: String,
-        replacement:             NarrowingReplacement,
+        suggestion: String,
+        target:     NarrowingTarget,
     },
     Structural {
         message:    String,
@@ -2407,12 +2539,8 @@ fn suspicious_finding_details(
         stale_parent_pub_use,
     );
     let (message, suggestion, fix_support, item_def_path, narrower_scope_def_path) = match advice {
-        SuspiciousPubAdvice::Narrowing {
-            suggestion,
-            narrower_scope_def_path,
-            replacement,
-        } => {
-            // `rewrites_annotation_only` permits rewriting a bare `pub` whose
+        SuspiciousPubAdvice::Narrowing { suggestion, target } => {
+            // `NarrowingTarget::Exact` permits rewriting a bare `pub` whose
             // exact boundary resolved in place, but only when no facade line has
             // to move with it: a stale facade
             // makes the repair a multi-file edit this fixer does not perform.
@@ -2422,30 +2550,40 @@ fn suspicious_finding_details(
             // `forbidden_pub_in_crate` reports as an error on the next run, and
             // under `Permitted` it is one accepted spelling among several
             // rather than the one the policy asks for.
-            let rewrites_annotation_only = bare_pub
-                && replacement == NarrowingReplacement::ExactBoundary
-                && stale_parent_pub_use.is_none()
-                && matches!(
-                    ctx.settings.visibility_config.pub_in_path,
-                    PubInPath::Required
-                );
-            let fix_support = match (
-                public_reexport_constraint,
-                rewrites_annotation_only,
-                bare_pub,
-            ) {
-                (PublicReexportConstraint::Absent, true, _) => FixSupport::RestrictedAnnotation,
-                (PublicReexportConstraint::Absent, false, true) => {
+            let fallback_support = || {
+                if bare_pub {
                     facade_chain_fix_support(parent_facade_analysis, fallback_fix_support)
+                } else {
+                    FixSupport::None
+                }
+            };
+            let fix_support = match public_reexport_constraint {
+                PublicReexportConstraint::PinsDeclaration => FixSupport::None,
+                PublicReexportConstraint::Absent => match &target {
+                    NarrowingTarget::Exact(_) => {
+                        if bare_pub
+                            && stale_parent_pub_use.is_none()
+                            && matches!(
+                                ctx.settings.visibility_config.pub_in_path,
+                                PubInPath::Required
+                            )
+                        {
+                            FixSupport::RestrictedAnnotation
+                        } else {
+                            fallback_support()
+                        }
+                    },
+                    NarrowingTarget::CallerSuppression {
+                        enclosing_module: _,
+                    } => fallback_support(),
                 },
-                _ => FixSupport::None,
             };
             (
                 policy::suspicious_pub_note(input.crate_kind, kind_label),
                 suggestion,
                 fix_support,
                 Some(use_sites::def_path_string(ctx.tcx, input.def_id)),
-                Some(narrower_scope_def_path),
+                Some(target.into_scope_def_path()),
             )
         },
         SuspiciousPubAdvice::Structural {
@@ -2559,12 +2697,13 @@ fn suspicious_pub_advice(
             if !matches!(annotation.syntax(), VisibilitySyntax::Public) && required_reach.is_none()
             {
                 return SuspiciousPubAdvice::Narrowing {
-                    suggestion:              format!(
+                    suggestion: format!(
                         "remove the parent facade and the now-unneeded `{}` annotation",
                         annotation.display_source()
                     ),
-                    narrower_scope_def_path: parent_scope_def_path,
-                    replacement:             NarrowingReplacement::Unavailable,
+                    target:     NarrowingTarget::CallerSuppression {
+                        enclosing_module: parent_scope_def_path,
+                    },
                 };
             }
             let pub_super_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
@@ -2582,9 +2721,10 @@ fn suspicious_pub_advice(
                 );
             }
             return SuspiciousPubAdvice::Narrowing {
-                suggestion:              policy::consider_using("pub(super)"),
-                narrower_scope_def_path: parent_scope_def_path,
-                replacement:             NarrowingReplacement::Unavailable,
+                suggestion: policy::consider_using("pub(super)"),
+                target:     NarrowingTarget::CallerSuppression {
+                    enclosing_module: parent_scope_def_path,
+                },
             };
         },
     }
@@ -2596,28 +2736,25 @@ fn suspicious_pub_advice(
         // only a `pub(in crate::<path>)` reach yields a boundary a fixer can
         // spell out. `pub` and `pub(crate)` fall back to the enclosing module,
         // which is a suppression key, not a rewrite target.
-        let exact_boundary = visibility_reach_boundary_path(required, ctx)
-            .and_then(|path| path.strip_prefix("crate::").map(String::from));
-        let (narrower_scope_def_path, replacement) = exact_boundary.map_or_else(
-            || {
-                (
-                    parent_scope_def_path.clone(),
-                    NarrowingReplacement::Unavailable,
-                )
-            },
-            |boundary| (boundary, NarrowingReplacement::ExactBoundary),
-        );
+        let target = visibility_reach_boundary_path(required, ctx)
+            .and_then(|path| ValidatedRestrictedBoundary::from_crate_rooted(&path))
+            .map_or_else(
+                || NarrowingTarget::CallerSuppression {
+                    enclosing_module: parent_scope_def_path,
+                },
+                NarrowingTarget::Exact,
+            );
         return SuspiciousPubAdvice::Narrowing {
             suggestion: policy::consider_using(&required.to_source(ctx.tcx)),
-            narrower_scope_def_path,
-            replacement,
+            target,
         };
     }
     let SignatureExposure::ExposedAt(required) = signature_exposure else {
         return SuspiciousPubAdvice::Narrowing {
-            suggestion:              policy::consider_using("pub(super)"),
-            narrower_scope_def_path: parent_scope_def_path,
-            replacement:             NarrowingReplacement::Unavailable,
+            suggestion: policy::consider_using("pub(super)"),
+            target:     NarrowingTarget::CallerSuppression {
+                enclosing_module: parent_scope_def_path,
+            },
         };
     };
     let parent_reach = VisibilityAnnotation::Parent.reach(input.def_id, ctx.tcx);
@@ -2626,9 +2763,10 @@ fn suspicious_pub_advice(
         Some(Ordering::Equal | Ordering::Greater)
     ) {
         return SuspiciousPubAdvice::Narrowing {
-            suggestion:              policy::consider_using("pub(super)"),
-            narrower_scope_def_path: parent_scope_def_path,
-            replacement:             NarrowingReplacement::Unavailable,
+            suggestion: policy::consider_using("pub(super)"),
+            target:     NarrowingTarget::CallerSuppression {
+                enclosing_module: parent_scope_def_path,
+            },
         };
     }
     structural_signature_advice(ctx, kind_label, required, input.def_id)
@@ -2695,6 +2833,7 @@ fn structural_signature_advice(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::rc::Rc;
 
     use rustc_middle::ty::Visibility;
@@ -2704,8 +2843,13 @@ mod tests {
     use rustc_span::def_id::DefIndex;
     use rustc_span::def_id::LOCAL_CRATE;
 
+    use super::DisplayDefPath;
     use super::FacadeCleanup;
+    use super::NarrowingTarget;
+    use super::ParentScope;
     use super::PubCrateNarrowing;
+    use super::ReachRequirements;
+    use super::ValidatedRestrictedBoundary;
     use crate::compiler::facade::ParentFacadeExportStatus;
     use crate::compiler::facade::ParentFacadeFixSupport;
     use crate::compiler::facade::ParentFacadeReach;
@@ -2713,6 +2857,7 @@ mod tests {
     use crate::compiler::facade::ParentFacadeUsage;
     use crate::compiler::visibility::annotation::VisibilityReach;
     use crate::compiler::visibility::annotation::VisibilitySyntax;
+    use crate::compiler::visibility::policy::NoFacadeVisibilityRepair;
     use crate::compiler::visibility::scan::classify::ParentVisibility;
     use crate::compiler::visibility::use_sites::FacadeChainBlocker;
     use crate::compiler::visibility::use_sites::FacadeChainResolution;
@@ -2721,6 +2866,101 @@ mod tests {
     use crate::compiler::visibility::use_sites::ParentFacadeOccurrences;
     use crate::compiler::visibility::use_sites::ReexportOccurrence;
     use crate::compiler::visibility::use_sites::RetainedFacadeRequirement;
+
+    #[test]
+    fn reach_requirements_keep_facade_and_required_reach_together() {
+        let facade = VisibilityReach::from(Visibility::Restricted(CRATE_DEF_ID.to_def_id()));
+        let required = VisibilityReach::from(Visibility::<DefId>::Public);
+        let requirements = ReachRequirements::Facade { facade, required };
+        assert!(matches!(
+            requirements.facade_reach().map(VisibilityReach::boundary),
+            Some(crate::compiler::visibility::annotation::ReachBoundary::CrateRoot)
+        ));
+        assert!(
+            requirements
+                .required_reach()
+                .is_some_and(VisibilityReach::is_public)
+        );
+        let signature = ReachRequirements::SignatureOnly { required };
+        assert!(signature.facade_reach().is_none());
+        assert!(
+            signature
+                .required_reach()
+                .is_some_and(VisibilityReach::is_public)
+        );
+        assert!(ReachRequirements::Unconstrained.facade_reach().is_none());
+        assert!(ReachRequirements::Unconstrained.required_reach().is_none());
+    }
+
+    #[test]
+    fn parent_scope_preserves_root_and_enclosing_caller_advice() {
+        let callers = BTreeSet::from([String::from("a::sibling")]);
+        let root = ParentScope::for_module("", 0);
+        assert!(matches!(root, ParentScope::CrateRoot));
+        assert!(matches!(
+            root.classify_callers("", &callers),
+            NoFacadeVisibilityRepair::RemoveAnnotation
+        ));
+        assert_eq!(
+            root.caller_note(NoFacadeVisibilityRepair::RemoveAnnotation, ""),
+            None
+        );
+        let parent = ParentScope::for_module("a::child", 2);
+        assert!(matches!(parent, ParentScope::Enclosing { def_path: "a" }));
+        assert!(matches!(
+            parent.classify_callers("a::child", &callers),
+            NoFacadeVisibilityRepair::UseParentVisibility
+        ));
+        assert_eq!(
+            parent.caller_note(NoFacadeVisibilityRepair::UseParentVisibility, "a::child"),
+            Some(String::from(concat!(
+                "no use of this item was found outside `crate::a`, ",
+                "which `pub(super)` already reaches"
+            )))
+        );
+        let shallow = ParentScope::for_module("a", 1);
+        assert!(matches!(shallow, ParentScope::CrateRoot));
+        assert!(matches!(
+            shallow.classify_callers("a", &BTreeSet::from([String::from("sibling")])),
+            NoFacadeVisibilityRepair::UseParentVisibility
+        ));
+        assert_eq!(
+            shallow.caller_note(NoFacadeVisibilityRepair::UseParentVisibility, "a"),
+            None
+        );
+    }
+
+    #[test]
+    fn display_def_paths_preserve_root_nested_and_import_names() {
+        for (path, item_name, expected) in [
+            ("Thing", Some("Alias"), "Thing"),
+            ("a::Thing", Some("Alias"), "a::Thing"),
+            ("{use#0}", Some("Alias"), "Alias"),
+            ("a::{use#0}", Some("Alias"), "a::Alias"),
+            ("{use#0}", None, "{use#0}"),
+            ("a::{use#0}", None, "a::{use#0}"),
+        ] {
+            assert_eq!(
+                DisplayDefPath::from(path).with_item_name(item_name),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn narrowing_targets_require_a_checked_restricted_boundary() {
+        for path in ["crate", "crate-external", "a::b", "crate::"] {
+            assert!(ValidatedRestrictedBoundary::from_crate_rooted(path).is_none());
+        }
+        let exact = ValidatedRestrictedBoundary::from_crate_rooted("crate::a::b")
+            .map(NarrowingTarget::Exact)
+            .map(NarrowingTarget::into_scope_def_path);
+        assert_eq!(exact.as_deref(), Some("a::b"));
+        let suppression = NarrowingTarget::CallerSuppression {
+            enclosing_module: String::from("a::child"),
+        };
+        assert_eq!(suppression.into_scope_def_path(), "a::child");
+    }
 
     #[test]
     fn pub_crate_narrowing_classifies_depth_boundaries() {
