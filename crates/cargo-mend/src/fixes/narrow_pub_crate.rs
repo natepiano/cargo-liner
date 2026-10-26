@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -14,6 +15,37 @@ pub(super) struct NarrowPubCrateScan {
     pub fixes: Vec<UseFix>,
 }
 
+/// A bare `pub` annotation eligible for narrowing to `pub(crate)`.
+/// Restricted annotations are already at most crate-wide; rewriting them
+/// here could be a no-op or widen their visibility.
+struct PubCrateNarrowingSite {
+    start: usize,
+    end:   usize,
+}
+
+impl PubCrateNarrowingSite {
+    fn locate(source: &str, line: usize, column: usize) -> Option<Self> {
+        let site = VisibilityAnnotationSite::locate(source, line, column)?;
+        match site.form {
+            VisibilityAnnotationForm::Bare => Some(Self {
+                start: site.start,
+                end:   site.end,
+            }),
+            VisibilityAnnotationForm::Restricted => None,
+        }
+    }
+
+    fn into_fix(self, path: PathBuf) -> UseFix {
+        UseFix {
+            path,
+            start: self.start,
+            end: self.end,
+            replacement: "pub(crate)".to_string(),
+            import_group: None,
+        }
+    }
+}
+
 pub(super) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
@@ -24,24 +56,43 @@ pub(super) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
-        let Some(site) = VisibilityAnnotationSite::locate(&source, finding.line, finding.column)
+        let Some(site) = PubCrateNarrowingSite::locate(&source, finding.line, finding.column)
         else {
             continue;
         };
-        // `VisibilityAnnotationForm::Bare` identifies the only annotation widened
-        // past the crate, a bare `pub`. A restricted annotation
-        // is already at most `pub(crate)`, so rewriting it would be a no-op at
-        // best and a widening at worst.
-        if site.form != VisibilityAnnotationForm::Bare {
-            continue;
-        }
-        fixes.push(UseFix {
-            path:         absolute_path,
-            start:        site.start,
-            end:          site.end,
-            replacement:  "pub(crate)".to_string(),
-            import_group: None,
-        });
+        fixes.push(site.into_fix(absolute_path));
     }
     Ok(NarrowPubCrateScan { fixes })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::PubCrateNarrowingSite;
+    use crate::fixes::constants::TAB_DISPLAY_WIDTH;
+
+    #[test]
+    fn narrowing_accepts_only_bare_visibility_and_preserves_the_separator() {
+        let source = "\tpub   fn item() {}\n";
+        let result = PubCrateNarrowingSite::locate(source, 1, TAB_DISPLAY_WIDTH + 1).map(|site| {
+            let fix = site.into_fix(PathBuf::from("src/lib.rs"));
+            format!(
+                "{}{}{}",
+                &source[..fix.start],
+                fix.replacement,
+                &source[fix.end..]
+            )
+        });
+        assert_eq!(result.as_deref(), Some("\tpub(crate)   fn item() {}\n"));
+        for source in [
+            "pub(crate) fn item() {}",
+            "pub(super) fn item() {}",
+            "pub(in crate::a) fn item() {}",
+            "pub(\n    crate) fn item() {}",
+            "fn item() {}",
+        ] {
+            assert!(PubCrateNarrowingSite::locate(source, 1, 1).is_none());
+        }
+    }
 }
