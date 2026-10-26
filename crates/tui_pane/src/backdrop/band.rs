@@ -59,7 +59,7 @@ use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
 use super::random;
 use super::random::Xorshift;
-use super::support::cell_pixels;
+use super::support;
 use crate::theme;
 
 /// Which way a [`TravelingBand`] crosses the grid.
@@ -917,7 +917,7 @@ impl TravelingBand {
     /// A terminal that will not say leaves the last answer standing, so
     /// a single refusal does not undo a size already learned.
     fn read_cell_pixels(&mut self) {
-        if let Some(measured) = cell_pixels() {
+        if let Some(measured) = support::cell_pixels() {
             self.cell_pixels = measured;
         }
     }

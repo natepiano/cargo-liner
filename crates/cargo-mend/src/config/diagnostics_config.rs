@@ -41,6 +41,7 @@ mod tests {
     use super::DiagnosticCode;
     use super::DiagnosticStatus;
     use super::DiagnosticsConfig;
+    use crate::config::constants::LEGACY_OVERBROAD_PUB_CRATE_KEY;
 
     #[test]
     fn is_enabled_reflects_config_values() {
@@ -71,7 +72,7 @@ mod tests {
     #[test]
     fn legacy_overbroad_pub_crate_key_is_accepted() {
         assert!(matches!(
-            toml::from_str::<DiagnosticsConfig>("forbidden_pub_crate = false"),
+            toml::from_str::<DiagnosticsConfig>(&format!("{LEGACY_OVERBROAD_PUB_CRATE_KEY} = false")),
             Ok(diagnostics_config)
                 if diagnostics_config.is_enabled(DiagnosticCode::OverbroadPubCrate)
                     == DiagnosticStatus::Disabled

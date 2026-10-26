@@ -278,6 +278,7 @@ fn digit_count(n: usize) -> usize { n.to_string().len() }
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
     use crate::config::DiagnosticCode;
     use crate::reporting;
     use crate::reporting::ColorMode;
@@ -287,6 +288,7 @@ mod tests {
     use crate::reporting::constants::CARGO_MEND_FIX_ALL;
     use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
     use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
+    use crate::reporting::constants::HINT_WARNING_FIXABLE_WITH_FIX;
     use crate::reporting::constants::SUMMARY_LABEL;
     use crate::reporting::diagnostics::Finding;
     use crate::reporting::diagnostics::FixSupport;
@@ -345,7 +347,7 @@ mod tests {
         );
 
         assert!(output.contains(&format!("{SUMMARY_LABEL} 3 compiler warnings")));
-        assert!(!output.contains("warning:"));
+        assert!(!output.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX));
     }
 
     #[test]
@@ -356,7 +358,7 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains("warning:"));
+        assert!(output.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX));
         assert!(output.contains(&format!("{SUMMARY_LABEL} 1 mend warning")));
         assert!(!output.contains("compiler warning"));
     }
@@ -519,7 +521,17 @@ mod tests {
             reporting::render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
 
         assert!(
-            !output.contains("--fix --fix-pub-use"),
+            !output.contains(&format!(
+                "{} {}",
+                CARGO_MEND_FIX
+                    .rsplit_once(' ')
+                    .expect("fix command has a flag")
+                    .1,
+                CARGO_MEND_FIX_PUB_USE
+                    .rsplit_once(' ')
+                    .expect("pub-use command has a flag")
+                    .1,
+            )),
             "combined flag string must never appear:\n{output}"
         );
         assert!(
@@ -581,7 +593,14 @@ mod tests {
 
         assert!(output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")));
         // `output` has a single fixable category, so it must omit `CARGO_MEND_FIX_ALL`.
-        assert!(!output.contains("--fix-all"));
+        assert!(
+            !output.contains(
+                CARGO_MEND_FIX_ALL
+                    .rsplit_once(' ')
+                    .expect("fix-all command has a flag")
+                    .1
+            )
+        );
     }
 
     #[test]
@@ -669,7 +688,7 @@ mod tests {
         );
 
         assert!(
-            output.contains("this warning is auto-fixable with `cargo mend --fix`"),
+            output.contains(HINT_WARNING_FIXABLE_WITH_FIX),
             "a fixable finding must advertise its command as a warning:\n{output}"
         );
         assert!(
@@ -701,7 +720,7 @@ mod tests {
             "a fixable finding recorded as an error still reports as a warning:\n{output}"
         );
         assert!(
-            warning_row.contains("2 fixable with `cargo mend --fix`"),
+            warning_row.contains(&format!("2 fixable with `{CARGO_MEND_FIX}`")),
             "both fixable findings belong in the warning row's fixable count:\n{output}"
         );
     }
