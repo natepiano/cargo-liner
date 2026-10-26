@@ -182,7 +182,7 @@ struct SourcePosition<'a> {
 }
 
 /// A complete import span checked against the source that supplies its text.
-pub(super) struct ImportSourceLocation<'a> {
+pub(in crate::fixes) struct ImportSourceLocation<'a> {
     start:       usize,
     end:         usize,
     source_line: &'a str,
@@ -190,11 +190,11 @@ pub(super) struct ImportSourceLocation<'a> {
 }
 
 impl<'a> ImportSourceLocation<'a> {
-    pub(super) const fn start(&self) -> usize { self.start }
+    pub(in crate::fixes) const fn start(&self) -> usize { self.start }
 
-    pub(super) const fn end(&self) -> usize { self.end }
+    pub(in crate::fixes) const fn end(&self) -> usize { self.end }
 
-    pub(super) const fn source_line(&self) -> &'a str { self.source_line }
+    pub(in crate::fixes) const fn source_line(&self) -> &'a str { self.source_line }
 
     pub(super) const fn text(&self) -> &'a str { self.text }
 }
@@ -234,7 +234,7 @@ impl<'a> ImportSource<'a> {
         })
     }
 
-    pub(super) fn locate(
+    pub(in crate::fixes) fn locate(
         &self,
         start: LineColumn,
         end: LineColumn,
