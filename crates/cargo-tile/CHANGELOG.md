@@ -115,6 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hidden arguments no longer produce `…`; only a real text cut does.
 - Numeric summary values align on their right edge, including CPU percent signs.
 - Wrapped commands keep a flag and its value together, such as `-D warnings`.

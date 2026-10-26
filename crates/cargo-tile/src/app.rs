@@ -262,6 +262,8 @@ impl AppContext for App {
 }
 
 impl SettingsHost for App {
+    fn settings_row_count(&self) -> usize { settings::rows(self).selectable_count() }
+
     fn step_setting(&mut self, step: SettingStep) { settings::cycle(self, step); }
 
     fn setting_text(&self) -> Option<String> { settings::selected_text(self) }

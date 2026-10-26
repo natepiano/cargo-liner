@@ -148,6 +148,10 @@ fn notices(app: &App) -> Vec<(&'static str, &str)> {
 }
 
 #[cfg(test)]
+#[path = "settings_scroll_tests.rs"]
+mod settings_scroll_tests;
+
+#[cfg(test)]
 #[expect(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
@@ -209,10 +213,7 @@ mod tests {
                     == Some(SettingTarget::AppText(AppSetting::HierarchyCommand))
             })
             .expect("the settings list a hierarchy command row");
-        app.framework
-            .settings_pane
-            .viewport_mut()
-            .set_pos(selection);
+        app.framework.settings_pane.select_row(selection);
         let command = "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat";
         let row_value = |app: &App| {
             rows(app)
@@ -264,10 +265,7 @@ mod tests {
                     == Some(SettingTarget::Framework(FrameworkSetting::TileFill))
             })
             .expect("the settings list a fill row");
-        app.framework
-            .settings_pane
-            .viewport_mut()
-            .set_pos(selection);
+        app.framework.settings_pane.select_row(selection);
         assert_eq!(app.loaded_config.config.tiles.fill, TileFill::Redistribute);
         assert_eq!(fill_row_value(&app), "redistribute");
 
@@ -297,10 +295,7 @@ mod tests {
                     == Some(SettingTarget::Framework(FrameworkSetting::Transparent))
             })
             .expect("the settings list a transparent row");
-        app.framework
-            .settings_pane
-            .viewport_mut()
-            .set_pos(selection);
+        app.framework.settings_pane.select_row(selection);
         let row_value = |app: &App| {
             rows(app)
                 .rows()

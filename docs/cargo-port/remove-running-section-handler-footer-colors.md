@@ -851,7 +851,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a grid minimum tile width in this work (it starves the summary); a status-scan core width for tiles (tiles became worse than main).
 
-### Phase 33 — Every settings row you can scroll to, you can select  · status: todo
+### Phase 33 — Every settings row you can scroll to, you can select  · status: done
 
 **Depends on:** Phase 32
 

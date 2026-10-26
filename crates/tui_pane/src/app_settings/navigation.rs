@@ -22,6 +22,9 @@ use crate::Navigation;
 /// An app whose settings overlay the framework's navigation scope can
 /// step.
 pub trait SettingsHost: AppContext {
+    /// Current selectable row count, available before the overlay's first draw.
+    fn settings_row_count(&self) -> usize;
+
     /// Step the settings overlay's selected row one value, then write
     /// and apply the result. A read-only row does nothing.
     fn step_setting(&mut self, step: SettingStep);
@@ -56,6 +59,8 @@ impl<A: SettingsHost + 'static> Navigation<A> for SettingsNavigation<A> {
             if app.framework().overlay() != Some(FrameworkOverlayId::Settings) {
                 return;
             }
+            let count = app.settings_row_count();
+            app.framework_mut().settings_pane.set_row_count(count);
             match action {
                 NavAction::Left => app.step_setting(SettingStep::Prev),
                 NavAction::Right => app.step_setting(SettingStep::Next),

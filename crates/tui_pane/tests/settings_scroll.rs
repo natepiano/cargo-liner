@@ -46,10 +46,7 @@ mod tests {
 
     fn render(pane: &mut SettingsPane, rows: &[SettingsRow], area: Rect) -> Vec<String> {
         let rendered = pane.render_rows(rows, options(usize::from(area.width)));
-        let viewport = pane.viewport_mut();
-        viewport.set_len(rendered.selectable_count);
-        viewport.set_content_area(area);
-        viewport.set_viewport_rows(usize::from(area.height));
+        pane.set_content_area(area);
         pane.update_scroll();
         let mut terminal = Terminal::new(TestBackend::new(area.right(), area.bottom()))
             .expect("create settings terminal");
@@ -129,9 +126,7 @@ mod tests {
             pane.line_target(0),
             SettingsLineTarget::Row(SettingsRowPayload::new(0))
         );
-        let viewport = pane.viewport_mut();
-        viewport.set_content_area(area);
-        viewport.set_viewport_rows(usize::from(area.height));
+        pane.set_content_area(area);
         pane.select_row(1);
 
         assert_eq!(
@@ -151,11 +146,8 @@ mod tests {
             SettingsRow::value(1, "row", "next"),
             SettingsRow::value(2, "row", "last"),
         ];
-        let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
-        let viewport = pane.viewport_mut();
-        viewport.set_len(rendered.selectable_count);
-        viewport.set_content_area(area);
-        viewport.set_viewport_rows(usize::from(area.height));
+        let _ = pane.render_rows(&rows, options(usize::from(area.width)));
+        pane.set_content_area(area);
         pane.select_row(1);
         let click = Position::new(area.x + 1, area.y + 1);
         assert_eq!(pane.row_at(click), SettingsRowHit::Missed);
@@ -213,10 +205,8 @@ mod tests {
         let area = Rect::new(7, 5, 28, 3);
         let rows = account_rows(8);
         let rendered = pane.render_rows(&rows, options(usize::from(area.width)));
-        let viewport = pane.viewport_mut();
-        viewport.set_content_area(area);
-        viewport.set_viewport_rows(usize::from(area.height));
-        viewport.set_scroll_offset(2);
+        pane.set_content_area(area);
+        pane.set_scroll_offset(2);
         let mut terminal = Terminal::new(TestBackend::new(area.right(), area.bottom()))
             .expect("create settings terminal");
         terminal
@@ -225,7 +215,7 @@ mod tests {
         let click = Position::new(area.x + 1, area.y + 1);
         assert_eq!(pane.row_at(click), SettingsRowHit::Row(2));
 
-        pane.viewport_mut().set_scroll_offset(3);
+        pane.set_scroll_offset(3);
         assert_eq!(pane.row_at(click), SettingsRowHit::Row(2));
         terminal
             .draw(|frame| pane.render_lines(frame, rendered.lines.clone()))

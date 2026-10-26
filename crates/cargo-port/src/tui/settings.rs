@@ -6,14 +6,19 @@ use toml::Table;
 use toml::Value;
 use tui_pane::Appearance;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::NavAction;
+use tui_pane::Navigation;
 use tui_pane::OverlayAction;
 use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingCodecs;
+use tui_pane::SettingStep;
 use tui_pane::SettingsCommand;
 use tui_pane::SettingsError;
 use tui_pane::SettingsFileSpec;
+use tui_pane::SettingsHost;
+use tui_pane::SettingsNavigation;
 use tui_pane::SettingsPane;
 use tui_pane::SettingsRegistry;
 use tui_pane::SettingsRenderOptions;
@@ -26,7 +31,6 @@ use tui_pane::ToastSettings;
 use tui_pane::ViewportOverflow;
 use tui_pane::error_color;
 use tui_pane::inline_error_color;
-use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::read_array;
 use tui_pane::read_bool;
@@ -1492,10 +1496,8 @@ fn toggle_vim_mode(app: &mut App) {
 /// runs; consumed by `SettingsPane`'s [`tui_pane::Renderable`] impl
 /// via [`crate::tui::render_context::PaneRenderCtx`].
 pub(super) struct SettingsRenderInputs {
-    pub lines:            Vec<Line<'static>>,
-    pub line_count:       usize,
-    pub selectable_count: usize,
-    pub popup_height:     u16,
+    pub lines:        Vec<Line<'static>>,
+    pub popup_height: u16,
 }
 
 /// Build the [`SettingsRenderInputs`] for the current frame. Takes
@@ -1532,15 +1534,9 @@ pub(super) fn prepare_settings_render_inputs(
         .framework
         .settings_pane
         .render_rows(&framework_rows, render_options);
-    let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    lines.extend(rendered.lines);
-    lines.push(Line::from(""));
-    let line_count = lines.len();
-    let popup_height = settings_popup_height(line_count, frame_area_height);
+    let popup_height = settings_popup_height(rendered.lines.len(), frame_area_height);
     SettingsRenderInputs {
-        lines,
-        line_count,
-        selectable_count: rendered.selectable_count,
+        lines: rendered.lines,
         popup_height,
     }
 }
@@ -1557,8 +1553,6 @@ pub(super) fn render_settings_pane_body(
         return;
     };
 
-    pane.viewport_mut().set_len(inputs.selectable_count);
-
     let popup = PopupFrame {
         title:        Some(" Settings ".to_string()),
         border_color: title_color(),
@@ -1568,24 +1562,21 @@ pub(super) fn render_settings_pane_body(
     .render_with_areas(frame);
     let inner = popup.inner;
 
-    pane.viewport_mut().set_content_area(inner);
+    pane.set_content_area(inner);
     let visible_height = usize::from(inner.height);
     let selected_line = match pane.line_for_selection(pane.viewport().pos()) {
         SettingsSelectionLine::Rendered(line) => line,
         SettingsSelectionLine::NotRendered => pane.viewport().pos(),
     };
-    let scroll_offset =
-        keep_visible_scroll_offset(selected_line, visible_height, inputs.line_count);
-    pane.viewport_mut().set_viewport_rows(visible_height);
-    pane.viewport_mut().set_scroll_offset(scroll_offset);
+    pane.update_scroll();
 
     pane.render_lines(frame, inputs.lines.clone());
     render_overflow_affordance(
         frame,
         popup.outer,
         ViewportOverflow::new(
-            inputs.line_count,
-            scroll_offset,
+            pane.viewport().content_height(),
+            pane.viewport().scroll_offset(),
             visible_height,
             selected_line,
         ),
@@ -1651,38 +1642,47 @@ pub(super) fn dispatch_settings_action(action: OverlayAction, app: &mut App) {
 }
 
 pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
-    // Set `app.framework.settings_pane.viewport_mut().set_len(selectable)` from
-    // `settings_rows` before handling `key`: the event loop drains queued keys
-    // before drawing, so a navigation key batched with opening the overlay
-    // would otherwise see zero rows and be dropped.
-    let rows = settings_rows(app, app.config.current());
-    let selectable = rows
-        .iter()
-        .filter(|(setting, _, _)| setting.is_some())
-        .count();
-    app.framework
-        .settings_pane
-        .viewport_mut()
-        .set_len(selectable);
-    let setting = setting_at_selection(&rows, app.framework.settings_pane.viewport().pos());
     match key {
-        KeyCode::Up => {
-            app.overlays.clear_inline_error();
-            app.framework.settings_pane.viewport_mut().up();
-        },
-        KeyCode::Down => {
-            app.overlays.clear_inline_error();
-            app.framework.settings_pane.viewport_mut().down();
-        },
+        KeyCode::Up => navigate_settings(app, NavAction::Up),
+        KeyCode::Down => navigate_settings(app, NavAction::Down),
+        KeyCode::PageUp => navigate_settings(app, NavAction::PageUp),
+        KeyCode::PageDown => navigate_settings(app, NavAction::PageDown),
+        KeyCode::Home => navigate_settings(app, NavAction::Home),
+        KeyCode::End => navigate_settings(app, NavAction::End),
         KeyCode::Left | KeyCode::Right => {
             app.overlays.clear_inline_error();
+            let setting = selected_setting(app);
             handle_settings_adjust_key(app, key, setting);
         },
         KeyCode::Enter | KeyCode::Char(' ') => {
             app.overlays.clear_inline_error();
+            let setting = selected_setting(app);
             handle_settings_activate_key(app, setting);
         },
         _ => {},
+    }
+}
+
+pub(super) fn navigate_settings(app: &mut App, action: NavAction) {
+    app.overlays.clear_inline_error();
+    SettingsNavigation::<App>::dispatcher()(action, *app.framework.focused(), app);
+}
+
+impl SettingsHost for App {
+    fn settings_row_count(&self) -> usize {
+        settings_rows(self, self.config.current())
+            .iter()
+            .filter(|(setting, _, _)| setting.is_some())
+            .count()
+    }
+
+    fn step_setting(&mut self, step: SettingStep) {
+        let setting = selected_setting(self);
+        let key = match step {
+            SettingStep::Prev => KeyCode::Left,
+            SettingStep::Next => KeyCode::Right,
+        };
+        handle_settings_adjust_key(self, key, setting);
     }
 }
 
@@ -2118,9 +2118,13 @@ fn toggle_lints(app: &mut App) {
 
 pub(super) fn focus_terminal_command(app: &mut App) {
     if let Some(index) = selection_index_for_setting(app, SettingOption::TerminalCommand) {
-        app.framework.settings_pane.viewport_mut().set_pos(index);
+        app.framework.settings_pane.select_row(index);
     }
 }
+
+#[cfg(test)]
+#[path = "settings_scroll_tests.rs"]
+mod settings_scroll_tests;
 
 #[cfg(test)]
 #[allow(

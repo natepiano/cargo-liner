@@ -702,7 +702,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, direction: ScrollDirecti
     }
 }
 
-const fn scroll_modal_overlay_at(app: &mut App, pos: Position, direction: ScrollDirection) -> bool {
+fn scroll_modal_overlay_at(app: &mut App, pos: Position, direction: ScrollDirection) -> bool {
     if app.overlays.is_finder_open() {
         app.overlays
             .finder_pane
@@ -720,10 +720,21 @@ const fn scroll_modal_overlay_at(app: &mut App, pos: Position, direction: Scroll
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => {
-            app.framework
+            if app
+                .framework
                 .settings_pane
-                .viewport_mut()
-                .scroll_if_contains(pos, direction);
+                .viewport()
+                .content_area()
+                .contains(pos)
+            {
+                settings::navigate_settings(
+                    app,
+                    match direction {
+                        ScrollDirection::Up => NavAction::Up,
+                        ScrollDirection::Down => NavAction::Down,
+                    },
+                );
+            }
             true
         },
         Some(FrameworkOverlayId::Keymap) => {

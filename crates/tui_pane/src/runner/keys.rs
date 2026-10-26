@@ -300,6 +300,8 @@ mod tests {
     }
 
     impl SettingsHost for TestApp {
+        fn settings_row_count(&self) -> usize { 1 }
+
         fn step_setting(&mut self, step: SettingStep) { self.steps.push(step); }
 
         fn setting_text(&self) -> Option<String> { self.text.clone() }

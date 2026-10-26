@@ -65,9 +65,7 @@ pub fn draw_settings<S: Copy>(frame: &mut Frame, pane: &mut SettingsPane, rows: 
     }
     .render_with_areas(frame);
 
-    let viewport = pane.viewport_mut();
-    viewport.set_content_area(popup.inner);
-    viewport.set_viewport_rows(usize::from(popup.inner.height));
+    pane.set_content_area(popup.inner);
     pane.update_scroll();
     pane.render_lines(frame, rendered.lines);
 }
