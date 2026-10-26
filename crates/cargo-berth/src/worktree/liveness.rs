@@ -488,6 +488,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use tempfile::tempdir;
 
     use super::RegisteredWorktreeLocation;
@@ -548,7 +549,7 @@ mod tests {
         let output = cargo_berth_test_support::fixture_git_command()
             .args(arguments)
             .current_dir(repository_root)
-            .output()
+            .bounded_output()
             .expect("git should run");
         assert!(
             output.status.success(),

@@ -797,6 +797,8 @@ mod tests {
     use std::process::Command;
     use std::process::Stdio;
 
+    use cargo_berth_test_support::ChildDeadlineExt as _;
+
     use super::EXECUTABLE_ENVIRONMENT;
     use super::EXECUTABLE_RESOLUTION;
     use super::REFERENCE_TRANSACTION_CONTEXT_FILE_NAME;
@@ -855,7 +857,9 @@ mod tests {
                     format!("{} {} refs/heads/main\n", "0".repeat(40), "1".repeat(40)).as_bytes(),
                 )
                 .expect("transaction should write");
-            let output = child.wait_with_output().expect("shared hook should finish");
+            let output = child
+                .bounded_wait_with_output()
+                .expect("shared hook should finish");
             assert!(
                 output.status.success(),
                 "{}",

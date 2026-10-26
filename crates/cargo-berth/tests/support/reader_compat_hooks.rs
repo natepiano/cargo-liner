@@ -1,11 +1,11 @@
 //! Hook response construction and invocation shared by acceptance and reader checks.
 
 use std::error::Error;
-use std::io::Write;
 use std::path::Path;
 use std::process::Output;
 use std::process::Stdio;
 
+use cargo_berth_test_support::TestProcessGroup;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 
@@ -117,18 +117,13 @@ fn spawn_hook_verb_for_discovery(
             command.env_remove("CARGO_BERTH_SESSION_ID");
         },
     }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut piped_stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| failure("hook stdin should be piped"))?;
-    piped_stdin.write_all(stdin)?;
-    drop(piped_stdin);
-    Ok(child.wait_with_output()?)
+    let child = TestProcessGroup::spawn(
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
+    Ok(child.output_with_input(stdin)?)
 }
 
 /// One hook response, read the way a harness reads it.

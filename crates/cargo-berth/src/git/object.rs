@@ -6,25 +6,20 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::io::ErrorKind;
-use std::io::Read;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Child;
-use std::process::ChildStdin;
-use std::process::ChildStdout;
 use std::process::Stdio;
 #[cfg(test)]
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::thread;
-use std::thread::JoinHandle;
+use std::sync::mpsc::Receiver;
 
+use super::child;
+use super::child::ChildDeadline;
+use super::child::ChildProcess;
 use super::command;
 use super::constants::GIT_AMBIGUOUS_OBJECT_SUFFIX;
 use super::constants::GIT_BATCH_CHECK_OBJECT_FORMAT_ARG;
@@ -37,6 +32,7 @@ use super::constants::GIT_REV_PARSE_COMMAND;
 #[cfg(test)]
 use super::error;
 use super::error::GitError;
+use super::protocol::LineExchange;
 use super::read;
 use super::read::RepositoryRead;
 use crate::ids::GitObjectId;
@@ -78,45 +74,9 @@ pub(super) struct CommitObjectReader {
 }
 
 struct CommitObjectProcess {
-    child:       Child,
-    input:       ObjectQueryInput,
-    output:      BufReader<ChildStdout>,
-    diagnostics: ObjectReaderDiagnostics,
-}
-
-enum ObjectQueryInput {
-    Connected(ChildStdin),
-    Closed,
-}
-
-impl ObjectQueryInput {
-    fn send(&mut self, expression: &str) -> io::Result<()> {
-        match self {
-            Self::Connected(input) => writeln!(input, "{expression}").and_then(|()| input.flush()),
-            Self::Closed => Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "object reader input is closed",
-            )),
-        }
-    }
-
-    fn close(&mut self) { drop(std::mem::replace(self, Self::Closed)); }
-}
-
-enum ObjectReaderDiagnostics {
-    Draining(JoinHandle<io::Result<Vec<u8>>>),
-    Collected(Vec<u8>),
-}
-
-impl ObjectReaderDiagnostics {
-    fn finish(self) -> io::Result<Vec<u8>> {
-        match self {
-            Self::Draining(worker) => worker
-                .join()
-                .map_err(|_| io::Error::other("git object diagnostic reader panicked"))?,
-            Self::Collected(bytes) => Ok(bytes),
-        }
-    }
+    child:       ChildProcess,
+    pipes:       LineExchange,
+    diagnostics: Receiver<io::Result<Vec<u8>>>,
 }
 
 impl CommitObjectReader {
@@ -128,33 +88,18 @@ impl CommitObjectReader {
         )?;
         // These streams were piped above. Convert the standard library's optional
         // handles at this boundary, before publishing the running reader.
-        let streams = (child.stdin.take(), child.stdout.take(), child.stderr.take());
-        let (Some(input), Some(output), Some(mut diagnostics)) = streams else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::other("git object reader omitted a piped stream").into());
+        let streams = {
+            let pipes = child.child_mut();
+            (pipes.stdin.take(), pipes.stdout.take(), pipes.stderr.take())
         };
-        let worker = thread::Builder::new()
-            .name("git-object-diagnostics".to_owned())
-            .spawn(move || {
-                let mut bytes = Vec::new();
-                diagnostics.read_to_end(&mut bytes)?;
-                Ok(bytes)
-            });
-        let worker = match worker {
-            Ok(worker) => worker,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error.into());
-            },
+        let (Some(input), Some(output), Some(diagnostics)) = streams else {
+            return Err(io::Error::other("git object reader omitted a piped stream").into());
         };
         Ok(Self {
             process: Mutex::new(CommitObjectProcess {
                 child,
-                input: ObjectQueryInput::Connected(input),
-                output: BufReader::new(output),
-                diagnostics: ObjectReaderDiagnostics::Draining(worker),
+                pipes: LineExchange::new(input, output)?,
+                diagnostics: child::drain(Some(diagnostics))?,
             }),
         })
     }
@@ -182,45 +127,38 @@ impl CommitObjectProcess {
                 line: expression.to_owned(),
             });
         }
-        let written = self.input.send(expression);
-        let mut line = String::new();
-        let read = self.output.read_line(&mut line)?;
-        if read == 0 {
-            let status = self.child.wait()?;
-            let diagnostics = std::mem::replace(
-                &mut self.diagnostics,
-                ObjectReaderDiagnostics::Collected(Vec::new()),
-            );
-            let stderr = diagnostics.finish()?;
-            self.diagnostics = ObjectReaderDiagnostics::Collected(stderr.clone());
-            return Err(GitError::CommandFailed {
-                command: GIT_CAT_FILE_COMMAND,
-                stderr:  if stderr.is_empty() {
-                    format!("object reader ended with {status}")
-                } else {
-                    String::from_utf8_lossy(&stderr).trim().to_owned()
-                },
-            });
+        let line = match self
+            .child
+            .exchange(&self.pipes, expression, child::GIT_COMMAND_DEADLINE)
+        {
+            Ok(line) => line,
+            // Git may close stdin before the protocol worker writes its request.
+            // Preserve its repository diagnostic just as stdout EOF does.
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => return self.ended_reader(),
+            Err(error) => return Err(error.into()),
+        };
+        if line.is_empty() {
+            return self.ended_reader();
         }
-        written?;
         commit_object_resolution(line.trim_end_matches('\n'))
     }
-}
 
-impl Drop for CommitObjectProcess {
-    fn drop(&mut self) {
-        // A Git wrapper may own the actual reader as a child. Close its input
-        // before joining stderr, so that child can exit even if the wrapper dies.
-        self.input.close();
-        // The reader owns no mutation. Stop it even when a caller leaves after a
-        // failed query; no child or diagnostic worker may outlive the operation.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let diagnostics = std::mem::replace(
-            &mut self.diagnostics,
-            ObjectReaderDiagnostics::Collected(Vec::new()),
-        );
-        let _ = diagnostics.finish();
+    fn ended_reader(&mut self) -> Result<CommitObjectResolution, GitError> {
+        let status = self.child.wait(child::PIPE_EOF_DEADLINE)?;
+        let stderr = ChildDeadline::new(
+            self.child.command(),
+            "object reader diagnostics EOF",
+            child::PIPE_EOF_DEADLINE,
+        )
+        .receive(&self.diagnostics)?;
+        Err(GitError::CommandFailed {
+            command: GIT_CAT_FILE_COMMAND,
+            stderr:  if stderr.is_empty() {
+                format!("object reader ended with {status}")
+            } else {
+                String::from_utf8_lossy(&stderr).trim().to_owned()
+            },
+        })
     }
 }
 
@@ -482,6 +420,7 @@ mod tests {
                 .lock()
                 .map_err(|error| error.to_string())?
                 .child
+                .child_mut()
                 .id())
         };
         let first_child = child_id()?;
@@ -526,6 +465,7 @@ mod tests {
                 .lock()
                 .map_err(|error| error.to_string())?
                 .child
+                .child_mut()
                 .id())
         };
         assert!(
@@ -562,6 +502,7 @@ mod tests {
             .lock()
             .map_err(|error| error.to_string())?
             .child
+            .child_mut()
             .id();
         assert_eq!(
             reader.resolve(&["refs/heads/main".to_owned()])?,
@@ -589,6 +530,7 @@ mod tests {
                 .lock()
                 .map_err(|error| error.to_string())?
                 .child
+                .child_mut()
                 .id(),
             child
         );
@@ -659,6 +601,7 @@ mod tests {
                 .lock()
                 .map_err(|error| error.to_string())?
                 .child
+                .child_mut()
                 .id())
         };
         let first_child = child_id()?;

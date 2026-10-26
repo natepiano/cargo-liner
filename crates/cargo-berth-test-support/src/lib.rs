@@ -18,7 +18,12 @@
 //! each entry point here that runs `cargo-berth`, directly or through a git
 //! hook, takes that path as its `executable`.
 
+// Git and fixture commands compile the same deadline and cleanup implementation.
+#[path = "../../cargo-berth/src/git/child.rs"]
+mod child_process;
+
 mod berth_command;
+mod command_deadline;
 mod directory_snapshot;
 mod fixture_directory;
 mod git_driver;
@@ -27,9 +32,14 @@ mod journal_records;
 mod repository_template;
 mod test_process_group;
 
+use std::process::Command;
+use std::process::Output;
+
 pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
 pub use berth_command::use_git_read_subprocess;
+pub use command_deadline::ChildDeadlineExt;
+pub use command_deadline::CommandDeadlineExt;
 pub use directory_snapshot::DirectorySnapshot;
 pub use fixture_directory::fixture_tempdir;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
@@ -60,3 +70,11 @@ pub use repository_template::LedgerTemplate;
 pub use repository_template::RepositoryTemplate;
 pub use repository_template::TemplateBuildTiming;
 pub use test_process_group::TestProcessGroup;
+
+/// Capture a fixture command with bounded exit and pipe waits.
+///
+/// # Errors
+/// Returns a named timeout, spawn error, or pipe error.
+pub fn command_output(command: &mut Command) -> std::io::Result<Output> {
+    child_process::command_output(command, child_process::GIT_COMMAND_DEADLINE)
+}

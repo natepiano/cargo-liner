@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -263,7 +264,7 @@ impl RewriteRepository {
             .args(["rebase", "--continue"])
             .env("GIT_EDITOR", "true")
             .current_dir(&self.holder)
-            .output()
+            .bounded_output()
             .expect("rebase continuation should run");
         assert!(
             continued.status.success(),
@@ -372,7 +373,7 @@ pub(super) fn board_with_rewrite_trace(root: &Path) -> Value {
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
         .env_remove("CARGO_BERTH_BYPASS")
-        .output()
+        .bounded_output()
         .expect("traced board should run");
     assert!(
         output.status.success(),
@@ -530,7 +531,7 @@ fn run_berth(root: &Path, arguments: &[&str]) -> Output {
         .current_dir(root)
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
-        .output()
+        .bounded_output()
         .expect("cargo-berth should run")
 }
 

@@ -255,6 +255,8 @@ fn execute_reservation_lifecycle(
 
 #[cfg(test)]
 mod tests {
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::TerminalMaintenance;
     use crate::git::GitError;
     use crate::git::RetentionMaintenance;
@@ -269,7 +271,7 @@ mod tests {
             let output = std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", TEST, "--nocapture"])
                 .env(CHILD, "1")
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             assert!(
@@ -303,13 +305,13 @@ mod tests {
             let output = cargo_berth_test_support::fixture_git_command()
                 .current_dir(repository.path())
                 .args(args)
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
         }
         let tip = cargo_berth_test_support::fixture_git_command()
             .current_dir(repository.path())
             .args(["rev-parse", "HEAD"])
-            .output()?;
+            .bounded_output()?;
         let tip = String::from_utf8(tip.stdout)?.trim().parse()?;
         let id = ReservationId::new();
         let lock = repository.path().join(format!(
@@ -321,7 +323,7 @@ mod tests {
         let output = cargo_berth_test_support::fixture_git_command()
             .current_dir(repository.path())
             .args(["config", "core.filesRefLockTimeout", "1"])
-            .output()?;
+            .bounded_output()?;
         assert!(output.status.success(), "{output:?}");
         let Err(GitError::LockRefused(lock)) =
             crate::git::write_reservation_retention_ref(repository.path(), id, &tip)

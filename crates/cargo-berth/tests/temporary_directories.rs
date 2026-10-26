@@ -10,6 +10,7 @@ use std::fs;
 use std::panic;
 use std::process::Command;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::IntegrationRepository;
 
@@ -141,7 +142,7 @@ fn repository_builders_leave_no_temporary_directory_after_return_or_panic() {
             .env("TMPDIR", temporary.path())
             .env("TMP", temporary.path())
             .env("TEMP", temporary.path())
-            .output()
+            .bounded_output()
             .expect("isolated fixture should run");
         assert!(output.status.success(), "{exit}: {output:?}");
         let remaining = fs::read_dir(temporary.path())
@@ -169,7 +170,7 @@ fn dropping_a_paused_test_process_ends_its_entire_process_group() {
     let ready = directory.path().join("ready");
     let created = Command::new("mkfifo")
         .arg(&fifo)
-        .status()
+        .bounded_status()
         .expect("mkfifo should run");
     assert!(created.success());
     let mut process = TestProcessGroup::spawn(
@@ -217,7 +218,7 @@ wait
                 "cleanup-deadline",
                 &format!("-{group}"),
             ])
-            .status();
+            .bounded_status();
     }
     let deadline = Instant::now() + Duration::from_millis(250);
     let mut remaining = process_group_members(group);
@@ -234,7 +235,7 @@ wait
                 "cleanup-failed-test",
                 &format!("-{group}"),
             ])
-            .status();
+            .bounded_status();
     }
     assert!(
         cleaned.is_ok(),
@@ -250,7 +251,7 @@ wait
 fn process_group_members(group: u32) -> Vec<String> {
     let output = Command::new("ps")
         .args(["-e", "-o", "pid=,pgid=,stat="])
-        .output()
+        .bounded_output()
         .expect("process table should read");
     assert!(output.status.success());
     String::from_utf8(output.stdout)
@@ -278,7 +279,7 @@ fn copied_git_seeds_keep_staged_changes_and_refs_private() -> Result<(), Box<dyn
         let output = fixture_git_command()
             .args(arguments)
             .current_dir(root)
-            .output()?;
+            .bounded_output()?;
         assert!(output.status.success(), "{output:?}");
         Ok(output.stdout)
     }
@@ -364,7 +365,7 @@ fn collecting_test_process_output_drains_both_pipes_and_ends_descendants() {
                 "output-deadline",
                 &format!("-{group}"),
             ])
-            .status();
+            .bounded_status();
     }
     let deadline = Instant::now() + Duration::from_millis(250);
     let mut remaining = process_group_members(group);

@@ -44,6 +44,7 @@ use super::constants::GIT_SHA256_OBJECT_FORMAT_VALUE;
 use super::constants::GIT_SPARSE_CHECKOUT_KEY;
 use super::constants::GIT_SPLIT_INDEX_KEY;
 use super::error::GitError;
+use super::installation;
 use super::object::BranchUpstream;
 use super::object::CommitObjectResolution;
 use super::refs::HeadAttachment;
@@ -201,19 +202,10 @@ fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
     if let RepositoryRead::GitRequired(reason) = configuration_overlay() {
         return Ok(RepositoryRead::GitRequired(reason));
     }
-    let mut permissions = gix::open::Permissions::default();
-    permissions.config.git_binary = true;
-    // gix discovers installation configuration with its own piped Git command.
-    // Share the spawn boundary: on platforms without atomic close-on-exec pipes,
-    // a concurrent persistent child must not inherit that probe's pipe writer.
-    match command::with_spawn_lock(|| {
-        gix::open_opts(
-            root,
-            gix::open::Options::default()
-                .permissions(permissions)
-                .strict_config(true),
-        )
-    })? {
+    let options = installation::open_options()?;
+    // Preserve phase 24's spawn boundary even though installation discovery now has
+    // an explicit, bounded command and gix receives the discovered file directly.
+    match command::with_spawn_lock(|| gix::open_opts(root, options))? {
         Ok(repository) => match repository_format(repository.config_snapshot().plumbing()) {
             RepositoryRead::InProcess(()) => Ok(RepositoryRead::InProcess(repository)),
             RepositoryRead::GitRequired(reason) => Ok(RepositoryRead::GitRequired(reason)),
@@ -748,6 +740,7 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use cargo_berth_test_support::TestProcessGroup;
 
     use super::GitReadRequirement;
@@ -921,7 +914,7 @@ mod tests {
             .arg(&config)
             .arg("core.excludesFile")
             .arg(root.join("excludes"))
-            .output()?;
+            .bounded_output()?;
         assert!(output.status.success(), "{output:?}");
         let git = std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?)
             .map(|path| path.join("git"))
@@ -947,7 +940,7 @@ mod tests {
             .env("CARGO_BERTH_READ_ENVIRONMENT_TEST", TEST)
             .env("PATH", path)
             .env_remove("GIT_CONFIG_NOSYSTEM")
-            .output()?;
+            .bounded_output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
@@ -1472,7 +1465,7 @@ mod tests {
             .arg("--nocapture")
             .env("CARGO_BERTH_READ_ENVIRONMENT_TEST", name)
             .envs(environment.iter().copied())
-            .output()?;
+            .bounded_output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("running 1 test"),

@@ -5670,6 +5670,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use serde_json::Value;
     use serde_json::json;
     use tempfile::TempDir;
@@ -5821,7 +5822,7 @@ mod tests {
             let output = cargo_berth_test_support::fixture_git_command()
                 .args(arguments)
                 .current_dir(root)
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
             Ok(String::from_utf8(output.stdout)?.trim().to_owned())
         };
@@ -6089,7 +6090,7 @@ mod tests {
         let initialized = cargo_berth_test_support::fixture_git_command()
             .args(["init", "--quiet"])
             .current_dir(repository.path())
-            .output()?;
+            .bounded_output()?;
         assert!(initialized.status.success());
         let integration = IntegrationTarget::from_branch_argument("integration")?;
         let repository_trunk = IntegrationTarget::from_branch_argument("main")?;

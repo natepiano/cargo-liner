@@ -1,5 +1,6 @@
 //! Scratch repositories shared by the unit tests of this module's submodules.
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
@@ -9,7 +10,7 @@ pub(super) fn scratch_repository() -> TempDir {
     let git_init = cargo_berth_test_support::fixture_git_command()
         .args(["init", "--quiet"])
         .current_dir(repository.path())
-        .status()
+        .bounded_status()
         .expect("git should initialize a scratch repository");
     assert!(git_init.success());
     repository

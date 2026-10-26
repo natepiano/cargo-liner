@@ -407,6 +407,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::CommandDeadlineExt as _;
     use crate::git_driver;
 
     const RESTORE_PROBE_GIT: &str = "CARGO_BERTH_RESTORE_PROBE_GIT";
@@ -427,7 +428,7 @@ mod tests {
                 let output = Command::new(&git)
                     .current_dir(repository.path())
                     .args(["status", "--porcelain", "--untracked-files=all"])
-                    .output()
+                    .bounded_output()
                     .expect("Git should inspect the restored index");
                 assert!(output.status.success(), "{output:?}");
                 assert_eq!(
@@ -451,7 +452,7 @@ mod tests {
             .args(["--exact", "repository_template::tests::template_restore_needs_no_git_and_preserves_clean_and_dirty_indexes", "--nocapture"])
             .env("PATH", empty_path.path())
             .env(RESTORE_PROBE_GIT, git)
-            .output()
+            .bounded_output()
             .expect("restore probe should start");
         assert!(output.status.success(), "{output:?}");
     }
@@ -502,7 +503,7 @@ mod tests {
         let output = git_driver::fixture_git_command()
             .current_dir(root)
             .args(arguments)
-            .output()
+            .bounded_output()
             .expect("fixture Git should start");
         assert!(output.status.success(), "{arguments:?}: {output:?}");
     }

@@ -693,6 +693,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use tempfile::tempdir;
 
     use super::BYPASS_ENVIRONMENT;
@@ -998,7 +999,7 @@ mod tests {
             .env(BYPASS_ENVIRONMENT, BYPASS_ENVIRONMENT_ENABLED_VALUE)
             .env(EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
             .env("PATH", path)
-            .output()
+            .bounded_output()
             .expect("managed hook should run");
         assert!(output.status.success());
     }

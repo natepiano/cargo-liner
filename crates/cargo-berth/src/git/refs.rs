@@ -8,14 +8,12 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Write;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Child;
 use std::process::Stdio;
 
+use super::child::ChildProcess;
 use super::command;
 use super::command::GitHookExecutionPolicy;
 use super::constants::GIT_FOR_EACH_REF_COMMAND;
@@ -431,7 +429,7 @@ impl RetentionRefMutation {
 enum RetentionRefWriter {
     NoWrites,
     Started {
-        child:           Child,
+        child:           ChildProcess,
         writes:          Vec<RetentionRefMutation>,
         reader:          Box<RetentionRefReader>,
         repository_root: PathBuf,
@@ -552,17 +550,13 @@ impl PreparedRetentionRefTransaction {
         };
         if let RetentionRefWriter::Started { child, .. } = &mut transaction.writer {
             let stdin = child
+                .child_mut()
                 .stdin
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("retention input was not piped"))?;
             stdin.write_all(b"start\n")?;
             stdin.flush()?;
-            let stdout = child
-                .stdout
-                .as_mut()
-                .ok_or_else(|| std::io::Error::other("retention output was not piped"))?;
-            let mut response = String::new();
-            BufReader::new(stdout).read_line(&mut response)?;
+            let response = child.read_line(super::protocol::CONTROL_REPLY_DEADLINE)?;
             if response != "start: ok\n" {
                 return Err(GitError::CommandFailed {
                     command: GIT_UPDATE_REF_COMMAND,
@@ -614,15 +608,14 @@ impl Drop for PreparedRetentionRefTransaction {
     fn drop(&mut self) {
         if let RetentionRefWriter::Started { child, .. } = &mut self.writer {
             // Invalidation discards a started transaction with no queued ref commands.
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
         }
     }
 }
 
 /// Finish the prestarted Git transaction; an empty set commits without touching any ref locks.
 fn commit_retention_writes(
-    child: Child,
+    child: ChildProcess,
     repository_root: &Path,
     writes: &[RetentionRefMutation],
 ) -> Result<(), GitError> {
@@ -678,6 +671,8 @@ fn apply_transaction(repository_root: &Path, input: &str) -> Result<(), GitError
 mod tests {
     use std::fs;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::PreparedRetentionRefTransaction;
     use super::ReservationRetentionRefRepair;
     use super::reservation_retention_ref_name;
@@ -697,7 +692,7 @@ mod tests {
                 .args(["--exact", TEST, "--nocapture"])
                 .env(CHILD, "1")
                 .env("GIT_TRACE2_EVENT", trace.path().join("git.json"))
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
             return Ok(());
         }
