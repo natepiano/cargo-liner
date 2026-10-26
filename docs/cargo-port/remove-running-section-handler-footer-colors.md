@@ -281,7 +281,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2401 `header_spans`, ≈2164 `unassigned_header_spans`).
-- Phase 12's accounts-header click: `render::cell_clicked` (`render/mod.rs` ≈199–282) tries the summary's agent headers first. Then it rebuilds `summary::accounts_header_spans(area, &cells.summary_frame())` (`summary/mod.rs` ≈347) from the current accounts reading, clock and `App.accounts_sort`, and calls `AccountsSort::select` (`sort.rs`). `SummaryFrame.accounts_sort` carries the sort into `summary::width` and `summary::draw`, and `accounts::header_spans` reads the lines that `accounts::draw_sorted` draws. Keep these drawn accounts spans with the frame, as for the agent headers.
+- Accounts-header click: phase 32 already keeps the painted summary. `App` holds `PaintedSummary::{NotDrawn, Drawn}`, and `render::cell_clicked` reads the accounts header spans from it (`render/mod.rs` ≈260), then calls `AccountsSort::select` (`sort.rs`). This phase extends that record with the painted clipping, the scrolled and pinned line mapping and the drawn identities; it does not rebuild headers from the current reading. Keep the census-change and the several-inputs-before-redraw tests.
 - Phases 16 and 20 add row and word clicks that can also hit changed content between draw and click: the frame record covers drawn row identities, clipped scrolled rows, wheel targets and word cells, tile titles and retired tiles included. Phase 20 resolves one press once, into both the row action and the painted word, and forwards tile title presses from tui_pane; keep both.
 - `TileGrid::cell_at` (`tiles/grid.rs` ≈2917) and `TileGrid::cell_content_at` (≈3182) still answer from settled geometry (`resolved_grid` over `drawn_held`). Phase 16 did not change this, so motion clicks are still wrong.
 - cargo-handler `Cells::prepare_moving_frame` (`render/mod.rs` ≈461) supplies the motion measurement bounds to `Cells::prepare_frame` (≈469). `prepare_frame` resolves the selections, runs `agent_cell::shared_tree_metrics`, and only then installs each selection area (`SurfaceSelection::set_area`). Keep that order. Those areas come from preparation allocations, so they are not the final clipped paint record.
@@ -803,7 +803,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `summary::selection_rows` (`summary/mod.rs` ≈278) lists the machine and session rows before the accounts section, so one viewport can hold agent rows and account rows together.
 - Two more domain-owned optional selection boundaries: `selection_surface(content: &TileContent) -> Option<SelectionSurface>` (`render/mod.rs` ≈283; `TileContent::Empty(_)` gives `None`) and `Cells::with_selections(self, selections, focused: Option<SelectionSurface>)` (≈405).
 - Phase 26 is done: its palette changes are in; the pinned headers and named results moved here.
-- Phase 32: the accounts fit drops in use, enabled, read and credits, then cuts roles with "…" to a 6-cell floor, then chooses TwoLine, then Stacked. The grid shares rows through `solve_column_shares` (`crates/tui_pane/src/tiles/grid.rs`), which lends the summary only limited rows; cargo-handler has no way to ask for its rows first. The red 34×50 test from phase 32 is saved outside the repository by the unit director and is given to the tester.
+- Phase 32: the accounts fit drops in use, enabled, read and credits, then cuts roles with "…" to a 6-cell floor, then chooses TwoLine, then Stacked. `AccountsLayout::for_width` is gone: one `AccountsFit {columns, layout}` is built per frame and feeds the owned `AccountLines`; `SummaryLayout` is built per frame, and `App` keeps the painted one as `PaintedSummary::{NotDrawn, Drawn}`, which the header click reads (`render/mod.rs` ≈260). Cut titles go through `truncated_line`. Pinning takes the fitted layout and its header lines from that record; do not add another layout chooser. `SummaryLayout` and `PaintedSummary` are internal states and need no user message; keep their click mapping covered by the header tests. The grid shares rows through `solve_column_shares` (`crates/tui_pane/src/tiles/grid.rs`), which lends the summary only limited rows; cargo-handler has no way to ask for its rows first. The red 34×50 test from phase 32 is saved outside the repository by the unit director and is given to the tester.
 
 **Spec:**
 1. Pinned headers: while any account row is in the viewport, the accounts section heading and that layout's column-header lines (Full one line, TwoLine two, Stacked none; Stacked gets no new header) stay pinned at the top. Nothing pins when the viewport cannot hold the pinned lines plus one body line. One pinned-and-scrolling mapping serves drawing, the selection bands (`RowSpan::visible_lines`) and clicks (`SurfaceSelection::click`). The body's navigation and page height is reduced by the pinned lines.
@@ -812,7 +812,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 3. Tests, red first: pinned headers in every layout, a header sort after End, a click on a continuation line, and an account taller than the viewport. Update `clipped_stacked_account_selection_bands_cover_facts_without_the_heading` (`render/accounts_grid_tests.rs` ≈547), which expects every visible line at End to be an account fact.
 4. Boundary tests, red first: scroll down and scroll up across the boundary between the session rows and the accounts section, with no header drawn twice, no lost agent row and no selection band on a pinned line; viewport heights one line below and at "pinned lines plus one body line"; PageUp and PageDown across the boundary; width changes between Full, TwoLine and Stacked while pinned.
 5. Named-state tests: a click that misses keeps the current selection; retired content cannot select a row and cannot focus a replacement tile.
-6. Summary rows first: below the roles floor, when TwoLine or Stacked applies, the summary gets the rows its lines need before the agent tiles get theirs, so no account and no error line is hidden. Add this to the tile grid as a named allocation choice (for example an enum on the pane, shared or before tiles), not a flag. Test, red first: the phase 32 34×50 fixture (7 accounts, 5 busy tiles, the error line "claude1: scratch reading failed") draws every account and the error line.
+6. Summary rows first (showrunner, 2026-10-25): whenever the summary does not get the rows its lines need, in every accounts layout (Full, TwoLine and Stacked), it gets them before the agent tiles get theirs, so no account and no error line is hidden. Add this to the tile grid as a named allocation choice (for example an enum on the pane, shared or before tiles), not a flag. Tests, red first: the phase 32 34×50 fixture (7 accounts, 5 busy tiles, the error line "claude1: scratch reading failed") draws every account and the error line; at 40 and 50 columns, with a grid minimum tile width set (phase 27's saved `phase27_core_width_test.rs`), every account and the error line still draw.
 
 **Files:**
 - `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/CHANGELOG.md`
@@ -828,45 +828,71 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 32 — Accounts table keeps main's height  · status: done
 
-**Depends on:** Phase 19, Phase 26, Phase 30
+#### As-built
+
+- `AccountsFit {columns, layout}` is built once per frame and feeds the owned `AccountLines`. The fit drops whole optional columns with their headers in this order: in use, enabled, read, credits. Then it cuts roles with "…" to a 6-cell floor. Then it chooses `TwoLine`, then `Stacked`. Account, roles, weekly left and resets always stay.
+- Height, draw, header clicks and selection all read the same fit. No reader has a second chooser.
+- `wrap_line` packs whole words. A separator stays with the word before it, so no wrapped line starts with punctuation. A number is never split.
+- A cut summary title (for example "natedev · 4") goes through `truncated_line` and ends with "…".
+- `SummaryLayout` is built per frame. `App` keeps `PaintedSummary::{NotDrawn, Drawn}`, and the accounts header click reads it.
+- At 200, 80, 50 and 40 columns the summary has main's height, draws every account and the error line, and leaves the tiles equal to main.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts.rs` — accounts fit, drop order, word wrap and lines
+- `crates/cargo-handler/src/summary/mod.rs` — summary layout and title cut
+- `crates/cargo-handler/src/render/mod.rs` — per-frame summary layout
+- `crates/cargo-handler/src/app.rs` — `PaintedSummary`
+- `crates/cargo-handler/src/sort.rs` — accounts sort reads the painted lines
+- `crates/cargo-handler/src/summary/accounts_tests.rs` — four-account fixture with an error line at each width
+
+**Binds later work:** `AccountsFit {columns, layout}` per frame feeds `AccountLines`; `SummaryLayout` per frame; `App`'s `PaintedSummary::{NotDrawn, Drawn}` is read by the accounts header click; `truncated_line` cuts titles; drop order is in use, enabled, read, credits, then roles cut with "…" to a 6-cell floor, then `TwoLine`, then `Stacked`. The summary gets no rows first in the grid; summary-first row allocation belongs to "Accounts headers stay in view", and the grid minimum tile width to "Narrow tiles keep their core columns".
+
+**Gotchas:** A grid minimum tile width (`set_min_tile_width`) without summary-first rows starves the summary at 50 and 40 columns: tiles stack to one column, 3 of 5 tiles stay in view, and the summary cuts to 12 rows.
+
+**Ruled out:** a grid minimum tile width in this work (it starves the summary); a status-scan core width for tiles (tiles became worse than main).
+
+### Phase 33 — Every settings row you can scroll to, you can select  · status: todo
+
+**Depends on:** Phase 32
 
 #### Work Order
 
-**Goal:** at every terminal width the summary's accounts table has no more rows than main, draws every account and every error line, never breaks a word or a number, and marks a cut title with "…".
+**Goal:** in every cargo-liner app, when the settings list is taller than the screen, each row that you can scroll to can also be selected and activated, by key and by click.
 
-**Source:** live shots 2026-10-24 against main (installed build of 2026-10-22) and the branch at ec1504bd. The defects come from phase 19 (checkpoint 2fb9d5e9, held, not on main). Summary rows, main | branch: 19 | 29 at 80 and 50 columns, 19 | 49 at 40. At 80 and 50 each account takes 2 lines (main 1); at 40 it takes 4–8, 11 words break mid-word ("Mo|n", "a|go"), 2 lines start with punctuation (", units", ":38"), codex2 and "claude1: scratch reading failed" fall past the pane end, 13,446 credits shows as "credits 1", and the title "natedev · 4" is cut with no "…". The taller summary also takes tile rows at 80 (hana 11 → 7, cargo-liner 12 → 6). Showrunner rulings, 2026-10-24: this repair runs before phase 27, and the held chain merges only with both on top. Drop order: in use, then enabled, then read, then credits.
+**Source:** the user, 2026-10-25, in cargo-port: "when i make it so the settings don't all fit on screen then scrolling is broken - i can't seem to select any row that is below the last row that fits on screen even though i can scroll to them". Showrunner ruling, 2026-10-25: a phase of its own after phase 32 and before phase 27. Fix the defect where it lives, in the shared code, so that all apps run one path.
 
 **Constraints from prior phases:**
-- `AccountsLayout::{Full, TwoLine, Stacked}` (`summary/accounts.rs` ≈402, chooser `for_width` ≈409) is chosen from the widths of all eight `AccountsColumn`s (`sort.rs` ≈172: Account, Roles, WeeklyLeft, Resets, Credits, Enabled, InUse, Read). `account_name_indent()` (≈423) is the one source of the two-line prefix.
-- `AccountLines` (≈441) is built by `measured_lines` (≈695) and rebuilt by each reader: `height_at_width` (≈205), `sorted_width_at_width` (≈222), draw (≈237), header clicks (≈249) and selection mapping (≈645).
-- `wrap_line` (≈482) cuts at any character; `stacked_facts` (≈509) builds the stacked facts; `role_words` (≈609) puts each separator in its own span; `credit_amount` (≈344) formats the whole grouped number.
-- The summary pane paints into a virtual buffer and copies its viewport (`render/mod.rs` ≈623–634), so lines past the bottom are lost without a mark.
-- Keep phase 19's reset outcomes (`summary/accounts_tests.rs` ≈1135, ≈1161), phase 26's role and account inks, and phase 30's reset shades.
+- The settings overlay is shared: `crates/tui_pane/src/overlays/settings.rs` (≈1196 lines). It owns `Viewport` (`viewport()` ≈261), `DrawnScrollOffset::{Undrawn, Drawn}` (≈132–170), the click mapping (≈294–301: drawn offset + row in the content area), `update_scroll` (≈325), `select_row` (≈353), page and home/end movement (≈363–387), line-wise up/down (≈392–412) and `viewport.set_len(selectable_count)` (≈433).
+- cargo-port has its own `crates/cargo-port/src/tui/settings.rs` (≈2327 lines): it adds padding after `render_rows`, computes its own scroll offset, and changes the selection through its own input and interaction paths. `crates/tui_pane/src/app_settings/draw.rs` draws the shared app settings. cargo-tile (`src/capture.rs`) and cargo-handler (`src/render/mod.rs`) reach the overlay through tui_pane. The defect can be in any of these; find it before naming the place.
+- The shared and port settings tests today are inline in implementation files. The tester writes new separate test modules.
+- tui_pane `CHANGELOG.md` and cargo-handler `CHANGELOG.md` are held by tile-fixes (reservation 01a16327): claim them `--after 01a16327`.
 
 **Spec:**
-1. When the Full row does not fit, drop whole optional columns first, in this order: in use, enabled, read, credits. Account, roles, weekly left and resets stay. A column and its header go together. Choose TwoLine, then Stacked, only when the kept columns still do not fit. The drop set and the layout are one fit result that every reader takes (`AccountLines` built once per width), not a second chooser.
-2. `wrap_line` packs whole words. A separator (", ", ":", "·") stays with the word before it, so no wrapped line starts with punctuation. A number (credits, percents, times) is never split; a single word longer than the line is cut with "…" through the shared cut path.
-3. The layout is chosen against the rows the summary has. Every account line and every error line draws. At a width where no layout can draw them all, stop and report the case to the unit director before any fallback is built.
-4. The summary title cut ("natedev · 4") goes through the "…" path.
-5. Tests, red first, with a fixture of four accounts (one with 13,446 credits) and an error line ("claude1: scratch reading failed") at 200, 80, 50 and 40 columns: at 200, 80 and 50 the accounts table draws one line per account, as main does (header, one line per account and the error line); every account and the error line draw at 40; no word or number breaks; no wrapped line starts with punctuation; a cut title ends with "…"; the drop order is in use, enabled, read, credits. Every test under one second.
-6. CHANGELOG: one line that the accounts table drops its optional columns before it wraps, and keeps every account and error line in view.
+1. Find the defect first, with red tests: reproduce it through cargo-port's real input path, then in tui_pane. A settings list taller than the viewport: scroll to the end, select and activate a row below the first screen by key, and then by click. Name the cause in the summary (for example, the selection clamped to the visible rows, or the scroll offset not added to the key or click index).
+2. Fix it where it lives. When the cause is in shared code (`tui_pane/src/overlays/settings.rs` or `tui_pane/src/app_settings/draw.rs`), fix it there, not in each app.
+3. If cargo-port has its own copy of the scroll, padding or selection code, remove it and use the shared code, so that all apps run one path.
+4. If the fix changes which record owns the scroll offset, write a short state model in this Work Order before the code: the record, and each path that changes it.
+5. Tests: the tests of spec 1, now green, in a separate shared settings regression module. One check in each of cargo-port, cargo-tile and cargo-handler, through the app's real settings dispatcher, that the app's settings list goes through that shared path (a list taller than the viewport: select and activate a row below the first screen by key and by click). Every test under one second.
+6. CHANGELOG lines (tui_pane and each app that changes): settings rows below the first screen can be selected.
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts.rs` — drop order, one fit result, word wrap
-- `crates/cargo-handler/src/render/mod.rs` — per-frame summary layout
-- `crates/cargo-handler/src/summary/mod.rs` — summary title cut
-- `crates/cargo-handler/src/summary/accounts_tests.rs` — fixture and width tests
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/tui_pane/src/overlays/settings.rs`, `crates/tui_pane/src/app_settings/draw.rs`, `crates/tui_pane/CHANGELOG.md`
+- `crates/tui_pane/src/overlays/settings_scroll_tests.rs` — new shared settings regression module, registered in `overlays/settings.rs`
+- `crates/cargo-port/src/tui/settings.rs`, `crates/cargo-port/src/tui/input/dispatch.rs`, `crates/cargo-port/src/tui/interaction.rs`, `crates/cargo-port/CHANGELOG.md` — the settings drawing, input and interaction adapters
+- `crates/cargo-port/src/tui/settings_scroll_tests.rs`, `crates/cargo-tile/src/settings_scroll_tests.rs`, `crates/cargo-handler/src/settings_scroll_tests.rs` — new app tests through each real settings dispatcher, registered in each app's settings module (`crates/cargo-tile/src/settings.rs`, `crates/cargo-handler/src/settings.rs`)
+- `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — only if that app's code changes
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — `summary/accounts.rs`, `summary/mod.rs`, the CHANGELOG; hub: `crates/cargo-handler/src/summary/accounts.rs`.
-- `test` — `summary/accounts_tests.rs`.
+- `impl` — the shared settings behavior, the cargo-port drawing, input and interaction adapters, the test module registrations and the CHANGELOGs; hub: `crates/tui_pane/src/overlays/settings.rs`.
+- `test` — the separate shared settings regression module and the app tests through each app's real settings dispatcher.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Phase 19's reset-outcome tests pass unchanged. Live, before the gate: summary shots at 200, 80, 50 and 40 columns in Default Dark and Default Light, against main and against ec1504bd, with summary rows, lines per account, broken words, lines that start with punctuation, missing accounts or error lines, cut numbers and cut titles; the showrunner checks them.
+**Acceptance gate:** `verify.sh lint` and `verify.sh test` clean for tui_pane, cargo-port, cargo-tile and cargo-handler. No test takes a second. Live in cargo-port: make the settings list taller than the screen, scroll down, select and change a row below the first screen.
+
+**Change-Review:** cargo-port settings rows below the first screen can be selected | On the Mac or natedev, run cargo-port in a short terminal, open settings, scroll down | A row below the first screen can be selected and changed
 
 ### Phase 27 — Narrow tiles keep their core columns  · status: todo
 
-**Depends on:** Phase 26, Phase 29, Phase 32
+**Depends on:** Phase 26, Phase 28, Phase 29, Phase 32, Phase 33
 
 #### Work Order
 
@@ -880,7 +906,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Tree tile columns are `TreeColumn::{Session, Type, Role, Status, Account, Branch, Directory, Age}` (`agent_cell.rs` ≈318). A tree tile has no pid column; the summary agents table has one.
 - The tile grid already takes a minimum tile width: `tui_pane::TileGrid::set_min_tile_width` (`crates/tui_pane/src/tiles/grid.rs` ≈1279, frame included), read by `fits` (≈4271). cargo-handler does not call it, so the grid uses `MIN_TILE_WIDTH` (8). Phase 32 tried it (2026-10-25 shots, full tile measure once per tile per frame) and moved it here: at 50 and 40 columns the grid stacked to one column, only 3 of 5 tiles stayed in view, and the summary fell to 12 rows with one account drawn (main 19 rows, every account). So spec 2 needs the summary rows first (phase 28 spec 6), and its gate counts tiles in view and summary rows. The 40-column test is saved as `phase27_core_width_test.rs` in the phase 32 session folder.
 - Phase 26: each agent tile title keeps its summary row's ink; session rows draw through `SessionRowInk::style()`; account, tier, role and session spans carry their own style.
-- Keep phase 19's measured Full/TwoLine/Stacked choice (`AccountsLayout::for_width`, `summary/accounts.rs` ≈402), `account_name_indent()` (≈423) and its reset outcomes through width changes (`summary/accounts_tests.rs` ≈1135, ≈1161).
+- Keep phase 32's accounts fit: one `AccountsFit {columns, layout}` per frame (it replaced `AccountsLayout::for_width`) feeds the owned `AccountLines`, the per-frame `SummaryLayout`, and the painted `PaintedSummary::{NotDrawn, Drawn}` in `App`. Extend the `truncated_line` path for cut text; do not add a second chooser. Keep `account_name_indent()` and the reset outcomes through width changes. The baseline is the accounts tests of checkpoint `1e6e3916` (`summary/accounts_tests.rs`, `render/accounts_grid_tests.rs`), not the older phase 19 expectations. The resize tests of this phase check the observable `AccountsFit` outcomes: which columns drop, when roles cut, and when TwoLine and Stacked apply.
 - Phase 28 owns pinned navigation; when it is done first, this phase keeps it through width changes. Phase 16's selected rows stay as they are.
 
 **Spec:**
@@ -890,8 +916,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 4. Cut text always ends with "…", through one truncation path that measures terminal cells and grapheme clusters (`unicode-width`, a workspace dependency) and keeps each span's style. Numbers (pids, counts, credits, ages) are never cut: drop the column or the field instead. Status words are never cut.
 5. Below the core width with one tile in a row (a terminal narrower than the core width plus the frame), keep session, role and status: cut the session name to its first cell plus "…", then the role; status stays whole; clip at the tile edge and keep the pane background.
 6. Rename `FlatColumns` to `FittedTreeColumns`, and its fit returns `TreeColumnFit::{Fitted(FittedTreeColumns), TooNarrow}` in place of `Option<Self>`.
-7. Tests, red first, on a multi-tile live-like fixture (several machines, subagent and shell rows, a timer status, long session names, long account names) at 200, 80, 50 and 40 columns: every tile is at least the core width while the terminal allows it; every drawn header is whole; pids and numbers are whole; adjacent cells keep a gap; cut text ends with "…"; status words are whole; no column drops while its tile has free cells; the summary has no more rows than phase 32 left at the same width. Unicode tests: a wide glyph, a combining mark and an emoji presentation sequence cut by cells. Every test under one second.
-8. Before the first gate, shots against main at 200, 80, 50 and 40 columns and against ec1504bd go to the showrunner with the counts: cut or crushed headers, cut pids and numbers, gaps, cut status words, cut text with no "…", tiles without role or status, summary rows, and whether type drops at 200.
+7. Tests, red first, on a multi-tile live-like fixture (several machines, subagent and shell rows, a timer status, long session names, long account names) at 200, 80, 50 and 40 columns: every tile is at least the core width while the terminal allows it; every drawn header is whole; pids and numbers are whole; adjacent cells keep a gap; cut text ends with "…"; status words are whole; no column drops while its tile has free cells; the summary has no more rows than phase 32 left at the same width; the tiles in view and the total tiles are counted, and no fewer tiles show than on main; every account and the error line draw. Unicode tests: a wide glyph, a combining mark and an emoji presentation sequence cut by cells. Every test under one second.
+8. Before the first gate, shots against main at 200, 80, 50 and 40 columns and against ec1504bd go to the showrunner with the counts: cut or crushed headers, cut pids and numbers, gaps, cut status words, cut text with no "…", tiles without role or status, tiles in view of the total, summary rows, accounts and the error line drawn, and whether type drops at 200.
 9. CHANGELOG: one line that narrow terminals show fewer agent tiles in a row so that each keeps its session, role and status whole, and that cut text ends with "…".
 
 **Files:**
@@ -903,11 +929,11 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `impl` — the state model, the grid minimum width, the fitting and truncation code, `FittedTreeColumns` and its fit result, the dependency declarations and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs` (registration) and `crates/cargo-handler/Cargo.toml` (dependency).
 - `test` — the multi-tile fixture and width tests, the column-visibility regressions, the Unicode tests.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` and phase 19's accounts tests pass unchanged. Phase 26's `root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts` (`render/role_title_tests.rs` ≈1066) passes unchanged. Live: agent tiles and summary shots at 200, 80, 50 and 40 columns in Default Dark and Default Light, against main and against ec1504bd, with every count of spec 10 equal to or better than main at every width.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` and phase 19's accounts tests pass unchanged. Phase 26's `root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts` (`render/role_title_tests.rs` ≈1066) passes unchanged. Live: agent tiles and summary shots at 200, 80, 50 and 40 columns in Default Dark and Default Light, against main and against ec1504bd, with every count of spec 8 equal to or better than main at every width.
 
 ### Phase 31 — Session colours stay apart  · status: todo
 
-**Depends on:** Phase 27, Phase 30
+**Depends on:** Phase 18, Phase 27, Phase 30
 
 #### Work Order
 
@@ -1050,11 +1076,11 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Spec:**
 1. `HierarchyWireRole` and `HierarchyRole` gain `AstraDesigner` and `AstraReviewer`, parsed from `astra-designer` and `astra-reviewer`. Their role words are `astra designer` and `astra reviewer` in the role column and the tile title.
-2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws (Phase 15 rules). On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
+2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules), unless phase 31 chose plain role text or another channel; then it follows phase 31's choice. On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
 3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the edge's `state` as its idle or busy status between turns.
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse and keep their words; each takes its configured color; an Astra row draws under a unit director and under a showrunner; a `codex_exec` thread named by an edge gets its name and activity; an unknown role is still dropped.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role ink, read through the production role API, meets the temporary floors in the constraints (light dE >= 15, Default Dark 12.2, High Contrast Dark 14.8) from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
+6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through the rendering path phase 31 chose (colour or another channel), keeps its configured role assignment, meets phase 31's final floors from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
 9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the unrounded 208/255 coverage. Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
