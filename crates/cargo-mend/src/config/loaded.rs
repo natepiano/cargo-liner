@@ -150,6 +150,10 @@ mod tests {
     use super::fingerprint_for;
     use super::load_config;
     use crate::config::DiagnosticsConfig;
+    use crate::config::constants::CONFIG_FILE_NAME;
+    use crate::config::constants::PRELUDE_KEY;
+    use crate::config::constants::PUB_IN_PATH_KEY;
+    use crate::config::constants::VISIBILITY_TABLE_KEY;
 
     fn global_config(pub_in_path: PubInPath, prelude_pub_mod: PreludePubMod) -> GlobalConfig {
         GlobalConfig {
@@ -163,8 +167,11 @@ mod tests {
     fn project_pub_in_path_overrides_global() -> Result<()> {
         let temp = tempdir()?;
         fs::write(
-            temp.path().join("mend.toml"),
-            "[visibility]\npub_in_path = \"required\"\n",
+            temp.path().join(CONFIG_FILE_NAME),
+            format!(
+                "[{VISIBILITY_TABLE_KEY}]\n{PUB_IN_PATH_KEY} = \"{}\"\n",
+                PubInPath::Required.config_value()
+            ),
         )?;
         let global = global_config(PubInPath::Forbidden, PreludePubMod::Allowed);
 
@@ -181,8 +188,8 @@ mod tests {
     fn absent_project_pub_in_path_inherits_global() -> Result<()> {
         let temp = tempdir()?;
         fs::write(
-            temp.path().join("mend.toml"),
-            "[visibility]\nallow_pub_mod = []\n",
+            temp.path().join(CONFIG_FILE_NAME),
+            format!("[{VISIBILITY_TABLE_KEY}]\nallow_pub_mod = []\n"),
         )?;
         let global = global_config(PubInPath::Forbidden, PreludePubMod::Allowed);
 
@@ -212,8 +219,8 @@ mod tests {
     fn project_prelude_pub_mod_overrides_global() -> Result<()> {
         let temp = tempdir()?;
         fs::write(
-            temp.path().join("mend.toml"),
-            "[visibility]\nallow_prelude_pub_mod = false\n",
+            temp.path().join(CONFIG_FILE_NAME),
+            format!("[{VISIBILITY_TABLE_KEY}]\n{PRELUDE_KEY} = false\n"),
         )?;
         let global = global_config(PubInPath::Permitted, PreludePubMod::Allowed);
 
