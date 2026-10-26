@@ -96,12 +96,22 @@ fn redirect_callers_in_syntax(
     redirects: &[FacadeRedirect],
     module_aliases: &ModuleAliases,
 ) -> FileRedirects {
+    let lines = SourceLines::new(source);
+    let scope = CallerRewriter::binding_scope(
+        syntax.items.iter(),
+        ScopeKind::Module,
+        &module_path,
+        redirects,
+        module_aliases,
+        &lines,
+    );
     let mut rewriter = CallerRewriter {
         file,
         source,
-        lines: SourceLines::new(source),
+        lines,
         module_path,
-        scopes: Vec::new(),
+        scope,
+        outer_scopes: Vec::new(),
         redirects,
         module_aliases,
         fixes: Vec::new(),
@@ -127,7 +137,9 @@ enum ScopeKind {
 /// The names the `use` items of one scope bind, each mapped to the
 /// crate-relative path it names, so `tool_staging::f()` written under
 /// `use crate::tool::tool_staging;` resolves to `tool::tool_staging::f`.
-struct BindingScope {
+/// Traversal always owns this active scope, so finishing deferred imports
+/// cannot silently return because no scope exists.
+struct ActiveBindingScope {
     kind:          ScopeKind,
     bindings:      FxHashMap<String, Vec<String>>,
     /// The bindings of a redirect's `unchanged_module`, by bound name.
@@ -142,7 +154,7 @@ struct BindingScope {
 /// through it.
 struct OwnerImport {
     item_start: usize,
-    leaf:       BoundLeaf,
+    leaf:       NamedUseLeaf,
     module:     Vec<String>,
     public:     bool,
     redirected: bool,
@@ -156,9 +168,9 @@ impl OwnerImport {
 }
 
 /// A `use` leaf by its written path (a `self` leaf's is its prefix) and the
-/// name it binds.
+/// name it binds. Unbound root `self` leaves have no named leaf to remove.
 #[derive(Clone, PartialEq, Eq)]
-struct BoundLeaf {
+struct NamedUseLeaf {
     path: Vec<String>,
     name: String,
 }
@@ -211,7 +223,8 @@ struct CallerRewriter<'a> {
     source:              &'a str,
     lines:               SourceLines<'a>,
     module_path:         Vec<String>,
-    scopes:              Vec<BindingScope>,
+    scope:               ActiveBindingScope,
+    outer_scopes:        Vec<ActiveBindingScope>,
     redirects:           &'a [FacadeRedirect],
     module_aliases:      &'a ModuleAliases,
     fixes:               Vec<UseFix>,
@@ -223,8 +236,6 @@ struct CallerRewriter<'a> {
 
 impl Visit<'_> for CallerRewriter<'_> {
     fn visit_file(&mut self, node: &File) {
-        let scope = self.binding_scope(node.items.iter(), ScopeKind::Module);
-        self.scopes.push(scope);
         visit::visit_file(self, node);
         self.close_scope();
     }
@@ -234,12 +245,19 @@ impl Visit<'_> for CallerRewriter<'_> {
             let cfg_test = rust_syntax::is_cfg_test(&node.attrs);
             self.cfg_test_depth += usize::from(cfg_test);
             self.module_path.push(node.ident.unraw().to_string());
-            let scope = self.binding_scope(items.iter(), ScopeKind::Module);
-            self.scopes.push(scope);
-            for item in items {
-                self.visit_item(item);
-            }
-            self.close_scope();
+            let scope = Self::binding_scope(
+                items.iter(),
+                ScopeKind::Module,
+                &self.module_path,
+                self.redirects,
+                self.module_aliases,
+                &self.lines,
+            );
+            self.in_scope(scope, |rewriter| {
+                for item in items {
+                    rewriter.visit_item(item);
+                }
+            });
             self.module_path.pop();
             self.cfg_test_depth -= usize::from(cfg_test);
         }
@@ -250,10 +268,15 @@ impl Visit<'_> for CallerRewriter<'_> {
             Stmt::Item(item) => Some(item),
             _ => None,
         });
-        let scope = self.binding_scope(items, ScopeKind::Block);
-        self.scopes.push(scope);
-        visit::visit_block(self, node);
-        self.close_scope();
+        let scope = Self::binding_scope(
+            items,
+            ScopeKind::Block,
+            &self.module_path,
+            self.redirects,
+            self.module_aliases,
+            &self.lines,
+        );
+        self.in_scope(scope, |rewriter| visit::visit_block(rewriter, node));
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
@@ -264,14 +287,16 @@ impl Visit<'_> for CallerRewriter<'_> {
             return;
         }
         self.record_use_tree_paths(&node.tree);
-        let (start, _) = source_text::item_use_byte_range(&self.lines, node);
-        if let Some(scope) = self.scopes.last_mut()
-            && scope
-                .owner_imports
-                .values()
-                .any(|import| import.item_start == start)
+        let Ok((start, _)) = source_text::item_use_byte_range(&self.lines, node) else {
+            return;
+        };
+        if self
+            .scope
+            .owner_imports
+            .values()
+            .any(|import| import.item_start == start)
         {
-            scope.deferred.push(node.clone());
+            self.scope.deferred.push(node.clone());
             return;
         }
         self.rewrite_use_item(node, &[]);
@@ -308,10 +333,13 @@ impl Visit<'_> for CallerRewriter<'_> {
 
 impl<'a> CallerRewriter<'a> {
     fn binding_scope<'item>(
-        &self,
         items: impl Iterator<Item = &'item Item>,
         kind: ScopeKind,
-    ) -> BindingScope {
+        module_path: &[String],
+        redirects: &[FacadeRedirect],
+        module_aliases: &ModuleAliases,
+        lines: &SourceLines<'_>,
+    ) -> ActiveBindingScope {
         let mut bindings = FxHashMap::default();
         let mut owner_imports = FxHashMap::default();
         for item in items {
@@ -321,24 +349,28 @@ impl<'a> CallerRewriter<'a> {
             if item_use.leading_colon.is_some() {
                 continue;
             }
-            let (item_start, _) = source_text::item_use_byte_range(&self.lines, item_use);
+            let Ok((item_start, _)) = source_text::item_use_byte_range(lines, item_use) else {
+                continue;
+            };
             for binding in imports::collect_use_bindings(&item_use.tree) {
                 let UseBinding::Named { name, path } = binding else {
                     continue;
                 };
                 let segments = split_path(&path);
-                let Some(absolute) = module_path::absolute_use_path(&self.module_path, &segments)
-                else {
+                let Some(absolute) = module_path::absolute_use_path(module_path, &segments) else {
                     continue;
                 };
-                let module = self.module_aliases.resolve(absolute.clone());
-                if self.is_unchanged_module(&module) {
+                let module = module_aliases.resolve(absolute.clone());
+                if redirects
+                    .iter()
+                    .any(|redirect| redirect.unchanged_module.as_ref() == Some(&module))
+                {
+                    let Some(leaf) = bound_leaf(segments, Some(&name)) else {
+                        continue;
+                    };
                     let import = OwnerImport {
                         item_start,
-                        leaf: BoundLeaf {
-                            path: segments,
-                            name: name.clone(),
-                        },
+                        leaf,
                         module,
                         public: !matches!(item_use.vis, Visibility::Inherited),
                         redirected: false,
@@ -349,7 +381,7 @@ impl<'a> CallerRewriter<'a> {
                 bindings.insert(name, absolute);
             }
         }
-        BindingScope {
+        ActiveBindingScope {
             kind,
             bindings,
             owner_imports,
@@ -363,16 +395,22 @@ impl<'a> CallerRewriter<'a> {
             .any(|redirect| redirect.unchanged_module.as_deref() == Some(path))
     }
 
-    /// Rewrites the scope's deferred `use` items without their unused owner
-    /// imports, records the unchanged modules its other owner imports still
-    /// name, and leaves the scope.
+    /// Runs inside a new active scope while retaining every enclosing binding.
+    fn in_scope(&mut self, scope: ActiveBindingScope, visit: impl FnOnce(&mut Self)) {
+        let parent = mem::replace(&mut self.scope, scope);
+        let parent_index = self.outer_scopes.len();
+        self.outer_scopes.push(parent);
+        visit(self);
+        self.close_scope();
+        self.scope = self.outer_scopes.remove(parent_index);
+    }
+
+    /// Finishes the active scope's deferred imports. An active scope always
+    /// exists: closing without one would silently lose deferred caller edits.
     fn close_scope(&mut self) {
-        let Some(scope) = self.scopes.last_mut() else {
-            return;
-        };
-        let deferred = mem::take(&mut scope.deferred);
+        let deferred = mem::take(&mut self.scope.deferred);
         let mut unused = Vec::new();
-        for import in scope.owner_imports.values() {
+        for import in self.scope.owner_imports.values() {
             if import.is_unused() {
                 unused.push((import.item_start, import.leaf.clone()));
             } else {
@@ -380,7 +418,9 @@ impl<'a> CallerRewriter<'a> {
             }
         }
         for item_use in &deferred {
-            let (start, _) = source_text::item_use_byte_range(&self.lines, item_use);
+            let Ok((start, _)) = source_text::item_use_byte_range(&self.lines, item_use) else {
+                continue;
+            };
             let removed = unused
                 .iter()
                 .filter(|(item_start, _)| *item_start == start)
@@ -388,18 +428,19 @@ impl<'a> CallerRewriter<'a> {
                 .collect::<Vec<_>>();
             self.rewrite_use_item(item_use, &removed);
         }
-        self.scopes.pop();
     }
 
     /// Rewrites one `use` item: redirected leaves repointed, `removed` leaves
     /// dropped, and the whole item deleted when nothing is left.
-    fn rewrite_use_item(&mut self, node: &ItemUse, removed: &[BoundLeaf]) {
+    fn rewrite_use_item(&mut self, node: &ItemUse, removed: &[NamedUseLeaf]) {
         let mut lines = UseItemLines::default();
         self.plan_use_tree(&[], &node.tree, removed, &mut lines);
         match UseRewritePlan::from(lines) {
             UseRewritePlan::Unchanged => {},
             UseRewritePlan::Delete => {
-                let (start, end) = source_text::item_use_byte_range(&self.lines, node);
+                let Ok((start, end)) = source_text::item_use_byte_range(&self.lines, node) else {
+                    return;
+                };
                 self.fixes.push(source_text::line_deletion(
                     self.file,
                     self.source,
@@ -407,8 +448,13 @@ impl<'a> CallerRewriter<'a> {
                 ));
             },
             UseRewritePlan::Replace { lines } => {
-                let (start, end) = source_text::item_use_byte_range(&self.lines, node);
-                let tree_start = self.lines.offset(node.tree.span().start());
+                let Ok((start, end)) = source_text::item_use_byte_range(&self.lines, node) else {
+                    return;
+                };
+                let Ok(position) = self.lines.position(node.tree.span().start()) else {
+                    return;
+                };
+                let tree_start = SourceLines::offset(position);
                 let header = &self.source[start..tree_start];
                 let separator = format!("\n{}", self.lines.indent_before(start));
                 let replacement = lines
@@ -451,7 +497,7 @@ impl<'a> CallerRewriter<'a> {
         let Some(index) = self.binding_scope_index(first) else {
             return;
         };
-        if let Some(import) = self.scopes[index].owner_imports.get_mut(first) {
+        if let Some(import) = self.scope_mut(index).owner_imports.get_mut(first) {
             if redirected {
                 import.redirected = true;
             } else {
@@ -484,13 +530,15 @@ impl<'a> CallerRewriter<'a> {
 
     fn binding(&self, name: &str) -> Option<&Vec<String>> {
         let index = self.binding_scope_index(name)?;
-        self.scopes[index].bindings.get(name)
+        self.scope_at(index).bindings.get(name)
     }
 
     /// The innermost scope binding `name`; lookup stops at the enclosing
     /// module scope.
     fn binding_scope_index(&self, name: &str) -> Option<usize> {
-        for (index, scope) in self.scopes.iter().enumerate().rev() {
+        for (index, scope) in iter::once((self.outer_scopes.len(), &self.scope))
+            .chain(self.outer_scopes.iter().enumerate().rev())
+        {
             if scope.bindings.contains_key(name) {
                 return Some(index);
             }
@@ -499,6 +547,22 @@ impl<'a> CallerRewriter<'a> {
             }
         }
         None
+    }
+
+    fn scope_at(&self, index: usize) -> &ActiveBindingScope {
+        if index == self.outer_scopes.len() {
+            &self.scope
+        } else {
+            &self.outer_scopes[index]
+        }
+    }
+
+    fn scope_mut(&mut self, index: usize) -> &mut ActiveBindingScope {
+        if index == self.outer_scopes.len() {
+            &mut self.scope
+        } else {
+            &mut self.outer_scopes[index]
+        }
     }
 
     /// The redirect `written` names here, the path a caller here writes
@@ -535,7 +599,7 @@ impl<'a> CallerRewriter<'a> {
         &mut self,
         written: &[String],
         tree: &UseTree,
-        removed: &[BoundLeaf],
+        removed: &[NamedUseLeaf],
         lines: &mut UseItemLines,
     ) {
         match tree {
@@ -569,7 +633,7 @@ impl<'a> CallerRewriter<'a> {
         written: &[String],
         ident: &Ident,
         alias: Option<&str>,
-        removed: &[BoundLeaf],
+        removed: &[NamedUseLeaf],
         lines: &mut UseItemLines,
     ) {
         let leaf = leaf_path(written, ident);
@@ -596,9 +660,9 @@ impl<'a> CallerRewriter<'a> {
         &mut self,
         leaf: Vec<String>,
         alias: Option<&str>,
-        removed: &[BoundLeaf],
+        removed: &[NamedUseLeaf],
     ) -> UseLeafDisposition<'a> {
-        if removed.contains(&bound_leaf(leaf.clone(), alias)) {
+        if bound_leaf(leaf.clone(), alias).is_some_and(|leaf| removed.contains(&leaf)) {
             return UseLeafDisposition::Removed;
         }
         self.redirect_target(&leaf)
@@ -608,10 +672,11 @@ impl<'a> CallerRewriter<'a> {
     }
 
     /// Whether a leaf of `tree` is redirected or in `removed`.
-    fn tree_changes(&self, written: &[String], tree: &UseTree, removed: &[BoundLeaf]) -> bool {
+    fn tree_changes(&self, written: &[String], tree: &UseTree, removed: &[NamedUseLeaf]) -> bool {
         let leaf_changes = |ident: &Ident, alias: Option<&str>| {
             let leaf = leaf_path(written, ident);
-            self.redirect_lookup(&leaf).is_some() || removed.contains(&bound_leaf(leaf, alias))
+            self.redirect_lookup(&leaf).is_some()
+                || bound_leaf(leaf, alias).is_some_and(|leaf| removed.contains(&leaf))
         };
         match tree {
             UseTree::Path(path) => {
@@ -665,8 +730,12 @@ impl<'a> CallerRewriter<'a> {
         let Some((length, target)) = found else {
             return;
         };
-        let start = self.lines.offset(idents[0].span().start());
-        let end = self.lines.offset(idents[length - 1].span().end());
+        let Ok((start, end)) = self
+            .lines
+            .span_range(idents[0].span().start(), idents[length - 1].span().end())
+        else {
+            return;
+        };
         let replacement =
             anchored.unwrap_or_else(|| module_path::import_path(&self.module_path, target, None));
         self.push_fix(start, end, replacement);
@@ -734,12 +803,12 @@ fn split_path(path: &str) -> Vec<String> { path.split("::").map(str::to_string).
 
 /// The written path and bound name of a `use` leaf, given its written path
 /// and alias.
-fn bound_leaf(path: Vec<String>, alias: Option<&str>) -> BoundLeaf {
-    let name = alias
-        .map(str::to_string)
-        .or_else(|| path.last().cloned())
-        .unwrap_or_default();
-    BoundLeaf { path, name }
+fn bound_leaf(path: Vec<String>, alias: Option<&str>) -> Option<NamedUseLeaf> {
+    let name = alias.map(str::to_string).or_else(|| path.last().cloned())?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(NamedUseLeaf { path, name })
 }
 
 /// The written path a `use` leaf binds; a `self` leaf binds its prefix.
@@ -1130,7 +1199,13 @@ mod tests {
             source:              "",
             lines:               super::SourceLines::new(""),
             module_path:         path("app"),
-            scopes:              Vec::new(),
+            scope:               super::ActiveBindingScope {
+                kind:          super::ScopeKind::Module,
+                bindings:      super::FxHashMap::default(),
+                owner_imports: super::FxHashMap::default(),
+                deferred:      Vec::new(),
+            },
+            outer_scopes:        Vec::new(),
             redirects:           &redirects,
             module_aliases:      &aliases,
             fixes:               Vec::new(),
@@ -1139,10 +1214,10 @@ mod tests {
             cfg_test_depth:      0,
         };
         let ident: Ident = syn::parse_str("stage").expect("parse name");
-        let removed = [super::bound_leaf(
-            path("crate::tool::tool_staging::stage"),
-            Some("alias"),
-        )];
+        let removed = [
+            super::bound_leaf(path("crate::tool::tool_staging::stage"), Some("alias"))
+                .expect("named aliased leaf"),
+        ];
         let mut lines = super::UseItemLines::default();
         rewriter.plan_use_leaf(
             &path("crate::tool::tool_staging"),
@@ -1169,6 +1244,34 @@ mod tests {
             lines.redirected.into_values().flatten().collect::<Vec<_>>(),
             vec!["crate::tool::stage as other_alias"]
         );
+    }
+
+    #[test]
+    fn nested_blocks_restore_the_enclosing_module_binding() {
+        let source = concat!(
+            "use crate::tool;\nfn f() { { use crate::tool as kit; ",
+            "kit::staging::run(); } tool::staging::run(); }\n",
+        );
+        let expected = concat!(
+            "use crate::tool;\nfn f() { { use crate::tool as kit; ",
+            "kit::run(); } tool::run(); }\n",
+        );
+        assert_eq!(
+            rewritten(
+                source,
+                "app",
+                &[redirect("tool::staging::run", "tool::run")]
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn unbound_root_leaves_have_no_named_removal_identity() {
+        assert!(super::bound_leaf(Vec::new(), None).is_none());
+        assert!(super::bound_leaf(Vec::new(), Some("")).is_none());
+        let aliased = super::bound_leaf(Vec::new(), Some("root")).expect("aliased root");
+        assert_eq!(aliased.name, "root");
     }
 
     #[test]

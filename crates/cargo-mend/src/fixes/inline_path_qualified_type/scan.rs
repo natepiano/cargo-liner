@@ -4,10 +4,8 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
-use syn::visit::Visit;
 use walkdir::WalkDir;
 
-use super::offsets;
 use super::process;
 use super::process::OccurrenceContext;
 use super::scope;
@@ -16,6 +14,7 @@ use super::scope::ScopeSpan;
 use super::visitor::InlinePathVisitor;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::ConditionalAttributes;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
@@ -86,11 +85,12 @@ fn scan_file(
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
-    let offsets = offsets::line_offsets(text);
+    let indexed = ImportSource::new(text);
+    let offsets = indexed.line_offsets();
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {
         text,
-        offsets: &offsets,
+        offsets,
         scopes: &mut scopes,
     };
     scope::collect_scopes(
@@ -98,18 +98,17 @@ fn scan_file(
         ScopeSpan::new(0, text.len()),
         &base_module_path,
         &mut scope_collection_context,
+        &indexed,
     );
 
     let mut visitor = InlinePathVisitor {
-        occurrences: Vec::new(),
-        bare_type_names: BTreeSet::new(),
-        mod_depth: 0,
-        generic_scopes: Vec::new(),
-        text,
-        offsets: &offsets,
+        occurrences:            Vec::new(),
+        bare_type_names:        BTreeSet::new(),
+        mod_depth:              0,
+        generic_scopes:         Vec::new(),
         conditional_attributes: ConditionalAttributes::default(),
     };
-    visitor.visit_file(syntax);
+    visitor.visit_file(syntax, &indexed);
 
     if visitor.occurrences.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -129,7 +128,7 @@ fn scan_file(
         path,
         display_path: &display_path,
         text,
-        offsets: &offsets,
+        offsets,
         scopes: &scopes,
         collision_names: &no_collision_names,
     };
@@ -170,4 +169,38 @@ fn scan_file(
     }
 
     Ok((findings, fixes))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fixes::imports::ImportSource;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn full_file_scan_shares_one_index_across_scopes_and_paths() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let statements = "ext::Widget;".repeat(128);
+        for gate in ["", "#[cfg(any(unix, windows))]\n"] {
+            let text = format!(
+                "mod nested {{ {gate}use ext::Existing; {gate}fn f() {{ {statements} }} \
+                 mod deeper {{ {gate}fn g() {{ {statements} }} }} }}"
+            );
+            std::fs::write(&path, &text)?;
+            let sources = ParsedSources::default();
+            let module_map = sources.module_map(dir.path());
+            let before = ImportSource::construction_count();
+            let (findings, fixes) =
+                super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+            assert_eq!(ImportSource::construction_count() - before, 1);
+            assert_eq!(findings.len(), 256);
+            assert!(!fixes.is_empty());
+            assert!(
+                fixes
+                    .iter()
+                    .any(|fix| { fix.replacement.contains(&format!("{gate}use ext::Widget;")) })
+            );
+        }
+        Ok(())
+    }
 }

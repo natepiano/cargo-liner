@@ -164,22 +164,91 @@ fn format_path(segments: &[String], rename: Option<&str>) -> String {
     path
 }
 
-pub(super) fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (idx, ch) in text.char_indices() {
-        if ch == '\n' {
-            offsets.push(idx + 1);
-        }
-    }
-    offsets
+#[cfg(test)]
+thread_local! {
+    static INDEX_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
-    line_offsets
-        .get(position.line.saturating_sub(1))
-        .copied()
-        .unwrap_or(0)
-        + position.column
+/// One source and its own line index, used to check external span coordinates.
+pub(in crate::fixes) struct ImportSource<'a> {
+    text:    &'a str,
+    offsets: Vec<usize>,
+}
+
+/// An addressable source position, including the real line used in diagnostics.
+struct SourcePosition<'a> {
+    offset:      usize,
+    source_line: &'a str,
+}
+
+/// A complete import span checked against the source that supplies its text.
+pub(super) struct ImportSourceLocation<'a> {
+    start:       usize,
+    end:         usize,
+    source_line: &'a str,
+    text:        &'a str,
+}
+
+impl<'a> ImportSourceLocation<'a> {
+    pub(super) const fn start(&self) -> usize { self.start }
+
+    pub(super) const fn end(&self) -> usize { self.end }
+
+    pub(super) const fn source_line(&self) -> &'a str { self.source_line }
+
+    pub(super) const fn text(&self) -> &'a str { self.text }
+}
+
+impl<'a> ImportSource<'a> {
+    pub(in crate::fixes) fn new(text: &'a str) -> Self {
+        #[cfg(test)]
+        INDEX_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+        let mut offsets = vec![0];
+        offsets.extend(text.match_indices('\n').map(|(offset, _)| offset + 1));
+        Self { text, offsets }
+    }
+
+    /// Borrow the line starts built from this owner's text for existing edit consumers.
+    pub(in crate::fixes) fn line_offsets(&self) -> &[usize] { &self.offsets }
+
+    #[cfg(test)]
+    pub(in crate::fixes) fn construction_count() -> usize {
+        INDEX_CONSTRUCTIONS.with(std::cell::Cell::get)
+    }
+
+    fn position(&self, position: LineColumn) -> Option<SourcePosition<'a>> {
+        let start = *self.offsets.get(position.line.checked_sub(1)?)?;
+        let rest = &self.text[start..];
+        let (line, source_line) = match rest.split_once('\n') {
+            Some((line, _)) => (line, line.strip_suffix('\r').unwrap_or(line)),
+            None => (rest, rest),
+        };
+        let column = line
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(line.len()))
+            .nth(position.column)?;
+        Some(SourcePosition {
+            offset: start + column,
+            source_line,
+        })
+    }
+
+    pub(super) fn locate(
+        &self,
+        start: LineColumn,
+        end: LineColumn,
+    ) -> Option<ImportSourceLocation<'a>> {
+        let start = self.position(start)?;
+        let end = self.position(end)?;
+        let text = self.text.get(start.offset..end.offset)?;
+        Some(ImportSourceLocation {
+            start: start.offset,
+            end: end.offset,
+            source_line: start.source_line,
+            text,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +257,7 @@ pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use proc_macro2::LineColumn;
     use syn::ItemUse;
 
     use super::analyze_use_tree;
@@ -197,6 +267,46 @@ mod tests {
             .filter(|part| !part.is_empty())
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn import_locations_require_real_lines_columns_and_ordered_spans() {
+        let source = super::ImportSource::new("// é\nuse é::Item;\n");
+        let at = |line, column| LineColumn { line, column };
+        let located = source
+            .locate(at(2, 4), at(2, 11))
+            .expect("valid UTF-8 span");
+        assert_eq!(located.text, "é::Item");
+        assert_eq!(located.source_line, "use é::Item;");
+        for (start, end) in [
+            (at(0, 0), at(1, 0)),
+            (at(4, 0), at(4, 0)),
+            (at(2, 99), at(2, 99)),
+            (at(2, 5), at(2, 4)),
+        ] {
+            assert!(source.locate(start, end).is_none());
+        }
+        assert!(source.locate(at(3, 0), at(3, 0)).is_some());
+    }
+
+    #[test]
+    fn source_lines_preserve_unterminated_carriage_returns() {
+        let at = |line, column| LineColumn { line, column };
+        for (text, line, expected) in [
+            ("use crate::a::X;\r", 1, "use crate::a::X;\r"),
+            ("use crate::a::X;\r\n", 1, "use crate::a::X;"),
+            ("use crate::a::X;\r\n", 2, ""),
+        ] {
+            let source = super::ImportSource::new(text);
+            let located = source.locate(at(line, 0), at(line, 0)).expect("valid line");
+            assert_eq!(located.source_line(), expected);
+        }
+        let source = super::ImportSource::new("é\r\n");
+        let located = source
+            .locate(at(1, 0), at(1, 2))
+            .expect("physical CR column");
+        assert_eq!(located.text(), "é\r");
+        assert_eq!(located.source_line(), "é");
     }
 
     #[test]

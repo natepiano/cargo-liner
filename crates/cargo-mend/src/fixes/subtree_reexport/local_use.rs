@@ -43,7 +43,7 @@ impl GlobReach<'_> {
         lines: &SourceLines<'_>,
         items: &[Item],
         module: &[String],
-    ) -> LocalUse {
+    ) -> Result<LocalUse> {
         self.items_reach_gated(source, lines, items, module, LocalUse::Always)
     }
 
@@ -56,7 +56,7 @@ impl GlobReach<'_> {
         items: &[Item],
         module: &[String],
         gate: LocalUse,
-    ) -> LocalUse {
+    ) -> Result<LocalUse> {
         let mut reach = LocalUse::Unused;
         for item in items {
             let Item::Mod(item_mod) = item else {
@@ -72,17 +72,17 @@ impl GlobReach<'_> {
             };
             let mut child = module.to_vec();
             child.push(item_mod.ident.unraw().to_string());
-            let start = lines.offset(brace.span.open().end());
-            let end = lines.offset(brace.span.close().start());
+            let (start, end) =
+                lines.span_range(brace.span.open().end(), brace.span.close().start())?;
             if self.module_reaches(&source[start..end], content, &child) {
                 reach = reach.max(gate);
             }
-            reach = reach.max(self.items_reach_gated(source, lines, content, &child, gate));
+            reach = reach.max(self.items_reach_gated(source, lines, content, &child, gate)?);
             if reach == LocalUse::Always {
                 break;
             }
         }
-        reach
+        Ok(reach)
     }
 
     /// The strongest use by a crate file other than `owner_file` that sits
@@ -119,7 +119,7 @@ impl GlobReach<'_> {
             if self.module_reaches(text, &syntax.items, module) {
                 reach = reach.max(gate);
             }
-            reach = reach.max(self.items_reach_gated(text, &lines, &syntax.items, module, gate));
+            reach = reach.max(self.items_reach_gated(text, &lines, &syntax.items, module, gate)?);
             if reach == LocalUse::Always {
                 break;
             }
@@ -194,7 +194,9 @@ mod tests {
             owner: &owner,
             name,
         };
-        reach.items_reach(source, &SourceLines::new(source), &syntax.items, &owner)
+        reach
+            .items_reach(source, &SourceLines::new(source), &syntax.items, &owner)
+            .expect("valid module spans")
     }
 
     #[test]
@@ -202,6 +204,23 @@ mod tests {
         let source = "mod inner {\n    use super::*;\n    fn f() { Widget::new(); }\n}\n";
         assert_eq!(reaches(source, "Widget"), LocalUse::Always);
         assert_eq!(reaches(source, "Other"), LocalUse::Unused);
+    }
+
+    #[test]
+    fn inline_glob_reach_checks_spans_after_multibyte_text() {
+        let source = "mod inner { /* é */ use super::*; fn f(_: Widget) {} }\n";
+        assert_eq!(reaches(source, "Widget"), LocalUse::Always);
+        let syntax = parse_file(source).expect("parse module");
+        let owner = vec!["owner".to_string()];
+        let reach = GlobReach {
+            owner: &owner,
+            name:  "Widget",
+        };
+        assert!(
+            reach
+                .items_reach("", &SourceLines::new(""), &syntax.items, &owner)
+                .is_err()
+        );
     }
 
     #[test]
