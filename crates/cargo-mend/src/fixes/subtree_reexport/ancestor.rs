@@ -72,6 +72,7 @@ fn insertion_text(
 #[cfg(test)]
 mod tests {
     use super::insertion_text;
+    use crate::fixes::constants::CFG_TEST_ATTRIBUTE;
     use crate::fixes::facade_redirect::CallerBuilds;
     use crate::reporting::AncestorReexportInsertion;
     use crate::reporting::ReexportVisibility;
@@ -83,7 +84,7 @@ mod tests {
         AncestorReexportInsertion {
             reexport_visibility,
             relative_path: "staging::Widget".to_string(),
-            cfg_attributes: vec!["#[cfg(test)]".to_string()],
+            cfg_attributes: vec![CFG_TEST_ATTRIBUTE.to_string()],
             file: "src/tool/mod.rs".to_string(),
             offset,
             indent: "    ".to_string(),
