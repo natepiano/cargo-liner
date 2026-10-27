@@ -22,6 +22,8 @@ use super::observation::FingerprintObservation;
 use super::observation::PostWriteAuthorship;
 use super::observation::PostWriteClaimSubject;
 use super::provenance;
+use super::report::DriftNotCheckedReason;
+use super::report::DriftOutcome;
 use super::report::DriftPathAttributionOutcome;
 use super::report::DriftReport;
 use super::report::PostWriteFreePathProtection;
@@ -135,6 +137,19 @@ pub(crate) fn execute(
             return OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string());
         },
     };
+    // This must precede reconciliation as well as fingerprint observation: no comparison
+    // ran, so this invocation may publish neither journal events nor disposable caches.
+    // Discovery failures still receive the existing reconciliation error below.
+    if let Ok(context) = WorktreeContext::discover(&invocation_directory) {
+        match WorktreeSettlement::observe(context.administrative_directory()) {
+            WorktreeSettlement::Settled => {},
+            WorktreeSettlement::GitOperationInProgress => {
+                return OutputEnvelope::drift(DriftOutcome::NotChecked {
+                    not_checked: DriftNotCheckedReason::GitOperationInProgress,
+                });
+            },
+        }
+    }
     let reconciled_drift_preflight = match reconcile::reconcile_for_drift(
         &invocation_directory,
         |repository, _, reservations| {
@@ -167,7 +182,9 @@ pub(crate) fn execute(
             &mut capacity_recovery,
         )
     }) {
-        Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
+        Ok(Enrollment::Enrolled(report)) => {
+            OutputEnvelope::drift(DriftOutcome::Checked(Box::new(report)))
+        },
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path),
@@ -512,8 +529,6 @@ enum WorktreeComparability {
     IdentityNotRecorded,
     /// Git has a pending operation, so its intermediate changes are not lane work.
     DeferredPendingOperation,
-    /// Git is writing the index and the working tree does not yet describe a finished write.
-    DeferredGitOperationInProgress,
 }
 
 /// Whether drift should observe the worktree or return its completed no-change report.
@@ -535,12 +550,6 @@ fn comparable_worktree(
     worktree_context: &WorktreeContext,
     request: &DriftRequest,
 ) -> Result<WorktreeComparability, DriftExecutionError> {
-    match WorktreeSettlement::observe(worktree_context.administrative_directory()) {
-        WorktreeSettlement::GitOperationInProgress => {
-            return Ok(WorktreeComparability::DeferredGitOperationInProgress);
-        },
-        WorktreeSettlement::Settled => {},
-    }
     let worktree_id =
         match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
             Ok(worktree_id) => worktree_id,
@@ -575,8 +584,7 @@ fn prepare_worktree_comparison(
             WorktreeComparisonReadiness::Ready(worktree_id)
         },
         WorktreeComparability::IdentityNotRecorded
-        | WorktreeComparability::DeferredPendingOperation
-        | WorktreeComparability::DeferredGitOperationInProgress => {
+        | WorktreeComparability::DeferredPendingOperation => {
             WorktreeComparisonReadiness::CompletedUnchanged(Box::new(DriftReport::unchanged(
                 comparison.report_mode(),
                 &[],
@@ -1080,8 +1088,10 @@ mod tests {
         assert!(!report.has_reportable_effect());
         assert!(!report.has_blocking_effect());
 
-        let output_envelope = serde_json::to_value(OutputEnvelope::drift(report))
-            .expect("drift output should serialize");
+        let output_envelope = serde_json::to_value(OutputEnvelope::drift(
+            crate::drift::DriftOutcome::Checked(Box::new(report)),
+        ))
+        .expect("drift output should serialize");
         assert_eq!(output_envelope["status"], "clear");
         assert_eq!(output_envelope["exit_code"], 0);
         assert_eq!(output_envelope["reservations"], Value::Array(Vec::new()));

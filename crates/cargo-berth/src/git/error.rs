@@ -425,6 +425,7 @@ mod tests {
     use super::GitLockHolders;
     #[cfg(target_os = "linux")]
     use super::inspect_git_lock_holders;
+    use crate::drift::DriftOutcome;
     use crate::git::RetentionMaintenance;
     use crate::output::CommandVerb;
     use crate::output::PostToolUseRendering;
@@ -503,9 +504,10 @@ mod tests {
             "comparison": "cheap_delta", "widening": {"status": "not_needed"},
             "results": [], "scope_acquisition": {"status": "permitted"}
         }))?;
-        let refreshed = crate::output::OutputEnvelope::drift(report)
-            .with_retention_maintenance(&maintenance)
-            .with_alerts(Vec::new());
+        let refreshed =
+            crate::output::OutputEnvelope::drift(DriftOutcome::Checked(Box::new(report)))
+                .with_retention_maintenance(&maintenance)
+                .with_alerts(Vec::new());
         let published = serde_json::to_value(&refreshed)?;
         assert_eq!(
             published["presentation"]["blocks"]
