@@ -9542,12 +9542,19 @@ mod tests {
     fn a_toast_leaves_the_summary_foot_drawn() {
         let mut app = App::new_for_test().expect("test app");
         app.started = Instant::now();
+        // Keep room for the eight-line toast after the grid has settled.
+        app.loaded_config.config.tiles.view = TileView::Summary;
         let mut process = invocation(500, &["check"]);
         process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         process.subtree_resource_use.memory = process.resource_use.memory;
         app.roster = roster_of(process, vec![]);
         let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = Terminal::new(TestBackend::new(64, 24)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &keymap))
+            .expect("initial frame");
+        // Compare the foot after grid motion, not two wall-clock animation frames.
+        app.tiles.settle_for_test();
         terminal
             .draw(|frame| draw(frame, &mut app, &keymap))
             .expect("bare frame");
@@ -9568,6 +9575,7 @@ mod tests {
             .position(|line| line.contains("content rows:"))
             .expect("summary count");
         assert!(buffer_line(&bare, u16::try_from(foot).unwrap()).contains("mem"));
+        assert_eq!(bare[(0, u16::try_from(foot).unwrap())].fg, Color::White);
         let card = app.framework.toasts.hits()[0].card_rect;
         assert!(
             usize::from(card.bottom()) < foot,

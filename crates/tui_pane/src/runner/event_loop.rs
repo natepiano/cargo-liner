@@ -32,6 +32,7 @@ use super::constants::REPAINT_SENTINEL;
 use super::deadline::VisualDeadline;
 use super::keys;
 use crate::FRAME_POLL_MILLIS;
+use crate::ScrollDirection;
 use crate::ToastVisualDeadline;
 
 /// The terminal backend, writing through the app's
@@ -202,15 +203,18 @@ fn apply_event<A: TerminalApp>(app: &mut A, event: &Event) -> Resized {
 
 /// Apply one mouse event.
 ///
-/// Only a left press does anything. The position is recorded from every
+/// Left presses and wheel steps reach the app. The position is recorded from every
 /// event regardless, which is what lets the framework answer where the
 /// pointer was without an event of its own to ask.
 fn handle_mouse<A: TerminalApp>(app: &mut A, mouse: MouseEvent) {
     crate::record_mouse_pos(mouse.column, mouse.row);
-    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-        return;
+    let position = Position::new(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => app.click(position),
+        MouseEventKind::ScrollUp => app.scroll(position, ScrollDirection::Up),
+        MouseEventKind::ScrollDown => app.scroll(position, ScrollDirection::Down),
+        _ => {},
     }
-    app.click(Position::new(mouse.column, mouse.row));
 }
 
 /// Reset the buffer the next frame is compared against, so that draw

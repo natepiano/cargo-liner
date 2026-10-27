@@ -50,6 +50,7 @@ pub use self::globals::open_favorites_on_state_for_test;
 pub use self::globals::save_favorite;
 pub use self::globals::show_random_favorite;
 pub use self::host::FavoritesHost;
+use self::host::FavoritesOverlayFrameOutcome;
 pub use self::host::dispatch_favorites_key;
 pub use self::host::favorites_resize_settled;
 pub use self::host::poll_favorites;
@@ -66,29 +67,23 @@ use self::line_plan::row_lifecycle;
 use self::line_plan::wrapped_notice_height;
 use self::notice::FavoritesOverlayNotice;
 use self::notice::deletion_refusal_message;
-use self::notice::favorite_adjustment_message;
 use self::notice::favorites_heading;
 use self::notice::render_notice;
 pub use self::pane::FavoritesOverlayAction;
+use self::pane::FavoritesOverlayActionOutcome;
+use self::pane::FavoritesOverlayCloseCommit;
 pub use self::pane::FavoritesOverlayPane;
 use self::state::FavoritesOverlayState;
 use self::state::OpenFavoritesCurrentParameters;
 use self::state::OpenFavoritesOverlayState;
-use crate::AppContext;
-use crate::AttractSettings;
 use crate::FavoriteRemovalTarget;
 use crate::FavoritesFileState;
 use crate::FavoritesMutationError;
-use crate::FavoritesRetryInstruction;
 use crate::Keymap;
 use crate::PopupFrame;
-use crate::SettingsApplicationOutcome;
-use crate::ToastStyle;
 use crate::Viewport;
 use crate::ViewportOverflow;
 use crate::VisualDeadline;
-use crate::attract::NOTICE_TOAST_MIN_INTERIOR_LINES;
-use crate::attract::NOTICE_TOAST_VISIBLE;
 use crate::keep_visible_scroll_offset;
 use crate::label_color;
 use crate::overlays::POPUP_BORDER_HEIGHT;
@@ -108,29 +103,6 @@ enum FavoriteDeletionConfirmationState {
     #[default]
     NoConfirmationArmed,
     AwaitingSecondPress(FavoriteRowIdentity),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FavoritesOverlayActionOutcome {
-    Quiet,
-    Load(AttractSettings),
-    Close,
-}
-
-/// Time-driven work owed by the favorites overlay.
-#[derive(Clone, Debug, PartialEq)]
-enum FavoritesOverlayFrameOutcome {
-    /// No row is fading and no frame is owed.
-    Quiet,
-    /// A removal fade is in progress.
-    Repaint,
-    /// The fade finished and this row must be removed from the file.
-    CommitRemoval(FavoriteRemovalTarget),
-}
-
-struct FavoritesOverlayCloseCommit {
-    removal_targets: Vec<FavoriteRemovalTarget>,
-    retry:           FavoritesRetryInstruction,
 }
 
 /// The complete favorites modal controller, which an app keeps and
@@ -524,7 +496,7 @@ impl FavoritesOverlay {
         }
         match &self.state {
             FavoritesOverlayState::Open(open_state) => match &open_state.content {
-                FavoritesOverlayContent::Rows(rows) => removal_visual_deadline(
+                FavoritesOverlayContent::Rows(rows) => Self::removal_visual_deadline(
                     rows.sections
                         .iter()
                         .flat_map(|section| &section.rows)
@@ -533,7 +505,7 @@ impl FavoritesOverlay {
                     now,
                     frame_period,
                 ),
-                FavoritesOverlayContent::OnlyUnrecognized(rows) => removal_visual_deadline(
+                FavoritesOverlayContent::OnlyUnrecognized(rows) => Self::removal_visual_deadline(
                     rows.rows.iter().map(|row| row.lifecycle),
                     now,
                     frame_period,
@@ -860,89 +832,24 @@ impl FavoritesOverlay {
             .set_len(self.line_plan.navigation_line_index.len());
         self.refresh_footer();
     }
-}
 
-fn removal_visual_deadline(
-    lifecycles: impl Iterator<Item = FavoriteRowLifecycle>,
-    now: Instant,
-    frame_period: Duration,
-) -> VisualDeadline {
-    lifecycles.fold(
-        VisualDeadline::NoVisualChangeScheduled,
-        |deadline, lifecycle| {
-            let FavoriteRowLifecycle::Removing { since } = lifecycle else {
-                return deadline;
-            };
-            let removal_done = since + FAVORITE_REMOVAL_FADE;
-            let next_frame = now + frame_period;
-            deadline.earlier(VisualDeadline::At(removal_done.min(next_frame)))
-        },
-    )
-}
-
-fn close_overlay<A: FavoritesHost>(overlay: &mut FavoritesOverlay, app: &mut A) {
-    close_overlay_with(overlay, app, crate::remove_favorite::<A::Identity>);
-}
-
-fn close_overlay_with<A: AppContext>(
-    overlay: &mut FavoritesOverlay,
-    app: &mut A,
-    mut remove: impl FnMut(FavoriteRemovalTarget) -> Result<(), FavoritesMutationError>,
-) {
-    let close_commit = overlay.begin_close();
-    for removal_target in close_commit.removal_targets {
-        if let Err(error) = remove(removal_target) {
-            let message = deletion_refusal_message(&close_commit.retry, &error);
-            push_scheduled_toast(app, "Favorite not deleted", &message, ToastStyle::Error);
-        }
+    fn removal_visual_deadline(
+        lifecycles: impl Iterator<Item = FavoriteRowLifecycle>,
+        now: Instant,
+        frame_period: Duration,
+    ) -> VisualDeadline {
+        lifecycles.fold(
+            VisualDeadline::NoVisualChangeScheduled,
+            |deadline, lifecycle| {
+                let FavoriteRowLifecycle::Removing { since } = lifecycle else {
+                    return deadline;
+                };
+                let removal_done = since + FAVORITE_REMOVAL_FADE;
+                let next_frame = now + frame_period;
+                deadline.earlier(VisualDeadline::At(removal_done.min(next_frame)))
+            },
+        )
     }
-    overlay.finish_close();
-}
-
-fn report_application_outcome<A: AppContext>(
-    overlay: &mut FavoritesOverlay,
-    app: &mut A,
-    outcome: SettingsApplicationOutcome,
-) {
-    if !overlay.is_open() {
-        report_closed_overlay_adjustment(app, outcome);
-        return;
-    }
-    let SettingsApplicationOutcome::AppliedWithAdjustments {
-        requested,
-        effective,
-    } = outcome
-    else {
-        return;
-    };
-    let message = favorite_adjustment_message(requested, effective);
-    overlay.set_adjustment_notice(message);
-}
-
-/// Report an adjusted favorite after its modal has closed.
-fn report_closed_overlay_adjustment<A: AppContext>(
-    app: &mut A,
-    outcome: SettingsApplicationOutcome,
-) {
-    let SettingsApplicationOutcome::AppliedWithAdjustments {
-        requested,
-        effective,
-    } = outcome
-    else {
-        return;
-    };
-    let message = favorite_adjustment_message(requested, effective);
-    push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
-}
-
-fn push_scheduled_toast<A: AppContext>(app: &mut A, title: &str, body: &str, style: ToastStyle) {
-    app.framework_mut().toasts.push_timed_styled(
-        title,
-        body,
-        NOTICE_TOAST_VISIBLE,
-        NOTICE_TOAST_MIN_INTERIOR_LINES,
-        style,
-    );
 }
 
 #[cfg(test)]
@@ -969,7 +876,9 @@ mod tests {
     use super::constants::COLUMN_GAP;
     use super::constants::FAVORITE_ROW_PREFIX_WIDTH;
     use super::content::FavoriteRowsView;
+    use super::globals::report_closed_overlay_adjustment;
     use super::line_plan::removal_alpha_for_test as removal_alpha;
+    use super::pane::close_overlay_with;
     use super::pane::dispatch;
     use super::parameter_column::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
     use super::table_layout::FavoriteSectionTableLayoutForTest;
@@ -978,6 +887,7 @@ mod tests {
     use super::test_app::keymap_from;
     use super::*;
     use crate::AttractGridPresentation;
+    use crate::AttractSettings;
     use crate::AttractVisibilityInstruction;
     use crate::AttractWork;
     use crate::BandDirection;
@@ -985,6 +895,8 @@ mod tests {
     use crate::FavoriteId;
     use crate::PixelFill;
     use crate::PixelResolve;
+    use crate::SettingsApplicationOutcome;
+    use crate::ToastStyle;
     use crate::ToastVisualDeadline;
     use crate::Updates;
     use crate::dispatch_key;

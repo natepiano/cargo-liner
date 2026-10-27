@@ -34,8 +34,9 @@ use crate::sort::SummarySort;
 use crate::summary;
 use crate::summary::SummaryFrame;
 
-const PATIENCE: Duration = Duration::from_millis(200);
 const FIRST_BUDGET: Duration = Duration::from_millis(2);
+// This limits a failure; a passing test never waits on it.
+const HANG_CEILING: Duration = Duration::from_secs(5);
 const MANAGER: u32 = 10;
 const UNIT: u32 = 20;
 const HOME: u32 = 30;
@@ -310,22 +311,21 @@ impl Fixture {
                 returned,
             })
             .expect("scan source is open");
-        done.recv_timeout(PATIENCE)
-            .expect("publication lock is free while hierarchy runs");
+        done.recv_timeout(HANG_CEILING)
+            .expect("publication returns while hierarchy runs");
     }
 
     fn request(&self) -> Request {
         self.requests
-            .recv_timeout(PATIENCE)
+            .recv_timeout(HANG_CEILING)
             .expect("hierarchy request starts")
     }
 
     fn containing(&self, pid: u32) -> (Vec<AgentRow>, HierarchySnapshot) {
-        let deadline = Instant::now() + PATIENCE;
         loop {
             match self
                 .updates
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .recv_timeout(HANG_CEILING)
                 .expect("scheduler publishes while the scan callback stays open")
             {
                 CensusUpdate::Local {
@@ -338,11 +338,10 @@ impl Fixture {
 
     fn assert_progress(&self, now: Instant, unit: UnitPlacement) {
         self.remotes.replace(vec![REMOTE.into()]);
-        let deadline = Instant::now() + PATIENCE;
         loop {
             if let CensusUpdate::Remote { host, state } = self
                 .updates
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .recv_timeout(HANG_CEILING)
                 .expect("a newly configured remote is probed while hierarchy runs")
             {
                 assert_eq!(host, REMOTE);
@@ -452,13 +451,12 @@ fn catch_up_hierarchy_refresh_holds_the_units_whole_linked_component() {
         .expect("safe row")
         .name = "component refresh progress".into();
     fixture.publish(refreshing, expired);
-    let deadline = Instant::now() + PATIENCE;
     loop {
         if let CensusUpdate::Local {
             rows, hierarchy, ..
         } = fixture
             .updates
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .recv_timeout(HANG_CEILING)
             .expect("safe rows publish while the component waits")
         {
             let drawn = draw(&rows, &hierarchy);
@@ -515,13 +513,12 @@ fn catch_up_hierarchy_checked_unnamed_session_stays_visible_during_an_expired_re
         .expect("safe row")
         .name = "settled session refresh progress".into();
     fixture.publish(refreshing, expired);
-    let deadline = Instant::now() + PATIENCE;
     loop {
         if let CensusUpdate::Local {
             rows, hierarchy, ..
         } = fixture
             .updates
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .recv_timeout(HANG_CEILING)
             .expect("settled rows publish while hierarchy runs")
         {
             let drawn = draw(&rows, &hierarchy);
@@ -598,11 +595,10 @@ fn catch_up_hierarchy_failed_followup_releases_retained_links_and_retry_stays_as
             .contains("ordinary home session")
     );
     failed_request.answer(Err(HierarchyError::TimedOut));
-    let deadline = Instant::now() + PATIENCE;
     let (rows, hierarchy) = loop {
         let update = fixture
             .updates
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .recv_timeout(HANG_CEILING)
             .expect("failure releases rows");
         if let CensusUpdate::Local {
             rows, hierarchy, ..

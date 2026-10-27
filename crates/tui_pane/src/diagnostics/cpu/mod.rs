@@ -10,6 +10,13 @@
 //! bucket using caller-supplied thresholds; [`CpuSeverity::color`]
 //! resolves to the framework's success / title / error theme colors.
 
+mod monitor;
+mod percent;
+mod platform;
+mod poller;
+mod rolling_mean;
+mod severity;
+
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::ptr::from_ref;
@@ -20,6 +27,7 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::Sender;
+pub use monitor::CpuMonitor;
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::CFData;
 #[cfg(target_os = "macos")]
@@ -48,34 +56,6 @@ use objc2_io_kit::IOServiceMatching;
 use objc2_io_kit::io_iterator_t;
 #[cfg(target_os = "macos")]
 use objc2_io_kit::kIOMainPortDefault;
-use ratatui::style::Color;
-use sysinfo::CpuRefreshKind;
-use sysinfo::RefreshKind;
-use sysinfo::System;
-
-#[cfg(target_os = "windows")]
-use super::constants::GPU_COUNTER_PATH;
-#[cfg(target_os = "macos")]
-use super::constants::KERN_SUCCESS;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_CSTATUS_NEW_DATA;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_FMT_DOUBLE;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_MORE_DATA;
-#[cfg(target_os = "windows")]
-use super::constants::PDH_SUCCESS;
-use super::constants::PERCENT_PER_CELL;
-use crate::theme;
-
-mod monitor;
-mod percent;
-mod platform;
-mod poller;
-mod rolling_mean;
-mod severity;
-
-pub use monitor::CpuMonitor;
 use percent::CpuBreakdownRaw;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use percent::bounded_percent_u8;
@@ -100,8 +80,27 @@ pub use poller::CpuCoreUsage;
 pub use poller::CpuPoller;
 pub use poller::CpuUsage;
 pub use poller::GpuUsage;
+use ratatui::style::Color;
 pub use rolling_mean::RollingMean;
 pub use severity::CpuSeverity;
 pub use severity::blank_bar_color;
 pub use severity::filled_cells;
 pub use severity::severity;
+use sysinfo::CpuRefreshKind;
+use sysinfo::RefreshKind;
+use sysinfo::System;
+
+#[cfg(target_os = "windows")]
+use super::constants::GPU_COUNTER_PATH;
+#[cfg(target_os = "macos")]
+use super::constants::KERN_SUCCESS;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_CSTATUS_NEW_DATA;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_FMT_DOUBLE;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_MORE_DATA;
+#[cfg(target_os = "windows")]
+use super::constants::PDH_SUCCESS;
+use super::constants::PERCENT_PER_CELL;
+use crate::theme;

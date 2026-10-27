@@ -1,6 +1,7 @@
 //! Shared tree layout and specialist role ink remain consistent across tiles.
 
 use super::*;
+use crate::census::ShellTimerObservation;
 use crate::census::transcript::SubagentRole;
 use crate::footer_colors::FooterRole;
 use crate::sort::SortDirection;
@@ -9,13 +10,22 @@ use crate::sort::SortDirection;
 fn mixed_heading_lengths_keep_one_column_set_and_positions() {
     let mut long = agent(10, "long", HOUR, None);
     long.directory = "/fixture/".repeat(24);
-    long.children
-        .push(child(0, ChildKind::Shell, Some(11), "cargo test", MINUTE));
+    long.children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(11),
+        "cargo test",
+        MINUTE,
+    ));
     let mut short = agent(20, "short", HOUR, None);
     short.directory = "/fixture".into();
-    short
-        .children
-        .push(child(0, ChildKind::Shell, Some(21), "cargo build", MINUTE));
+    short.children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(21),
+        "cargo build",
+        MINUTE,
+    ));
     let cells = [entry(&long, None), entry(&short, None)];
     let buffers: Vec<_> = cells
         .iter()

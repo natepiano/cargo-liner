@@ -410,11 +410,19 @@ fn working_group() -> MachineState {
         ),
         ChildRow {
             worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-            timer: Some(Timer {
-                started:  NOW - MINUTE,
-                deadline: NOW + MINUTE,
-            }),
-            ..child(0, ChildKind::Shell, Some(101), "clock job", 10 * MINUTE)
+            kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                Timer {
+                    started:  NOW - MINUTE,
+                    deadline: NOW + MINUTE,
+                },
+            )),
+            ..child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(101),
+                "clock job",
+                10 * MINUTE,
+            )
         },
         child(
             1,
@@ -435,7 +443,13 @@ fn working_group() -> MachineState {
             "review worker",
             8 * MINUTE,
         ),
-        child(1, ChildKind::Shell, Some(103), "nested command", 7 * MINUTE),
+        child(
+            1,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(103),
+            "nested command",
+            7 * MINUTE,
+        ),
         child(
             0,
             ChildKind::Session(Agent::Claude),
@@ -445,7 +459,7 @@ fn working_group() -> MachineState {
         ),
         child(
             1,
-            ChildKind::Shell,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
             Some(105),
             "session-work-hidden",
             5 * MINUTE,
@@ -461,7 +475,13 @@ fn working_group() -> MachineState {
     let root = AgentRow {
         role_fallback: RoleFallback::None,
         account: home("claude2"),
-        children: vec![child(0, ChildKind::Shell, Some(107), "root command", HOUR)],
+        children: vec![child(
+            0,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(107),
+            "root command",
+            HOUR,
+        )],
         ..agent(10, "production", 3 * HOUR, None)
     };
     MachineState::Answered(vec![root, worker], HierarchyEdges::default().into())
@@ -576,12 +596,18 @@ fn tree_headers_and_lines_keep_blank_margins_before_tile_borders() {
         children: vec![
             child(
                 0,
-                ChildKind::Shell,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                 Some(11),
                 &"long command ".repeat(7),
                 10 * MINUTE,
             ),
-            child(0, ChildKind::Shell, Some(12), "second command", 10 * MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(12),
+                "second command",
+                10 * MINUTE,
+            ),
         ],
         ..agent(10, "worker", HOUR, None)
     };

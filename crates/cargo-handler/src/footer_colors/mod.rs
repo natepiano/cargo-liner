@@ -26,6 +26,7 @@ use self::constants::SRGB_LINEAR_DIVISOR;
 use self::constants::SRGB_LINEAR_THRESHOLD;
 use self::constants::SRGB_POWER;
 use crate::census::HierarchyRole;
+use crate::theme::SessionRowInk;
 
 pub(crate) mod constants;
 
@@ -58,6 +59,16 @@ pub(crate) enum FooterColor {
 /// A name outside the footer's color table.
 #[derive(Debug)]
 pub(crate) struct UnknownFooterColor;
+
+impl FooterColor {
+    /// Foreground for an account field beside a session name.
+    pub(crate) fn account_style(self) -> Style { Style::default().fg(resolved(self).foreground) }
+
+    /// Management labels reserve additional contrast for antialiased glyph edges.
+    pub(crate) fn management_style(self) -> Style {
+        Style::default().fg(resolved_management(self).foreground)
+    }
+}
 
 impl FromStr for FooterColor {
     type Err = UnknownFooterColor;
@@ -139,8 +150,8 @@ impl FooterTint {
     /// Keep all theme attributes, replacing only a configured foreground.
     pub(crate) fn style(self, theme: Style) -> Style {
         match self {
-            Self::Footer(color) => theme.fg(resolved(color).foreground),
-            Self::Management(color) => theme.fg(resolved_management(color).foreground),
+            Self::Footer(color) => theme.patch(SessionRowInk::Account(color).style()),
+            Self::Management(color) => theme.patch(SessionRowInk::Management(color).style()),
             Self::Plain => theme,
         }
     }
@@ -165,12 +176,13 @@ struct ReadableInk {
 
 /// One palette belongs to one active theme; drawing only looks up its colors.
 struct ReadablePalette {
-    theme:      Arc<Theme>,
-    colors:     BTreeMap<FooterColor, ReadableInk>,
-    management: BTreeMap<FooterColor, ReadableInk>,
-    plain:      ReadableInk,
-    grounds:    InkGrounds,
-    glyph_inks: Vec<(Color, Color)>,
+    theme:         Arc<Theme>,
+    colors:        BTreeMap<FooterColor, ReadableInk>,
+    management:    BTreeMap<FooterColor, ReadableInk>,
+    plain:         ReadableInk,
+    grounds:       InkGrounds,
+    glyph_inks:    Vec<(Color, Color)>,
+    selected_inks: Vec<(Color, Color, SelectedGroundInk)>,
 }
 
 thread_local! {
@@ -214,6 +226,7 @@ impl ReadablePalette {
             plain,
             grounds,
             glyph_inks: Vec::new(),
+            selected_inks: Vec::new(),
         }
     }
 
@@ -403,8 +416,102 @@ impl ReadableInk {
     }
 }
 
+/// A foreground resolved for one selected row ground, retaining its original hue.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedGroundInk(Color);
+
+impl SelectedGroundInk {
+    pub(crate) fn resolve(color: Color, ground: Color) -> Self {
+        PALETTE.with(|palette| {
+            let mut palette = palette.borrow_mut();
+            palette.current();
+            if let Some((_, _, ink)) = palette
+                .selected_inks
+                .iter()
+                .find(|(source, background, _)| *source == color && *background == ground)
+            {
+                return *ink;
+            }
+            let target = LightnessTarget::Selected(ground);
+            let foreground = if target.contrast(color) >= MINIMUM_CONTRAST {
+                color
+            } else {
+                lightness_for(color, target)
+            };
+            let ink = Self(foreground);
+            palette.selected_inks.push((color, ground, ink));
+            ink
+        })
+    }
+
+    pub(crate) const fn foreground(self) -> Color { self.0 }
+}
+
+/// Pane inks choose the nearest readable lightness; selected inks move away from their ground.
+#[derive(Clone, Copy)]
+enum LightnessTarget {
+    Pane {
+        grounds:  InkGrounds,
+        coverage: InkCoverage,
+    },
+    Selected(Color),
+}
+
+impl LightnessTarget {
+    fn contrast(self, color: Color) -> f64 {
+        match self {
+            Self::Pane { grounds, coverage } => coverage.contrast(grounds, color),
+            Self::Selected(ground) => InkCoverage::Antialiased.contrast(
+                InkGrounds {
+                    base:      ground,
+                    unfocused: ground,
+                    focused:   ground,
+                },
+                color,
+            ),
+        }
+    }
+
+    fn endpoints(self) -> &'static [f64] {
+        match self {
+            Self::Pane { .. } => &[0.0, 1.0],
+            Self::Selected(ground) => {
+                let (red, green, blue) = rgb(ground);
+                let lightness =
+                    f64::from(red.max(green).max(blue)) + f64::from(red.min(green).min(blue));
+                if lightness < 255.0 { &[1.0] } else { &[0.0] }
+            },
+        }
+    }
+
+    const fn ground(self) -> Color {
+        match self {
+            Self::Pane { grounds, .. } => grounds.base,
+            Self::Selected(ground) => ground,
+        }
+    }
+}
+
 /// Keep HSL hue and saturation, choosing the closest readable lightness.
 fn readable_lightness(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Color {
+    lightness_for(color, LightnessTarget::Pane { grounds, coverage })
+}
+
+/// Search HSL lightness for pane inks and gamut-mapped OKLCH lightness for selected inks.
+fn lightness_for(color: Color, target: LightnessTarget) -> Color {
+    match target {
+        LightnessTarget::Pane { grounds, coverage } => pane_lightness_for(color, grounds, coverage),
+        LightnessTarget::Selected(_) => {
+            let path = SelectedHueChroma::from_color(color);
+            search_lightness(color, target, path.lightness, |light| {
+                path.at_lightness(light)
+            })
+        },
+    }
+}
+
+/// Pane mapping retains the original HSL arithmetic and byte rounding.
+fn pane_lightness_for(color: Color, grounds: InkGrounds, coverage: InkCoverage) -> Color {
     let channels = <[u8; 3]>::from(rgb(color)).map(|value| f64::from(value) / 255.0);
     let maximum = channels.into_iter().fold(0.0, f64::max);
     let minimum = channels.into_iter().fold(1.0, f64::min);
@@ -428,23 +535,38 @@ fn readable_lightness(color: Color, grounds: InkGrounds, coverage: InkCoverage) 
         });
         Color::Rgb(values[0], values[1], values[2])
     };
+    search_lightness(
+        color,
+        LightnessTarget::Pane { grounds, coverage },
+        lightness,
+        at,
+    )
+}
+
+/// Bisect the readable interval using the caller's color-space mapping.
+fn search_lightness(
+    color: Color,
+    target: LightnessTarget,
+    lightness: f64,
+    at: impl Fn(f64) -> Color,
+) -> Color {
     // Each side of `ground` has a monotone readable interval. Find its boundary.
     let mut best = (f64::INFINITY, at(lightness));
-    for endpoint in [0.0, 1.0] {
-        if coverage.contrast(grounds, at(endpoint)) < MINIMUM_CONTRAST {
+    for &endpoint in target.endpoints() {
+        if target.contrast(at(endpoint)) < MINIMUM_CONTRAST {
             continue;
         }
         let mut readable = endpoint;
-        let mut unreadable = if coverage.contrast(grounds, color) >= MINIMUM_CONTRAST {
+        let mut unreadable = if target.contrast(color) >= MINIMUM_CONTRAST {
             // Subdued ink chooses the boundary nearest `ground`'s lightness.
-            let (red, green, blue) = rgb(grounds.base);
+            let (red, green, blue) = rgb(target.ground());
             (f64::from(red.max(green).max(blue)) + f64::from(red.min(green).min(blue))) / 510.0
         } else {
             lightness
         };
         for _ in 0..LIGHTNESS_SEARCH_ITERATIONS {
             let middle = readable.midpoint(unreadable);
-            if coverage.contrast(grounds, at(middle)) >= MINIMUM_CONTRAST {
+            if target.contrast(at(middle)) >= MINIMUM_CONTRAST {
                 readable = middle;
             } else {
                 unreadable = middle;
@@ -456,6 +578,163 @@ fn readable_lightness(color: Color, grounds: InkGrounds, coverage: InkCoverage) 
         }
     }
     best.1
+}
+
+/// A measurement of the production color conversion, before any lightness mapping.
+#[cfg(test)]
+pub(crate) struct Oklch {
+    pub(crate) lightness: f64,
+    pub(crate) chroma:    f64,
+    pub(crate) hue:       f64,
+}
+
+#[cfg(test)]
+impl Oklch {
+    /// Use the same conversion as selected inks, without a second set of matrices.
+    pub(crate) fn from_color(color: Color) -> Self {
+        let converted = SelectedHueChroma::from_color(color);
+        Self {
+            lightness: converted.lightness,
+            chroma:    converted.red_green.hypot(converted.yellow_blue),
+            hue:       converted
+                .yellow_blue
+                .atan2(converted.red_green)
+                .to_degrees()
+                .rem_euclid(360.0),
+        }
+    }
+}
+
+/// An OKLCH hue ray whose chroma contracts only at the sRGB gamut boundary.
+/// Conversion matrices: <https://bottosson.github.io/posts/oklab>/ .
+struct SelectedHueChroma {
+    lightness:   f64,
+    red_green:   f64,
+    yellow_blue: f64,
+}
+
+impl SelectedHueChroma {
+    fn from_color(color: Color) -> Self {
+        let [red, green, blue] = <[u8; 3]>::from(rgb(color)).map(|channel| {
+            let encoded = f64::from(channel) / 255.0;
+            if encoded <= SRGB_LINEAR_THRESHOLD {
+                encoded / SRGB_LINEAR_DIVISOR
+            } else {
+                ((encoded + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
+            }
+        });
+        let long = 0.051_445_992_9f64
+            .mul_add(
+                blue,
+                0.536_332_536_3f64.mul_add(green, 0.412_221_470_8 * red),
+            )
+            .cbrt();
+        let medium = 0.107_396_956_6f64
+            .mul_add(
+                blue,
+                0.680_699_545_1f64.mul_add(green, 0.211_903_498_2 * red),
+            )
+            .cbrt();
+        let short = 0.629_978_700_5f64
+            .mul_add(
+                blue,
+                0.281_718_837_6f64.mul_add(green, 0.088_302_461_9 * red),
+            )
+            .cbrt();
+        Self {
+            lightness:   0.004_072_046_8f64.mul_add(
+                -short,
+                0.793_617_785f64.mul_add(medium, 0.210_454_255_3 * long),
+            ),
+            red_green:   0.450_593_709_9f64.mul_add(
+                short,
+                2.428_592_205f64.mul_add(-medium, 1.977_998_495_1 * long),
+            ),
+            yellow_blue: 0.808_675_766f64.mul_add(
+                -short,
+                0.782_771_766_2f64.mul_add(medium, 0.025_904_037_1 * long),
+            ),
+        }
+    }
+
+    fn at_lightness(&self, lightness: f64) -> Color {
+        // The gamut has zero chroma at these endpoints. Keep them exact despite
+        // the conversion matrices' floating-point approximation.
+        if lightness <= 0.0 {
+            return Color::Rgb(0, 0, 0);
+        }
+        if lightness >= 1.0 {
+            return Color::Rgb(255, 255, 255);
+        }
+        let in_gamut = |channels: [f64; 3]| {
+            channels
+                .into_iter()
+                .all(|channel| (0.0..=1.0).contains(&channel))
+        };
+        let mut channels = self.linear_channels(lightness, 1.0);
+        if !in_gamut(channels) {
+            // Scaling both Oklab axes equally holds the hue fixed. The neutral
+            // point starts inside the gamut; the fixed iteration count finds
+            // the largest usable chroma without ever clipping a channel.
+            let mut inside = 0.0_f64;
+            let mut outside = 1.0;
+            for _ in 0..LIGHTNESS_SEARCH_ITERATIONS {
+                let middle = inside.midpoint(outside);
+                if in_gamut(self.linear_channels(lightness, middle)) {
+                    inside = middle;
+                } else {
+                    outside = middle;
+                }
+            }
+            channels = self.linear_channels(lightness, inside);
+        }
+        let channels = channels.map(|linear| {
+            let encoded = if linear <= 0.003_130_8 {
+                SRGB_LINEAR_DIVISOR * linear
+            } else {
+                SRGB_ENCODED_SCALE.mul_add(linear.powf(1.0 / SRGB_POWER), -SRGB_ENCODED_OFFSET)
+            };
+            rounded_channel(encoded * 255.0)
+        });
+        Color::Rgb(channels[0], channels[1], channels[2])
+    }
+
+    fn linear_channels(&self, lightness: f64, chroma_scale: f64) -> [f64; 3] {
+        let red_green = self.red_green * chroma_scale;
+        let yellow_blue = self.yellow_blue * chroma_scale;
+        let long = 0.215_803_757_3f64
+            .mul_add(
+                yellow_blue,
+                0.396_337_777_4f64.mul_add(red_green, lightness),
+            )
+            .powi(3);
+        let medium = 0.063_854_172_8f64
+            .mul_add(
+                -yellow_blue,
+                0.105_561_345_8f64.mul_add(-red_green, lightness),
+            )
+            .powi(3);
+        let short = 1.291_485_548f64
+            .mul_add(
+                -yellow_blue,
+                0.089_484_177_5f64.mul_add(-red_green, lightness),
+            )
+            .powi(3);
+        [
+            0.230_969_929_2f64.mul_add(
+                short,
+                3.307_711_591_3f64.mul_add(-medium, 4.076_741_662_1 * long),
+            ),
+            0.341_319_396_5f64.mul_add(
+                -short,
+                2.609_757_401_1f64.mul_add(medium, -1.268_438_004_6 * long),
+            ),
+            1.707_614_701f64.mul_add(
+                short,
+                0.703_418_614_7f64.mul_add(-medium, -0.004_196_086_3 * long),
+            ),
+        ]
+    }
 }
 
 /// Quantize to the nearest channel byte, saturating at the representable endpoints.
@@ -481,6 +760,14 @@ pub(crate) struct FooterColors {
 }
 
 impl FooterColors {
+    /// Every fixed ink that can share a row with a session name under this configuration.
+    #[cfg(test)]
+    pub(crate) fn session_row_inks(&self) -> impl Iterator<Item = SessionRowInk> + '_ {
+        SessionRowInk::fixed_fields()
+            .chain(self.accounts.values().copied().map(SessionRowInk::Account))
+            .chain(self.roles.values().copied().map(SessionRowInk::Management))
+    }
+
     /// Read assignments as the footer does: comments, whitespace, then the first `=`.
     pub(crate) fn parse(text: &str) -> Self {
         let mut colors = Self::default();

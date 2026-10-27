@@ -11,7 +11,6 @@ use std::time::Instant;
 use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
-use tui_pane::install_theme;
 use tui_pane::run_terminal;
 use tui_pane::spawn_appearance_watcher;
 
@@ -38,7 +37,8 @@ pub(crate) fn run() -> ExitCode {
     startup_log::init();
     let loaded_config = LoadedConfig::load::<CargoHandler>();
     startup_log::startup_event("config_loaded");
-    let mut startup_note = install_theme(&loaded_config.config.appearance, theme::builtins());
+    let mut startup_note =
+        theme::install_theme(&loaded_config.config.appearance, theme::builtins());
     let (appearance_sender, appearance_updates) = mpsc::channel();
     let startup_appearance = spawn_appearance_watcher(move |appearance| {
         let _ = appearance_sender.send(appearance);

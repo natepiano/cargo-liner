@@ -10,10 +10,12 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 
 use super::*;
+use crate::census::accounts::AccountReadStatus;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsReading;
-use crate::census::accounts::CreditUse;
+use crate::census::accounts::CreditActivity;
+use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
 use crate::constants::ACCOUNTS_STALE_SECONDS;
@@ -40,7 +42,9 @@ fn draw_account_roles(
             weekly_left_percent: Reading::Known(50.0),
             resets_at: Reading::Unavailable,
             credits: Credits::Amount(20.0),
-            credit_use: CreditUse::Spending,
+            credit_permission: CreditPermission::Enabled,
+            credit_activity: CreditActivity::Idle,
+            read_status: AccountReadStatus::Ok,
             read_at,
         }],
         problems: Vec::new(),

@@ -14,7 +14,9 @@ pub(crate) mod age;
 mod constants;
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
+use accounts::AccountLines;
 use age::AgeLayout;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -63,6 +65,7 @@ use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
+use crate::interaction::RowSpan;
 use crate::sort;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
@@ -92,6 +95,7 @@ fn machine_height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> u
 ///
 /// This is what the summary asks the grid for across, so a directory is
 /// only cut short once the summary has reached the right edge.
+#[cfg(test)]
 pub(crate) fn width(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -100,6 +104,20 @@ pub(crate) fn width(
     sort: SummarySort,
     accounts: &AccountsTable,
     accounts_sort: AccountsSort,
+) -> u16 {
+    machine_width(machines, placement, now, account_column, sort).max(accounts::sorted_width(
+        accounts,
+        now,
+        accounts_sort,
+    ))
+}
+
+fn machine_width(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    now: u64,
+    account_column: AccountColumn,
+    sort: SummarySort,
 ) -> u16 {
     let headings = machines
         .iter()
@@ -114,7 +132,7 @@ pub(crate) fn width(
         .iter()
         .all(|machine| root_rows(*machine, placement).next().is_none())
     {
-        return headings.max(accounts::sorted_width(accounts, now, accounts_sort));
+        return headings;
     }
     let widths = column_widths(machines, placement, now, account_column, sort);
     let visible = populated_columns(machines, placement, account_column);
@@ -124,12 +142,11 @@ pub(crate) fn width(
         .map(|column| widths.get(column.index()))
         .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
         .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
-    headings
-        .max(table)
-        .max(accounts::sorted_width(accounts, now, accounts_sort))
+    headings.max(table)
 }
 
 /// Both stacked sections, with the same gap used between machine groups.
+#[cfg(test)]
 pub(crate) fn height(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -137,6 +154,27 @@ pub(crate) fn height(
 ) -> usize {
     let agents = machine_height(machines, placement);
     let usage = accounts::height(accounts);
+    agents
+        + usage
+        + if agents > 0 && usage > 0 {
+            usize::from(GROUP_GAP_HEIGHT)
+        } else {
+            0
+        }
+}
+
+/// Measure account wrapping against the same width used for painting.
+#[cfg(test)]
+fn height_at_width(
+    machines: &[Machine<'_>],
+    placement: &AgentPlacement<'_>,
+    accounts: &AccountsTable,
+    now: u64,
+    accounts_sort: AccountsSort,
+    width: u16,
+) -> usize {
+    let agents = machine_height(machines, placement);
+    let usage = accounts::height_at_width(accounts, now, accounts_sort, width);
     agents
         + usage
         + if agents > 0 && usage > 0 {
@@ -193,8 +231,110 @@ pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) sort:           SummarySort,
 }
 
+/// The summary allocation owns the account lines used by all frame readers.
+pub(crate) struct SummaryLayout {
+    width:        u16,
+    accounts:     AccountLines,
+    machine_rows: usize,
+}
+
+impl SummaryLayout {
+    pub(crate) fn new(frame: &SummaryFrame<'_, '_>, width: u16) -> Self {
+        Self {
+            width,
+            accounts: accounts::build_lines(
+                frame.accounts,
+                frame.now,
+                frame.footer_colors,
+                frame.accounts_sort,
+                width,
+            ),
+            machine_rows: machine_height(frame.machines, frame.placement),
+        }
+    }
+
+    pub(crate) const fn allocation_width(&self) -> u16 { self.width }
+
+    pub(crate) fn height(&self) -> usize {
+        self.machine_rows
+            + self.accounts.lines.len()
+            + if self.machine_rows > 0 && !self.accounts.lines.is_empty() {
+                usize::from(GROUP_GAP_HEIGHT)
+            } else {
+                0
+            }
+    }
+
+    pub(crate) fn preferred_width(&self, frame: &SummaryFrame<'_, '_>) -> u16 {
+        let accounts = self
+            .accounts
+            .lines
+            .iter()
+            .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+            .max()
+            .unwrap_or_default();
+        machine_width(
+            frame.machines,
+            frame.placement,
+            frame.now,
+            frame.account_column,
+            frame.sort,
+        )
+        .max(accounts)
+    }
+
+    fn accounts_area(&self, area: Rect) -> Rect {
+        let offset = self.machine_rows
+            + if self.machine_rows > 0 {
+                usize::from(GROUP_GAP_HEIGHT)
+            } else {
+                0
+            };
+        let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
+        Rect {
+            y: area.y.saturating_add(offset),
+            height: area.height.saturating_sub(offset),
+            ..area
+        }
+    }
+
+    pub(crate) fn accounts_header_spans(&self, area: Rect) -> Vec<HeaderSpan<AccountsColumn>> {
+        let area = self.accounts_area(area);
+        self.accounts
+            .headers
+            .iter()
+            .filter(|header| header.row < area.height)
+            .map(|header| HeaderSpan {
+                column:  header.column,
+                row:     area.y.saturating_add(header.row),
+                columns: area.x.saturating_add(header.columns.start)
+                    ..area.x.saturating_add(header.columns.end).min(area.right()),
+            })
+            .collect()
+    }
+}
+
+/// Header clicks retain the exact allocation that was last painted.
+#[derive(Default)]
+pub(crate) enum PaintedSummary {
+    #[default]
+    NotDrawn,
+    Drawn(Rc<SummaryLayout>),
+}
+
 /// Draw machine groups and accounts with the independent ordering in this frame.
+#[cfg(test)]
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>) {
+    let layout = SummaryLayout::new(frame, area.width);
+    draw_measured(buffer, area, frame, &layout);
+}
+
+pub(crate) fn draw_measured(
+    buffer: &mut Buffer,
+    area: Rect,
+    frame: &SummaryFrame<'_, '_>,
+    layout: &SummaryLayout,
+) {
     let SummaryHeader {
         visible,
         constraints,
@@ -212,44 +352,54 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, frame: &SummaryFrame<'_, '_>
     for machine in machines {
         draw_machine(buffer, machine, frame.cells, &columns, frame.now);
     }
-    accounts::draw_sorted(
-        buffer,
-        accounts_area(area, frame),
-        frame.accounts,
-        frame.now,
-        frame.footer_colors,
-        frame.accounts_sort,
-    );
+    Paragraph::new(layout.accounts.lines.clone()).render(layout.accounts_area(area), buffer);
 }
 
-/// Accounts begin after the machine groups and their section gap, clipped to the cell.
-fn accounts_area(area: Rect, frame: &SummaryFrame<'_, '_>) -> Rect {
-    let agent_height = machine_height(frame.machines, frame.placement);
-    let offset = agent_height
-        + if agent_height > 0 {
-            usize::from(GROUP_GAP_HEIGHT)
-        } else {
-            0
-        };
-    let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
-    Rect {
-        y: area.y.saturating_add(offset),
-        height: area.height.saturating_sub(offset),
-        ..area
-    }
-}
-
-/// Account headers use the same section offset and measured lines as drawing.
-pub(crate) fn accounts_header_spans(
-    area: Rect,
+/// Selectable rows use the very same sorted machine tables as drawing.
+pub(crate) fn selection_rows(
     frame: &SummaryFrame<'_, '_>,
-) -> Vec<HeaderSpan<AccountsColumn>> {
-    accounts::header_spans(
-        accounts_area(area, frame),
-        frame.accounts,
-        frame.now,
-        frame.accounts_sort,
-    )
+    layout: &SummaryLayout,
+) -> Vec<(crate::interaction::RowIdentity, RowSpan)> {
+    use crate::interaction::RowIdentity;
+    let area = Rect::new(
+        0,
+        0,
+        layout.width,
+        u16::try_from(layout.height()).unwrap_or(u16::MAX),
+    );
+    let mut result = Vec::new();
+    for mut machine in machine_tables(area, frame) {
+        result.push((
+            RowIdentity::SummaryGroup {
+                machine: machine.machine.name.to_owned(),
+            },
+            RowSpan::single(usize::from(machine.heading.y)),
+        ));
+        machine
+            .rows
+            .sort_by(|a, b| compare_rows(a, b, frame.sort, frame.account_column));
+        for (index, row) in machine.rows.into_iter().enumerate() {
+            result.push((
+                RowIdentity::session(machine.machine.name, row),
+                RowSpan::single(usize::from(machine.table.y) + 1 + index),
+            ));
+        }
+    }
+    let accounts_y = usize::from(layout.accounts_area(area).y);
+    result.extend(
+        layout
+            .accounts
+            .selections
+            .iter()
+            .cloned()
+            .map(|(account, span)| {
+                (
+                    RowIdentity::SummaryAccount { account },
+                    span.shifted(accounts_y),
+                )
+            }),
+    );
+    result
 }
 
 /// A visible machine group with its heading, table and rows resolved together.
@@ -326,7 +476,11 @@ fn draw_machine(
     let mut rows = machine.rows;
     rows.sort_by(|left, right| compare_rows(left, right, columns.sort, columns.account_column));
     let label = Style::default().fg(label_color());
-    Paragraph::new(heading(&machine.machine, rows.len())).render(machine.heading, buffer);
+    Paragraph::new(truncated_line(
+        heading(&machine.machine, rows.len()),
+        usize::from(machine.heading.width),
+    ))
+    .render(machine.heading, buffer);
     Table::new(
         rows.iter().map(|row| {
             agent_row(
@@ -575,6 +729,41 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
     let mut cut = prefix.trim_end().to_owned();
     cut.push(TRUNCATION_MARK);
     cut
+}
+
+/// Use the shared cut result while retaining every visible span's style.
+pub(super) fn truncated_line(line: Line<'_>, max: usize) -> Line<'static> {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let cut = truncated(&text, max);
+    if cut == text {
+        return Line::from(
+            line.spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                .collect::<Vec<_>>(),
+        )
+        .style(line.style);
+    }
+    let mut remaining = cut.chars().count().saturating_sub(1);
+    let mut spans = Vec::new();
+    let mut last_style = line.style;
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let content: String = span.content.chars().take(remaining).collect();
+        remaining = remaining.saturating_sub(content.chars().count());
+        last_style = span.style;
+        spans.push(Span::styled(content, span.style));
+    }
+    if !cut.is_empty() {
+        spans.push(Span::styled(TRUNCATION_MARK.to_string(), last_style));
+    }
+    Line::from(spans).style(line.style)
 }
 
 /// Column widths fitted to the widest cell across every machine's rows.
@@ -1156,8 +1345,8 @@ mod tests {
     /// with one agent; a remote whose probe failed; and one that has not
     /// answered. Each machine that lists agents repeats the label row
     /// under its heading, with the columns sized across both machines'
-    /// rows. Each name takes the hue of its cell: the launched session
-    /// has a cell but no row, so the hue after boss's goes to it.
+    /// rows. Each root name takes the next palette entry independently of
+    /// the launched session nested under the first root.
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
         let natedev = natedev();
@@ -1275,29 +1464,15 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [
-                Role::Rainbow(crate::theme::RainbowHue::Red)
-                    .style()
-                    .fg
-                    .expect("red session"),
-                Role::Rainbow(crate::theme::RainbowHue::Green)
-                    .style()
-                    .fg
-                    .expect("green session"),
-                Role::Rainbow(crate::theme::RainbowHue::Cyan)
-                    .style()
-                    .fg
-                    .expect("cyan session"),
-                Role::Rainbow(crate::theme::RainbowHue::Blue)
-                    .style()
-                    .fg
-                    .expect("blue session"),
-                Role::Rainbow(crate::theme::RainbowHue::Red)
-                    .style()
-                    .fg
-                    .expect("wrapped red session"),
-            ],
-            "red, then green past trunk's orange, cyan, blue, and the mac's red"
+            (0..5)
+                .map(|ordinal| {
+                    Role::Session(crate::theme::SessionHue::of_agent(ordinal))
+                        .style()
+                        .fg
+                        .expect("root session color")
+                })
+                .collect::<Vec<_>>(),
+            "root ordinals continue across machines without counting launched descendants"
         );
     }
 

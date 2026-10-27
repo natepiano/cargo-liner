@@ -4,7 +4,7 @@
 //! [`tui_pane::GlobalAction`] owns quit, restart, pane cycling, and the
 //! settings / keymap / shortcut overlays — those need no registration
 //! here. This scope is for the shortcuts *this* app adds on top: the two
-//! that open and close cells, and the four arrows that move the focus
+//! that open and close cells, and the horizontal arrows that move the focus
 //! ring between them. The framework picks up the rest from the
 //! registration in [`crate::keymap`]: TOML loading, the status-line
 //! slots, and the rows in the keymap overlay.
@@ -22,10 +22,12 @@ use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::NavAction;
 use tui_pane::TileAction;
 
 use crate::app::App;
 use crate::constants::APP_GLOBALS_SECTION;
+use crate::render;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -36,6 +38,12 @@ tui_pane::action_enum! {
         FocusRight => ("focus_right", "Focus the tile to the right");
         FocusUp    => ("focus_up",    "Focus the tile above");
         FocusDown  => ("focus_down",  "Focus the tile below");
+        RowUp => ("row_up", "Select the previous row");
+        RowDown => ("row_down", "Select the next row");
+        RowPageUp => ("row_page_up", "Select one page above");
+        RowPageDown => ("row_page_down", "Select one page below");
+        RowHome => ("row_home", "Select the first row");
+        RowEnd => ("row_end", "Select the last row");
         Attract    => ("attract",     "Show the attract screen");
         RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
         UndoAttractReplacement => ("undo_attract_replacement", "Undo attract replacement");
@@ -58,8 +66,12 @@ impl Globals<App> for AppGlobalAction {
             '-' => Self::RemoveTile,
             KeyCode::Left => Self::FocusLeft,
             KeyCode::Right => Self::FocusRight,
-            KeyCode::Up => Self::FocusUp,
-            KeyCode::Down => Self::FocusDown,
+            KeyCode::Up => Self::RowUp,
+            KeyCode::Down => Self::RowDown,
+            KeyCode::PageUp => Self::RowPageUp,
+            KeyCode::PageDown => Self::RowPageDown,
+            KeyCode::Home => Self::RowHome,
+            KeyCode::End => Self::RowEnd,
             'a' => Self::Attract,
             'r' => Self::RandomizeAttract,
             'u' => Self::UndoAttractReplacement,
@@ -82,6 +94,12 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, growth),
         AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
         AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
+        AppGlobalAction::RowUp => render::navigate_selection(app, NavAction::Up),
+        AppGlobalAction::RowDown => render::navigate_selection(app, NavAction::Down),
+        AppGlobalAction::RowPageUp => render::navigate_selection(app, NavAction::PageUp),
+        AppGlobalAction::RowPageDown => render::navigate_selection(app, NavAction::PageDown),
+        AppGlobalAction::RowHome => render::navigate_selection(app, NavAction::Home),
+        AppGlobalAction::RowEnd => render::navigate_selection(app, NavAction::End),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),
         AppGlobalAction::UndoAttractReplacement => tui_pane::undo_attract_replacement(app),
@@ -115,8 +133,15 @@ mod tests {
             (KeyBind::from('-'), AppGlobalAction::RemoveTile),
             (KeyBind::from(KeyCode::Left), AppGlobalAction::FocusLeft),
             (KeyBind::from(KeyCode::Right), AppGlobalAction::FocusRight),
-            (KeyBind::from(KeyCode::Up), AppGlobalAction::FocusUp),
-            (KeyBind::from(KeyCode::Down), AppGlobalAction::FocusDown),
+            (KeyBind::from(KeyCode::Up), AppGlobalAction::RowUp),
+            (KeyBind::from(KeyCode::Down), AppGlobalAction::RowDown),
+            (KeyBind::from(KeyCode::PageUp), AppGlobalAction::RowPageUp),
+            (
+                KeyBind::from(KeyCode::PageDown),
+                AppGlobalAction::RowPageDown,
+            ),
+            (KeyBind::from(KeyCode::Home), AppGlobalAction::RowHome),
+            (KeyBind::from(KeyCode::End), AppGlobalAction::RowEnd),
             (KeyBind::from('a'), AppGlobalAction::Attract),
             (KeyBind::from('r'), AppGlobalAction::RandomizeAttract),
             (KeyBind::from('u'), AppGlobalAction::UndoAttractReplacement),
@@ -129,7 +154,7 @@ mod tests {
             assert_eq!(scope.action_for(&bind), Some(action), "{bind:?}");
         }
         assert_eq!(
-            expected.len(),
+            expected.len() + 2,
             <AppGlobalAction as tui_pane::Action>::ALL.len()
         );
     }

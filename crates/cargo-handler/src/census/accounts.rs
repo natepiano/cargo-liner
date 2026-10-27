@@ -61,9 +61,23 @@ pub(crate) enum Credits {
 
 /// Whether this account may spend its available credits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CreditUse {
-    Spending,
-    Held,
+pub(crate) enum CreditPermission {
+    Enabled,
+    Disabled,
+}
+
+/// Whether the source reports that credits are currently being spent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreditActivity {
+    InUse,
+    Idle,
+}
+
+/// Whether the latest usage read succeeded and a stored reading exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccountReadStatus {
+    Ok,
+    Failed,
 }
 
 /// One signed-in account, in the source's order.
@@ -74,7 +88,9 @@ pub(crate) struct AccountUsage {
     pub(crate) weekly_left_percent: Reading<f64>,
     pub(crate) resets_at:           Reading<DateTime<Utc>>,
     pub(crate) credits:             Credits,
-    pub(crate) credit_use:          CreditUse,
+    pub(crate) credit_permission:   CreditPermission,
+    pub(crate) credit_activity:     CreditActivity,
+    pub(crate) read_status:         AccountReadStatus,
     pub(crate) read_at:             Reading<DateTime<Utc>>,
 }
 
@@ -99,6 +115,10 @@ struct AccountWire {
     resets_at:           Option<String>,
     credits:             Option<CreditWire>,
     use_credits:         bool,
+    #[serde(default)]
+    credits_in_use:      bool,
+    #[serde(default)]
+    read_ok:             bool,
     read_at:             Option<String>,
 }
 
@@ -135,10 +155,20 @@ impl AccountsReading {
                             Some(CreditWire::Word(Unlimited::Unlimited)) => Credits::Unlimited,
                             None => Credits::Unavailable,
                         },
-                        credit_use:          if row.use_credits {
-                            CreditUse::Spending
+                        credit_permission:   if row.use_credits {
+                            CreditPermission::Enabled
                         } else {
-                            CreditUse::Held
+                            CreditPermission::Disabled
+                        },
+                        credit_activity:     if row.credits_in_use {
+                            CreditActivity::InUse
+                        } else {
+                            CreditActivity::Idle
+                        },
+                        read_status:         if row.read_ok {
+                            AccountReadStatus::Ok
+                        } else {
+                            AccountReadStatus::Failed
                         },
                         read_at:             timestamp(row.read_at.as_deref())?,
                     })

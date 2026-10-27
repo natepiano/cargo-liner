@@ -78,7 +78,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
 use transcript::SubagentRole;
+use worker_dispatch::ResolvedWorkerDispatch;
 use worker_dispatch::WorkerDispatch;
+use worker_dispatch::WorkerIdentity;
 use worker_dispatch::WorkerTask;
 
 use crate::constants::CLAUDE_AGENT;
@@ -371,12 +373,17 @@ impl AgentRow {
     }
 }
 
+/// Preserve the seat's family-qualified identity outside census placement.
+pub(crate) fn worker_identity(dispatch: &ResolvedWorkerDispatch) -> WorkerIdentity {
+    dispatch.identity.clone()
+}
+
 /// How an agent holds a child, including the work kinds shown in tree role columns.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
     /// A command the agent's shell tool is running.
-    Shell,
+    Shell(ShellTimerObservation),
     /// A subagent running inside the agent's own process.
     Subagent(SubagentRole),
     /// An agent this one opened, in a tmux session or as a session of
@@ -405,6 +412,21 @@ pub(crate) struct Timer {
     pub(crate) deadline: u64,
 }
 
+/// A shell's timer observation cannot be attached to another work kind.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum ShellTimerObservation {
+    Untimed,
+    ObservedCountdown(Timer),
+}
+
+/// Recorded work ids survive descriptions and probe transport; older senders are explicit.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum WorkIdentity {
+    Recorded(String),
+    #[default]
+    Legacy,
+}
+
 /// Old probe children had no activity unless their thread was busy.
 const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 
@@ -414,6 +436,7 @@ const fn idle_activity() -> AgentActivity { AgentActivity::Idle }
 #[serde(from = "probe::ProbeChildRow", into = "probe::ProbeChildRow")]
 pub(crate) struct ChildRow {
     /// Task naming survives placement so the final hierarchy role supplies its label.
+    pub(crate) work_id:      WorkIdentity,
     pub(crate) worker_task:  WorkerTask,
     /// The last activity, read incrementally from a thread rollout or subagent transcript.
     pub(crate) activity:     AgentActivity,
@@ -442,11 +465,6 @@ pub(crate) struct ChildRow {
     pub(crate) name:         String,
     /// When it started, in unix seconds.
     pub(crate) started:      u64,
-    /// The `sleep` a shell row's command is waiting out, where that
-    /// `sleep` is the one process at the bottom of the shell's subtree;
-    /// none for any other row. Missing from a probe printed before it
-    /// existed, and left out of one for a row that has none.
-    pub(crate) timer:        Option<Timer>,
 }
 
 /// What is known about one machine's agents.
@@ -978,3 +996,10 @@ mod activity_tests;
 
 #[cfg(test)]
 mod command_name_tests;
+
+#[cfg(test)]
+mod selection_probe_tests;
+
+#[cfg(test)]
+#[path = "accounts_wire_tests.rs"]
+mod accounts_wire_tests;

@@ -12,8 +12,8 @@ use ratatui::widgets::Widget;
 use super::tests;
 use super::*;
 use crate::theme;
-use crate::theme::RainbowHue;
 use crate::theme::Role;
+use crate::theme::SessionHue;
 
 /// Read the ink produced by the same style path used for account and role words.
 fn drawn_ink(style: Style, ground: Color) -> Color {
@@ -122,7 +122,7 @@ fn teal_account_ink_stays_distinct_from_other_accounts_roles_and_azure() {
                     ),
                     (
                         "azure",
-                        drawn_ink(Role::Rainbow(RainbowHue::Blue).style(), ground),
+                        drawn_ink(Role::Session(SessionHue::Fifth).style(), ground),
                     ),
                 ];
                 for (peer, color) in peers {
