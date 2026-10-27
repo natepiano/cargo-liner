@@ -1512,12 +1512,17 @@ mod tests {
     }
 
     fn doubled_line_failure(buffer: &Buffer, area: Rect, motion: &str, raw: u32) -> Option<String> {
+        let row = |y| {
+            let start = buffer.index_of(area.x, y);
+            &buffer.content[start..start + usize::from(area.width)]
+        };
         for y in area.top()..area.bottom().saturating_sub(1) {
-            for x in area.left()..area.right().saturating_sub(2) {
-                let horizontal_run = |row| {
-                    (x..x + 3).all(|column| buffer[(column, row)].symbol() == line::HORIZONTAL)
-                };
-                if horizontal_run(y) && horizontal_run(y + 1) {
+            for (upper, lower) in row(y).windows(3).zip(row(y + 1).windows(3)) {
+                if upper
+                    .iter()
+                    .chain(lower)
+                    .all(|cell| cell.symbol() == line::HORIZONTAL)
+                {
                     return Some(format!(
                         "{motion} at raw {raw} draws horizontal lines on rows {y} and {}",
                         y + 1
@@ -1539,10 +1544,10 @@ mod tests {
             line::BOTTOM_LEFT,
         ];
         for y in area.top()..area.bottom() {
-            for x in area.left()..area.right().saturating_sub(1) {
-                let left = buffer[(x, y)].symbol();
-                let right = buffer[(x + 1, y)].symbol();
-                if right_edges.contains(&left) && left_edges.contains(&right) {
+            for (offset, pair) in row(y).windows(2).enumerate() {
+                if right_edges.contains(&pair[0].symbol()) && left_edges.contains(&pair[1].symbol())
+                {
+                    let x = usize::from(area.x) + offset;
                     return Some(format!(
                         "{motion} at raw {raw} draws vertical lines side by side at ({x}, {y})"
                     ));
@@ -1804,11 +1809,19 @@ mod tests {
         grid.set_layout(area, growth);
         let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
         let mut cells_demands = cells.demands(&cells_widths);
-        let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
-        let mut alone_demands = cells.demands(&alone_widths);
         add_readout_rows(&mut cells_demands, &cells_widths);
-        add_readout_rows(&mut alone_demands, &alone_widths);
         grid.sync_rendered_demands(&cells_demands, growth);
+        measured_motion_drawing(grid, cells, area, growth, raw)
+    }
+
+    /// Measure geometry after the fixture has published its content change.
+    fn measured_motion_drawing(
+        grid: &mut TileGrid<u32>,
+        cells: &impl TileCells<u32>,
+        area: Rect,
+        growth: TileGrowth,
+        raw: u32,
+    ) -> TileDrawing<u32> {
         grid.measure_row_steps(
             area,
             growth,
@@ -1942,8 +1955,9 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        for raw in 0..=PROGRESS_SCALE {
-            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+        fixed_motion_drawing(&mut grid, &cells, area, growth, 0);
+        for raw in grid.distinct_motion_steps_for_test(area, growth) {
+            let drawing = measured_motion_drawing(&mut grid, &cells, area, growth, raw);
             for (content, path) in &mut paths {
                 let placement = drawing
                     .placements()
@@ -2088,8 +2102,13 @@ mod tests {
         );
         grid.settle_for_test();
 
-        for raw in 1..PROGRESS_SCALE {
-            let drawing = fixed_motion_drawing(&mut grid, &after, area, growth, raw);
+        fixed_motion_drawing(&mut grid, &after, area, growth, 0);
+        for raw in grid
+            .distinct_motion_steps_for_test(area, growth)
+            .into_iter()
+            .filter(|&raw| raw > 0 && raw < PROGRESS_SCALE)
+        {
+            let drawing = measured_motion_drawing(&mut grid, &after, area, growth, raw);
             let summary = drawing
                 .placements()
                 .find(|placement| placement.content == TileContent::Summary);
