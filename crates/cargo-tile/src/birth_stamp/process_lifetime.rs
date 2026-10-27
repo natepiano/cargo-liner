@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use super::BirthStamp;
+use super::IdentityEvidence;
 #[cfg(target_os = "linux")]
 use super::Observation;
 use super::Verification;
@@ -34,6 +35,24 @@ impl ProcessLifetime {
             boot: self.boot.clone(),
             birth,
         }))
+    }
+    /// Compare only with the kernel observation for this process.
+    pub(crate) fn verify_process(
+        &self,
+        pid: u32,
+        observation: &super::KernelObservation,
+    ) -> Verification {
+        #[cfg(target_os = "macos")]
+        let birth = self.birth / u64::from(BIRTH_MICROSECONDS_PER_SECOND);
+        #[cfg(not(target_os = "macos"))]
+        let birth = self.birth;
+        observation.compare(
+            pid,
+            &IdentityEvidence::Available(BirthStamp {
+                boot: self.boot.clone(),
+                birth,
+            }),
+        )
     }
     /// Preserve the entire timeval where registration comparison keeps seconds only.
     #[cfg(any(target_os = "macos", test))]

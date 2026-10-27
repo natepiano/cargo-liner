@@ -73,6 +73,7 @@ use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
 use super::constants::TABLE_CELL;
 use super::constants::TILE_BORDER_ROWS;
 use super::draw;
+use super::draw::CandidateCells;
 use super::draw::CellAdmission;
 use super::draw::CellContinuity;
 #[cfg(test)]
@@ -84,6 +85,7 @@ use super::draw::CellPresentation;
 use super::draw::DrawableCell;
 use super::draw::DrawableFragment;
 use super::draw::EndedCell;
+use super::draw::MeasuredDrawing;
 use super::draw::VisibleInk;
 use super::growth::TileGrowth;
 use super::settings::CellRowDemand;
@@ -150,10 +152,10 @@ impl<Id> ListedCommands<Id> {
     pub fn ids(&self) -> &[Id] { &self.0 }
 }
 
-/// One complete partition of the frame's live commands.
+/// Checked cell owners and the live commands that remain listed.
 #[derive(Clone, Debug)]
 pub struct FramePlacement<Id> {
-    celled: Vec<Id>,
+    cells:  Vec<Id>,
     listed: ListedCommands<Id>,
 }
 
@@ -163,20 +165,25 @@ impl<Id: Clone + Eq> FramePlacement<Id> {
     where
         Id: 'a,
     {
-        let celled: Vec<_> = drawn.filter(|id| required.contains(id)).cloned().collect();
+        let mut cells = Vec::new();
+        for id in drawn {
+            if !cells.contains(id) {
+                cells.push(id.clone());
+            }
+        }
         let listed = ListedCommands(
             required
                 .iter()
-                .filter(|id| !celled.contains(id))
+                .filter(|id| !cells.contains(id))
                 .cloned()
                 .collect(),
         );
-        Self { celled, listed }
+        Self { cells, listed }
     }
 
     /// Commands with a whole cell in the published drawing.
     #[must_use]
-    pub fn celled(&self) -> &[Id] { &self.celled }
+    pub fn celled(&self) -> &[Id] { &self.cells }
 
     /// Commands whose required row belongs to the summary.
     #[must_use]
@@ -497,6 +504,7 @@ struct AdmissionRoom {
 #[derive(Clone, Copy)]
 struct FreeAllocationRoom {
     columns: u16,
+    summary: AdmissionRoom,
 }
 
 /// A published capacity assignment survives summary remeasurement.
@@ -542,6 +550,15 @@ impl<Id: Clone> CapacityColumns<Id> {
     }
 }
 
+/// Generic summaries retain layout demand; invocation partitions reserve their exact rows.
+#[derive(Clone, Copy, Default)]
+enum FrameSummaryMinimum {
+    #[default]
+    Candidate,
+    LayoutManaged,
+    Measured(SummaryDemand),
+}
+
 /// Space below both the source allocation and its painted motion clip.
 struct FreeColumnRows(u16);
 
@@ -549,27 +566,34 @@ struct FreeColumnRows(u16);
 #[derive(Clone, Copy)]
 struct ColumnGrowth(u16);
 
+/// Removing only the surplus above a checked summary minimum keeps its body whole.
+#[derive(Clone, Copy)]
+struct ColumnReduction(u16);
+
 impl FreeColumnRows {
     fn grant(self, requested: u16) -> ColumnGrowth { ColumnGrowth(requested.min(self.0)) }
+}
+
+/// Column replacement requires every measured rectangle to stay in its viewport.
+struct BoundedColumn(Vec<Rect>);
+
+impl BoundedColumn {
+    fn check(frames: Vec<Rect>, viewport: Rect) -> Result<Self, CandidateDoesNotFit> {
+        if frames
+            .iter()
+            .all(|frame| frame.intersection(viewport) == *frame)
+        {
+            Ok(Self(frames))
+        } else {
+            Err(CandidateDoesNotFit)
+        }
+    }
 }
 
 /// Complete, bounded cells produced by the current-minimum packing pass.
 struct WholeCellDrawing<Id>(TileDrawing<Id>);
 
 impl<Id: Clone + Eq> WholeCellDrawing<Id> {
-    /// Membership and columns are fixed. Preserve the summary reservation,
-    /// then spend free rows on cut live bodies without padding completed bodies.
-    fn with_summary_room(mut self, viewport: Rect, requested: u16) -> Self {
-        if let Some(summary) = self.0.pieces.first() {
-            let frame = summary.placement.frame.rect();
-            let extra = self
-                .free_rows(viewport, frame.x)
-                .grant(requested.saturating_sub(frame.height));
-            self.grow_span(0, extra);
-        }
-        self
-    }
-
     /// Optional summary detail uses only space below the already placed column.
     /// Growing this span shifts its mates by the same amount, so every live body
     /// retains its complete allocation and remains within the viewport.
@@ -646,6 +670,29 @@ impl<Id: Clone + Eq> WholeCellDrawing<Id> {
                     TileContent::Empty(_) => false,
                 });
             if !live {
+                if let Some(&index) = indices.iter().find(|&&index| {
+                    matches!(self.0.pieces[index].placement.content, TileContent::Summary)
+                }) {
+                    let frame = self.0.pieces[index].placement.frame;
+                    if frame.rect() == frame.clip()
+                        && indices.iter().all(|&index| {
+                            let frame = self.0.pieces[index].placement.frame;
+                            frame.rect() == frame.clip()
+                        })
+                    {
+                        let minimum = match required.summary {
+                            SummaryReservation::Unreserved => required.summary_minimum,
+                            SummaryReservation::Resizing { height } => {
+                                height.max(required.summary_minimum)
+                            },
+                        };
+                        self.shrink_span(
+                            index,
+                            ColumnReduction(frame.rect().height.saturating_sub(minimum)),
+                        );
+                    }
+                }
+                self.grow_live_bodies(viewport, &indices, required, provider, settings);
                 continue;
             }
             let frames = self.shared_column(viewport, &indices, required, provider, settings);
@@ -669,8 +716,8 @@ impl<Id: Clone + Eq> WholeCellDrawing<Id> {
                         TileContent::Empty(_) => false,
                     }
                 });
-            if fits {
-                for (&index, frame) in indices.iter().zip(frames) {
+            if fits && let Ok(frames) = BoundedColumn::check(frames, viewport) {
+                for (&index, frame) in indices.iter().zip(frames.0) {
                     let piece = &mut self.0.pieces[index];
                     piece.placement.frame =
                         PaneFrame::new(frame).with_focus(piece.placement.frame.is_focused());
@@ -678,6 +725,55 @@ impl<Id: Clone + Eq> WholeCellDrawing<Id> {
             }
         }
         self
+    }
+
+    /// A departure keeps its measured span. Free rows below that span can
+    /// still reveal more of a live body without taking any protected row.
+    fn grow_live_bodies(
+        &mut self,
+        viewport: Rect,
+        indices: &[usize],
+        required: &RequiredCommands<'_, Id>,
+        provider: &impl draw::TileCells<Id>,
+        settings: &TileSettings,
+    ) {
+        for &index in indices {
+            let piece = &self.0.pieces[index].placement;
+            let TileContent::Group(id) = &piece.content else {
+                continue;
+            };
+            let Some(cell) = required.cells.iter().find(|cell| {
+                &cell.id == id
+                    && cell.continuity == CellContinuity::Running
+                    && !cell.owns_visible_departure()
+            }) else {
+                continue;
+            };
+            let frame = piece.frame;
+            if frame.rect() != frame.clip() {
+                continue;
+            }
+            let rect = frame.rect();
+            let free = self.free_rows(viewport, rect.x);
+            let maximum = rect
+                .height
+                .saturating_add(free.0)
+                .min(cell.lifecycle_height(rect.width, settings.min_tile_height));
+            let usage = |height| {
+                provider.rows_drawn(
+                    &piece.content,
+                    draw::content_area(frame_inner(Rect { height, ..rect })),
+                )
+            };
+            let current = usage(rect.height);
+            let best = usage(maximum);
+            if best > current {
+                let height = (rect.height..=maximum)
+                    .find(|&height| usage(height) == best)
+                    .unwrap_or(maximum);
+                self.grow_span(index, free.grant(height.saturating_sub(rect.height)));
+            }
+        }
     }
 
     fn shared_column(
@@ -706,7 +802,7 @@ impl<Id: Clone + Eq> WholeCellDrawing<Id> {
                     TileContent::Summary => match required.summary {
                         SummaryReservation::Unreserved => required.summary_minimum,
                         SummaryReservation::Resizing { height } => {
-                            piece.frame.rect().height.max(height)
+                            height.max(required.summary_minimum)
                         },
                     },
                     TileContent::Empty(_) => piece.frame.rect().height,
@@ -782,6 +878,28 @@ impl<Id: Clone + Eq> WholeCellDrawing<Id> {
             .max()
             .unwrap_or_else(|| viewport.bottom());
         FreeColumnRows(viewport.bottom().saturating_sub(bottom))
+    }
+
+    fn shrink_span(&mut self, index: usize, reduction: ColumnReduction) {
+        let ColumnReduction(rows) = reduction;
+        let rect = self.0.pieces[index].placement.frame.rect();
+        for (offset, piece) in self.0.pieces.iter_mut().enumerate() {
+            let frame = piece.placement.frame;
+            let mut next = frame.rect();
+            let mut clip = frame.clip();
+            if next.x != rect.x {
+                continue;
+            }
+            if offset == index {
+                next.height -= rows;
+                clip.height -= rows;
+            } else if next.y > rect.y {
+                next.y -= rows;
+                clip.y -= rows;
+            }
+            piece.placement.frame =
+                PaneFrame::shifted(next, frame.shift(), clip).with_focus(frame.is_focused());
+        }
     }
 
     fn grow_span(&mut self, index: usize, growth: ColumnGrowth) {
@@ -869,6 +987,13 @@ impl<Id> Deref for BodyDrawing<Id> {
 pub(super) enum DrawingAllocation {
     Motion,
     Capacity,
+}
+
+/// Only a complete-body capacity proof can retain a drawing across frames.
+enum PaintedAllocation<Id> {
+    Motion,
+    LayoutManagedCapacity,
+    WholeBodyCapacity(TileDrawing<Id>),
 }
 
 /// The only drawing accepted at the paint boundary: every clip belongs to its viewport.
@@ -2334,6 +2459,7 @@ pub struct TileGrid<Id> {
     held:                   HeldCellLayout,
     /// What every cell is asking for, as the last scan left it.
     demands:                TileDemands<Id>,
+    frame_summary_minimum:  FrameSummaryMinimum,
     /// Whether the geometry is settled or playing a timed move.
     motion:                 GridMotion<Id>,
     /// Clock policy, including deterministic test observations.
@@ -2364,7 +2490,7 @@ pub struct TileGrid<Id> {
     candidate_measurements: Vec<CandidateBody<Id>>,
     capacity_publication:   CapacityPublication,
     /// Which allocator produced the geometry used by the next preparation pass.
-    painted_allocation:     DrawingAllocation,
+    painted_allocation:     PaintedAllocation<Id>,
     painted_viewport:       Rect,
     summary_live:           Vec<Id>,
     dropped_ended:          Vec<Id>,
@@ -2441,6 +2567,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 summary_depth: 1,
             },
             demands:                TileDemands::default(),
+            frame_summary_minimum:  FrameSummaryMinimum::Candidate,
             motion:                 GridMotion::Settled,
             motion_clock:           MotionClock::default(),
             entry_timeline:         CellEntryTimeline::default(),
@@ -2456,7 +2583,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             capacity_cells:         Vec::new(),
             candidate_measurements: Vec::new(),
             capacity_publication:   CapacityPublication::BeforePaint,
-            painted_allocation:     DrawingAllocation::Motion,
+            painted_allocation:     PaintedAllocation::Motion,
             painted_viewport:       Rect::ZERO,
             summary_live:           Vec::new(),
             dropped_ended:          Vec::new(),
@@ -2492,6 +2619,75 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
     }
 
+    /// Prepare row policy at the readable floor, independent of painted geometry.
+    pub(super) fn readable_preparation_height(
+        &self,
+        first_height: u16,
+        body_width: u16,
+        viewport_height: u16,
+    ) -> u16 {
+        let frame = Rect::new(
+            0,
+            0,
+            body_width.saturating_add(TILE_BORDER_ROWS),
+            self.settings
+                .min_tile_height
+                .max(first_height)
+                .min(viewport_height),
+        );
+        draw::content_area(frame_inner(frame)).height
+    }
+
+    /// Checked placement supplies the exact summary rows for this draw.
+    pub(super) fn measure_frame_summary(
+        &mut self,
+        summary: SummaryDemand,
+        drawing: &ViewportDrawing<Id>,
+        continuity: CellContinuity,
+    ) {
+        self.dropped_ended.clone_from(&drawing.dropped_ended);
+        self.demands.summary = summary;
+        self.frame_summary_minimum = match continuity {
+            CellContinuity::LayoutManaged => FrameSummaryMinimum::LayoutManaged,
+            CellContinuity::Running | CellContinuity::FrozenAfterEnd => {
+                FrameSummaryMinimum::Measured(summary)
+            },
+        };
+    }
+
+    /// Admission can change the listed set of an initial summary estimate.
+    pub(super) const fn measure_candidate_summary(
+        &mut self,
+        summary: SummaryDemand,
+        continuity: CellContinuity,
+    ) {
+        self.demands.summary = summary;
+        self.frame_summary_minimum = match continuity {
+            CellContinuity::LayoutManaged => FrameSummaryMinimum::LayoutManaged,
+            CellContinuity::Running | CellContinuity::FrozenAfterEnd => {
+                FrameSummaryMinimum::Candidate
+            },
+        };
+    }
+
+    /// A retained layout step uses the summary rows of the current assignment.
+    fn frame_held(&self, held: &HeldCellLayout) -> HeldCellLayout {
+        let mut held = held.clone();
+        let required = self.required_cells();
+        let celled = required.iter().collect::<Vec<_>>();
+        let minimum = self.admission_room(&celled).summary_minimum.get();
+        if let Some(summary) = held.rows.first_mut() {
+            let exact = match self.frame_summary_minimum {
+                FrameSummaryMinimum::Candidate | FrameSummaryMinimum::LayoutManaged => {
+                    summary.exact_framed().max(minimum)
+                },
+                FrameSummaryMinimum::Measured(_) => minimum,
+            };
+            *summary = summary.with_exact_from(CellRowDemand::uniform(exact));
+        }
+        held
+    }
+
     /// Probe destination row steps, then nearby heights this moving frame may use.
     pub(super) fn measure_row_steps(
         &mut self,
@@ -2521,7 +2717,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 rows: FrameCellRowAnswers::default(),
             })
             .collect();
-        let held = self.drawn_held();
+        let held = self.frame_held(&self.drawn_held());
         let cells_grid = Grid::with_row_use(
             area,
             &held,
@@ -2968,7 +3164,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect();
         let mut grid = Grid::with_row_use(
             area,
-            held,
+            &self.frame_held(held),
             growth,
             &self.settings,
             &mut |index, area, purpose| {
@@ -3164,7 +3360,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Explicit slot edits must measure their new widths before depth can settle.
     /// Otherwise capacity prepares the allocation it owns rather than hidden motion.
     fn prepares_published_capacity(&self, area: Rect) -> bool {
-        self.painted_allocation == DrawingAllocation::Capacity
+        !matches!(self.painted_allocation, PaintedAllocation::Motion)
             && matches!(&self.capacity_columns, CapacityColumns::Assigned { viewport, .. } if *viewport == area)
             && self.painted_viewport == area
             && !matches!(
@@ -3433,7 +3629,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 let Ok(frame) = cell.presentation().departure_frame() else {
                     continue;
                 };
-                *lifecycle = cell.end(end, provider, elapsed, frame, &lifecycle);
+                *lifecycle = cell.end(end, provider, elapsed, frame);
             }
             if let CellLifecycle::Leaving(ended) = &mut *lifecycle {
                 ended.shrink_at(elapsed);
@@ -3492,7 +3688,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 && let Some(end) = cells.ended(&cell.id)
                 && let Ok(frame) = cell.presentation().departure_frame()
             {
-                *lifecycle = cell.end(end, cells, elapsed, frame, &lifecycle);
+                *lifecycle = cell.end(end, cells, elapsed, frame);
             }
             if let CellLifecycle::Leaving(ended) = &mut *lifecycle {
                 ended.shrink_at(elapsed);
@@ -3619,6 +3815,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         prepared: Vec<DrawableCell<Id>>,
         growth: TileGrowth,
     ) {
+        self.frame_summary_minimum = FrameSummaryMinimum::Candidate;
         self.admission = prepared;
         self.allocated_arrivals
             .retain(|arrival| self.admission.iter().any(|cell| cell.id == arrival.cell.id));
@@ -5050,9 +5247,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Record the same presentations as painting, starting and sampling their one clock.
     pub(super) fn start_painted_entries(
         &self,
-        mut drawing: ViewportDrawing<Id>,
+        drawing: MeasuredDrawing<Id>,
         retained: &[DrawableCell<Id>],
     ) -> StartedCellDrawing<Id> {
+        let mut drawing = drawing.into_drawing();
         for cell in retained {
             let mut pieces = drawing.drawing.0.pieces.iter_mut().filter(|piece| {
                 matches!(&piece.placement.content, TileContent::Group(id) if id == &cell.id)
@@ -5079,7 +5277,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     CellLifecycle::Resident => PieceInk::Resident,
                 };
                 drop(lifecycle);
-                let presentation = CellPresentation::Drawn(piece.placement.frame);
+                let presentation = CellPresentation::Drawn {
+                    frame: piece.placement.frame,
+                    ink:   CellFadeProgress::new(piece.ink.amount()),
+                };
                 for fragment in pieces {
                     fragment.ink = piece.ink;
                 }
@@ -5098,7 +5299,33 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         drawing: StartedCellDrawing<Id>,
     ) -> ViewportDrawing<Id> {
         let StartedCellDrawing(drawing) = drawing;
-        self.painted_allocation = drawing.allocation;
+        self.painted_allocation = match drawing.allocation {
+            DrawingAllocation::Motion => PaintedAllocation::Motion,
+            DrawingAllocation::Capacity
+                if self
+                    .admission
+                    .iter()
+                    .any(|cell| cell.continuity == CellContinuity::LayoutManaged) =>
+            {
+                PaintedAllocation::LayoutManagedCapacity
+            },
+            DrawingAllocation::Capacity => PaintedAllocation::WholeBodyCapacity(TileDrawing {
+                pieces:       drawing
+                    .pieces
+                    .iter()
+                    .map(|piece| TilePiece {
+                        placement:   TilePlacement {
+                            content: piece.placement.content.clone(),
+                            frame:   piece.placement.frame,
+                        },
+                        ink:         piece.ink,
+                        name:        piece.name,
+                        height_snap: piece.height_snap,
+                    })
+                    .collect(),
+                column_bands: drawing.column_bands.clone(),
+            }),
+        };
         if drawing.allocation == DrawingAllocation::Capacity {
             for arrival in &mut self.allocated_arrivals {
                 if let Some(piece) = drawing.pieces.iter().find(|piece| {
@@ -5245,11 +5472,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     measurements:    &[],
                     admitted:        &[],
                     summary:         self.summary_reservation(),
-                    summary_minimum: self.admission_room(&[]).summary_minimum.get(),
+                    summary_minimum: self
+                        .candidate_room(&[], self.summary_probe_width(area), cells)
+                        .summary_minimum
+                        .get(),
                 },
                 &self.dropped_ended,
                 SummarizedCommands::none(),
             );
+        }
+        if let Ok(drawing) = self.checked_painted_capacity(area, cells) {
+            return drawing;
         }
         // A queued slot does not own its arrival until its normal geometry can
         // replace the whole free allocation. Until then the arrival stays required.
@@ -5277,41 +5510,23 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         {
             return drawing;
         }
-        self.capacity_cells =
-            self.required_cells()
-                .iter()
-                .map(|cell| {
-                    let measured = candidate.pieces.iter().find(|piece| {
-                        piece.placement.content == TileContent::Group(cell.id.clone())
-                    });
-                    let Some(piece) = measured else {
-                        return CurrentCellCapacity::TooTall(cell.clone());
-                    };
-                    let width = piece
-                        .placement
-                        .frame
-                        .rect()
-                        .width
-                        .saturating_sub(TILE_BORDER_ROWS);
-                    match cell.capacity_at(width, area.height, cells) {
-                        CellAdmission::Drawable(cell) => CurrentCellCapacity::Drawable(cell),
-                        CellAdmission::Waiting => CurrentCellCapacity::TooTall(cell.clone()),
-                    }
-                })
-                .collect();
-        let refs = self
+        self.capacity_cells = self.measure_drawing_cells(&candidate, area, cells);
+        let drawing_cells = self
             .capacity_cells
             .iter()
             .map(CurrentCellCapacity::cell)
             .collect::<Vec<_>>();
         let required = RequiredCommands {
-            cells:           &refs,
+            cells:           &drawing_cells,
             measurements:    &self.capacity_cells,
             admitted:        &admitted,
             summary:         self.summary_reservation(),
-            summary_minimum: self.admission_room(&refs).summary_minimum.get(),
+            summary_minimum: self
+                .candidate_room(&drawing_cells, self.summary_probe_width(area), cells)
+                .summary_minimum
+                .get(),
         };
-        if (!self.capacity_assignment_holds(area, &refs)
+        if (!self.capacity_assignment_holds(area, &drawing_cells)
             || self.preserves_capacity_columns(&candidate))
             && let Ok(drawing) =
                 ViewportDrawing::checked(candidate, area, &required, &self.dropped_ended)
@@ -5319,21 +5534,141 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return drawing;
         }
         self.measure_capacity_cells(area, cells);
-        let refs = self
+        let required_cells = self
             .capacity_cells
             .iter()
             .map(CurrentCellCapacity::cell)
             .collect::<Vec<_>>();
-        self.capacity_drawing(
+        self.capacity_drawing_with_rooms(
             area,
             &RequiredCommands {
-                cells:           &refs,
+                cells:           &required_cells,
                 measurements:    &self.capacity_cells,
                 admitted:        &[],
                 summary:         self.summary_reservation(),
-                summary_minimum: self.admission_room(&refs).summary_minimum.get(),
+                summary_minimum: self
+                    .candidate_room(&required_cells, self.summary_probe_width(area), cells)
+                    .summary_minimum
+                    .get(),
             },
+            |celled| self.candidate_room(celled, self.summary_probe_width(area), cells),
         )
+    }
+
+    /// An unchanged capacity frame keeps its columns after current body checks.
+    fn checked_painted_capacity(
+        &mut self,
+        area: Rect,
+        cells: &impl draw::TileCells<Id>,
+    ) -> Result<ViewportDrawing<Id>, ColumnCapacityFailure> {
+        if !self.prepares_published_capacity(area)
+            || !matches!(self.motion, GridMotion::Settled)
+            || self.admission.iter().any(|cell| !cell.has_drawn_body())
+        {
+            return Err(ColumnCapacityFailure);
+        }
+        let PaintedAllocation::WholeBodyCapacity(held) = &self.painted_allocation else {
+            return Err(ColumnCapacityFailure);
+        };
+        let candidate = TileDrawing {
+            pieces:       held
+                .pieces
+                .iter()
+                .map(|piece| {
+                    let placement = &piece.placement;
+                    let focused = match &self.focus {
+                        Focus::Summary => matches!(placement.content, TileContent::Summary),
+                        Focus::Cell(drawn) => {
+                            DrawnSlot::matches_content(&drawn.slot, &placement.content, &self.slots)
+                        },
+                    };
+                    TilePiece {
+                        placement:   TilePlacement {
+                            content: placement.content.clone(),
+                            frame:   placement.frame.with_focus(focused),
+                        },
+                        ink:         piece.ink,
+                        name:        piece.name,
+                        height_snap: piece.height_snap,
+                    }
+                })
+                .collect(),
+            column_bands: held.column_bands.clone(),
+        };
+        self.capacity_cells = self.measure_drawing_cells(&candidate, area, cells);
+        let cell_references = self
+            .capacity_cells
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        let admitted = self.drawable_groups();
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &self.capacity_cells,
+            admitted:        &admitted,
+            summary:         self.summary_reservation(),
+            summary_minimum: self
+                .candidate_room(&cell_references, self.summary_probe_width(area), cells)
+                .summary_minimum
+                .get(),
+        };
+        let mut drawing =
+            ViewportDrawing::checked(candidate, area, &required, &self.dropped_ended)?;
+        drawing.allocation = DrawingAllocation::Capacity;
+        drawing.capacity_columns = CapacityColumns::assigned(area, &drawing, &required);
+        Ok(drawing)
+    }
+
+    /// Measure complete command bodies through this drawing's current widths and form.
+    fn measure_drawing_cells(
+        &self,
+        candidate: &TileDrawing<Id>,
+        area: Rect,
+        cells: &impl draw::TileCells<Id>,
+    ) -> Vec<CurrentCellCapacity<Id>> {
+        let widths = candidate
+            .pieces
+            .iter()
+            .map(|piece| {
+                (
+                    piece.placement.content.clone(),
+                    piece
+                        .placement
+                        .frame
+                        .rect()
+                        .width
+                        .saturating_sub(TILE_BORDER_ROWS),
+                )
+            })
+            .collect::<Vec<_>>();
+        let demands = cells.demands(&widths);
+        self.required_cells()
+            .iter()
+            .map(|cell| {
+                let measured = candidate
+                    .pieces
+                    .iter()
+                    .find(|piece| piece.placement.content == TileContent::Group(cell.id.clone()));
+                let Some(piece) = measured else {
+                    return CurrentCellCapacity::TooTall(cell.clone());
+                };
+                let width = piece
+                    .placement
+                    .frame
+                    .rect()
+                    .width
+                    .saturating_sub(TILE_BORDER_ROWS);
+                let rows = demands
+                    .groups
+                    .iter()
+                    .find(|demand| demand.id == cell.id)
+                    .map_or_else(|| cell.last_measured_rows(), |demand| demand.rows);
+                match cell.capacity_at(rows, width, area.height, cells) {
+                    CellAdmission::Drawable(cell) => CurrentCellCapacity::Drawable(cell),
+                    CellAdmission::Waiting => CurrentCellCapacity::TooTall(cell.clone()),
+                }
+            })
+            .collect()
     }
 
     /// Capacity admission shares free rows through the measured body allocator.
@@ -5343,6 +5678,35 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         provider: &impl draw::TileCells<Id>,
     ) -> ViewportDrawing<Id> {
+        let required_ids = self
+            .demands
+            .groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let placement = drawing.placement(&required_ids);
+        let width = drawing
+            .pieces
+            .iter()
+            .find(|piece| matches!(piece.placement.content, TileContent::Summary))
+            .map_or_else(
+                || area.width.saturating_sub(TILE_BORDER_ROWS),
+                |piece| frame_inner(piece.placement.frame.rect()).width,
+            );
+        let drawn = self
+            .capacity_cells
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .filter(|cell| placement.celled().contains(&cell.id))
+            .collect::<Vec<_>>();
+        let minimum = self
+            .candidate_room(&drawn, width, provider)
+            .summary_minimum
+            .get();
+        let provider = &CandidateCells {
+            live: provider,
+            placement,
+        };
         if drawing.allocation != DrawingAllocation::Capacity {
             let ViewportDrawing {
                 drawing,
@@ -5352,7 +5716,28 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 summary_live,
                 dropped_ended,
             } = drawing;
-            let whole = WholeCellDrawing(drawing.0).with_optional_summary_rows(area, provider);
+            let whole = WholeCellDrawing(drawing.0);
+            let whole = if matches!(
+                self.frame_summary_minimum,
+                FrameSummaryMinimum::LayoutManaged
+            ) {
+                whole
+            } else {
+                let cell_references = self
+                    .capacity_cells
+                    .iter()
+                    .map(CurrentCellCapacity::cell)
+                    .collect::<Vec<_>>();
+                let required = RequiredCommands {
+                    cells:           &cell_references,
+                    measurements:    &self.capacity_cells,
+                    admitted:        &[],
+                    summary:         self.summary_reservation(),
+                    summary_minimum: minimum,
+                };
+                whole.with_shared_rows(area, &required, provider, &self.settings)
+            };
+            let whole = whole.with_optional_summary_rows(area, provider);
             return ViewportDrawing {
                 drawing: BodyDrawing(whole.0),
                 allocation,
@@ -5362,17 +5747,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 dropped_ended,
             };
         }
-        let refs = self
+        let cell_references = self
             .capacity_cells
             .iter()
             .map(CurrentCellCapacity::cell)
             .collect::<Vec<_>>();
         let required = RequiredCommands {
-            cells:           &refs,
+            cells:           &cell_references,
             measurements:    &self.capacity_cells,
             admitted:        &[],
             summary:         self.summary_reservation(),
-            summary_minimum: self.admission_room(&refs).summary_minimum.get(),
+            summary_minimum: minimum,
         };
         let summarized = SummarizedCommands(drawing.summary_live.clone());
         let released = drawing.dropped_ended.clone();
@@ -5473,7 +5858,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let room = self.free_allocation_room(area, destination.len());
         let mut outcome = WaitingAdmissions::NoFreeAllocation;
         for cell in waiting {
-            if let WaitingAdmissions::Placed(drawing) = self.allocate_waiter(area, &cell, room) {
+            let mut candidate = self
+                .capacity_cells
+                .iter()
+                .map(CurrentCellCapacity::cell)
+                .collect::<Vec<_>>();
+            candidate.push(&cell);
+            let summary = self.candidate_room(&candidate, self.summary_probe_width(area), provider);
+            if let WaitingAdmissions::Placed(drawing) =
+                self.allocate_waiter(area, &cell, FreeAllocationRoom { summary, ..room })
+            {
                 outcome = WaitingAdmissions::Placed(drawing);
             }
         }
@@ -5490,26 +5884,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let waiting_cell = cell.clone();
         self.capacity_cells
             .push(CurrentCellCapacity::Drawable(cell.clone()));
-        let refs = self
+        let cell_references = self
             .capacity_cells
             .iter()
             .map(CurrentCellCapacity::cell)
             .collect::<Vec<_>>();
         let Ok(whole) =
-            self.fit_painted_viewport(area, &refs, self.admission_room(&refs), room.columns)
+            self.fit_painted_viewport(area, &cell_references, room.summary, room.columns)
         else {
             self.capacity_cells.pop();
             return WaitingAdmissions::NoFreeAllocation;
         };
         let required = RequiredCommands {
-            cells:           &refs,
+            cells:           &cell_references,
             measurements:    &self.capacity_cells,
             admitted:        &[],
             summary:         self.summary_reservation(),
-            summary_minimum: self.admission_room(&refs).summary_minimum.get(),
+            summary_minimum: room.summary.summary_minimum.get(),
         };
         let drawing = ViewportDrawing::from_whole_cells(
-            whole.with_summary_room(area, self.requested_summary_height()),
+            whole,
             area,
             &required,
             &self.dropped_ended,
@@ -5554,7 +5948,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             )
             .unwrap_or(u16::MAX)
         };
-        FreeAllocationRoom { columns }
+        FreeAllocationRoom {
+            columns,
+            summary: self.admission_room(&[]),
+        }
     }
 
     /// Previously measured capacity also serves layout queries outside painting.
@@ -5645,8 +6042,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             }
         }
         for width in widths {
+            let demands = provider.demands(&[(TileContent::Summary, width)]);
             for cell in &candidates {
-                let capacity = match cell.capacity_at(width, area.height, provider) {
+                let rows = demands
+                    .groups
+                    .iter()
+                    .find(|demand| demand.id == cell.id)
+                    .map_or_else(|| cell.last_measured_rows(), |demand| demand.rows);
+                let capacity = match cell.capacity_at(rows, width, area.height, provider) {
                     CellAdmission::Drawable(cell) => CurrentCellCapacity::Drawable(cell),
                     CellAdmission::Waiting => CurrentCellCapacity::TooTall(cell.clone()),
                 };
@@ -5702,6 +6105,39 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .saturating_add(TILE_BORDER_ROWS)
     }
 
+    fn summary_probe_width(&self, area: Rect) -> u16 {
+        self.capacity_widths(area)
+            .into_iter()
+            .min()
+            .unwrap_or_else(|| area.width.saturating_sub(TILE_BORDER_ROWS))
+    }
+
+    fn candidate_room(
+        &self,
+        celled: &[&DrawableCell<Id>],
+        width: u16,
+        provider: &impl draw::TileCells<Id>,
+    ) -> AdmissionRoom {
+        if matches!(
+            self.frame_summary_minimum,
+            FrameSummaryMinimum::LayoutManaged
+        ) {
+            return self.admission_room(celled);
+        }
+        let required = self
+            .demands
+            .groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let placement = FramePlacement::from_outcome(&required, celled.iter().map(|cell| &cell.id));
+        let summary = provider.summary_demand_for(&placement, width);
+        AdmissionRoom {
+            summary_minimum: NonZeroU16::new(draw::summary_frame_rows(summary, width))
+                .unwrap_or(NonZeroU16::MIN),
+        }
+    }
+
     fn admission_room(&self, celled: &[&DrawableCell<Id>]) -> AdmissionRoom {
         // Layout-managed cells use the ordinary grid floor. They do not publish
         // the invocation partition whose listed rows reserve extra summary room.
@@ -5718,25 +6154,24 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     .unwrap_or(NonZeroU16::MIN),
             };
         }
+        let summary = match self.frame_summary_minimum {
+            FrameSummaryMinimum::Measured(summary) => summary,
+            FrameSummaryMinimum::Candidate | FrameSummaryMinimum::LayoutManaged => {
+                self.demands.summary
+            },
+        };
         let listed = self
             .demands
             .groups
             .iter()
             .filter(|demand| !celled.iter().any(|cell| cell.id == demand.id))
             .count();
-        let header_and_foot = self
-            .demands
-            .summary
-            .required()
-            .get()
-            .saturating_sub(self.demands.summary.listed());
+        let header_and_foot = summary.required().get().saturating_sub(summary.listed());
         AdmissionRoom {
             summary_minimum: NonZeroU16::new(
-                self.settings.min_tile_height.max(
-                    header_and_foot
-                        .saturating_add(u16::try_from(listed).unwrap_or(u16::MAX))
-                        .saturating_add(TILE_BORDER_ROWS),
-                ),
+                header_and_foot
+                    .saturating_add(u16::try_from(listed).unwrap_or(u16::MAX))
+                    .saturating_add(TILE_BORDER_ROWS),
             )
             .unwrap_or(NonZeroU16::MIN),
         }
@@ -5882,7 +6317,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         required: &RequiredCommands<'_, Id>,
     ) -> ViewportDrawing<Id> {
-        let room = self.admission_room(required.cells);
+        self.capacity_drawing_with_rooms(area, required, |cells| self.admission_room(cells))
+    }
+
+    fn capacity_drawing_with_rooms(
+        &self,
+        area: Rect,
+        required: &RequiredCommands<'_, Id>,
+        room_for: impl Fn(&[&DrawableCell<Id>]) -> AdmissionRoom,
+    ) -> ViewportDrawing<Id> {
+        let room = room_for(required.cells);
         let minimum = self
             .fit_painted_viewport(area, required.cells, room, u16::MAX)
             .or_else(|CandidateDoesNotFit| {
@@ -5900,7 +6344,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let pressure = match minimum {
             Ok(drawing) => {
                 return ViewportDrawing::from_whole_cells(
-                    drawing.with_summary_room(area, self.requested_summary_height()),
+                    drawing,
                     area,
                     required,
                     &self.dropped_ended,
@@ -5934,10 +6378,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     &pressure,
                 ))
             } else {
-                self.fit_required_viewport(area, &kept, self.admission_room(&kept), u16::MAX)
+                self.fit_required_viewport(area, &kept, room_for(&kept), u16::MAX)
                     .map(|drawing| {
                         ViewportDrawing::from_whole_cells(
-                            drawing.with_summary_room(area, self.requested_summary_height()),
+                            drawing,
                             area,
                             required,
                             &self.dropped_ended,
@@ -7409,6 +7853,16 @@ fn solve_column_shares(
         floor,
     );
     let mut minimum = disjoint_demands(std::iter::repeat_n(floor, count), height, floor);
+    if matches!(head, ColumnHead::Summary(_))
+        && measured.measures_saturation() == SaturationEvidence::Measured
+    {
+        // A short summary can use its exact demand below the command height floor.
+        let summary_minimum = wants[0]
+            .exact_framed()
+            .min(height)
+            .saturating_sub(u16::from(count > 1));
+        minimum[0] = minimum[0].min(summary_minimum);
+    }
 
     let mut short: Vec<u16> = want
         .iter()
@@ -9683,6 +10137,7 @@ mod tests {
     }
     use super::draw::AdmissibleCell;
     use super::draw::AdmissionEvidence;
+    use super::draw::CellContinuity;
     use super::draw::EndedCellDeparture;
     use super::draw::NotAdmissible;
     use crate::TileGridContents;
@@ -12302,6 +12757,34 @@ mod tests {
     }
 
     #[test]
+    fn a_summarys_saturation_search_keeps_its_required_floor() {
+        for (summary, minimum) in [(4, 3), (12, 5)] {
+            let wants = row_demands(&[summary, 30]);
+            let mut summary_probes = Vec::new();
+            let shares = shares_with_directional_row_usage(
+                &wants,
+                40,
+                ColumnHead::Summary(1),
+                ColumnFocus::Outside,
+                6,
+                &mut |index, rows: u16, _| {
+                    if index == 0 {
+                        summary_probes.push(rows);
+                        rows.saturating_sub(summary.saturating_sub(1))
+                    } else {
+                        0
+                    }
+                },
+            );
+            assert!(
+                summary_probes.iter().all(|rows| *rows >= minimum),
+                "summary {summary} probes below its required floor {minimum}: {summary_probes:?}"
+            );
+            assert_eq!(shares[0], PaneAxisSize::Fixed(summary - 1));
+        }
+    }
+
+    #[test]
     fn a_saturation_cap_keeps_the_last_cells_readable_floor() {
         let mut shares = [12, 6];
         let mut unused = |index, rows: u16, _| rows.saturating_sub(if index == 0 { 5 } else { 1 });
@@ -13130,6 +13613,63 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn a_departure_does_not_block_free_rows_for_a_cut_live_body() {
+        let area = Rect::new(0, 0, 80, 48);
+        let demands = TileDemands {
+            summary:       summary_demand(1),
+            summary_width: 0,
+            groups:        vec![TileDemand {
+                id:   1_u32,
+                rows: 12,
+            }],
+        };
+        let provider = GeometryCells(&demands);
+        let grid = seeded_grid();
+        let mut admitted = grid.measured_test_groups(&demands);
+        admitted[0].continuity = CellContinuity::Running;
+        *admitted[0].lifecycle.lock().expect("cell lifecycle") = CellLifecycle::Resident;
+        let live = admitted.iter().collect::<Vec<_>>();
+        let required = RequiredCommands {
+            cells:           &live,
+            measurements:    &[],
+            admitted:        &admitted,
+            summary:         SummaryReservation::Unreserved,
+            summary_minimum: 4,
+        };
+        let piece = |content, y, height| TilePiece {
+            placement:   TilePlacement {
+                content,
+                frame: PaneFrame::new(Rect::new(0, y, 80, height)),
+            },
+            ink:         PieceInk::Resident,
+            name:        PieceName::Shown,
+            height_snap: PieceHeightSnap::Settled,
+        };
+        let drawing = WholeCellDrawing(TileDrawing {
+            pieces:       vec![
+                piece(TileContent::Summary, 0, 4),
+                piece(TileContent::Group(1), 3, 5),
+                piece(TileContent::Group(2), 7, 3),
+            ],
+            column_bands: vec![],
+        })
+        .with_shared_rows(area, &required, &provider, &grid.settings);
+        let frame = drawing.0.pieces[1].placement.frame.rect();
+        assert!(
+            draw::content_area(frame_inner(frame)).height >= 12,
+            "a live body stays cut while its column has free rows: {frame:?}"
+        );
+        assert!(
+            drawing
+                .0
+                .pieces
+                .iter()
+                .all(|piece| piece.placement.frame.clip().intersection(area)
+                    == piece.placement.frame.clip())
+        );
     }
 
     #[test]

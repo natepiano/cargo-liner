@@ -9,12 +9,17 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Frame allocation measures the final row policy, reserves summary rows for each candidate set of cells, and gives free rows to live cells beside a departure. Placement publication keeps command row measurements.
 - Command cells enter with drawable rows, leave on the same clock as their text, and release saturated height; queued layouts discard ended commands and viewport pressure keeps whole cells.
 - Config rewrites preserve unknown keys and comments.
 - A cell holding hundreds of rows no longer stalls the grid; each cell's content is measured at most once per height in a frame.
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
 
 ### Added
+- `PresentedRowSpan` and `TileCells::presented_rows` retain the source process row through viewport translation and clipping.
+- `TileCells::summary_demand_for` and `summary_rows_for` measure candidate summary membership; `freeze_painted_frame` fixes the row policy before final allocation.
+- `TileCells::placement_trial` separates trial measurement from committed placement. `prepare_painted_frame` receives the checked paint allocations and returns `FrameLayoutPreparation` to request a new capacity measurement when the layout changes.
+- `EndedCellDeparture::with_row_values` and `started` let a provider retain row values and use the current frame layout during departure.
 - `AdmissibleCell` and `AdmissionEvidence` carry the proof needed to admit a command; `NotAdmissible` reports that the proof is unavailable.
 - `CellDeparture`, `CellDepartureReceipt`, `CellLifecycleTiming` and `EndedCellDeparture` describe cell withdrawal and the owned departure clock. `PaintedRowSpan` and `EmptyPaintedSpan` identify presented content.
 - `FramePlacement`, `ListedCommands` and `SummaryDemand` describe which live commands have cells and the summary rows required for the others.

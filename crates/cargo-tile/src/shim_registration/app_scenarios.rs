@@ -494,7 +494,10 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
             .iter()
             .map(|group| (group.lead.pid, TileContent::Group(group.id())))
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         app.root_status.clone_from(&capture.root_status);
         let rendered = draw_summary(&app, 8);
         assert_capture_rows(&rendered, &rows);
@@ -583,7 +586,10 @@ fn assert_mixed_command_pane(
             assert!(matches!(row.provenance, RowProvenance::Direct(_)));
         }
         let content = TileContent::Group(group.id());
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let rendered = draw_content(&app, &content, 12);
         assert_capture_rows(&rendered, rows);
         let older = rendered
@@ -610,7 +616,10 @@ fn summary_registration_row_keeps_measurements_above_the_footer() {
     let groups = sequence.sample_capture(&ProcessObservations::default(), &capture);
     assert_eq!(groups.len(), 2);
     let mut app = App::new_for_test().expect("summary app");
-    app.roster.observe(groups, Instant::now());
+    app.roster.observe_invocations(
+        &app.roster
+            .fixture_with_ended_absences(groups, Instant::now()),
+    );
     for height in [5, 6, 7] {
         let rendered = draw_summary(&app, height);
         assert_capture_rows(&rendered, &entries);
@@ -721,7 +730,10 @@ fn app_with_summary_memory() -> App {
         group.lead.subtree_resource_use.memory = memory;
     }
     let mut app = App::new_for_test().expect("summary memory app");
-    app.roster.observe(groups, Instant::now());
+    app.roster.observe_invocations(
+        &app.roster
+            .fixture_with_ended_absences(groups, Instant::now()),
+    );
     app
 }
 

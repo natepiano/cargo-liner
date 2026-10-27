@@ -242,10 +242,52 @@ struct CellDemandProbe<'a, Id> {
     demands: &'a TileDemands<Id>,
 }
 
+/// Only a drawing measured after the provider has fixed its row policy can start paint.
+pub(super) struct MeasuredDrawing<Id>(ViewportDrawing<Id>);
+
+impl<Id> MeasuredDrawing<Id> {
+    pub(super) fn into_drawing(self) -> ViewportDrawing<Id> { self.0 }
+}
+
+impl<Id: Clone + Eq> MeasuredDrawing<Id> {
+    fn conceal_summary(&mut self) { self.0.conceal_summary(); }
+}
+
+impl<Id> Deref for MeasuredDrawing<Id> {
+    type Target = ViewportDrawing<Id>;
+
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
 /// Per-frame row measurements shared by admission and allocation.
 struct MeasuredCellProvider<'a, Id, Cells> {
-    live: &'a Cells,
-    rows: RefCell<Vec<ContentRowMeasurements<Id>>>,
+    live:      &'a Cells,
+    rows:      RefCell<Vec<ContentRowMeasurements<Id>>>,
+    demands:   RefCell<Vec<FrameDemandMeasurement<Id>>>,
+    summaries: RefCell<Vec<SummaryMeasurements<Id>>>,
+}
+
+struct SummaryMeasurements<Id> {
+    placement: FramePlacement<Id>,
+    demands:   Vec<(u16, SummaryDemand)>,
+    rows:      HashMap<Rect, u16>,
+}
+
+/// Admission and paint share demands for one width set and prepared policy.
+struct FrameDemandMeasurement<Id> {
+    widths:  Vec<(TileContent<Id>, u16)>,
+    demands: TileDemands<Id>,
+}
+
+impl<Id: Clone + Eq> FrameDemandMeasurement<Id> {
+    fn matches_widths(&self, widths: &[(TileContent<Id>, u16)]) -> bool {
+        measured_width(&self.widths, &TileContent::Summary)
+            == measured_width(widths, &TileContent::Summary)
+            && self.demands.groups.iter().all(|group| {
+                let content = TileContent::Group(group.id.clone());
+                measured_width(&self.widths, &content) == measured_width(widths, &content)
+            })
+    }
 }
 
 /// Which visible rows an allocation reading protects.
@@ -262,6 +304,48 @@ struct ContentRowMeasurements<Id> {
 }
 
 impl<Id: Clone + Eq, Cells: TileCells<Id>> MeasuredCellProvider<'_, Id, Cells> {
+    fn clear_policy(&self) {
+        self.rows.borrow_mut().clear();
+        self.demands.borrow_mut().clear();
+        self.summaries.borrow_mut().clear();
+    }
+
+    fn invalidate_preparation(&self, preparation: FrameLayoutPreparation) {
+        match preparation {
+            FrameLayoutPreparation::Ready => {},
+            FrameLayoutPreparation::MeasureSummaryAgain => {
+                self.rows
+                    .borrow_mut()
+                    .retain(|rows| !matches!(rows.content, TileContent::Summary));
+                self.summaries.borrow_mut().clear();
+            },
+            FrameLayoutPreparation::MeasureAgain => self.clear_policy(),
+        }
+    }
+
+    fn summary_reading<Answer>(
+        &self,
+        placement: &FramePlacement<Id>,
+        read: impl FnOnce(&mut SummaryMeasurements<Id>) -> Answer,
+    ) -> Answer {
+        let mut summaries = self.summaries.borrow_mut();
+        let index = summaries
+            .iter()
+            .position(|known| {
+                known.placement.celled() == placement.celled()
+                    && known.placement.listed().ids() == placement.listed().ids()
+            })
+            .unwrap_or_else(|| {
+                summaries.push(SummaryMeasurements {
+                    placement: placement.clone(),
+                    demands:   Vec::new(),
+                    rows:      HashMap::new(),
+                });
+                summaries.len() - 1
+            });
+        read(&mut summaries[index])
+    }
+
     fn reading(
         &self,
         content: &TileContent<Id>,
@@ -296,7 +380,37 @@ impl<Id: Clone + Eq, Cells: TileCells<Id>> MeasuredCellProvider<'_, Id, Cells> {
 impl<Id: Clone + Eq, Cells: TileCells<Id>> TileCells<Id> for MeasuredCellProvider<'_, Id, Cells> {
     fn summary_title(&self) -> &str { self.live.summary_title() }
     fn demands(&self, widths: &[(TileContent<Id>, u16)]) -> TileDemands<Id> {
-        self.live.demands(widths)
+        let mut readings = self.demands.borrow_mut();
+        if let Some(reading) = readings
+            .iter()
+            .find(|reading| reading.matches_widths(widths))
+        {
+            return reading.demands.clone();
+        }
+        let demands = self.live.demands(widths);
+        readings.push(FrameDemandMeasurement {
+            widths:  widths.to_vec(),
+            demands: demands.clone(),
+        });
+        demands
+    }
+    fn summary_demand_for(&self, placement: &FramePlacement<Id>, width: u16) -> SummaryDemand {
+        self.summary_reading(placement, |summary| {
+            if let Some((_, demand)) = summary.demands.iter().find(|(known, _)| *known == width) {
+                return *demand;
+            }
+            let demand = self.live.summary_demand_for(placement, width);
+            summary.demands.push((width, demand));
+            demand
+        })
+    }
+    fn summary_rows_for(&self, placement: &FramePlacement<Id>, area: Rect) -> u16 {
+        self.summary_reading(placement, |summary| {
+            *summary
+                .rows
+                .entry(area)
+                .or_insert_with(|| self.live.summary_rows_for(placement, area))
+        })
     }
     fn rows_drawn(&self, content: &TileContent<Id>, area: Rect) -> u16 {
         self.reading(content, area, RowMeasurementPurpose::Painted)
@@ -313,9 +427,18 @@ impl<Id: Clone + Eq, Cells: TileCells<Id>> TileCells<Id> for MeasuredCellProvide
         self.live.admission(id)
     }
     fn presented(&self, spans: &[PaintedRowSpan<Id>]) { self.live.presented(spans); }
+    fn presented_rows(&self, content: &TileContent<Id>, rows: &[PresentedRowSpan<Id>]) {
+        self.live.presented_rows(content, rows);
+    }
     fn frame_placement(&self, placement: &FramePlacement<Id>) {
-        self.rows.borrow_mut().clear();
+        self.rows
+            .borrow_mut()
+            .retain(|rows| !matches!(rows.content, TileContent::Summary));
         self.live.frame_placement(placement);
+    }
+    fn placement_trial(&self, placement: &FramePlacement<Id>) {
+        self.rows.borrow_mut().clear();
+        self.live.placement_trial(placement);
     }
     fn painted_rows(&self, content: &TileContent<Id>, area: Rect) -> Vec<PaintedRowSpan<Id>> {
         self.live.painted_rows(content, area)
@@ -368,6 +491,9 @@ pub(super) struct DrawableCell<Id> {
 }
 
 impl<Id> DrawableCell<Id> {
+    /// Complete body rows retained from the last measurement.
+    pub(super) const fn last_measured_rows(&self) -> usize { self.rows.get() }
+
     /// Desired complete body height; only live cells can receive spare allocation rows.
     pub(super) fn full_height(&self, width: u16) -> u16 {
         u16::try_from(self.rows.get())
@@ -445,6 +571,7 @@ impl<Id: Clone + Eq + Debug> DrawableCell<Id> {
     /// Measure a resident's complete body at the width used by the capacity fit.
     pub(super) fn capacity_at(
         &self,
+        rows: usize,
         width: u16,
         height: u16,
         cells: &impl TileCells<Id>,
@@ -464,7 +591,7 @@ impl<Id: Clone + Eq + Debug> DrawableCell<Id> {
         }
         Self::prepare(
             self.admissible.clone(),
-            self.rows.get(),
+            rows,
             width,
             height,
             cells,
@@ -712,10 +839,27 @@ impl EndedFrameProgress {
     }
 }
 
+/// A provider can retain row values and compose them with each frame's layout.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CellContentRetention {
+    /// The grid retains the last painted image.
+    #[default]
+    PaintedImage,
+    /// The provider retains immutable row values through the departure receipt.
+    RowValues,
+}
+
+/// A row-value departure cannot carry a stale formatted image.
+#[derive(Debug)]
+enum RetainedCellBody {
+    PaintedImage(Buffer),
+    RowValues,
+}
+
 /// Immutable end-frame rows and the allocation that actually presented them.
 #[derive(Debug)]
 struct EndedCellSnapshot {
-    image:   Buffer,
+    body:    RetainedCellBody,
     pid_row: u16,
     ceiling: u16,
 }
@@ -765,7 +909,10 @@ impl EndedCell {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum CellPresentation {
     NotDrawn,
-    Drawn(PaneFrame),
+    Drawn {
+        frame: PaneFrame,
+        ink:   CellFadeProgress,
+    },
 }
 
 /// Elapsed lifecycle time retained when a new resident transition begins.
@@ -809,6 +956,23 @@ enum CellTitle {
 pub struct PaintedRowSpan<Id> {
     id:   Id,
     area: Rect,
+}
+
+/// A visible receipt keeps the source row through viewport translation and clipping.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PresentedRowSpan<Id> {
+    source:  PaintedRowSpan<Id>,
+    visible: PaintedRowSpan<Id>,
+}
+
+impl<Id> PresentedRowSpan<Id> {
+    /// The row as reported by its provider before the viewport transform.
+    #[must_use]
+    pub const fn source(&self) -> &PaintedRowSpan<Id> { &self.source }
+
+    /// The part of that row which reached the viewport.
+    #[must_use]
+    pub const fn visible(&self) -> &PaintedRowSpan<Id> { &self.visible }
 }
 
 /// An empty rectangle cannot prove an invocation was painted.
@@ -873,12 +1037,15 @@ enum CellPainting<Id> {
 
 /// Only a cell present on the immediately preceding frame can own a departure.
 #[derive(Clone, Copy)]
-pub(super) struct PreviouslyDrawnCell(PaneFrame);
+pub(super) struct PreviouslyDrawnCell {
+    frame: PaneFrame,
+    ink:   CellFadeProgress,
+}
 
 impl CellPresentation {
     pub(super) const fn departure_frame(self) -> Result<PreviouslyDrawnCell, ()> {
         match self {
-            Self::Drawn(frame) => Ok(PreviouslyDrawnCell(frame)),
+            Self::Drawn { frame, ink } => Ok(PreviouslyDrawnCell { frame, ink }),
             Self::NotDrawn => Err(()),
         }
     }
@@ -902,18 +1069,13 @@ impl<Id: Clone + Eq> DrawableCell<Id> {
         cells: &impl TileCells<Id>,
         offset: Duration,
         frame: PreviouslyDrawnCell,
-        previous: &CellLifecycle,
     ) -> CellLifecycle {
         let clock = CellClock {
             timing: end.timing,
             elapsed: end.started.elapsed(),
             offset,
         };
-        let initial_ink = match previous {
-            CellLifecycle::Entering(entry) => entry.last_ink,
-            CellLifecycle::Leaving(ended) => ended.ink().amount(),
-            CellLifecycle::Waiting | CellLifecycle::Resident => 0,
-        };
+        let initial_ink = frame.ink.amount();
         let mut painting = self.image.lock().unwrap_or_else(PoisonError::into_inner);
         let CellPainting::Drawn {
             image,
@@ -923,7 +1085,7 @@ impl<Id: Clone + Eq> DrawableCell<Id> {
         else {
             return CellLifecycle::Waiting;
         };
-        let frame = frame.0;
+        let frame = frame.frame;
         let ceiling = frame.clip().height;
         let source = content_area(frame_inner(frame.rect()));
         let visible = content_area(frame_inner(frame.clip()));
@@ -975,7 +1137,10 @@ impl<Id: Clone + Eq> DrawableCell<Id> {
             .saturating_sub(first_row)
             .min(snapshot.area.height.saturating_sub(1));
         let snapshot = EndedCellSnapshot {
-            image: snapshot,
+            body: match end.content {
+                CellContentRetention::PaintedImage => RetainedCellBody::PaintedImage(snapshot),
+                CellContentRetention::RowValues => RetainedCellBody::RowValues,
+            },
             pid_row,
             ceiling,
         };
@@ -1097,8 +1262,20 @@ impl<Id: Clone + Eq + Debug, Cells: TileCells<Id>> TileCells<Id> for LifecycleCe
         self.live.admission(id)
     }
     fn presented(&self, spans: &[PaintedRowSpan<Id>]) { self.live.presented(spans); }
+    fn presented_rows(&self, content: &TileContent<Id>, rows: &[PresentedRowSpan<Id>]) {
+        self.live.presented_rows(content, rows);
+    }
+    fn summary_demand_for(&self, placement: &FramePlacement<Id>, width: u16) -> SummaryDemand {
+        self.live.summary_demand_for(placement, width)
+    }
+    fn summary_rows_for(&self, placement: &FramePlacement<Id>, area: Rect) -> u16 {
+        self.live.summary_rows_for(placement, area)
+    }
     fn frame_placement(&self, placement: &FramePlacement<Id>) {
         self.live.frame_placement(placement);
+    }
+    fn placement_trial(&self, placement: &FramePlacement<Id>) {
+        self.live.placement_trial(placement);
     }
     fn painted_rows(&self, content: &TileContent<Id>, area: Rect) -> Vec<PaintedRowSpan<Id>> {
         if let Some(cell) = self.retained(content) {
@@ -1109,6 +1286,10 @@ impl<Id: Clone + Eq + Debug, Cells: TileCells<Id>> TileCells<Id> for LifecycleCe
             let CellLifecycle::Leaving(ended) = &*lifecycle else {
                 return Vec::new();
             };
+            if matches!(ended.snapshot.body, RetainedCellBody::RowValues) {
+                drop(lifecycle);
+                return self.live.painted_rows(content, area);
+            }
             let offset = ended
                 .snapshot
                 .pid_row
@@ -1176,7 +1357,11 @@ impl<Id: Clone + Eq + Debug, Cells: TileCells<Id>> TileCells<Id> for LifecycleCe
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if let CellLifecycle::Leaving(ended) = &*lifecycle {
-                let image = &ended.snapshot.image;
+                let RetainedCellBody::PaintedImage(image) = &ended.snapshot.body else {
+                    drop(lifecycle);
+                    self.live.draw(buffer, content, inner, ground);
+                    return;
+                };
                 // Keep the command's PID row until the final body row disappears.
                 let offset = ended
                     .snapshot
@@ -1364,9 +1549,21 @@ pub struct EndedCellDeparture {
     started: Instant,
     timing:  CellLifecycleTiming,
     receipt: DepartureReceipt,
+    content: CellContentRetention,
 }
 
 impl EndedCellDeparture {
+    /// The end instant at which a provider freezes its retained row values.
+    #[must_use]
+    pub const fn started(&self) -> Instant { self.started }
+
+    /// Keep immutable provider rows and compose them with the current frame layout.
+    #[must_use]
+    pub const fn with_row_values(mut self) -> Self {
+        self.content = CellContentRetention::RowValues;
+        self
+    }
+
     /// Adapt an application's explicit end value to its configured departure clock.
     #[must_use]
     pub const fn new(started: Instant, timing: CellLifecycleTiming) -> Self {
@@ -1374,6 +1571,7 @@ impl EndedCellDeparture {
             started,
             timing,
             receipt: DepartureReceipt::Untracked,
+            content: CellContentRetention::PaintedImage,
         }
     }
 
@@ -1383,6 +1581,17 @@ impl EndedCellDeparture {
         self.receipt = DepartureReceipt::Tracked(receipt);
         self
     }
+}
+
+/// Whether the final frame layout needs another capacity measurement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameLayoutPreparation {
+    /// The checked row measurements use this layout.
+    Ready,
+    /// Only the summary changed; command measurements still use this layout.
+    MeasureSummaryAgain,
+    /// This layout changed row measurements and needs another capacity check.
+    MeasureAgain,
 }
 
 /// What an app draws inside the cells of a [`TileGrid`].
@@ -1405,8 +1614,43 @@ pub trait TileCells<Id> {
             .collect()
     }
 
+    /// Previous placement used only to measure a capacity trial.
+    fn placement_trial(&self, _: &FramePlacement<Id>) {}
+
     /// Placement selected by the capacity outcome before summary measurement and paint.
     fn frame_placement(&self, _: &FramePlacement<Id>) {}
+
+    /// Checked allocations used to select the one layout painted in this frame.
+    fn prepare_painted_frame(
+        &self,
+        _: &FramePlacement<Id>,
+        _: impl FnOnce() -> Vec<(TileContent<Id>, Rect)>,
+    ) -> FrameLayoutPreparation {
+        FrameLayoutPreparation::Ready
+    }
+
+    /// Required summary rows for this candidate membership, without changing the row policy.
+    fn summary_demand_for(&self, _: &FramePlacement<Id>, width: u16) -> SummaryDemand {
+        self.demands(&[(TileContent::Summary, width)]).summary
+    }
+
+    /// Painted summary rows for this candidate membership and allocation.
+    fn summary_rows_for(&self, _: &FramePlacement<Id>, area: Rect) -> u16 {
+        self.rows_drawn(&TileContent::Summary, area)
+    }
+
+    /// Fix this frame's row policy before its final allocation is measured.
+    /// Later placement publication must keep this policy.
+    fn freeze_painted_frame(&self) {}
+
+    /// Report visible rows with their source spans, so providers retain process keys.
+    fn presented_rows(&self, _: &TileContent<Id>, rows: &[PresentedRowSpan<Id>])
+    where
+        Id: Clone,
+    {
+        let visible: Vec<_> = rows.iter().map(|row| row.visible.clone()).collect();
+        self.presented(&visible);
+    }
 
     /// Rows through the first content row in this allocation, including headings.
     fn first_content_rows_at(&self, content: &TileContent<Id>, _: Rect) -> u16 {
@@ -1567,12 +1811,12 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
 ) {
     let source_cells = cells;
     let required = prepare_frame_cells(grid, area, growth, cells);
-    let invocation_summary = required
-        .iter()
-        .any(|id| matches!(cells.departure(id), CellDeparture::Live));
+    let summary_continuity = summary_continuity(&required, cells);
     let measured = MeasuredCellProvider {
-        live: cells,
-        rows: RefCell::new(Vec::new()),
+        live:      cells,
+        rows:      RefCell::new(Vec::new()),
+        demands:   RefCell::new(Vec::new()),
+        summaries: RefCell::new(Vec::new()),
     };
     let cells = &measured;
     let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
@@ -1597,6 +1841,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     add_readout_rows(&mut cells_demands, &cells_widths);
     grid.retain_fading_cells(&mut cells_demands, cells);
     grid.sync_drawable_groups(&cells_demands, prepared, growth);
+    grid.measure_candidate_summary(cells_demands.summary, summary_continuity);
     grid.begin_owned_fade_motion();
     grid.set_lifecycle_timing(cells);
     let progress = grid.sample_frame_clock();
@@ -1612,33 +1857,26 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         growth,
         progress,
         |content, area| match content {
-            TileContent::Summary if invocation_summary => {
+            TileContent::Summary if summary_continuity == CellContinuity::Running => {
                 cells.rows_drawn(content, area).min(summary_rows)
             },
             _ => cells.rows_drawn(content, area),
         },
         |content, area| match content {
-            TileContent::Summary if invocation_summary => {
+            TileContent::Summary if summary_continuity == CellContinuity::Running => {
                 cells.rows_kept(content, area).min(summary_rows)
             },
             _ => cells.rows_kept(content, area),
         },
     );
     let display = grid.display();
-    let alone_widths;
-    let mut alone_demands;
-    let (widths, demands) = match display {
-        GridDisplay::Cells => (&cells_widths, &cells_demands),
-        GridDisplay::SummaryAlone => {
-            alone_widths = measurement_widths(grid, area, growth, display);
-            alone_demands = cells.demands(&alone_widths);
-            add_readout_rows(&mut alone_demands, &alone_widths);
-            (&alone_widths, &alone_demands)
-        },
-    };
-    let mut drawing = grid.drawing_with_cells(area, growth, progress, cells);
-    drawing = grid.share_capacity_rows(drawing, area, cells);
-    cells.frame_placement(&drawing.placement(&required));
+    let mut drawing =
+        prepare_painted_drawing(grid, area, growth, progress, &required, &measured, cells);
+    let placement = drawing.placement(&required);
+    let (widths, committed_demands) = painted_demands(&drawing, &placement, cells);
+    let widths = widths.as_slice();
+    cells.frame_placement(&placement);
+    let demands = &committed_demands;
     if display == GridDisplay::SummaryAlone && contents == TileGridContents::Hidden {
         drawing.conceal_summary();
     }
@@ -1662,6 +1900,176 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     };
     fade_cell_ink(buffer, area, &drawing);
     grid.record_painted_summary_frames(frames);
+}
+
+/// The readout uses the same content widths as the checked drawing.
+fn painted_demands<Id: Clone + Eq>(
+    drawing: &ViewportDrawing<Id>,
+    placement: &FramePlacement<Id>,
+    cells: &impl TileCells<Id>,
+) -> (Vec<(TileContent<Id>, u16)>, TileDemands<Id>) {
+    let widths = drawing
+        .pieces
+        .iter()
+        .map(|piece| {
+            (
+                piece.placement.content.clone(),
+                frame_inner(piece.placement.frame.rect()).width,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut committed_demands = cells.demands(&widths);
+    committed_demands.summary =
+        cells.summary_demand_for(placement, measured_width(&widths, &TileContent::Summary));
+    add_readout_rows(&mut committed_demands, &widths);
+    (widths, committed_demands)
+}
+
+/// All summary height queries in one allocation use that allocation's membership.
+pub(super) struct CandidateCells<'a, Id, Cells> {
+    pub(super) live:      &'a Cells,
+    pub(super) placement: FramePlacement<Id>,
+}
+
+impl<Id, Cells: TileCells<Id>> TileCells<Id> for CandidateCells<'_, Id, Cells> {
+    fn summary_title(&self) -> &str { self.live.summary_title() }
+    fn admission(&self, id: &Id) -> Result<AdmissibleCell<Id>, NotAdmissible> {
+        self.live.admission(id)
+    }
+    fn demands(&self, widths: &[(TileContent<Id>, u16)]) -> TileDemands<Id> {
+        self.live.demands(widths)
+    }
+    fn rows_drawn(&self, content: &TileContent<Id>, area: Rect) -> u16 {
+        if matches!(content, TileContent::Summary) {
+            self.live.summary_rows_for(&self.placement, area)
+        } else {
+            self.live.rows_drawn(content, area)
+        }
+    }
+    fn rows_kept(&self, content: &TileContent<Id>, area: Rect) -> u16 {
+        if matches!(content, TileContent::Summary) {
+            self.live.summary_rows_for(&self.placement, area)
+        } else {
+            self.live.rows_kept(content, area)
+        }
+    }
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent<Id>, area: Rect, ground: Color) {
+        self.live.draw(buffer, content, area, ground);
+    }
+}
+
+/// The summary body and its readout are measured at the same candidate width.
+pub(super) const fn summary_frame_rows(summary: SummaryDemand, width: u16) -> u16 {
+    summary
+        .required()
+        .get()
+        .saturating_add(rows_readout_height(width))
+        .saturating_add(TILE_BORDER_ROWS)
+}
+
+/// Live invocation providers reserve exact partition rows; generic cells retain layout demand.
+fn summary_continuity<Id>(required: &[Id], cells: &impl TileCells<Id>) -> CellContinuity {
+    if required
+        .iter()
+        .any(|id| matches!(cells.departure(id), CellDeparture::Live))
+    {
+        CellContinuity::Running
+    } else {
+        CellContinuity::LayoutManaged
+    }
+}
+
+/// Two provider trials precede measurement under a fixed row policy.
+fn prepare_painted_drawing<Id: Clone + Eq + Debug, Cells: TileCells<Id>>(
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    progress: u32,
+    required: &[Id],
+    measured: &MeasuredCellProvider<'_, Id, Cells>,
+    cells: &impl TileCells<Id>,
+) -> MeasuredDrawing<Id> {
+    let prepare_layout = |drawing: &ViewportDrawing<Id>| {
+        measured
+            .live
+            .prepare_painted_frame(&drawing.placement(required), || {
+                drawing
+                    .pieces
+                    .iter()
+                    .map(|piece| {
+                        (
+                            piece.placement.content.clone(),
+                            content_area(frame_inner(piece.placement.frame.rect())),
+                        )
+                    })
+                    .collect()
+            })
+    };
+    let drawing = grid.drawing_with_cells(area, growth, progress, cells);
+    let drawing = grid.share_capacity_rows(drawing, area, cells);
+    let preparation = prepare_layout(&drawing);
+    if preparation == FrameLayoutPreparation::Ready {
+        measured.live.freeze_painted_frame();
+        return MeasuredDrawing(drawing);
+    }
+    measured.invalidate_preparation(preparation);
+    let drawing = measure_prepared_drawing(grid, area, growth, progress, required, cells, &drawing);
+    let preparation = prepare_layout(&drawing);
+    measured.live.freeze_painted_frame();
+    if preparation == FrameLayoutPreparation::Ready {
+        return MeasuredDrawing(drawing);
+    }
+    measured.invalidate_preparation(preparation);
+    // No provider preparation follows this measurement. Its policy cannot change
+    // between the capacity check and publication.
+    MeasuredDrawing(measure_prepared_drawing(
+        grid, area, growth, progress, required, cells, &drawing,
+    ))
+}
+
+/// Measure the current policy before producing any allocation that can be painted.
+fn measure_prepared_drawing<Id: Clone + Eq + Debug>(
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    progress: u32,
+    required: &[Id],
+    cells: &impl TileCells<Id>,
+    previous: &ViewportDrawing<Id>,
+) -> ViewportDrawing<Id> {
+    let widths = measurement_widths(grid, area, growth, grid.display());
+    let mut demands = cells.demands(&widths);
+    demands.summary = cells.summary_demand_for(
+        &previous.placement(required),
+        measured_width(&widths, &TileContent::Summary),
+    );
+    let summary = demands.summary.required().get();
+    add_readout_rows(&mut demands, &widths);
+    let continuity = summary_continuity(required, cells);
+    grid.measure_frame_summary(demands.summary, previous, continuity);
+    grid.measure_row_steps(
+        area,
+        growth,
+        progress,
+        |content, area| {
+            let drawn = cells.rows_drawn(content, area);
+            if continuity == CellContinuity::Running && matches!(content, TileContent::Summary) {
+                drawn.min(summary)
+            } else {
+                drawn
+            }
+        },
+        |content, area| {
+            let kept = cells.rows_kept(content, area);
+            if continuity == CellContinuity::Running && matches!(content, TileContent::Summary) {
+                kept.min(summary)
+            } else {
+                kept
+            }
+        },
+    );
+    let drawing = grid.drawing_with_cells(area, growth, progress, cells);
+    grid.share_capacity_rows(drawing, area, cells)
 }
 
 /// Required summary rows exclude the readout reserved by the grid.
@@ -1698,16 +2106,45 @@ fn prepare_frame_cells<Id: Clone + Eq + Debug>(
     cells: &impl TileCells<Id>,
 ) -> Vec<Id> {
     let required = cells.required_commands();
-    cells.frame_placement(&grid.previous_placement(&required));
+    cells.placement_trial(&grid.previous_placement(&required));
     grid.set_draw_layout(area, growth);
-    for cell in grid.drawable_groups() {
+    let drawable = grid.drawable_groups();
+    for cell in &drawable {
         cells.retain_content_prefix(
             &TileContent::Group(cell.id.clone()),
             cell.painted_prefix_rows(),
         );
     }
+    let readable_allocation = |(content, allocation): (TileContent<Id>, Rect)| {
+        let height = match &content {
+            TileContent::Summary => area.height,
+            TileContent::Group(id) => grid.readable_preparation_height(
+                drawable
+                    .iter()
+                    .find(|cell| &cell.id == id)
+                    .map_or(0, |cell| cell.first_height.get()),
+                allocation.width,
+                area.height,
+            ),
+            TileContent::Empty(_) => {
+                grid.readable_preparation_height(0, allocation.width, area.height)
+            },
+        };
+        (
+            content,
+            Rect {
+                height,
+                ..allocation
+            },
+        )
+    };
     cells.prepare_moving_frame(
-        || grid.preparation_allocations(area, growth),
+        || {
+            grid.preparation_allocations(area, growth)
+                .into_iter()
+                .map(readable_allocation)
+                .collect()
+        },
         || grid.motion_preparation_allocations(area, growth),
     );
     required
@@ -1728,7 +2165,7 @@ fn withdraw_unpainted_departures<Id: Clone + Eq + Debug>(
                 CellDeparture::Live => {},
                 CellDeparture::Immediate => immediate.push(cell.id.clone()),
                 CellDeparture::Fading { .. } => match cell.presentation() {
-                    CellPresentation::Drawn(_) => departures.push(cell.id.clone()),
+                    CellPresentation::Drawn { .. } => departures.push(cell.id.clone()),
                     CellPresentation::NotDrawn => {
                         if matches!(&*cell.lifecycle.lock().unwrap_or_else(PoisonError::into_inner),
                             CellLifecycle::Leaving(ended) if ended.height() > 0)
@@ -2141,10 +2578,14 @@ fn present_visible_rows<Id: Clone + Eq + Debug>(
                 u16::try_from(bottom - top).ok()?,
             )
             .intersection(visible);
-            PaintedRowSpan::new(span.id, area).ok()
+            let visible = PaintedRowSpan::new(span.id.clone(), area).ok()?;
+            Some(PresentedRowSpan {
+                source: span,
+                visible,
+            })
         })
         .collect();
-    cells.presented(&spans);
+    cells.presented_rows(&placement.content, &spans);
 }
 
 /// Outer column edges close the lattice only where the next edge leaves a body row.
@@ -2601,6 +3042,7 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::ops::Range;
 
@@ -2879,6 +3321,803 @@ mod tests {
         );
         assert_eq!(frames, []);
         Ok(())
+    }
+
+    /// Header policy can change on the last allowed preparation pass.
+    #[test]
+    fn a_second_policy_change_is_measured_before_paint() {
+        struct HeaderCells(Cell<usize>);
+        impl TileCells<u32> for HeaderCells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 6)]).demands
+            }
+            fn first_content_rows(&self, _: &TileContent<u32>) -> u16 {
+                if self.0.get() < 2 { 1 } else { 6 }
+            }
+            fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+                area.height.min(match content {
+                    TileContent::Summary => 1,
+                    _ => self.first_content_rows(content),
+                })
+            }
+            fn prepare_painted_frame(
+                &self,
+                _: &FramePlacement<u32>,
+                _: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+            ) -> FrameLayoutPreparation {
+                self.0.set(self.0.get() + 1);
+                FrameLayoutPreparation::MeasureAgain
+            }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+                if matches!(content, TileContent::Group(1)) {
+                    assert!(
+                        area.height >= 6,
+                        "paint received an allocation from an old header policy: {area:?}"
+                    );
+                    buffer.set_string(area.x, area.y + 5, "cargo pid", Style::default());
+                }
+            }
+        }
+        let cells = HeaderCells(Cell::new(0));
+        let area = Rect::new(0, 0, 80, 48);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert!(area_lines(&buffer, area).join("\n").contains("cargo pid"));
+    }
+
+    #[test]
+    fn unchanged_live_inputs_keep_the_same_summary_and_cells() {
+        struct LiveCells;
+        impl TileCells<u32> for LiveCells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn departure(&self, _: &u32) -> CellDeparture { CellDeparture::Live }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, (1..=5).map(|id| (id, 3))).demands
+            }
+            fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+                area.height.min(if matches!(content, TileContent::Summary) {
+                    1
+                } else {
+                    3
+                })
+            }
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                buffer.set_string(area.x, area.y, "cargo pid", Style::default());
+            }
+        }
+        let area = Rect::new(0, 0, 80, 48);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(40);
+        grid.set_motion_duration_for_test(Duration::ZERO);
+        let mut warmup = Buffer::empty(area);
+        draw_tile_grid(
+            &mut warmup,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &LiveCells,
+        );
+        grid.settle_for_test();
+        let mut layouts = Vec::new();
+        for _ in 0..4 {
+            let mut buffer = Buffer::empty(area);
+            draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &LiveCells,
+            );
+            grid.settle_for_test();
+            layouts.push(
+                grid.painted_placements_for_test()
+                    .iter()
+                    .map(|piece| {
+                        (
+                            piece.content.clone(),
+                            piece.frame.rect(),
+                            piece.frame.clip(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert!(
+            layouts.windows(2).all(|pair| pair[0] == pair[1]),
+            "unchanged frame inputs changed the layout: {layouts:?}"
+        );
+    }
+
+    struct EndingCells {
+        ended: Cell<bool>,
+        at:    Instant,
+    }
+    impl TileCells<u32> for EndingCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+            test_admission(*id, *id == 5 && self.ended.get())
+        }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            StubCells::demanding(
+                1,
+                (1..=5)
+                    .filter(|id| *id != 5 || !self.ended.get())
+                    .map(|id| (id, if id == 5 { 1 } else { 6 })),
+            )
+            .demands
+        }
+        fn summary_demand_for(&self, placement: &FramePlacement<u32>, _: u16) -> SummaryDemand {
+            let listed = u16::try_from(placement.listed().ids().len()).unwrap_or(u16::MAX);
+            SummaryDemand::new(NonZeroU16::MIN.saturating_add(listed), listed)
+        }
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            area.height.min(match content {
+                TileContent::Summary | TileContent::Group(5) => 1,
+                _ => 6,
+            })
+        }
+        fn departure(&self, id: &u32) -> CellDeparture {
+            if *id == 5 && self.ended.get() {
+                CellDeparture::Fading {
+                    started: self.at,
+                    timing:  CellLifecycleTiming::new(Duration::from_secs(3)),
+                }
+            } else {
+                CellDeparture::Live
+            }
+        }
+        fn ended(&self, id: &u32) -> Option<EndedCellDeparture> {
+            (*id == 5 && self.ended.get()).then(|| {
+                EndedCellDeparture::new(self.at, CellLifecycleTiming::new(Duration::from_secs(3)))
+            })
+        }
+        fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+            buffer.set_string(area.x, area.y, "pid", Style::default());
+        }
+    }
+
+    #[test]
+    fn an_ended_bottom_cell_keeps_its_border_and_summary_height() {
+        for width in [40, 80] {
+            let area = Rect::new(0, 0, width, 48);
+            let cells = EndingCells {
+                ended: Cell::new(false),
+                at:    Instant::now(),
+            };
+            let mut grid = TileGrid::new();
+            grid.set_min_tile_width(40);
+            grid.set_view(TileView::Cells);
+            grid.set_motion_duration_for_test(Duration::ZERO);
+            for _ in 0..2 {
+                let mut buffer = Buffer::empty(area);
+                draw_tile_grid(
+                    &mut buffer,
+                    &mut grid,
+                    area,
+                    TileGrowth::default(),
+                    TileGridContents::Shown,
+                    &cells,
+                );
+                grid.settle_for_test();
+            }
+            cells.ended.set(true);
+            let mut summary_heights = Vec::new();
+            for _ in 0..4 {
+                let mut buffer = Buffer::empty(area);
+                draw_tile_grid(
+                    &mut buffer,
+                    &mut grid,
+                    area,
+                    TileGrowth::default(),
+                    TileGridContents::Shown,
+                    &cells,
+                );
+                let placements = grid.painted_placements_for_test();
+                assert!(
+                    placements
+                        .iter()
+                        .any(|piece| piece.content == TileContent::Group(5)),
+                    "the one-row departure was not painted"
+                );
+                for piece in placements {
+                    let rect = piece.frame.clip();
+                    assert_eq!(rect.intersection(area), rect, "a tile row left its area");
+                    assert_ne!(
+                        buffer[(rect.x, rect.bottom() - 1)].symbol(),
+                        " ",
+                        "a cell lost its bottom border"
+                    );
+                    if piece.content == TileContent::Summary {
+                        summary_heights.push(rect.height);
+                    }
+                }
+            }
+            assert!(
+                summary_heights.windows(2).all(|pair| pair[0] == pair[1]),
+                "an end changed the summary height between equal inputs: {summary_heights:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_column_reserves_its_readable_cell_minima() {
+        struct LiveCells(RefCell<Vec<u32>>);
+        impl TileCells<u32> for LiveCells {
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn departure(&self, _: &u32) -> CellDeparture { CellDeparture::Live }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, (1..=9).map(|id| (id, 3))).demands
+            }
+            fn summary_demand_for(&self, placement: &FramePlacement<u32>, _: u16) -> SummaryDemand {
+                let listed = u16::try_from(placement.listed().ids().len()).unwrap_or(u16::MAX);
+                SummaryDemand::new(NonZeroU16::MIN.saturating_add(listed), listed)
+            }
+            fn frame_placement(&self, placement: &FramePlacement<u32>) {
+                self.0.replace(placement.listed().ids().to_vec());
+            }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(3) }
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                buffer.set_string(area.x, area.y, "cargo pid", Style::default());
+            }
+        }
+        let area = Rect::new(0, 0, 40, 48);
+        let cells = LiveCells(RefCell::new(Vec::new()));
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        for _ in 0..2 {
+            let mut buffer = Buffer::empty(area);
+            draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &cells,
+            );
+            grid.settle_for_test();
+        }
+        assert!(
+            !cells.0.borrow().is_empty(),
+            "nine readable cells and the summary need 49 rows"
+        );
+    }
+
+    #[test]
+    fn equal_content_widths_share_one_demand_measurement() {
+        struct WidthCells(Cell<usize>);
+        impl TileCells<u32> for WidthCells {
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                self.0.set(self.0.get() + 1);
+                StubCells::demanding(
+                    1,
+                    [(
+                        1,
+                        usize::from(measured_width(widths, &TileContent::Group(1))),
+                    )],
+                )
+                .demands
+            }
+            fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+        }
+        let live = WidthCells(Cell::new(0));
+        let measured = MeasuredCellProvider {
+            live:      &live,
+            rows:      RefCell::new(Vec::new()),
+            demands:   RefCell::new(Vec::new()),
+            summaries: RefCell::new(Vec::new()),
+        };
+        let first = measured.demands(&[(TileContent::Summary, 38), (TileContent::Group(1), 39)]);
+        let repeated = measured.demands(&[(TileContent::Group(1), 39), (TileContent::Summary, 38)]);
+        assert_eq!(first.groups, repeated.groups);
+        assert_eq!(
+            live.0.get(),
+            1,
+            "equal per-content widths repeated a measurement"
+        );
+        let changed = measured.demands(&[(TileContent::Summary, 38)]);
+        assert_eq!(
+            changed.groups[0].rows, 38,
+            "a changed fallback width reused an old demand"
+        );
+        assert_eq!(live.0.get(), 2);
+    }
+
+    #[test]
+    fn publishing_membership_keeps_command_row_measurements() {
+        struct CountedCells(Cell<usize>);
+        impl TileCells<u32> for CountedCells {
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 6)]).demands
+            }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 {
+                self.0.set(self.0.get() + 1);
+                area.height.min(6)
+            }
+            fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+        }
+        let live = CountedCells(Cell::new(0));
+        let measured = MeasuredCellProvider {
+            live:      &live,
+            rows:      RefCell::new(Vec::new()),
+            demands:   RefCell::new(Vec::new()),
+            summaries: RefCell::new(Vec::new()),
+        };
+        let area = Rect::new(1, 1, 38, 8);
+        let before = measured.rows_drawn(&TileContent::Group(1), area);
+        let placement = FramePlacement::from_outcome(&[1], [&1].into_iter());
+        measured.frame_placement(&placement);
+        assert_eq!(measured.rows_drawn(&TileContent::Group(1), area), before);
+        assert_eq!(
+            live.0.get(),
+            1,
+            "publishing placement repeated a command measurement"
+        );
+    }
+
+    #[test]
+    fn a_summary_recheck_keeps_command_demands_and_measures_new_rows() {
+        struct SummaryCells {
+            checked: Cell<bool>,
+            queries: Cell<usize>,
+        }
+        impl TileCells<u32> for SummaryCells {
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn required_commands(&self) -> Vec<u32> { vec![1] }
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                self.queries.set(self.queries.get() + 1);
+                StubCells::demanding(1, [(1, 4)]).demands
+            }
+            fn summary_demand_for(&self, _: &FramePlacement<u32>, _: u16) -> SummaryDemand {
+                summary_demand(if self.checked.get() { 3 } else { 1 })
+            }
+            fn summary_rows_for(&self, _: &FramePlacement<u32>, area: Rect) -> u16 {
+                area.height.min(if self.checked.get() { 3 } else { 1 })
+            }
+            fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+                area.height.min(match content {
+                    TileContent::Summary if !self.checked.get() => 1,
+                    TileContent::Summary => 3,
+                    _ => 4,
+                })
+            }
+            fn prepare_painted_frame(
+                &self,
+                _: &FramePlacement<u32>,
+                _: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+            ) -> FrameLayoutPreparation {
+                if self.checked.replace(true) {
+                    FrameLayoutPreparation::Ready
+                } else {
+                    FrameLayoutPreparation::MeasureSummaryAgain
+                }
+            }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+                if matches!(content, TileContent::Summary) {
+                    assert!(area.height >= 3, "new summary rows were not measured");
+                    buffer.set_string(area.x, area.y + 2, "listed job", Style::default());
+                }
+            }
+        }
+        let cells = SummaryCells {
+            checked: Cell::new(false),
+            queries: Cell::new(0),
+        };
+        let area = Rect::new(0, 0, 80, 48);
+        let mut buffer = Buffer::empty(area);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(area.width);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert!(area_lines(&buffer, area).join("\n").contains("listed job"));
+        assert_eq!(
+            cells.queries.get(),
+            1,
+            "a summary change repeated command demand measurement"
+        );
+    }
+
+    #[derive(Default)]
+    struct ContinuationCells {
+        reserved: Cell<bool>,
+        queries:  Cell<usize>,
+    }
+
+    impl ContinuationCells {
+        fn prepare_allocations(&self, allocations: &[(TileContent<u32>, Rect)]) {
+            if let Some((_, area)) = allocations
+                .iter()
+                .find(|(content, _)| matches!(content, TileContent::Group(_)))
+            {
+                self.reserved.set(area.height < 8);
+            }
+        }
+    }
+
+    impl TileCells<u32> for ContinuationCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn required_commands(&self) -> Vec<u32> { vec![1] }
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+            test_admission(*id, false)
+        }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            self.queries.set(self.queries.get() + 1);
+            StubCells::demanding(1, [(1, 6)]).demands
+        }
+        fn summary_demand_for(&self, _: &FramePlacement<u32>, _: u16) -> SummaryDemand {
+            summary_demand(1)
+        }
+        fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 4 }
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            area.height.min(if matches!(content, TileContent::Summary) {
+                1
+            } else {
+                6
+            })
+        }
+        fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>) {
+            self.prepare_allocations(&allocations());
+        }
+        fn prepare_painted_frame(
+            &self,
+            _: &FramePlacement<u32>,
+            allocations: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+        ) -> FrameLayoutPreparation {
+            let before = self.reserved.get();
+            self.prepare_allocations(&allocations());
+            if before == self.reserved.get() {
+                FrameLayoutPreparation::Ready
+            } else {
+                FrameLayoutPreparation::MeasureAgain
+            }
+        }
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+            if matches!(content, TileContent::Group(_)) {
+                buffer.set_string(area.x, area.y, "cargo pid", Style::default());
+            }
+        }
+    }
+
+    #[test]
+    fn moving_row_metrics_include_the_rows_that_still_paint() {
+        struct RoleCells {
+            role_width: Cell<u16>,
+        }
+        impl TileCells<u32> for RoleCells {
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn prepare_moving_frame(
+                &self,
+                _: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+                motion_bounds: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+            ) {
+                for (content, area) in motion_bounds() {
+                    if matches!(content, TileContent::Group(1)) {
+                        self.role_width.set(if area.height >= 7 { 10 } else { 4 });
+                    }
+                }
+            }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 7)]).demands
+            }
+            fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+                area.height
+                    .min(if matches!(content, TileContent::Group(1)) {
+                        7
+                    } else {
+                        1
+                    })
+            }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+                if matches!(content, TileContent::Group(1)) {
+                    for (index, role) in [
+                        "role",
+                        "impl",
+                        "review",
+                        "review",
+                        "review",
+                        "review",
+                        "showrunner",
+                    ]
+                    .into_iter()
+                    .take(usize::from(area.height))
+                    .enumerate()
+                    {
+                        buffer.set_stringn(
+                            area.x,
+                            area.y + u16::try_from(index).unwrap_or(0),
+                            role,
+                            usize::from(self.role_width.get()),
+                            Style::default(),
+                        );
+                    }
+                }
+            }
+        }
+        let cells = RoleCells {
+            role_width: Cell::new(0),
+        };
+        let area = Rect::new(0, 0, 180, 22);
+        let growth = TileGrowth {
+            initial_rows: 8,
+            widen_summary: false,
+            ..TileGrowth::default()
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let paint = |grid: &mut TileGrid<u32>| {
+            let mut buffer = Buffer::empty(area);
+            draw_tile_grid(
+                &mut buffer,
+                grid,
+                area,
+                growth,
+                TileGridContents::Shown,
+                &cells,
+            );
+            buffer
+        };
+        paint(&mut grid);
+        grid.settle_for_test();
+        let before = paint(&mut grid);
+        assert!(
+            area_lines(&before, area).join("\n").contains("showrunner"),
+            "the settled body paints rows beyond the prepared role width"
+        );
+    }
+
+    #[test]
+    fn a_readable_preparation_keeps_a_stable_continuation_policy() {
+        let area = Rect::new(0, 0, 80, 48);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(area.width);
+        for _ in 0..2 {
+            draw_tile_grid(
+                &mut Buffer::empty(area),
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &ContinuationCells::default(),
+            );
+            grid.settle_for_test();
+        }
+        for _ in 0..4 {
+            let cells = ContinuationCells::default();
+            let mut buffer = Buffer::empty(area);
+            draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &cells,
+            );
+            assert!(area_lines(&buffer, area).join("\n").contains("cargo pid"));
+            assert_eq!(
+                cells.queries.get(),
+                1,
+                "unchanged short cells reset the continuation policy"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_layout_request_still_paints_one_frame() {
+        struct RecheckingCells(Cell<usize>);
+        impl TileCells<u32> for RecheckingCells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 2)]).demands
+            }
+            fn prepare_painted_frame(
+                &self,
+                _: &FramePlacement<u32>,
+                _: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+            ) -> FrameLayoutPreparation {
+                let calls = self.0.get() + 1;
+                self.0.set(calls);
+                assert!(
+                    calls <= 2,
+                    "frame preparation must end after its final pass"
+                );
+                FrameLayoutPreparation::MeasureAgain
+            }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+                if matches!(content, TileContent::Group(1)) {
+                    buffer.set_string(inner.x, inner.y, "pid row", Style::default());
+                }
+            }
+        }
+        let cells = RecheckingCells(Cell::new(0));
+        let area = Rect::new(0, 0, 40, 24);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert_eq!(cells.0.get(), 2);
+        assert!(area_lines(&buffer, area).join("\n").contains("pid row"));
+    }
+
+    #[test]
+    fn capacity_trials_do_not_commit_a_providers_placement() {
+        struct PlacementObserver(Cell<usize>);
+        impl TileCells<u32> for PlacementObserver {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 2)]).demands
+            }
+            fn frame_placement(&self, _: &FramePlacement<u32>) { self.0.set(self.0.get() + 1); }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+                assert_eq!(
+                    self.0.get(),
+                    1,
+                    "only the checked placement can be committed"
+                );
+                if matches!(content, TileContent::Group(1)) {
+                    buffer.set_string(inner.x, inner.y, "pid row", Style::default());
+                }
+            }
+        }
+        let cells = PlacementObserver(Cell::new(0));
+        let area = Rect::new(0, 0, 40, 24);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert_eq!(cells.0.get(), 1);
+        assert!(area_lines(&buffer, area).join("\n").contains("pid row"));
+    }
+
+    #[test]
+    fn the_final_layout_is_measured_before_its_cell_is_committed() {
+        struct FinalLayout(Cell<bool>);
+        impl TileCells<u32> for FinalLayout {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 2)]).demands
+            }
+            fn first_content_rows(&self, _: &TileContent<u32>) -> u16 {
+                if self.0.get() { 6 } else { 1 }
+            }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 {
+                area.height.min(if self.0.get() { 6 } else { 1 })
+            }
+            fn prepare_painted_frame(
+                &self,
+                _: &FramePlacement<u32>,
+                _: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>,
+            ) -> FrameLayoutPreparation {
+                if self.0.replace(true) {
+                    FrameLayoutPreparation::Ready
+                } else {
+                    FrameLayoutPreparation::MeasureAgain
+                }
+            }
+            fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+                if matches!(content, TileContent::Group(1)) && inner.height >= 6 {
+                    buffer.set_string(inner.x, inner.y + 5, "whole pid row", Style::default());
+                }
+            }
+        }
+        let cells = FinalLayout(Cell::new(false));
+        let area = Rect::new(0, 0, 40, 24);
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert!(
+            area_lines(&buffer, area)
+                .join("\n")
+                .contains("whole pid row")
+        );
+    }
+
+    #[test]
+    fn a_shifted_receipt_retains_the_source_process_row() {
+        struct Receipts(RefCell<Vec<PresentedRowSpan<u32>>>);
+        impl TileCells<u32> for Receipts {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                StubCells::demanding(1, [(1, 4)]).demands
+            }
+            fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+            fn painted_rows(&self, _: &TileContent<u32>, _: Rect) -> Vec<PaintedRowSpan<u32>> {
+                PaintedRowSpan::new(1, Rect::new(1, 2, 18, 2))
+                    .into_iter()
+                    .collect()
+            }
+            fn presented_rows(&self, _: &TileContent<u32>, rows: &[PresentedRowSpan<u32>]) {
+                self.0.borrow_mut().extend_from_slice(rows);
+            }
+        }
+        let cells = Receipts(RefCell::new(Vec::new()));
+        let placement = TilePlacement {
+            content: TileContent::Group(1),
+            frame:   PaneFrame::shifted(Rect::new(0, 0, 20, 8), 3, Rect::new(0, 3, 20, 7)),
+        };
+        present_visible_rows(&cells, &placement, Rect::new(0, 0, 20, 10));
+        let receipts = cells.0.borrow();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].source().area(), Rect::new(1, 2, 18, 2));
+        assert_eq!(receipts[0].visible().area(), Rect::new(1, 5, 18, 2));
     }
 
     struct StubCells {

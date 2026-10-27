@@ -5,7 +5,11 @@
 #[path = "render/linux_processors.rs"]
 mod linux_processors;
 
+#[path = "render/invocation_frame.rs"]
+mod invocation_frame;
+
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroU16;
@@ -16,6 +20,14 @@ use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use invocation_frame::EndedCellContent;
+use invocation_frame::FrameInvocationPlacement;
+use invocation_frame::InvocationCellId;
+use invocation_frame::InvocationProcessRows;
+use invocation_frame::PaintedProcessRowSpan;
+use invocation_frame::PlacementTrial;
+use invocation_frame::ProcessRowPaint;
+use invocation_frame::ProcessRowSite;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -41,11 +53,13 @@ use tui_pane::CellDeparture;
 use tui_pane::CellFadeProgress;
 use tui_pane::CellReadoutFade;
 use tui_pane::EndedCellDeparture;
+use tui_pane::FrameLayoutPreparation;
 use tui_pane::FramePlacement;
 use tui_pane::Keymap;
 use tui_pane::NotAdmissible;
 use tui_pane::PaintedRowSpan;
 use tui_pane::PaneFrameLabel;
+use tui_pane::PresentedRowSpan;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ScanIndicator;
@@ -405,23 +419,28 @@ enum FramePreparation {
     #[default]
     Unprepared,
     Allocated(Vec<(TileContent, Rect)>),
+    Committed,
 }
 
 /// What the tile grid's cells hold, borrowed out of [`App`] for one frame.
 struct Cells<'a> {
-    preparation: RefCell<FramePreparation>,
+    preparation:   RefCell<FramePreparation>,
+    placement:     RefCell<FrameInvocationPlacement>,
+    trial:         RefCell<PlacementTrial>,
     /// Every command group, which the summary gathers and each group's
     /// own cell draws.
-    roster:      VisibleRoster,
+    roster:        VisibleRoster,
+    process_rows:  InvocationProcessRows,
     /// Configured departure duration shared with the grid lifecycle.
-    fade:        Duration,
+    fade:          Duration,
     /// What sccache reports, written along the summary cell's top border.
-    sccache:     &'a SccacheStats,
+    sccache:       &'a SccacheStats,
     /// Content-row answers already computed during this draw.
-    row_uses:    RefCell<HashMap<(CellRowIdentity, u16), Vec<PreparedRowsForPolicy>>>,
-    painted:     RefCell<Vec<PaintedRowSpan<InvocationId>>>,
+    row_uses:      RefCell<HashMap<(CellRowIdentity, u16), Vec<PreparedRowsForPolicy>>>,
+    painted:       RefCell<Vec<PaintedRowSpan<InvocationId>>>,
+    cell_receipts: RefCell<HashMap<CellRowIdentity, Vec<PaintedProcessRowSpan>>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
-    grids:       FrameColumnGrids,
+    grids:         FrameColumnGrids,
 }
 
 impl<'a> Cells<'a> {
@@ -449,13 +468,206 @@ impl<'a> Cells<'a> {
     ) -> Self {
         Self {
             sccache,
+            process_rows: InvocationProcessRows::of(&roster),
+            placement: RefCell::new(FrameInvocationPlacement::listed(&roster)),
+            trial: RefCell::new(PlacementTrial(FrameInvocationPlacement::listed(&roster))),
             preparation: RefCell::new(FramePreparation::Unprepared),
             fade: Duration::from_secs(DEFAULT_FADE_SECONDS),
             row_uses: RefCell::new(HashMap::new()),
             painted: RefCell::new(Vec::new()),
+            cell_receipts: RefCell::new(HashMap::new()),
             grids: FrameColumnGrids::for_frame(&roster, view, height),
             roster,
         }
+    }
+
+    fn prepare_command_form(&self, allocations: &[(TileContent, Rect)]) {
+        let grid = &self.grids.commands.0;
+        if matches!(
+            *grid.command_layout.borrow(),
+            CommandFrameLayout::Committed(_)
+        ) {
+            return;
+        }
+        let Some(width) = allocations
+            .iter()
+            .filter_map(|(content, area)| {
+                matches!(content, TileContent::Group(_)).then_some(indented(*area).width)
+            })
+            .min()
+        else {
+            return;
+        };
+        let next = CommandFrameLayout::Prepared(CommandHeaderForm {
+            columns: grid.fit_command_columns(width).columns,
+        });
+        if *grid.command_layout.borrow() != next {
+            grid.command_layout.replace(next);
+            grid.layouts.borrow_mut().clear();
+            grid.prepared_plans.borrow_mut().clear();
+            self.row_uses.borrow_mut().clear();
+            *self.preparation.borrow_mut() = FramePreparation::Unprepared;
+        }
+    }
+
+    fn clear_summary_plans(&self) {
+        if !matches!(*self.preparation.borrow(), FramePreparation::Committed) {
+            *self.preparation.borrow_mut() = FramePreparation::Unprepared;
+        }
+        self.row_uses
+            .borrow_mut()
+            .retain(|(identity, _), _| !matches!(identity, CellRowIdentity::Summary));
+        self.grids.summary.0.layouts.borrow_mut().clear();
+        self.grids.summary.0.prepared_plans.borrow_mut().clear();
+    }
+
+    fn reset_row_policy(&self) {
+        self.grids.summary.0.row_end.set(TableRowEnd::Unreserved);
+        let commands = &self.grids.commands.0;
+        commands.row_end.set(TableRowEnd::Unreserved);
+        commands.cell_gap.set(CellTableGap::Unprepared);
+        commands.whole_short_tables.borrow_mut().clear();
+    }
+
+    fn frame_layout_policy(&self) -> FrameLayoutPolicy {
+        let grid = &self.grids.commands.0;
+        FrameLayoutPolicy {
+            header:         grid.command_layout.borrow().clone(),
+            summary_end:    self.grids.summary.0.row_end.get(),
+            command_end:    grid.row_end.get(),
+            gap:            grid.cell_gap.get(),
+            whole_commands: grid.whole_short_tables.borrow().clone(),
+        }
+    }
+
+    /// Painter fixtures provide their allocation below the checked grid boundary.
+    #[cfg(test)]
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
+        match content {
+            TileContent::Group(id) => {
+                let placement = FrameInvocationPlacement::painter_fixture(&self.roster, Some(id));
+                self.paint_cell(buffer, content, inner, ground, &placement);
+            },
+            _ => self.paint_cell(buffer, content, inner, ground, &self.placement.borrow()),
+        }
+    }
+
+    fn paint_cell(
+        &self,
+        buffer: &mut Buffer,
+        content: &TileContent,
+        inner: Rect,
+        ground: Color,
+        placement: &FrameInvocationPlacement,
+    ) {
+        let grid = match content {
+            TileContent::Summary => &self.grids.summary.0,
+            TileContent::Group(_) | TileContent::Empty(_) => &self.grids.commands.0,
+        };
+        grid.painted_rows.borrow_mut().clear();
+        match content {
+            TileContent::Summary => frame_draw_summary(
+                buffer,
+                &SummaryRows::of(&self.process_rows, placement),
+                inner,
+                ground,
+                grid,
+            ),
+            TileContent::Group(id) => {
+                let assignment = placement.assignment(id);
+                let rows = self.process_rows.assigned(&assignment);
+                if let Some(end) = self.ended(id) {
+                    let ended = EndedCellContent::new(rows, &end, self.fade);
+                    self.paint_ended_cell(buffer, id, inner, ground, &ended);
+                } else {
+                    frame_draw_group_rows(
+                        buffer,
+                        &self.roster,
+                        id,
+                        inner,
+                        ground,
+                        grid,
+                        &rows.values(),
+                    );
+                }
+            },
+            TileContent::Empty(_) => {},
+        }
+        let spans = grid
+            .painted_rows
+            .borrow()
+            .iter()
+            .filter_map(|span| self.process_rows.span(span, process_row_site(content)))
+            .collect();
+        self.cell_receipts
+            .borrow_mut()
+            .insert(CellRowIdentity::from(content), spans);
+    }
+
+    /// Compose retained values through the current columns and keep the first pid visible.
+    fn paint_ended_cell(
+        &self,
+        buffer: &mut Buffer,
+        id: &InvocationId,
+        inner: Rect,
+        background: Color,
+        ended: &EndedCellContent,
+    ) {
+        let content = TileContent::Group(id.clone());
+        let grid = &self.grids.commands.0;
+        let rows = ended.values();
+        let layout = CellTableLayout::for_table_slots(
+            grid,
+            Rect {
+                height: u16::MAX,
+                ..inner
+            },
+            background,
+            &rows,
+        );
+        let first_row = rows
+            .first()
+            .map_or(1, |row| process_row_lines(row, &layout));
+        let first = self
+            .first_content_rows_at(&content, inner)
+            .saturating_add(first_row.saturating_sub(1));
+        let full = Rect {
+            height: inner.height.max(first),
+            ..inner
+        };
+        let offset = full.height.saturating_sub(inner.height);
+        let mut composed = Buffer::empty(full);
+        composed.set_style(full, Style::default().bg(background));
+        frame_draw_group_rows(
+            &mut composed,
+            &self.roster,
+            id,
+            full,
+            background,
+            grid,
+            &rows,
+        );
+        for y in inner.y..inner.bottom() {
+            for x in inner.x..inner.right() {
+                buffer[(x, y)] = composed[(x, y + offset)].clone();
+            }
+        }
+        let visible = Rect {
+            y: inner.y.saturating_add(offset),
+            ..inner
+        };
+        grid.painted_rows.borrow_mut().retain_mut(|painted| {
+            let area = painted.span.area().intersection(visible);
+            let projected = Rect {
+                y: area.y.saturating_sub(offset),
+                ..area
+            };
+            let Ok(span) = PaintedRowSpan::new(painted.span.id().clone(), projected) else {
+                return false;
+            };
+            painted.span = span;
+            true
+        });
     }
 
     /// Use the configured fade for each tracked group departure.
@@ -507,7 +719,15 @@ impl<'a> Cells<'a> {
             retained,
             whole_short: grid.whole_short_tables.borrow().clone(),
         };
-        let rows = PreparedCellRows::new(&self.roster, content, width, &self.grids);
+        let selection = SummaryRows::of(&self.process_rows, &self.trial.borrow().0);
+        let rows = PreparedCellRows::new(
+            &self.roster,
+            content,
+            width,
+            &self.grids,
+            &selection,
+            &self.process_rows,
+        );
         let index = variants.len();
         variants.push(PreparedRowsForPolicy { policy, rows });
         read(&variants[index].rows)
@@ -541,28 +761,47 @@ impl TileCells<InvocationId> for Cells<'_> {
             .collect()
     }
 
+    fn placement_trial(&self, placement: &FramePlacement<InvocationId>) {
+        self.trial
+            .replace(PlacementTrial(FrameInvocationPlacement::checked(
+                &self.roster,
+                placement,
+            )));
+        self.clear_summary_plans();
+    }
+
     fn frame_placement(&self, placement: &FramePlacement<InvocationId>) {
-        let unchanged = self
-            .grids
-            .summary
-            .0
-            .placement
-            .borrow()
-            .as_ref()
-            .is_some_and(|previous| {
-                previous.celled() == placement.celled()
-                    && previous.listed().ids() == placement.listed().ids()
-            });
-        if unchanged {
-            return;
+        let placement = FrameInvocationPlacement::checked(&self.roster, placement);
+        if self.trial.borrow().0 != placement {
+            self.clear_summary_plans();
         }
-        *self.preparation.borrow_mut() = FramePreparation::Unprepared;
-        *self.grids.summary.0.placement.borrow_mut() = Some(placement.clone());
-        self.row_uses
-            .borrow_mut()
-            .retain(|(identity, _), _| !matches!(identity, CellRowIdentity::Summary));
-        self.grids.summary.0.layouts.borrow_mut().clear();
-        self.grids.summary.0.prepared_plans.borrow_mut().clear();
+        self.trial.replace(PlacementTrial(placement.clone()));
+        self.placement.replace(placement);
+    }
+
+    fn summary_demand_for(
+        &self,
+        placement: &FramePlacement<InvocationId>,
+        _: u16,
+    ) -> SummaryDemand {
+        let placement = FrameInvocationPlacement::checked(&self.roster, placement);
+        SummaryRows::of(&self.process_rows, &placement).demand()
+    }
+
+    fn summary_rows_for(&self, placement: &FramePlacement<InvocationId>, area: Rect) -> u16 {
+        let placement = FrameInvocationPlacement::checked(&self.roster, placement);
+        let selection = SummaryRows::of(&self.process_rows, &placement);
+        PreparedSummaryRows::new(&selection, area.width, &self.grids.summary.0)
+            .at(area.height)
+            .drawn
+    }
+
+    fn freeze_painted_frame(&self) {
+        let mut layout = self.grids.commands.0.command_layout.borrow_mut();
+        if let CommandFrameLayout::Prepared(form) = &*layout {
+            *layout = CommandFrameLayout::Committed(form.clone());
+        }
+        self.preparation.replace(FramePreparation::Committed);
     }
 
     fn command_ended(&self, id: &InvocationId) -> bool {
@@ -581,11 +820,14 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn painted_rows(&self, content: &TileContent, _: Rect) -> Vec<PaintedRowSpan<InvocationId>> {
-        match content {
-            TileContent::Summary => self.grids.summary.0.painted_rows.borrow().clone(),
-            TileContent::Group(_) => self.grids.commands.0.painted_rows.borrow().clone(),
-            TileContent::Empty(_) => Vec::new(),
-        }
+        let site = process_row_site(content);
+        self.cell_receipts
+            .borrow()
+            .get(&CellRowIdentity::from(content))
+            .into_iter()
+            .flatten()
+            .filter_map(|span| span.adapter(&site))
+            .collect()
     }
 
     fn presented(&self, spans: &[PaintedRowSpan<InvocationId>]) {
@@ -599,6 +841,21 @@ impl TileCells<InvocationId> for Cells<'_> {
                 .find(|row| &row.process.invocation_id == span.id())
             {
                 row.presented(span.clone());
+            }
+        }
+    }
+
+    fn presented_rows(&self, content: &TileContent, rows: &[PresentedRowSpan<InvocationId>]) {
+        let receipts = self.cell_receipts.borrow();
+        let sources = receipts.get(&CellRowIdentity::from(content));
+        for row in rows {
+            self.painted.borrow_mut().push(row.visible().clone());
+            if let Some(source) = sources
+                .into_iter()
+                .flatten()
+                .find(|source| source.matches_source(row.source()))
+            {
+                self.process_rows.presented(source, row.visible().clone());
             }
         }
     }
@@ -622,6 +879,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             .iter()
             .find(|group| &group.id == id)
             .and_then(|group| group.departure_evidence(self.fade))
+            .map(EndedCellDeparture::with_row_values)
     }
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
@@ -649,30 +907,49 @@ impl TileCells<InvocationId> for Cells<'_> {
         }
     }
 
+    fn prepare_painted_frame(
+        &self,
+        placement: &FramePlacement<InvocationId>,
+        allocations: impl FnOnce() -> Vec<(TileContent, Rect)>,
+    ) -> FrameLayoutPreparation {
+        let next = FrameInvocationPlacement::checked(&self.roster, placement);
+        let placement_changed = self.trial.borrow().0 != next;
+        if placement_changed {
+            self.trial.replace(PlacementTrial(next));
+            self.clear_summary_plans();
+        }
+        let before = self.frame_layout_policy();
+        self.prepare_frame(allocations);
+        let after = self.frame_layout_policy();
+        if before != after {
+            FrameLayoutPreparation::MeasureAgain
+        } else if placement_changed {
+            FrameLayoutPreparation::MeasureSummaryAgain
+        } else {
+            FrameLayoutPreparation::Ready
+        }
+    }
+
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        if matches!(*self.preparation.borrow(), FramePreparation::Committed) {
+            return;
+        }
         let allocations = allocations();
+        self.prepare_command_form(&allocations);
         if matches!(&*self.preparation.borrow(), FramePreparation::Allocated(previous) if *previous == allocations)
         {
             return;
         }
-        self.grids.summary.0.row_end.set(TableRowEnd::Unreserved);
-        self.grids.commands.0.row_end.set(TableRowEnd::Unreserved);
-        self.grids.commands.0.cell_gap.set(CellTableGap::Unprepared);
-        self.grids
-            .commands
-            .0
-            .whole_short_tables
-            .borrow_mut()
-            .clear();
+        self.reset_row_policy();
         let mut summary_cut = false;
         let mut commands_cut = false;
         for (content, area) in &allocations {
             let area = *area;
             match content {
                 TileContent::Summary => {
-                    let selection = SummaryRows::of(&self.roster, &self.grids.summary.0);
-                    let rows = selection.all();
-                    if !selection.listed.is_empty()
+                    let selection = SummaryRows::of(&self.process_rows, &self.trial.borrow().0);
+                    let rows = selection.listed().to_vec();
+                    if !selection.listed().is_empty()
                         && usize::from(area.height)
                             < frame_table_height(
                                 &rows,
@@ -702,7 +979,7 @@ impl TileCells<InvocationId> for Cells<'_> {
                         continue;
                     };
 
-                    let rows: Vec<_> = group.rows().collect();
+                    let rows = self.process_rows.measured(id);
                     let grid = &self.grids.commands.0;
                     let demand = frame_table_height(
                         &rows,
@@ -790,7 +1067,7 @@ impl TileCells<InvocationId> for Cells<'_> {
                 let Some(group) = self.roster.groups().iter().find(|group| &group.id == id) else {
                     return CellReadoutFade::Unfaded;
                 };
-                let rows: Vec<_> = group.rows().collect();
+                let rows = self.process_rows.measured(id);
                 group_fade(group, &rows)
             },
             TileContent::Empty(_) => return CellReadoutFade::Unfaded,
@@ -819,7 +1096,7 @@ impl TileCells<InvocationId> for Cells<'_> {
         let summary = summary_rows(&self.roster);
 
         TileDemands {
-            summary:       SummaryRows::of(&self.roster, &self.grids.summary.0).demand(),
+            summary:       SummaryRows::of(&self.process_rows, &self.trial.borrow().0).demand(),
             summary_width: frame_summary_width(&summary, &self.grids.summary.0),
             groups:        self
                 .roster
@@ -872,13 +1149,18 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-        self.grids.summary.0.painted_rows.borrow_mut().clear();
-        self.grids.commands.0.painted_rows.borrow_mut().clear();
-        frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
+        self.paint_cell(buffer, content, inner, ground, &self.placement.borrow());
     }
 
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
         sccache_label(self.sccache, rect)
+    }
+}
+
+fn process_row_site(content: &TileContent) -> ProcessRowSite {
+    match content {
+        TileContent::Group(id) => ProcessRowSite::Cell(InvocationCellId(id.clone())),
+        TileContent::Summary | TileContent::Empty(_) => ProcessRowSite::Summary,
     }
 }
 
@@ -933,20 +1215,20 @@ impl PreparedCellRows {
         content: &TileContent,
         width: u16,
         grids: &FrameColumnGrids,
+        summary: &SummaryRows<'_>,
+        process_rows: &InvocationProcessRows,
     ) -> Self {
         match content {
-            TileContent::Summary => Self::Summary(PreparedSummaryRows::new(
-                &SummaryRows::of(roster, &grids.summary.0),
-                width,
-                &grids.summary.0,
-            )),
+            TileContent::Summary => {
+                Self::Summary(PreparedSummaryRows::new(summary, width, &grids.summary.0))
+            },
             TileContent::Group(id) => {
                 let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
                     return Self::Empty;
                 };
                 let grid = &grids.commands.0;
 
-                let rows: Vec<_> = group.rows().collect();
+                let rows = process_rows.measured(id);
                 let walk = drawn_ancestry(group, &grid.view);
                 let mut ancestry = PreparedAncestryRows::new(
                     AncestrySource::for_group(&walk, group, &grid.view),
@@ -1101,6 +1383,7 @@ impl PreparedAncestryRows {
 /// Painted and retained rows at any height of one solved table width.
 enum TableHeightUse {
     EmptyTable,
+    HeaderOnly,
     NoReadableColumns,
     ProcessRows {
         groups:     Vec<Vec<u16>>,
@@ -1174,7 +1457,7 @@ impl TableHeightUse {
     fn exact_rows(&self) -> usize {
         match self {
             Self::EmptyTable => 0,
-            Self::NoReadableColumns => usize::from(TABLE_HEADER_HEIGHT),
+            Self::HeaderOnly | Self::NoReadableColumns => usize::from(TABLE_HEADER_HEIGHT),
             Self::ProcessRows { exact_rows, .. } => *exact_rows,
         }
     }
@@ -1189,7 +1472,7 @@ impl TableHeightUse {
                     separator_rows_yielded: 0,
                 }
             },
-            Self::NoReadableColumns => {
+            Self::HeaderOnly | Self::NoReadableColumns => {
                 let drawn = height.min(TABLE_HEADER_HEIGHT);
                 GroupRowUse {
                     drawn,
@@ -1304,10 +1587,10 @@ struct SummaryRowsAtHeight {
 
 impl PreparedSummaryRows {
     fn new(selection: &SummaryRows<'_>, width: u16, grid: &FrameTableColumnGrid) -> Self {
-        let combined = selection.all();
+        let combined = selection.listed().to_vec();
         let rows = combined.as_slice();
         let groups = group_by_path(rows, PinnedGroup::Unpinned);
-        let compact_rows = (!selection.listed.is_empty()).then(|| CompactSummaryRows {
+        let compact_rows = (!selection.listed().is_empty()).then(|| CompactSummaryRows {
             rows:            TABLE_HEADER_HEIGHT
                 .saturating_add(u16::try_from(rows.len()).unwrap_or(u16::MAX)),
             headings:        u16::try_from(groups.len()).unwrap_or(u16::MAX),
@@ -1324,7 +1607,9 @@ impl PreparedSummaryRows {
             let layout = CellTableLayout::for_table_slots(grid, area, Color::Reset, rows);
             SummaryRowsAtHeight {
                 height,
-                rows: if rows.is_empty() {
+                rows: if matches!(selection, SummaryRows::NoListedInvocations) {
+                    TableHeightUse::HeaderOnly
+                } else if rows.is_empty() {
                     TableHeightUse::EmptyTable
                 } else if width == 0 {
                     TableHeightUse::NoReadableColumns
@@ -1545,7 +1830,11 @@ fn frame_tile_demands(
     };
     let summary = summary_rows(roster);
     TileDemands {
-        summary:       SummaryRows::of(roster, &grids.summary.0).demand(),
+        summary:       SummaryRows::of(
+            &InvocationProcessRows::of(roster),
+            &FrameInvocationPlacement::listed(roster),
+        )
+        .demand(),
         summary_width: frame_summary_width(&summary, &grids.summary.0),
         groups:        roster
             .tiled_ids()
@@ -1800,9 +2089,11 @@ fn draw_contents(
         inner,
         ground,
         &FrameColumnGrids::for_frame(roster, view, u16::MAX),
+        &FrameInvocationPlacement::listed(roster),
     );
 }
 
+#[cfg(test)]
 fn frame_draw_contents(
     buffer: &mut Buffer,
     roster: &VisibleRoster,
@@ -1810,11 +2101,12 @@ fn frame_draw_contents(
     inner: Rect,
     ground: Color,
     grids: &FrameColumnGrids,
+    placement: &FrameInvocationPlacement,
 ) {
     match content {
         TileContent::Summary => frame_draw_summary(
             buffer,
-            &SummaryRows::of(roster, &grids.summary.0),
+            &SummaryRows::of(&InvocationProcessRows::of(roster), placement),
             inner,
             ground,
             &grids.summary.0,
@@ -1849,48 +2141,52 @@ fn draw_summary(
     let grids = FrameColumnGrids::for_frame(roster, view, inner.height);
     frame_draw_summary(
         buffer,
-        &SummaryRows::of(roster, &grids.summary.0),
+        &SummaryRows::of(
+            &InvocationProcessRows::of(roster),
+            &FrameInvocationPlacement::listed(roster),
+        ),
         inner,
         ground,
         &grids.summary.0,
     );
 }
 
-/// The summary's required rows and its optional rows share one selection.
-struct SummaryRows<'a> {
-    listed: Vec<&'a TrackedRow>,
-    celled: Vec<&'a TrackedRow>,
+/// Only listed invocations and their summary departures enter this plan.
+enum SummaryRows<'a> {
+    EmptyRoster,
+    NoListedInvocations,
+    Listed(Vec<&'a TrackedRow>),
 }
 
 impl<'a> SummaryRows<'a> {
-    fn of(roster: &'a VisibleRoster, grid: &FrameTableColumnGrid) -> Self {
-        let placement = grid.placement.borrow();
-        let mut listed = Vec::new();
-        let mut celled = Vec::new();
-        for group in roster.groups() {
-            if placement
-                .as_ref()
-                .is_some_and(|placement| placement.listed().ids().contains(&group.id))
-            {
-                listed.push(&group.lead);
-            } else {
-                celled.push(&group.lead);
-            }
-        }
+    fn of(rows: &'a InvocationProcessRows, placement: &FrameInvocationPlacement) -> Self {
+        let mut listed = rows.listed(placement);
         listed.sort_by_key(|row| row.process.started);
-        Self { listed, celled }
+        if !listed.is_empty() {
+            Self::Listed(listed)
+        } else if rows.is_empty() {
+            Self::EmptyRoster
+        } else {
+            Self::NoListedInvocations
+        }
     }
 
-    fn all(&self) -> Vec<&'a TrackedRow> {
-        self.listed.iter().chain(&self.celled).copied().collect()
+    fn listed(&self) -> &[&'a TrackedRow] {
+        match self {
+            Self::Listed(rows) => rows,
+            Self::EmptyRoster | Self::NoListedInvocations => &[],
+        }
     }
 
     fn demand(&self) -> SummaryDemand {
-        let listed = u16::try_from(self.listed.len()).unwrap_or(u16::MAX);
-        SummaryDemand::new(
-            NonZeroU16::new(TABLE_HEADER_HEIGHT.saturating_add(listed)).unwrap_or(NonZeroU16::MIN),
-            listed,
-        )
+        let listed = u16::try_from(self.listed().len()).unwrap_or(u16::MAX);
+        let required = match self {
+            Self::EmptyRoster => TABLE_HEADER_HEIGHT.saturating_add(GROUP_HEADER_HEIGHT),
+            Self::NoListedInvocations | Self::Listed(_) => {
+                TABLE_HEADER_HEIGHT.saturating_add(listed)
+            },
+        };
+        SummaryDemand::new(NonZeroU16::new(required).unwrap_or(NonZeroU16::MIN), listed)
     }
 }
 
@@ -1901,17 +2197,13 @@ fn frame_draw_summary(
     ground: Color,
     grid: &FrameTableColumnGrid,
 ) {
-    let rows = selection.all();
+    if matches!(selection, SummaryRows::NoListedInvocations) {
+        paint_summary_header_without_rows(buffer, inner, ground, grid);
+        return;
+    }
+    let rows = selection.listed().to_vec();
     let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-    if selection.listed.is_empty()
-        || usize::from(inner.height)
-            >= frame_table_height(&rows, inner.width, PinnedGroup::Unpinned, grid).saturating_sub(
-                groups
-                    .len()
-                    .saturating_sub(1)
-                    .saturating_mul(usize::from(GROUP_GAP_HEIGHT)),
-            )
-    {
+    if summary_fits_detailed_rows(&rows, inner, groups.len(), grid) {
         frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid);
         return;
     }
@@ -2003,6 +2295,37 @@ fn frame_draw_summary(
     }
 }
 
+fn summary_fits_detailed_rows(
+    rows: &[&TrackedRow],
+    inner: Rect,
+    group_count: usize,
+    grid: &FrameTableColumnGrid,
+) -> bool {
+    rows.is_empty()
+        || usize::from(inner.height)
+            >= frame_table_height(rows, inner.width, PinnedGroup::Unpinned, grid).saturating_sub(
+                group_count
+                    .saturating_sub(1)
+                    .saturating_mul(usize::from(GROUP_GAP_HEIGHT)),
+            )
+}
+
+fn paint_summary_header_without_rows(
+    buffer: &mut Buffer,
+    inner: Rect,
+    background: Color,
+    grid: &FrameTableColumnGrid,
+) {
+    let layout = CellTableLayout::for_table_slots(grid, inner, background, &[]);
+    paint_table_header(
+        buffer,
+        indented(inner),
+        &layout,
+        0,
+        [true; TABLE_HEADERS.len()],
+    );
+}
+
 /// Paint and receipt use the same one-row compact allocation.
 fn paint_compact_summary_row(
     buffer: &mut Buffer,
@@ -2012,7 +2335,10 @@ fn paint_compact_summary_row(
     grid: &FrameTableColumnGrid,
 ) {
     if let Ok(span) = PaintedRowSpan::new(row.source.process.invocation_id.clone(), area) {
-        grid.painted_rows.borrow_mut().push(span);
+        grid.painted_rows.borrow_mut().push(ProcessRowPaint {
+            pid: row.source.process.pid,
+            span,
+        });
     }
     paint_process_rows(buffer, area, vec![row], layout);
 }
@@ -2186,6 +2512,7 @@ fn draw_group(
     );
 }
 
+#[cfg(test)]
 fn frame_draw_group(
     buffer: &mut Buffer,
     roster: &VisibleRoster,
@@ -2194,19 +2521,30 @@ fn frame_draw_group(
     ground: Color,
     grid: &FrameTableColumnGrid,
 ) {
+    let rows = InvocationProcessRows::of(roster);
+    frame_draw_group_rows(buffer, roster, id, inner, ground, grid, &rows.measured(id));
+}
+
+fn frame_draw_group_rows(
+    buffer: &mut Buffer,
+    roster: &VisibleRoster,
+    id: &InvocationId,
+    inner: Rect,
+    ground: Color,
+    grid: &FrameTableColumnGrid,
+    rows: &[&TrackedRow],
+) {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
         return;
     };
-
-    let rows: Vec<&TrackedRow> = group.rows().collect();
     let ancestry = drawn_ancestry(group, &grid.view);
     // The chain and table fade together when their command finishes.
-    let faded = group_fade(group, &rows);
+    let faded = group_fade(group, rows);
     // The same measurement [`frame_group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
     // ask left it.
     let table_rows = frame_table_height(
-        &rows,
+        rows,
         inner.width,
         PinnedGroup::Lead(&group.lead.process),
         grid,
@@ -2229,7 +2567,7 @@ fn frame_draw_group(
     frame_draw_process_table(
         buffer,
         table,
-        &rows,
+        rows,
         ground,
         PinnedGroup::Lead(&group.lead.process),
         &table_grid,
@@ -3809,24 +4147,52 @@ struct FittedTableColumns {
     value_width: u16,
 }
 
+/// One field set is shared by all command cells, including departures.
+#[derive(Clone, Eq, PartialEq)]
+struct CommandHeaderForm {
+    columns: Vec<usize>,
+}
+
+impl CommandHeaderForm {
+    fn columns(&self) -> &[usize] { &self.columns }
+}
+
+/// Width probes cannot replace a committed frame's field set.
+#[derive(Clone, Eq, PartialEq)]
+enum CommandFrameLayout {
+    Unprepared,
+    Prepared(CommandHeaderForm),
+    Committed(CommandHeaderForm),
+}
+
+/// These row policies must stay fixed between the capacity proof and paint.
+#[derive(Eq, PartialEq)]
+struct FrameLayoutPolicy {
+    header:         CommandFrameLayout,
+    summary_end:    TableRowEnd,
+    command_end:    TableRowEnd,
+    gap:            CellTableGap,
+    whole_commands: Vec<WholeShortCommandTable>,
+}
+
 /// Complete column slots and intrinsic widths before a cell drops or spaces them.
 #[derive(Clone)]
 struct FrameTableColumnGrid {
     /// Palette comparisons are shared by all parent and pid spans in this frame.
     family_inks:              Rc<RefCell<FrameFamilyInks>>,
     /// One gap for the command cells, independent of the summary's gap.
-    cell_gap:                 Rc<std::cell::Cell<CellTableGap>>,
+    cell_gap:                 Rc<Cell<CellTableGap>>,
     /// Shared row-end cells reserved only after a table omits process rows.
-    row_end:                  std::cell::Cell<TableRowEnd>,
+    row_end:                  Cell<TableRowEnd>,
     /// The frame decision remains shared when one whole Short table uses its edge.
-    frame_row_end:            Rc<std::cell::Cell<TableRowEnd>>,
+    frame_row_end:            Rc<Cell<TableRowEnd>>,
     /// Fully drawn Short tables that need the edge cells for a whole command name.
     whole_short_tables:       Rc<RefCell<Vec<WholeShortCommandTable>>>,
     layouts:                  Rc<RefCell<Vec<CachedTableLayout>>>,
     column_fits:              Rc<RefCell<Vec<(ColumnFitInputs, FittedTableColumns)>>>,
-    painted_rows:             Rc<RefCell<Vec<PaintedRowSpan<InvocationId>>>>,
+    command_layout:           Rc<RefCell<CommandFrameLayout>>,
+    painted_rows:             Rc<RefCell<Vec<ProcessRowPaint>>>,
     retained_ancestry:        Rc<RefCell<HashMap<InvocationId, u16>>>,
-    placement:                Rc<RefCell<Option<FramePlacement<InvocationId>>>>,
     prepared_rows:            Rc<RefCell<PreparedProcessRows>>,
     prepared_plans:           Rc<RefCell<Vec<CachedTablePlan>>>,
     /// Disjoint resources stay available even when a height cut hides their row.
@@ -3977,9 +4343,9 @@ impl FrameTableColumnGrid {
             whole_short_tables: std::rc::Rc::new(RefCell::new(Vec::new())),
             layouts: std::rc::Rc::new(RefCell::new(Vec::new())),
             column_fits: Rc::new(RefCell::new(Vec::new())),
+            command_layout: Rc::new(RefCell::new(CommandFrameLayout::Unprepared)),
             painted_rows: Rc::new(RefCell::new(Vec::new())),
             retained_ancestry: Rc::new(RefCell::new(HashMap::new())),
-            placement: Rc::new(RefCell::new(None)),
             prepared_rows: std::rc::Rc::new(RefCell::new(PreparedProcessRows::default())),
             prepared_plans: std::rc::Rc::new(RefCell::new(Vec::new())),
             contributions,
@@ -4083,6 +4449,17 @@ impl FrameTableColumnGrid {
 
     /// Apply the same reductions for every view and every table in the frame.
     fn columns_for_command_name(&self, width: u16) -> FittedTableColumns {
+        if self.kind == TableKind::Command
+            && let CommandFrameLayout::Prepared(form) | CommandFrameLayout::Committed(form) =
+                &*self.command_layout.borrow()
+        {
+            let columns = form.columns().to_vec();
+            return FittedTableColumns {
+                constraints: self.constraints(&columns),
+                value_width: width.saturating_sub(self.allocation_clearance(&columns)),
+                columns,
+            };
+        }
         let inputs = ColumnFitInputs {
             width,
             state: self.state_column,
@@ -4747,7 +5124,7 @@ struct CellTableLayout {
     family_inks:    Rc<RefCell<FrameFamilyInks>>,
     #[cfg(test)]
     table_width:    u16,
-    painted_rows:   Rc<RefCell<Vec<PaintedRowSpan<InvocationId>>>>,
+    painted_rows:   Rc<RefCell<Vec<ProcessRowPaint>>>,
     prepared_rows:  Rc<RefCell<PreparedProcessRows>>,
     prepared_plans: Rc<RefCell<Vec<CachedTablePlan>>>,
     /// The summary keeps readings beside rows; command headings keep their gauge.
@@ -5760,7 +6137,10 @@ fn draw_path_group(
             row.source.process.invocation_id.clone(),
             Rect::new(indented(area).x, top, indented(area).width, height),
         ) {
-            layout.painted_rows.borrow_mut().push(span);
+            layout.painted_rows.borrow_mut().push(ProcessRowPaint {
+                pid: row.source.process.pid,
+                span,
+            });
         }
         top = top.saturating_add(height);
     }
@@ -6339,7 +6719,7 @@ fn paint_table_header(
     let style = column_header_style(layout, faded);
     for (column, area) in painted_table_columns(area, layout) {
         let line = Line::from(Span::styled(
-            if visible[column] {
+            if layout.kind == TableKind::Command || visible[column] {
                 TABLE_HEADERS[column]
             } else {
                 ""
@@ -7177,6 +7557,7 @@ mod tests {
     use crate::census::scan::AncestryWalk;
     use crate::census::scan::CensusSequence;
     use crate::census::scan::Compiler;
+    use crate::census::scan::FixturePublication;
     use crate::census::scan::ProcessField;
     use crate::census::scan::ProcessObservation;
     use crate::census::scan::ProcessObservations;
@@ -7354,7 +7735,8 @@ mod tests {
         parent.command = CommandText::of("cargo", &["clippy", "--", "-D", "warnings"]);
         group.ancestry = AncestryWalk::Ended(vec![parent]);
         let mut roster = Roster::new();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let view = CommandView::new(
             ProcessHierarchy::Shown,
             ArgumentDetail::Default,
@@ -7469,7 +7851,8 @@ mod tests {
         let mut group = cargo_group(invocation(500, &["check"]));
         group.ancestry = AncestryWalk::LimitCut(vec![ancestor(100, "claude")]);
         let mut roster = Roster::new();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let stats = SccacheStats::new();
         let view = CommandView::new(
             ProcessHierarchy::Hidden,
@@ -7819,7 +8202,10 @@ mod tests {
             ancestry: AncestryWalk::Ended(vec![]),
         };
         app.roster
-            .observe(vec![group, cargo_group(other), cut_group], Instant::now());
+            .observe_invocations(&app.roster.fixture_with_ended_absences(
+                vec![group, cargo_group(other), cut_group],
+                Instant::now(),
+            ));
         let area = Rect::new(0, 0, 64, 50);
         let mut terminal =
             Terminal::new(TestBackend::new(area.width, area.height)).expect("terminal");
@@ -7925,7 +8311,10 @@ mod tests {
             }
             groups.push(group);
         }
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         app
     }
 
@@ -8038,7 +8427,10 @@ mod tests {
         groups.push(cargo_group(other));
         let mut app = App::new_for_test().expect("app");
         app.loaded_config.config.tiles.view = TileView::Cells;
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let terminal = draw_nested_progress(&mut app);
         let placements = app.tiles.placements(
             Rect::new(0, 0, 64, 50),
@@ -8097,7 +8489,12 @@ mod tests {
             placement_text(terminal.backend().buffer(), summary)
                 .matches("99.8%")
                 .count(),
-            1
+            0
+        );
+        let listed = placement_text(terminal.backend().buffer(), summary);
+        assert!(
+            !listed.contains("741928") && !listed.contains("742007"),
+            "{listed}"
         );
     }
 
@@ -8136,18 +8533,19 @@ mod tests {
             neighbour.path = "~/neighbour".into();
             neighbour.directory_identity = WorkingDirectoryIdentity::Absolute("/neighbour".into());
             neighbour.resource_use.memory = first.resource_use.memory;
-            app.roster.observe(
-                vec![
-                    CargoGroup {
-                        lead: first,
-                        rest,
-                        ancestry: AncestryWalk::Ended(vec![]),
-                    },
-                    cargo_group(other),
-                    cargo_group(neighbour),
-                ],
-                Instant::now(),
-            );
+            app.roster
+                .observe_invocations(&app.roster.fixture_with_ended_absences(
+                    vec![
+                        CargoGroup {
+                            lead: first,
+                            rest,
+                            ancestry: AncestryWalk::Ended(vec![]),
+                        },
+                        cargo_group(other),
+                        cargo_group(neighbour),
+                    ],
+                    Instant::now(),
+                ));
             let terminal = draw_nested_progress(&mut app);
             let placements = app.tiles.placements(
                 Rect::new(0, 0, 64, 50),
@@ -8232,7 +8630,10 @@ mod tests {
             }
             groups.push(group);
         }
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let terminal = draw_nested_progress(&mut app);
         let placements = app.tiles.placements(
             Rect::new(0, 0, 64, 50),
@@ -8324,7 +8725,10 @@ mod tests {
             }
             groups.push(group);
         }
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         app
     }
 
@@ -8371,7 +8775,10 @@ mod tests {
             64,
             64 * BYTES_PER_GIBIBYTE,
         ));
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         app
     }
 
@@ -8745,14 +9152,14 @@ mod tests {
             32,
             128 * BYTES_PER_GIBIBYTE,
         ));
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
     #[test]
-    fn a_forty_column_summary_keeps_listed_commands_before_celled_copies() {
+    fn a_forty_column_summary_keeps_each_listed_invocation_once() {
         let roster = forty_column_summary_roster();
-        let area = Rect::new(0, 0, 40, 49);
+        let area = Rect::new(0, 0, 40, 48);
         let sccache = SccacheStats::new();
         let hidden = hidden_commands();
         let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
@@ -8770,11 +9177,10 @@ mod tests {
             .find(|p| p.content == TileContent::Summary)
             .expect("summary");
         let text = placement_text(&buffer, summary);
-        // Listed commands own mandatory rows. A command with a cell may use
-        // spare summary rows, but cannot displace those required commands.
-        let selection = SummaryRows::of(&cells.roster, &cells.grids.summary.0);
-        assert!(!selection.listed.is_empty(), "exercise a full tile");
-        for row in selection.listed {
+        // Each listed invocation owns a summary row in the committed placement.
+        let selection = SummaryRows::of(&cells.process_rows, &cells.placement.borrow());
+        assert!(!selection.listed().is_empty(), "exercise a full tile");
+        for row in selection.listed() {
             assert!(text.contains(&row.process.pid.to_string()), "{text}");
         }
         let frame = buffer_rows(&buffer).join("\n");
@@ -8845,7 +9251,7 @@ mod tests {
         );
         let groups = CensusSequence::default().sample(&records);
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         let stats = SccacheStats::default();
         let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 50);
         let area = Rect::new(0, 0, 200, 50);
@@ -8902,7 +9308,10 @@ mod tests {
                 scan
             })
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let stats = SccacheStats::default();
         let cells = Cells::for_frame(app.roster.visible(&[]), CommandView::short(), &stats, 120);
         let area = Rect::new(0, 0, 46, 30);
@@ -9063,7 +9472,7 @@ mod tests {
             group
         })
         .collect();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         let stats = SccacheStats::default();
         let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 32);
         let allocations: Vec<_> = roster
@@ -9264,7 +9673,10 @@ mod tests {
                 }
             })
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         if !blocked {
             let groups = app
                 .roster
@@ -9283,7 +9695,10 @@ mod tests {
                     }
                 })
                 .collect();
-            app.roster.observe(groups, Instant::now());
+            app.roster.observe_invocations(
+                &app.roster
+                    .fixture_with_ended_absences(groups, Instant::now()),
+            );
         }
         {
             let stats = SccacheStats::default();
@@ -9550,7 +9965,10 @@ mod tests {
                     }
                 })
                 .collect();
-            app.roster.observe(groups, Instant::now());
+            app.roster.observe_invocations(
+                &app.roster
+                    .fixture_with_ended_absences(groups, Instant::now()),
+            );
         }
         let texts = state_frame_text_when_settled(&mut app, 64, 50);
         assert_eq!(texts.len(), 8);
@@ -9660,7 +10078,8 @@ mod tests {
                 )
             })
             .collect();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let stats = SccacheStats::default();
         let area = LARGE_TABLE_TEST_AREA;
         let cells = Cells::for_frame(
@@ -9820,13 +10239,13 @@ mod tests {
     #[test]
     fn a_zero_width_table_skips_process_layout() {
         let mut roster = Roster::default();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(invocation(
                 LARGE_TABLE_TEST_FIRST_PID,
                 &LARGE_TABLE_TEST_COMMAND,
             ))],
             Instant::now(),
-        );
+        ));
         let stats = SccacheStats::default();
         let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
         let content = TileContent::Group(roster.groups()[0].id.clone());
@@ -10060,7 +10479,10 @@ mod tests {
                 }
             })
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         for width in 54..=56 {
             let texts = state_frame_text_when_settled(&mut app, width, 50);
             let blocked = texts
@@ -10115,11 +10537,13 @@ mod tests {
             assert_eq!(texts.len(), 8);
             let mut memory_offsets = Vec::new();
             let mut cpu_offsets = Vec::new();
+            let mut headers = Vec::new();
             for text in &texts {
                 let header = text
                     .lines()
                     .find(|line| line.contains("command"))
                     .expect(text);
+                headers.push(header.split_whitespace().collect::<Vec<_>>());
                 let memory_at = header.find("mem");
                 memory_offsets.push(memory_at);
                 let process = text
@@ -10127,7 +10551,11 @@ mod tests {
                     .find(|line| line.trim_start().starts_with("316"))
                     .expect(text);
                 if let Some(memory_at) = memory_at {
-                    let memory: String = process.chars().skip(memory_at).take(5).collect();
+                    let memory: String = process
+                        .chars()
+                        .skip(memory_at.saturating_add(3).saturating_sub(5))
+                        .take(5)
+                        .collect();
                     assert!(memory.trim().ends_with('G'), "{text}");
                 }
                 if width >= 65 {
@@ -10137,14 +10565,27 @@ mod tests {
                     cpu_offsets.push(offset);
                 }
                 if text.contains("3160100") {
-                    assert!(
-                        header.contains("state") && text.contains("blocked"),
-                        "{text}"
-                    );
-                } else {
-                    assert!(!header.contains("state"), "{text}");
+                    if header.contains("state") {
+                        assert!(text.contains("blocked"), "{text}");
+                    }
+                } else if let Some(state_at) = header.find("state") {
+                    let state: String = process
+                        .chars()
+                        .skip(state_at)
+                        .take(
+                            header
+                                .find("command")
+                                .expect("command column")
+                                .saturating_sub(state_at),
+                        )
+                        .collect();
+                    assert!(state.trim().is_empty(), "{text}");
                 }
             }
+            assert!(
+                headers.iter().all(|header| *header == headers[0]),
+                "{texts:#?}"
+            );
             assert!(
                 memory_offsets
                     .iter()
@@ -10180,7 +10621,10 @@ mod tests {
                 }
             })
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         for width in [48, 49, 50, 51, 52] {
             let grids = FrameColumnGrids::new(&app.roster, &[], CommandView::short());
             let grid = &grids.commands.0;
@@ -10256,7 +10700,10 @@ mod tests {
         let mut other = invocation(830_000, &["nextest", "run", "--workspace"]);
         other.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         groups.push(cargo_group(other));
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         app
     }
 
@@ -10580,7 +11027,10 @@ mod tests {
             cargo_group(process)
         })
         .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let area = Rect::new(0, 0, 22, 24);
         let mut terminal = Terminal::new(TestBackend::new(22, 25)).expect("terminal");
         terminal
@@ -10613,11 +11063,13 @@ mod tests {
     fn a_last_short_summary_row_keeps_whole_words_before_its_mark() {
         let mut app = App::new_for_test().expect("test app");
         app.loaded_config.config.tiles.view = TileView::Summary;
-        app.roster.observe(
-            (1_234_567..1_234_570)
-                .map(|pid| cargo_group(invocation(pid, &["nextest", "run", "--tests"])))
-                .collect(),
-            Instant::now(),
+        app.roster.observe_invocations(
+            &app.roster.fixture_with_ended_absences(
+                (1_234_567..1_234_570)
+                    .map(|pid| cargo_group(invocation(pid, &["nextest", "run", "--tests"])))
+                    .collect(),
+                Instant::now(),
+            ),
         );
         let area = Rect::new(0, 0, 33, 6);
         let mut terminal = Terminal::new(TestBackend::new(33, 7)).expect("terminal");
@@ -10775,7 +11227,7 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_uses_cells_below_a_six_row_summary_without_clearing_its_foot() {
+    fn a_toast_uses_cells_below_a_compact_summary_without_clearing_its_foot() {
         let mut app = App::new_for_test().expect("test app");
         app.started = Instant::now();
         let mut process = invocation(500, &["check"]);
@@ -10799,7 +11251,7 @@ mod tests {
             .iter()
             .position(|line| line.contains("content rows:"))
             .expect("summary foot");
-        assert_eq!(foot, 4, "{:?}", buffer_rows(&bare));
+        assert_eq!(foot, 2, "{:?}", buffer_rows(&bare));
         app.framework.toasts.push_persistent(
             "toast title",
             "body",
@@ -10920,7 +11372,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_compiler_and_runs_slot_returns_a_cut_commands_last_argument() {
+    fn one_command_form_keeps_a_short_cells_last_argument() {
         let mut app = App::new_for_test().expect("test app");
         app.tree = ProcessHierarchy::Shown;
         app.arguments = ArgumentDetail::All;
@@ -10951,23 +11403,24 @@ mod tests {
         );
         second.resource_use.compiler = CompilerObservation::None;
         second.managed = Measurement::Unavailable(MeasurementAbsence::FirstObservation);
-        app.roster.observe(
-            vec![
-                CargoGroup {
-                    lead:     first,
-                    rest:     (501..521).map(|pid| invocation(pid, &["check"])).collect(),
-                    ancestry: AncestryWalk::Ended(vec![]),
-                },
-                CargoGroup {
-                    lead:     second,
-                    rest:     vec![],
-                    ancestry: AncestryWalk::Ended(vec![]),
-                },
-            ],
-            Instant::now(),
-        );
-        let area = Rect::new(0, 0, 126, 22);
-        let mut terminal = Terminal::new(TestBackend::new(126, 23)).expect("terminal");
+        app.roster
+            .observe_invocations(&app.roster.fixture_with_ended_absences(
+                vec![
+                    CargoGroup {
+                        lead:     first,
+                        rest:     (501..521).map(|pid| invocation(pid, &["check"])).collect(),
+                        ancestry: AncestryWalk::Ended(vec![]),
+                    },
+                    CargoGroup {
+                        lead:     second,
+                        rest:     vec![],
+                        ancestry: AncestryWalk::Ended(vec![]),
+                    },
+                ],
+                Instant::now(),
+            ));
+        let area = Rect::new(0, 0, 126, 27);
+        let mut terminal = Terminal::new(TestBackend::new(126, 28)).expect("terminal");
         terminal
             .draw(|frame| {
                 draw_panes(frame, &mut app, area, TileGridContents::Shown);
@@ -10990,10 +11443,13 @@ mod tests {
             .expect("second cell");
         let text = placement_text(terminal.backend().buffer(), second);
         assert!(text.contains("--no-capture"), "{text}");
-        assert!(
-            !text.contains("compiler") && !text.contains("runs"),
-            "{text}"
-        );
+        let second_header = text
+            .lines()
+            .find(|line| line.contains("pid"))
+            .expect("second header")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let first = placements
             .iter()
             .find(|placement| {
@@ -11001,7 +11457,14 @@ mod tests {
             })
             .expect("first cell");
         let text = placement_text(terminal.backend().buffer(), first);
-        assert!(text.contains("compiler") && text.contains("runs"), "{text}");
+        let first_header = text
+            .lines()
+            .find(|line| line.contains("pid"))
+            .expect("first header")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(first_header, second_header, "one form for command cells");
     }
 
     #[test]
@@ -11034,7 +11497,10 @@ mod tests {
                 }
             })
             .collect();
-        app.roster.observe(groups, Instant::now());
+        app.roster.observe_invocations(
+            &app.roster
+                .fixture_with_ended_absences(groups, Instant::now()),
+        );
         let area = Rect::new(0, 0, 126, 66);
         let mut terminal =
             Terminal::new(TestBackend::new(area.width, area.height + 1)).expect("terminal");
@@ -11085,8 +11551,9 @@ mod tests {
         whole.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
         let mut first = invocation(1_000_000, &["check"]);
         first.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
-        app.roster.observe(
-            vec![
+        app.roster
+            .observe_invocations(&app.roster.fixture_with_ended_absences(
+                vec![
                 CargoGroup {
                     lead:     first,
                     rest:     (1_000_001..1_000_031)
@@ -11104,8 +11571,8 @@ mod tests {
                 cargo_group(invocation(1_234_568, &["check"])),
                 cargo_group(invocation(1_234_569, &["check"])),
             ],
-            Instant::now(),
-        );
+                Instant::now(),
+            ));
         let area = Rect::new(0, 0, 84, 24);
         let mut terminal = Terminal::new(TestBackend::new(84, 25)).expect("terminal");
         terminal
@@ -11163,8 +11630,9 @@ mod tests {
             });
             process
         };
-        app.roster.observe(
-            vec![
+        app.roster
+            .observe_invocations(&app.roster.fixture_with_ended_absences(
+                vec![
                 CargoGroup {
                     lead:     make_lead(500),
                     rest:     (501..551)
@@ -11182,8 +11650,8 @@ mod tests {
                     ancestry: AncestryWalk::Ended(vec![]),
                 },
             ],
-            Instant::now(),
-        );
+                Instant::now(),
+            ));
         let area = Rect::new(0, 0, 126, 50);
         let mut terminal = Terminal::new(TestBackend::new(126, 51)).expect("terminal");
         terminal
@@ -11268,6 +11736,7 @@ mod tests {
         );
         let area = Rect::new(0, 0, 160, 6);
         let mut headers = Vec::new();
+        let mut bodies = Vec::new();
         for source in [&waiting, &running] {
             let mut buffer = Buffer::empty(area);
             frame_draw_process_table(
@@ -11279,9 +11748,12 @@ mod tests {
                 &grid,
             );
             headers.push(buffer_line(&buffer, 0));
+            bodies.push(buffer_line(&buffer, 2));
         }
         assert!(headers[0].contains("state"), "{headers:#?}");
-        assert!(!headers[1].contains("state"), "{headers:#?}");
+        assert_eq!(headers[0], headers[1], "one command header form");
+        assert!(bodies[0].contains("blocked"));
+        assert!(!bodies[1].contains("blocked"));
         for title in ["pid", "parent", "start", "dur", "cpu", "mem"] {
             assert_eq!(
                 headers[0].find(title),
@@ -11319,7 +11791,7 @@ mod tests {
             headers.push(buffer_line(&buffer, 0));
         }
         assert!(headers[0].contains("state"));
-        assert!(!headers[1].contains("state"));
+        assert_eq!(headers[0], headers[1], "one command header form");
         assert_eq!(headers[0].find("pid"), headers[1].find("pid"));
         let waiting_command = headers[0].find("command").unwrap();
         let running_command = headers[1].find("command").unwrap();
@@ -11349,9 +11821,20 @@ mod tests {
             "{:?}",
             buffer_rows(&long_buffer)
         );
-        for title in ["start", "state"] {
-            assert!(!header.contains(title), "{:?}", buffer_rows(&long_buffer));
-        }
+        assert!(!header.contains("start"), "{:?}", buffer_rows(&long_buffer));
+        assert!(header.contains("state"), "{:?}", buffer_rows(&long_buffer));
+        let mut waiting_buffer = Buffer::empty(long_area);
+        frame_draw_process_table(
+            &mut waiting_buffer,
+            long_area,
+            &[&long_waiting],
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            &long_grid,
+        );
+        assert_eq!(header, buffer_line(&waiting_buffer, 0));
+        assert!(buffer_rows(&waiting_buffer).join("\n").contains("blocked"));
+        assert!(!buffer_rows(&long_buffer).join("\n").contains("blocked"));
     }
 
     #[test]
@@ -11369,7 +11852,9 @@ mod tests {
                     AncestryWalk::Ended(ancestors)
                 };
                 let mut roster = Roster::new();
-                roster.observe(vec![group], Instant::now());
+                roster.observe_invocations(
+                    &roster.fixture_with_ended_absences(vec![group], Instant::now()),
+                );
                 let area = Rect::new(0, 0, 40, height);
                 let mut buffer = Buffer::empty(area);
                 draw_group(
@@ -11402,7 +11887,8 @@ mod tests {
         let mut group = cargo_group(invocation(500, &["check"]));
         group.ancestry = AncestryWalk::Ended(vec![ancestor(100, "cargo …")]);
         let mut roster = Roster::new();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let area = Rect::new(0, 0, 80, 12);
         let mut buffer = Buffer::empty(area);
         draw_group(
@@ -11526,9 +12012,11 @@ mod tests {
         group.rest = initial;
         let mut roster = Roster::new();
         let now = Instant::now();
-        roster.observe(vec![group.clone()], now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(vec![group.clone()], now));
         group.rest = live;
-        roster.observe(vec![group], now + Duration::from_millis(1));
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(vec![group], now + Duration::from_millis(1)),
+        );
         assert!(roster.groups()[0].rows().any(TrackedRow::is_ended));
         roster
     }
@@ -11744,7 +12232,7 @@ mod tests {
             headers.push(buffer_line(&buffer, 0));
         }
         assert!(headers[0].contains("state"), "{headers:#?}");
-        assert!(!headers[1].contains("state"), "{headers:#?}");
+        assert_eq!(headers[0], headers[1], "one command header form");
         assert_eq!(
             headers[0].find("pid"),
             headers[1].find("pid"),
@@ -12057,7 +12545,10 @@ mod tests {
             }),
         );
         let mut roster = Roster::new();
-        roster.observe(CensusSequence::default().sample(&records), Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
+            CensusSequence::default().sample(&records),
+            Instant::now(),
+        ));
         let hidden = Vec::new();
         let area = Rect::new(0, 0, 160, 12);
         let mut buffer = Buffer::empty(area);
@@ -12270,10 +12761,10 @@ mod tests {
         let mut second = invocation(234_567, &["build", "--release"]);
         second.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(58, 100)));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(first), cargo_group(second)],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         for view in [CommandView::short(), CommandView::long()] {
             let area = Rect::new(0, 0, 46, 16);
@@ -12300,7 +12791,8 @@ mod tests {
         let mut group = cargo_group(invocation(500, &["check"]));
         group.ancestry = AncestryWalk::LimitCut(vec![ancestor(100, "claude")]);
         let mut roster = Roster::new();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let sccache = SccacheStats::new();
         for view in [CommandView::short(), CommandView::long()] {
             let cells = Cells::new(&roster, &[], view, &sccache);
@@ -12343,24 +12835,23 @@ mod tests {
     }
 
     #[test]
-    fn one_visible_command_keeps_its_reading_when_the_other_cannot_fit_the_frame() {
+    fn compact_summary_keeps_both_listed_readings_before_directory_heading() {
         let mut first = invocation(500, &["check"]);
         first.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(84, 100)));
         let mut second = invocation(501, &["check"]);
         second.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(58, 100)));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(first), cargo_group(second)],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &sccache, 3);
         let area = Rect::new(0, 0, 160, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
-        assert!(!buffer_line(&buffer, 1).contains('%'));
-        assert!(buffer_line(&buffer, 2).contains("84%"));
-        assert!(!buffer_line(&buffer, 2).contains("58%"));
+        assert!(buffer_line(&buffer, 1).contains("500") && buffer_line(&buffer, 1).contains("84%"));
+        assert!(buffer_line(&buffer, 2).contains("501") && buffer_line(&buffer, 2).contains("58%"));
     }
 
     #[test]
@@ -12370,10 +12861,10 @@ mod tests {
         let mut second = invocation(501, &["check"]);
         second.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(58, 100)));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(first), cargo_group(second)],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for (group, reading) in roster.groups().iter().zip(["84%", "58%"]) {
@@ -12397,7 +12888,9 @@ mod tests {
                 let mut group = cargo_group(invocation(500, &["check"]));
                 group.ancestry = AncestryWalk::LimitCut(levels);
                 let mut roster = Roster::new();
-                roster.observe(vec![group], Instant::now());
+                roster.observe_invocations(
+                    &roster.fixture_with_ended_absences(vec![group], Instant::now()),
+                );
                 let area = Rect::new(0, 0, 160, 20);
                 let mut buffer = Buffer::empty(area);
                 draw_group(
@@ -12475,10 +12968,10 @@ mod tests {
         second.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(65, 100)));
         let third = invocation(1_727_355, &["test"]);
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(first), cargo_group(second), cargo_group(third)],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         let area = Rect::new(1, 1, width - 2, 8);
         let cells = Cells::for_frame(roster.visible(&[]), view, &sccache, area.height);
@@ -12762,10 +13255,25 @@ mod tests {
         let roster = directory_rich_roster(&[1, 6, 1, 1]);
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
-        for (height, drawn) in [(12, 12), (11, 11), (10, 10), (9, 9)] {
-            let use_rows = cells.row_use(&TileContent::Summary, Rect::new(0, 0, 160, height));
-            assert_eq!(use_rows.drawn, drawn);
-            assert_eq!(use_rows.kept, 9);
+        for height in [27, 26, 25, 24] {
+            let area = Rect::new(0, 0, 160, height);
+            let use_rows = cells.row_use(&TileContent::Summary, area);
+            assert_eq!(use_rows.drawn, height);
+            assert_eq!(use_rows.kept, 19);
+            let mut buffer = Buffer::empty(area);
+            cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
+            let text = buffer_rows(&buffer).join("\n");
+            for row in roster.groups().iter().flat_map(TrackedGroup::rows) {
+                assert_eq!(
+                    text.lines()
+                        .filter(|line| line
+                            .split_whitespace()
+                            .any(|word| word == row.process.pid.to_string()))
+                        .count(),
+                    1,
+                    "{text}"
+                );
+            }
         }
     }
 
@@ -12818,8 +13326,8 @@ mod tests {
         let mut group = cargo_group(invocation(500, &["check"]));
         group.ancestry = AncestryWalk::LimitCut(vec![ancestor(100, "claude")]);
         let mut roster = Roster::new();
-        roster.observe(vec![group], now);
-        roster.observe(vec![], now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(vec![group], now));
+        roster.observe_invocations(&roster.fixture_with_ended_absences(vec![], now));
         roster.advance(
             now + std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(4),
@@ -13002,7 +13510,12 @@ mod tests {
             process.resource_use.cpu =
                 Measurement::Reading(cpu.trim_end_matches('%').parse::<f32>().unwrap());
             process.resource_use.memory = Measurement::Reading(memory);
-            roster.observe(vec![cargo_group(process.clone())], Instant::now());
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(
+                    vec![cargo_group(process.clone())],
+                    Instant::now(),
+                ),
+            );
             let grids = FrameColumnGrids::new(&roster, &[], CommandView::long());
             let rows = [&roster.groups()[0].lead];
             let mut frame_headers = Vec::new();
@@ -13123,7 +13636,10 @@ mod tests {
         last.path = "~/last".to_string();
         last.directory_identity = WorkingDirectoryIdentity::Absolute("/last".into());
         let mut roster = Roster::new();
-        roster.observe(vec![cargo_group(first), cargo_group(last)], Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
+            vec![cargo_group(first), cargo_group(last)],
+            Instant::now(),
+        ));
         let area = Rect::new(0, 0, 40, 3);
         let mut buffer = Buffer::empty(area);
         draw_summary(
@@ -13150,7 +13666,10 @@ mod tests {
             16,
             16 * BYTES_PER_GIBIBYTE,
         ));
-        roster.observe(vec![cargo_group(first), cargo_group(last)], Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
+            vec![cargo_group(first), cargo_group(last)],
+            Instant::now(),
+        ));
         let area = Rect::new(0, 0, 40, 5);
         let mut buffer = Buffer::empty(area);
         draw_summary(
@@ -13766,7 +14285,10 @@ mod tests {
         });
         wide.managed = Measurement::Reading(123);
         let mut roster = Roster::new();
-        roster.observe(vec![cargo_group(narrow), cargo_group(wide)], Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
+            vec![cargo_group(narrow), cargo_group(wide)],
+            Instant::now(),
+        ));
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for width in [64, 200] {
@@ -13878,7 +14400,7 @@ mod tests {
         );
         lead.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(998, 1000)));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![
                 CargoGroup {
                     lead,
@@ -13891,7 +14413,7 @@ mod tests {
                 cargo_group(invocation(4200, &["check"])),
             ],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         for width in [38, 62, 198] {
@@ -13931,7 +14453,7 @@ mod tests {
     }
 
     #[test]
-    fn a_column_whose_only_value_is_hidden_draws_no_header() {
+    fn a_hidden_value_keeps_the_shared_header_and_an_empty_slot() {
         let lead = same_second("/workspace/project", 4100);
         let mut later = same_second("/workspace/project", 4101);
         later.process.managed = Measurement::Reading(1);
@@ -13942,7 +14464,7 @@ mod tests {
         visible.process.resource_use.compiler = CompilerObservation::Unknown;
         visible.process.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![
                 CargoGroup {
                     lead:     lead.process,
@@ -13952,7 +14474,7 @@ mod tests {
                 cargo_group(visible.process),
             ],
             Instant::now(),
-        );
+        ));
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &[], CommandView::long(), &sccache);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 200, 8));
@@ -13966,7 +14488,9 @@ mod tests {
         }
         let hidden = buffer_line(&buffer, 0);
         let visible = buffer_line(&buffer, 4);
-        assert!(!hidden.contains("state"), "{hidden:?}");
+        assert_eq!(hidden, visible, "one command header form");
+        assert!(!buffer_line(&buffer, 2).contains("blocked"));
+        assert!(buffer_line(&buffer, 6).contains("blocked"));
         assert!(visible.contains("state"), "{visible:?}");
         for title in ["pid", "parent", "start", "dur", "cpu", "mem"] {
             assert_eq!(
@@ -13976,16 +14500,17 @@ mod tests {
             );
         }
         for column in [COMPILER_COLUMN, MANAGED_COLUMN] {
-            assert!(!hidden.contains(TABLE_HEADERS[column]), "{hidden:?}");
-            if let Some(slot) = visible.find(TABLE_HEADERS[column]) {
+            assert_eq!(
+                hidden.find(TABLE_HEADERS[column]),
+                visible.find(TABLE_HEADERS[column])
+            );
+            if let Some(slot) = hidden.find(TABLE_HEADERS[column]) {
                 for offset in 0..TABLE_HEADERS[column].len() {
                     assert_eq!(
-                        buffer[(u16::try_from(slot + offset).unwrap(), 0)].symbol(),
+                        buffer[(u16::try_from(slot + offset).unwrap(), 2)].symbol(),
                         " "
                     );
                 }
-            } else {
-                assert_eq!(column, COMPILER_COLUMN);
             }
         }
         for column in [
@@ -14280,11 +14805,13 @@ mod tests {
         let live = memory_invocation(4100, Measurement::Reading(BYTES_PER_GIBIBYTE));
         let ended = memory_invocation(4200, Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2));
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![cargo_group(live.clone()), cargo_group(ended)],
             Instant::now(),
+        ));
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(vec![cargo_group(live)], Instant::now()),
         );
-        roster.observe(vec![cargo_group(live)], Instant::now());
 
         assert_eq!(
             memory_total(&roster.visible(&[])),
@@ -15078,7 +15605,7 @@ mod tests {
             .map(|&(pid, memory)| cargo_group(memory_invocation(pid, memory)))
             .collect();
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -15113,11 +15640,13 @@ mod tests {
         let mut baseline = Roster::new();
         let mut roster = Roster::new();
         let visible = make_family(6100, "test");
-        baseline.observe(vec![visible.clone()], Instant::now());
-        roster.observe(
+        baseline.observe_invocations(
+            &baseline.fixture_with_ended_absences(vec![visible.clone()], Instant::now()),
+        );
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![make_family(6000, PORT_SUBCOMMAND_NAME), visible],
             Instant::now(),
-        );
+        ));
         let stats = SccacheStats::default();
         let hidden = hidden_commands();
         let area = Rect::new(0, 0, 160, 15);
@@ -15155,23 +15684,23 @@ mod tests {
         }
         let now = Instant::now();
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead:     lead.clone(),
                 rest:     vec![hidden.clone(), sibling],
                 ancestry: AncestryWalk::Ended(Vec::new()),
             }],
             now,
-        );
+        ));
         lead.managed = Measurement::Reading(1);
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead,
                 rest: vec![hidden],
                 ancestry: AncestryWalk::Ended(Vec::new()),
             }],
             now,
-        );
+        ));
         let stats = SccacheStats::default();
         let area = Rect::new(0, 0, 160, 15);
         let mut buffer = Buffer::empty(area);
@@ -15380,7 +15909,7 @@ mod tests {
             pid: lead.pid,
         };
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![
                 CargoGroup {
                     lead,
@@ -15393,7 +15922,7 @@ mod tests {
                 )),
             ],
             Instant::now(),
-        );
+        ));
         let hidden = hidden_commands();
         let stats = SccacheStats::default();
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &stats);
@@ -15474,15 +16003,21 @@ mod tests {
         fade: Duration,
         inspect: impl FnOnce(&Cells<'_>, &TileGrid<InvocationId>, &Roster),
     ) -> (Buffer, Vec<ForeignLoadPaintedRow>) {
+        foreign_load_frame_in_view(roster, grid, area, fade, CommandView::short(), inspect)
+    }
+
+    fn foreign_load_frame_in_view(
+        roster: &mut Roster,
+        grid: &mut TileGrid<InvocationId>,
+        area: Rect,
+        fade: Duration,
+        view: &CommandView,
+        inspect: impl FnOnce(&Cells<'_>, &TileGrid<InvocationId>, &Roster),
+    ) -> (Buffer, Vec<ForeignLoadPaintedRow>) {
         let visible = roster.visible(&[]);
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(
-            visible,
-            CommandView::short(),
-            &stats,
-            area.height.saturating_sub(3),
-        )
-        .with_fade(fade);
+        let cells =
+            Cells::for_frame(visible, view, &stats, area.height.saturating_sub(3)).with_fade(fade);
         let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
             &mut buffer,
@@ -15601,14 +16136,15 @@ mod tests {
         grid.set_motion_elapsed_for_test(Duration::ZERO);
         let mut invariant = CaptureFrameInvariant::default();
         let fade = Duration::from_millis(48);
-        roster.observe(groups[..1].to_vec(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups[..1].to_vec(), now));
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         grid.settle_for_test();
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         let ended = now;
-        roster.observe(groups[1..].to_vec(), ended);
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(groups[1..].to_vec(), ended));
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         let mut during_departure = Buffer::empty(area);
@@ -15707,9 +16243,15 @@ mod tests {
                 let now = start_time + Duration::from_millis(offset + millis);
                 if millis == 0 || millis == 16 {
                     let count = if millis == 0 { 2 } else { 4 };
-                    roster.observe(groups[start..start + count].to_vec(), now);
+                    roster.observe_invocations(
+                        &roster.fixture_with_ended_absences(
+                            groups[start..start + count].to_vec(),
+                            now,
+                        ),
+                    );
                 } else if millis == 64 {
-                    roster.observe(Vec::new(), now);
+                    roster
+                        .observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), now));
                 }
                 roster.advance(now, fade);
                 let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -15762,7 +16304,7 @@ mod tests {
         grid.set_motion_duration_for_test(Duration::from_millis(48));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
         let mut invariant = CaptureFrameInvariant::default();
-        roster.observe(groups[..1].to_vec(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups[..1].to_vec(), now));
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         grid.settle_for_test();
@@ -15788,12 +16330,13 @@ mod tests {
             };
             groups[0].rest.push(child);
         }
-        roster.observe(groups[..1].to_vec(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups[..1].to_vec(), now));
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         // These children grow A's cell, not the summary's required row set.
-        // B must not queue behind a resize measured from optional summary rows.
-        roster.observe(groups.clone(), now);
+        // B must not queue behind a resize measured from optional summary
+        // rows.
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), now));
         let frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&frame, &grid, &roster, 0, fade);
         let mut saw_resized_resident = false;
@@ -15854,7 +16397,8 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(48));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups[..6].to_vec(), start);
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(groups[..6].to_vec(), start));
         let mut invariant = CaptureFrameInvariant::default();
         let first_frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&first_frame, &grid, &roster, 0, fade);
@@ -15870,7 +16414,7 @@ mod tests {
                 .filter(|(index, _)| *index != 3 && (*index != 4 || millis < 300))
                 .map(|(_, group)| group.clone())
                 .collect();
-            roster.observe(active, now);
+            roster.observe_invocations(&roster.fixture_with_ended_absences(active, now));
             roster.advance(now, fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -15955,7 +16499,8 @@ mod tests {
                 .collect::<Vec<_>>();
             let identities = active.iter().map(CargoGroup::id).collect::<Vec<_>>();
             if identities != observed {
-                roster.observe(active.clone(), now);
+                roster
+                    .observe_invocations(&roster.fixture_with_ended_absences(active.clone(), now));
                 observed = identities;
             }
             roster.advance(now, fade);
@@ -16012,7 +16557,9 @@ mod tests {
     fn frame_check_rejects_a_heading_only_arrival() {
         let groups = live_scan_groups(1);
         let mut roster = Roster::new();
-        roster.observe(groups.clone(), Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(groups.clone(), Instant::now()),
+        );
         let area = Rect::new(0, 0, 40, 8);
         let mut buffer = Buffer::empty(area);
         draw_group(
@@ -16060,10 +16607,10 @@ mod tests {
                 records.push(cargo);
             }
             let records = ProcessObservations::new(records);
-            roster.observe(
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
                 sequence.sample(&records),
                 start + Duration::from_millis(millis),
-            );
+            ));
             roster.advance(start + Duration::from_millis(millis), fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -16223,7 +16770,9 @@ mod tests {
                 &ProcessObservations::new(records),
                 if millis < 80 { &unpublished } else { &capture },
             );
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, start + Duration::from_millis(millis)),
+            );
             roster.advance(start + Duration::from_millis(millis), fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -16270,7 +16819,7 @@ mod tests {
         grid.set_min_tile_width(80);
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups.clone(), start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), start));
         let mut invariant = CaptureFrameInvariant::default();
         for _ in 0..2 {
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -16278,7 +16827,10 @@ mod tests {
             grid.settle_for_test();
         }
         for millis in (0..=88).step_by(8) {
-            roster.observe(groups[1..].to_vec(), start + Duration::from_millis(millis));
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
+                groups[1..].to_vec(),
+                start + Duration::from_millis(millis),
+            ));
             roster.advance(start + Duration::from_millis(millis), fade);
             if (8..=40).contains(&millis) {
                 grid.set_min_tile_width(40);
@@ -16372,7 +16924,10 @@ mod tests {
             if chain && millis >= 32 {
                 assert_eq!(groups[0].id(), owner, "oldest owner at {millis}ms");
             }
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_published_scan(
+                sequence.publication(),
+                start + Duration::from_millis(millis),
+            );
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
             invariant.assert_valid();
@@ -16409,7 +16964,9 @@ mod tests {
                 if millis < 16 { 1 } else { 3 },
                 "branch identity at {millis}ms"
             );
-            roster.observe(groups, now + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, now + Duration::from_millis(millis)),
+            );
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
             assert!(roster.groups().iter().all(|g| !g.lead.is_ended()));
@@ -16478,7 +17035,9 @@ mod tests {
                 "distinct tree invocations at {millis}ms"
             );
             let expected_cells = groups.len();
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, start + Duration::from_millis(millis)),
+            );
             if millis == 0 {
                 for _ in 0..2 {
                     let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -16531,7 +17090,7 @@ mod tests {
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
         let mut invariant = CaptureFrameInvariant::default();
-        roster.observe(groups.clone(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), now));
         for _ in 0..2 {
             let buffer = scanned_grid_frame(&mut roster, &mut grid, full, fade);
             invariant.check(&buffer, &grid, &roster, 0, fade);
@@ -16543,14 +17102,14 @@ mod tests {
             } else {
                 full
             };
-            roster.observe(
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
                 if millis < 24 {
                     groups.clone()
                 } else {
                     Vec::new()
                 },
                 now + Duration::from_millis(millis),
-            );
+            ));
             roster.advance(now + Duration::from_millis(millis), fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -16699,7 +17258,10 @@ mod tests {
         let mut columns = Vec::new();
         for (frame, &summary) in summary.iter().enumerate() {
             let millis = u64::try_from(frame).expect("frame") * 8;
-            roster.observe(groups.clone(), start + Duration::from_millis(millis));
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
+                groups.clone(),
+                start + Duration::from_millis(millis),
+            ));
             let cells = SummaryAdmissionCells {
                 body: RequiredBodyCells {
                     groups: &groups,
@@ -16773,7 +17335,9 @@ mod tests {
                     "branch merged after missing scan at {millis}ms"
                 );
             }
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, start + Duration::from_millis(millis)),
+            );
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
             invariant.assert_valid();
@@ -16790,7 +17354,9 @@ mod tests {
         grid.set_motion_duration_for_test(Duration::from_millis(96));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
         let mut roster = Roster::new();
-        roster.observe(groups.clone(), Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(groups.clone(), Instant::now()),
+        );
         let mut invariant = CaptureFrameInvariant::default();
         for (frame, rows) in [3, 3, 4, 4, 4].into_iter().enumerate() {
             let millis = u64::try_from(frame).expect("frame") * 8;
@@ -16872,7 +17438,9 @@ mod tests {
                     .expect("initial native owner");
                 assert_eq!(&original.1, owner, "native owner changed at {millis}ms");
             }
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, start + Duration::from_millis(millis)),
+            );
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             let mut painted_native = Vec::new();
             for piece in grid.painted_placements_for_test() {
@@ -17456,6 +18024,257 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_ended_family_keeps_one_cell_for_each_pid_through_later_publications() {
+        replay_ended_family(Rect::new(0, 0, 40, 120));
+    }
+
+    #[test]
+    fn an_ended_family_closes_only_after_its_full_fade() {
+        replay_ended_family(Rect::new(0, 0, 80, 48));
+    }
+
+    #[test]
+    fn a_live_capture_binding_keeps_one_unavailable_process_cell_through_its_end() {
+        let root = tempfile::tempdir().expect("capture root");
+        let (capture, birth) = registered_parent_capture(root.path());
+        let args = ["cargo", "check"].map(OsString::from);
+        let epoch = Instant::now() + Duration::from_secs(60);
+        let fade = Duration::from_millis(192);
+        let area = Rect::new(0, 0, 40, 48);
+        let mut sequence = CensusSequence::default();
+        let mut roster = Roster::new();
+        let mut grid = live_test_grid();
+        grid.set_motion_duration_for_test(Duration::ZERO);
+        let cargo =
+            ProcessObservation::cargo(4102, &args).with_lifetime(LifetimeEvidence::Unavailable);
+        sequence.sample_published(
+            &ProcessObservations::new([cargo]),
+            &Capture::default(),
+            epoch,
+        );
+        let process_id = sequence.publication().groups()[0].id();
+        roster.observe_invocations(sequence.publication());
+        foreign_load_frame(&mut roster, &mut grid, area, fade);
+        grid.settle_for_test();
+        let shim = ProcessObservation::cargo(4100, &args).with_lifetime(
+            LifetimeEvidence::Available(ProcessLifetime::matching_registration_for_test(&birth)),
+        );
+        let mut cargo =
+            ProcessObservation::cargo(4102, &args).with_lifetime(LifetimeEvidence::Unavailable);
+        cargo.parent = ProcessField::Observed(Pid::from_u32(4100));
+        sequence.sample_published(
+            &ProcessObservations::new([shim, cargo]),
+            &capture,
+            epoch + Duration::from_millis(16),
+        );
+        let captured_id = sequence
+            .publication()
+            .groups()
+            .iter()
+            .find(|group| matches!(group.id(), InvocationId::Captured(_)))
+            .expect("captured cargo")
+            .id();
+        roster.observe_invocations(sequence.publication());
+        let (buffer, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+        assert_one_capture_cell(&buffer, &grid, &sequence, &process_id);
+        let ended_at = epoch + Duration::from_millis(32);
+        let ended_capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Ended)
+        });
+        let mut previous_millis = 0;
+        let mut previous_height = u16::MAX;
+        for millis in [0, 16, 64, 128, 176, 191, 192] {
+            grid.elapse_for_test(Duration::from_millis(millis - previous_millis));
+            previous_millis = millis;
+            let now = ended_at + Duration::from_millis(millis);
+            sequence.sample_with_native_evidence(
+                &ProcessObservations::default(),
+                &ended_capture,
+                now,
+                FixturePublication::Current,
+                |_| Observation::Ended,
+            );
+            assert!(
+                !matches!(
+                    sequence.publication().state(&process_id),
+                    Some(crate::census::scan::PublishedInvocation::Ended(_))
+                ),
+                "joined process emitted its own end at {millis}ms"
+            );
+            roster.observe_invocations(sequence.publication());
+            roster.advance(now, fade);
+            let (buffer, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+            let holding: Vec<_> = grid
+                .painted_placements_for_test()
+                .iter()
+                .filter(|piece| drawn_process_in(&buffer, piece, 4102))
+                .collect();
+            assert_eq!(
+                holding.len(),
+                usize::from(millis < 192),
+                "one process cell through the full fade at {millis}ms"
+            );
+            if let Some(piece) = holding.first() {
+                assert_eq!(piece.content, TileContent::Group(captured_id.clone()));
+                assert!(
+                    piece.frame.clip().height <= previous_height,
+                    "ended cell height rose at {millis}ms"
+                );
+                previous_height = piece.frame.clip().height;
+            }
+        }
+    }
+
+    fn assert_one_capture_cell(
+        buffer: &Buffer,
+        grid: &TileGrid<InvocationId>,
+        sequence: &CensusSequence,
+        process_id: &InvocationId,
+    ) {
+        assert_eq!(
+            grid.painted_placements_for_test()
+                .iter()
+                .filter(|piece| drawn_process_in(buffer, piece, 4102))
+                .count(),
+            1,
+            "the live binding must have one process cell"
+        );
+        assert!(
+            matches!(
+                sequence.publication().state(process_id),
+                Some(crate::census::scan::PublishedInvocation::Joined { .. })
+            ),
+            "the process record must join while its capture binding is live"
+        );
+    }
+
+    fn registered_parent_capture(root: &Path) -> (Capture, BirthStamp) {
+        fs::create_dir_all(root.join("state/pids")).expect("registration directory");
+        let magic = std::str::from_utf8(REGISTRATION_MAGIC).expect("registration magic");
+        fs::write(
+            root.join("state/pids/4100.generation"),
+            format!("{magic}\0generation\0boot\x00100\0run.log\0/work\0/writer\x001\0check\0"),
+        )
+        .expect("registration");
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "100") else {
+            panic!("fixture birth");
+        };
+        let capture = Capture::take_from(root, |pid| {
+            KernelObservation::for_test(pid, Observation::Present(birth.clone()))
+        });
+        (capture, birth)
+    }
+
+    fn replay_ended_family(area: Rect) {
+        let parent_args = ["cargo", "build"].map(OsString::from);
+        let child_args = ["cargo", "test"].map(OsString::from);
+        let epoch = Instant::now() + Duration::from_secs(60);
+        let fade = Duration::from_millis(192);
+        let mut sequence = CensusSequence::default();
+        let mut roster = Roster::new();
+        let mut grid = live_test_grid();
+        grid.set_motion_duration_for_test(Duration::ZERO);
+        let parent = ProcessObservation::cargo(4100, &parent_args);
+        let mut child = ProcessObservation::cargo(4101, &child_args);
+        child.parent = ProcessField::Observed(Pid::from_u32(4100));
+        sequence.sample_published(
+            &ProcessObservations::new([parent, child]),
+            &Capture::default(),
+            epoch,
+        );
+        roster.observe_invocations(sequence.publication());
+        foreign_load_frame(&mut roster, &mut grid, area, fade);
+        grid.settle_for_test();
+        let (initial, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+        let owner = sequence.publication().groups()[0].id();
+        let content = TileContent::Group(owner);
+        assert!(
+            grid.painted_placements_for_test()
+                .iter()
+                .any(|piece| piece.content == content && drawn_process_in(&initial, piece, 4101))
+        );
+        let ended_at = epoch + Duration::from_millis(16);
+        let mut previous_height = u16::MAX;
+        let mut previous_millis = 0;
+        for millis in [0, 16, 48, 80, 128, 176, 191, 192] {
+            grid.elapse_for_test(Duration::from_millis(millis - previous_millis));
+            previous_millis = millis;
+            let now = ended_at + Duration::from_millis(millis);
+            sequence.sample_with_native_evidence(
+                &ProcessObservations::default(),
+                &Capture::default(),
+                now,
+                FixturePublication::Current,
+                |_| Observation::Ended,
+            );
+            if millis == 16 {
+                let retained = sequence.publication().groups()[0].clone();
+                let later = CargoGroup {
+                    lead:     invocation(4200, &["check"]),
+                    rest:     std::iter::once(retained.lead)
+                        .chain(retained.rest)
+                        .collect(),
+                    ancestry: retained.ancestry,
+                };
+                let publication = roster.fixture_with_ended_absences(vec![later], now);
+                roster.observe_invocations(&publication);
+            } else {
+                roster.observe_invocations(sequence.publication());
+            }
+            roster.advance(now, fade);
+            for pid in [4100, 4101] {
+                let owners = process_row_owners(&roster, pid);
+                assert_eq!(
+                    owners.len(),
+                    usize::from(millis < 192),
+                    "pid {pid} has owners {owners:?} at {millis}ms"
+                );
+            }
+            let (buffer, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+            let pieces = grid.painted_placements_for_test();
+            {
+                let pid = 4100;
+                let holding: Vec<_> = pieces
+                    .iter()
+                    .filter(|piece| drawn_process_in(&buffer, piece, pid))
+                    .collect();
+                if millis < 192 {
+                    assert_eq!(
+                        holding.len(),
+                        1,
+                        "pid {pid} at {millis}ms: {:?}",
+                        buffer_rows(&buffer)
+                    );
+                    assert_eq!(
+                        holding[0].content, content,
+                        "pid changed cell at {millis}ms"
+                    );
+                } else {
+                    assert!(holding.is_empty(), "pid {pid} remains after its fade");
+                }
+            }
+            if let Some(piece) = pieces.iter().find(|piece| piece.content == content) {
+                let height = piece.frame.clip().height;
+                assert!(height <= previous_height, "ended height rose at {millis}ms");
+                previous_height = height;
+            }
+        }
+    }
+
+    fn process_row_owners(roster: &Roster, pid: u32) -> Vec<InvocationId> {
+        roster
+            .groups()
+            .iter()
+            .flat_map(|group| {
+                group
+                    .rows()
+                    .filter(move |row| row.process.pid == pid)
+                    .map(move |_| group.id.clone())
+            })
+            .collect()
+    }
+
     /// A child's presentation keeps its own end alive throughout the configured fade.
     #[test]
     fn an_ended_child_in_its_leads_cell_keeps_its_full_fade() {
@@ -17687,13 +18506,24 @@ mod tests {
             );
             roster.observe_invocations(sequence.publication());
         }
-        let (buffer, spans) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+        let (buffer, spans) = foreign_load_frame_in_view(
+            &mut roster,
+            &mut grid,
+            area,
+            fade,
+            CommandView::long(),
+            |_, _, _| {},
+        );
         let parent_piece = grid
             .painted_placements_for_test()
             .iter()
             .find(|piece| piece.content == TileContent::Group(parent_id.clone()))
             .expect("ended lead keeps its departure cell");
-        assert!(placement_text(&buffer, parent_piece).contains("--config 4101"));
+        assert!(
+            placement_text(&buffer, parent_piece).contains("--config 4101"),
+            "{}",
+            buffer_rows(&buffer).join("\n")
+        );
         assert!(!placement_text(&buffer, parent_piece).contains("cargo test"));
         assert!(
             spans.iter().any(|span| span.id == parent_id
@@ -18226,11 +19056,11 @@ mod tests {
             for group in &groups {
                 assert_eq!(owners, vec![group.id()], "owner changed at {millis}ms");
             }
-            roster.observe_discovery(
+            roster.observe_invocations(&roster.fixture_publication(
                 groups,
                 &sequence.missing_invocations(),
                 start + Duration::from_millis(millis),
-            );
+            ));
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             if !unreadable {
                 assert!(
@@ -18261,21 +19091,21 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(vec![group], start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(vec![group], start));
         let mut invariant = CaptureFrameInvariant::default();
         for millis in (0..=80).step_by(8) {
             if millis == 8 {
-                roster.observe_discovery(
+                roster.observe_invocations(&roster.fixture_publication(
                     Vec::new(),
                     std::slice::from_ref(&id),
                     start + Duration::from_millis(millis),
-                );
+                ));
             } else if millis == 16 {
-                assert!(roster.observe_discovery(
+                assert!(roster.observe_invocations(&roster.fixture_publication(
                     Vec::new(),
                     &[],
                     start + Duration::from_millis(millis)
-                ));
+                )));
             }
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             if millis >= 16 {
@@ -18298,7 +19128,8 @@ mod tests {
         group.rest = (0..24).map(|i| invocation(4300 + i, &["check"])).collect();
         let id = group.id();
         let mut roster = Roster::new();
-        roster.observe(vec![group], Instant::now());
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![group], Instant::now()));
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
@@ -18362,7 +19193,9 @@ mod tests {
             rows:   6,
         };
         let mut roster = Roster::new();
-        roster.observe(groups.clone(), Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(groups.clone(), Instant::now()),
+        );
         let mut invariant = CaptureFrameInvariant::default();
         for millis in (0..=64).step_by(8) {
             let mut buffer = Buffer::empty(area);
@@ -18450,7 +19283,9 @@ mod tests {
         let area = Rect::new(0, 0, 80, 21);
         let groups = live_scan_groups(3);
         let mut roster = Roster::new();
-        roster.observe(groups.clone(), Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(groups.clone(), Instant::now()),
+        );
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(96));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
@@ -18526,7 +19361,9 @@ mod tests {
             } else {
                 1 + (millis - 16) / 16
             };
-            roster.observe(live_scan_groups(count), Instant::now());
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(live_scan_groups(count), Instant::now()),
+            );
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             let placed = grid
                 .painted_placements_for_test()
@@ -18566,7 +19403,7 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-                roster.observe(observed, frame);
+                roster.observe_invocations(&roster.fixture_with_ended_absences(observed, frame));
                 let window = crate::census::scan::ScanPublicationWindow::started(started, budget);
                 started = frame + window.pause_after(frame);
                 publication = started + scan_cost;
@@ -18598,7 +19435,7 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(vec![group.clone()], now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(vec![group.clone()], now));
         scanned_grid_frame(&mut roster, &mut grid, area, fade);
         grid.settle_for_test();
         let initial = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -18612,7 +19449,7 @@ mod tests {
         let mut invariant = CaptureFrameInvariant::default();
         for millis in (0..=96).step_by(8) {
             if millis == 0 {
-                roster.observe(Vec::new(), now);
+                roster.observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), now));
             }
             if millis == 24 {
                 let mut later = group.clone();
@@ -18622,7 +19459,12 @@ mod tests {
                     passes_through: false,
                 }]);
                 later.rest.push(invocation(4200, &["late-process"]));
-                roster.observe(vec![later], now + Duration::from_millis(millis));
+                roster.observe_invocations(
+                    &roster.fixture_with_ended_absences(
+                        vec![later],
+                        now + Duration::from_millis(millis),
+                    ),
+                );
             }
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             if let Some(piece) = grid
@@ -18748,7 +19590,7 @@ mod tests {
         let start = Instant::now() + Duration::from_secs(60);
         let groups = live_scan_groups(3);
         let mut roster = Roster::new();
-        roster.observe(groups.clone(), start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), start));
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
@@ -18823,7 +19665,7 @@ mod tests {
         let groups = live_scan_groups(1);
         let id = groups[0].id();
         let mut roster = Roster::new();
-        roster.observe(groups, start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, start));
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
@@ -18831,7 +19673,7 @@ mod tests {
         for millis in (0..=128).step_by(8) {
             let now = start + Duration::from_millis(millis);
             if millis == 16 {
-                roster.observe(Vec::new(), now);
+                roster.observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), now));
             }
             roster.advance(now, fade);
             let area = Rect::new(0, 0, 40, if millis < 32 { 6 } else { 32 });
@@ -18875,14 +19717,17 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups.clone(), start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), start));
         let mut invariant = CaptureFrameInvariant::default();
         for millis in (0..=64).step_by(8) {
             if millis == 32 {
-                roster.observe(groups[1..].to_vec(), start + Duration::from_millis(millis));
+                roster.observe_invocations(&roster.fixture_with_ended_absences(
+                    groups[1..].to_vec(),
+                    start + Duration::from_millis(millis),
+                ));
             }
             roster.advance(start + Duration::from_millis(millis), fade);
-            let area = Rect::new(0, 0, 40, if millis < 16 { 21 } else { 10 });
+            let area = Rect::new(0, 0, 40, if millis < 16 { 21 } else { 6 });
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
             if millis >= 16 {
@@ -18936,14 +19781,14 @@ mod tests {
             }
             let mut grandparent = ProcessObservation::cargo(3333, &shell);
             grandparent.name = ProcessField::Observed(OsStr::new("grandparent-shell"));
-            roster.observe(
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
                 sequence.sample(&ProcessObservations::new(vec![
                     command,
                     parent,
                     grandparent,
                 ])),
                 start + Duration::from_millis(millis),
-            );
+            ));
             let stats = SccacheStats::default();
             let cells = Cells::for_frame(
                 roster.visible(&[]),
@@ -19084,7 +19929,9 @@ mod tests {
                 identity[0],
                 "identity changed at {millis}ms"
             );
-            roster.observe(groups, start + Duration::from_millis(millis));
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(groups, start + Duration::from_millis(millis)),
+            );
             roster.advance(start + Duration::from_millis(millis), fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -19129,10 +19976,10 @@ mod tests {
         child.parent = ProcessField::Observed(Pid::from_u32(3334));
         let mut parent = ProcessObservation::cargo(3334, &python);
         parent.name = ProcessField::Observed(OsStr::new("python"));
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             sequence.sample(&ProcessObservations::new(vec![child, parent])),
             start,
-        );
+        ));
         for _ in 0..3 {
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, 0, fade);
@@ -19155,10 +20002,10 @@ mod tests {
                 }
                 records.push(parent);
             }
-            roster.observe(
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
                 sequence.sample(&ProcessObservations::new(records)),
                 start + Duration::from_millis(millis),
-            );
+            ));
             roster.advance(start + Duration::from_millis(millis), fade);
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -19245,10 +20092,10 @@ mod tests {
                 records.push(parent);
             }
             if matches!(millis, 0 | 24 | 32 | 40 | 48) {
-                roster.observe(
+                roster.observe_invocations(&roster.fixture_with_ended_absences(
                     sequence.sample(&ProcessObservations::new(records)),
                     start + Duration::from_millis(millis),
-                );
+                ));
                 cells = frame_cells(&mut roster);
             }
             roster.advance(start + Duration::from_millis(millis), fade);
@@ -19323,10 +20170,10 @@ mod tests {
                 8
             };
             if matches!(millis, 0 | 16 | 32) {
-                roster.observe(
+                roster.observe_invocations(&roster.fixture_with_ended_absences(
                     groups[..count].to_vec(),
                     start + Duration::from_millis(millis),
-                );
+                ));
                 cells = frame_cells(&mut roster);
             }
             roster.advance(start + Duration::from_millis(millis), fade);
@@ -19363,10 +20210,10 @@ mod tests {
         let mut invariant = CaptureFrameInvariant::default();
         for millis in (0..=64).step_by(8) {
             let count = if millis < 24 { 1 } else { 5 };
-            roster.observe(
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
                 groups[..count].to_vec(),
                 start + Duration::from_millis(millis),
-            );
+            ));
             roster.advance(start + Duration::from_millis(millis), fade);
             let mut buffer = Buffer::empty(area);
             tui_pane::draw_tile_grid(
@@ -19455,7 +20302,7 @@ mod tests {
             let identities = active.iter().map(CargoGroup::id).collect::<Vec<_>>();
             let now = start + Duration::from_millis(millis);
             if identities != observed {
-                roster.observe(active, now);
+                roster.observe_invocations(&roster.fixture_with_ended_absences(active, now));
                 observed = identities;
             }
             roster.advance(now, fade);
@@ -20132,7 +20979,7 @@ mod tests {
         let mut roster = Roster::new();
         let mut grid = live_test_grid();
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups.clone(), start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), start));
         let mut invariant = CaptureFrameInvariant::default();
         let first = scanned_grid_frame(&mut roster, &mut grid, initial, fade);
         invariant.check(&first, &grid, &roster, 0, fade);
@@ -20163,7 +21010,7 @@ mod tests {
                 arriving.lead.invocation_id = InvocationId::for_test(4099);
                 active.push(arriving);
             }
-            roster.observe(active, now);
+            roster.observe_invocations(&roster.fixture_with_ended_absences(active, now));
             roster.advance(now, fade);
             let area = if millis == 0 { initial } else { offered };
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -20191,8 +21038,22 @@ mod tests {
         Shrink,
     }
 
+    impl CapacityPressure {
+        const fn initial_area(self) -> Rect {
+            Rect::new(
+                2,
+                2,
+                40,
+                match self {
+                    Self::Arrival => 19,
+                    Self::Shrink => 21,
+                },
+            )
+        }
+    }
+
     fn replay_insufficient_capacity(pressure: CapacityPressure) {
-        let initial = Rect::new(2, 2, 40, 21);
+        let initial = pressure.initial_area();
         let canvas = Rect::new(0, 0, 84, 48);
         let fade = Duration::from_millis(96);
         let start = Instant::now() + Duration::from_secs(60);
@@ -20204,7 +21065,8 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(48));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups[..3].to_vec(), start);
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(groups[..3].to_vec(), start));
         let mut invariant = CaptureFrameInvariant::default();
         let first = capacity_grid_frame(&mut roster, &mut grid, initial, canvas, fade);
         invariant.check(&first, &grid, &roster, 0, fade);
@@ -20224,14 +21086,14 @@ mod tests {
             if millis >= 16 && matches!(pressure, CapacityPressure::Arrival) {
                 active.push(groups[3].clone());
             }
-            roster.observe(active, now);
+            roster.observe_invocations(&roster.fixture_with_ended_absences(active, now));
             roster.advance(now, fade);
             let area = match (pressure, millis) {
                 (CapacityPressure::Shrink, 0..=40) => Rect::new(2, 2, 40, 10),
                 (CapacityPressure::Shrink, 48..=56) => Rect::new(2, 2, 40, 11),
                 _ => initial,
             };
-            // Four command bodies plus the summary need at least 26 rows in one column.
+            // Four command bodies plus the compact summary need at least 24 rows.
             // After shrinking, even three command bodies without a summary need 16 rows.
             let buffer = capacity_grid_frame(&mut roster, &mut grid, area, canvas, fade);
             invariant.check(&buffer, &grid, &roster, millis, fade);
@@ -20493,7 +21355,7 @@ mod tests {
         let mut grid = live_test_grid();
         grid.set_motion_duration_for_test(Duration::from_millis(48));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups.clone(), start);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), start));
         let mut invariant = CaptureFrameInvariant::default();
         let first = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&first, &grid, &roster, 0, fade);
@@ -20513,13 +21375,15 @@ mod tests {
         for millis in (0..=96).step_by(8) {
             let now = start + Duration::from_millis(millis);
             if ended && millis == end_at {
-                roster.observe(
-                    groups
-                        .iter()
-                        .filter(|group| group.id() != id)
-                        .cloned()
-                        .collect(),
-                    now,
+                roster.observe_invocations(
+                    &roster.fixture_with_ended_absences(
+                        groups
+                            .iter()
+                            .filter(|group| group.id() != id)
+                            .cloned()
+                            .collect(),
+                        now,
+                    ),
                 );
             }
             if !ended && millis == 0 {
@@ -20528,7 +21392,7 @@ mod tests {
                 arriving.lead.invocation_id = InvocationId::for_test(4099);
                 let mut active = groups.clone();
                 active.push(arriving);
-                roster.observe(active, now);
+                roster.observe_invocations(&roster.fixture_with_ended_absences(active, now));
             }
             if millis == end_at + 8 {
                 roster
@@ -20655,7 +21519,7 @@ mod tests {
         grid.set_motion_duration_for_test(Duration::from_millis(16));
         grid.set_motion_elapsed_for_test(Duration::ZERO);
         let mut invariant = CaptureFrameInvariant::default();
-        roster.observe(groups.clone(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups.clone(), now));
         for _ in 0..2 {
             let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
             invariant.check(&buffer, &grid, &roster, 0, fade);
@@ -20678,7 +21542,7 @@ mod tests {
         let baseline_ink = process_ink(&baseline_buffer, baseline_piece, 4100);
         invariant.check(&baseline_buffer, &grid, &roster, 0, fade);
         let mut previous = initial;
-        roster.observe(groups[1..].to_vec(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups[1..].to_vec(), now));
         for millis in (0..=96).step_by(8) {
             let elapsed = Duration::from_millis(millis);
             roster.advance(now + elapsed, fade);
@@ -20751,7 +21615,7 @@ mod tests {
         let mut roster = Roster::new();
         let mut grid = live_test_grid();
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups, now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, now));
         let mut invariant = CaptureFrameInvariant::default();
         let first_frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&first_frame, &grid, &roster, 0, fade);
@@ -20766,7 +21630,7 @@ mod tests {
         invariant.check(&before, &grid, &roster, 0, fade);
         let baseline_ink = process_ink(&before, &initial, 4100);
         let ended = Instant::now() + Duration::from_secs(60);
-        roster.observe(Vec::new(), ended);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), ended));
         let ended_frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&ended_frame, &grid, &roster, 0, fade);
         let mut heights = Vec::new();
@@ -20902,14 +21766,14 @@ mod tests {
         let mut roster = Roster::new();
         let mut grid = live_test_grid();
         grid.set_motion_elapsed_for_test(Duration::ZERO);
-        roster.observe(groups, now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, now));
         let mut invariant = CaptureFrameInvariant::default();
         let first_frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&first_frame, &grid, &roster, 0, fade);
         grid.settle_for_test();
         let before = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&before, &grid, &roster, 0, fade);
-        roster.observe(Vec::new(), now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), now));
         let ended_frame = scanned_grid_frame(&mut roster, &mut grid, area, fade);
         invariant.check(&ended_frame, &grid, &roster, 0, fade);
         for millis in (0..=120).step_by(8) {
@@ -20935,7 +21799,10 @@ mod tests {
         let mut invariant = CaptureFrameInvariant::default();
         for (batch, count) in [3, 7, 16, 12].into_iter().enumerate() {
             let offset = u64::try_from(batch).expect("batch number") * 72;
-            roster.observe(live_scan_groups(count), now + Duration::from_millis(offset));
+            roster.observe_invocations(&roster.fixture_with_ended_absences(
+                live_scan_groups(count),
+                now + Duration::from_millis(offset),
+            ));
             for millis in (0..=64).step_by(8) {
                 roster.advance(now + Duration::from_millis(offset + millis), fade);
                 let buffer = scanned_grid_frame(&mut roster, &mut grid, area, fade);
@@ -20986,7 +21853,7 @@ mod tests {
         let mut hidden = memory_invocation(4100, Measurement::Reading(3 * BYTES_PER_GIBIBYTE));
         hidden.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![
                 cargo_group(hidden),
                 cargo_group(memory_invocation(
@@ -20995,7 +21862,7 @@ mod tests {
                 )),
             ],
             Instant::now(),
-        );
+        ));
         let stats = SccacheStats::new();
         let area = Rect::new(0, 0, 160, 40);
         let growth = TileGrowth {
@@ -21059,7 +21926,7 @@ mod tests {
             });
         }
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         let stats = SccacheStats::new();
         let cells = Cells::for_frame(roster.visible(&[]), CommandView::short(), &stats, 120);
         let area = Rect::new(0, 0, 40, 120);
@@ -21159,8 +22026,14 @@ mod tests {
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         assert_eq!(
             memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
-            "2.0G"
+            "1.0G"
         );
+        let listed = buffer_rows(&buffer).join("\n");
+        let sibling = listed
+            .lines()
+            .find(|line| line.contains("5500"))
+            .expect("listed sibling");
+        assert!(sibling.contains("1.0G"), "{sibling}");
         assert!(!buffer_rows(&buffer).join("\n").contains("5200"));
     }
 
@@ -21200,8 +22073,10 @@ mod tests {
             vec![nested],
             vec![visible.clone()],
         ] {
-            baseline.observe(vec![visible.clone()], now);
-            roster.observe(scan, now);
+            baseline.observe_invocations(
+                &baseline.fixture_with_ended_absences(vec![visible.clone()], now),
+            );
+            roster.observe_invocations(&roster.fixture_with_ended_absences(scan, now));
             let expected = Cells::for_frame(
                 baseline.visible(&hidden_commands),
                 CommandView::long(),
@@ -21335,14 +22210,14 @@ mod tests {
         ancestry: Vec<Ancestor>,
     ) -> Roster {
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead,
                 rest,
                 ancestry: crate::census::scan::AncestryWalk::Ended(ancestry),
             }],
             Instant::now(),
-        );
+        ));
         roster
     }
 
@@ -21980,7 +22855,7 @@ mod tests {
             RowProvenance::Uncaptured(ProcessOwner::Observed(context.account.clone()))
         );
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         let area = Rect::new(0, 0, 180, 16);
         let mut buffer = Buffer::empty(area);
         draw_cell_for_test(&mut buffer, &roster, &TileContent::Summary, area, 4);
@@ -23282,15 +24157,16 @@ mod tests {
         let lead = invocation(4100, &["test"]);
         let child = invocation(4200, &["build"]);
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead:     lead.clone(),
                 rest:     vec![child],
                 ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
             }],
             now,
-        );
-        roster.observe(vec![cargo_group(lead)], now);
+        ));
+        roster
+            .observe_invocations(&roster.fixture_with_ended_absences(vec![cargo_group(lead)], now));
         roster.advance(
             now + std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
@@ -23304,7 +24180,10 @@ mod tests {
             CellReadoutFade::Unfaded,
             "a live lead holds the cell ink"
         );
-        roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
+        roster.observe_invocations(
+            &roster
+                .fixture_with_ended_absences(Vec::new(), now + std::time::Duration::from_secs(1)),
+        );
         roster.advance(
             now + std::time::Duration::from_secs(2),
             std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
@@ -23331,15 +24210,15 @@ mod tests {
         driver.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         driver.subtree_resource_use.memory = driver.resource_use.memory;
         let mut roster = Roster::new();
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead:     driver.clone(),
                 rest:     vec![invocation(4200, &["build"])],
                 ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
             }],
             now,
-        );
-        roster.observe(Vec::new(), now);
+        ));
+        roster.observe_invocations(&roster.fixture_with_ended_absences(Vec::new(), now));
         roster.advance(
             now + std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
@@ -23379,14 +24258,14 @@ mod tests {
         );
         driver.invocation_id = InvocationId::for_test(4400);
         driver.pid = 4400;
-        roster.observe(
+        roster.observe_invocations(&roster.fixture_with_ended_absences(
             vec![CargoGroup {
                 lead:     driver,
                 rest:     vec![invocation(4300, &["check"])],
                 ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
             }],
             now + std::time::Duration::from_secs(1),
-        );
+        ));
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
             cells.readout_fade(&TileContent::Summary),
@@ -23407,6 +24286,27 @@ mod tests {
         fn required_commands(&self) -> Vec<InvocationId> { self.0.required_commands() }
         fn frame_placement(&self, placement: &FramePlacement<InvocationId>) {
             self.0.frame_placement(placement);
+        }
+        fn summary_demand_for(
+            &self,
+            placement: &FramePlacement<InvocationId>,
+            width: u16,
+        ) -> SummaryDemand {
+            self.0.summary_demand_for(placement, width)
+        }
+        fn summary_rows_for(&self, placement: &FramePlacement<InvocationId>, area: Rect) -> u16 {
+            self.0.summary_rows_for(placement, area)
+        }
+        fn freeze_painted_frame(&self) { self.0.freeze_painted_frame(); }
+        fn placement_trial(&self, placement: &FramePlacement<InvocationId>) {
+            self.0.placement_trial(placement);
+        }
+        fn prepare_painted_frame(
+            &self,
+            placement: &FramePlacement<InvocationId>,
+            allocations: impl FnOnce() -> Vec<(TileContent, Rect)>,
+        ) -> FrameLayoutPreparation {
+            self.0.prepare_painted_frame(placement, allocations)
         }
         fn departure(&self, id: &InvocationId) -> CellDeparture { self.0.departure(id) }
         fn first_content_rows(&self, content: &TileContent) -> u16 {
@@ -23429,10 +24329,235 @@ mod tests {
         fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands { self.0.demands(widths) }
 
         fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-            self.0.draw(buffer, content, inner, ground);
+            TileCells::draw(&self.0, buffer, content, inner, ground);
         }
 
         fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> { self.0.summary_labels(rect) }
+    }
+
+    #[test]
+    fn an_admitted_invocation_leaves_the_summary_on_its_first_cell_frame() {
+        let mut roster = tiled_roster(2, &[]);
+        let mut grid = live_test_grid();
+        let area = Rect::new(0, 0, 80, 40);
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        let (buffer, _) = foreign_load_frame(&mut roster, &mut grid, area, Duration::from_secs(3));
+        for pid in [4100, 4101] {
+            assert_eq!(grid.painted_placements_for_test().iter().filter(|piece|
+                piece.content == TileContent::Group(InvocationId::for_test(pid))).count(), 1);
+            let count = buffer_rows(&buffer)
+                .iter()
+                .filter(|line| line.split_whitespace().any(|word| word == pid.to_string()))
+                .count();
+            assert_eq!(
+                count,
+                1,
+                "pid {pid} must have one place: {}",
+                buffer_rows(&buffer).join("\n")
+            );
+        }
+        let narrow = Rect::new(0, 0, 80, 8);
+        let (summary, _) =
+            foreign_load_frame(&mut roster, &mut grid, narrow, Duration::from_secs(3));
+        assert!(
+            grid.painted_placements_for_test()
+                .iter()
+                .filter(|piece| matches!(piece.content, TileContent::Group(_)))
+                .count()
+                < 2
+        );
+        for pid in [4100, 4101] {
+            assert_eq!(
+                buffer_rows(&summary)
+                    .iter()
+                    .filter(|line| line.split_whitespace().any(|word| word == pid.to_string()))
+                    .count(),
+                1,
+                "{}",
+                buffer_rows(&summary).join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn each_cells_receipts_hold_only_its_assigned_process_rows() {
+        let roster = tiled_roster(2, &[]);
+        let stats = SccacheStats::default();
+        let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
+        let area = Rect::new(0, 0, 80, 12);
+        let first = TileContent::Group(InvocationId::for_test(4100));
+        let second = TileContent::Group(InvocationId::for_test(4101));
+        let mut buffer = Buffer::empty(area);
+        cells.draw(&mut buffer, &first, area, Color::Reset);
+        cells.draw(&mut buffer, &second, area, Color::Reset);
+        let spans = cells.painted_rows(&first, area);
+        assert_ne!(
+            spans,
+            [] as [tui_pane::PaintedRowSpan<census::process_identity::InvocationId>; 0]
+        );
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.id() == &InvocationId::for_test(4100))
+        );
+    }
+
+    #[test]
+    fn different_cell_widths_use_one_command_header_form() {
+        let roster = paired_tiled_roster(2, &[]);
+        let stats = SccacheStats::default();
+        let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
+        let first = TileContent::Group(InvocationId::for_test(6100));
+        let second = TileContent::Group(InvocationId::for_test(6102));
+        let narrow = Rect::new(0, 0, 38, 12);
+        let wide = Rect::new(0, 12, 120, 12);
+        cells.prepare_frame(|| vec![(first.clone(), narrow), (second.clone(), wide)]);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
+        cells.draw(&mut buffer, &first, narrow, Color::Reset);
+        cells.draw(&mut buffer, &second, wide, Color::Reset);
+        let headers: Vec<_> = buffer_rows(&buffer)
+            .into_iter()
+            .filter(|line| line.split_whitespace().any(|word| word == "pid"))
+            .collect();
+        assert_eq!(headers.len(), 2, "{headers:?}");
+        assert_eq!(
+            headers[0].split_whitespace().collect::<Vec<_>>(),
+            headers[1].split_whitespace().collect::<Vec<_>>(),
+            "{headers:?}"
+        );
+    }
+
+    #[test]
+    fn an_ended_cells_rows_follow_the_current_command_header_form() {
+        let mut roster = tiled_roster(2, &[]);
+        let mut grid = live_test_grid();
+        let fade = Duration::from_secs(3);
+        let wide = Rect::new(0, 0, 160, 40);
+        foreign_load_frame(&mut roster, &mut grid, wide, fade);
+        grid.settle_for_test();
+        foreign_load_frame(&mut roster, &mut grid, wide, fade);
+        let survivor = roster
+            .groups()
+            .iter()
+            .find(|group| group.id == InvocationId::for_test(4101))
+            .expect("survivor")
+            .lead
+            .process
+            .clone();
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(vec![cargo_group(survivor)], Instant::now()),
+        );
+        foreign_load_frame(&mut roster, &mut grid, wide, fade);
+        let narrow = Rect::new(0, 0, 40, 40);
+        let (buffer, _) = foreign_load_frame(&mut roster, &mut grid, narrow, fade);
+        let mut forms = Vec::new();
+        for placement in grid.painted_placements_for_test() {
+            if !matches!(placement.content, TileContent::Group(_)) {
+                continue;
+            }
+            let clip = placement.frame.clip().intersection(narrow);
+            for y in clip.y..clip.bottom() {
+                let line: String = (clip.x..clip.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                if line.split_whitespace().any(|word| word == "pid") {
+                    forms.push(
+                        line.split_whitespace()
+                            .filter(|word| !word.contains('│'))
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+        assert_eq!(forms.len(), 2, "{}", buffer_rows(&buffer).join("\n"));
+        assert_eq!(forms[0], forms[1], "{}", buffer_rows(&buffer).join("\n"));
+    }
+
+    #[test]
+    fn a_repeated_family_publication_has_one_process_row_per_key() {
+        let member = invocation(4200, &["check"]);
+        let roster = roster_of(invocation(4100, &["build"]), vec![member.clone(), member]);
+        let stats = SccacheStats::default();
+        let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buffer = Buffer::empty(area);
+        cells.draw(
+            &mut buffer,
+            &TileContent::Group(InvocationId::for_test(4100)),
+            area,
+            Color::Reset,
+        );
+        let count = buffer_rows(&buffer)
+            .iter()
+            .filter(|line| line.split_whitespace().any(|word| word == "4200"))
+            .count();
+        assert_eq!(count, 1, "{}", buffer_rows(&buffer).join("\n"));
+    }
+
+    #[test]
+    fn a_departing_cells_row_values_receive_one_text_fade() {
+        let mut roster = tiled_roster(2, &[]);
+        let mut grid = live_test_grid();
+        let area = Rect::new(0, 0, 80, 40);
+        let fade = Duration::from_secs(3);
+        foreign_load_frame(&mut roster, &mut grid, area, fade);
+        grid.settle_for_test();
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        let (before, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+        let initial = painted_pid_ink(&before, 4100);
+        let survivor = roster
+            .groups()
+            .iter()
+            .find(|group| group.id == InvocationId::for_test(4101))
+            .expect("survivor")
+            .lead
+            .process
+            .clone();
+        let ended = Instant::now() + Duration::from_secs(60);
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(vec![cargo_group(survivor)], ended),
+        );
+        foreign_load_frame(&mut roster, &mut grid, area, fade);
+        let elapsed = Duration::from_secs(1);
+        grid.set_motion_elapsed_for_test(elapsed);
+        roster.advance(ended + elapsed, fade);
+        let (after, _) = foreign_load_frame(&mut roster, &mut grid, area, fade);
+        let piece = grid
+            .painted_placements_for_test()
+            .iter()
+            .find(|piece| piece.content == TileContent::Group(InvocationId::for_test(4100)))
+            .expect("departure");
+        let amount = tui_pane::CellLifecycleTiming::new(fade)
+            .fade_out(elapsed)
+            .amount();
+        assert_eq!(
+            painted_pid_ink(&after, 4100),
+            blend_color(initial, pane_background(piece.frame.is_focused()), amount)
+        );
+    }
+
+    fn painted_pid_ink(buffer: &Buffer, pid: u32) -> Color {
+        let pid = pid.to_string();
+        let digits: Vec<_> = pid.chars().collect();
+        for (row, line) in buffer_rows(buffer).iter().enumerate() {
+            if line.split_whitespace().any(|word| word == pid) {
+                let text: Vec<_> = line.chars().collect();
+                let column = text
+                    .windows(digits.len())
+                    .position(|text| text == digits.as_slice())
+                    .expect("pid column");
+                return buffer[(
+                    u16::try_from(column).expect("column"),
+                    u16::try_from(row).expect("row"),
+                )]
+                    .fg;
+            }
+        }
+        panic!(
+            "pid {pid} has no painted row:\n{}",
+            buffer_rows(buffer).join("\n")
+        );
     }
 
     /// A roster with one independently tiled command per requested cell.
@@ -23453,7 +24578,7 @@ mod tests {
             })
             .collect();
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -23481,7 +24606,7 @@ mod tests {
             })
             .collect();
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -23519,7 +24644,7 @@ mod tests {
             },
         ];
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -23552,7 +24677,7 @@ mod tests {
             })
             .collect();
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -23719,15 +24844,21 @@ mod tests {
             .iter()
             .find(|placement| placement.content == TileContent::Summary)
             .expect("the summary is placed");
-        let widths = [(TileContent::Summary, summary.frame.inner().width)];
-        let demands = tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
-
         assert_eq!(
-            demands.summary.required().get(),
+            placement_content_rows(summary),
             TABLE_HEADER_HEIGHT,
             "{}",
             buffer_rows(&buffer).join("\n")
         );
+        let summary_text = placement_text(&buffer, summary);
+        for group in roster.groups() {
+            for row in group.rows() {
+                assert!(
+                    !summary_text.contains(&row.process.pid.to_string()),
+                    "{summary_text}"
+                );
+            }
+        }
         assert_eq!(
             blank_content_row_count(&buffer, summary),
             0,
@@ -23783,7 +24914,7 @@ mod tests {
     }
 
     #[test]
-    fn a_summary_hiding_a_directory_leaves_no_blank_row_above_its_foot() {
+    fn a_summary_with_no_listed_invocations_leaves_no_blank_row_above_its_foot() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
         let area = Rect::new(0, 0, 200, 41);
         let production = settled_cells_buffer(&roster, area);
@@ -23799,30 +24930,20 @@ mod tests {
             .iter()
             .find(|placement| placement.content == TileContent::Summary)
             .expect("the summary is placed");
-        let widths: Vec<_> = placements
-            .iter()
-            .map(|placement| (placement.content.clone(), placement.frame.inner().width))
-            .collect();
-        let hidden = hidden_commands();
-        let sccache = SccacheStats::new();
-        let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
-        let summary_width = widths
-            .iter()
-            .find(|(content, _)| *content == TileContent::Summary)
-            .expect("summary width")
-            .1;
-        let summary_rows = cells.prepared_rows(
-            &TileContent::Summary,
-            summary_width,
-            PreparedCellRows::demand,
-        );
-
-        // Model (c) reserves only the Listed minimum, so disabling row
-        // reports no longer recreates the former full-summary reservation.
-        // Pin the rendered result directly, including every summary body row.
         assert!(!repaired.contains(&TileContent::Summary));
         assert_eq!(blank_content_row_count(&production.1, summary), 0);
-        assert!(summary_rows > usize::from(placement_content_rows(summary)));
+        assert_eq!(placement_content_rows(summary), TABLE_HEADER_HEIGHT);
+        assert_eq!(
+            placements
+                .iter()
+                .filter(|piece| matches!(piece.content, TileContent::Group(_)))
+                .count(),
+            roster.groups().len()
+        );
+        let text = placement_text(&production.1, summary);
+        for row in roster.groups().iter().flat_map(TrackedGroup::rows) {
+            assert!(!text.contains(&row.process.pid.to_string()), "{text}");
+        }
     }
 
     #[test]
@@ -23867,7 +24988,7 @@ mod tests {
     #[test]
     fn a_lone_ancestry_row_goes_to_a_mates_next_process_step() {
         let roster = ancestry_transfer_roster(2);
-        let area = Rect::new(0, 0, 80, 18);
+        let area = Rect::new(0, 0, 80, 16);
         let (grid, buffer) = settled_cells_buffer(&roster, area);
         let placements = grid.placements(
             area,
@@ -23907,7 +25028,7 @@ mod tests {
     #[test]
     fn an_unusable_lone_row_draws_ancestry_without_a_blank_foot_row() {
         let roster = ancestry_transfer_roster(1);
-        let area = Rect::new(0, 0, 80, 18);
+        let area = Rect::new(0, 0, 80, 16);
         let (grid, buffer) = settled_cells_buffer(&roster, area);
         let donor = grid
             .placements(
@@ -24173,17 +25294,16 @@ mod tests {
             let (grid, buffer) = settled_cells_buffer(&roster, area);
             let placements = grid.placements(area, growth);
             if let Some(expected) = expected_summary_rows {
-                let widths: Vec<_> = placements
+                let summary = placements
                     .iter()
-                    .map(|placement| (placement.content.clone(), placement.frame.inner().width))
-                    .collect();
-                let demands =
-                    tile_demands(&roster, &widths, &hidden_commands(), CommandView::long());
+                    .find(|placement| placement.content == TileContent::Summary)
+                    .expect("summary placement");
                 assert_eq!(
-                    usize::from(demands.summary.required().get()),
+                    usize::from(placement_content_rows(summary)),
                     expected,
                     "{area:?}"
                 );
+                assert_eq!(blank_content_row_count(&buffer, summary), 0, "{area:?}");
             }
             let commands: Vec<_> = placements
                 .iter()

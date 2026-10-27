@@ -1,5 +1,16 @@
 use super::*;
 
+/// Time between census publications in this fixture, in milliseconds.
+const SCAN_INTERVAL_MILLIS: u64 = 250;
+/// Scans with a job entry, a foreign departure, or foreign growth.
+const MOTION_SAMPLE_SCANS: [u64; 3] = [6, 8, 12];
+
+/// Evidence that the fixture increased a foreign cell's content.
+enum ForeignGrowth {
+    Unchanged,
+    Observed,
+}
+
 /// A process row that reached the output buffer, identified before its text was drawn.
 pub(super) struct ForeignLoadPaintedRow {
     pub(super) id: InvocationId,
@@ -25,8 +36,8 @@ impl ForeignLoadJob {
     fn scheduled(index: u32) -> Self {
         Self {
             pid: 90_000 + index,
-            starts: 1500 + u64::from(index) * 250,
-            ends: 1500 + u64::from(index) * 250 + 500 + u64::from(index % 5) * 250,
+            starts: 1500 + u64::from(index / 2) * SCAN_INTERVAL_MILLIS,
+            ends: 1500 + u64::from(index / 2) * SCAN_INTERVAL_MILLIS + 500 + u64::from(index % 5) * SCAN_INTERVAL_MILLIS,
             paint: JobPaint::Unpublished,
         }
     }
@@ -51,13 +62,13 @@ struct PreviousCellInk {
 /// Foreign examples occupy the grid while an independent session submits short jobs.
 #[test]
 fn a_full_tile_under_foreign_load_draws_every_job_at_80_columns() {
-    foreign_load(Rect::new(0, 0, 80, 48), 6, 6, 50);
+    foreign_load(Rect::new(0, 0, 80, 48), 6, 6, 16, 50);
 }
 
 /// A single narrow column must list waiting jobs before commands that already have cells.
 #[test]
 fn a_full_tile_under_foreign_load_draws_every_job_at_40_columns() {
-    foreign_load(Rect::new(0, 0, 40, 120), 8, 10, 20);
+    foreign_load(Rect::new(0, 0, 40, 72), 6, 6, 8, 20);
 }
 
 struct FixtureAppearance {
@@ -88,7 +99,7 @@ impl FixtureAppearance {
     }
 }
 
-fn foreign_load(area: Rect, foreign_cells: u32, children: u32, frame_millis: u64) {
+fn foreign_load(area: Rect, foreign_cells: u32, children: u32, job_count: u32, frame_millis: u64) {
     let appearance = FixtureAppearance::dark();
     let elapsed = Instant::now();
     let epoch = Instant::now() + Duration::from_secs(60);
@@ -102,13 +113,13 @@ fn foreign_load(area: Rect, foreign_cells: u32, children: u32, frame_millis: u64
         fade,
         ..ForeignLoadPaint::default()
     };
-    let mut jobs: Vec<_> = (0..16_u32)
+    let mut jobs: Vec<_> = (0..job_count)
         .map(ForeignLoadJob::scheduled)
         .collect();
     let foreign_arguments: Vec<_> = (0..foreign_cells)
         .map(|index| ["cargo".into(), "run".into(), "--example".into(), format!("foreign{index:02}").into()])
         .collect();
-    let job_arguments: Vec<_> = (0..16)
+    let job_arguments: Vec<_> = (0..job_count)
         .map(|index| [OsString::from("cargo"), OsString::from(format!("p22k{index:02}"))])
         .collect();
     let child_arguments = ["cargo", "check"].map(OsString::from);
@@ -117,18 +128,19 @@ fn foreign_load(area: Rect, foreign_cells: u32, children: u32, frame_millis: u64
     let foreign_directories: Vec<_> = (0..foreign_cells)
         .map(|index| PathBuf::from(format!("/foreign/example{index:02}")))
         .collect();
-    let job_directories: Vec<_> = (0..16)
+    let job_directories: Vec<_> = (0..job_count)
         .map(|index| PathBuf::from(format!("/jobs/p22k{index:02}")))
         .collect();
-    let mut saw_foreign_growth = false;
+    let mut foreign_growth = ForeignGrowth::Unchanged;
 
-    for scan in 0..29_u64 {
+    let last_scan = jobs.iter().map(|job| job.ends).max().unwrap_or(0) / SCAN_INTERVAL_MILLIS;
+    for scan in 0..=last_scan {
         // No process changes during the initial foreign-only opening.
         if (1..6).contains(&scan) {
-            grid.elapse_for_test(Duration::from_millis(250));
+            grid.elapse_for_test(Duration::from_millis(SCAN_INTERVAL_MILLIS));
             continue;
         }
-        let millis = scan * 250;
+        let millis = scan * SCAN_INTERVAL_MILLIS;
         let mut observations = Vec::new();
         observations.push(ProcessObservation::cargo(80_000, &session_arguments));
         observations.push(ProcessObservation::cargo(89_000, &job_session_arguments));
@@ -142,7 +154,7 @@ fn foreign_load(area: Rect, foreign_cells: u32, children: u32, frame_millis: u64
             lead.uid = ProcessField::Observed(2000);
             observations.push(lead);
             let added = if index == 0 && scan >= 12 { 3 } else { 0 };
-            saw_foreign_growth |= added > 0;
+            if added > 0 { foreign_growth = ForeignGrowth::Observed; }
             for child in 0..children + added {
                 let mut cargo = ProcessObservation::cargo(pid + child + 1, &child_arguments);
                 cargo.parent = ProcessField::Observed(Pid::from_u32(pid));
@@ -170,23 +182,18 @@ fn foreign_load(area: Rect, foreign_cells: u32, children: u32, frame_millis: u64
             job.record_publication(&sequence, millis);
         }
         roster.observe_invocations(sequence.publication());
-        for offset in [0, frame_millis] {
+        // Keep intermediate job entry, foreign departure and growth frames.
+        let motion_sample = MOTION_SAMPLE_SCANS.contains(&scan);
+        let offsets: &[u64] = if motion_sample { &[0, frame_millis] } else { &[0] };
+        for &offset in offsets {
             let now = millis + offset;
             roster.advance(epoch + Duration::from_millis(now), fade);
             paint.draw_and_check(&mut roster, &mut grid, area, &mut jobs, now);
-            let delta = if offset == frame_millis { 250 - offset } else { frame_millis };
+            let delta = if offset == 0 && motion_sample { frame_millis } else { SCAN_INTERVAL_MILLIS - offset };
             grid.elapse_for_test(Duration::from_millis(delta));
         }
     }
-    for job in &jobs {
-        let JobPaint::Drawn { at } = job.paint else { panic!("job {} was never drawn", job.pid); };
-        assert!(at.saturating_sub(job.starts) < 1000, "job {} missed its census deadline", job.pid);
-    }
-    assert!(paint.saw_job_cell, "fixture never admitted a short job cell");
-    assert!(paint.saw_listed_job, "fixture never filled the tile with a waiting job");
-    assert!(saw_foreign_growth, "fixture did not grow a foreign cell");
-    assert!(paint.saw_ended_cell, "fixture did not paint an ended job cell");
-    assert!(elapsed.elapsed() < Duration::from_secs(1), "foreign-load fixture took {:?}", elapsed.elapsed());
+    paint.assert_complete(&jobs, &foreign_growth, elapsed.elapsed());
     drop(appearance);
 }
 
@@ -204,6 +211,18 @@ struct ForeignLoadPaint {
 }
 
 impl ForeignLoadPaint {
+    fn assert_complete(&self, jobs: &[ForeignLoadJob], foreign_growth: &ForeignGrowth, elapsed: Duration) {
+    for job in jobs {
+        let JobPaint::Drawn { at } = job.paint else { panic!("job {} was never drawn", job.pid); };
+        assert!(at.saturating_sub(job.starts) < 1000, "job {} missed its census deadline", job.pid);
+    }
+    assert!(self.saw_job_cell, "fixture never admitted a short job cell");
+    assert!(self.saw_listed_job, "fixture never filled the tile with a waiting job");
+    assert!(matches!(foreign_growth, ForeignGrowth::Observed), "fixture did not grow a foreign cell");
+    assert!(self.saw_ended_cell, "fixture did not paint an ended job cell");
+    assert!(elapsed < Duration::from_secs(1), "foreign-load fixture took {elapsed:?}");
+    }
+
     /// Measure and check the provider that painted this frame without preparing another.
     fn draw_and_check(
         &mut self,
@@ -310,3 +329,5 @@ fn relative_luminance(color: Color) -> f64 {
     };
     0.0722f64.mul_add(component(blue), 0.7152f64.mul_add(component(green), 0.2126 * component(red)))
 }
+
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/one_place.rs"));

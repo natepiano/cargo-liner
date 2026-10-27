@@ -56,14 +56,14 @@ fn collision_roster() -> Roster {
         })
         .collect();
     let mut roster = Roster::new();
-    roster.observe(
+    roster.observe_invocations(&roster.fixture_with_ended_absences(
         vec![CargoGroup {
             lead,
             rest: vec![child],
             ancestry: crate::census::scan::AncestryWalk::Ended(ancestry),
         }],
         Instant::now(),
-    );
+    ));
     roster
 }
 
