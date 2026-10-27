@@ -23,7 +23,6 @@ use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
 use super::constants::GIT_HEAD_REVISION;
 use super::constants::GIT_IGNORE_MISSING_ARG;
 use super::constants::GIT_IS_ANCESTOR_ARG;
-use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use super::constants::GIT_MERGE_BASE_COMMAND;
 use super::constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
 use super::constants::GIT_MERGE_TREE_COMMAND;
@@ -45,6 +44,7 @@ use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::patch::HistoricalIntegrationCandidateDiscovery;
 use super::patch::ScopedPatchTargetHistory;
+use super::refs::IntegrationProofRef;
 use super::refs::LocalTargetUpstream;
 use super::snapshot::RepositorySnapshot;
 use crate::ids::GitObjectId;
@@ -388,7 +388,9 @@ pub(crate) fn reservation_checkpoint_commits(
     repository: &RepositorySnapshot,
     trunk_branch: &str,
 ) -> Result<ReservationCheckpointCommits, GitError> {
-    let trunk_expression = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{trunk_branch}");
+    let proof =
+        super::refs::IntegrationProofRef::resolve(&repository.object_reader(), trunk_branch)?;
+    let trunk_expression = proof.reference().as_str().to_owned();
     let expressions = [GIT_HEAD_REVISION.to_owned(), trunk_expression.clone()];
     let [protected_tip, trunk] = repository
         .resolve_commit_objects(&expressions)?
@@ -433,17 +435,21 @@ pub(crate) fn head_commit_reachability(
         .map(|observation| observation.reachability)
 }
 
-/// Resolve one local branch and classify every candidate ancestor through one object batch.
+/// Classify candidate ancestors against the branch's upstream, or its local-only proof ref.
 pub(crate) fn branch_commit_reachability(
     repository: &RepositorySnapshot,
     branch: &str,
     candidate_ancestors: &[GitObjectId],
 ) -> Result<CommitTargetReachabilityObservation, GitError> {
-    commit_target_reachability(
-        repository,
-        &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
-        candidate_ancestors,
-    )
+    let objects = repository.object_reader();
+    let proof = super::refs::IntegrationProofRef::resolve(&objects, branch)?;
+    // A missing configured upstream is unavailable proof, not a missing local target that
+    // reconciliation may replace with the repository trunk. Pin the observed upstream tip.
+    let target = match proof {
+        IntegrationProofRef::Upstream(_) => proof.commit(&objects)?.to_string(),
+        IntegrationProofRef::LocalOnly(reference) => reference.as_str().to_owned(),
+    };
+    commit_target_reachability(repository, &target, candidate_ancestors)
 }
 
 /// Return the paths merging this branch into trunk would change, plus every conflicted path.

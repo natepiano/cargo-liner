@@ -52,6 +52,37 @@ const GIT_MISSING_REFERENCE_EXIT_CODE: i32 = 2;
 const GIT_SHOW_REF_COMMAND: &str = "show-ref";
 const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
 
+/// The branch ref permitted to prove integration, selected from invocation-cached config.
+pub(crate) enum IntegrationProofRef {
+    /// A configured upstream must supply the proof, even when its ref is unavailable.
+    Upstream(FullRefName),
+    /// Without an upstream, integration remains a local repository operation.
+    LocalOnly(FullRefName),
+}
+
+impl IntegrationProofRef {
+    pub(crate) fn resolve(objects: &OperationObjectReader, branch: &str) -> Result<Self, GitError> {
+        let reference = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}");
+        match objects.upstream_references()?.get(&reference) {
+            Some(BranchUpstream::Configured(upstream)) => Ok(Self::Upstream(upstream.clone())),
+            Some(BranchUpstream::Unconfigured) | None => reference
+                .parse()
+                .map(Self::LocalOnly)
+                .map_err(|_| GitError::InvalidReferenceName { reference }),
+        }
+    }
+
+    pub(crate) fn commit(&self, objects: &OperationObjectReader) -> Result<GitObjectId, GitError> {
+        objects.commit(self.reference().as_str())
+    }
+
+    pub(crate) const fn reference(&self) -> &FullRefName {
+        match self {
+            Self::Upstream(reference) | Self::LocalOnly(reference) => reference,
+        }
+    }
+}
+
 /// The target's upstream commit, if its ref and object are available locally.
 pub(crate) enum LocalTargetUpstream {
     Available(GitObjectId),
