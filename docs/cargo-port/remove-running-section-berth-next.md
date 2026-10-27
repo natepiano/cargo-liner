@@ -825,3 +825,14 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - Checkpoint snapshots, `current_trunk`, reconcile reachability, scoped patch checks, orphan evidence, merge extent, unchanged-scopes releases, release and `IntegratedAs` recovery all read the proof commit. Drift provenance keeps both bases, so local authorship history stays.
 - A local merge that is not pushed shows the existing `not_integrated` state; no new board state or schema. Journal, dispositions and replay are unchanged.
 - Proof: `a_local_merge_waits_for_the_pushed_integration_target` (`tests/lifecycle.rs`) failed before (released before the push); checkpoint and rollback tests (no evidence-lost alert); a repository without a remote keeps the old behaviour. 1295/1295.
+
+### Phase 34 — A merge that brings in only integrated commits is not a write  · status: done
+
+#### As-built
+
+- Why: in cargo-liner-style, `git merge --ff-only style/main` into a clean unit branch fired POST-WRITE INCURSION on other units' paths and opened a first-touch reservation on the 22 merged-in paths. Nothing was written. Showrunner, 2026-10-27.
+- `CommittedWriteSelection` {`Unclassified`, `NoReceivedCommits`, `UnitWrites`} (`src/drift/selection.rs`, built in `src/drift/writes.rs`): before classification, committed drift keeps only paths from commits outside the history of every recorded integration target (repository trunk and child trunks, local tip and available upstream). Staged, unstaged and untracked changes stay unit writes.
+- When every integration tip precedes every phase start, the phase start graph already read proves that nothing was received, with no new Git process. Otherwise one shared range query and one path log select the unit's own content.
+- A checkout of an integration branch keeps the per-holder cover checks. Missing or unreadable ancestry keeps the old conservative observation. Integration targets come from the ledger's recorded targets, not branch-name guesses.
+- No journal, disposition, output contract or replay change.
+- Proof: `an_integrated_fast_forward_is_not_a_post_write` (`tests/drift.rs`) failed before (incursion on a held path, widening onto received paths). Companion tests: the unit's own committed foreign-scope path still incurs after a merge; a dirty edit after the fast-forward still incurs. 1298/1298.

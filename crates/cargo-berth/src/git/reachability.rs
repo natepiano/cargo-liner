@@ -137,6 +137,24 @@ enum HistoricalCandidateHistory {
 }
 
 impl PhaseStartTargetFirstParentHistories {
+    /// Prove that integration history contributes nothing new to any phase range.
+    pub(crate) fn integration_tips_precede_phases(
+        &self,
+        tips: &[GitObjectId],
+        phase_starts: &[GitObjectId],
+    ) -> bool {
+        let HistoricalCandidateHistory::Available(history) = &self.candidate_history else {
+            return false;
+        };
+        phase_starts.iter().all(|anchor| {
+            if !history.graph.contains(anchor) {
+                return false;
+            }
+            let ancestors = history.graph.ancestors_including(anchor);
+            tips.iter().all(|tip| ancestors.contains(tip))
+        })
+    }
+
     /// Borrow the target interval after one phase start when the graph proved it.
     pub(crate) fn after_phase_start(
         &self,
@@ -430,9 +448,8 @@ fn required_commit_expression(
 pub(crate) fn head_commit_reachability(
     repository: &RepositorySnapshot,
     candidate_ancestors: &[GitObjectId],
-) -> Result<CommitTargetReachability, GitError> {
+) -> Result<CommitTargetReachabilityObservation, GitError> {
     commit_target_reachability(repository, GIT_HEAD_REVISION, candidate_ancestors)
-        .map(|observation| observation.reachability)
 }
 
 /// Classify candidate ancestors against the branch's upstream, or its local-only proof ref.

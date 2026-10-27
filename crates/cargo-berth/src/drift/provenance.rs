@@ -297,6 +297,7 @@ pub(super) fn read_committed_foreign_paths(
     let FullPhaseHistoryObservation::Anchored {
         target: observed_tip,
         anchor_states,
+        ..
     } = full_changes.phase_history()
     else {
         return Ok(CommittedForeignPathHistory::Unavailable);
