@@ -815,3 +815,15 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - Proof: `tests/lifecycle.rs` (stale release and readback, fresh kept, committed/staged/unstaged/untracked kept, removed worktree retired, release at the limit, refusal at the limit with nothing stale), `tests/hooks.rs` (notice once). 1288/1288.
 
 **Binds later work:** a binary that writes `unchanged_scopes` goes live only when the readers on both machines also read it. Phase 31's `Deferred` form is a separate disposition.
+
+### Phase 33 — Work counts as integrated only when it is reachable from the pushed merge branch  · status: todo
+
+**Why:** on 2026-10-27 the merge of phase 31 (`e72a13a9`) reached the local `main` and berth released reservations `01a17ade` and `01a17b1a` as integrated. `merge_checkpoint` then rolled the merge back before it pushed. berth printed INTEGRATION EVIDENCE LOST for both, and the board showed a wrong result. Showrunner, 2026-10-27: current, not later.
+
+**Work Order:**
+1. berth counts work as integrated only when it is reachable from `origin/<integration target>`, the pushed state. A local merge that is not pushed is not proof. When the target has no upstream (a repository with no remote), the local branch stays the proof, as today.
+2. Then a rollback before the push releases nothing and loses no evidence.
+3. When the board must show "merged locally, not pushed", it uses a typed state for it, never a flag.
+4. Only the realistic path: one merge, then a rollback or a push. Search every reader of the integration target ref (reconcile, gate, board, release, recovery, alerts) and keep each one correct.
+
+**Verification:** `cargo-berth` suite passes, each test under 1 s. Tests: a merge to local main that is not pushed leaves the reservation live; after the push it is released as integrated; a rollback of the local merge before the push gives no evidence-lost alert; a repository without a remote keeps today's behaviour. Existing ledgers replay unchanged.

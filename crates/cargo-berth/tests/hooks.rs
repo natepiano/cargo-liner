@@ -101,6 +101,7 @@ use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::net::UdpSocket;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -582,15 +583,20 @@ fn a_rejected_request_states_the_engine_message() -> TestResult {
 }
 
 #[test]
-fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> TestResult {
+fn hook_writers_and_reconciliation_use_a_bounded_number_of_lock_acquisitions() -> TestResult {
+    const WRITERS: usize = 2;
+    const PATHS_PER_WRITER: usize = 16;
+
     let repository = initialized_repository()?;
     let mut worktrees = Vec::new();
-    for index in 0..8 {
+    for index in 0..WRITERS {
         let worktree = add_worktree(&repository, &format!("parallel-hook-{index}"))?;
-        fs::write(
-            worktree.1.join(format!("writer-{index}.rs")),
-            "actual hook write\n",
-        )?;
+        for path in 0..PATHS_PER_WRITER {
+            fs::write(
+                worktree.1.join(format!("writer-{index}-{path}.rs")),
+                "actual hook write\n",
+            )?;
+        }
         worktrees.push(worktree);
     }
     let holder = File::options()
@@ -599,6 +605,9 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
         .open(repository.path().join(MUTATION_LOCK_PATH))?;
     holder.lock()?;
     let signals = TempDir::new_in(SCRATCH_ROOT)?;
+    let ready = UdpSocket::bind("127.0.0.1:0")?;
+    let ready_address = ready.local_addr()?.to_string();
+    ready.set_read_timeout(Some(SCHEDULING_ALLOWANCE))?;
     let mut writers = Vec::new();
     for (index, (_, root)) in worktrees.iter().enumerate() {
         let payload = bash_payload(root, &format!("parallel-hook-session-{index}"));
@@ -611,6 +620,10 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
             .env(
                 MUTATION_LOCK_READY_ENVIRONMENT,
                 signals.path().join(index.to_string()),
+            )
+            .env(
+                "CARGO_BERTH_TEST_MUTATION_LOCK_READY_SOCKET",
+                &ready_address,
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -633,17 +646,17 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
             MUTATION_LOCK_READY_ENVIRONMENT,
             signals.path().join("reconcile"),
         )
+        .env(
+            "CARGO_BERTH_TEST_MUTATION_LOCK_READY_SOCKET",
+            &ready_address,
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let queued = Instant::now();
-    while ((0..8).any(|index| !signals.path().join(index.to_string()).is_file())
-        || !signals.path().join("reconcile").is_file())
-        && queued.elapsed() < Duration::from_millis(500)
-    {
-        thread::sleep(Duration::from_millis(1));
-    }
-    let ready = (0..8).all(|index| signals.path().join(index.to_string()).is_file())
+    // Receive one notification per process while the same ledger lock is still held.
+    // This timeout is a deadlock watchdog, never a performance assertion.
+    let queued = (0..=WRITERS).try_for_each(|_| ready.recv(&mut [0; 6]).map(|_| ()));
+    let all_queued = (0..WRITERS).all(|index| signals.path().join(index.to_string()).is_file())
         && signals.path().join("reconcile").is_file();
     holder.unlock()?;
     let mut writer_answers = Vec::new();
@@ -654,43 +667,46 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
     }
     let output = reconcile.wait_with_output()?;
     require_success(&output, "concurrent reconciliation")?;
+    queued?;
     assert!(
-        ready,
+        all_queued,
         "every hook and reconciliation must enter the same held ledger queue"
     );
     let events = journal_events(repository.path())?;
-    for index in 0..8 {
-        assert_hook_writer_waits_under_two_seconds(signals.path(), index)?;
-        let path = format!("writer-{index}.rs");
-        assert!(
-            events.iter().any(|event| event["op"] == "claim"
-                && event["scopes"]
-                    .as_array()
-                    .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == path))),
-            "hook writer {index} must acquire its actual changed path; answers: {writer_answers:?}"
-        );
+    for index in 0..WRITERS {
+        assert_hook_writer_acquisitions_are_bounded(signals.path(), index)?;
+        for path in 0..PATHS_PER_WRITER {
+            let path = format!("writer-{index}-{path}.rs");
+            assert!(
+                events.iter().any(|event| event["op"] == "claim"
+                    && event["scopes"]
+                        .as_array()
+                        .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == path))),
+                "hook writer {index} must acquire its actual changed path; answers: {writer_answers:?}"
+            );
+        }
     }
     Ok(())
 }
 
-fn assert_hook_writer_waits_under_two_seconds(signals: &Path, index: usize) -> TestResult {
-    let waits = fs::read_to_string(signals.join(index.to_string()).with_extension("waits"))?;
+/// Marker sweeping, reconciliation and the batched claim each prepare one mutation. Each may
+/// acquire at most nine times: eight optimistic attempts and one serialized fallback.
+/// Sixteen changed paths must share these batches instead of building a per-path queue.
+fn assert_hook_writer_acquisitions_are_bounded(signals: &Path, index: usize) -> TestResult {
+    const MAXIMUM_ACQUISITIONS_PER_HOOK: usize = 3 * 9;
+    let acquisitions = fs::read_to_string(
+        signals
+            .join(index.to_string())
+            .with_extension("acquisitions"),
+    )?;
+    let count = acquisitions.lines().count();
     assert!(
-        !waits.is_empty(),
-        "writer {index} must report its held-lock wait"
+        count > 0,
+        "writer {index} must report its lock acquisitions"
     );
-    let mut total_wait_nanoseconds = 0;
-    for waited in waits.lines() {
-        let nanoseconds = waited.parse::<u128>()?;
-        total_wait_nanoseconds += nanoseconds;
-        assert!(
-            nanoseconds < Duration::from_secs(2).as_nanos(),
-            "writer {index} lock wait exceeds 2 s: {nanoseconds} ns"
-        );
-    }
     assert!(
-        total_wait_nanoseconds < Duration::from_secs(2).as_nanos(),
-        "writer {index} cumulative lock wait exceeds 2 s: {total_wait_nanoseconds} ns"
+        count <= MAXIMUM_ACQUISITIONS_PER_HOOK,
+        "writer {index} attempted to acquire the ledger lock {count} times; at most {MAXIMUM_ACQUISITIONS_PER_HOOK} are needed for three mutation batches"
     );
     Ok(())
 }
