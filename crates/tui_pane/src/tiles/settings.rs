@@ -10,6 +10,16 @@ use super::constants::TILE_BORDER_ROWS;
 use super::constants::TILE_DEMAND_STEP;
 use crate::TileView;
 
+/// How a summary competes with the tiles for a column's rows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SummaryRowAllocation {
+    /// All panes share rows and lend unused room.
+    #[default]
+    Shared,
+    /// Reserve the summary's measured rows before serving tile demands.
+    BeforeTiles,
+}
+
 /// The framed rows a cell uses now and the stepped demand that controls
 /// layout motion.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -51,6 +61,8 @@ impl CellRowDemand {
 pub(super) struct TileSettings {
     /// Which rule selects command cells or the summary alone.
     pub(super) view:                   TileView,
+    /// Whether the summary reserves its measured rows before tile sharing.
+    pub(super) summary_row_allocation: SummaryRowAllocation,
     /// Rows one cell standing alone needs; see [`MIN_TILE_HEIGHT`].
     pub(super) min_tile_height:        u16,
     /// Columns one cell standing alone needs; see [`MIN_TILE_WIDTH`].
@@ -77,6 +89,7 @@ impl Default for TileSettings {
     fn default() -> Self {
         Self {
             view:                   TileView::Cells,
+            summary_row_allocation: SummaryRowAllocation::Shared,
             min_tile_height:        MIN_TILE_HEIGHT,
             min_tile_width:         MIN_TILE_WIDTH,
             border_rows:            TILE_BORDER_ROWS,

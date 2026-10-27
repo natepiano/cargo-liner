@@ -755,7 +755,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** each relaxation (a)–(d) and (c)+(a), as measured above. Evidence: the phase 30 measurement programs and logs (`relax_measure.py`, `relax_domain.cpp`, `relax_sessions.cpp`).
 
-### Phase 28 — Accounts headers stay in view  · status: todo
+### Phase 28 — Accounts headers stay in view  · status: done
 
 **Depends on:** Phase 26, Phase 32, and tile-fixes phase 24 merged (it holds `render/mod.rs` and the `tui_pane` tile grid files).
 

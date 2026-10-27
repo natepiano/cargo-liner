@@ -309,6 +309,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         && (contents == TileGridContents::Hidden || frame_inner(area).is_empty())
     {
         grid.record_painted_summary_frames(Vec::new());
+        grid.record_painted_cells(&[]);
         return;
     }
     let (widths, demands) = match display {
@@ -317,6 +318,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     };
     let drawing = grid.drawing_at(area, growth, progress);
     let frames = draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
+    grid.record_painted_cells(&drawing.pieces);
     grid.record_painted_summary_frames(frames);
 }
 
@@ -1403,11 +1405,7 @@ mod tests {
 
     /// One hand-built piece and its inseparable name role.
     fn tile_piece(content: TileContent<u32>, frame: PaneFrame, name: PieceName) -> TilePiece<u32> {
-        TilePiece {
-            placement: TilePlacement { content, frame },
-            name,
-            height_snap: PieceHeightSnap::Settled,
-        }
+        TilePiece::for_test(content, frame, name)
     }
 
     /// Draw moving pieces with the width their contents were measured at.

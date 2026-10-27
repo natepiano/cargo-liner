@@ -39,6 +39,45 @@ pub(crate) enum SelectionSurface {
     Tile(TileKey),
 }
 
+/// Whether a cell has a selectable surface, independent of surface retirement.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SelectableSurface {
+    #[default]
+    EmptyCell,
+    Surface(SelectionSurface),
+}
+
+/// A row identity may have disappeared from the current census.
+pub(crate) enum RowLocation {
+    Gone,
+    Found(SelectionSurface),
+}
+
+/// A lookup distinguishes current row membership from a retired surface.
+pub(crate) enum SurfaceLookup<T> {
+    Retired,
+    Current(T),
+}
+
+impl<T> SurfaceLookup<T> {
+    pub(crate) fn map_or<U>(self, retired: U, current: impl FnOnce(T) -> U) -> U {
+        match self {
+            Self::Retired => retired,
+            Self::Current(value) => current(value),
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(clippy::expect_used, reason = "rendered fixture surfaces must exist")]
+    pub(crate) fn expect(self, message: &str) -> T { self.map_or(None, Some).expect(message) }
+}
+
+/// Empty membership has no selected span.
+pub(crate) enum SelectedSpan {
+    NoRows,
+    Row(RowSpan),
+}
+
 /// Owning process generation of a work row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RowOwner {
@@ -163,6 +202,93 @@ pub(crate) enum RowClick {
     Missed,
 }
 
+/// The accounts section supplied by the frame's fitted line record.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum SectionPin {
+    #[default]
+    NoAccounts,
+    Accounts {
+        headers: Range<usize>,
+        body:    Range<usize>,
+    },
+}
+
+/// One transform serves painting, selection bands and pointer coordinates.
+#[derive(Clone, Debug)]
+pub(crate) enum ViewportMapping {
+    Linear {
+        offset: usize,
+        height: usize,
+    },
+    Pinned {
+        headers: Range<usize>,
+        offset:  usize,
+        height:  usize,
+    },
+}
+
+/// Pinned decoration is addressable for sorting, but cannot select a body row.
+pub(crate) enum ViewportLine {
+    Outside,
+    Header(usize),
+    Body(usize),
+}
+
+impl Default for ViewportMapping {
+    fn default() -> Self {
+        Self::Linear {
+            offset: 0,
+            height: 0,
+        }
+    }
+}
+
+impl ViewportMapping {
+    fn new(pin: &SectionPin, offset: usize, height: usize) -> Self {
+        if let SectionPin::Accounts { headers, body } = pin {
+            let body_offset = offset.max(headers.end);
+            if offset > headers.start
+                && height > headers.len()
+                && body_offset < body.end
+                && body_offset.saturating_add(height - headers.len()) > body.start
+            {
+                return Self::Pinned {
+                    headers: headers.clone(),
+                    offset: body_offset,
+                    height,
+                };
+            }
+        }
+        Self::Linear { offset, height }
+    }
+
+    pub(crate) fn source_line(&self, row: usize) -> ViewportLine {
+        match self {
+            Self::Linear { offset, height } if row < *height => ViewportLine::Body(offset + row),
+            Self::Pinned {
+                headers, height, ..
+            } if row < *height && row < headers.len() => ViewportLine::Header(headers.start + row),
+            Self::Pinned {
+                headers,
+                offset,
+                height,
+            } if row < *height => ViewportLine::Body(offset + row - headers.len()),
+            _ => ViewportLine::Outside,
+        }
+    }
+
+    fn body(&self) -> (usize, usize, usize) {
+        match self {
+            Self::Linear { offset, height } => (*offset, *height, 0),
+            Self::Pinned {
+                headers,
+                offset,
+                height,
+            } => (*offset, height - headers.len(), headers.len()),
+        }
+    }
+}
+
 /// A selectable item always occupies its first line, with zero or more continuations.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowSpan {
@@ -185,10 +311,10 @@ impl RowSpan {
         }
     }
 
-    const fn start(self) -> usize { self.first }
+    pub(crate) const fn start(self) -> usize { self.first }
 
     /// Exclusive end of the drawn item.
-    const fn end(self) -> usize {
+    pub(crate) const fn end(self) -> usize {
         self.first
             .saturating_add(self.continuation_lines)
             .saturating_add(1)
@@ -197,9 +323,10 @@ impl RowSpan {
     const fn contains(self, line: usize) -> bool { self.first <= line && line < self.end() }
 
     /// The span's occupied lines clipped and translated into viewport coordinates.
-    pub(crate) fn visible_lines(self, offset: usize, height: usize) -> Range<usize> {
-        let start = self.start().saturating_sub(offset).min(height);
-        let end = self.end().saturating_sub(offset).min(height);
+    pub(crate) fn visible_lines(self, mapping: &ViewportMapping) -> Range<usize> {
+        let (offset, height, pinned) = mapping.body();
+        let start = self.start().saturating_sub(offset).min(height) + pinned;
+        let end = self.end().saturating_sub(offset).min(height) + pinned;
         start..end
     }
 
@@ -216,6 +343,8 @@ impl RowSpan {
 pub(crate) struct SurfaceSelection {
     rows:     Vec<(RowIdentity, RowSpan)>,
     viewport: Viewport,
+    pin:      SectionPin,
+    painted:  ViewportMapping,
 }
 
 impl SurfaceSelection {
@@ -227,6 +356,22 @@ impl SurfaceSelection {
     }
 
     pub(crate) const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    /// Replace section geometry only from the fitted summary lines.
+    pub(crate) fn set_pin(&mut self, pin: SectionPin) {
+        self.pin = pin;
+        self.keep_visible();
+    }
+
+    pub(crate) const fn painted_mapping(&self) -> &ViewportMapping { &self.painted }
+
+    fn mapping(&self) -> ViewportMapping {
+        ViewportMapping::new(
+            &self.pin,
+            self.viewport.scroll_offset(),
+            usize::from(self.viewport.content_area().height),
+        )
+    }
 
     /// Keep an exact identity, otherwise the successor at the old index, then the tail.
     fn resolve(&mut self, rows: Vec<(RowIdentity, RowSpan)>) {
@@ -247,8 +392,10 @@ impl SurfaceSelection {
         self.keep_visible();
     }
 
-    pub(crate) fn selected_span(&self) -> Option<RowSpan> {
-        self.rows.get(self.viewport.pos()).map(|(_, span)| *span)
+    pub(crate) fn selected_span(&self) -> SelectedSpan {
+        self.rows
+            .get(self.viewport.pos())
+            .map_or(SelectedSpan::NoRows, |(_, span)| SelectedSpan::Row(*span))
     }
 
     fn select(&mut self, identity: &RowIdentity) {
@@ -319,16 +466,20 @@ impl SurfaceSelection {
 
     pub(crate) fn set_area(&mut self, area: Rect) {
         self.viewport.set_content_area(area);
-        self.viewport.set_viewport_rows(usize::from(area.height));
         self.keep_visible();
+        self.painted = self.mapping();
     }
 
     pub(crate) fn click(&mut self, position: Position) -> RowClick {
         if !self.viewport.content_area().contains(position) {
             return RowClick::Missed;
         }
-        let line = usize::from(position.y - self.viewport.content_area().y)
-            + self.viewport.scroll_offset();
+        let ViewportLine::Body(line) = self
+            .painted
+            .source_line(usize::from(position.y - self.viewport.content_area().y))
+        else {
+            return RowClick::Missed;
+        };
         if let Some(index) = self.rows.iter().position(|(_, span)| span.contains(line)) {
             self.viewport.set_pos(index);
             self.keep_visible();
@@ -346,30 +497,45 @@ impl SurfaceSelection {
     }
 
     fn keep_visible(&mut self) {
-        let visible = self.viewport.visible_rows();
-        if visible == 0 {
-            return;
-        }
-        let offset = self.viewport.scroll_offset();
+        let height = usize::from(self.viewport.content_area().height);
+        self.viewport.set_viewport_rows(height);
         let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
             return;
         };
-        let offset = if span.end().saturating_sub(span.start()) > visible {
-            // A tall item can remain partially visible while its continuation is scrolled.
-            if span.end() <= offset || span.start() >= offset.saturating_add(visible) {
+        let span = *span;
+        if height == 0 {
+            return;
+        }
+        let mut offset = self.viewport.scroll_offset();
+        if let SectionPin::Accounts { headers, body } = &self.pin
+            && span.start() == body.start
+            && span.end().saturating_sub(headers.start) <= height
+        {
+            // Returning to the first account exposes the section in its natural place.
+            offset = offset.min(span.end().saturating_sub(height));
+        }
+        // Resolve once against the natural section and once against its pinned body.
+        for _ in 0..2 {
+            let mapping = ViewportMapping::new(&self.pin, offset, height);
+            let (body_start, visible, _) = mapping.body();
+            self.viewport.set_viewport_rows(visible);
+            offset = if span.end() - span.start() > visible {
+                if span.end() <= body_start || span.start() >= body_start.saturating_add(visible) {
+                    span.start()
+                } else {
+                    offset
+                }
+            } else if span.start() < body_start {
                 span.start()
+            } else if span.end() > body_start.saturating_add(visible) {
+                span.end().saturating_sub(visible)
             } else {
                 offset
-            }
-        } else if span.start() < offset {
-            span.start()
-        } else if span.end() > offset.saturating_add(visible) {
-            span.end().saturating_sub(visible)
-        } else {
-            offset
-        };
-        self.viewport
-            .set_scroll_offset(offset.min(self.viewport.content_height().saturating_sub(visible)));
+            };
+            offset = offset.min(self.viewport.content_height().saturating_sub(visible));
+        }
+        self.viewport.set_scroll_offset(offset);
+        self.viewport.set_viewport_rows(self.mapping().body().1);
     }
 }
 
@@ -386,29 +552,40 @@ pub(crate) struct Selections {
 }
 
 impl Selections {
-    pub(crate) fn containing(&self, identity: &RowIdentity) -> Option<SelectionSurface> {
+    pub(crate) fn containing(&self, identity: &RowIdentity) -> RowLocation {
         self.surfaces
             .iter()
             .find(|(_, state)| state.rows.iter().any(|(row, _)| row.continues(identity)))
-            .map(|(surface, _)| surface.clone())
+            .map_or(RowLocation::Gone, |(surface, _)| {
+                RowLocation::Found(surface.clone())
+            })
     }
 
     /// Move the active cursor with its exact row across surfaces.
-    /// Background transfers are reconciled separately and cannot displace a survivor.
-    pub(crate) fn follow_focused(&mut self, identity: &RowIdentity) -> Option<SelectionSurface> {
-        let destination = self.containing(identity)?;
-        self.surfaces.get_mut(&destination)?.select(identity);
-        Some(destination)
+    pub(crate) fn follow_focused(&mut self, identity: &RowIdentity) -> RowLocation {
+        let RowLocation::Found(destination) = self.containing(identity) else {
+            return RowLocation::Gone;
+        };
+        match self.surface_mut(&destination) {
+            SurfaceLookup::Current(state) => state.select(identity),
+            SurfaceLookup::Retired => return RowLocation::Gone,
+        }
+        RowLocation::Found(destination)
     }
 
-    pub(crate) fn surface(&self, surface: &SelectionSurface) -> Option<&SurfaceSelection> {
-        self.surfaces.get(surface)
+    pub(crate) fn surface(&self, surface: &SelectionSurface) -> SurfaceLookup<&SurfaceSelection> {
+        self.surfaces
+            .get(surface)
+            .map_or(SurfaceLookup::Retired, SurfaceLookup::Current)
     }
+
     pub(crate) fn surface_mut(
         &mut self,
         surface: &SelectionSurface,
-    ) -> Option<&mut SurfaceSelection> {
-        self.surfaces.get_mut(surface)
+    ) -> SurfaceLookup<&mut SurfaceSelection> {
+        self.surfaces
+            .get_mut(surface)
+            .map_or(SurfaceLookup::Retired, SurfaceLookup::Current)
     }
 
     /// Reconcile together so exact identities follow a session between surfaces.
