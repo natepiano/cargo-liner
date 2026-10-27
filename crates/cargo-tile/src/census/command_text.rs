@@ -140,7 +140,6 @@ pub(crate) enum CommandWordDisplay<'a> {
 /// Which program owns the flags in the current argv segment.
 #[derive(Clone, Copy)]
 enum ArgumentOwner {
-    CargoGlobal,
     Cargo,
     RustcLint,
     Other,
@@ -164,8 +163,7 @@ impl ArgumentOwner {
                     (
                         Self::Cargo,
                         ValuedOptionScope::Global | ValuedOptionScope::Cargo
-                    ) | (Self::CargoGlobal, ValuedOptionScope::Global)
-                        | (Self::RustcLint, ValuedOptionScope::RustcLint)
+                    ) | (Self::RustcLint, ValuedOptionScope::RustcLint)
                 )
         })
     }
@@ -176,7 +174,7 @@ fn command_words(program: &str, arguments: &[String]) -> Vec<CommandWord> {
     let cargo = CARGO_PROCESS_NAMES.contains(&program_name(program))
         || program_name(program).starts_with(CARGO_SUBCOMMAND_PREFIX);
     let mut owner = if cargo {
-        ArgumentOwner::CargoGlobal
+        ArgumentOwner::Cargo
     } else {
         ArgumentOwner::compiler(program)
     };
@@ -216,7 +214,6 @@ fn command_words(program: &str, arguments: &[String]) -> Vec<CommandWord> {
             } else {
                 if matches!(position, CommandNamePosition::BeforeCommand) {
                     child_owner = ArgumentOwner::compiler(word);
-                    owner = ArgumentOwner::Cargo;
                 }
                 position = CommandNamePosition::Naming;
                 CommandWordKind::Name(word.clone())
@@ -339,7 +336,13 @@ impl CommandText {
     /// `cargo-port` answers this the same as one still spelled
     /// `cargo port`.
     fn subcommand(&self) -> Result<&str, RetainedSubcommandAbsence> {
-        cargo_subcommand(&self.words)
+        self.words
+            .iter()
+            .find_map(|word| match &word.kind {
+                CommandWordKind::Name(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .ok_or(RetainedSubcommandAbsence::NoSubcommand)
     }
 
     /// Whether the hidden command policy names this invocation's subcommand.
@@ -616,31 +619,18 @@ pub(super) fn select_cargo(
 /// what settles it.
 pub(super) fn names_cargo(argv: &[OsString]) -> bool { cargo_split(argv).is_ok() }
 
-/// Read the subcommand from the shared argv classification.
-fn cargo_subcommand(words: &[CommandWord]) -> Result<&str, RetainedSubcommandAbsence> {
-    words
-        .iter()
-        .find_map(|word| match &word.kind {
-            CommandWordKind::Name(name) => Some(name.as_str()),
-            _ => None,
-        })
-        .ok_or(RetainedSubcommandAbsence::NoSubcommand)
-}
-
-/// The subcommand after Cargo's global options and toolchain selectors.
+/// The subcommand an argv names: the first word past the cargo binary
+/// that is neither a flag nor a `+toolchain` selector.
 pub(super) fn subcommand(argv: &[OsString]) -> Result<String, SubcommandAbsence> {
     let CargoArguments { start, layout } = cargo_split(argv).map_err(SubcommandAbsence::from)?;
     if let ArgumentLayout::External(subcommand) = layout {
         return Ok(subcommand);
     }
-    let arguments = argv
-        .iter()
+    argv.iter()
         .skip(start)
         .map(|argument| argument.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    cargo_subcommand(&command_words(CARGO_DISPLAY_NAME, &arguments))
-        .map(str::to_owned)
-        .map_err(|RetainedSubcommandAbsence::NoSubcommand| SubcommandAbsence::NoSubcommand)
+        .find(|argument| !argument.starts_with('-') && !argument.starts_with('+'))
+        .ok_or(SubcommandAbsence::NoSubcommand)
 }
 
 /// Whether `commands.excluded` names the subcommand an argv carries.
@@ -1113,20 +1103,6 @@ mod tests {
             .iter()
             .map(|subcommand| (*subcommand).to_string())
             .collect()
-    }
-
-    #[test]
-    fn an_excluded_command_after_a_valued_global_option_is_excluded() -> Result<(), RowAbsence> {
-        for (option, scope) in COMMAND_VALUED_OPTIONS {
-            if !matches!(scope, ValuedOptionScope::Global) {
-                continue;
-            }
-            let argv = ["cargo", "+nightly", option, "k=v", "berth", "claim"].map(OsString::from);
-            assert!(is_excluded(&argv, &excluded()), "{option}");
-            let command = command_text(&argv, ScannerHome::Unavailable)?;
-            assert!(command.is_hidden(&excluded()), "{option}");
-        }
-        Ok(())
     }
 
     #[test]

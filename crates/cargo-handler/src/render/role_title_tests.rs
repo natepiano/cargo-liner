@@ -164,7 +164,6 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
         &cells,
     );
     app.tiles.settle_for_test();
-    buffer.reset();
     tui_pane::draw_tile_grid(
         &mut buffer,
         &mut app.tiles,

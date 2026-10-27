@@ -118,9 +118,37 @@ pub(crate) use recovery_command::ClaimRecoverySelector;
 use super::refusal;
 use crate::git::RepositorySnapshot;
 use crate::ledger::JournalEvent;
+use crate::reconcile::ReconcileError;
+use crate::reconcile::ReconciliationReport;
 use crate::session::PreparedSessionMappingPublication;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
+
+/// Maintenance committed while a claim retries a full ledger, reported by this invocation.
+#[derive(Default)]
+pub(crate) struct ClaimCapacityRecovery {
+    reports: Vec<ReconciliationReport>,
+}
+
+impl ClaimCapacityRecovery {
+    fn recover(
+        &mut self,
+        repository: &RepositorySnapshot,
+        ledger: &Ledger,
+        config: &BerthConfig,
+    ) -> Result<(), ClaimError> {
+        let report = reconcile::reconcile_for_claim_capacity(repository, ledger, config)
+            .map_err(|error| ClaimError::CapacityRecovery(Box::new(error)))?;
+        self.reports.push(report);
+        Ok(())
+    }
+
+    pub(crate) fn into_output(self, output: OutputEnvelope) -> OutputEnvelope {
+        self.reports
+            .into_iter()
+            .fold(output, |output, report| report.into_output(output))
+    }
+}
 
 /// A parsed claim whose provenance carries domain types rather than CLI options.
 pub(crate) struct ClaimRequest {
@@ -296,11 +324,13 @@ pub(crate) fn execute(
     } = &claim_request;
     let answer_recovery = answer_recovery.clone();
     let reservation_selection = *reservation_selection;
-    reconciliation_report.into_output(claim_acquisition_output(
-        acquire(claim_request, recovery_command_line),
+    let mut capacity_recovery = ClaimCapacityRecovery::default();
+    let output = reconciliation_report.into_output(claim_acquisition_output(
+        acquire(claim_request, recovery_command_line, &mut capacity_recovery),
         reservation_selection,
         &answer_recovery,
-    ))
+    ));
+    capacity_recovery.into_output(output)
 }
 
 /// Render one acquisition result while preserving its blocked envelope contract.
@@ -830,6 +860,7 @@ enum AlreadyHeldSessionMapping {
 fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         reservation_selection,
@@ -847,7 +878,7 @@ fn acquire(
             named::acquire(claim_request, reservation_id, recovery_command_line)
         },
         ClaimReservationSelection::NewReservation => {
-            acquire_new(claim_request, recovery_command_line)
+            acquire_new(claim_request, recovery_command_line, capacity_recovery)
         },
     }
 }
@@ -855,6 +886,7 @@ fn acquire(
 fn acquire_new(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         reservation_selection: _,
@@ -922,21 +954,24 @@ fn acquire_new(
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
-    let outcome = prepared_claim.transact(
+    let mut validation_context = ClaimValidationContext {
+        repository: claim_repository_facts.repository,
+        run_validation: claim_run_validation,
+        worktree_context: worktree_context.clone(),
+        recovery_command_line: recovery_command_line.clone(),
+        worktree_id: journal_mutation_actor.worktree_id,
+        path_case,
+        answer_policy,
+        maximum_reservations: berth_config.maximum_reservations,
+        maximum_ordering_edges: berth_config.maximum_ordering_edges,
+        repository_trunk,
+    };
+    let outcome = prepared_claim.transact_with_capacity_recovery(
         &ledger,
         journal_mutation_actor,
-        &ClaimValidationContext {
-            repository: claim_repository_facts.repository,
-            run_validation: claim_run_validation,
-            worktree_context: worktree_context.clone(),
-            recovery_command_line: recovery_command_line.clone(),
-            worktree_id: journal_mutation_actor.worktree_id,
-            path_case,
-            answer_policy,
-            maximum_reservations: berth_config.maximum_reservations,
-            maximum_ordering_edges: berth_config.maximum_ordering_edges,
-            repository_trunk,
-        },
+        &mut validation_context,
+        &berth_config,
+        capacity_recovery,
     )?;
     finish_new_claim(
         outcome,
@@ -1084,11 +1119,13 @@ fn normalized_claim_scopes(
 pub(crate) fn acquire_first_touch(
     request: FirstTouchClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         CheckReservationSelection::SessionMappingOrSingleActive,
         recovery_command_line,
+        capacity_recovery,
     )
 }
 
@@ -1097,11 +1134,13 @@ pub(super) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
         recovery_command_line,
+        capacity_recovery,
     )
 }
 
@@ -1109,6 +1148,7 @@ fn acquire_first_touch_with_reservation_selection(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     let FirstTouchClaimRequest {
         declared_scopes,
@@ -1161,7 +1201,7 @@ fn acquire_first_touch_with_reservation_selection(
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
-    let validation_context = FirstTouchValidationContext {
+    let mut validation_context = FirstTouchValidationContext {
         repository: repository_facts.repository,
         run_validation,
         worktree_context,
@@ -1175,7 +1215,13 @@ fn acquire_first_touch_with_reservation_selection(
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
     };
-    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
+    let execution = transact_first_touch_with_capacity_recovery(
+        &ledger,
+        &prepared_claim,
+        &mut validation_context,
+        &berth_config,
+        capacity_recovery,
+    )?;
     // Only a refusal of the whole request stops the caller, so only it records the default.
     let (
         FirstTouchClaimExecution::Blocked { .. },
@@ -1191,10 +1237,37 @@ fn acquire_first_touch_with_reservation_selection(
         &prepared_claim.target.target,
         &validation_context,
     )?;
-    let execution = transact_first_touch(&ledger, &prepared_claim, &validation_context)?;
+    let execution = transact_first_touch_with_capacity_recovery(
+        &ledger,
+        &prepared_claim,
+        &mut validation_context,
+        &berth_config,
+        capacity_recovery,
+    )?;
     Ok(Enrollment::Enrolled(
         execution.answered_by_default(answered),
     ))
+}
+
+/// Retry a full-ledger decision once after committing stale-scope maintenance.
+fn transact_first_touch_with_capacity_recovery(
+    ledger: &Ledger,
+    prepared_claim: &PreparedClaim,
+    validation_context: &mut FirstTouchValidationContext,
+    config: &BerthConfig,
+    capacity_recovery: &mut ClaimCapacityRecovery,
+) -> Result<FirstTouchClaimExecution, ClaimError> {
+    let execution = transact_first_touch(ledger, prepared_claim, validation_context)?;
+    if matches!(
+        execution,
+        FirstTouchClaimExecution::ReservationLimitReached(_)
+    ) {
+        capacity_recovery.recover(&validation_context.repository, ledger, config)?;
+        validation_context.repository = Arc::new(validation_context.repository.fresh_observation());
+        transact_first_touch(ledger, prepared_claim, validation_context)
+    } else {
+        Ok(execution)
+    }
 }
 
 /// Prepare a first-touch decision, validate its generation, and publish its committed result.
@@ -2632,6 +2705,28 @@ fn checked_claim_operation(
 }
 
 impl PreparedClaim {
+    /// Retry a full ledger once after maintenance, validating capacity again under the lock.
+    fn transact_with_capacity_recovery(
+        self,
+        ledger: &Ledger,
+        requester: ResolvedJournalMutationActor,
+        context: &mut ClaimValidationContext,
+        config: &BerthConfig,
+        capacity_recovery: &mut ClaimCapacityRecovery,
+    ) -> Result<LedgerTransactionOutcome<ClaimRejection>, ClaimError> {
+        let outcome = self.clone().transact(ledger, requester, context)?;
+        if matches!(
+            outcome,
+            LedgerTransactionOutcome::Rejected(ClaimRejection::ReservationLimitReached(_))
+        ) {
+            capacity_recovery.recover(&context.repository, ledger, config)?;
+            context.repository = Arc::new(context.repository.fresh_observation());
+            self.transact(ledger, requester, context)
+        } else {
+            Ok(outcome)
+        }
+    }
+
     /// Validate the claim before acquisition, then publish it after checking its generation.
     fn transact(
         self,
@@ -3090,6 +3185,7 @@ enum ClaimRejection {
 
 #[derive(Debug)]
 pub(crate) enum ClaimError {
+    CapacityRecovery(Box<ReconcileError>),
     InvalidTarget(TargetRefusal),
     InvalidRepositoryTrunk(String),
     Io(std::io::Error),
@@ -3121,6 +3217,7 @@ pub(crate) enum ClaimError {
 impl Display for ClaimError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CapacityRecovery(error) => Display::fmt(error, formatter),
             Self::InvalidTarget(error) => formatter.write_str(&error.message()),
             Self::InvalidRepositoryTrunk(error) => formatter.write_str(error),
             Self::Io(error) => write!(formatter, "claim I/O failed: {error}"),
@@ -3182,6 +3279,7 @@ impl std::error::Error for ClaimError {}
 impl ClaimError {
     pub(crate) fn into_output(self, command_verb: CommandVerb) -> OutputEnvelope {
         match self {
+            Self::CapacityRecovery(error) => error.into_output(command_verb),
             Self::InvalidTarget(error) => {
                 OutputEnvelope::invalid_input(command_verb, &error.message())
             },

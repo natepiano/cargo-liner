@@ -69,6 +69,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
+use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -129,6 +130,7 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
+use crate::reservation::ScopeChangeEvidence;
 use crate::reservation::ScopedPatchComparisonObservation;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluationPriority;
@@ -192,6 +194,7 @@ impl ReconciliationReport {
         output
             .with_alerts(self.alerts)
             .with_retention_maintenance(&self.retention_maintenance)
+            .with_automatic_releases(&self.settlements)
     }
 
     /// Route this report's alerts for a response that answers on `occasion`.
@@ -304,11 +307,12 @@ pub(crate) struct ReconciledEvidence {
     pub(crate) status:         IntegrationEvidenceStatus,
 }
 
-/// One terminal integration disposition appended by this reconciliation.
+/// One release disposition appended by this reconciliation.
+#[derive(Clone)]
 pub(crate) struct ReconciledSettlement {
-    /// The outstanding reservation this transaction released.
+    /// The reservation this transaction released.
     pub(crate) reservation_id: ReservationId,
-    /// The complete integration proof retained by the release.
+    /// The evidence or retirement decision retained by the release.
     pub(crate) disposition:    ReleaseDisposition,
 }
 
@@ -321,6 +325,7 @@ struct ReconciliationPlan {
 struct ReconciliationEvidenceContext<'context> {
     repository:                               &'context git::RepositorySnapshot,
     merged_run_endings:                       MergedRunEndings,
+    stale_scope_releases:                     StaleScopeReleases,
     berth_config:                             &'context BerthConfig,
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
     successor_scoped_patch_evaluation_budget:
@@ -1359,6 +1364,71 @@ struct ReconciliationRequest {
     repository_observation_scope: RepositoryObservationScope,
     recovered_bypass_reporting:   RecoveredBypassReporting,
     merged_run_endings:           MergedRunEndings,
+    stale_scope_releases:         StaleScopeReleases,
+}
+
+/// Stale-scope reads run during board maintenance or recovery of a full reservation ledger.
+#[derive(Clone, Copy)]
+enum StaleScopeReleases {
+    Observe,
+    Defer,
+}
+
+/// Recover capacity only after a locked claim decision finds the reservation limit reached.
+pub(crate) fn reconcile_for_claim_capacity(
+    repository: &git::RepositorySnapshot,
+    ledger: &Ledger,
+    config: &BerthConfig,
+) -> Result<ReconciliationReport, ReconcileError> {
+    reconcile_with_open_ledger(
+        &repository.fresh_observation(),
+        ledger,
+        config,
+        ReconciliationRequest {
+            repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
+            recovered_bypass_reporting:   RecoveredBypassReporting::Defer,
+            merged_run_endings:           MergedRunEndings::Defer,
+            stale_scope_releases:         StaleScopeReleases::Observe,
+        },
+    )
+}
+
+/// Reconcile the board, checking stale scopes only for an explicit invocation.
+pub(crate) fn reconcile_for_board(
+    invocation_directory: &Path,
+    recovered_bypass_reporting: RecoveredBypassReporting,
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
+    let context = WorktreeContext::discover(invocation_directory)?;
+    let config = match BerthConfig::read(&context.configuration_lookup())? {
+        Enrollment::Enrolled(config) => config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
+    let ledger = Ledger::open_from_discovered_worktree(&context)?;
+    let repository = git::RepositorySnapshot::new(context);
+    let stale_scope_releases = match EngineAnswerOccasion::current() {
+        EngineAnswerOccasion::DirectInvocation => StaleScopeReleases::Observe,
+        EngineAnswerOccasion::CompletedBashCall | EngineAnswerOccasion::OpeningSession => {
+            StaleScopeReleases::Defer
+        },
+    };
+    reconcile_with_open_ledger(
+        &repository,
+        &ledger,
+        &config,
+        ReconciliationRequest {
+            repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
+            recovered_bypass_reporting,
+            merged_run_endings: MergedRunEndings::End,
+            stale_scope_releases,
+        },
+    )
+    .map(Enrollment::Enrolled)
 }
 
 /// Reconcile every retained reservation before a stateful command consumes it.
@@ -1409,6 +1479,7 @@ where
                         recovered_bypass_reporting:   RecoveredBypassReporting::Defer,
                         // Post-commit drift must attribute the commit before its run can end.
                         merged_run_endings:           MergedRunEndings::Defer,
+                        stale_scope_releases:         StaleScopeReleases::Defer,
                     },
                 );
                 let observation = observation_worker
@@ -1528,6 +1599,7 @@ fn reconcile_enrolled(
             repository_observation_scope,
             recovered_bypass_reporting,
             merged_run_endings: MergedRunEndings::End,
+            stale_scope_releases: StaleScopeReleases::Defer,
         },
     )
 }
@@ -2280,6 +2352,7 @@ fn prepare_reconciliation_transaction(
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
         repository,
         merged_run_endings: request.merged_run_endings,
+        stale_scope_releases: request.stale_scope_releases,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
@@ -2830,6 +2903,9 @@ fn complete_reconciliation_plan(
         MergedRunEndings::Defer => Vec::new(),
     };
     append_orphan_retirements(reservations, plan);
+    if matches!(context.stale_scope_releases, StaleScopeReleases::Observe) {
+        append_stale_unchanged_releases(context.repository, reservations, ordering_graph, plan)?;
+    }
     for snapshot in &mut snapshots {
         if let Some(merged_run) = merged_runs
             .iter()
@@ -2848,15 +2924,23 @@ fn complete_reconciliation_plan(
                 ..
             } = operation
                 && *reservation_id == snapshot.reservation_id
-                && let RepositoryReservationEvidence::Outstanding {
-                    protected_tip,
-                    integration_status,
-                } = &snapshot.evidence
             {
-                snapshot.evidence = RepositoryReservationEvidence::Released {
-                    protected_tip:      protected_tip.clone(),
-                    integration_status: integration_status.clone(),
-                    disposition:        disposition.clone(),
+                snapshot.evidence = match &snapshot.evidence {
+                    RepositoryReservationEvidence::Active => {
+                        RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                            disposition: disposition.clone(),
+                        }
+                    },
+                    RepositoryReservationEvidence::Outstanding {
+                        protected_tip,
+                        integration_status,
+                    } => RepositoryReservationEvidence::Released {
+                        protected_tip:      protected_tip.clone(),
+                        integration_status: integration_status.clone(),
+                        disposition:        disposition.clone(),
+                    },
+                    RepositoryReservationEvidence::Released { .. }
+                    | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
                 };
             }
         }
@@ -3500,6 +3584,7 @@ pub(crate) fn prepare_gate_reconciliation(
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
         repository,
         merged_run_endings: MergedRunEndings::Defer,
+        stale_scope_releases: StaleScopeReleases::Defer,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
@@ -4744,12 +4829,105 @@ fn append_orphan_retirements(
         }
     }
     for reservation_id in retired {
+        let disposition = ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived());
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id,
-            disposition: ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived()),
+            disposition: disposition.clone(),
             source: Some(ReleaseSource::Reconciliation),
         });
+        reconciliation
+            .action
+            .settlements
+            .push(ReconciledSettlement {
+                reservation_id,
+                disposition,
+            });
     }
+}
+
+/// Release stale declarations only from complete current holder observations.
+/// One diff and the already shared status read serve every reservation in a holder/target.
+fn append_stale_unchanged_releases(
+    repository: &git::RepositorySnapshot,
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    plan: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    let Ok(path_case) = PathCase::read(repository.context().common_git_directory()) else {
+        return Ok(());
+    };
+    let now = RecordedAt::now();
+    let mut observations = HashMap::new();
+    for reservation in reservations.iter() {
+        if matches!(
+            reservation.lifecycle(),
+            ReservationLifecycle::Released { .. }
+        ) || !matches!(
+            reservation.freshness(&now),
+            reservation::ReservationFreshness::Stale { .. }
+        ) || planned_release(reservation.id(), &plan.operations).is_some()
+        {
+            continue;
+        }
+        let Ok(holder) = plan
+            .action
+            .repository_snapshot
+            .reservation(reservation.id())
+        else {
+            continue;
+        };
+        if holder.worktree_liveness != WorktreeLiveness::Live {
+            continue;
+        }
+        let (WorktreeHead::Resolved(head), JudgedTargetTip::Resolved(target)) = (
+            &holder.worktree_head,
+            plan.action.repository_snapshot.target_for(reservation.id()),
+        ) else {
+            continue;
+        };
+        let root = plan
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                JournalOperation::RelocateWorktree {
+                    reservation_id,
+                    current_root,
+                    ..
+                } if *reservation_id == reservation.id() => Some(current_root),
+                _ => None,
+            })
+            .unwrap_or_else(|| reservation.worktree_root());
+        let observation = observations
+            .entry((root.as_ref().to_path_buf(), target.clone(), head.clone()))
+            .or_insert_with(|| {
+                reservation::HolderScopeChanges::observe(repository, root.as_ref(), target, head)
+            });
+        let Ok(observation) = observation else {
+            continue;
+        };
+        let ScopeChangeEvidence::Unchanged(evidence) =
+            observation.for_scopes(reservation.scopes(), path_case)
+        else {
+            continue;
+        };
+        let disposition = ReleaseDisposition::UnchangedScopes(evidence);
+        plan.operations.push(JournalOperation::Release {
+            reservation_id: reservation.id(),
+            disposition:    disposition.clone(),
+            source:         Some(ReleaseSource::Reconciliation),
+        });
+        plan.action.settlements.push(ReconciledSettlement {
+            reservation_id: reservation.id(),
+            disposition,
+        });
+    }
+    let settled = plan
+        .action
+        .settlements
+        .iter()
+        .map(|settlement| (settlement.reservation_id, settlement.disposition.clone()))
+        .collect();
+    rebuild_settlement_retention(reservations, ordering_graph, &settled, plan)
 }
 
 /// The merge extent this plan already records for a reservation, if it observes one.

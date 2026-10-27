@@ -364,9 +364,9 @@ impl OrderingEdge {
             RepositoryReservationEvidence::Released { disposition, .. }
             | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { disposition } => {
                 return Ok(match disposition {
-                    ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
-                        EdgeReadiness::Cancelled
-                    },
+                    ReleaseDisposition::Abandoned(_)
+                    | ReleaseDisposition::RetiredOrphan(_)
+                    | ReleaseDisposition::UnchangedScopes(_) => EdgeReadiness::Cancelled,
                     ReleaseDisposition::Integrated
                     | ReleaseDisposition::RewrittenIntegration(_) => EdgeReadiness::Fulfilled,
                 });
@@ -381,7 +381,9 @@ impl OrderingEdge {
             | RepositoryReservationEvidence::Released { disposition, .. }
                 if matches!(
                     disposition,
-                    ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_)
+                    ReleaseDisposition::Abandoned(_)
+                        | ReleaseDisposition::RetiredOrphan(_)
+                        | ReleaseDisposition::UnchangedScopes(_)
                 ) =>
             {
                 Ok(EdgeReadiness::Cancelled)

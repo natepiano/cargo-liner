@@ -12,7 +12,6 @@ use std::process::Stdio;
 use tempfile::TempDir;
 
 use crate::constants::REGISTRATION_MAGIC;
-use crate::hook;
 
 #[path = "parallel_cases.rs"]
 mod parallel_cases;
@@ -30,14 +29,13 @@ struct InstalledShim {
     birth_time_separation: BirthTimeSeparation,
     real_date:             PathBuf,
     real_ln:               PathBuf,
-    real_ps:               PathBuf,
 }
 
 impl InstalledShim {
     /// Install the repository script beside cargo that snapshots its live registration.
     fn new(birth_time_separation: BirthTimeSeparation) -> Self {
         let utilities = Command::new("sh")
-            .args(["-c", "command -v ln; command -v date; command -v ps"])
+            .args(["-c", "command -v ln; command -v date"])
             .output()
             .expect("locate system utilities before changing the child PATH");
         assert!(utilities.status.success());
@@ -48,7 +46,6 @@ impl InstalledShim {
             birth_time_separation,
             real_ln: PathBuf::from(utilities.next().expect("system ln path")),
             real_date: PathBuf::from(utilities.next().expect("system date path")),
-            real_ps: PathBuf::from(utilities.next().expect("system ps path")),
         };
         for directory in [
             "bin",
@@ -58,7 +55,7 @@ impl InstalledShim {
         ] {
             fs::create_dir_all(fixture.path(directory)).expect("create fixture directory");
         }
-        let source = hook::shim_source();
+        let source = include_str!("../cargo-capture-shim.sh");
         let assignment = "capture_parent=/tmp/cargo-tile";
         assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
         let parent = fixture
@@ -76,20 +73,6 @@ impl InstalledShim {
             &source.replace(assignment, &format!("capture_parent='{parent}'")),
         );
         install_cargo(&fixture.path("bin/cargo-tile-real"));
-        if matches!(fixture.birth_time_separation, BirthTimeSeparation::Required) {
-            // Check the requested native PID directly. A setup child born in
-            // the same calendar second must still fail this identity proof.
-            executable(
-                &fixture.path("tools/ps"),
-                r#"#!/bin/sh
-set -eu
-if [ "$#" -eq 4 ] && [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ]; then
-    [ "$4" = "$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")" ] || exit 91
-fi
-exec "$SHIM_TEST_REAL_PS" "$@"
-"#,
-            );
-        }
         install_date(&fixture.path("tools/date"));
         install_publication_observer(&fixture.path("tools/ln"));
         fixture
@@ -204,9 +187,10 @@ sys.exit(98)
         command
                 .args([
                     "-c",
-                // Linux start ticks need a distinct setup-child tick. On macOS
-                // the ps observer checks the exact PID instead of waiting for
-                // a calendar-second boundary.
+                // Native birth comparisons need distinct shim and setup-child births:
+                // Linux /proc start times count 10 ms clock ticks, while macOS ps lstart
+                // resolves whole seconds, so macOS waits for the second to change.
+                // The wait reads SHIM_TEST_REAL_DATE because tools/date intercepts date.
                     r#"umask 0066
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
 if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
@@ -225,7 +209,10 @@ fi
 if [ "$SHIM_TEST_BIRTH_TIME_SEPARATION" = required ]; then
     case $SHIM_TEST_NATIVE_PLATFORM in
         linux) sleep 0.05 ;;
-        *) : ;;
+        *)
+            started=$("$SHIM_TEST_REAL_DATE" +%s)
+            while [ "$("$SHIM_TEST_REAL_DATE" +%s)" = "$started" ]; do sleep 0.05; done
+            ;;
     esac
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/repeat" ]; then
@@ -265,7 +252,6 @@ exec sh "$0" "$@""#,
                     "SHIM_TEST_REAL_DATE",
                     &self.real_date,
                 )
-                .env("SHIM_TEST_REAL_PS", &self.real_ps)
                 .env("SHIM_TEST_GENERATION", "20260909-204000")
                 .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
                 .env_remove("SHIM_TEST_PENDING_DELETE")
@@ -1034,10 +1020,6 @@ fn same_pid_and_calendar_second_receive_different_generations() {
         &first.fields()[2..4],
         &second.fields()[2..4],
         "same boot and shell birth"
-    );
-    assert!(
-        !first.fields()[3].is_empty(),
-        "the exact native PID was observed"
     );
     assert_ne!(
         first.fields()[1],

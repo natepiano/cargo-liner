@@ -99,8 +99,7 @@ fn a_nested_test_keeps_its_compiler_cpu_beside_its_idle_nextest_parent() {
 /// Inspect real table cells after census grouping and roster observation.
 fn assert_cpu_rows(groups: &[CargoGroup], width: u16, expected: &[(u32, &str)]) {
     let mut roster = Roster::new();
-    roster
-        .observe_invocations(&roster.fixture_with_ended_absences(groups.to_vec(), Instant::now()));
+    roster.observe(groups.to_vec(), Instant::now());
     let area = ratatui::layout::Rect::new(0, 0, width, 16);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
     render::draw_cell_for_test(
@@ -574,9 +573,7 @@ fn assert_nested_source_samples(samples: &[Vec<CargoGroup>], capture: &Capture) 
                 MeasurementAbsence::Unproven
             })
         );
-        roster.observe_invocations(
-            &roster.fixture_with_ended_absences(groups.clone(), Instant::now()),
-        );
+        roster.observe(groups.clone(), Instant::now());
         assert_eq!(roster.groups().len(), 1);
         assert_eq!(roster.groups()[0].rows().count(), 3);
         headings.push(assert_nested_render(&roster, group, capture, index));

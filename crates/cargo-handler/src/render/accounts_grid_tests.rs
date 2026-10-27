@@ -8,7 +8,6 @@
 
 use tui_pane::AttractWork;
 use tui_pane::CellPoint;
-use tui_pane::TileView;
 use tui_pane::Updates;
 
 use super::*;
@@ -41,8 +40,6 @@ fn locate(buffer: &Buffer, label: &str) -> CellPoint {
 }
 
 fn draw_grid(app: &mut App) -> Buffer {
-    // Header sorting is exercised in the summary, with whole session names.
-    app.tiles.set_view(TileView::Summary);
     let cells = Cells::new(
         app.census.machines(&[]),
         NOW,
@@ -58,12 +55,7 @@ fn draw_grid(app: &mut App) -> Buffer {
         0,
         // A header click can add a sort arrow; the terminal keeps its width.
         80,
-        demand
-            .summary
-            .required()
-            .get()
-            .checked_add(3)
-            .expect("small summary"),
+        u16::try_from(demand.summary + 3).expect("small summary"),
     );
     let mut buffer = Buffer::empty(area);
     tui_pane::draw_tile_grid(

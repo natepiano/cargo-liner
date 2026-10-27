@@ -972,7 +972,16 @@ fn the_reservation_limit_counts_each_parallel_phase() {
         "reservation_limit_reached"
     );
     assert_eq!(refused["payload"]["data"]["maximum"], 2);
-    assert_eq!(journal_events(root), before);
+    let after = journal_events(root);
+    assert_eq!(&after[..before.len()], before.as_slice());
+    // Capacity recovery may record its holder observation, but these fresh phases must
+    // neither be released nor admit a third claim.
+    assert!(
+        after[before.len()..]
+            .iter()
+            .all(|event| event["op"] == "holder_merge_extent_observed"),
+        "capacity recovery changed reservations: {after:?}"
+    );
     assert_eq!(session_mappings(root), mappings_before);
 }
 

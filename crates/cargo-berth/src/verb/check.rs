@@ -5,6 +5,7 @@ use std::path::Path;
 use super::claim;
 use super::claim::CheckAcquisitionDecision;
 use super::claim::CheckReservationSelection;
+use super::claim::ClaimCapacityRecovery;
 use super::claim::ClaimError;
 use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
@@ -115,6 +116,20 @@ pub(crate) fn execute(
     check_request: CheckRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
+    let mut capacity_recovery = claim::ClaimCapacityRecovery::default();
+    let output = execute_with_capacity_recovery(
+        check_request,
+        recovery_command_line,
+        &mut capacity_recovery,
+    );
+    capacity_recovery.into_output(output)
+}
+
+fn execute_with_capacity_recovery(
+    check_request: CheckRequest,
+    recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
+) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -151,6 +166,7 @@ pub(crate) fn execute(
             check_request.declared_scopes,
             check_request.reservation_selection,
             recovery_command_line,
+            capacity_recovery,
         );
     }
     if first_decision.conflicts.is_empty() {
@@ -158,6 +174,7 @@ pub(crate) fn execute(
             check_request.declared_scopes.clone(),
             check_request.reservation_selection,
             recovery_command_line,
+            capacity_recovery,
         ) {
             Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { .. })) => {
                 reconcile_and_retry(
@@ -165,6 +182,7 @@ pub(crate) fn execute(
                     check_request.declared_scopes,
                     check_request.reservation_selection,
                     recovery_command_line,
+                    capacity_recovery,
                 )
             },
             acquisition => render_acquisition(
@@ -180,6 +198,7 @@ pub(crate) fn execute(
         check_request.declared_scopes,
         check_request.reservation_selection,
         recovery_command_line,
+        capacity_recovery,
     )
 }
 
@@ -189,6 +208,7 @@ fn reconcile_and_retry(
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> OutputEnvelope {
     let reconciliation_report =
         match reconcile::reconcile(invocation_directory, RecoveredBypassReporting::Defer) {
@@ -215,13 +235,15 @@ fn reconcile_and_retry(
         }) => {
             return OutputEnvelope::unconfigured(CommandVerb::Check, &expected_configuration_path)
                 .with_alerts(reconciliation_report.alerts)
-                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance)
+                .with_automatic_releases(&reconciliation_report.settlements);
         },
         Err(error) => {
             return error
                 .into_output()
                 .with_alerts(reconciliation_report.alerts)
-                .with_retention_maintenance(&reconciliation_report.retention_maintenance);
+                .with_retention_maintenance(&reconciliation_report.retention_maintenance)
+                .with_automatic_releases(&reconciliation_report.settlements);
         },
     };
     // A configured default answer records itself under the lock before the edit is protected.
@@ -231,6 +253,7 @@ fn reconcile_and_retry(
                 declared_scopes,
                 reservation_selection,
                 recovery_command_line,
+                capacity_recovery,
             ),
             retried_decision.approver,
             retried_decision.requester,
@@ -238,6 +261,7 @@ fn reconcile_and_retry(
         )
         .with_alerts(reconciliation_report.alerts)
         .with_retention_maintenance(&reconciliation_report.retention_maintenance)
+        .with_automatic_releases(&reconciliation_report.settlements)
     } else {
         refusal::record(
             &retried_decision.worktree_context,
@@ -253,6 +277,7 @@ fn reconcile_and_retry(
         )
         .with_alerts(reconciliation_report.alerts)
         .with_retention_maintenance(&reconciliation_report.retention_maintenance)
+        .with_automatic_releases(&reconciliation_report.settlements)
     }
 }
 
@@ -260,6 +285,7 @@ fn acquire_first_touch(
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     claim::acquire_first_touch_for_check(
         FirstTouchClaimRequest {
@@ -268,6 +294,7 @@ fn acquire_first_touch(
         },
         reservation_selection,
         recovery_command_line,
+        capacity_recovery,
     )
 }
 

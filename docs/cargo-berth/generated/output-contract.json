@@ -1200,6 +1200,20 @@
           ],
           "type": "object"
         },
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "UnintegratedPredecessorEvidence": {
           "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
@@ -1559,6 +1573,23 @@
         "release_disposition": {
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
+            {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
             {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
@@ -6438,6 +6469,20 @@
           "minItems": 1,
           "type": "array"
         },
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "UnintegratedPredecessorEvidence": {
           "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
@@ -9297,6 +9342,23 @@
         "release_disposition": {
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
+            {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
             {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
@@ -14600,6 +14662,20 @@
           "minItems": 1,
           "type": "array"
         },
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "UnintegratedPredecessorEvidence": {
           "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
@@ -16635,6 +16711,23 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
@@ -18013,9 +18106,42 @@
       "type": "string"
     },
     "release_disposition": {
+      "$defs": {
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        }
+      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "A verified or user-confirmed terminal reservation outcome.",
       "oneOf": [
+        {
+          "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/UnchangedScopesEvidence"
+            },
+            "kind": {
+              "const": "unchanged_scopes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "evidence"
+          ],
+          "type": "object"
+        },
         {
           "description": "Git proved the protected work reached the reservation's integration target.",
           "properties": {
@@ -18218,6 +18344,20 @@
     },
     "reservation_lifecycle": {
       "$defs": {
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "protected_reservation_tip": {
           "description": "The fixed checkpoint commit used for ordinary integration evidence.",
           "minLength": 1,
@@ -18226,6 +18366,23 @@
         "release_disposition": {
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
+            {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
             {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
@@ -19299,6 +19456,20 @@
           ],
           "type": "object"
         },
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "WaitingAction": {
           "oneOf": [
             {
@@ -19505,6 +19676,23 @@
         "release_disposition": {
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
+            {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
             {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
@@ -19774,9 +19962,40 @@
             }
           ]
         },
+        "UnchangedScopesEvidence": {
+          "description": "A successful observation against this exact target found no differing scope path.",
+          "properties": {
+            "target_commit": {
+              "description": "The target commit at which the reservation's scopes were empty.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_commit"
+          ],
+          "type": "object"
+        },
         "release_disposition": {
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
+            {
+              "description": "A stale reservation had no differing path in its scopes against the recorded target.",
+              "properties": {
+                "evidence": {
+                  "$ref": "#/$defs/UnchangedScopesEvidence"
+                },
+                "kind": {
+                  "const": "unchanged_scopes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
             {
               "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {

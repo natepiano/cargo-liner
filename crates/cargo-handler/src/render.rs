@@ -3,7 +3,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::num::NonZeroU16;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -14,19 +13,15 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use tui_pane::AdmissibleCell;
-use tui_pane::AdmissionEvidence;
 use tui_pane::AttractGridPresentation;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellClick;
 use tui_pane::Keymap;
-use tui_pane::NotAdmissible;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
-use tui_pane::SummaryDemand;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
@@ -325,17 +320,7 @@ impl<'a> Cells<'a> {
     }
 }
 
-#[derive(Debug)]
-struct ObservedAgentTile;
-impl AdmissionEvidence for ObservedAgentTile {}
-
 impl TileCells<TileKey> for Cells<'_> {
-    fn admission(&self, id: &TileKey) -> Result<AdmissibleCell<TileKey>, NotAdmissible> {
-        self.tile(id)
-            .map(|tile| tui_pane::AdmissibleCell::new(tile.key(), ObservedAgentTile))
-            .ok_or(NotAdmissible)
-    }
-
     fn prepare_moving_frame(
         &self,
         _: impl FnOnce() -> Vec<(TileContent, Rect)>,
@@ -388,18 +373,7 @@ impl TileCells<TileKey> for Cells<'_> {
                 .map_or(narrowest, |&(_, width)| width)
         };
         TileDemands {
-            summary:       SummaryDemand::new(
-                NonZeroU16::new(
-                    u16::try_from(summary::height(
-                        &self.machines,
-                        &self.placement,
-                        self.accounts,
-                    ))
-                    .unwrap_or(u16::MAX),
-                )
-                .unwrap_or(NonZeroU16::MIN),
-                0,
-            ),
+            summary:       summary::height(&self.machines, &self.placement, self.accounts),
             summary_width: summary::width(
                 &self.machines,
                 &self.placement,

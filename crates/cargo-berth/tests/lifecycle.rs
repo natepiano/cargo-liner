@@ -4712,6 +4712,289 @@ mod merge_extent {
         );
     }
 
+    #[test]
+    fn stale_unchanged_scopes_release_without_an_owner_step() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        age_claims(fixture.trunk());
+        let released = board(fixture.trunk());
+        let row = snapshot(&released, &id);
+        assert_eq!(row["lifecycle"]["stage"], "released", "{released}");
+        assert_eq!(row["lifecycle"]["disposition"]["kind"], "unchanged_scopes");
+        assert_eq!(
+            row["lifecycle"]["disposition"]["evidence"]["target_commit"],
+            GIT.stdout(fixture.trunk(), ["rev-parse", "main"]).trim()
+        );
+        let ending_count = || {
+            events(fixture.trunk())
+                .into_iter()
+                .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+                .count()
+        };
+        assert_eq!(ending_count(), 1);
+        assert!(
+            released["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&id))
+        );
+        let again = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&again, &id)["lifecycle"]["disposition"],
+            row["lifecycle"]["disposition"]
+        );
+        assert_eq!(ending_count(), 1);
+        assert!(
+            !again["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&id))
+        );
+    }
+
+    #[test]
+    fn first_touch_at_the_limit_releases_stale_unchanged_scopes_before_claiming() {
+        let fixture = Repository::new();
+        for root in [fixture.trunk(), &fixture.holder, &fixture.outsider] {
+            write(
+                root,
+                super::CONFIGURATION_PATH,
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            );
+        }
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        age_claims(fixture.trunk());
+        let acquired = berth(
+            &fixture.outsider,
+            &["check", "file:new.rs", "--json"],
+            SECOND_RUN,
+        );
+        succeed(&acquired);
+        let envelope = json(&acquired);
+        assert_eq!(envelope["status"], "clear", "{envelope}");
+        let message = envelope["message"]
+            .as_str()
+            .expect("check should name its maintenance");
+        assert_eq!(
+            message
+                .matches(&format!("Automatically released reservation {id}:"))
+                .count(),
+            1
+        );
+        let release = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "release" && event["reservation_id"] == id)
+            .expect("capacity recovery should append a release before the claim");
+        assert_eq!(release["disposition"]["kind"], "unchanged_scopes");
+        let again = berth(
+            &fixture.outsider,
+            &["check", "file:new.rs", "--json"],
+            SECOND_RUN,
+        );
+        succeed(&again);
+        assert!(
+            !json(&again)["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&id))
+        );
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["disposition"]["kind"],
+            "unchanged_scopes"
+        );
+    }
+
+    #[test]
+    fn explicit_claim_at_the_limit_releases_stale_unchanged_scopes_before_claiming() {
+        let fixture = Repository::new();
+        for root in [fixture.trunk(), &fixture.holder, &fixture.outsider] {
+            write(
+                root,
+                super::CONFIGURATION_PATH,
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            );
+        }
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        age_claims(fixture.trunk());
+        let acquired = berth(
+            &fixture.outsider,
+            &["claim", "file:new.rs", "--run", SECOND_RUN, "--json"],
+            SECOND_RUN,
+        );
+        succeed(&acquired);
+        assert!(json(&acquired)["message"].as_str().is_some_and(|message| {
+            message.contains(&format!("Automatically released reservation {id}:"))
+        }));
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["disposition"]["kind"],
+            "unchanged_scopes"
+        );
+        assert_eq!(
+            events(fixture.trunk())
+                .iter()
+                .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn claims_at_the_limit_keep_fresh_unchanged_reservations() {
+        let fixture = Repository::new();
+        for root in [fixture.trunk(), &fixture.holder, &fixture.outsider] {
+            write(
+                root,
+                super::CONFIGURATION_PATH,
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            );
+        }
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        for arguments in [
+            vec!["check", "file:new.rs", "--json"],
+            vec!["claim", "file:new.rs", "--run", SECOND_RUN, "--json"],
+        ] {
+            let refused = berth(&fixture.outsider, &arguments, SECOND_RUN);
+            assert!(!refused.status.success());
+            assert_eq!(json(&refused)["status"], "reservation_limit_reached");
+        }
+        assert!(
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| event["op"] == "release" && event["reservation_id"] == id)
+        );
+    }
+
+    #[test]
+    fn fresh_unchanged_scopes_keep_the_reservation_live() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn stale_committed_scope_change_keeps_the_reservation_live() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "committed work\n");
+        age_claims(fixture.trunk());
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn stale_uncommitted_scope_change_keeps_the_reservation_live() {
+        let fixture = Repository::new();
+        commit(&fixture.holder, "branch.rs", "tracked base\n");
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        write(&fixture.holder, "branch.rs", "dirty work\n");
+        age_claims(fixture.trunk());
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn stale_staged_scope_change_keeps_the_reservation_live() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        write(&fixture.holder, "branch.rs", "staged work\n");
+        GIT.run(&fixture.holder, ["add", "branch.rs"]);
+        age_claims(fixture.trunk());
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn stale_untracked_scope_change_keeps_the_reservation_live() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        write(&fixture.holder, "branch.rs", "untracked work\n");
+        age_claims(fixture.trunk());
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn stale_unchanged_scope_releases_while_other_holder_work_stays_protected() {
+        let fixture = Repository::new();
+        let empty = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let changed = claim(&fixture.holder, "file:other.rs", FIRST_RUN);
+        commit(&fixture.holder, "other.rs", "other reserved work\n");
+        age_claims(fixture.trunk());
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &empty)["lifecycle"]["disposition"]["kind"],
+            "unchanged_scopes"
+        );
+        assert_eq!(
+            snapshot(&observed, &changed)["lifecycle"]["stage"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn a_removed_worktree_retires_its_empty_reservation_once() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        board(fixture.trunk());
+        GIT.run(
+            fixture.trunk(),
+            [
+                "worktree",
+                "remove",
+                fixture
+                    .holder
+                    .to_str()
+                    .expect("fixture path should be UTF-8"),
+            ],
+        );
+        let retired = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&retired, &id)["lifecycle"]["disposition"]["kind"],
+            "retired_orphan"
+        );
+        assert!(
+            retired["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&id))
+        );
+        let again = board(fixture.trunk());
+        assert!(
+            !again["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&id))
+        );
+    }
+
+    /// Model old owner activity without sleeping or changing production clocks.
+    fn age_claims(root: &Path) {
+        let rewritten = events(root)
+            .into_iter()
+            .map(|mut event| {
+                if event["op"] == "claim" {
+                    event["at"] = serde_json::json!("2020-01-01T00:00:00.000Z");
+                }
+                serde_json::to_string(&event).expect("event should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.join(JOURNAL), format!("{rewritten}\n")).expect("journal should rewrite");
+        for name in ["reservations.json", "replay-checkpoint.json"] {
+            let path = root.join(".git/cargo-berth").join(name);
+            if path.exists() {
+                fs::remove_file(path).expect("derived replay cache should clear");
+            }
+        }
+    }
+
     /// A completed observation that proved emptiness stays proof after a later observation fails,
     /// so the reservation refuses nothing and `MergeExtent::protection` answers `Clear`.
     /// Alerting that it "retains its previous merge protection" states the opposite of what

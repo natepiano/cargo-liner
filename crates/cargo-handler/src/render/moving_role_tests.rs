@@ -19,10 +19,6 @@ struct ShrinkingCells<'a> {
 }
 
 impl TileCells<TileKey> for ShrinkingCells<'_> {
-    fn admission(&self, id: &TileKey) -> Result<AdmissibleCell<TileKey>, NotAdmissible> {
-        self.cells.admission(id)
-    }
-
     fn summary_title(&self) -> &'static str { "summary" }
 
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
@@ -39,11 +35,7 @@ impl TileCells<TileKey> for ShrinkingCells<'_> {
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         let mut demand = self.cells.demands(widths);
-        demand.summary = SummaryDemand::new(
-            NonZeroU16::new(u16::try_from(self.summary_rows).expect("small summary"))
-                .expect("nonempty summary"),
-            0,
-        );
+        demand.summary = self.summary_rows;
         demand
     }
 

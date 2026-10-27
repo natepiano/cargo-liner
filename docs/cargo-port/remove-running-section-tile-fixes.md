@@ -756,15 +756,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 
 **Ruled out:** a cut rebuilt from painted text (offsets drift from argv); `SummaryDetail::Trimmed` (dead, removed).
 
-### Phase 24 — One lifecycle for every invocation  · status: not landed
-
-**Outcome (2026-10-25).** Phase 24 used its 3 repair rounds and one bounded step past the cap that the showrunner allowed for one regression, and its second paired live capture against main (fa651052) failed the landing rule. By the showrunner's ruling, phase 24 does not land. Its round 3 tree is on the unit branch as a plain commit, not a checkpoint, and Phases 24a and 24b start from it.
-- The repair that worked: a new job waited 2.3 to 4.4 s for its first cell while rows were free (first capture, `shots41_reply.txt` CAUSES 1). The cause was the census metadata read queue: each new cargo job waited behind the reads of known lifetimes. `DetailRead` (`Queued`, `Reading`, `Ready`, `Refreshing`) now reads a new lifetime first, and a source change has its own state (`SourceChanged`), so it does not wait behind ordinary refreshes. After the repair, 64 of 64 jobs got a cell (before: 54), and the d80 first cell came in 0.43 to 2.20 s.
-- Second capture, branch against main over the four pairs (`shots42_reply.txt`): rule a 2/12, rule b 1/16, rule c 0/520, rule e 0/19; never-drawn 0/0; d80 census max 0.43 s; CPU per drawn cell better than main in t40 (6.72/8.88), t80 (6.33/6.59) and d40 (10.32/11.13).
-- Counts that failed: d80 CPU per drawn cell 7.57 > 6.99 (time-weighted 8.40 > 7.78); t40 rule a, rule b, F040 and F030 at 1 > 0. At t40 19.95 to 20.27 s, a cell that changed form was drawn in its old and its new form for 12 frames (the ink drop is the F040). At 23.06 to 24.10 s, a parent pid got a second cell for its job (p22k15).
-- Also seen in the shots: the summary lists jobs that already have a cell (all four captures); ended cells shrink out as one-row headless cells in mid-column (d40 9.00); in t80 one pid row is painted 3 to 4 times in one cell; two header forms (`pid parent command` and `pid command`) show at once.
-- The showrunner's reading: the t40 breaks, the summary double, the repeated pid rows, the mixed cell forms and the first-cell wait have one cause. One invocation can be in two places at once (the summary and a cell, or two cells for two of its pids). That is this phase's goal, and the types do not hold it yet. Phase 24a takes it; Phase 24b takes the ended cell that leaves as a headless row.
-- Evidence: `shots41_reply.txt` (first capture) and `shots42_reply.txt` (second capture) in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad`, with the shots in its `ph24` and `ph24b` folders.
+### Phase 24 — One lifecycle for every invocation  · status: todo
 
 **Depends on:** Phase 21, Phase 22 (its Work Order and item 14's state model; its code did not land), Phase 23
 
@@ -820,7 +812,6 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - `crates/cargo-tile/src/tiles.rs`, `crates/cargo-handler/src/tiles.rs`, `crates/cargo-handler/src/render.rs` — ruling 2's `SummaryDemand` callers.
 - `crates/cargo-handler/CHANGELOG.md` — one Changed line for the summary demand.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Fixed line each, and one cargo-tile Fixed line for Phase 22 items 11 and 12.
-- Added during the phase: `.config/nextest.toml`; `crates/cargo-tile/Cargo.toml` and `crates/tui_pane/Cargo.toml` (the `test-clock` feature); `crates/cargo-tile/tests/support/foreign_load.rs`, `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`; `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`; `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/birth_stamp/process_lifetime.rs`, `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`; `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`.
 
 **Seats:** as Phase 22 (`impl` for the lifecycle path, `impl2` for Phase 22 items 11 and 12), plus `test`, which owns the item 2 fixture and the paired live captures and writes no product file.
 
@@ -834,98 +825,9 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - Change-review line: under a full tile, a live command with no cell is in the summary.
 - Change-review line: a new cell fades in from its first frame, and no live cell leaves the tile when another cell grows.
 
-### Phase 24a — One invocation, one place  · status: not landed
-
-**Depends on:** Phase 24 (its round 3 tree, its Outcome and its state model)
-
-#### Work Order
-
-**Goal:** One invocation is drawn in one place at a time: in the summary or in one cell, never in both, never in two cells, and each of its pid rows is painted once. Phase 24's goal holds; this phase makes the types hold it. The showrunner's split ruling (2026-10-25) names one cause for the Phase 24 t40 breaks, the summary double, the repeated pid rows, the mixed cell forms and the first-cell wait: one invocation can be in two places at once.
-
-**Spec:**
-
-1. **Extend the state model before any code, and send it to the showrunner for review.** Extend `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/24/state_model_extension.md`. It names the type that makes each of these impossible:
-   - **An invocation in the summary and in a cell at the same time.** Placement is one enum for each `InvocationId` (for example `Listed`, `Celled`, `Departing`), and the summary and the tile both project from it.
-   - **Two cells for one invocation.** The parent pid, the shim pid and the cargo child pid resolve to one `InvocationId` before admission. A pid change (shim to cargo, alias to child) updates the record and never opens a cell.
-   - **One pid row painted more than once in a cell.** Row spans key on (`InvocationId`, pid).
-   - **Two header forms at once** (`pid parent command` and `pid command`). The header form comes from one value for each frame layout, so a form change replaces the cells and never adds a second set.
-
-   **Done before dispatch:** the extended model is written as section (e) of the state model file, and the showrunner approved it with its 7 recommended answers (2026-10-25). Build to it, with the showrunner's three notes:
-   - Item 5: with exclusive placement, the time a job stays `Listed` while rows are free (0.1 to 1.8 s in the Phase 24 capture; p22k00: shim pid 1617011 listed, cell at 4.36 s with cargo pid 1617240) becomes the visible wait. The model states its cause; the expected cause is the time until the refresh finds the cargo child pid. The capture reports the `Listed` to `Celled` time with free rows for each job. It is not a landing count. If it is over 0.5 s and its cause is the refresh cadence, Phase 24b takes a targeted read of the registered pid's children when a new registration comes in.
-   - Item 6: before the profile, diff the refresh path against main. If the branch makes a new `System` and does a full refresh on each pass (`census/scan.rs` ~862, ~1327) and main does not, that is the first suspect for the CPU per drawn cell difference. Then profile by function.
-   - Item 4: one header form for each frame, chosen from the narrowest cell, is correct (one style on the screen). The summary keeps its own form.
-2. **A cell opens at admission with no CPU sample.** CPU is an enum (`AwaitingFirstSample`, `Sampled`), and admission never waits for the first sample.
-3. **Tests.** One fixture under 1 s for each Phase 24 t40 case: a form change while a job ends (t40 19.95 to 20.27 s), and a parent pid that gets a second cell (t40 23.06 to 24.10 s). Each fails on the Phase 24 round 3 tree and passes after.
-
-**Landing rule:** Phase 24's landing rule, unchanged, CPU per drawn cell included (Phase 24 d80: 7.57 against main 6.99). If the duplicate cells are not that cost, the phase names the cost. The state model is reviewed before code. At most 3 repair rounds.
-
-**Files:** Phase 24's Files, the paths added during Phase 24 included.
-
-**Seats:** as Phase 24: `impl` for the lifecycle path, `impl2` for the census, and `test` for the fixtures; a capture helper takes the paired live captures.
-
-**Constraints from prior phases:** Phase 24's Constraints hold. Its round 3 repairs and their tests stay, as do Phase 24's `DetailRead` read order and its tests. No new `#[allow]` or `#[expect]`; no test takes a second.
-
-**Acceptance gate:**
-- The extended model is written and the showrunner reviewed it before code.
-- The two t40 fixtures fail before the fix and pass after; each takes under 1 s.
-- `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green.
-- The paired live capture against main meets the landing rule.
-- Change-review line: no invocation is in the summary and in a cell in the same frame, and no invocation has two cells.
-
-#### Outcome
-
-Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tree is commit `d22c672b` and is the base of the next lifecycle phase.
-- Round 1 capture (shots43, against main `c9142b19`): every job got a cell (64 of 64 against 25 of 64), the d80 census max was 0.50 s and no job showed in the summary and a cell at once. The two-pass frame draw made the layout flip every frame (d80, 181 frames), the tile ran past the screen, ended jobs showed in two cells, and the alias parent kept its own cell.
-- Round 3 capture (shots44, against main `595145da`): those faults are gone, d80 and d40 have 0 on every rule count, the d80 census max is 0.39 s, and never-drawn is 0 (main 4). Still worse than main: the rows-cut mark with free rows (0.4-1.4 s per pair), a closing ended cell puts its job back in the summary for 1 frame and the cells below move (16 times), t80 admission 7 against 10 (an uncut 30-row foreign cell takes a column), CPU per drawn cell (t80 28.80 against 15.68, d40 18.95 against 15.69), and frame draw 2-4x slower in t40 and t80.
-
-### Phase 24c — Reader and named slow tests hold under load  · status: todo
-
-**Depends on:** Phase 24a's tree (commit `d22c672b`, merged with main `595145da`).
-
-#### Work Order
-
-Every `reader_scenarios` test passes under load or finishes fast; none fails on its timing (showrunner, 2026-10-26: the cargo-liner-style merge gate rolled back two merges on these). Each test named below is timed alone on a quiet machine (`build_hold.py quiet`), and a test of 1 s or more alone is fixed, never given a longer limit. A test whose wall-clock budget fails only under full-suite load is changed so that its check does not depend on wall time, or so that its work fits the budget with the suite running.
-
-Tests (time seen, where):
-- `reader_scenarios`: `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.31 s full, 0.955 s alone, compile CPU 0 at load ~52; 11-15 s in the cargo-liner-style Mac gate; this also closes Phase 25 item 5), `reader_excludes_a_live_command_without_sweeping_its_capture` (8.2 s, 11-15 s), `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` (failed once), `reader_keeps_parent_family_across_its_only_childs_source_switch` (1.117-1.829 s), `reader_keeps_one_direct_row_for_quiet_json` (1.194 s), `reader_accepts_live_writer_under_different_locale_and_timezone` (11-12 s in the full Mac suite on 2026-10-26, fails on rerun, passes alone; the reader shows "no cargo processes running" at the deadline: "production reader does not display the live cargo row with its blocked state", log `/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/merge_34574d9_test.log`; `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` fails there the same way). Log: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-style/294cac84-fe49-4a1b-952d-70ffd6ce8aee/scratchpad/merge_08f9a40_test.log`.
-- cargo-tile: `foreign_load::a_full_tile_under_foreign_load_draws_every_job_at_40_columns` and `_at_80_columns` (fixture cap 1 s: 1.13 / 2.11 s in the full Mac suite, 0.25 / 0.48 s alone), `wire::json_arguments_preserve_both_quiet_spellings_after_separator` (1.029 s), `render::tests::scanned_commands_fill_free_rows_beside_a_tall_summary` (1.243 s), `render::tests::rule_a_ended_cell_is_offered_more_rows` (1.318 s), `shim_registration::shared_capture::staged_executable_installs_toolchains_and_cleans_up` (1.33 s full suite).
-- tui_pane: `tiles::grid::tests::a_key_whose_new_widths_change_demands_still_moves_once` (1.067-3.490 s), `a_removal_whose_new_widths_change_demands_still_moves_once` (1.180-3.333 s), `tiles::draw::tests::a_turn_that_grows_content_and_height_draws_no_blank_row` (1.447-3.196 s), `startup_cells_leave_no_line_before_their_first_row` (1.393-2.157 s), `a_cell_lends_no_row_it_must_take_back_within_one_key` (1.478-2.991 s), `a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row` (1.568-1.679 s), `a_content_change_mid_motion_leaves_no_blank_row`, `a_content_change_keeps_the_motion_clock_with_a_key_waiting`, `grid::tests::arriving_and_leaving_pieces_snap_without_a_floor`, `motion_rules::every_frame_of_a_key_keeps_the_motion_rules`, `a_shrinking_piece_skips_the_height_that_leaves_a_row_unused`, `a_large_height_shrink_moves_one_way`, `an_every_other_height_shrink_moves_one_way`, `runner::lifecycle::tests::a_panic_report_holds_its_message_location_and_backtrace` (1.0-3.1 s in loaded full runs).
-
-**Acceptance gate:**
-- Each named test takes under 1 s alone on a quiet machine; the time of each, before and after, is in the Outcome.
-- Two full Mac `verify.sh test cargo-tile` runs and one under natedev load pass with no timing failure.
-- `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green; lint green.
-
-### Phase 24b — Ended cells leave whole  · status: todo
-
-**Depends on:** Phase 24a
-
-#### Work Order
-
-**Goal:** An ended cell fades and shrinks as one whole cell. It never paints as a one-row headless cell in mid-column (Phase 24 second capture, `r24b_d40_overview_9.00`; first capture, `r24_d80_overview_9.00`). This phase also takes any defect that Phase 24a's capture moves out of its scope.
-
-**Spec:**
-
-1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame.
-2. **The defects that Phase 24a's capture moves here,** each with its evidence and a red-first test.
-
-**Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds.
-
-**Files:** `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/cargo-tile/src/render.rs`, and the files of each defect moved here.
-
-**Seats:** `impl`; a capture helper takes the paired live captures.
-
-**Constraints from prior phases:** Phase 24a's Constraints hold. No new `#[allow]` or `#[expect]`; no test takes a second.
-
-**Acceptance gate:**
-- The fixture fails before the fix and passes after.
-- `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green.
-- The paired live capture against main meets the landing rule.
-- Change-review line: an ended cell never paints as a headless row.
-
 ### Phase 25 — Phase 23's follow-ups: rows name what runs, and all arguments fit the screen  · status: todo
 
-**Depends on:** Phase 23, Phase 24b
+**Depends on:** Phase 23, Phase 24
 
 #### Work Order
 
@@ -944,23 +846,15 @@ Tests (time seen, where):
    - A cut keeps a lone punctuation fragment of the dropped word (`--test-threads 8 -…`): drop the fragment and keep the separator (`--test-threads 8 …`).
    - `h` widens the pid and parent columns, so a 38-cell tile column loses its parent column while its 39-cell neighbours keep it. Rule: a key toggle never changes which columns a tile shows; the pid and parent columns are sized the same with `h` on and off. Phase 28's table-specific removal of empty columns (its items 20, 30 and 39) is a different rule and stays. Test, red first: `a_key_toggle_keeps_each_tiles_columns`.
    - Summary blank rows between groups are uneven under height pressure: keep all or none.
-   - The status bar prints the mode words (`tree all arguments`) in the version's ink and with names that differ from the key hints, and the hint `p process_tree` shows an internal name (showrunner's design check). Rule: plain words on the hints (`p processes`, lowercase key, to match the shared bar; showrunner add-on 2026-10-22), and the on state shows on the key hint itself. The on state is a semantic toggle state of the hint, apart from availability: today a label comes from `AppGlobalAction` (`crates/cargo-tile/src/app_global_action.rs`) and `StatusLineGlobal` (`crates/tui_pane/src/bar/status_line.rs`) carries only `ShortcutState::{Enabled, Disabled}` (`crates/tui_pane/src/bar/slot.rs`), so a hint gets its own on/off state type, never a third `ShortcutState` value. Test, red first: `a_toggled_key_hint_shows_its_on_state`.
+   - The status bar prints the mode words (`tree all arguments`) in the version's ink and with names that differ from the key hints, and the hint `p process_tree` shows an internal name (showrunner's design check). Rule: plain words on the hints (`p tree`), and the on state shows on the key hint itself. The on state is a semantic toggle state of the hint, apart from availability: today a label comes from `AppGlobalAction` (`crates/cargo-tile/src/globals.rs`) and `StatusLineGlobal` (`crates/tui_pane/src/bar/status_line.rs`) carries only `ShortcutState::{Enabled, Disabled}` (`crates/tui_pane/src/bar/slot.rs`), so a hint gets its own on/off state type, never a third `ShortcutState` value. Test, red first: `a_toggled_key_hint_shows_its_on_state`.
    - At 24 rows, `p` makes no visible change: `short_p1h1` and `short_p0h1` are the same (showrunner's design check). A toggle shows its effect: with too little room for the tree, at least one compact ancestor row (`… python3`) shows, or a short hint says the tree has no room. Test, red first: `the_tree_key_changes_a_short_tile`.
    - Summary `state` percentages mix precision (`99.1%`, `  33%`): one precision, and a header that names the number.
    - With `h` on, each ancestry row wraps its full command (systemd takes 3 rows): an ancestry row stays one row, cut with `…`.
 
-5. **Add-ons approved by the showrunner (2026-10-22 to 2026-10-25),** each with a red-first test:
-   - **The `run` ink.** On the focused tile ground (46,46,57), the command word `run` ink (3,197,3) measures 4.28:1. Lift it to at least 4.5:1 with an OKLCH lightness-only lift that keeps the hue.
-   - **The compiler-cache reader test under one second.** `shim_registration::reader_scenarios::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.390 s to 4.4 s in full cargo-tile runs (0.61 to 0.64 s earlier). Find what waits on wall clock or load, and cut it under one second.
-   - **The rows readout is off by default.** The tui_pane tile rows readout (`content rows: N  r/c: R/C`, `draw_rows_readout` in `crates/tui_pane/src/tiles/draw.rs`) is a layout aid. It is off by default in cargo-tile, cargo-handler and cargo-port. One key, bound through the shared tui_pane keymap and shown in the keys bar, turns it on and off for the session (no settings entry). When it is off, the demand adds no readout row (`add_readout_rows`, `rows_readout_height`); when it is on, its text does not change. The state is an enum (`RowsReadout::{Hidden, Shown}`), read by the demand and draw paths. Record the key in this Work Order: one that is free in all three keymaps. The red `+n unseen` count (`UnseenTiles::Trailing(n)`, handler overflow plan) stays on at all times, on the last placed piece's bottom border; a clipped piece's red shortfall count goes under the same key. Tell the handler unit when this lands.
-   - **Frame draw time** (showrunner 2026-10-25, moved from Phase 24). Phase 24's release captures: d80 max 19.1 ms (p99 3.2), t40 7.8 (p99 3.5), t80 79.9 (one frame; p99 6.1), d40 9.7 (p99 5.4) (`shots41_reply.txt` FRAME TIME). Exit: in busy release captures, no frame draws for more than 4 ms.
-   - **Summary rows name their crate.** Phase 24's t80 shot at 9.00 (`ph24b`) shows summary rows with no crate path line and with cut names. In t40, summary pids are listed under the p22k02 path line with no path line of their own. Each summary row names its own crate path, and a name is cut only with `…`.
-
 **Files:**
 - `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/constants.rs` — items 1 and 3 and their tests.
-- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/app_global_action.rs` — item 4 and its render tests, and item 2's row form and its render test.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/globals.rs` — item 4 and its render tests, and item 2's row form and its render test.
 - `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/bar/slot.rs` — item 4's key-hint on state, additive; `crates/tui_pane/CHANGELOG.md` — one Added line.
-- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/keymap/` (the readout key), and the readout's callers in `crates/cargo-handler` and `crates/cargo-port` — item 5's readout key and frame draw time; `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py` — item 5's reader test.
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
 
 **Seats:** 1 writer — `impl`, every file above.
@@ -1064,7 +958,7 @@ Tests (time seen, where):
 **Spec:**
 
 1. **One key, one name.** The default binding moves from `f` to `space`, and `f` is left unbound. The action is renamed from freeze to pause throughout, with no alias for the old name. Neither machine's cargo-tile config names `global.freeze` (checked 2026-10-16). The renames:
-   - the action: `AppGlobalAction::Freeze` ("freeze", "Freeze the display") becomes pause, "Pause the display" (`crates/cargo-tile/src/app_global_action.rs` ~43, ~69, ~93);
+   - the action: `AppGlobalAction::Freeze` ("freeze", "Freeze the display") becomes pause, "Pause the display" (`crates/cargo-tile/src/globals.rs` ~43, ~69, ~93);
    - the default keymap line: `global.freeze = f` becomes `global.pause = space` (`crates/cargo-tile/src/keymap.rs` ~215);
    - the state: `Updates::Frozen` becomes `Updates::Paused`;
    - the status note: `FROZEN_NOTE_LABEL` (`"frozen"`, `crates/cargo-tile/src/constants.rs` ~364) becomes a `paused` note, drawn through `StatusLineNote::flag` as today (`crates/cargo-tile/src/render.rs` ~6060).
@@ -1077,7 +971,7 @@ Tests (time seen, where):
 6. **Pause holds the motion clock, not only the updates.** Skipping scans does not hold travel: `TileGrid::progress` (`crates/tui_pane/src/tiles/grid.rs` ~2945) reads `transition.started.elapsed()` on whatever frame draws, and Phase 26's once-a-second status-line frame draws while paused, so a paused grid would advance its motion and fades on every status tick. Rule: this phase owns freezing the clock that cells read. While paused, every frame draws each cell's geometry and its text inks exactly as on the frame pause began; the status line alone moves. On unpause, motion and fades continue from where they stood, as if the paused span had not passed, with no jump. The grid takes a paused state through an additive `tui_pane` method (for example `TileGrid::pause(at)` / `resume(at)`, or a clock the grid reads that pause stops) that shifts elapsed motion by the paused span; the row fades cargo-tile computes read the same held clock. Phase 29 replaces the step queue with `step(displayed, target, dt)`, and carries this as a paused `dt` of zero. Test, red first, with injected time: `a_paused_grid_draws_the_same_cells_across_status_ticks`: a grid mid-motion with a fading row, paused, then several status ticks; every frame's cell area matches the paused frame cell for cell; after unpause the next frame continues from the paused progress, not from wall time.
 
 **Files:**
-- `crates/cargo-tile/src/app_global_action.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — items 1 to 3 and the renames.
+- `crates/cargo-tile/src/globals.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — items 1 to 3 and the renames.
 - `crates/cargo-tile/src/render.rs` — the note line, item 5's render test, and item 6's row fades on the held clock with its test.
 - `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — item 6's paused motion clock and any additive export it needs, and its grid test.
 - `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — item 4, and one Changed line; `crates/tui_pane/CHANGELOG.md` — one Added line for item 6.

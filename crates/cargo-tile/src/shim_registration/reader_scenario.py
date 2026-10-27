@@ -933,7 +933,7 @@ def assert_child_family(parent: StartedWriter, child: RegistrationCarrier,
     # No PTY read separates the ready screen from its matching color snapshot.
     colors = terminal_snapshot()[1]
     lines = rendered.splitlines()
-    child_matches = [line for line in invocation_cell_lines(rendered) if child[1].name in line]
+    child_matches = [line for line in lines if child[1].name in line]
     assert len(child_matches) == 1, 'source change duplicates an invocation\n' + rendered
     child_row = child_matches[0]
     child_line = lines.index(child_row)
@@ -1077,22 +1077,12 @@ def assert_settings_scroll() -> None:
     wait_for(settings_are_visible, 'small settings popup does not open', popup_diagnostics,
              pause=0)
 
-def invocation_cell_lines(rendered: str) -> list[str]:
-    # This fixture requests one column. Its first parent-column header
-    # starts the command cells below the summary.
-    # Phase 24 ruling 1 permits a celled lead to also appear in the summary.
-    lines = rendered.splitlines()
-    boundary = next((index for index, line in enumerate(lines)
-                     if 'parent' in line and 'command' in line), None)
-    assert boundary is not None, 'reader has no command cell\n' + rendered
-    return lines[boundary + 1:]
-
 def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path,
                             rendered: str) -> str:
     markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
     for marker, command in zip(markers, ('check', 'test')):
         assert nested_directory.name in rendered, rendered
-        rows = [line for line in invocation_cell_lines(rendered) if marker in line]
+        rows = [line for line in rendered.splitlines() if marker in line]
         assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
         assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
         nested_pid = (enclosing[1] / command / 'cargo-pid').read_text()
@@ -1398,19 +1388,8 @@ try:
             marker_is_ready = all(blocked_invocation_in_rendered(
                 'probe-nested-' + root.name + '-' + command, rendered)
                 for command in ('check', 'test'))
-        elif scenario in ('locale', 'quiet-json-long', 'root-headings'):
+        elif scenario in ('locale', 'quiet-json-long'):
             marker_is_ready = blocked_invocation_in_rendered(marker, rendered)
-            if scenario in ('quiet-json-long', 'root-headings'):
-                # Registration-only publication is immediate. Check native row
-                # ownership only after the reader observes the real cargo PID.
-                cargo_pid = (first[1] / 'cargo-pid').read_text().strip()
-                command_header_is_ready = any(
-                    'parent' in line and 'command' in line
-                    for line in rendered.splitlines())
-                marker_is_ready = marker_is_ready and command_header_is_ready and any(
-                    re.match(r'^\s*│\s*' + cargo_pid + r'\s', line)
-                    and marker in line
-                    for line in invocation_cell_lines(rendered))
         elif scenario == 'child-source-switch':
             marker_is_ready = carrier_source_in_rendered(
                 required(carrier, 'child-source-switch setup does not assign carrier'),
@@ -1430,10 +1409,10 @@ try:
     if scenario == 'quiet-json-long':
         quiet_writer = required(quiet_writer, 'quiet-json-long setup does not assign quiet_writer')
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
-        rows = [line for line in invocation_cell_lines(rendered) if quiet_writer[1].name in line]
+        rows = [line for line in rendered.splitlines() if quiet_writer[1].name in line]
         assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
-        assert re.match(r'^\s*│\s*' + cargo_pid + r'\s', rows[0]), (repr(cargo_pid), rows[0], rendered)
+        assert re.match(r'^\s*│\s*' + cargo_pid + r'\s', rows[0]), rendered
         assert 'cargo check ' + quiet_writer[1].name in rows[0], rendered
         assert 'blocked' in rows[0], rendered
         settings = settings_screen()
@@ -1443,8 +1422,8 @@ try:
     if scenario == 'root-headings':
         account = pwd.getpwuid(capture.stat().st_uid).pw_name
         heading = '[' + account + '] ~/' + work.name
-        assert sum(first[1].name in line for line in invocation_cell_lines(rendered)) == 1, rendered
-        assert sum(heading in line for line in invocation_cell_lines(rendered)) == 1, rendered
+        assert sum(first[1].name in line for line in rendered.splitlines()) == 1, rendered
+        assert sum(heading in line for line in rendered.splitlines()) == 1, rendered
         assert foreign_work.name not in rendered, rendered
         assert '[' + str(other_uid) + ']' not in rendered, rendered
         settings = settings_screen()

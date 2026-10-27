@@ -19,6 +19,7 @@ mod record;
 mod replay;
 mod retention;
 mod scoped_patch_evaluation;
+mod unchanged;
 
 pub(crate) use conflict::ReservationConflict;
 pub(crate) use containment::ActingHeadContainment;
@@ -76,3 +77,5 @@ pub(crate) use scoped_patch_evaluation::ScopedPatchEvaluatorVersion;
 pub(crate) use scoped_patch_evaluation::ScopedPatchTargetVerdictAvailability;
 pub(crate) use scoped_patch_evaluation::SuccessorScopedPatchEquivalenceVerdict;
 pub(crate) use scoped_patch_evaluation::SuccessorScopedPatchTargetVerdictAvailability;
+pub(crate) use unchanged::HolderScopeChanges;
+pub(crate) use unchanged::ScopeChangeEvidence;

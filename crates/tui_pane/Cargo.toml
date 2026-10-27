@@ -27,8 +27,6 @@ backdrop = [
 ]
 clipboard = ["crossterm/osc52"]
 default = ["clipboard"]
-# Inject lifecycle time from dependent crates' buffer tests.
-test-clock = []
 
 [dependencies]
 # Save times on the attract favorites `backdrop` keeps in `favorites.toml`, and the time on each

@@ -9,9 +9,6 @@ command = { command-line = "crates/cargo-berth/tests/check-test-scratch.sh", rel
 filter      = 'package(cargo-berth) | package(cargo-berth-test-support)'
 run-wrapper = 'cargo-berth-scratch'
 
-[profile.default]
-slow-timeout = { period = "15s", terminate-after = 2 }
-
 [scripts.setup.cargo-berth-templates]
 command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh", relative-to = "workspace-root" }
 

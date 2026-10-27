@@ -115,10 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Cargo global options and their separate values no longer bypass command exclusions or capture workspace terminal UIs in the shim.
-
-- Each invocation keeps one owner through missing observations and its final fade; waiting commands stay in the summary, new cells start with visible ink, and hidden commands withdraw immediately.
-
 - Hidden arguments no longer produce `…`; only a real text cut does.
 - Numeric summary values align on their right edge, including CPU percent signs.
 - Wrapped commands keep a flag and its value together, such as `-D warnings`.

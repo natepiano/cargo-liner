@@ -24,7 +24,6 @@ pub(crate) use scan::Ancestor;
 pub(crate) use scan::CargoGroup;
 pub(crate) use scan::CargoProcess;
 pub(crate) use scan::CensusScope;
-pub(crate) use scan::CensusStartError;
 pub(crate) use scan::CompilerObservation;
 pub(crate) use scan::ExcludedCommands;
 pub(crate) use scan::ProcessOwner;
