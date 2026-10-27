@@ -1742,15 +1742,11 @@ mod tests {
     use super::TransactionValidation;
     use crate::drift::WorkingTreeFingerprint;
     use crate::ids::CoordinationRunId;
-    use crate::ids::ForcedIntegrationPermitId;
     use crate::ids::GitObjectId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
-    use crate::ledger::BypassCause;
-    use crate::ledger::BypassOccurrenceTime;
-    use crate::ledger::BypassRecording;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
     use crate::ledger::ObservedReservation;
@@ -1758,6 +1754,7 @@ mod tests {
     use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
     use crate::ledger::journal;
+    use crate::ledger::journal::SkippedIntegrationHoldSet;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
     use crate::reservation::HolderMergeExtentCoverage;
@@ -2686,18 +2683,22 @@ mod tests {
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-            TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                action:          BypassedAction::Editing,
-                cause:           BypassCause::ForcedIntegration {
-                    permit_id: ForcedIntegrationPermitId::new(),
-                    reason:    "x"
+            TransactionValidation::<()>::Append(Box::new(
+                JournalOperation::ForcedIntegrationPermit {
+                    permit_id:      crate::ids::ForcedIntegrationPermitId::new(),
+                    reservation_id: ReservationId::new(),
+                    reason:         "x"
                         .repeat(MAXIMUM_JOURNAL_RECORD_BYTES)
                         .parse::<ForcedIntegrationReason>()
                         .expect("oversized reason should remain non-empty"),
+                    skipped_holds:  SkippedIntegrationHoldSet::OrderingEdges {
+                        edges: vec![super::super::journal::SkippedOrderingEdge {
+                            edge_id:     crate::ids::EdgeId::new(),
+                            predecessor: ReservationId::new(),
+                        }],
+                    },
                 },
-                occurrence_time: BypassOccurrenceTime::EventRecordedAt,
-                recording:       BypassRecording::Direct,
-            }))
+            ))
         });
 
         assert!(matches!(

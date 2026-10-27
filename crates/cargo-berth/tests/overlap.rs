@@ -73,7 +73,83 @@ const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
+const TREE_CLAIM_HOLDER_COUNT: usize = 124;
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+
+#[test]
+fn a_tree_claim_records_many_holder_answers_without_a_size_refusal() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let own = run_berth(
+        root,
+        &["claim", "file:own.rs", "--run", FIRST_RUN, "--json"],
+    );
+    assert_success(&own);
+    let own_id = json(&own)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("own reservation")
+        .to_owned();
+    let (_directory, foreign) = foreign_worktree(&repository, "many-holders");
+    make_dirty(&foreign, "crates/hana/tests/holder_0.rs");
+    let holder = run_berth(
+        &foreign,
+        &[
+            "claim",
+            "file:crates/hana/tests/holder_0.rs",
+            "--run",
+            SECOND_RUN,
+            "--json",
+        ],
+    );
+    assert_success(&holder);
+    let holder_id = json(&holder)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("holder reservation")
+        .to_owned();
+    let journal = seed_unavailable_tree_holders(root, &holder_id);
+    let configuration = root.join(CONFIGURATION_PATH);
+    let configured = fs::read_to_string(&configuration).expect("configuration");
+    fs::write(
+        &configuration,
+        format!("default_answer = \"first_ready\"\n{configured}"),
+    )
+    .expect("default answers should configure");
+
+    let claimed = run_berth(
+        root,
+        &[
+            "claim",
+            "--reservation",
+            &own_id,
+            "tree:crates/hana/tests",
+            "--run",
+            FIRST_RUN,
+            "--json",
+        ],
+    );
+    assert_success(&claimed);
+    let after = fs::read_to_string(root.join(JOURNAL_PATH)).expect("answers should read");
+    let answer: serde_json::Value = after
+        .strip_prefix(&journal)
+        .expect("existing records remain unchanged")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("appended fact"))
+        .find(|event| event["op"] == "answer")
+        .expect("one answer record");
+    assert_eq!(
+        answer["scopes"],
+        serde_json::json!([{"kind":"tree", "path":"crates/hana/tests"}])
+    );
+    assert_eq!(
+        answer["authorizations"]
+            .as_array()
+            .expect("holder answers")
+            .len(),
+        TREE_CLAIM_HOLDER_COUNT,
+        "every holder must receive its answer: {answer}"
+    );
+    assert!(serde_json::to_vec(&answer).expect("encoded answers").len() > 16 * 1024);
+}
 
 #[test]
 fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
@@ -1824,6 +1900,54 @@ fn claim_overlapping_reservations(
     assert_ne!(newer, older);
 
     OverlappingReservationIds { newer, older }
+}
+
+/// Seed retained declarations for missing checkouts without starting one process per holder.
+fn seed_unavailable_tree_holders(root: &Path, holder_id: &str) -> String {
+    let mut events = journal_events(root);
+    let prototype = events
+        .iter()
+        .find(|event| event["op"] == "claim" && event["reservation_id"] == holder_id)
+        .expect("holder claim")
+        .clone();
+    let mut generation = events
+        .iter()
+        .map(|event| event["projection_generation"].as_u64().expect("generation"))
+        .max()
+        .expect("journal generation");
+    // An unavailable checkout retains its declared protection. Replay those claims instead of
+    // spawning 123 worktrees and commands; the live claim still binds every retained holder.
+    for index in 1..TREE_CLAIM_HOLDER_COUNT {
+        let mut event = prototype.clone();
+        generation += 1;
+        event["projection_generation"] = generation.into();
+        event["event_id"] = uuid::Uuid::now_v7().to_string().into();
+        event["reservation_id"] = uuid::Uuid::now_v7().to_string().into();
+        event["actor"]["worktree"] = uuid::Uuid::now_v7().to_string().into();
+        event["worktree_root"] = root
+            .join(".git")
+            .join(format!("missing-holder-{index}"))
+            .to_str()
+            .expect("fixture root")
+            .into();
+        event["worktree_administrative_locator"] =
+            format!("worktrees/missing-holder-{index}").into();
+        event["scopes"] = serde_json::json!([{
+            "kind": "file", "path": format!("crates/hana/tests/holder_{index}.rs"),
+        }]);
+        events.push(event);
+    }
+    let journal = events
+        .iter()
+        .map(|event| serde_json::to_string(event).expect("fixture record") + "\n")
+        .collect::<String>();
+    fs::write(root.join(JOURNAL_PATH), &journal).expect("holder claims should write");
+    fs::remove_file(root.join(PROJECTION_PATH)).expect("cached projection should be removed");
+    let checkpoint = root.join(".git/cargo-berth/replay-checkpoint.json");
+    if checkpoint.exists() {
+        fs::remove_file(checkpoint).expect("cached replay checkpoint should be removed");
+    }
+    journal
 }
 
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }

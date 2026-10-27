@@ -744,60 +744,6 @@ impl JournalOperation {
         }
     }
 
-    /// Which ceiling bounds this operation's record.
-    ///
-    /// The distinction is whether anyone can make the record smaller. Three operations carry a set
-    /// the engine measured off the repository and nobody declared: the branch surface a merge
-    /// extent observes, the paths a drift widen adds, and the paths an incursion found uncovered.
-    /// Each grows with the repository rather than with a request, so holding one to the caller's
-    /// limit lets a branch's size stop every ref update — and the session it stops usually does not
-    /// own that branch, so it could not shrink the record even if told which one it was.
-    ///
-    /// Everything else stays under [`RecordCeiling::Declared`], including operations that carry
-    /// only a caller's text. That is deliberate: for a forced-integration reason and its like, the
-    /// record limit is the only bound there is, so moving them would remove a check rather than
-    /// correct one. A new operation added to this enum joins the declared group by falling into the
-    /// exhaustive arm below, which is the conservative side for anything a caller can influence.
-    pub(super) const fn record_ceiling(&self) -> RecordCeiling {
-        match self {
-            Self::MergeExtentObserved { .. }
-            | Self::HolderMergeExtentObserved { .. }
-            | Self::Incursion { .. }
-            | Self::Widen {
-                cause: WidenCause::Drift,
-                ..
-            } => RecordCeiling::Derived,
-            Self::Claim { .. }
-            | Self::Widen {
-                cause: WidenCause::Explicit { .. },
-                ..
-            }
-            | Self::Checkpoint { .. }
-            | Self::Resnapshot { .. }
-            | Self::Retarget { .. }
-            | Self::UnrecordedTargetsPinned { .. }
-            | Self::Renew { .. }
-            | Self::Release { .. }
-            | Self::ReplaceReleaseDisposition { .. }
-            | Self::EvidenceRevalidated { .. }
-            | Self::ScopedPatchEquivalenceChecked { .. }
-            | Self::ScopedPatchComparisonAttempted { .. }
-            | Self::SuccessorScopedPatchEquivalenceChecked { .. }
-            | Self::SuccessorScopedPatchComparisonAttempted { .. }
-            | Self::Answer { .. }
-            | Self::OverlapRefused { .. }
-            | Self::ResolveDefer { .. }
-            | Self::Sequence { .. }
-            | Self::RetireCyclicOrderingEdge { .. }
-            | Self::ResolveIncursion { .. }
-            | Self::ForcedIntegrationPermit { .. }
-            | Self::ConsumeForcedIntegrationPermit { .. }
-            | Self::Bypass { .. }
-            | Self::RebindWorktree { .. }
-            | Self::RelocateWorktree { .. } => RecordCeiling::Declared,
-        }
-    }
-
     /// Whether a reader other than the reservation fold reads this record.
     ///
     /// The readers are [`crate::edge::OrderingGraph`] replay, the board's overlap answers and
@@ -2223,17 +2169,9 @@ impl PreparedJournalAppend {
     pub(super) fn encode(events: &[JournalEvent]) -> Result<Self, JournalAppendError> {
         let mut records = Vec::new();
         for event in events {
-            let mut record =
-                serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
-            record.push(b'\n');
-            let ceiling = event.operation.record_ceiling();
-            if record.len() > ceiling.maximum_bytes() {
-                return Err(JournalAppendError::RecordTooLarge {
-                    bytes: record.len(),
-                    ceiling,
-                });
-            }
-            records.extend(record);
+            super::record_size::CallerJournalInput::from(&event.operation).validate()?;
+            let record = super::record_size::DerivedJournalRecord::encode(event)?;
+            records.extend(record.into_bytes());
         }
         Ok(Self { records })
     }
@@ -2806,6 +2744,88 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_declaration_does_not_charge_observed_holder_bindings_to_the_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scope = serde_json::json!([{"kind":"tree", "path":"crates/hana/tests"}]);
+        let authorizations = (0..124).map(|index| {
+            let id = ReservationId::new();
+            serde_json::json!({
+                "kind": "override", "blocker": id, "reason": "allow parallel work",
+                "overlaps": [{
+                    "reservation_id": id, "scope_revision": "a".repeat(64),
+                    "scopes": [{"kind":"file", "path":format!("crates/hana/tests/holder_{index}.rs")}],
+                }],
+            })
+        }).collect::<Vec<_>>();
+        let operation: JournalOperation = serde_json::from_value(serde_json::json!({
+            "op": "answer", "scopes": scope, "authorizations": authorizations,
+        }))?;
+        let event =
+            JournalEvent::for_operation(test_actor(), ProjectionGeneration::from(1), operation);
+        let encoded = super::PreparedJournalAppend::encode(std::slice::from_ref(&event))?;
+        assert!(encoded.records().len() > MAXIMUM_JOURNAL_RECORD_BYTES);
+        assert_eq!(
+            super::complete_record_events(encoded.records())?,
+            vec![event]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_evidence_does_not_consume_the_callers_record_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scopes = (0..128)
+            .map(|index| {
+                serde_json::json!({
+                    "kind": "file", "path": format!("src/{index}/{}.rs", "long_path".repeat(24)),
+                })
+            })
+            .collect::<Vec<_>>();
+        let holder = ReservationId::new();
+        let mut operations = vec![
+            serde_json::json!({
+                "op": "overlap_refused", "verb": "claim",
+                "scopes": [{"kind": "tree", "path": "src"}],
+                "holders": [{"reservation_id": holder, "scopes": scopes}],
+            }),
+            serde_json::json!({
+                "op": "sequence", "predecessor": holder,
+                "successor": ReservationId::new(), "edge_id": crate::ids::EdgeId::new(),
+                "scopes": scopes, "reason": "incorporate predecessor first",
+            }),
+            serde_json::json!({
+                "op": "forced_integration_permit",
+                "permit_id": crate::ids::ForcedIntegrationPermitId::new(),
+                "reservation_id": holder, "reason": "accept outstanding holds",
+                "skipped_holds": {"kind": "ordering_edges", "edges": (0..256).map(|_| {
+                    serde_json::json!({"edge_id": crate::ids::EdgeId::new(), "predecessor": ReservationId::new()})
+                }).collect::<Vec<_>>()},
+            }),
+        ];
+        for source in [
+            serde_json::json!({"kind": "enrolled"}),
+            serde_json::json!({"kind": "cover", "covered_branch": "refs/heads/integration"}),
+        ] {
+            let mut claim = serde_json::to_value(fold_claim(HOLDER_RESERVATION_ID, "src")?)?;
+            claim["source"] = source;
+            claim["scopes"] = serde_json::json!(scopes);
+            operations.push(claim);
+        }
+        for operation in operations {
+            let operation: JournalOperation = serde_json::from_value(operation)?;
+            let event =
+                JournalEvent::for_operation(test_actor(), ProjectionGeneration::from(1), operation);
+            let encoded = super::PreparedJournalAppend::encode(std::slice::from_ref(&event))?;
+            assert!(encoded.records().len() > MAXIMUM_JOURNAL_RECORD_BYTES);
+            assert_eq!(
+                super::complete_record_events(encoded.records())?,
+                vec![event]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn overlap_refused_round_trips_in_the_current_schema() -> Result<(), Box<dyn std::error::Error>>
     {
         for (verb, wire_verb) in [
@@ -2827,10 +2847,6 @@ mod tests {
     {
         let event = overlap_refused_event(super::RefusedVerb::Check)?;
         assert!(!event.operation.is_coordination_record());
-        assert!(matches!(
-            event.operation.record_ceiling(),
-            super::RecordCeiling::Declared
-        ));
         Ok(())
     }
 

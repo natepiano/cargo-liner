@@ -3081,7 +3081,7 @@ fn unappendable_decoded_marker_stays_visible_as_a_timed_alert() {
     let reservation = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     assert!(reservation.status.success());
     let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
-    let bypassed_merge = "x".repeat(17_000);
+    let bypassed_merge = "x".repeat(4 * 1_024 * 1_024);
     fs::write(
         &marker_path,
         serde_json::to_vec(&serde_json::json!({

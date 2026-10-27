@@ -616,13 +616,17 @@ mod tests {
     fn operation_object_reader_keeps_a_failed_repository_distinct_from_a_missing_object()
     -> FixtureResult {
         let directory = tempfile::tempdir()?;
+        std::fs::write(
+            directory.path().join(".git"),
+            "invalid repository locator\n",
+        )?;
         let reader = CommitObjectReader::open(directory.path())?;
         let error = reader
             .resolve(&["HEAD".to_owned()])
             .err()
             .ok_or("expected the repository failure")?;
         assert!(
-            matches!(error, GitError::CommandFailed { command: "cat-file", stderr } if stderr.contains("not a git repository"))
+            matches!(error, GitError::CommandFailed { command: "cat-file", stderr } if stderr.contains("invalid gitfile format"))
         );
         Ok(())
     }

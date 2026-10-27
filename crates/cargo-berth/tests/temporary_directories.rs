@@ -19,6 +19,106 @@ const FIXTURE_PANIC: &str = "exercise repository cleanup while unwinding";
 const TEST_NAME: &str = "repository_builders_leave_no_temporary_directory_after_return_or_panic";
 
 #[test]
+fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::symlink;
+    use std::os::unix::process::ExitStatusExt as _;
+
+    const CHILD_MODE: &str = "CARGO_BERTH_SCRATCH_PROOF";
+    const NAME: &str = "scratch_wrapper_names_leaks_and_preserves_clean_panics";
+    if let Ok(mode) = env::var(CHILD_MODE) {
+        if mode == "panic" {
+            let temporary = tempfile::tempdir()?;
+            let fixture = cargo_berth_test_support::fixture_tempdir("panic-fixture-");
+            assert_eq!(temporary.path().parent(), fixture.path().parent());
+            eprintln!("deliberate panic after TempDir ownership is established");
+            panic::resume_unwind(Box::new("exercise scratch cleanup while unwinding"));
+        }
+        if mode == "exit" {
+            std::process::exit(7);
+        }
+        if mode == "signal" {
+            rustix::process::kill_process(
+                rustix::process::getpid(),
+                rustix::process::Signal::TERM,
+            )?;
+            return Err("signal proof process should terminate".into());
+        }
+        // Only this subprocess writes a deliberate leak; the outer TempDir owns it.
+        let root = match mode.as_str() {
+            "tmp" => env::temp_dir(),
+            "fixture" => {
+                let fixture = cargo_berth_test_support::fixture_tempdir("proof-");
+                fixture
+                    .path()
+                    .parent()
+                    .ok_or("fixture needs a parent")?
+                    .to_owned()
+            },
+            _ => return Err("unknown scratch proof mode".into()),
+        };
+        let discovery = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&root)
+            .bounded_output()?;
+        assert!(!discovery.status.success());
+        assert!(String::from_utf8(discovery.stderr)?.contains("not a git repository"));
+        fs::create_dir(root.join("deliberately-left-folder"))?;
+        return Ok(());
+    }
+
+    let wrapper =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/check-test-scratch.sh");
+    for mode in ["tmp", "fixture", "panic", "exit", "signal"] {
+        let proof = cargo_berth_test_support::fixture_tempdir("scratch-proof-");
+        let binaries = proof.path().join("debug/deps");
+        fs::create_dir_all(&binaries)?;
+        let executable = binaries.join("proof-test");
+        symlink(env::current_exe()?, &executable)?;
+        let output = Command::new(&wrapper)
+            .arg(executable)
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_MODE, mode)
+            .env("NEXTEST_TEST_NAME", format!("{NAME}::{mode}"))
+            .bounded_output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        let private = proof.path().join("tmp/cargo-berth-templates/private");
+        let remaining = fs::read_dir(&private)?.collect::<Result<Vec<_>, _>>()?;
+        if matches!(mode, "tmp" | "fixture") {
+            assert_eq!(output.status.code(), Some(1), "{stderr}");
+            assert!(
+                stderr.contains(&format!("test {NAME}::{mode} left scratch paths:")),
+                "{stderr}"
+            );
+            assert_eq!(remaining.len(), 1);
+            let leaked = remaining[0].path().join("deliberately-left-folder");
+            assert!(leaked.is_dir());
+            assert!(stderr.contains(&leaked.display().to_string()), "{stderr}");
+            println!("{mode}: {stderr}");
+        } else {
+            if mode == "signal" {
+                assert_eq!(output.status.signal(), Some(15), "{stderr}");
+            } else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(if mode == "panic" { 101 } else { 7 }),
+                    "{stderr}"
+                );
+            }
+            assert!(remaining.is_empty(), "{mode}: {remaining:?}");
+            assert!(!stderr.contains("left scratch paths"), "{stderr}");
+            if mode == "panic" {
+                assert!(
+                    stderr.contains("deliberate panic after TempDir ownership"),
+                    "{stderr}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
     use std::os::unix::fs::MetadataExt;
 

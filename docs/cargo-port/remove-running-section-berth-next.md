@@ -758,3 +758,31 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Gotchas:**
 - A change to what a shared type or field means in `~/.claude/scripts` needs a search of every user first; the first patch broke two callers outside its file set.
+
+### Phase 29 — A cargo-berth test that leaves a folder behind fails with its own name  · status: done
+
+#### As-built
+
+- Every `cargo-berth` and `cargo-berth-test-support` test runs under `crates/cargo-berth/tests/check-test-scratch.sh`, a POSIX `sh` nextest wrapper script (`.config/nextest.toml`, `wrapper-scripts`). It makes a private 0700 root under the fixture cache's `private` directory and exports `TMPDIR`, `TMP`, `TEMP`, `CARGO_BERTH_TEST_SCRATCH_ROOT` and `GIT_CEILING_DIRECTORIES`. After the test process exits, a root that is not empty fails the test with its name and each path left. An empty root is removed. The test's own exit status and signals are kept.
+- `fixture_tempdir` makes its `TempDir` under that root, so both places a test makes folders are checked, and hard links from the cache still work.
+- `GIT_CEILING_DIRECTORIES` stops Git discovery at the root's parent. Without it, a test that ran Git in its scratch root found this worktree's repository.
+- The proof is `scratch_wrapper_names_leaks_and_preserves_clean_panics` in `tests/temporary_directories.rs`. It runs the wrapper itself around subprocesses that leak through `TMPDIR` or `fixture_tempdir`, unwind cleanly, or exit with status 7.
+- Cost: 17.9 ms per test added (500 runs, load 56–114). The first Python version added 39.6 ms.
+- No current leak was found. The 423 old natedev folders date from before phase 23 and are left to the builds unit's sweep.
+
+**Binds later work:** A cargo-berth test that leaves a folder in its scratch root fails. A new fixture folder is a `TempDir` under `TMPDIR` or `fixture_tempdir`.
+
+**Gotchas:** A test killed by nextest's `terminate-after` also kills the wrapper, so nothing checks that test's root.
+
+### Phase 30 — A claim on a `tree:` scope is not refused for its size in a crate with many holders  · status: done
+
+#### As-built
+
+- Cause: a claim on a `tree:` scope records a `JournalOperation::Answer` whose authorizations repeat holder ids, overlap scopes, scope revisions and an explanation for each holder. The old check measured the whole event against the 16384-byte limit for caller input. On the report's snapshot the record was 39 KB; the caller's part is 315 bytes.
+- `src/ledger/record_size.rs`: `CallerJournalInput` is the only type that `validate` (16384 bytes) accepts. An exhaustive conversion from each operation keeps only what the caller supplied: scopes, provenance, purpose, new reasons, explicit widenings, forced-integration reasons, release explanations and the retarget branch name. `DerivedJournalRecord` encodes the complete event under the 4 MiB derived limit. `JournalOperation::record_ceiling` is removed, so a new operation variant must choose its caller projection at compile time.
+- Records, schema and replay are unchanged; only the check at append time changed. Neither limit was raised.
+- Proof: `a_tree_claim_records_many_holder_answers_without_a_size_refusal` (`tests/overlap.rs`, 124 holders, refused at 66,667 bytes before the fix) and two journal tests in `ledger/journal.rs`.
+- The report's claim succeeds on a copy of the snapshot. Phase 29's scratch root made three fixtures depend on not finding an enclosing repository, and they were repaired: `tests/board.rs` marker, `gate/permit.rs` shell marker and `git/object.rs` failed repository.
+
+**Binds later work:** A size check on journal input takes `CallerJournalInput`. Derived evidence never counts against the caller's limit.
+
