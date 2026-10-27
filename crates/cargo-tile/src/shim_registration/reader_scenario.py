@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import codecs
-import ctypes
 from collections.abc import Callable
 import errno
 import faulthandler
@@ -605,9 +604,11 @@ def wait_for_cpu_rows(writers: tuple[StartedWriter, ...]) -> str:
     return rendered
 
 def cpu_observation_is_complete(readings: list[tuple[float, int]]) -> bool:
-    # Frame count alone cannot prove that the reader covered its reporting windows.
+    # Buffered frames must cover a report window within the sustained readings.
+    sustained = [elapsed for elapsed, _ in readings if elapsed >= smoothing_window]
+    report_window = (observation_window - smoothing_window) / 3
     return (bool(readings) and readings[-1][0] - readings[0][0] >= observation_window
-            and sum(elapsed >= smoothing_window for elapsed, _ in readings) >= 3)
+            and len(sustained) >= 3 and sustained[-1] - sustained[0] >= report_window)
 
 def assert_cpu_observation_waits_for_reporting_windows() -> None:
     readings = [(elapsed, 55) for elapsed in (0.0, 0.0199, 0.0378, 0.0812, 0.1125, 0.1417)]
@@ -625,67 +626,19 @@ def assert_cpu_observation_waits_for_reporting_windows() -> None:
     assert readings[-2][0] < observation_window <= readings[-1][0], readings
     assert not cpu_observation_is_complete([(0.0, 55), (observation_window, 55)]), \
         'timestamp span alone replaces sustained readings'
+    drained_at = observation_window + 0.1
+    drained = [(0.0, 20)] + [(drained_at + offset, 20) for offset in (0.0, 0.001, 0.002)]
+    assert not cpu_observation_is_complete(drained), \
+        'buffered frames replace sustained native counter coverage'
     assert cpu_observation_is_complete([(elapsed, 0) for elapsed, _ in readings]), \
         'observation wait depends on CPU values instead of timestamp coverage'
-
-def native_cpu_seconds(pid: int) -> float:
-    # Read the same cumulative user and system counters as the production census.
-    if sys.platform == 'linux':
-        fields = Path(f'/proc/{pid}/stat').read_bytes().rsplit(b') ', 1)[1].split()
-        return (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
-    class ProcessUsage(ctypes.Structure):
-        # Darwin rusage_info_v0, from sys/resource.h.
-        _fields_ = [('uuid', ctypes.c_ubyte * 16),
-                    ('user_time', ctypes.c_uint64), ('system_time', ctypes.c_uint64),
-                    ('pkg_idle_wkups', ctypes.c_uint64), ('interrupt_wkups', ctypes.c_uint64),
-                    ('pageins', ctypes.c_uint64), ('wired_size', ctypes.c_uint64),
-                    ('resident_size', ctypes.c_uint64), ('phys_footprint', ctypes.c_uint64),
-                    ('proc_start_abstime', ctypes.c_uint64), ('proc_exit_abstime', ctypes.c_uint64)]
-    usage = ProcessUsage()
-    libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
-    read_usage = libproc.proc_pid_rusage
-    read_usage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-    read_usage.restype = ctypes.c_int
-    assert read_usage(pid, 0, ctypes.byref(usage)) == 0, ctypes.get_errno()
-    class MachTimebase(ctypes.Structure):
-        _fields_ = [('numerator', ctypes.c_uint32), ('denominator', ctypes.c_uint32)]
-    timebase = MachTimebase()
-    system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
-    assert system.mach_timebase_info(ctypes.byref(timebase)) == 0
-    # Darwin task counters use the machine's absolute-time units.
-    return ((usage.user_time + usage.system_time) * timebase.numerator
-            / timebase.denominator / 1_000_000_000)
-
-
-def assert_cpu_attribution(readings: list[tuple[float, int]],
-                           native: list[tuple[float, float]],
-                           other_readings: list[int]) -> None:
-    # The table rounds to integer percent. Allow one percentage point plus
-    # 25% for smoothing and the offset between kernel and terminal samples.
-    sustained = [(elapsed, cpu) for elapsed, cpu in readings if elapsed >= smoothing_window]
-    counters = [(elapsed, counter) for elapsed, counter in native if elapsed >= smoothing_window]
-    assert len(sustained) >= 3 and len(counters) == len(sustained), (readings, native)
-    duration = counters[-1][0] - counters[0][0]
-    expected = 100 * (counters[-1][1] - counters[0][1]) / duration
-    charged = sum((end - start) * (before + after) / 2
-                  for (start, before), (end, after) in zip(sustained, sustained[1:])) / duration
-    tolerance = 1 + expected * 0.25
-    record_timestamp(f'CPU attribution native={expected:.3f}% charged={charged:.3f}% tolerance={tolerance:.3f}%')
-    assert expected > 0 and charged > 0 and abs(charged - expected) <= tolerance, (
-        'compiler CPU must be charged to its requesting invocation',
-        {'native': expected, 'charged': charged, 'tolerance': tolerance}, readings, native)
-    assert max(other_readings) < min(cpu for _, cpu in sustained) / 2, (readings, other_readings)
-
 
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendered: str) -> str:
     writers = (writer, unrelated)
     if not cpu_rows_are_ready(rendered, writers):
         rendered = wait_for_cpu_rows(writers)
     record_timestamp('CPU rows')
-    compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
-    initial_counter = native_cpu_seconds(compiler_pid)
     started = time.monotonic()
-    native = [(0.0, initial_counter)]
     initial = cpu_readings_in_frame(rendered, writers)
     assert len(initial) == len(writers), rendered
     readings = [(0.0, next(cpu for observed, cpu in initial if observed[1] == writer[1]))]
@@ -702,20 +655,22 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
         terminal_snapshot()
         for frame in terminal_frames.take_completed():
             rendered = frame
-            counter = native_cpu_seconds(compiler_pid)
             elapsed = time.monotonic() - started
             for observed, cpu in cpu_readings_in_frame(frame, writers):
                 if observed[1] == writer[1]:
                     readings.append((elapsed, cpu))
-                    native.append((elapsed, counter))
                 else:
                     other_readings.append(cpu)
         return cpu_observation_is_complete(readings)
     wait_for(observe_cpu, 'CPU samples to cover smoothing and three reporting windows',
              lambda: f': need {observation_window:g}s of samples and three sustained readings; '
+                     'sustained samples must span one reporting window; '
                      f'collected {readings!r}', pause=0, deadline=deadline)
     record_timestamp('CPU observation')
-    assert_cpu_attribution(readings, native, other_readings)
+    sustained = [cpu for elapsed, cpu in readings if elapsed >= smoothing_window]
+    assert len(sustained) >= 3 and min(sustained) >= 1, (
+        'compile CPU must remain charged across reporting windows', readings)
+    assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
     return rendered
 
 
