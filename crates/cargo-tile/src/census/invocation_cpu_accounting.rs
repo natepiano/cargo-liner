@@ -203,11 +203,9 @@ impl CensusCadence {
 
     /// How much of a fresh sample a settled reading takes on.
     ///
-    /// Worked out from the scan interval rather than stated, so the window
-    /// stays the one [`smoothing`](Self::smoothing) names however often
-    /// the scan runs.
-    fn smoothing_alpha(self) -> f32 {
-        1.0 - (-self.poll.as_secs_f32() / self.smoothing.as_secs_f32()).exp()
+    /// Use the elapsed sample time so a late scan keeps the configured window.
+    fn smoothing_alpha(self, elapsed: Duration) -> f32 {
+        1.0 - (-elapsed.as_secs_f32() / self.smoothing.as_secs_f32()).exp()
     }
 }
 
@@ -219,6 +217,16 @@ enum CpuPublication {
     NeverPublished,
     /// Readings may be held until the reporting interval expires.
     Published(Instant),
+}
+
+/// The time of the previous CPU sample, separate from its publication time.
+#[derive(Default)]
+enum CpuSmoothingSample {
+    /// The first sample supplies the initial reading.
+    #[default]
+    AwaitingFirstSample,
+    /// The next sample must account for all time since this observation.
+    Observed(Instant),
 }
 
 /// Whether a scan replaces the memory the table reports.
@@ -269,6 +277,8 @@ pub(super) struct InvocationCpuAccounting {
     pub(super) reported_memory: HashMap<InvocationId, Measurement<u64>>,
     /// A never-published smoother has no previous snapshot to hold.
     publication:                CpuPublication,
+    /// A delayed scan still advances smoothing by the full elapsed interval.
+    smoothing_sample:           CpuSmoothingSample,
     /// The scan interval and the windows that smooth and hold a reading.
     cadence:                    CensusCadence,
 }
@@ -712,7 +722,14 @@ impl InvocationCpuAccounting {
     ) -> HashMap<InvocationId, Measurement<f32>> {
         self.settled.retain(|pid, _| cargo.contains(pid));
         self.reported.retain(|pid, _| cargo.contains(pid));
-        let alpha = self.cadence.smoothing_alpha();
+        let elapsed = match std::mem::replace(
+            &mut self.smoothing_sample,
+            CpuSmoothingSample::Observed(now),
+        ) {
+            CpuSmoothingSample::AwaitingFirstSample => self.cadence.poll,
+            CpuSmoothingSample::Observed(previous) => now.saturating_duration_since(previous),
+        };
+        let alpha = self.cadence.smoothing_alpha(elapsed);
         for pid in cargo {
             let sample = sampled
                 .get(pid)
