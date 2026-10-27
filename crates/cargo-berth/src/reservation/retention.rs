@@ -1639,7 +1639,9 @@ impl RetainedReservationSet {
             reservation.advance_integration_proof_subject_revision()?;
         }
         match disposition {
-            ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => reservation
+            ReleaseDisposition::Abandoned(_)
+            | ReleaseDisposition::RetiredOrphan(_)
+            | ReleaseDisposition::UnchangedScopes(_) => reservation
                 .lifecycle
                 .release_without_checkpoint(disposition.clone())
                 .map_err(|error| {

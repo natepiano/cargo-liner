@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::evidence::ProtectedReservationTip;
+use super::unchanged::UnchangedScopesEvidence;
 use crate::constants::DERIVED_ORPHAN_RETIREMENT_REASON;
 use crate::git::Reachability;
 use crate::ids::GitObjectId;
@@ -106,19 +107,21 @@ impl ReservationLifecycle {
         }
     }
 
-    /// Record an abandonment or orphan retirement, neither of which checkpoints first.
+    /// End a run by a retirement decision or an observation that its scopes are unchanged.
     ///
     /// [`Self::release`] requires `Outstanding` because an integration disposition rests on the
-    /// protected tip a checkpoint fixed. `Abandoned` and `RetiredOrphan` rest on a decision
-    /// instead -- the user's for an abandonment, reconciliation's proved-empty evidence for a
-    /// derived retirement -- so they are the two dispositions that may end an `Active` run.
+    /// protected tip a checkpoint fixed. Retirement dispositions instead rest on the user's
+    /// decision, proved-empty orphan evidence, or a complete stale-scope observation.
+    /// Those dispositions may also end an `Active` run.
     pub(crate) fn release_without_checkpoint(
         &mut self,
         disposition: ReleaseDisposition,
     ) -> Result<(), LifecycleTransitionError> {
         if !matches!(
             disposition,
-            ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_)
+            ReleaseDisposition::Abandoned(_)
+                | ReleaseDisposition::RetiredOrphan(_)
+                | ReleaseDisposition::UnchangedScopes(_)
         ) {
             return Err(LifecycleTransitionError::ReleaseRequiresCheckpoint);
         }
@@ -239,6 +242,8 @@ declare_wire_enum! {
 #[schemars(rename = "release_disposition")]
 #[serde(tag = "kind", content = "evidence", rename_all = "snake_case")]
 pub(crate) enum ReleaseDisposition {
+    /// A stale reservation had no differing path in its scopes against the recorded target.
+    UnchangedScopes(UnchangedScopesEvidence),
     /// Git proved the protected work reached the reservation's integration target.
     Integrated,
     /// An alternate integration-target commit witnesses verified rewritten integration.
@@ -269,7 +274,9 @@ impl ReleaseDisposition {
             Self::RewrittenIntegration(trunk_commit) => {
                 ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit)
             },
-            Self::Abandoned(_) | Self::RetiredOrphan(_) => ReleaseRevalidationSubject::None,
+            Self::Abandoned(_) | Self::RetiredOrphan(_) | Self::UnchangedScopes(_) => {
+                ReleaseRevalidationSubject::None
+            },
         }
     }
 }

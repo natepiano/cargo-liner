@@ -6,6 +6,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::ErrorKind;
+use std::path::Path;
 use std::path::PathBuf;
 
 use super::classification;
@@ -66,6 +67,7 @@ use crate::scope::DeclaredReservationScopeSetError;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::verb::claim;
+use crate::verb::claim::ClaimCapacityRecovery;
 use crate::verb::claim::ClaimError;
 use crate::verb::claim::FirstTouchClaimExecution;
 use crate::verb::claim::FirstTouchClaimRequest;
@@ -152,6 +154,7 @@ pub(crate) fn execute(
         ledger,
         observation,
     } = reconciled_drift_preflight;
+    let mut capacity_recovery = claim::ClaimCapacityRecovery::default();
     let output_envelope = match observation.and_then(|prepared| {
         execute_inner(
             request,
@@ -160,6 +163,7 @@ pub(crate) fn execute(
             prepared,
             &reconciliation_report.repository_snapshot,
             recovery_command_line,
+            &mut capacity_recovery,
         )
     }) {
         Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
@@ -198,9 +202,11 @@ pub(crate) fn execute(
     // worktree's session, so it carries only that worktree's alerts; drift run by hand carries
     // every alert.
     let alert_routing = reconciliation_report.alert_routing(EngineAnswerOccasion::current());
-    output_envelope
+    let output_envelope = output_envelope
         .with_alerts(alert_routing.route(reconciliation_report.alerts))
         .with_retention_maintenance(&reconciliation_report.retention_maintenance)
+        .with_automatic_releases(&reconciliation_report.settlements);
+    capacity_recovery.into_output(output_envelope)
 }
 
 fn prepare_drift_execution(
@@ -277,6 +283,7 @@ fn execute_inner(
     prepared: PreparedDriftExecution,
     repository_snapshot: &RepositorySnapshot,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
     let worktree_context = repository.context();
     let ObservedDriftExecution {
@@ -329,18 +336,15 @@ fn execute_inner(
             PostWriteFirstTouchRequirement::Required
         )
     {
-        let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
+        let attribution =
+            claim_post_write_paths(&observation, recovery_command_line, capacity_recovery)?;
         let report = DriftReport {
             comparison:        observation.comparison,
             path_attribution:  attribution.outcome,
             results:           attribution.results,
             scope_acquisition: DriftScopeAcquisition::Permitted,
         };
-        if report.has_blocking_effect() {
-            fingerprint::invalidate_fingerprint(&cache_path);
-        } else {
-            fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
-        }
+        finish_drift_fingerprint(&report, &cache_path, &observation);
         return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
@@ -396,16 +400,27 @@ fn execute_inner(
             PostWriteFirstTouchRequirement::Required
         )
     {
-        let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
+        let attribution =
+            claim_post_write_paths(&observation, recovery_command_line, capacity_recovery)?;
         report.path_attribution = attribution.outcome;
         report.results.extend(attribution.results);
     }
-    if acquisition_permitted && !report.has_blocking_effect() {
-        fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
-    } else {
-        fingerprint::invalidate_fingerprint(&cache_path);
-    }
+    finish_drift_fingerprint(&report, &cache_path, &observation);
     Ok(Enrollment::Enrolled(report))
+}
+
+fn finish_drift_fingerprint(
+    report: &DriftReport,
+    cache_path: &Path,
+    observation: &FingerprintObservation,
+) {
+    if matches!(report.scope_acquisition, DriftScopeAcquisition::Permitted)
+        && !report.has_blocking_effect()
+    {
+        fingerprint::publish_fingerprint(cache_path, &observation.cache_value);
+    } else {
+        fingerprint::invalidate_fingerprint(cache_path);
+    }
 }
 
 /// Read acting-head containment before the lock and carry it into the replay.
@@ -558,6 +573,7 @@ fn prepare_worktree_comparison(
 fn claim_post_write_paths(
     observation: &FingerprintObservation,
     recovery_command_line: &RecoveryCommandLine,
+    capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<PostWritePathAttribution, DriftExecutionError> {
     let paths = match observation.post_write_claim_subject() {
         PostWriteClaimSubject::NoModifiedPath => {
@@ -578,6 +594,7 @@ fn claim_post_write_paths(
             conflict_handling: FirstTouchConflictHandling::ProtectFreePaths,
         },
         recovery_command_line,
+        capacity_recovery,
     )?;
     match acquisition {
         Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
