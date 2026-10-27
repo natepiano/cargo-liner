@@ -5,7 +5,7 @@
 #[cfg(test)]
 use ratatui::layout::Rect;
 
-// grid shape
+// Grid shape: `TABLE_CELL` through `MIN_INITIAL_ROWS`.
 /// The cell holding the summary. Cells are numbered from one and fill
 /// column by column, so the summary is always the first.
 pub const TABLE_CELL: usize = 1;
@@ -14,7 +14,7 @@ pub const TABLE_CELL: usize = 1;
 /// second cell on.
 pub const MIN_INITIAL_ROWS: usize = 1;
 
-// cell sizes
+// Cell sizes: `MIN_TILE_HEIGHT` through `SUMMARY_SLOT_SHORTFALL_DIVISOR`.
 /// Rows one cell standing alone needs: a border line, a line of
 /// content, and a border line. A cell with a neighbour below costs one
 /// less, because the two share that line.
@@ -36,7 +36,7 @@ pub(super) const TILE_DEMAND_STEP: usize = 3;
 /// the summary may take from its column mates without adding a position.
 pub(super) const SUMMARY_SLOT_SHORTFALL_DIVISOR: u16 = 2;
 
-// cell readout
+// Cell readout: `TILE_FOOT_GAP` through `TILE_ROWS_WIDTH_LABEL`.
 /// Kept between the summary foot and the rows readout.
 pub(super) const TILE_FOOT_GAP: u16 = 2;
 /// Kept between the summary foot and the cell's left border.
@@ -64,7 +64,7 @@ pub(super) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// terms, and is worth the room it takes.
 pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 
-// motion
+// Motion and fixtures: `PROGRESS_SCALE` through `LARGE_CONTENT_TEST_MEASUREMENT_BOUND`.
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(super) const PROGRESS_SCALE: u32 = 1000;
