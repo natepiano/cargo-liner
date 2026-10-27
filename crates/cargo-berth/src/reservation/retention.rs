@@ -1641,6 +1641,7 @@ impl RetainedReservationSet {
         match disposition {
             ReleaseDisposition::Abandoned(_)
             | ReleaseDisposition::RetiredOrphan(_)
+            | ReleaseDisposition::KeptOnBranch(_)
             | ReleaseDisposition::UnchangedScopes(_) => reservation
                 .lifecycle
                 .release_without_checkpoint(disposition.clone())

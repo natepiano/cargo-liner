@@ -1622,6 +1622,24 @@
               "type": "object"
             },
             {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "The user deliberately discarded the reservation's work.",
               "properties": {
                 "evidence": {
@@ -9391,6 +9409,24 @@
               "type": "object"
             },
             {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "The user deliberately discarded the reservation's work.",
               "properties": {
                 "evidence": {
@@ -16759,6 +16795,24 @@
               "type": "object"
             },
             {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "The user deliberately discarded the reservation's work.",
               "properties": {
                 "evidence": {
@@ -18174,6 +18228,24 @@
           "type": "object"
         },
         {
+          "description": "The user kept unintegrated work on its branch for a later phase.",
+          "properties": {
+            "evidence": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "kept_on_branch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The user deliberately discarded the reservation's work.",
           "properties": {
             "evidence": {
@@ -18405,6 +18477,24 @@
                 },
                 "kind": {
                   "const": "rewritten_integration",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
                   "type": "string"
                 }
               },
@@ -19725,6 +19815,24 @@
               "type": "object"
             },
             {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "The user deliberately discarded the reservation's work.",
               "properties": {
                 "evidence": {
@@ -20018,6 +20126,24 @@
                 },
                 "kind": {
                   "const": "rewritten_integration",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The user kept unintegrated work on its branch for a later phase.",
+              "properties": {
+                "evidence": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "kept_on_branch",
                   "type": "string"
                 }
               },

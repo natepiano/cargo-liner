@@ -111,15 +111,16 @@ impl ReservationLifecycle {
     ///
     /// [`Self::release`] requires `Outstanding` because an integration disposition rests on the
     /// protected tip a checkpoint fixed. Retirement dispositions instead rest on the user's
-    /// decision, proved-empty orphan evidence, or a complete stale-scope observation.
-    /// Those dispositions may also end an `Active` run.
+    /// decision to discard or keep work, proved-empty orphan evidence, or a complete stale-scope
+    /// observation. Those dispositions may also end an `Active` run.
     pub(crate) fn release_without_checkpoint(
         &mut self,
         disposition: ReleaseDisposition,
     ) -> Result<(), LifecycleTransitionError> {
         if !matches!(
             disposition,
-            ReleaseDisposition::Abandoned(_)
+            ReleaseDisposition::KeptOnBranch(_)
+                | ReleaseDisposition::Abandoned(_)
                 | ReleaseDisposition::RetiredOrphan(_)
                 | ReleaseDisposition::UnchangedScopes(_)
         ) {
@@ -252,6 +253,12 @@ pub(crate) enum ReleaseDisposition {
         #[schemars(length(min = 1))]
         RewrittenIntegrationTrunkCommit,
     ),
+    /// The user kept unintegrated work on its branch for a later phase.
+    KeptOnBranch(
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        KeptWorkReason,
+    ),
     /// The user deliberately discarded the reservation's work.
     Abandoned(
         #[schemars(with = "String")]
@@ -274,9 +281,10 @@ impl ReleaseDisposition {
             Self::RewrittenIntegration(trunk_commit) => {
                 ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit)
             },
-            Self::Abandoned(_) | Self::RetiredOrphan(_) | Self::UnchangedScopes(_) => {
-                ReleaseRevalidationSubject::None
-            },
+            Self::Abandoned(_)
+            | Self::RetiredOrphan(_)
+            | Self::KeptOnBranch(_)
+            | Self::UnchangedScopes(_) => ReleaseRevalidationSubject::None,
         }
     }
 }
@@ -355,6 +363,12 @@ macro_rules! nonempty_release_reason {
     };
 }
 
+nonempty_release_reason!(
+    KeptWorkReason,
+    EmptyKeptWorkReason,
+    "The required explanation for keeping unintegrated work on its branch.",
+    "a kept-work reason cannot be empty"
+);
 nonempty_release_reason!(
     AbandonmentReason,
     EmptyAbandonmentReason,
