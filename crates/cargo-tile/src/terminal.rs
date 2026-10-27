@@ -23,6 +23,8 @@ use crate::census::CargoGroup;
 use crate::census::CensusCadence;
 use crate::census::CensusScope;
 use crate::census::ExcludedCommands;
+#[cfg(test)]
+use crate::census::cpu_observation::CpuScanPublication;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
@@ -42,13 +44,16 @@ use crate::theme;
 /// what makes the answer free, and what keeps the summary's stats read
 /// from having to start a server to discover whether one is running.
 pub(crate) struct Scan {
+    /// The native scan that supplied this test snapshot.
+    #[cfg(test)]
+    pub(crate) cpu_scan_publication: CpuScanPublication,
     /// The commands running, newest first.
-    pub(crate) groups:           Vec<CargoGroup>,
+    pub(crate) groups:               Vec<CargoGroup>,
     /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
-    pub(crate) sccache:          SccacheServer,
+    pub(crate) sccache:              SccacheServer,
     /// Settings reads these observations without reopening any capture path.
-    pub(crate) root_status:      Vec<AccountCaptureDirectory>,
-    pub(crate) shared_directory: SharedCaptureDirectory,
+    pub(crate) root_status:          Vec<AccountCaptureDirectory>,
+    pub(crate) shared_directory:     SharedCaptureDirectory,
 }
 
 /// Whether tile positions travel between layouts or reach the new layout on the next poll.
@@ -283,6 +288,8 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         app.root_status != scan.root_status || app.shared_directory != scan.shared_directory;
     app.shared_directory = scan.shared_directory;
     app.root_status = scan.root_status;
+    #[cfg(test)]
+    census::cpu_observation::accept(scan.cpu_scan_publication);
     app.roster.observe(scan.groups, Instant::now()) || status_changed
 }
 
@@ -336,6 +343,7 @@ mod tests {
     use crate::census::SelectedProof;
     use crate::census::VisibleParent;
     use crate::census::command_text::CommandText;
+    use crate::census::cpu_observation::CpuScanPublication;
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentity;
@@ -386,10 +394,11 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:           Vec::new(),
-                sccache:          SccacheServer::Stopped,
-                root_status:      capture.root_status,
-                shared_directory: capture.shared_directory,
+                cpu_scan_publication: CpuScanPublication::Unobserved,
+                groups:               Vec::new(),
+                sccache:              SccacheServer::Stopped,
+                root_status:          capture.root_status,
+                shared_directory:     capture.shared_directory,
             })
             .expect("retained scan receiver");
         drain_scans(app, &scans)
@@ -445,14 +454,15 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
-                    groups:           vec![CargoGroup {
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups:               vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
                         ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                     }],
-                    sccache:          SccacheServer::Stopped,
-                    root_status:      Vec::new(),
-                    shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
+                    sccache:              SccacheServer::Stopped,
+                    root_status:          Vec::new(),
+                    shared_directory:     crate::root_scan::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
             assert!(drain_scans(&mut app, &scans));
@@ -495,14 +505,15 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
-                    groups:           vec![CargoGroup {
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups:               vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
                         ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                     }],
-                    sccache:          SccacheServer::Stopped,
-                    root_status:      Vec::new(),
-                    shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
+                    sccache:              SccacheServer::Stopped,
+                    root_status:          Vec::new(),
+                    shared_directory:     crate::root_scan::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
 
@@ -676,14 +687,15 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:           vec![CargoGroup {
+                cpu_scan_publication: CpuScanPublication::Unobserved,
+                groups:               vec![CargoGroup {
                     lead:     process.clone(),
                     rest:     Vec::new(),
                     ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                 }],
-                sccache:          SccacheServer::Stopped,
-                root_status:      capture.root_status,
-                shared_directory: capture.shared_directory,
+                sccache:              SccacheServer::Stopped,
+                root_status:          capture.root_status,
+                shared_directory:     capture.shared_directory,
             })
             .expect("scan receiver is alive");
 

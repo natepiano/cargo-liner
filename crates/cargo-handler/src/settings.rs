@@ -65,7 +65,12 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
 
     out.files::<CargoHandler>();
 
-    out.notices(&notices(app));
+    let notices = notices(app);
+    let borrowed: Vec<_> = notices
+        .iter()
+        .map(|(label, note)| (*label, note.as_str()))
+        .collect();
+    out.notices(&borrowed);
     out
 }
 
@@ -77,7 +82,9 @@ pub(crate) fn cycle(app: &mut App, step: SettingStep) {
     let selection = app.framework.settings_pane.viewport().pos();
     match rows(app).target(selection) {
         Some(SettingTarget::Framework(setting)) => {
-            step_framework_setting(setting, step, &mut app.loaded_config, &mut app.startup_note);
+            let mut note = app.startup_note.appearance_note();
+            step_framework_setting(setting, step, &mut app.loaded_config, &mut note);
+            app.startup_note.appearance = note.into();
         },
         Some(
             SettingTarget::App(AppSetting::RemoteMachines | AppSetting::HierarchyCommand)
@@ -115,7 +122,9 @@ pub(crate) fn commit_text(app: &mut App, text: &str) {
         },
         _ => return,
     }
-    apply_settings(&mut app.loaded_config, &mut app.startup_note);
+    let mut note = app.startup_note.appearance_note();
+    apply_settings(&mut app.loaded_config, &mut note);
+    app.startup_note.appearance = note.into();
 }
 
 /// Replace the remote list in the config, in the scheduler's copy, and
@@ -136,13 +145,15 @@ fn set_hierarchy_command(app: &mut App, text: &str) {
 
 /// Outstanding startup notices, kept visible after their toasts
 /// disappear: the theme note, then the config error.
-fn notices(app: &App) -> Vec<(&'static str, &str)> {
-    let mut notices = Vec::new();
-    if let Some(note) = &app.startup_note {
-        notices.push(("theme", note.as_str()));
-    }
+fn notices(app: &App) -> Vec<(&'static str, String)> {
+    let mut notices: Vec<_> = app
+        .startup_note
+        .messages()
+        .into_iter()
+        .map(|note| ("theme", note))
+        .collect();
     if let Some(error) = &app.loaded_config.error {
-        notices.push(("config", error.as_str()));
+        notices.push(("config", error.clone()));
     }
     notices
 }
@@ -168,13 +179,13 @@ mod tests {
     #[test]
     fn applying_an_appearance_replaces_the_theme_notice() {
         let mut app = App::new_for_test().expect("test app should build");
-        app.startup_note = Some("earlier notice".to_string());
+        app.startup_note.appearance = Some("earlier notice".to_string()).into();
         app.loaded_config.config.appearance.light_theme = "Missing Light".to_string();
 
         app.apply_system_appearance(Appearance::Light);
 
         assert_eq!(
-            app.startup_note.as_deref(),
+            app.startup_note.appearance_note().as_deref(),
             Some("theme `Missing Light` not found — using a built-in")
         );
     }

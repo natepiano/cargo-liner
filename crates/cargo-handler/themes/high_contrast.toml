@@ -81,7 +81,7 @@ appearance = "light"
 name       = "High Contrast Light"
 
 session_hues = [
-  { r = 0, g = 35, b = 86 },
+  { r = 0, g = 34, b = 85 },
   { r = 68, g = 0, b = 29 },
   { r = 37, g = 0, b = 67 },
   { r = 81, g = 12, b = 0 },

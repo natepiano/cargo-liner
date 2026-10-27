@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "render/status_bar_contrast_tests.rs"]
+mod status_bar_contrast_tests;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;

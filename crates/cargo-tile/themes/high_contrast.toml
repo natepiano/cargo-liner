@@ -71,7 +71,7 @@ appearance = "light"
 name       = "High Contrast Light"
 
 [variants.pane_chrome]
-active_title    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+active_title    = { color = { r = 112, g = 48, b = 0 }, bold = true }
 inactive_border = "Black"
 inactive_title  = "Black"
 

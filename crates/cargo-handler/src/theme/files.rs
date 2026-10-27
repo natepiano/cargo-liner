@@ -1,5 +1,7 @@
 //! Handler theme files require their own five-entry session palette.
 
+use std::path::PathBuf;
+
 use ratatui::style::Color;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -8,7 +10,9 @@ use tui_pane::AppIdentity;
 use tui_pane::AppearanceConfig;
 use tui_pane::StyleSpec;
 use tui_pane::ThemeFamily;
+use tui_pane::ThemeId;
 use tui_pane::ThemeRegistry;
+use tui_pane::ThemeSource;
 use tui_pane::ThemeState;
 use tui_pane::ThemeVariant;
 use tui_pane::ThemeVariantFile;
@@ -67,13 +71,106 @@ pub(super) fn parse_family(contents: &str) -> Result<ThemeFamily, toml::de::Erro
     })
 }
 
+/// Whether the configured active theme was found at installation.
+#[derive(Debug, Default)]
+enum ActiveThemeOutcome {
+    #[default]
+    Found,
+    BuiltinForMissingName(ThemeId),
+}
+
+/// One file rejected by the handler schema or filesystem loader.
+#[derive(Debug)]
+struct RejectedThemeFile {
+    path:   PathBuf,
+    reason: String,
+}
+
+/// The active-theme outcome and the independent file-loading diagnostics.
+#[derive(Debug, Default)]
+pub(crate) struct ThemeInstallation {
+    active:   ActiveThemeOutcome,
+    rejected: Vec<RejectedThemeFile>,
+}
+
+/// The latest response from the framework appearance resolver.
+#[derive(Debug, Default)]
+pub(crate) enum AppearanceDiagnostic {
+    #[default]
+    NotObserved,
+    Clear,
+    Notice(String),
+}
+
+impl From<Option<String>> for AppearanceDiagnostic {
+    fn from(note: Option<String>) -> Self { note.map_or(Self::Clear, Self::Notice) }
+}
+
+/// Installation diagnostics persist independently of appearance changes.
+#[derive(Debug, Default)]
+pub(crate) struct StartupThemeNotes {
+    installation:          ThemeInstallation,
+    pub(crate) appearance: AppearanceDiagnostic,
+}
+
+impl StartupThemeNotes {
+    /// Combine the installation report with the first appearance answer.
+    pub(crate) const fn new(
+        installation: ThemeInstallation,
+        appearance: AppearanceDiagnostic,
+    ) -> Self {
+        Self {
+            installation,
+            appearance,
+        }
+    }
+
+    /// Convert only for framework APIs that require an optional diagnostic.
+    pub(crate) fn appearance_note(&self) -> Option<String> {
+        match &self.appearance {
+            AppearanceDiagnostic::Notice(note) => Some(note.clone()),
+            AppearanceDiagnostic::NotObserved | AppearanceDiagnostic::Clear => None,
+        }
+    }
+
+    /// File failures outlive any later successful theme resolution.
+    pub(crate) fn messages(&self) -> Vec<String> {
+        let mut messages: Vec<_> = self
+            .installation
+            .rejected
+            .iter()
+            .map(|file| {
+                format!(
+                    "theme file `{}` rejected: {}",
+                    file.path.display(),
+                    file.reason
+                )
+            })
+            .collect();
+        match &self.appearance {
+            AppearanceDiagnostic::Notice(note) => messages.push(note.clone()),
+            AppearanceDiagnostic::NotObserved => {
+                if let ActiveThemeOutcome::BuiltinForMissingName(name) = &self.installation.active {
+                    messages.push(format!("theme `{name}` not found — using a built-in"));
+                }
+            },
+            AppearanceDiagnostic::Clear => {},
+        }
+        messages
+    }
+}
+
 /// Install handler files before the appearance watcher supplies its first observation.
 pub(crate) fn install_theme<I: AppIdentity>(
     appearance: &AppearanceConfig<I>,
     builtins: Vec<ThemeVariant>,
-) -> Option<String> {
+) -> ThemeInstallation {
     let registry = match I::themes_dir() {
-        Some(dir) => ThemeRegistry::from_dir_with_parser(Some(&dir), builtins, parse_family),
+        Some(dir) => ThemeRegistry::from_dir_with_parser(
+            ThemeSource::Directory(&dir),
+            builtins,
+            parse_family,
+        ),
         None => ThemeRegistry::new_with_builtins(builtins),
     };
     let resolved = registry.resolve_active(
@@ -82,14 +179,23 @@ pub(crate) fn install_theme<I: AppIdentity>(
         &appearance.dark_theme,
         None,
     );
-    let note = resolved
-        .miss
-        .as_ref()
-        .map(|missing| format!("theme `{missing}` not found — using a built-in"));
+    let active = resolved.miss.map_or(
+        ActiveThemeOutcome::Found,
+        ActiveThemeOutcome::BuiltinForMissingName,
+    );
+    let rejected = registry
+        .status()
+        .failed_files
+        .iter()
+        .map(|(path, error)| RejectedThemeFile {
+            path:   path.clone(),
+            reason: error.message().to_owned(),
+        })
+        .collect();
     tui_pane::install_theme_state(ThemeState::with_registry(
         registry,
         (*resolved.theme).clone(),
     ));
     tui_pane::set_transparent_background(appearance.transparent);
-    note
+    ThemeInstallation { active, rejected }
 }

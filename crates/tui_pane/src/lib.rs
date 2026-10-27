@@ -457,6 +457,7 @@ pub use theme::ThemeId;
 pub use theme::ThemeLoadError;
 pub use theme::ThemeRegistry;
 pub use theme::ThemeRuntime;
+pub use theme::ThemeSource;
 pub use theme::ThemeState;
 pub use theme::ThemeVariant;
 pub use theme::ThemeVariantFile;

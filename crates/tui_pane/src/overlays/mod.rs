@@ -22,6 +22,8 @@
 mod constants;
 mod frame_tail;
 mod global_shortcuts;
+#[cfg(test)]
+mod global_shortcuts_tests;
 mod keymap;
 mod keymap_edit;
 mod keymap_ui;

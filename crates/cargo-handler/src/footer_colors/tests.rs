@@ -407,16 +407,31 @@ fn measured_channels(color: Color) -> (u8, u8, u8) {
 /// Model the production stem coverage independently of its channel blending.
 /// Arbitrary font fringes can have coverage approaching zero.
 pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64 {
-    let ground_share = 47u32;
-    let foreground = <[u8; 3]>::from(measured_channels(foreground));
-    let ground = <[u8; 3]>::from(measured_channels(background));
-    let mixed: [u8; 3] = std::array::from_fn(|index| {
-        let channel = (u32::from(foreground[index]) * (255 - ground_share)
-            + u32::from(ground[index]) * ground_share)
-            / 255;
-        u8::try_from(channel).expect("convex channel mixture fits a byte")
+    let foreground = <[u8; 3]>::from(measured_channels(foreground)).map(f64::from);
+    let ground = <[u8; 3]>::from(measured_channels(background)).map(f64::from);
+    let mixed = std::array::from_fn(|index| {
+        f64::mul_add(ground[index], 47.0, foreground[index] * 208.0) / 255.0
     });
-    contrast_ratio(Color::Rgb(mixed[0], mixed[1], mixed[2]), background)
+    let luminance = |channels: [f64; 3]| {
+        let [red, green, blue] = channels.map(|channel| {
+            let value = channel / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.0722f64.mul_add(blue, 0.7152f64.mul_add(green, 0.2126 * red))
+    };
+    let ground = luminance(ground);
+    // Both fractional stems and nearest-byte stems must clear the floor.
+    [mixed, mixed.map(f64::round)]
+        .map(|channels| {
+            let ink = luminance(channels);
+            (ink.max(ground) + 0.05) / (ink.min(ground) + 0.05)
+        })
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Independent WCAG oracle: ANSI values follow the documented xterm approximation.
@@ -821,3 +836,47 @@ pub(crate) fn palette_pair_report(class: &str, pairs: &[(String, Color, String, 
 
 /// Normalize named and indexed terminal inks for comparison with measurement artifacts.
 pub(crate) fn terminal_rgb(color: Color) -> [u8; 3] { measured_channels(color).into() }
+
+#[test]
+fn covered_contrast_keeps_fractional_channels_below_the_readability_floor() {
+    // Rounding this stem gives 4.502294; the actual covered ink is 4.497312.
+    let ink = Color::Rgb(44, 87, 150);
+    let ground = Color::Rgb(250, 250, 250);
+    let expected = covered_role_contrast(ink, ground);
+    assert!(expected < 4.5, "fixture straddles the readability floor");
+    let actual = InkCoverage::Antialiased.contrast(
+        InkGrounds {
+            base:      ground,
+            unfocused: ground,
+            focused:   ground,
+        },
+        ink,
+    );
+    assert!(
+        (actual - expected).abs() < 1e-12,
+        "covered contrast must retain fractional channels: actual={actual:.12}, expected={expected:.12}"
+    );
+    assert!(
+        actual < 4.5,
+        "rounded coverage must not accept an unreadable ink"
+    );
+}
+
+#[test]
+fn covered_contrast_rejects_an_ink_that_only_fractional_coverage_accepts() {
+    // Fractional coverage is 4.500905; nearest-byte coverage is only 4.479550.
+    let ink = Color::Rgb(128, 128, 255);
+    let ground = Color::Black;
+    let expected = covered_role_contrast(ink, ground);
+    assert!((expected - 4.479_550_353_426).abs() < 1e-12);
+    let measured = InkCoverage::Antialiased.contrast(
+        InkGrounds {
+            base:      ground,
+            unfocused: ground,
+            focused:   ground,
+        },
+        ink,
+    );
+    assert!((measured - expected).abs() < 1e-12);
+    assert!(measured < 4.5, "nearest-byte coverage must reject this ink");
+}

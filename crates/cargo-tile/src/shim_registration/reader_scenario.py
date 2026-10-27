@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import codecs
+import ctypes
+from decimal import Decimal
 from collections.abc import Callable
 import errno
 import faulthandler
 import fcntl
+from dataclasses import dataclass, field
+from enum import Enum
+import math
 import os
 from pathlib import Path
 import pty
@@ -50,6 +55,13 @@ def record_timestamp(name: str) -> None:
 record_timestamp('python start')
 # How long the CPU scenario reads the table, and how long the reader's
 # CensusCadence takes a reading most of the way to a changed share, in seconds.
+# Coupled to constants.rs::READER_CPU_OBSERVATION_FILE.
+CPU_OBSERVATION_FILE = 'cpu-observation.tsv'
+NANOSECONDS_PER_SECOND = 1_000_000_000
+
+def nanoseconds(seconds: str) -> int:
+    return int(Decimal(seconds) * NANOSECONDS_PER_SECOND)
+
 observation_window = float(observation_argument)
 smoothing_window = float(smoothing_argument)
 READER_SCENARIOS = (
@@ -57,6 +69,8 @@ READER_SCENARIOS = (
     'cpu-cache-server', 'quiet-json-long', 'excluded',
 )
 SELF_CHECK_SCENARIOS = (
+    '--cpu-duplicate-self-check', '--cpu-kernel-self-check', '--cpu-boundary-self-check',
+    '--cpu-changing-load-self-check', '--cpu-delayed-drain-self-check',
     '--blocked-invocation-self-check',
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
@@ -604,7 +618,8 @@ def wait_for_cpu_rows(writers: tuple[StartedWriter, ...]) -> str:
     return rendered
 
 def cpu_observation_is_complete(readings: list[tuple[float, int]]) -> bool:
-    # Buffered frames must cover a report window within the sustained readings.
+    # Native scan stamps, rather than terminal drain times, must cover a report
+    # window within the sustained set used for attribution.
     sustained = [elapsed for elapsed, _ in readings if elapsed >= smoothing_window]
     report_window = (observation_window - smoothing_window) / 3
     return (bool(readings) and readings[-1][0] - readings[0][0] >= observation_window
@@ -633,19 +648,439 @@ def assert_cpu_observation_waits_for_reporting_windows() -> None:
     assert cpu_observation_is_complete([(elapsed, 0) for elapsed, _ in readings]), \
         'observation wait depends on CPU values instead of timestamp coverage'
 
+def assert_changing_cpu_load() -> None:
+    oracle = NativeCpuOracle()
+    shown = []
+    for number, (at, counter) in enumerate(((0.0, 0.0), (0.025, 0.025), (0.05, 0.025),
+                                           (0.075, 0.05), (0.1, 0.05)), 1):
+        scan = CpuScan(number, nanoseconds(str(at)), owners={10: ('Reading(0.0)', 'invocation')},
+                       counters={10: {'tree': {'process': counter}}})
+        shown.append(oracle.observe(scan)[10])
+    smoothed_down = 100 * math.exp(-0.025 / 0.1)
+    smoothed_up = smoothed_down + (100 - smoothed_down) * (1 - math.exp(-0.025 / 0.1))
+    assert shown[0] is UnavailableCpuReading.UNAVAILABLE and cpu_percent(shown[1]) == 100, shown
+    assert abs(cpu_percent(shown[2]) - smoothed_down) < 0.000001, shown
+    assert shown[3] == shown[2], 'an intermediate scan replaces the held reading'
+    assert abs(cpu_percent(shown[4]) - smoothed_up * math.exp(-0.025 / 0.1)) < 0.000001, shown
+    assert cpu_percent(shown[-1]) != 0, 'the oracle compares the final raw zero rate to a smoothed row'
+    gap = CpuScan(6, 110_000_000, owners={10: ('Unavailable(ReadFailed)', 'invocation')},
+                  counters={10: {'tree': {'process': 0.06}}})
+    assert oracle.observe(gap)[10] is UnavailableCpuReading.UNAVAILABLE
+    recovered = CpuScan(7, 120_000_000, owners={10: ('Reading(0.0)', 'invocation')},
+                        counters={10: {'tree': {'process': 0.07}}})
+    assert abs(cpu_percent(oracle.observe(recovered)[10]) - 100) < 0.000001
+
+def assert_delayed_cpu_drain() -> None:
+    first = b'\x1b]777;cargo-tile-cpu;1;100000000\x07one\x1b[?25l'
+    second = b'\x1b]777;cargo-tile-cpu;2;200000000\x07two\x1b[?25l'
+    on_time = CompletedTerminalFrames()
+    on_time.resize(2, 20)
+    on_time.feed(bytearray(first))
+    expected = on_time.take_cpu_completed()
+    on_time.feed(bytearray(second))
+    expected.extend(on_time.take_cpu_completed())
+    delayed = CompletedTerminalFrames()
+    delayed.resize(2, 20)
+    # The terminal drain occurs once, long after both publications. Split OSC bytes
+    # still have the same scan and publication time as complete input.
+    delayed.feed(bytearray((first + second)[:12]))
+    delayed.feed(bytearray((first + second)[12:]))
+    actual = delayed.take_cpu_completed()
+    assert actual == expected and [(number, at) for number, at, _ in actual] == [(1, 100_000_000), (2, 200_000_000)], \
+        'draining frames together loses their scan and publication time'
+    scans = {number: CpuScan(number, nanoseconds(str(at)), owners={10: ('Reading(0.0)', 'invocation')},
+                             counters={10: {'tree': {'process': counter}}})
+             for number, at, counter in ((1, 0.0, 0.0), (2, 0.05, 0.01))}
+    def replay(frames: list[tuple[int, int, str]]) -> list[CpuReading]:
+        oracle = NativeCpuOracle()
+        return [oracle.observe(scans[number])[10] for number, _, _ in frames]
+    assert replay(actual) == replay(expected) == [UnavailableCpuReading.UNAVAILABLE, CpuPercent(20.0)]
+    path = root / 'cpu-counter-fragments.tsv'
+    path.write_text('scan\t1\t0\nend\t1\nscan\t2\t')
+    assert [scan.number for scan in read_cpu_scans(path)] == [1], \
+        'an unfinished native scan enters the oracle'
+    path.write_text('scan\t1\t0\nend\t1\nscan\t2\t50000000\nend\t2\n')
+    assert [scan.number for scan in read_cpu_scans(path)] == [1, 2]
+    path.unlink()
+
+def assert_compiler_counter(recorded: float, independent: float) -> None:
+    # sysinfo truncates to milliseconds. Linux /proc uses clock ticks.
+    # The stopped fixture compiler has no children.
+    assert independent - 0.001 <= recorded <= independent + 0.000000001, (
+        'recorded compiler CPU differs from its stopped kernel counter', recorded, independent)
+
+
+class MacProcessUsage(ctypes.Structure):
+    # sys/resource.h::rusage_info_v0, selected by RUSAGE_INFO_V0 (0).
+    _fields_ = [('uuid', ctypes.c_ubyte * 16),
+                *[(name, ctypes.c_uint64) for name in
+                  ('user_time', 'system_time', 'package_idle_wakeups', 'interrupt_wakeups',
+                   'pageins', 'wired_size', 'resident_size', 'physical_footprint',
+                   'process_start', 'process_exit')]]
+
+
+class MacTimebase(ctypes.Structure):
+    _fields_ = [('numerator', ctypes.c_uint32), ('denominator', ctypes.c_uint32)]
+
+
+def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> None:
+    os.kill(compiler, signal.SIGSTOP)
+    try:
+        def compiler_is_stopped() -> bool:
+            state = subprocess.run(['ps', '-p', str(compiler), '-o', 'stat='], check=True,
+                                   capture_output=True, text=True, timeout=wait_seconds).stdout
+            return 'T' in state
+        wait_for(compiler_is_stopped, 'compiler does not stop for its kernel counter', pause=0, deadline=deadline)
+        if sys.platform == 'linux':
+            fields = Path(f'/proc/{compiler}/stat').read_bytes().rsplit(b') ', 1)[1].split()
+            independent = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+        else:
+            usage = MacProcessUsage()
+            libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+            read_usage = libproc.proc_pid_rusage
+            read_usage.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.POINTER(MacProcessUsage))
+            read_usage.restype = ctypes.c_int
+            assert read_usage(compiler, 0, ctypes.byref(usage)) == 0, ('read compiler kernel CPU', ctypes.get_errno())
+            timebase = MacTimebase()
+            read_timebase = ctypes.CDLL('/usr/lib/libSystem.B.dylib').mach_timebase_info
+            read_timebase.argtypes = (ctypes.POINTER(MacTimebase),)
+            read_timebase.restype = ctypes.c_int
+            assert read_timebase(ctypes.byref(timebase)) == 0, 'read Mach CPU timebase'
+            ticks = usage.user_time + usage.system_time
+            independent = ticks * timebase.numerator / timebase.denominator / NANOSECONDS_PER_SECOND
+        last = read_cpu_scans(scan_path)[-1].number
+        # One scan can have read its counters before SIGSTOP. The following scan
+        # must read the stopped compiler. Completion follows scan sequence events.
+        def next_stopped_scan() -> bool:
+            scans = read_cpu_scans(scan_path)
+            if scans[-1].number < last + 2:
+                return False
+            counters = [counter for groups in scans[-1].counters.values()
+                        for group in groups.values() for identity, counter in group.items()
+                        if process_identity_pid(identity) == compiler]
+            assert len(counters) == 1, ('stopped compiler contribution count', counters)
+            assert_compiler_counter(counters[0], independent)
+            return True
+        wait_for(next_stopped_scan, 'reader does not scan the stopped compiler', pause=0, deadline=deadline)
+        record_timestamp(f'compiler kernel counter pid={compiler} seconds={independent}')
+    finally:
+        os.kill(compiler, signal.SIGCONT)
+
+
+def process_identity_pid(identity: str) -> int:
+    match = required(re.match(r'Known \{ pid: (\d+),', identity),
+                     'CPU contribution has no native process identity: ' + identity)
+    return int(match[1])
+
+
+@dataclass(frozen=True)
+class UniqueProcessContributions:
+    counters: dict[str, float]
+
+    @classmethod
+    def from_groups(cls, groups: dict[str, dict[str, float]]) -> UniqueProcessContributions:
+        counters: dict[str, float] = {}
+        for group in groups.values():
+            for identity, counter in group.items():
+                assert identity not in counters, ('process CPU contributes more than once', identity)
+                counters[identity] = counter
+        return cls(counters)
+
+
+@dataclass(frozen=True)
+class FixtureCpuOwnership:
+    processes: dict[int, frozenset[int]]
+
+    @classmethod
+    def observe(cls, requester: int, unrelated: int, compiler: int) -> FixtureCpuOwnership:
+        output = subprocess.run(['ps', '-axo', 'pid=,ppid='], check=True, capture_output=True,
+                                text=True, timeout=wait_seconds).stdout
+        parents = {int(pid): int(parent) for pid, parent in (line.split() for line in output.splitlines())}
+        def descendants(owner: int) -> frozenset[int]:
+            result = {owner}
+            while True:
+                children = {pid for pid, parent in parents.items() if parent in result}
+                if children <= result:
+                    return frozenset(result)
+                result.update(children)
+        return cls({requester: descendants(requester) | {compiler}, unrelated: descendants(unrelated)})
+
+    def check(self, scan: CpuScan) -> None:
+        charged: set[int] = set()
+        for owner, expected in self.processes.items():
+            unique = UniqueProcessContributions.from_groups(scan.counters.get(owner, {}))
+            actual = [process_identity_pid(identity) for identity in unique.counters]
+            assert len(actual) == len(set(actual)), ('one live pid has multiple CPU identities', actual)
+            assert set(actual) == expected, ('CPU process set differs from fixture ancestry', owner, actual, expected)
+            assert charged.isdisjoint(actual), ('process CPU belongs to two invocations', actual)
+            charged.update(actual)
+            assert not scan.nested.get(owner), ('CPU fixture has no nested invocation', scan)
+
+
+
+def assert_rejected(check: Callable[[], object], message: str) -> None:
+    try:
+        check()
+    except AssertionError:
+        return
+    raise AssertionError(message)
+
+
+def assert_duplicate_cpu_counter() -> None:
+    compiler = 'Known { pid: 30, lifetime: compiler }'
+    scan = CpuScan(1, 0, owners={10: ('Reading(0.0)', 'invocation')},
+                   counters={10: {'tree': {compiler: 0.2}, 'server': {compiler: 0.2}}})
+    assert_rejected(lambda: NativeCpuOracle().observe(scan),
+                    'one compiler counter is accepted in two groups')
+    requester = 'Known { pid: 10, lifetime: requester }'
+    ownership = FixtureCpuOwnership({10: frozenset({10, 30})})
+    scan.counters = {10: {'tree': {requester: 0.01}, 'server': {compiler: 0.2}}}
+    ownership.check(scan)
+    scan.counters[10]['server'] = {'Known { pid: 99, lifetime: foreign }': 0.2}
+    assert_rejected(lambda: ownership.check(scan), 'foreign process CPU is accepted')
+    scan.counters[10]['server'] = {}
+    assert_rejected(lambda: ownership.check(scan), 'missing compiler CPU is accepted')
+
+
+def assert_independent_compiler_counter() -> None:
+    assert_compiler_counter(0.2, 0.2)
+    assert_compiler_counter(0.427, 0.4279)
+    assert_rejected(lambda: assert_compiler_counter(200.0, 0.2),
+                    'a compiler counter in wrong units is accepted')
+    assert_rejected(lambda: assert_compiler_counter(0.0, 0.2),
+                    'another process counter is accepted')
+
+
+def assert_exact_cpu_deadlines() -> None:
+    oracle = NativeCpuOracle()
+    for number, (at, counter) in enumerate(((0.0, 0.0), (0.05, 0.05),
+                                           (0.1, 0.05), (0.15, 0.05)), 1):
+        scan = CpuScan(number, nanoseconds(str(at)), owners={10: ('Reading(0.0)', 'invocation')},
+                       counters={10: {'tree': {'process': counter}}})
+        shown = oracle.observe(scan)[10]
+        if number == 4:
+            assert abs(cpu_percent(shown) - 100 * math.exp(-1)) < 0.000001, shown
+
+
+class CounterRetention(Enum):
+    REAPED_CHILDREN = 'true'
+    PROCESS_LIFETIMES = 'false'
+
+@dataclass
+class CpuScan:
+    number: int
+    at: int
+    cadence: tuple[int, int, int, CounterRetention] = (50_000_000, 50_000_000, 100_000_000, CounterRetention.PROCESS_LIFETIMES)
+    owners: dict[int, tuple[str, str]] = field(default_factory=dict)
+    counters: dict[int, dict[str, dict[str, float]]] = field(default_factory=dict)
+    nested: dict[int, dict[str, float]] = field(default_factory=dict)
+    results: dict[int, tuple[float, CpuReading, CpuReading, CpuReading]] = field(default_factory=dict)
+
+
+class UnavailableCpuReading(Enum):
+    UNAVAILABLE = 'unavailable'
+
+
+@dataclass(frozen=True)
+class CpuPercent:
+    value: float
+
+
+CpuReading = CpuPercent | UnavailableCpuReading
+
+
+class AwaitingCpuBaseline(Enum):
+    AWAITING = 'awaiting baseline'
+
+
+@dataclass(frozen=True)
+class CpuCounterBaseline:
+    at: int
+    counter: float
+
+
+class CpuScanClock(Enum):
+    AWAITING_FIRST_SCAN = 'awaiting first scan'
+
+
+class CpuPublicationClock(Enum):
+    NEVER_PUBLISHED = 'never published'
+
+
+@dataclass(frozen=True)
+class ObservedCpuTime:
+    at: int
+
+
+def observed_measurement(value: str) -> CpuReading:
+    reading = re.fullmatch(r'Some\(Reading\(([^)]+)\)\)', value)
+    return CpuPercent(float(reading[1])) if reading else UnavailableCpuReading.UNAVAILABLE
+
+
+def cpu_percent(reading: CpuReading) -> float:
+    assert isinstance(reading, CpuPercent), ('CPU reading is unavailable', reading)
+    return reading.value
+
+
+def read_cpu_scans(path: Path) -> list[CpuScan]:
+    scans: list[CpuScan] = []
+    pending: CpuScan | None = None
+    # The scanner can still be writing the next record while the terminal drains.
+    for line in path.read_text().split('\n')[:-1]:
+        fields = line.split('\t')
+        if fields[0] == 'scan':
+            pending = CpuScan(int(fields[1]), int(fields[2]))
+        elif fields[0] == 'end':
+            scan = required(pending, 'scan end has no native inputs')
+            assert scan.number == int(fields[1]), fields
+            scans.append(scan)
+            pending = None
+        elif pending is not None:
+            if fields[0] == 'cadence':
+                pending.cadence = (int(fields[1]), int(fields[2]), int(fields[3]), CounterRetention(fields[4]))
+            elif fields[0] == 'owner':
+                pending.owners[int(fields[1])] = (fields[2], fields[3])
+            elif fields[0] == 'counter':
+                group = pending.counters.setdefault(int(fields[1]), {}).setdefault(fields[2], {})
+                assert fields[3] not in group, ('duplicate counter record', fields)
+                group[fields[3]] = float(fields[4])
+            elif fields[0] == 'nested':
+                pending.nested.setdefault(int(fields[1]), {})[fields[2]] = float(fields[3])
+            elif fields[0] == 'result':
+                pending.results[int(fields[1])] = (float(fields[2]), *(observed_measurement(value) for value in fields[3:]))
+    return scans
+
+
+@dataclass
+class NativeCpuHistory:
+    processes: dict[str, dict[str, float]] = field(default_factory=dict)
+    totals: dict[str, float] = field(default_factory=dict)
+    nested: dict[str, float] = field(default_factory=dict)
+    accumulated: float = 0.0
+    baseline: CpuCounterBaseline | AwaitingCpuBaseline = AwaitingCpuBaseline.AWAITING
+
+    def sample(self, scan: CpuScan, pid: int) -> CpuReading:
+        UniqueProcessContributions.from_groups(scan.counters.get(pid, {}))
+        retention = scan.cadence[3]
+        for group, counters in scan.counters.get(pid, {}).items():
+            if retention is CounterRetention.REAPED_CHILDREN:
+                self.totals[group] = max(self.totals.get(group, 0.0), sum(counters.values()))
+            else:
+                retained = self.processes.setdefault(group, {})
+                for identity, counter in counters.items():
+                    retained[identity] = max(retained.get(identity, 0.0), counter)
+                self.totals[group] = sum(retained.values())
+        for identity, counter in scan.nested.get(pid, {}).items():
+            self.nested[identity] = max(self.nested.get(identity, 0.0), counter)
+        tree = max(0.0, self.totals.get('tree', 0.0) - sum(self.nested.values()))
+        self.accumulated = max(self.accumulated, tree + sum(value for group, value in self.totals.items() if group != 'tree'))
+        proof, _ = scan.owners[pid]
+        if not proof.startswith('Reading('):
+            return UnavailableCpuReading.UNAVAILABLE
+        previous = self.baseline
+        self.baseline = CpuCounterBaseline(scan.at, self.accumulated)
+        if isinstance(previous, AwaitingCpuBaseline):
+            return UnavailableCpuReading.UNAVAILABLE
+        return CpuPercent(100 * (self.accumulated - previous.counter) * NANOSECONDS_PER_SECOND
+                          / (scan.at - previous.at))
+
+
+class NativeCpuOracle:
+    """Apply the public accounting rules independently to supplied native inputs."""
+    def __init__(self) -> None:
+        self.histories: dict[str, NativeCpuHistory] = {}
+        self.settled: dict[str, CpuReading] = {}
+        self.reported: dict[str, CpuReading] = {}
+        self.previous: ObservedCpuTime | CpuScanClock = CpuScanClock.AWAITING_FIRST_SCAN
+        self.published: ObservedCpuTime | CpuPublicationClock = CpuPublicationClock.NEVER_PUBLISHED
+
+    def observe(self, scan: CpuScan) -> dict[int, CpuReading]:
+        poll, report, smoothing, _ = scan.cadence
+        elapsed = poll if isinstance(self.previous, CpuScanClock) else scan.at - self.previous.at
+        self.previous = ObservedCpuTime(scan.at)
+        alpha = 1 - math.exp(-elapsed / smoothing)
+        present = {identity for _, identity in scan.owners.values()}
+        self.histories = {key: value for key, value in self.histories.items() if key in present}
+        self.settled = {key: value for key, value in self.settled.items() if key in present}
+        self.reported = {key: value for key, value in self.reported.items() if key in present}
+        for pid, (_, identity) in scan.owners.items():
+            history = self.histories.setdefault(identity, NativeCpuHistory())
+            sample = history.sample(scan, pid)
+            previous = self.settled.get(identity, UnavailableCpuReading.UNAVAILABLE)
+            self.settled[identity] = (CpuPercent(previous.value + alpha * (sample.value - previous.value))
+                                      if isinstance(sample, CpuPercent) and isinstance(previous, CpuPercent)
+                                      else sample)
+            if isinstance(sample, UnavailableCpuReading):
+                self.reported[identity] = sample
+            if pid in scan.results:
+                accumulated, actual_sample, _, _ = scan.results[pid]
+                assert abs(accumulated - history.accumulated) < 0.0000001, (scan, history)
+                assert_cpu_value(sample, actual_sample, scan, 'native rate')
+        if isinstance(self.published, CpuPublicationClock) or scan.at - self.published.at >= report:
+            self.reported = self.settled.copy()
+            self.published = ObservedCpuTime(scan.at)
+        else:
+            for identity, value in self.settled.items():
+                if isinstance(self.reported.get(identity, UnavailableCpuReading.UNAVAILABLE), UnavailableCpuReading):
+                    self.reported[identity] = value
+        shown: dict[int, CpuReading] = {}
+        for pid, (_, identity) in scan.owners.items():
+            shown[pid] = self.reported[identity]
+            if pid in scan.results:
+                _, _, actual_settled, actual_shown = scan.results[pid]
+                assert_cpu_value(self.settled[identity], actual_settled, scan, 'smoothed rate')
+                assert_cpu_value(shown[pid], actual_shown, scan, 'published rate')
+        return shown
+
+
+def assert_cpu_value(expected: CpuReading, actual: CpuReading, scan: CpuScan, stage: str) -> None:
+    # Arithmetic uses f64 here and f32 in the product. This bound is below table rounding.
+    assert ((isinstance(expected, UnavailableCpuReading) and isinstance(actual, UnavailableCpuReading))
+            or (isinstance(expected, CpuPercent) and isinstance(actual, CpuPercent)
+                and abs(expected.value - actual.value) < 0.005)), \
+        (stage, expected, actual, scan)
+
+
+def assert_cpu_attribution(frames: list[tuple[int, int, str]], writer: StartedWriter,
+                           unrelated: StartedWriter, ownership: FixtureCpuOwnership) -> None:
+    scans = read_cpu_scans(root / CPU_OBSERVATION_FILE)
+    oracle = NativeCpuOracle()
+    expected = {}
+    for scan in scans:
+        ownership.check(scan)
+        expected[scan.number] = oracle.observe(scan)
+    by_number = {scan.number: scan for scan in scans}
+    compiler = int((root / 'cpu-server/compiler-pid').read_text())
+    requester = int((writer[1] / 'cargo-pid').read_text())
+    other = int((unrelated[1] / 'cargo-pid').read_text())
+    for number, _, rendered in frames:
+        scan = by_number[number]
+        compiler_owners = {pid for pid, groups in scan.counters.items()
+                           for group, counters in groups.items() if group != 'tree'
+                           and any(re.match(r'Known \{ pid: ' + str(compiler) + r',', identity) for identity in counters)}
+        assert compiler_owners == {requester}, ('compiler CPU has the wrong invocation', compiler_owners, scan)
+        for observed, charged in cpu_readings_in_frame(rendered, (writer, unrelated)):
+            pid = requester if observed[1] == writer[1] else other
+            value = expected[number][pid]
+            assert isinstance(value, CpuPercent) and abs(charged - value.value) <= 0.501, \
+                ('shown CPU differs from native scan after smoothing and hold', pid, number, charged, value, scan)
+
+
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendered: str) -> str:
     writers = (writer, unrelated)
     if not cpu_rows_are_ready(rendered, writers):
         rendered = wait_for_cpu_rows(writers)
     record_timestamp('CPU rows')
-    started = time.monotonic()
-    initial = cpu_readings_in_frame(rendered, writers)
-    assert len(initial) == len(writers), rendered
-    readings = [(0.0, next(cpu for observed, cpu in initial if observed[1] == writer[1]))]
-    other_readings = [next(cpu for observed, cpu in initial if observed[1] == unrelated[1])]
+    compiler = int((root / 'cpu-server/compiler-pid').read_text())
+    requester = int((writer[1] / 'cargo-pid').read_text())
+    other = int((unrelated[1] / 'cargo-pid').read_text())
+    ownership = FixtureCpuOwnership.observe(requester, other, compiler)
     terminal_frames.take_completed()
-    # Wait for collected samples to cover the windows, even if a busy reader draws late.
+    terminal_frames.take_cpu_completed()
+    started = time.monotonic()
     deadline = started + wait_seconds
+    frames: list[tuple[int, int, str]] = []
+    readings: list[tuple[float, int]] = []
     def observe_cpu() -> bool:
         nonlocal rendered
         remaining = deadline - time.monotonic()
@@ -653,24 +1088,24 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
             return False
         read_terminal(min(0.1, remaining))
         terminal_snapshot()
-        for frame in terminal_frames.take_completed():
+        terminal_frames.take_completed()
+        scans = {scan.number: scan for scan in read_cpu_scans(root / CPU_OBSERVATION_FILE)}
+        for number, published, frame in terminal_frames.take_cpu_completed():
+            if not cpu_rows_are_ready(frame, writers):
+                continue
             rendered = frame
-            elapsed = time.monotonic() - started
-            for observed, cpu in cpu_readings_in_frame(frame, writers):
-                if observed[1] == writer[1]:
-                    readings.append((elapsed, cpu))
-                else:
-                    other_readings.append(cpu)
+            frames.append((number, published, frame))
+            origin = scans[frames[0][0]].at
+            requester_cpu = next(cpu for observed, cpu in cpu_readings_in_frame(frame, writers)
+                                 if observed[1] == writer[1])
+            readings.append(((scans[number].at - origin) / NANOSECONDS_PER_SECOND, requester_cpu))
         return cpu_observation_is_complete(readings)
     wait_for(observe_cpu, 'CPU samples to cover smoothing and three reporting windows',
-             lambda: f': need {observation_window:g}s of samples and three sustained readings; '
-                     'sustained samples must span one reporting window; '
+             lambda: f': need {observation_window:g}s of native scans and three sustained readings; '
                      f'collected {readings!r}', pause=0, deadline=deadline)
+    assert_cpu_attribution(frames, writer, unrelated, ownership)
+    stopped_compiler_cpu(compiler, root / CPU_OBSERVATION_FILE, deadline)
     record_timestamp('CPU observation')
-    sustained = [cpu for elapsed, cpu in readings if elapsed >= smoothing_window]
-    assert len(sustained) >= 3 and min(sustained) >= 1, (
-        'compile CPU must remain charged across reporting windows', readings)
-    assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
     return rendered
 
 
@@ -738,9 +1173,10 @@ def end_reader(request: bytes | signal.Signals, exit_seconds: float = READER_EXI
             pass
         request_name = request.name
         if request == signal.SIGKILL:
+            # Release unread PTY output before waiting for Darwin to finish exit.
+            close_reader_terminal()
             with named_wait('reader to exit after SIGKILL'):
                 _ = os.waitpid(reader_pid(), 0)
-            close_reader_terminal()
             return
     description = 'reader to exit after ' + request_name
     with named_wait(description):
@@ -757,6 +1193,16 @@ def end_reader(request: bytes | signal.Signals, exit_seconds: float = READER_EXI
     with named_wait(description):
         if not reader_exited_before(time.monotonic() + killed_exit_seconds, None):
             raise AssertionError(description)
+
+class UnstampedCpuFrame(Enum):
+    UNSTAMPED = 'unstamped'
+
+
+@dataclass(frozen=True)
+class CpuFrameStamp:
+    number: int
+    at: int
+
 
 class CompletedTerminalFrames:
     """Keep the mutable draw separate from the last completed screen."""
@@ -779,10 +1225,17 @@ class CompletedTerminalFrames:
         self.columns: int = 0
         self.published: Snapshot = ('', [])
         self.completed: list[str] = []
+        self.cpu_publication: CpuFrameStamp | UnstampedCpuFrame = UnstampedCpuFrame.UNSTAMPED
+        self.completed_cpu: list[tuple[int, int, str]] = []
 
     def take_completed(self) -> list[str]:
         completed = self.completed
         self.completed = []
+        return completed
+
+    def take_cpu_completed(self) -> list[tuple[int, int, str]]:
+        completed = self.completed_cpu
+        self.completed_cpu = []
         return completed
 
     def resize(self, rows: int, columns: int) -> None:
@@ -820,6 +1273,9 @@ class CompletedTerminalFrames:
                     # A trailing ESC may be the first byte of the OSC terminator.
                     if not match[1] and self.pending[match.end():] in ('', '\x1b'):
                         break
+                    stamp = re.fullmatch(r'\x1b\]777;cargo-tile-cpu;(\d+);([0-9.]+)\x07', match[0])
+                    if stamp:
+                        self.cpu_publication = CpuFrameStamp(int(stamp[1]), int(stamp[2]))
                     index = match.end()
                     continue
                 index += 1 if introducer == '\x1b' else 2
@@ -848,6 +1304,10 @@ class CompletedTerminalFrames:
             self.published = ('\n'.join(''.join(line).rstrip() for line in self.cells),
                               [line.copy() for line in self.colors])
             self.completed.append(self.published[0])
+            if isinstance(self.cpu_publication, CpuFrameStamp):
+                number, at = self.cpu_publication.number, self.cpu_publication.at
+                self.completed_cpu.append((number, at, self.published[0]))
+                self.cpu_publication = UnstampedCpuFrame.UNSTAMPED
         elif command in 'Hf':
             position = parameters.split(';')
             self.row = int(position[0] or 1) - 1
@@ -1275,6 +1735,21 @@ if scenario == '--blocked-invocation-self-check':
     cancel_scenario_deadline()
     sys.exit(0)
 
+if scenario == '--cpu-duplicate-self-check':
+    assert_duplicate_cpu_counter()
+    sys.exit(0)
+if scenario == '--cpu-kernel-self-check':
+    assert_independent_compiler_counter()
+    sys.exit(0)
+if scenario == '--cpu-boundary-self-check':
+    assert_exact_cpu_deadlines()
+    sys.exit(0)
+if scenario == '--cpu-changing-load-self-check':
+    assert_changing_cpu_load()
+    sys.exit(0)
+if scenario == '--cpu-delayed-drain-self-check':
+    assert_delayed_cpu_drain()
+    sys.exit(0)
 if scenario == '--cpu-observation-self-check':
     assert_cpu_observation_waits_for_reporting_windows()
     record_timestamp('assertions')
@@ -1343,7 +1818,9 @@ try:
     _ = reader_environment.pop('NO_COLOR', None)
     if scenario == 'cpu-cache-server':
         idle = root / 'idle-workload.sh'
-        _ = idle.write_text('IFS= read -r notification < "$OBSERVED/notification"\n')
+        _ = idle.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
+IFS= read -r notification < "$OBSERVED/notification"
+''')
         unrelated_directory = home / ('unrelated-cpu-' + root.name)
         unrelated_directory.mkdir()
         _ = shutil.copyfile(work / 'build', unrelated_directory / 'build')
@@ -1358,6 +1835,7 @@ try:
             additional_environment=(('CPU_WORKLOAD', str(idle)),))
         finish_cpu_workload_start()
         wait_for(lambda: all((launch.observations / 'cpu-ready').exists()
+                             and (launch.observations / 'client-pid').exists()
                              for launch in (first_start, unrelated_start))
                  and (root / 'cpu-server/compiler-pid').exists(),
                  'CPU baselines are not established', pause=0.001)

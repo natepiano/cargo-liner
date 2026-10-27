@@ -282,15 +282,20 @@ fn rgb(color: Color) -> (u8, u8, u8) {
 }
 
 fn luminance(color: Color) -> f64 {
-    let channel = |value| {
-        let value = f64::from(value) / 255.0;
+    let (red, green, blue) = rgb(color);
+    channel_luminance([f64::from(red), f64::from(green), f64::from(blue)])
+}
+
+/// Relative luminance without quantizing a covered glyph's fractional channels.
+fn channel_luminance([red, green, blue]: [f64; 3]) -> f64 {
+    let channel = |value: f64| {
+        let value = value / 255.0;
         if value <= SRGB_LINEAR_THRESHOLD {
             value / SRGB_LINEAR_DIVISOR
         } else {
             ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
         }
     };
-    let (red, green, blue) = rgb(color);
     RED_LUMINANCE_WEIGHT.mul_add(
         channel(red),
         GREEN_LUMINANCE_WEIGHT.mul_add(channel(green), BLUE_LUMINANCE_WEIGHT * channel(blue)),
@@ -355,7 +360,7 @@ const ANTIALIASED_GLYPH_COVERAGE: u8 = 208;
 #[derive(Clone, Copy)]
 enum InkCoverage {
     Opaque,
-    /// Measured stem coverage with a small margin for the terminal rasterizer.
+    /// Stem contrast under both fractional and byte-rounded terminal coverage.
     Antialiased,
 }
 
@@ -366,10 +371,26 @@ impl InkCoverage {
             Self::Antialiased => [grounds.base, grounds.unfocused, grounds.focused]
                 .into_iter()
                 .map(|ground| {
-                    contrast(
-                        tui_pane::blend_color(ink, ground, 255 - ANTIALIASED_GLYPH_COVERAGE),
-                        ground,
-                    )
+                    let (red, green, blue) = rgb(ink);
+                    let (ground_red, ground_green, ground_blue) = rgb(ground);
+                    let coverage = f64::from(ANTIALIASED_GLYPH_COVERAGE) / 255.0;
+                    let covered = [
+                        (red, ground_red),
+                        (green, ground_green),
+                        (blue, ground_blue),
+                    ]
+                    .map(|(ink, ground)| {
+                        f64::mul_add(f64::from(ground), 1.0 - coverage, f64::from(ink) * coverage)
+                    });
+                    let ground = luminance(ground);
+                    [covered, covered.map(f64::round)]
+                        .into_iter()
+                        .map(|covered| {
+                            let ink = channel_luminance(covered);
+                            (ink.max(ground) + CONTRAST_LUMINANCE_OFFSET)
+                                / (ink.min(ground) + CONTRAST_LUMINANCE_OFFSET)
+                        })
+                        .fold(f64::INFINITY, f64::min)
                 })
                 .fold(f64::INFINITY, f64::min),
         }

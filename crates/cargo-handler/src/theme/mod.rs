@@ -38,6 +38,9 @@ use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeVariant;
 
+pub(crate) use self::files::AppearanceDiagnostic;
+pub(crate) use self::files::StartupThemeNotes;
+pub(crate) use self::files::ThemeInstallation;
 pub(crate) use self::files::install_theme;
 use crate::constants::BUSY_ROLE;
 use crate::constants::CLAUDE_ROLE;
@@ -345,7 +348,7 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
     session_hues:   [
         Color::Rgb(70, 1, 2),
         Color::Rgb(87, 39, 90),
-        Color::Rgb(0, 35, 86),
+        Color::Rgb(0, 34, 85),
         Color::Rgb(110, 6, 54),
         Color::Rgb(33, 0, 69),
     ],
@@ -383,7 +386,7 @@ const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
     idle:           StyleSpec::from_color(Color::Rgb(80, 80, 80)),
     unreachable:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
     session_hues:   [
-        Color::Rgb(0, 35, 86),
+        Color::Rgb(0, 34, 85),
         Color::Rgb(68, 0, 29),
         Color::Rgb(37, 0, 67),
         Color::Rgb(81, 12, 0),
@@ -443,7 +446,7 @@ fn default_dark() -> Theme {
             remembered: StyleSpec::from_color(Color::Rgb(46, 46, 46)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Cyan),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 213, 213)),
             error:        StyleSpec::from_color(Color::Rgb(255, 115, 115)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
@@ -492,7 +495,7 @@ fn default_light() -> Theme {
             remembered: StyleSpec::from_color(Color::Rgb(235, 235, 235)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 77, 110)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
@@ -502,13 +505,13 @@ fn default_light() -> Theme {
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),
-            secondary: StyleSpec::from_color(Color::Rgb(70, 70, 70)),
+            secondary: StyleSpec::from_color(Color::Rgb(69, 69, 69)),
             dim:       StyleSpec::from_color(Color::Rgb(130, 130, 130)),
             bright:    StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             bg_focus:  StyleSpec::from_color(Color::White),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::Rgb(250, 250, 250)),
+            bar: StyleSpec::from_color(Color::Rgb(220, 220, 220)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(255, 245, 180)),
