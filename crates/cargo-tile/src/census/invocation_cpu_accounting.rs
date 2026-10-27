@@ -7,6 +7,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+#[cfg(test)]
+use std::fmt::Write as _;
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::ops::Add;
@@ -22,6 +24,10 @@ use sysinfo::Pid;
 use sysinfo::Process;
 
 use super::command_text;
+#[cfg(test)]
+use super::cpu_observation;
+#[cfg(test)]
+use super::cpu_observation::CpuScanPublication;
 use super::process_identity::InvocationId;
 use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
@@ -134,12 +140,15 @@ impl<T: Add<Output = T>> Add for Measurement<T> {
 /// under one has been walked up to it.
 /// Buckets are disjoint: nested cargo retains its own contribution, never folded into its parent.
 pub(super) struct InvocationMeasurements {
+    /// Native inputs and accounting results associated with these test rows.
+    #[cfg(test)]
+    pub(super) cpu_scan_publication: CpuScanPublication,
     /// Every invocation has an observation, including one compiling nothing.
-    pub(super) compilers: HashMap<Pid, CompilerObservation>,
+    pub(super) compilers:            HashMap<Pid, CompilerObservation>,
     /// Settled invocation work, unavailable only when its own sample is unestablished.
-    pub(super) cpu:       HashMap<Pid, Measurement<f32>>,
+    pub(super) cpu:                  HashMap<Pid, Measurement<f32>>,
     /// Resident bytes held on the same publication cadence as CPU.
-    pub(super) memory:    HashMap<Pid, Measurement<u64>>,
+    pub(super) memory:               HashMap<Pid, Measurement<u64>>,
 }
 
 /// Evidence retained across a refresh to establish identity and monotonic CPU time.
@@ -650,6 +659,40 @@ pub(super) fn linux_cpu_time(pid: Pid) -> Result<Duration, MeasurementAbsence> {
 }
 
 impl InvocationCpuAccounting {
+    /// Supply `reader_scenario.py` with cadence and results through the
+    /// `cpu-observation.tsv` record written by `cpu_observation::record`.
+    #[cfg(test)]
+    pub(super) fn observe_cpu(
+        &self,
+        sampled: &HashMap<InvocationId, Measurement<f32>>,
+        identities: &HashMap<Pid, InvocationId>,
+        now: Instant,
+    ) -> CpuScanPublication {
+        cpu_observation::record(now, || {
+            let mut inputs = format!(
+                "cadence\t{}\t{}\t{}\t{}\n",
+                self.cadence.poll.as_nanos(),
+                self.cadence.report.as_nanos(),
+                self.cadence.smoothing.as_nanos(),
+                cfg!(target_os = "linux")
+            );
+            for (pid, identity) in identities {
+                if let Some(history) = self.invocations.get(identity) {
+                    let result = writeln!(
+                        inputs,
+                        "result\t{}\t{}\t{:?}\t{:?}\t{:?}",
+                        pid.as_u32(),
+                        history.accumulated.as_secs_f64(),
+                        sampled.get(identity),
+                        self.settled.get(identity),
+                        self.reported.get(identity)
+                    );
+                    assert!(result.is_ok());
+                }
+            }
+            inputs
+        })
+    }
     /// Accounting that smooths and holds readings at `cadence`.
     pub(super) fn new(cadence: CensusCadence) -> Self {
         Self {
