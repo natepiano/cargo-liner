@@ -208,9 +208,6 @@ impl<'a> ImportSource<'a> {
         Self { text, offsets }
     }
 
-    /// Borrow the line starts built from this owner's text for existing edit consumers.
-    pub(in crate::fixes) fn line_offsets(&self) -> &[usize] { &self.offsets }
-
     #[cfg(test)]
     pub(in crate::fixes) fn construction_count() -> usize {
         INDEX_CONSTRUCTIONS.with(std::cell::Cell::get)
