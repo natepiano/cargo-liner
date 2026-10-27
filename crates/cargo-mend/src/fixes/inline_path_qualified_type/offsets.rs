@@ -1,15 +1,5 @@
 use proc_macro2::LineColumn;
 
-pub(super) fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (idx, ch) in text.char_indices() {
-        if ch == '\n' {
-            offsets.push(idx + 1);
-        }
-    }
-    offsets
-}
-
 pub(super) fn offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usize {
     let line_start = line_offsets
         .get(position.line.saturating_sub(1))

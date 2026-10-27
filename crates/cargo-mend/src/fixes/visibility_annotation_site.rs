@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use super::constants::TAB_DISPLAY_WIDTH;
 
 /// How a visibility annotation is written in source. Fixers may rewrite or
@@ -112,18 +114,26 @@ pub(super) fn byte_offset_of_display_column(line_text: &str, column: usize) -> O
     (display_column == target).then_some(line_text.len())
 }
 
-/// Byte offset where 1-based `line` starts in `source`.
+/// A reported line that can be converted to a zero-based index without underflow.
+struct OneBasedLine(NonZeroUsize);
+
+impl OneBasedLine {
+    fn new(line: usize) -> Option<Self> { NonZeroUsize::new(line).map(Self) }
+
+    fn byte_offset(&self, source: &str) -> Option<usize> {
+        match self.0.get() {
+            1 => Some(0),
+            line => source
+                .match_indices('\n')
+                .nth(line - 2)
+                .map(|(pos, _)| pos + 1),
+        }
+    }
+}
+
+/// Byte offset where a raw reported line starts; zero is rejected at this boundary.
 pub(super) fn line_byte_offset(source: &str, line: usize) -> Option<usize> {
-    if line == 0 {
-        return None;
-    }
-    if line == 1 {
-        return Some(0);
-    }
-    source
-        .match_indices('\n')
-        .nth(line - 2)
-        .map(|(pos, _)| pos + 1)
+    OneBasedLine::new(line)?.byte_offset(source)
 }
 
 #[cfg(test)]
@@ -136,6 +146,13 @@ mod tests {
     use super::VisibilityAnnotationForm;
     use super::VisibilityAnnotationSite;
     use super::annotation_form_and_byte_len;
+
+    #[test]
+    fn reported_lines_reject_zero_and_preserve_empty_final_lines() {
+        for (line, expected) in [(0, None), (1, Some(0)), (2, Some(2)), (3, None)] {
+            assert_eq!(super::line_byte_offset("a\n", line), expected);
+        }
+    }
 
     #[test]
     fn bare_pub_is_measured_without_its_separator() {
