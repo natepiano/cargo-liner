@@ -1978,7 +1978,7 @@ fn rewrite_target_tip_for_reservation<'cache>(
         &mut observations.tips,
         judging_target,
         resolution_calls,
-        |target| git::branch_object_id(&repository.object_reader(), target.short_name()),
+        |target| reservation::current_trunk(&repository.object_reader(), target.short_name()),
     )
     .as_ref()
     .map_or(RewriteTargetTip::Unavailable, RewriteTargetTip::Resolved))

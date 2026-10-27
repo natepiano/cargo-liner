@@ -816,14 +816,12 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Binds later work:** a binary that writes `unchanged_scopes` goes live only when the readers on both machines also read it. Phase 31's `Deferred` form is a separate disposition.
 
-### Phase 33 — Work counts as integrated only when it is reachable from the pushed merge branch  · status: todo
+### Phase 33 — Work counts as integrated only when it is reachable from the pushed merge branch  · status: done
 
-**Why:** on 2026-10-27 the merge of phase 31 (`e72a13a9`) reached the local `main` and berth released reservations `01a17ade` and `01a17b1a` as integrated. `merge_checkpoint` then rolled the merge back before it pushed. berth printed INTEGRATION EVIDENCE LOST for both, and the board showed a wrong result. Showrunner, 2026-10-27: current, not later.
+#### As-built
 
-**Work Order:**
-1. berth counts work as integrated only when it is reachable from `origin/<integration target>`, the pushed state. A local merge that is not pushed is not proof. When the target has no upstream (a repository with no remote), the local branch stays the proof, as today.
-2. Then a rollback before the push releases nothing and loses no evidence.
-3. When the board must show "merged locally, not pushed", it uses a typed state for it, never a flag.
-4. Only the realistic path: one merge, then a rollback or a push. Search every reader of the integration target ref (reconcile, gate, board, release, recovery, alerts) and keep each one correct.
-
-**Verification:** `cargo-berth` suite passes, each test under 1 s. Tests: a merge to local main that is not pushed leaves the reservation live; after the push it is released as integrated; a rollback of the local merge before the push gives no evidence-lost alert; a repository without a remote keeps today's behaviour. Existing ledgers replay unchanged.
+- Why: on 2026-10-27 the phase 31 merge reached local `main`, berth released two reservations as integrated, and the merge gate then rolled `main` back before the push. berth printed INTEGRATION EVIDENCE LOST for both.
+- `IntegrationProofRef::Upstream(FullRefName)` / `LocalOnly(FullRefName)` (`src/git/refs.rs`): when the target branch has an upstream, only the upstream's commit proves integration; a configured upstream that cannot be read is unavailable evidence, never a fall back to the local branch. A target with no upstream keeps the local branch as proof. No fetch.
+- Checkpoint snapshots, `current_trunk`, reconcile reachability, scoped patch checks, orphan evidence, merge extent, unchanged-scopes releases, release and `IntegratedAs` recovery all read the proof commit. Drift provenance keeps both bases, so local authorship history stays.
+- A local merge that is not pushed shows the existing `not_integrated` state; no new board state or schema. Journal, dispositions and replay are unchanged.
+- Proof: `a_local_merge_waits_for_the_pushed_integration_target` (`tests/lifecycle.rs`) failed before (released before the push); checkpoint and rollback tests (no evidence-lost alert); a repository without a remote keeps the old behaviour. 1295/1295.

@@ -284,7 +284,7 @@ pub(super) fn read_committed_foreign_paths(
             .clone();
         distinct_targets
             .entry(target.clone())
-            .or_insert_with(|| repository_snapshot.target_for(origin_reservation).clone());
+            .or_insert_with(|| local_authorship_basis(repository, &target, repository_snapshot));
         origin_targets.insert(*reservation_id, target);
     }
     ordering::normalize_paths(&mut paths);
@@ -345,6 +345,24 @@ pub(super) fn read_committed_foreign_paths(
     }
     batch.origin_targets = origin_targets;
     Ok(CommittedForeignPathHistory::Read(batch))
+}
+
+/// Authorship excludes commits received from the local target as well as its upstream;
+/// integration proof alone excludes only the pushed target history.
+fn local_authorship_basis(
+    repository: &git::RepositorySnapshot,
+    target: &IntegrationTarget,
+    snapshot: &RepositorySnapshot,
+) -> JudgedTargetTip {
+    target
+        .judging_branch(
+            repository.repository_root(),
+            snapshot.repository_trunk_target(),
+        )
+        .and_then(|branch| {
+            git::branch_object_id(&repository.object_reader(), branch.target().short_name())
+        })
+        .map_or(JudgedTargetTip::ObjectUnknown, JudgedTargetTip::Resolved)
 }
 
 const fn origin_reservation_for_path(
