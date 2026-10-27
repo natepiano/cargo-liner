@@ -25,11 +25,10 @@ fn process(pid: u32, parent: u32, args: &[&str]) -> ProcessEntry {
 
 #[test]
 fn activity_scan_detached_gate_overrides_tool_then_finished_run_reveals_the_tool() {
-    let base = Path::new("/tmp/claude/unit");
-    fs::create_dir_all(base).expect("fixture root");
+    let root = tempfile::tempdir().expect("isolated session root");
     let directory = tempfile::Builder::new()
         .prefix("handler-activity-")
-        .tempdir_in(base)
+        .tempdir_in(root.path())
         .expect("isolated session");
     let run_dir = directory.path().join("mesh_runs");
     fs::create_dir(&run_dir).expect("run directory");
@@ -60,6 +59,7 @@ fn activity_scan_detached_gate_overrides_tool_then_finished_run_reveals_the_tool
     )
     .expect("rollout writes");
     let mut scanner = LocalScanner::new(AccountLabels::new(&AccountsConfig::default(), None));
+    scanner.session_roots = SessionRoots::new([root.path().to_path_buf()]);
     scanner.rollouts.read(&rollout);
     let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
         "agent":"claude","name":"root","pid":10,"started":10,"status":"busy","desktop":null,"directory":"/work/fixture","branch":null,"launched_by":null,

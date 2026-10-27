@@ -214,6 +214,7 @@ mod tests {
     use std::path::Path;
 
     use serde::Deserialize;
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -243,24 +244,20 @@ mod tests {
         const RETIRED_CONFIG_KEYS: &'static [&'static [&'static str]] = &[&["settings", "retired"]];
     }
 
-    /// A directory of the test's own under the system temp directory,
-    /// removed when dropped. Named by process and test so tests running
-    /// side by side never share one.
-    struct Scratch(PathBuf);
+    /// A test-owned config directory under the runner's temporary directory.
+    struct Scratch(TempDir);
 
     impl Scratch {
         fn new(test: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("tui_pane-{test}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).expect("the scratch directory should be created");
-            Self(dir)
+            Self(
+                tempfile::Builder::new()
+                    .prefix(&format!("tui_pane-{test}-"))
+                    .tempdir()
+                    .expect("the scratch directory should be created"),
+            )
         }
 
-        fn config_path(&self) -> PathBuf { self.0.join(CONFIG_FILENAME) }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn config_path(&self) -> PathBuf { self.0.path().join(CONFIG_FILENAME) }
     }
 
     fn read(path: &Path) -> String {
@@ -338,7 +335,7 @@ mod tests {
     #[test]
     fn save_creates_the_directory_and_clears_the_error() {
         let scratch = Scratch::new("save");
-        let path = scratch.0.join("nested").join(CONFIG_FILENAME);
+        let path = scratch.0.path().join("nested").join(CONFIG_FILENAME);
         let mut loaded = LoadedConfig {
             config: Sample::default(),
             error:  Some("stale".to_string()),
