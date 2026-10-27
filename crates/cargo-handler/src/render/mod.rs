@@ -28,6 +28,7 @@ use tui_pane::ScrollDirection;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
+use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
@@ -62,15 +63,22 @@ use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
-use crate::interaction::RowClick;
+use crate::interaction::RowLocation;
+use crate::interaction::SelectableSurface;
+use crate::interaction::SelectedSpan;
 use crate::interaction::SelectionSurface;
 use crate::interaction::Selections;
+use crate::interaction::SurfaceLookup;
 use crate::interaction::TileSelection;
+use crate::interaction::ViewportLine;
+use crate::interaction::ViewportMapping;
 use crate::settings;
 use crate::sort;
+use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
 use crate::sort::HeaderHit;
 use crate::sort::HeaderSpan;
+use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::summary;
@@ -145,6 +153,8 @@ fn draw_panes_at(
     contents: TileGridContents,
     now: u64,
 ) {
+    app.tiles
+        .set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
     let growth = app.loaded_config.config.tiles.growth();
     app.selection_area = area;
     let cells = Cells::new(
@@ -162,11 +172,16 @@ fn draw_panes_at(
         .placements(area, growth)
         .into_iter()
         .find(|placement| placement.frame.is_focused())
-        .and_then(|placement| selection_surface(&placement.content));
-    let followed = focused
-        .as_ref()
-        .and_then(|surface| app.selections.surface(surface))
-        .map(super::interaction::SurfaceSelection::selection);
+        .map_or(SelectableSurface::EmptyCell, |placement| {
+            selection_surface(&placement.content)
+        });
+    let followed = match &focused {
+        SelectableSurface::EmptyCell => TileSelection::NoRows,
+        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
+            TileSelection::NoRows,
+            super::interaction::SurfaceSelection::selection,
+        ),
+    };
     let cells = cells.with_selections(app.selections.clone(), focused.clone());
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
@@ -180,14 +195,17 @@ fn draw_panes_at(
     *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
     app.tree_layouts = cells.layouts.into_inner();
     app.selections = cells.selections.into_inner();
-    if let Some(TileSelection::Row(identity)) = followed
-        && let Some(destination) = app.selections.containing(&identity)
-        && focused.as_ref() != Some(&destination)
+    if let TileSelection::Row(identity) = followed
+        && let RowLocation::Found(destination) = app.selections.containing(&identity)
+        && focused != SelectableSurface::Surface(destination.clone())
         && let Some(placement) = app
             .tiles
             .placements(area, growth)
             .into_iter()
-            .find(|placement| selection_surface(&placement.content).as_ref() == Some(&destination))
+            .find(|placement| {
+                selection_surface(&placement.content)
+                    == SelectableSurface::Surface(destination.clone())
+            })
     {
         let rect = placement.frame.rect();
         if let Some(index) = app.tiles.cell_at(ratatui::layout::Position::new(
@@ -211,16 +229,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         point,
         ..
     } = click;
-    if let Some(surface) = selection_surface(&content)
-        && let Some(state) = app.selections.surface_mut(&surface)
-        && state.click(ratatui::layout::Position::new(
-            area.x.saturating_add(point.column),
-            area.y.saturating_add(point.row),
-        )) == RowClick::Selected
-    {
-        return;
-    }
-    let area = Rect::new(0, 0, area.width, area.height);
+    let header_area = Rect::new(0, 0, area.width, area.height);
     let cells = Cells::new(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
@@ -237,55 +246,100 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         }
     }
     match content {
-        TileContent::Summary => {
-            let offset = app
-                .selections
-                .surface(&SelectionSurface::Summary)
-                .map_or(0, |state| state.viewport().scroll_offset());
-            let point = CellPoint {
-                row: point
-                    .row
-                    .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX)),
-                ..point
-            };
-            let area = Rect {
-                height: match &*app.painted_summary.borrow() {
-                    PaintedSummary::NotDrawn => area.height,
-                    PaintedSummary::Drawn(layout) => {
-                        u16::try_from(layout.height()).unwrap_or(u16::MAX)
-                    },
-                },
-                ..area
-            };
-            if let HeaderHit::Column(column) =
-                sort::header_hit(&summary::header_spans(area, &cells.summary_frame()), point)
-            {
+        TileContent::Summary => match summary_header_hit(app, header_area, point, &cells) {
+            SummaryHeaderHit::Missed => {},
+            SummaryHeaderHit::AgentColumn(column) => {
                 app.summary_sort.select(column);
-            } else if let PaintedSummary::Drawn(layout) = &*app.painted_summary.borrow()
-                && let HeaderHit::Column(column) =
-                    sort::header_hit(&layout.accounts_header_spans(area), point)
-            {
+                return;
+            },
+            SummaryHeaderHit::AccountColumn(column) => {
                 app.accounts_sort.select(column);
-            }
+                return;
+            },
         },
-        TileContent::Group(id) => {
-            if let Some(tile) = cells.tile(&id)
+        TileContent::Group(ref id) => {
+            if let Some(tile) = cells.tile(id)
                 && let HeaderHit::Column(column) =
-                    sort::header_hit(&cells.header_spans(tile, area), point)
+                    sort::header_hit(&cells.header_spans(tile, header_area), point)
             {
                 let default = tile.default_sort();
-                app.tree_sorts.entry(id).or_insert(default).select(column);
+                app.tree_sorts
+                    .entry(id.clone())
+                    .or_insert(default)
+                    .select(column);
+                return;
             }
         },
-        TileContent::Empty(_) => {},
+        TileContent::Empty(_) => return,
+    }
+    if let SelectableSurface::Surface(surface) = selection_surface(&content)
+        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
+    {
+        state.click(ratatui::layout::Position::new(
+            area.x.saturating_add(point.column),
+            area.y.saturating_add(point.row),
+        ));
     }
 }
 
-fn selection_surface(content: &TileContent) -> Option<SelectionSurface> {
+/// The two independent tables share one painted summary surface.
+enum SummaryHeaderHit {
+    Missed,
+    AgentColumn(SummaryColumn),
+    AccountColumn(AccountsColumn),
+}
+
+/// Header-only summary draws retain their layout without a selectable row surface.
+fn summary_header_hit(
+    app: &App,
+    area: Rect,
+    point: CellPoint,
+    cells: &Cells<'_>,
+) -> SummaryHeaderHit {
+    let painted = app.painted_summary.borrow();
+    let PaintedSummary::Drawn(layout) = &*painted else {
+        return SummaryHeaderHit::Missed;
+    };
+    let source = match app.selections.surface(&SelectionSurface::Summary) {
+        SurfaceLookup::Current(state) => {
+            state.painted_mapping().source_line(usize::from(point.row))
+        },
+        SurfaceLookup::Retired => ViewportMapping::Linear {
+            offset: 0,
+            height: usize::from(area.height),
+        }
+        .source_line(usize::from(point.row)),
+    };
+    let row = match source {
+        ViewportLine::Header(row) | ViewportLine::Body(row) => row,
+        ViewportLine::Outside => return SummaryHeaderHit::Missed,
+    };
+    let point = CellPoint {
+        row: u16::try_from(row).unwrap_or(u16::MAX),
+        ..point
+    };
+    let area = Rect {
+        height: u16::try_from(layout.height()).unwrap_or(u16::MAX),
+        ..area
+    };
+    if let HeaderHit::Column(column) =
+        sort::header_hit(&summary::header_spans(area, &cells.summary_frame()), point)
+    {
+        SummaryHeaderHit::AgentColumn(column)
+    } else if let HeaderHit::Column(column) =
+        sort::header_hit(&layout.accounts_header_spans(area), point)
+    {
+        SummaryHeaderHit::AccountColumn(column)
+    } else {
+        SummaryHeaderHit::Missed
+    }
+}
+
+fn selection_surface(content: &TileContent) -> SelectableSurface {
     match content {
-        TileContent::Summary => Some(SelectionSurface::Summary),
-        TileContent::Group(key) => Some(SelectionSurface::Tile(key.clone())),
-        TileContent::Empty(_) => None,
+        TileContent::Summary => SelectableSurface::Surface(SelectionSurface::Summary),
+        TileContent::Group(key) => SelectableSurface::Surface(SelectionSurface::Tile(key.clone())),
+        TileContent::Empty(_) => SelectableSurface::EmptyCell,
     }
 }
 
@@ -294,21 +348,23 @@ pub(crate) fn navigate_selection(app: &mut App, action: NavAction) {
         return;
     };
     let growth = app.loaded_config.config.tiles.growth();
-    if let Some(surface) = app
+    if let SelectableSurface::Surface(surface) = app
         .tiles
         .placements(app.selection_area, growth)
         .into_iter()
         .find(|placement| placement.frame.is_focused())
-        .and_then(|placement| selection_surface(&placement.content))
-        && let Some(state) = app.selections.surface_mut(&surface)
+        .map_or(SelectableSurface::EmptyCell, |placement| {
+            selection_surface(&placement.content)
+        })
+        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
     {
         state.navigate(action);
     }
 }
 
 pub(crate) fn cell_scrolled(app: &mut App, cell: &CellClick<TileKey>, direction: ScrollDirection) {
-    if let Some(surface) = selection_surface(&cell.content)
-        && let Some(state) = app.selections.surface_mut(&surface)
+    if let SelectableSurface::Surface(surface) = selection_surface(&cell.content)
+        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
     {
         state.scroll(direction);
     }
@@ -340,7 +396,7 @@ struct Cells<'a> {
     summary_selection: RefCell<SummarySelectionLayout>,
     painted_summary:   RefCell<PaintedSummary>,
     selections:        RefCell<Selections>,
-    focused:           RefCell<Option<SelectionSurface>>,
+    focused:           RefCell<SelectableSurface>,
     layouts:           RefCell<HashMap<TileKey, TreeMetrics>>,
     /// This machine, then each configured remote.
     machines:          Vec<Machine<'a>>,
@@ -399,11 +455,11 @@ pub(crate) fn draw_allocated_tiles_for_test(
 impl<'a> Cells<'a> {
     /// Paint the selected rows after their tile content.
     fn paint_selection(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect) {
-        if let Some(surface) = selection_surface(content) {
+        if let SelectableSurface::Surface(surface) = selection_surface(content) {
             let selections = self.selections.borrow();
-            if let Some(state) = selections.surface(&surface)
+            if let SurfaceLookup::Current(state) = selections.surface(&surface)
                 && !matches!(state.selection(), TileSelection::NoRows)
-                && let Some(span) = state.selected_span()
+                && let SelectedSpan::Row(span) = state.selected_span()
             {
                 let area = match content {
                     TileContent::Group(key) => self.tile(key).map_or(inner, |tile| {
@@ -411,24 +467,26 @@ impl<'a> Cells<'a> {
                     }),
                     _ => inner,
                 };
-                let offset = state.viewport().scroll_offset();
-                for visible in span.visible_lines(offset, usize::from(area.height)) {
-                    let focus = if self.focused.borrow().as_ref() == Some(&surface) {
-                        PaneFocusState::Active
-                    } else {
-                        PaneFocusState::Remembered
-                    };
+                for visible in span.visible_lines(state.painted_mapping()) {
+                    let focus =
+                        if *self.focused.borrow() == SelectableSurface::Surface(surface.clone()) {
+                            PaneFocusState::Active
+                        } else {
+                            PaneFocusState::Remembered
+                        };
                     let style = tui_pane::selection_style(focus);
                     let row = Rect::new(
                         area.x,
                         area.y + u16::try_from(visible).unwrap_or(u16::MAX),
                         area.width,
                         1,
-                    );
+                    )
+                    .intersection(area)
+                    .intersection(buffer.area);
                     buffer.set_style(row, style);
                     if let Some(ground) = style.bg {
-                        for x in row.x..row.right() {
-                            let cell = &mut buffer[(x, row.y)];
+                        for position in row.positions() {
+                            let cell = &mut buffer[position];
                             cell.fg =
                                 crate::footer_colors::SelectedGroundInk::resolve(cell.fg, ground)
                                     .foreground();
@@ -456,7 +514,7 @@ impl<'a> Cells<'a> {
             summary_selection: RefCell::new(SummarySelectionLayout::DirectDraw),
             painted_summary: RefCell::new(PaintedSummary::NotDrawn),
             selections: RefCell::new(Selections::default()),
-            focused: RefCell::new(None),
+            focused: RefCell::new(SelectableSurface::EmptyCell),
             layouts: RefCell::new(HashMap::new()),
             machines,
             agents,
@@ -471,11 +529,7 @@ impl<'a> Cells<'a> {
         }
     }
 
-    fn with_selections(
-        mut self,
-        selections: Selections,
-        focused: Option<SelectionSurface>,
-    ) -> Self {
+    fn with_selections(mut self, selections: Selections, focused: SelectableSurface) -> Self {
         self.selections = RefCell::new(selections);
         self.focused = RefCell::new(focused);
         self
@@ -544,17 +598,21 @@ impl<'a> Cells<'a> {
             .collect();
         rows.push((SelectionSurface::Summary, summary_rows));
         let mut selections = self.selections.borrow_mut();
-        let followed = self
-            .focused
-            .borrow()
-            .as_ref()
-            .and_then(|surface| selections.surface(surface))
-            .map(super::interaction::SurfaceSelection::selection);
+        let followed = match &*self.focused.borrow() {
+            SelectableSurface::EmptyCell => TileSelection::NoRows,
+            SelectableSurface::Surface(surface) => selections.surface(surface).map_or(
+                TileSelection::NoRows,
+                super::interaction::SurfaceSelection::selection,
+            ),
+        };
         selections.resolve(rows);
-        if let Some(TileSelection::Row(identity)) = followed
-            && let Some(destination) = selections.follow_focused(&identity)
+        if let SurfaceLookup::Current(state) = selections.surface_mut(&SelectionSurface::Summary) {
+            state.set_pin(layout.section_pin());
+        }
+        if let TileSelection::Row(identity) = followed
+            && let RowLocation::Found(destination) = selections.follow_focused(&identity)
         {
-            *self.focused.borrow_mut() = Some(destination);
+            *self.focused.borrow_mut() = SelectableSurface::Surface(destination);
         }
         drop(selections);
     }
@@ -621,7 +679,7 @@ impl TileCells<TileKey> for Cells<'_> {
             })
             .collect();
         for (tile, _) in &tiles {
-            if let Some(state) = self
+            if let SurfaceLookup::Current(state) = self
                 .selections
                 .borrow()
                 .surface(&SelectionSurface::Tile(tile.key()))
@@ -642,8 +700,8 @@ impl TileCells<TileKey> for Cells<'_> {
         }
         let mut selections = self.selections.borrow_mut();
         for (content, area) in &allocations {
-            if let Some(surface) = selection_surface(content)
-                && let Some(state) = selections.surface_mut(&surface)
+            if let SelectableSurface::Surface(surface) = selection_surface(content)
+                && let SurfaceLookup::Current(state) = selections.surface_mut(&surface)
             {
                 match content {
                     TileContent::Group(key) => {
@@ -718,18 +776,23 @@ impl TileCells<TileKey> for Cells<'_> {
                 if selection_prepared {
                     *self.summary_selection.borrow_mut() =
                         SummarySelectionLayout::Prepared(Rc::clone(&layout));
-                    if let Some(state) = self
+                    if let SurfaceLookup::Current(state) = self
                         .selections
                         .borrow_mut()
                         .surface_mut(&SelectionSurface::Summary)
                     {
+                        state.set_pin(layout.section_pin());
                         state.set_area(inner);
                     }
                 }
                 let selections = self.selections.borrow();
-                let offset = selections
-                    .surface(&SelectionSurface::Summary)
-                    .map_or(0, |state| state.viewport().scroll_offset());
+                let mapping = selections.surface(&SelectionSurface::Summary).map_or(
+                    ViewportMapping::Linear {
+                        offset: 0,
+                        height: usize::from(inner.height),
+                    },
+                    |state| state.painted_mapping().clone(),
+                );
                 let height = layout.height();
                 let virtual_area = Rect::new(
                     inner.x,
@@ -742,9 +805,12 @@ impl TileCells<TileKey> for Cells<'_> {
                 summary::draw_measured(&mut complete, virtual_area, &self.summary_frame(), &layout);
                 *self.painted_summary.borrow_mut() = PaintedSummary::Drawn(layout);
                 for y in 0..inner.height {
-                    let source = usize::from(y) + offset;
+                    let source = match mapping.source_line(usize::from(y)) {
+                        ViewportLine::Header(source) | ViewportLine::Body(source) => source,
+                        ViewportLine::Outside => continue,
+                    };
                     if source >= usize::from(virtual_area.height) {
-                        break;
+                        continue;
                     }
                     for x in inner.x..inner.right() {
                         buffer[(x, inner.y + y)] =
@@ -1967,3 +2033,6 @@ mod selection_tests;
 
 #[cfg(test)]
 mod status_bar_contrast_tests;
+
+#[cfg(test)]
+mod pinned_accounts_tests;
