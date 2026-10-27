@@ -175,7 +175,7 @@ fn append_panic_report(
     path: &Path,
     message: &str,
     location: Option<&Location<'_>>,
-    backtrace: &Backtrace,
+    backtrace: &impl std::fmt::Display,
 ) -> io::Result<()> {
     if let Some(directory) = path.parent() {
         fs::create_dir_all(directory)?;
@@ -217,15 +217,11 @@ mod tests {
 
     #[test]
     fn a_panic_report_holds_its_message_location_and_backtrace() -> io::Result<()> {
+        const FRAME: &str = "0: tui_pane::runner::lifecycle::install_panic_report";
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("missing").join("panic.log");
         let location = Location::caller();
-        append_panic_report(
-            &path,
-            "the grid lost a tile",
-            Some(location),
-            &Backtrace::force_capture(),
-        )?;
+        append_panic_report(&path, "the grid lost a tile", Some(location), &FRAME)?;
         let report = fs::read_to_string(&path)?;
         assert!(report.contains("the grid lost a tile"), "{report}");
         assert!(
@@ -239,6 +235,7 @@ mod tests {
             backtrace.is_some_and(|frames| !frames.is_empty()),
             "{report}"
         );
+        assert!(report.contains(FRAME));
         Ok(())
     }
 
