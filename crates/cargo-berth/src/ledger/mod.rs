@@ -14,6 +14,7 @@ mod ordering_repair;
 mod path;
 mod preparation;
 mod projection;
+mod record_size;
 mod replay_checkpoint;
 mod target;
 #[cfg(test)]

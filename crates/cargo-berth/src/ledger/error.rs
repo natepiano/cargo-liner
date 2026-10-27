@@ -221,7 +221,7 @@ impl Display for LedgerTransactionError {
                 maximum_bytes,
             } => write!(
                 formatter,
-                "cargo-berth observed a branch surface too large to record: {bytes} bytes, above the {maximum_bytes}-byte limit for observations. This is not a limit on anything you declared, so there is nothing in your claim to reduce. Report it — the observed surface has outgrown the record format."
+                "cargo-berth derived a journal record too large to record: {bytes} bytes, above the {maximum_bytes}-byte limit for repository evidence. This is not a limit on anything you declared, so there is nothing in your claim to reduce. Report it — the repository evidence has outgrown the record format."
             ),
         }
     }
