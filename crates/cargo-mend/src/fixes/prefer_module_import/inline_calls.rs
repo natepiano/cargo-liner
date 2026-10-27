@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::ExprPath;
 use syn::File;
@@ -15,6 +16,7 @@ use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::support;
 use super::support::CrateSources;
+use super::support::SourceSpan;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
@@ -132,10 +134,54 @@ impl InlineCallRewrite<'_> {
     }
 }
 
+/// Highlight text checked against the source before a call finding can be emitted.
+/// An unavailable range is rejected instead of fabricating empty path text.
+struct CallSourceSpan<'a> {
+    span: SourceSpan<'a>,
+    text: &'a str,
+}
+
+impl<'a> CallSourceSpan<'a> {
+    fn new(context: &ScanFileContext<'a>, start: LineColumn, end: LineColumn) -> Result<Self> {
+        let span = support::SourceSpan::new(context.source(), start, end)?;
+        let text = &context.text()[span.start().byte()..span.end()];
+        Ok(Self { span, text })
+    }
+}
+
+/// A call's checked rewrite window and real diagnostic line belong to its highlight span.
+/// A missing source line must not silently become empty diagnostic text.
+struct InlineCallLocation<'a> {
+    path:         CallSourceSpan<'a>,
+    prefix_start: usize,
+    leaf_start:   usize,
+}
+
+impl<'a> InlineCallLocation<'a> {
+    fn new(context: &ScanFileContext<'a>, candidate: &InlineCallCandidate) -> Result<Self> {
+        let path =
+            CallSourceSpan::new(context, candidate.full_span_start, candidate.full_span_end)?;
+        let prefix = support::SourceSpan::new(
+            context.source(),
+            candidate.prefix_start,
+            candidate.leaf_start,
+        )?;
+        anyhow::ensure!(
+            path.span.start().byte() <= prefix.start().byte() && prefix.end() <= path.span.end(),
+            "call rewrite window lies outside its highlight span",
+        );
+        Ok(Self {
+            path,
+            prefix_start: prefix.start().byte(),
+            leaf_start: prefix.end(),
+        })
+    }
+}
+
 pub(super) fn build_inline_call_findings_and_fixes(
     file_context: &ScanFileContext<'_>,
     inline_inputs: &InlineCallFindingInputs<'_>,
-) -> (Vec<Finding>, Vec<UseFix>) {
+) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let display_path = file_context.display_path();
 
     let mut findings = Vec::new();
@@ -162,23 +208,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             },
         };
 
-        let prefix_start_byte = support::offset(file_context.offsets, candidate.prefix_start);
-        let leaf_start_byte = support::offset(file_context.offsets, candidate.leaf_start);
-        let full_start_byte = support::offset(file_context.offsets, candidate.full_span_start);
-        let full_end_byte = support::offset(file_context.offsets, candidate.full_span_end);
-
-        let source_line = file_context
-            .text
-            .lines()
-            .nth(candidate.full_span_start.line.saturating_sub(1))
-            .unwrap_or_default()
-            .to_string();
-
-        let full_path_text = file_context
-            .text
-            .get(full_start_byte..full_end_byte)
-            .unwrap_or_default()
-            .to_string();
+        let location = InlineCallLocation::new(file_context, candidate)?;
 
         let (message, suggestion) = inline_call_text(candidate, &rewrite);
 
@@ -188,8 +218,8 @@ pub(super) fn build_inline_call_findings_and_fixes(
             path: display_path.clone(),
             line: candidate.full_span_start.line,
             column: candidate.full_span_start.column + 1,
-            highlight_len: full_path_text.len().max(1),
-            source_line,
+            highlight_len: location.path.text.len().max(1),
+            source_line: location.path.span.start().source_line().to_string(),
             item: None,
             message,
             suggestion: Some(suggestion),
@@ -206,8 +236,8 @@ pub(super) fn build_inline_call_findings_and_fixes(
         let call_prefix = rewrite.prefix().to_string();
         fixes.push(UseFix {
             path:         file_context.path.to_path_buf(),
-            start:        prefix_start_byte,
-            end:          leaf_start_byte,
+            start:        location.prefix_start,
+            end:          location.leaf_start,
             replacement:  call_prefix,
             import_group: group.clone(),
         });
@@ -251,7 +281,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
         fixes[last].replacement.push('\n');
     }
 
-    (findings, fixes)
+    Ok((findings, fixes))
 }
 
 fn inline_call_text(
@@ -397,7 +427,8 @@ mod tests {
     use crate::fixes::prefer_module_import::scan::ScanFileContext;
 
     #[test]
-    fn parent_calls_insert_no_import_and_module_calls_reuse_planned_imports() {
+    fn parent_calls_insert_no_import_and_module_calls_reuse_planned_imports() -> anyhow::Result<()>
+    {
         let text = "crate::outer::run(); crate::util::run();";
         let candidates = [
             ("outer", ImportTarget::ParentModule, 0, 14, 17),
@@ -427,12 +458,7 @@ mod tests {
             import_target:          target,
             conditional_attributes: ConditionalAttributes::default(),
         });
-        let context = ScanFileContext {
-            analysis_root: Path::new("."),
-            path: Path::new("src/lib.rs"),
-            text,
-            offsets: &[0],
-        };
+        let context = ScanFileContext::new(Path::new("."), Path::new("src/lib.rs"), text);
         for (planned, expected) in [
             (
                 BTreeSet::new(),
@@ -453,7 +479,7 @@ mod tests {
                         before_first_item: true,
                     },
                 },
-            );
+            )?;
             assert_eq!(findings.len(), 2);
             assert_eq!(
                 fixes
@@ -463,5 +489,52 @@ mod tests {
                 expected
             );
         }
+        Ok(())
+    }
+    #[test]
+    fn checked_call_locations_keep_text_and_reject_invalid_windows() -> anyhow::Result<()> {
+        let text = "// é\ncrate::util::run();\n";
+        let context = ScanFileContext::new(Path::new("."), Path::new("lib.rs"), text);
+        let at = |line, column| LineColumn { line, column };
+        let mut candidate = InlineCallCandidate {
+            function_name:          "run".to_string(),
+            module_name:            "util".to_string(),
+            module_path:            "crate::util".to_string(),
+            absolute_module:        vec!["util".to_string()],
+            prefix_start:           at(2, 0),
+            leaf_start:             at(2, 13),
+            full_span_start:        at(2, 0),
+            full_span_end:          at(2, 16),
+            import_target:          ImportTarget::OtherModule,
+            conditional_attributes: ConditionalAttributes::default(),
+        };
+        let location = super::InlineCallLocation::new(&context, &candidate)?;
+        assert_eq!(location.path.text, "crate::util::run");
+        assert_eq!(
+            location.path.span.start().source_line(),
+            "crate::util::run();"
+        );
+        assert_eq!(location.prefix_start, "// é\n".len());
+        for start in [at(0, 0), at(4, 0), at(2, 100)] {
+            candidate.full_span_start = start;
+            assert!(super::InlineCallLocation::new(&context, &candidate).is_err());
+        }
+        candidate.full_span_start = at(2, 0);
+        candidate.full_span_end = at(2, 100);
+        assert!(super::InlineCallLocation::new(&context, &candidate).is_err());
+        candidate.full_span_end = at(2, 16);
+        candidate.leaf_start = at(2, 17);
+        assert!(super::InlineCallLocation::new(&context, &candidate).is_err());
+        candidate.leaf_start = at(2, 13);
+        candidate.full_span_start = at(2, 7);
+        let error = super::InlineCallLocation::new(&context, &candidate)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected a left-of-highlight window rejection"))?;
+        assert_eq!(
+            error.to_string(),
+            "call rewrite window lies outside its highlight span"
+        );
+        assert!(super::CallSourceSpan::new(&context, at(2, 16), at(2, 0)).is_err());
+        Ok(())
     }
 }

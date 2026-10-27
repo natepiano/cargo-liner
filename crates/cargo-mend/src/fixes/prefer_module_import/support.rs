@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context;
+use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::File;
 use syn::Item;
@@ -10,6 +12,7 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
+use crate::fixes::imports::ImportSource;
 use crate::rust_syntax;
 use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
@@ -21,9 +24,79 @@ pub(super) struct CrateSources<'a> {
     pub(super) sources:     &'a ParsedSources,
 }
 
+/// A flattened leaf import always names a leaf, including when it has no prefix.
+/// Re-export lookup therefore never has to recover from an empty import path.
 pub(super) struct FlattenedImport {
-    pub(super) segments: Vec<String>,
-    pub(super) rename:   Option<String>,
+    pub(super) prefix: Vec<String>,
+    pub(super) leaf:   String,
+    pub(super) rename: Option<String>,
+}
+
+impl FlattenedImport {
+    fn anchor(&self) -> PathAnchor {
+        PathAnchor::from(self.prefix.first().unwrap_or(&self.leaf).as_str())
+    }
+
+    pub(super) fn absolute_path(&self, current_module_path: &[String]) -> Option<Vec<String>> {
+        let segments = self.prefix.iter().chain(std::iter::once(&self.leaf));
+        match self.anchor() {
+            PathAnchor::Crate => Some(segments.skip(1).cloned().collect()),
+            PathAnchor::Super => {
+                // The required leaf can itself be the last ancestor navigation segment.
+                let super_count = segments
+                    .clone()
+                    .take_while(|segment| *segment == "super")
+                    .count();
+                let retained = current_module_path.len().checked_sub(super_count)?;
+                let mut absolute = current_module_path[..retained].to_vec();
+                absolute.extend(segments.skip(super_count).cloned());
+                Some(absolute)
+            },
+            PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => None,
+        }
+    }
+}
+
+/// A source-bound position validated before it can participate in an edit.
+/// Missing lines and columns must be rejected, never repaired to byte zero.
+pub(super) struct SourcePosition<'a> {
+    byte:        usize,
+    source_line: &'a str,
+}
+
+impl<'a> SourcePosition<'a> {
+    pub(super) const fn byte(&self) -> usize { self.byte }
+
+    pub(super) const fn source_line(&self) -> &'a str { self.source_line }
+}
+
+/// An ordered pair of positions checked together against one source owner.
+pub(super) struct SourceSpan<'a> {
+    start: SourcePosition<'a>,
+    end:   usize,
+}
+
+impl<'a> SourceSpan<'a> {
+    pub(super) const fn start(&self) -> &SourcePosition<'a> { &self.start }
+
+    pub(super) const fn end(&self) -> usize { self.end }
+
+    pub(super) fn new(
+        source: &ImportSource<'a>,
+        start: LineColumn,
+        end: LineColumn,
+    ) -> Result<Self> {
+        let location = source
+            .locate(start, end)
+            .with_context(|| format!("invalid import source span {start:?}..{end:?}"))?;
+        Ok(Self {
+            start: SourcePosition {
+                byte:        location.start(),
+                source_line: location.source_line(),
+            },
+            end:   location.end(),
+        })
+    }
 }
 
 pub(super) fn resolve_to_absolute(
@@ -200,17 +273,22 @@ fn reexports_module(
 /// `None`.
 fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Option<Vec<String>> {
     let flat = flatten_use_tree(&item_use.tree)?;
-    let bound = flat.rename.as_ref().or_else(|| flat.segments.last())?;
+    let bound = flat.rename.as_ref().unwrap_or(&flat.leaf);
     if bound != name {
         return None;
     }
-    match PathAnchor::first(&flat.segments)? {
+    match flat.anchor() {
         PathAnchor::SelfMod => {
             let mut absolute = module_path.to_vec();
-            absolute.extend(flat.segments[1..].iter().cloned());
+            absolute.extend(flat.prefix.iter().skip(1).cloned());
+            if !flat.prefix.is_empty() {
+                absolute.push(flat.leaf.clone());
+            }
             Some(absolute)
         },
-        _ => resolve_to_absolute(&flat.segments, module_path),
+        PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType | PathAnchor::Name => {
+            flat.absolute_path(module_path)
+        },
     }
 }
 
@@ -278,16 +356,16 @@ pub(super) fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
                 cursor = &path.tree;
             },
             UseTree::Name(name) => {
-                segments.push(name.ident.to_string());
                 break Some(FlattenedImport {
-                    segments,
+                    prefix: segments,
+                    leaf:   name.ident.to_string(),
                     rename: None,
                 });
             },
             UseTree::Rename(rename_tree) => {
-                segments.push(rename_tree.ident.to_string());
                 break Some(FlattenedImport {
-                    segments,
+                    prefix: segments,
+                    leaf:   rename_tree.ident.to_string(),
                     rename: Some(rename_tree.rename.to_string()),
                 });
             },
@@ -315,16 +393,18 @@ pub(super) fn is_snake_case_function_name(name: &str) -> bool {
 
 pub(super) fn is_snake_case_module_name(name: &str) -> bool { is_snake_case_function_name(name) }
 
-pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
-    line_offsets
-        .get(position.line.saturating_sub(1))
-        .copied()
-        .unwrap_or(0)
-        + position.column
+pub(super) fn offset<'a>(
+    source: &ImportSource<'a>,
+    position: LineColumn,
+) -> Result<SourcePosition<'a>> {
+    Ok(SourceSpan::new(source, position, position)?.start)
 }
 
 #[cfg(test)]
 mod tests {
+    use proc_macro2::LineColumn;
+    use syn::ItemUse;
+
     use super::is_snake_case_function_name;
     use super::shorten_module_path;
 
@@ -411,5 +491,97 @@ mod tests {
     #[test]
     fn snake_case_rejects_empty() {
         assert!(!is_snake_case_function_name(""));
+    }
+    #[test]
+    fn checked_positions_reject_missing_coordinates_and_preserve_byte_boundaries()
+    -> anyhow::Result<()> {
+        let text = "// é\nα::run();\n";
+        let source = crate::fixes::imports::ImportSource::new(text);
+        let at = |line, column| LineColumn { line, column };
+        for position in [at(0, 0), at(4, 0), at(1, 5), at(2, 10)] {
+            assert!(super::offset(&source, position).is_err());
+        }
+        let position = super::offset(&source, at(2, 3))?;
+        assert_eq!(position.byte(), "// é\nα::".len());
+        assert_eq!(position.source_line(), "α::run();");
+        let final_line = super::offset(&source, at(3, 0))?;
+        assert_eq!(final_line.byte(), text.len());
+        assert_eq!(final_line.source_line(), "");
+        assert!(super::SourceSpan::new(&source, at(2, 4), at(2, 3)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn flattened_path_anchors_match_absolute_and_reexport_resolution() -> anyhow::Result<()> {
+        let current = ["a", "b", "c"].map(str::to_string);
+        for (path, absolute, reexport) in [
+            ("super::super", Some(vec!["a"]), Some(vec!["a"])),
+            ("super::super::super", Some(vec![]), Some(vec![])),
+            ("super::super::super::super", None, None),
+            (
+                "super::named_leaf",
+                Some(vec!["a", "b", "named_leaf"]),
+                Some(vec!["a", "b", "named_leaf"]),
+            ),
+            ("super", Some(vec!["a", "b"]), Some(vec!["a", "b"])),
+            ("crate", Some(vec![]), Some(vec![])),
+            (
+                "crate::named_leaf",
+                Some(vec!["named_leaf"]),
+                Some(vec!["named_leaf"]),
+            ),
+            ("self", None, Some(vec!["a", "b", "c"])),
+            (
+                "self::named_leaf",
+                None,
+                Some(vec!["a", "b", "c", "named_leaf"]),
+            ),
+            ("external", None, None),
+            ("external::named_leaf", None, None),
+        ] {
+            let item: ItemUse = syn::parse_str(&format!("pub use {path} as ancestor;"))?;
+            let flat = super::flatten_use_tree(&item.tree)
+                .ok_or_else(|| anyhow::anyhow!("expected a leaf import"))?;
+            let owned = |segments: Vec<&str>| segments.into_iter().map(str::to_string).collect();
+            assert_eq!(flat.absolute_path(&current), absolute.map(owned), "{path}");
+            assert_eq!(
+                super::reexport_target(&item, &current, "ancestor"),
+                reexport.map(owned),
+                "{path}",
+            );
+            assert_eq!(super::reexport_target(&item, &current, "unbound"), None);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn flattened_imports_always_carry_the_leaf_separately() -> anyhow::Result<()> {
+        for (text, prefix, leaf, rename) in [
+            ("use run;", Vec::new(), "run", None),
+            ("use crate::util::run;", vec!["crate", "util"], "run", None),
+            (
+                "use self::run as execute;",
+                vec!["self"],
+                "run",
+                Some("execute"),
+            ),
+        ] {
+            let item: ItemUse = syn::parse_str(text)?;
+            let flat = super::flatten_use_tree(&item.tree)
+                .ok_or_else(|| anyhow::anyhow!("expected a leaf import"))?;
+            assert_eq!(flat.prefix, prefix);
+            assert_eq!(flat.leaf, leaf);
+            assert_eq!(flat.rename.as_deref(), rename);
+        }
+        let item: ItemUse = syn::parse_str("pub use self::run as execute;")?;
+        assert_eq!(
+            super::reexport_target(&item, &["util".to_string()], "execute"),
+            Some(vec!["util".to_string(), "run".to_string()]),
+        );
+        for text in ["use crate::util::*;", "use crate::util::{run, stop};"] {
+            let item: ItemUse = syn::parse_str(text)?;
+            assert!(super::flatten_use_tree(&item.tree).is_none());
+        }
+        Ok(())
     }
 }
