@@ -7,6 +7,8 @@ use std::marker::PhantomData;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
+use super::draw::content_area;
+use super::grid::CellHit;
 use super::grid::TileContent;
 use super::grid::TileGrid;
 use crate::AppContext;
@@ -20,6 +22,7 @@ use crate::Mode;
 use crate::Pane;
 use crate::ScrollDirection;
 use crate::dispatch_hit_test;
+use crate::frame_inner;
 
 /// A terminal cell position relative to a tile's content origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +97,8 @@ impl<A: TileGridHost> Pane<A> for TileGridPane<A> {
 pub enum TilePick {
     /// A cell of the tile grid, by cell number.
     Cell(usize),
+    /// A departing cell is still painted but no longer owns a live slot.
+    RetiredCell,
     /// A row of an open framework overlay.
     OverlayRow {
         /// The overlay the row belongs to.
@@ -121,7 +126,11 @@ impl TilePick {
 
 impl<Id: Clone + Eq + Debug> Hittable<TilePick> for TileGrid<Id> {
     fn hit_test_at(&self, pos: Position) -> Option<TilePick> {
-        self.cell_at(pos).map(TilePick::Cell)
+        match self.cell_hit(pos) {
+            CellHit::Current { index, .. } => Some(TilePick::Cell(index)),
+            CellHit::Retired => Some(TilePick::RetiredCell),
+            CellHit::Missed => None,
+        }
     }
 }
 
@@ -138,24 +147,16 @@ where
 {
     match dispatch_hit_test(app, position) {
         Some(TilePick::Cell(index)) => {
-            let content = app.tile_grid_mut().cell_content_at(position);
+            let click = content_click(app.tile_grid_mut().cell_hit(position), position);
             app.tile_grid_mut().focus_cell(index);
-            if let Some((index, content, area)) = content {
-                app.cell_clicked(CellClick {
-                    index,
-                    content,
-                    area,
-                    point: CellPoint {
-                        column: position.x - area.x,
-                        row:    position.y - area.y,
-                    },
-                });
+            if let Some(click) = click {
+                app.cell_clicked(click);
             }
         },
         Some(TilePick::OverlayRow { id, row }) => {
             select_framework_overlay_row(app.framework_mut(), id, row);
         },
-        None => (),
+        Some(TilePick::RetiredCell) | None => (),
     }
 }
 
@@ -165,21 +166,39 @@ where
     A: TileGridHost + InputContext<Target = TilePick>,
 {
     if let Some(TilePick::Cell(_)) = dispatch_hit_test(app, position)
-        && let Some((index, content, area)) = app.tile_grid_mut().cell_content_at(position)
+        && let Some(click) = content_click(app.tile_grid_mut().cell_hit(position), position)
     {
-        app.cell_scrolled(
-            CellClick {
-                index,
-                content,
-                area,
-                point: CellPoint {
-                    column: position.x - area.x,
-                    row:    position.y - area.y,
-                },
-            },
-            direction,
-        );
+        app.cell_scrolled(click, direction);
     }
+}
+
+/// Translate a painted press back to the source coordinates used by its content.
+fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellClick<Id>> {
+    let CellHit::Current {
+        index,
+        content,
+        frame,
+    } = hit
+    else {
+        return None;
+    };
+    let area = content_area(frame.inner());
+    let source = Position::new(
+        position.x,
+        u16::try_from(i32::from(position.y) - frame.shift()).ok()?,
+    );
+    if !frame_inner(frame.clip()).contains(position) || !area.contains(source) {
+        return None;
+    }
+    Some(CellClick {
+        index,
+        content,
+        area,
+        point: CellPoint {
+            column: source.x - area.x,
+            row:    source.y - area.y,
+        },
+    })
 }
 
 /// Move a framework overlay's selection to the row that was clicked.

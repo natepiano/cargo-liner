@@ -66,6 +66,7 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::interaction::RowSpan;
+use crate::interaction::SectionPin;
 use crate::sort;
 use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
@@ -281,6 +282,26 @@ impl SummaryLayout {
             frame.sort,
         )
         .max(accounts)
+    }
+
+    /// Header and body source lines come from the same fitted accounts record.
+    pub(crate) fn section_pin(&self) -> SectionPin {
+        let Some((_, first)) = self.accounts.selections.first() else {
+            return SectionPin::NoAccounts;
+        };
+        let Some((_, last)) = self.accounts.selections.last() else {
+            return SectionPin::NoAccounts;
+        };
+        let start = self.machine_rows
+            + if self.machine_rows > 0 {
+                usize::from(GROUP_GAP_HEIGHT)
+            } else {
+                0
+            };
+        SectionPin::Accounts {
+            headers: start..start + first.start(),
+            body:    start + first.start()..start + last.end(),
+        }
     }
 
     fn accounts_area(&self, area: Rect) -> Rect {

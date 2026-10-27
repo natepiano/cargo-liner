@@ -63,7 +63,7 @@ pub(super) const MUTATION_RETRY_WINDOW_BASE_MILLISECONDS: u64 = 2;
 // lock acquisition
 pub(crate) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(60);
 /// Test-only signal path that makes a waiting `MutationLock::acquire` observable.
-/// Successful queued acquisitions append their wait nanoseconds to its `.waits` sibling.
+/// Each acquisition attempt appends one line to its `.acquisitions` sibling.
 pub(super) const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str =
     "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 

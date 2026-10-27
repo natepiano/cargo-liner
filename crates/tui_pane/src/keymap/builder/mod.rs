@@ -11,6 +11,11 @@
 //!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
 //!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
 
+mod finalize;
+mod overlay;
+mod registration;
+mod transition;
+
 use core::any::Any;
 use core::any::type_name;
 use core::marker::PhantomData;
@@ -19,7 +24,17 @@ use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
+use finalize::finalize;
+use overlay::action_key_set;
+use overlay::apply_toml_overlay;
+use overlay::apply_toml_overlay_with_peer;
+use overlay::framework_global_action_key_set;
+use registration::apply_vim_navigation_extras;
+use registration::build_pane_bindings;
+use registration::check_reserved_vim_navigation_keys;
+use registration::reserved_vim_navigation_keys;
 use toml::Table;
+use transition::transition;
 
 use super::Bindings;
 use super::Globals;
@@ -44,22 +59,6 @@ use crate::SettingsPane;
 use crate::TabStop;
 use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
-
-mod finalize;
-mod overlay;
-mod registration;
-mod transition;
-
-use finalize::finalize;
-use overlay::action_key_set;
-use overlay::apply_toml_overlay;
-use overlay::apply_toml_overlay_with_peer;
-use overlay::framework_global_action_key_set;
-use registration::apply_vim_navigation_extras;
-use registration::build_pane_bindings;
-use registration::check_reserved_vim_navigation_keys;
-use registration::reserved_vim_navigation_keys;
-use transition::transition;
 
 /// `Box<dyn Any>`-erased typed singleton. The builder stores the
 /// `ScopeMap<X::Actions>` from a `Navigation` / `Globals` impl behind

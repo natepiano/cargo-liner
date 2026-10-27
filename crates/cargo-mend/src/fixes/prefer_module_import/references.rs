@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
+use anyhow::Result;
 use proc_macro2::Spacing;
+use proc_macro2::Span;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use syn::Arm;
@@ -24,7 +26,8 @@ use syn::TraitItemFn;
 use syn::visit;
 use syn::visit::Visit;
 
-use super::support;
+use super::support::SourceSpan;
+use crate::fixes::imports::ImportSource;
 
 pub(super) struct BareReference {
     pub(super) name:             String,
@@ -36,12 +39,15 @@ pub(super) struct BareReference {
     pub(super) inline_mod_depth: usize,
 }
 
+/// Binding registration always has an active scope, even at the root.
+/// Entering and leaving nested scopes cannot silently discard a local binding.
 pub(super) struct ReferenceCollector<'a> {
-    pub(super) offsets:          &'a [usize],
-    pub(super) imported_names:   &'a BTreeSet<String>,
-    pub(super) references:       Vec<BareReference>,
-    pub(super) scopes:           Vec<BTreeSet<String>>,
-    pub(super) inline_mod_depth: usize,
+    source:                &'a ImportSource<'a>,
+    imported_names:        &'a BTreeSet<String>,
+    pub(super) references: Result<Vec<BareReference>>,
+    active_scope:          BTreeSet<String>,
+    enclosing_scopes:      Vec<BTreeSet<String>>,
+    inline_mod_depth:      usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,23 +93,54 @@ impl PreviousToken {
 }
 
 impl<'a> ReferenceCollector<'a> {
-    pub(super) fn new(offsets: &'a [usize], imported_names: &'a BTreeSet<String>) -> Self {
+    pub(super) const fn new(
+        source: &'a ImportSource<'a>,
+        imported_names: &'a BTreeSet<String>,
+    ) -> Self {
         Self {
-            offsets,
+            source,
             imported_names,
-            references: Vec::new(),
-            scopes: vec![BTreeSet::new()],
+            references: Ok(Vec::new()),
+            active_scope: BTreeSet::new(),
+            enclosing_scopes: Vec::new(),
             inline_mod_depth: 0,
         }
     }
 
     fn is_shadowed(&self, name: &str) -> bool {
-        self.scopes.iter().any(|scope| scope.contains(name))
+        self.active_scope.contains(name)
+            || self
+                .enclosing_scopes
+                .iter()
+                .any(|scope| scope.contains(name))
     }
 
-    fn enter_scope_with(&mut self, bindings: BTreeSet<String>) { self.scopes.push(bindings); }
+    fn enter_scope_with(&mut self, bindings: BTreeSet<String>) {
+        let enclosing = std::mem::replace(&mut self.active_scope, bindings);
+        self.enclosing_scopes.push(enclosing);
+    }
 
-    fn exit_scope(&mut self) { self.scopes.pop(); }
+    fn exit_scope(&mut self) {
+        if let Some(enclosing) = self.enclosing_scopes.pop() {
+            self.active_scope = enclosing;
+        }
+    }
+
+    fn record_reference(&mut self, name: String, span: Span) {
+        match SourceSpan::new(self.source, span.start(), span.end()) {
+            Ok(location) => {
+                if let Ok(references) = &mut self.references {
+                    references.push(BareReference {
+                        name,
+                        byte_start: location.start().byte(),
+                        byte_end: location.end(),
+                        inline_mod_depth: self.inline_mod_depth,
+                    });
+                }
+            },
+            Err(error) => self.references = Err(error),
+        }
+    }
 }
 
 impl Visit<'_> for ReferenceCollector<'_> {
@@ -145,9 +182,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         }
         let mut bindings = BTreeSet::new();
         collect_pat_bindings(&local.pat, &mut bindings);
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.extend(bindings);
-        }
+        self.active_scope.extend(bindings);
     }
 
     fn visit_item_fn(&mut self, item: &ItemFn) {
@@ -250,15 +285,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
                     let segment = &expr_path.path.segments[0];
                     let name = segment.ident.to_string();
                     if self.imported_names.contains(&name) && !self.is_shadowed(&name) {
-                        let span = segment.ident.span();
-                        let start = support::offset(self.offsets, span.start());
-                        let end = support::offset(self.offsets, span.end());
-                        self.references.push(BareReference {
-                            name,
-                            byte_start: start,
-                            byte_end: end,
-                            inline_mod_depth: self.inline_mod_depth,
-                        });
+                        self.record_reference(name, segment.ident.span());
                     }
                 }
             },
@@ -270,15 +297,22 @@ impl Visit<'_> for ReferenceCollector<'_> {
         // `collect_bare_refs_from_tokens` sees identifiers, not scopes, so `is_shadowed` filters
         // its hits against the bindings in scope at the macro call site.
         let mut collected = Vec::new();
-        collect_bare_refs_from_tokens(
+        let result = collect_bare_refs_from_tokens(
             &node.tokens,
-            self.offsets,
+            self.source,
             self.imported_names,
             self.inline_mod_depth,
             &mut collected,
         );
         collected.retain(|reference| !self.is_shadowed(&reference.name));
-        self.references.append(&mut collected);
+        match result {
+            Ok(()) => {
+                if let Ok(references) = &mut self.references {
+                    references.append(&mut collected);
+                }
+            },
+            Err(error) => self.references = Err(error),
+        }
         visit::visit_macro(self, node);
     }
 }
@@ -395,13 +429,13 @@ fn collect_fn_param_bindings<'a>(
     }
 }
 
-pub(super) fn collect_bare_refs_from_tokens(
+fn collect_bare_refs_from_tokens(
     tokens: &TokenStream,
-    offsets: &[usize],
+    source: &ImportSource<'_>,
     imported_names: &BTreeSet<String>,
     inline_mod_depth: usize,
     references: &mut Vec<BareReference>,
-) {
+) -> Result<()> {
     let mut previous_token = PreviousToken::Other;
     for token_tree in tokens.clone() {
         match token_tree {
@@ -409,12 +443,11 @@ pub(super) fn collect_bare_refs_from_tokens(
                 let name = ident.to_string();
                 if previous_token.allows_bare_reference() && imported_names.contains(&name) {
                     let span = ident.span();
-                    let start = support::offset(offsets, span.start());
-                    let end = support::offset(offsets, span.end());
+                    let location = SourceSpan::new(source, span.start(), span.end())?;
                     references.push(BareReference {
                         name,
-                        byte_start: start,
-                        byte_end: end,
+                        byte_start: location.start().byte(),
+                        byte_end: location.end(),
                         inline_mod_depth,
                     });
                 }
@@ -430,11 +463,11 @@ pub(super) fn collect_bare_refs_from_tokens(
             TokenTree::Group(ref group) => {
                 collect_bare_refs_from_tokens(
                     &group.stream(),
-                    offsets,
+                    source,
                     imported_names,
                     inline_mod_depth,
                     references,
-                );
+                )?;
                 previous_token = previous_token.after_group();
             },
             TokenTree::Literal(_) => {
@@ -442,6 +475,7 @@ pub(super) fn collect_bare_refs_from_tokens(
             },
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -453,6 +487,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use proc_macro2::TokenStream;
+    use syn::Item;
+    use syn::Stmt;
     use syn::visit::Visit;
 
     use super::BareReference;
@@ -464,12 +500,12 @@ mod tests {
     fn collect_bare_refs_finds_ident_in_macro_tokens() {
         let src = r"matches!(do_thing(x), MyEnum::Variant)";
         let source = ImportSource::new(src);
-        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &source, &names, 0, &mut refs)
+            .expect("valid source positions");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
         assert_eq!(&src[refs[0].byte_start..refs[0].byte_end], "do_thing");
@@ -479,12 +515,12 @@ mod tests {
     fn collect_bare_refs_skips_qualified_ident_in_macro_tokens() {
         let src = r"matches!(module::do_thing(x), MyEnum::Variant)";
         let source = ImportSource::new(src);
-        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &source, &names, 0, &mut refs)
+            .expect("valid source positions");
         assert!(refs.is_empty(), "qualified path should not match");
     }
 
@@ -492,12 +528,12 @@ mod tests {
     fn collect_bare_refs_finds_nested_in_group() {
         let src = r"assert!(do_thing(foo(bar())))";
         let source = ImportSource::new(src);
-        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, &source, &names, 0, &mut refs)
+            .expect("valid source positions");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
     }
@@ -513,18 +549,69 @@ fn inspect(value: i32) {
 ";
         let syntax = syn::parse_file(source).expect("parse fixture");
         let indexed = ImportSource::new(source);
-        let offsets = indexed.line_offsets();
         let imported_names = BTreeSet::from(["helper".to_string(), "threshold".to_string()]);
-        let mut collector = ReferenceCollector::new(offsets, &imported_names);
+        let mut collector = ReferenceCollector::new(&indexed, &imported_names);
 
         collector.visit_file(&syntax);
 
-        assert_eq!(collector.references.len(), 2);
+        let references = collector.references.expect("valid reference positions");
+        assert_eq!(references.len(), 2);
         assert!(
-            collector
-                .references
+            references
                 .iter()
                 .all(|reference| reference.name == "helper")
+        );
+    }
+    #[test]
+    fn active_root_and_enclosing_scopes_never_drop_local_bindings() -> anyhow::Result<()> {
+        let text = "fn f() { let run = || {}; run(); }";
+        let syntax = syn::parse_file(text).expect("parse fixture");
+        let source = ImportSource::new(text);
+        let names = BTreeSet::from(["run".to_string()]);
+        let mut collector = ReferenceCollector::new(&source, &names);
+        collector.exit_scope();
+        let Item::Fn(function) = &syntax.items[0] else {
+            anyhow::bail!("expected a function");
+        };
+        let Stmt::Local(local) = &function.block.stmts[0] else {
+            anyhow::bail!("expected a local binding");
+        };
+        collector.visit_local(local);
+        assert!(collector.is_shadowed("run"));
+        collector.enter_scope_with(BTreeSet::from(["nested".to_string()]));
+        assert!(collector.is_shadowed("run"));
+        assert!(collector.is_shadowed("nested"));
+        collector.exit_scope();
+        assert!(collector.is_shadowed("run"));
+        assert!(!collector.is_shadowed("nested"));
+        collector.visit_expr(&syn::parse_str("run()").expect("parse call"));
+        assert!(collector.references.expect("valid positions").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn reference_collection_rejects_mismatched_source_and_restores_nested_bindings() {
+        let text = "fn f() { run(); { let run = || {}; run(); } run(); }";
+        let syntax = syn::parse_file(text).expect("parse fixture");
+        let source = ImportSource::new(text);
+        let names = BTreeSet::from(["run".to_string()]);
+        let mut collector = ReferenceCollector::new(&source, &names);
+        collector.visit_file(&syntax);
+        let references = collector.references.expect("valid positions");
+        assert_eq!(references.len(), 2);
+        assert!(
+            references
+                .iter()
+                .all(|reference| { &text[reference.byte_start..reference.byte_end] == "run" })
+        );
+        let wrong_source = ImportSource::new("");
+        let mut collector = ReferenceCollector::new(&wrong_source, &names);
+        collector.visit_file(&syntax);
+        assert!(collector.references.is_err());
+        let tokens: TokenStream = "run()".parse().expect("parse tokens");
+        assert!(
+            collect_bare_refs_from_tokens(&tokens, &wrong_source, &names, 0, &mut Vec::new(),)
+                .is_err()
         );
     }
 }

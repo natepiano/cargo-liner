@@ -15,6 +15,7 @@ use crate::fixes::inline_path_qualified_type::InlinePathScan;
 use crate::fixes::prefer_module_import;
 use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::ExecutionOutcome;
+use crate::reporting::Finding;
 use crate::reporting::MendFailure;
 use crate::reporting::PassEdits;
 use crate::rust_syntax::ParsedSources;
@@ -136,38 +137,7 @@ impl MendRunner<'_> {
         report
             .findings
             .extend(scan_findings.into_iter().flatten().flatten().cloned());
-        report.findings.sort_by(|a, b| {
-            (
-                a.severity,
-                &a.path,
-                a.line,
-                a.column,
-                &a.diagnostic_code,
-                &a.item,
-                &a.message,
-                &a.suggestion,
-            )
-                .cmp(&(
-                    b.severity,
-                    &b.path,
-                    b.line,
-                    b.column,
-                    &b.diagnostic_code,
-                    &b.item,
-                    &b.message,
-                    &b.suggestion,
-                ))
-        });
-        report.findings.dedup_by(|a, b| {
-            a.severity == b.severity
-                && a.diagnostic_code == b.diagnostic_code
-                && a.path == b.path
-                && a.line == b.line
-                && a.column == b.column
-                && a.message == b.message
-                && a.item == b.item
-                && a.suggestion == b.suggestion
-        });
+        sort_and_dedup_findings(&mut report.findings);
         // `report.findings.retain` removes findings whose `diagnostic_code` is disabled in
         // `self.loaded_config.diagnostics_config`.
         report.findings.retain(|f| {
@@ -182,5 +152,117 @@ impl MendRunner<'_> {
             scans,
             sources,
         })
+    }
+}
+
+/// Preserve compiler input order and the runner's suggestion-sensitive duplicate policy.
+fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
+    findings.sort_by(|a, b| {
+        (
+            a.input_order(),
+            &a.path,
+            a.line,
+            a.column,
+            &a.diagnostic_code,
+            &a.item,
+            &a.message,
+            &a.suggestion,
+        )
+            .cmp(&(
+                b.input_order(),
+                &b.path,
+                b.line,
+                b.column,
+                &b.diagnostic_code,
+                &b.item,
+                &b.message,
+                &b.suggestion,
+            ))
+    });
+    findings.dedup_by(|a, b| {
+        a.input_order() == b.input_order()
+            && a.diagnostic_code == b.diagnostic_code
+            && a.path == b.path
+            && a.line == b.line
+            && a.column == b.column
+            && a.message == b.message
+            && a.item == b.item
+            && a.suggestion == b.suggestion
+    });
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::reporting::Finding;
+    use crate::reporting::FixSupport;
+    use crate::reporting::Severity;
+    #[test]
+    fn input_order_and_dedup_preserve_origins_and_shared_annotation_sites() -> anyhow::Result<()> {
+        let error = ordering_finding(Severity::Error, FixSupport::PubUse, "origin")?;
+        let warning = ordering_finding(Severity::Warning, FixSupport::PubUse, "origin")?;
+        let manual = ordering_finding(Severity::Error, FixSupport::None, "manual")?;
+        let first = ordering_finding(Severity::Error, FixSupport::RestrictedAnnotation, "site-a")?;
+        let second = ordering_finding(
+            Severity::Warning,
+            FixSupport::RestrictedAnnotation,
+            "site-b",
+        )?;
+        let mut findings = vec![
+            warning.clone(),
+            second,
+            error.clone(),
+            first,
+            manual,
+            error,
+            warning,
+        ];
+        super::sort_and_dedup_findings(&mut findings);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.message.as_str())
+                .collect::<Vec<_>>(),
+            ["manual", "origin", "site-a", "origin", "site-b"]
+        );
+        let wires = findings
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            wires
+                .iter()
+                .map(|wire| wire["severity"].as_str())
+                .collect::<Vec<_>>(),
+            [
+                Some("error"),
+                Some("error"),
+                Some("error"),
+                Some("warning"),
+                Some("warning")
+            ]
+        );
+        // Runner dedup preserves both distinct compiler diagnostics at the site.
+        assert_eq!(findings[2].fix_support(), FixSupport::RestrictedAnnotation);
+        assert_eq!(findings[4].fix_support(), FixSupport::RestrictedAnnotation);
+        let mut distinct = findings[1].clone();
+        distinct.suggestion = Some("different suggestion".to_string());
+        findings.push(distinct);
+        super::sort_and_dedup_findings(&mut findings);
+        assert_eq!(findings.len(), 6);
+        Ok(())
+    }
+
+    fn ordering_finding(
+        severity: Severity,
+        support: FixSupport,
+        message: &str,
+    ) -> anyhow::Result<Finding> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "severity": severity, "fixability": support,
+            "diagnostic_code": "suspicious_pub", "path": "src/lib.rs",
+            "line": 1, "column": 1, "highlight_len": 3,
+            "source_line": "pub fn item() {}", "item": "item", "message": message,
+        }))?)
     }
 }

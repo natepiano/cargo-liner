@@ -46,7 +46,11 @@ impl From<ShortenImportFact> for Finding {
     fn from(fact: ShortenImportFact) -> Self {
         let replacement = fact.replacement;
         Self {
-            severity:        Severity::Warning,
+            disposition:     Self::disposition(
+                fact.diagnostic_code,
+                Severity::Warning,
+                FixSupport::ShortenImport,
+            ),
             diagnostic_code: fact.diagnostic_code,
             path:            fact.path,
             line:            fact.line,
@@ -56,7 +60,6 @@ impl From<ShortenImportFact> for Finding {
             item:            None,
             message:         fact.message.to_string(),
             suggestion:      Some(format!("consider using: `{replacement}`")),
-            fix_support:     FixSupport::ShortenImport,
             related:         None,
             item_visibility: ItemVisibility::default(),
         }

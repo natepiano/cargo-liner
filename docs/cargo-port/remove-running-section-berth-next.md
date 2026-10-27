@@ -787,16 +787,19 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Binds later work:** A size check on journal input takes `CallerJournalInput`. Derived evidence never counts against the caller's limit.
 
 
-### Phase 31 — A reservation whose work stays on its branch for a later phase is released as kept  · status: todo
+### Phase 31 — A reservation whose work stays on its branch for a later phase is released as kept  · status: done
 
-**Why:** tile had to release reservation `01a16327` for work that did not land but stays on its branch for a later phase. `release` refused it (outstanding at the protected tip). `--abandon` records the work as discarded, which is false. `resolve --retire-orphan` is scoped to an orphan, and this reservation was live. Showrunner, 2026-10-26: add one correct form for this case.
+#### As-built
 
-**Work Order:**
-1. `cargo-berth release <id> --keep-work --why <reason>` releases a live reservation whose work is not integrated and stays on its branch. It records a new `ReleaseDisposition` variant (for example `Deferred(reason)`). The reservation stops blocking, like the other dispositions.
-2. The board and JSON output show it as work kept on its branch, never as integrated or discarded. The help texts of `release`, `--abandon` and `--retire-orphan` name which form fits which case.
-3. The new variant reaches a live ledger only from a build that also reads it. Both machines install it together.
+- Why: tile had to release a live reservation for work that stays on its branch for a later phase. `release` refused it as outstanding, `--abandon` says the work was discarded, and `resolve --retire-orphan` is for a gone holder. hana owners met the same case on 2026-10-26.
+- `cargo-berth release <id> --keep-work --why <reason>` records the new `ReleaseDisposition::KeptOnBranch(KeptWorkReason)` (`kept_on_branch` on the wire). The reason is trimmed, non-empty and caller input under the 16384-byte check. It works on an active or an outstanding reservation and leaves the branch and files unchanged.
+- `release` also takes `--abandon --why` now. Clap puts `--keep-work` and `--abandon` in one group that requires `--why`. The CLI turns them into one `ReleaseSelection` enum (`IntegrationCheckpoint`, `KeepWork`, `Abandon`) at the boundary.
+- A kept release stops blocking and stops counting toward `maximum_reservations`. Its ordering constraints are cancelled, not fulfilled (`src/edge/mod.rs`). Output says the work is kept on its branch, with the reason. It is never shown as integrated or discarded, and never as an automatic release.
+- Help texts: `release` = merged work; `--abandon` = discarded work; `--keep-work` = work kept on its branch; `resolve --retire-orphan` = holder gone.
+- No journal operation changed; the existing `Release` record carries the new disposition. Output contract regenerated (seven `kept_on_branch` alternatives only).
+- Proof: `kept_branch_work_releases_an_outstanding_hold_and_its_capacity` (`tests/lifecycle.rs`) failed before the change (`--keep-work` unknown). Also tested: reason validation, abandon stays distinct, both edge directions, frozen replay and compaction. 1292/1292.
 
-**Verification:** `cargo-berth` suite passes, each test under 1 s. A test releases a live reservation with `--keep-work`, then proves it does not block and reads back as kept. Existing ledgers replay unchanged.
+**Binds later work:** like `unchanged_scopes`, a binary that writes `kept_on_branch` goes live only when the readers on both machines also read it.
 
 ### Phase 32 — A reservation with no change left against its target is released by itself  · status: done
 
@@ -812,3 +815,36 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - Proof: `tests/lifecycle.rs` (stale release and readback, fresh kept, committed/staged/unstaged/untracked kept, removed worktree retired, release at the limit, refusal at the limit with nothing stale), `tests/hooks.rs` (notice once). 1288/1288.
 
 **Binds later work:** a binary that writes `unchanged_scopes` goes live only when the readers on both machines also read it. Phase 31's `Deferred` form is a separate disposition.
+
+### Phase 33 — Work counts as integrated only when it is reachable from the pushed merge branch  · status: done
+
+#### As-built
+
+- Why: on 2026-10-27 the phase 31 merge reached local `main`, berth released two reservations as integrated, and the merge gate then rolled `main` back before the push. berth printed INTEGRATION EVIDENCE LOST for both.
+- `IntegrationProofRef::Upstream(FullRefName)` / `LocalOnly(FullRefName)` (`src/git/refs.rs`): when the target branch has an upstream, only the upstream's commit proves integration; a configured upstream that cannot be read is unavailable evidence, never a fall back to the local branch. A target with no upstream keeps the local branch as proof. No fetch.
+- Checkpoint snapshots, `current_trunk`, reconcile reachability, scoped patch checks, orphan evidence, merge extent, unchanged-scopes releases, release and `IntegratedAs` recovery all read the proof commit. Drift provenance keeps both bases, so local authorship history stays.
+- A local merge that is not pushed shows the existing `not_integrated` state; no new board state or schema. Journal, dispositions and replay are unchanged.
+- Proof: `a_local_merge_waits_for_the_pushed_integration_target` (`tests/lifecycle.rs`) failed before (released before the push); checkpoint and rollback tests (no evidence-lost alert); a repository without a remote keeps the old behaviour. 1295/1295.
+
+### Phase 34 — A merge that brings in only integrated commits is not a write  · status: done
+
+#### As-built
+
+- Why: in cargo-liner-style, `git merge --ff-only style/main` into a clean unit branch fired POST-WRITE INCURSION on other units' paths and opened a first-touch reservation on the 22 merged-in paths. Nothing was written. Showrunner, 2026-10-27.
+- `CommittedWriteSelection` {`Unclassified`, `NoReceivedCommits`, `UnitWrites`} (`src/drift/selection.rs`, built in `src/drift/writes.rs`): before classification, committed drift keeps only paths from commits outside the history of every recorded integration target (repository trunk and child trunks, local tip and available upstream). Staged, unstaged and untracked changes stay unit writes.
+- When every integration tip precedes every phase start, the phase start graph already read proves that nothing was received, with no new Git process. Otherwise one shared range query and one path log select the unit's own content.
+- A checkout of an integration branch keeps the per-holder cover checks. Missing or unreadable ancestry keeps the old conservative observation. Integration targets come from the ledger's recorded targets, not branch-name guesses.
+- No journal, disposition, output contract or replay change.
+- Proof: `an_integrated_fast_forward_is_not_a_post_write` (`tests/drift.rs`) failed before (incursion on a held path, widening onto received paths). Companion tests: the unit's own committed foreign-scope path still incurs after a merge; a dirty edit after the fast-forward still incurs. 1298/1298.
+
+### Phase 35 — Tests leave no paths behind in shared temp roots  · status: done
+
+#### As-built
+
+- Why: builds-unit found test leftovers in `/tmp/cache`, `/tmp/claude` and the live `/tmp/claude/unit`, where the census scans. Showrunner, 2026-10-27.
+- cargo-port `supervisor.rs`: both `/tmp/cache` `cache_root` values come from a test-owned `TempDir`.
+- cargo-berth `tests/hooks.rs`: `SCRATCH_ROOT` is gone; every fixture uses a default `TempDir`. Three wrappers that could no longer fail were removed; callers use the template constants directly.
+- tui_pane `app_config/loaded.rs`: the test `Scratch` owns a `TempDir`, not a fixed `tui_pane-<test>-<pid>` path.
+- cargo-handler: session discovery takes its roots as input (showrunner-approved production change). `SessionRoots` (`pub(super)`, `census/worker_dispatch/mod.rs`) owns the root directories; `SessionRoots::production()` is the one conversion of `SESSION_ROOTS`, built once in `LocalScanner::new`. `WorkerNames::session_dirs`, `resolve` and `name` take `&SessionRoots`. Production roots, session-id parsing and order are unchanged.
+- Every fixture in `worker_dispatch/{tests,dispatch_form_tests,naming_tests,prompt_opening_tests}.rs` and `census/scan/activity_scan_tests.rs` lives in a `TempDir`. New test `session_discovery_uses_only_supplied_roots_and_preserves_id_boundaries_and_order`.
+- Proof: cargo-port 1082/1082, cargo-handler 683/683, tui_pane 1140/1140, cargo-berth 1298/1298. No new entry in the three shared roots after the suites.

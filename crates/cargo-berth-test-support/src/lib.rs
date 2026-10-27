@@ -24,6 +24,7 @@ mod child_process;
 
 mod berth_command;
 mod command_deadline;
+mod constants;
 mod directory_snapshot;
 mod fixture_directory;
 mod git_driver;
@@ -35,11 +36,11 @@ mod test_process_group;
 use std::process::Command;
 use std::process::Output;
 
-pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
 pub use berth_command::use_git_read_subprocess;
 pub use command_deadline::ChildDeadlineExt;
 pub use command_deadline::CommandDeadlineExt;
+pub use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use directory_snapshot::DirectorySnapshot;
 pub use fixture_directory::fixture_tempdir;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;

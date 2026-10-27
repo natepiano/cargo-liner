@@ -26,10 +26,17 @@ use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::startup_log;
 use crate::theme;
+use crate::theme::AppearanceDiagnostic;
+use crate::theme::StartupThemeNotes;
+use crate::theme::ThemeInstallation;
 
 #[cfg(test)]
 #[path = "terminal/startup_tests.rs"]
 mod startup_tests;
+
+#[cfg(test)]
+#[path = "terminal/theme_note_tests.rs"]
+mod theme_note_tests;
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
@@ -37,20 +44,16 @@ pub(crate) fn run() -> ExitCode {
     startup_log::init();
     let loaded_config = LoadedConfig::load::<CargoHandler>();
     startup_log::startup_event("config_loaded");
-    let mut startup_note =
-        theme::install_theme(&loaded_config.config.appearance, theme::builtins());
+    let installation = theme::install_theme(&loaded_config.config.appearance, theme::builtins());
     let (appearance_sender, appearance_updates) = mpsc::channel();
     let startup_appearance = spawn_appearance_watcher(move |appearance| {
         let _ = appearance_sender.send(appearance);
     });
     startup_log::startup_event("appearance_read_returned");
-    if let Some(appearance) = startup_appearance {
-        startup_note =
-            tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance);
-    }
+    let startup_notes = startup_theme_notes(&loaded_config, installation, startup_appearance);
     // Read iterm2_profile before App::new consumes loaded_config.
     let iterm2_profile = loaded_config.config.appearance.iterm2_profile.clone();
-    let mut app = match App::new(loaded_config, startup_note) {
+    let mut app = match App::new(loaded_config, startup_notes) {
         Ok(app) => app,
         Err(error) => {
             eprintln!("{BINARY_NAME}: keymap: {error}");
@@ -70,6 +73,18 @@ pub(crate) fn run() -> ExitCode {
             appearance_updates,
         )
     })
+}
+
+/// Preserve installation failures while applying the watcher's first answer.
+fn startup_theme_notes(
+    loaded_config: &LoadedConfig,
+    installation: ThemeInstallation,
+    appearance: Option<Appearance>,
+) -> StartupThemeNotes {
+    let diagnostic = appearance.map_or(AppearanceDiagnostic::NotObserved, |appearance| {
+        tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance).into()
+    });
+    StartupThemeNotes::new(installation, diagnostic)
 }
 
 /// What the loop folds in on every pass besides input: the census

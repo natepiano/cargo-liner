@@ -3,6 +3,12 @@
 #[cfg(test)]
 mod app_scenarios;
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod installed;
+#[cfg(test)]
 mod reader_scenarios;
 #[cfg(test)]
 mod rows_readout;
@@ -12,9 +18,3 @@ mod rows_readout;
     reason = "tests should panic on unexpected values"
 )]
 mod shared_capture;
-#[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-mod wire;

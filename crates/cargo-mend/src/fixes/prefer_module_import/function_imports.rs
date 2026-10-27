@@ -114,27 +114,29 @@ fn analyze_function_import(
         return None;
     }
 
-    let path_anchor = PathAnchor::first(&flat.segments)?;
+    let path_anchor = PathAnchor::first(&flat.prefix)?;
     if !path_anchor.is_crate_relative() {
         return None;
     }
 
-    if flat.segments.len() < 3 {
+    if flat.prefix.len() < 2 {
         return None;
     }
 
-    let leaf = flat.segments.last()?;
+    let leaf = &flat.leaf;
     if !support::is_snake_case_function_name(leaf) {
         return None;
     }
 
-    let absolute_segments = support::resolve_to_absolute(&flat.segments, current_module_path)?;
+    let absolute_module = support::resolve_to_absolute(&flat.prefix, current_module_path)?;
+    let mut absolute_segments = absolute_module.clone();
+    absolute_segments.push(leaf.clone());
     if support::leaf_is_module(crate_sources, &absolute_segments) {
         return None;
     }
 
-    let module_segments = &flat.segments[..flat.segments.len() - 1];
-    let module_name = flat.segments[flat.segments.len() - 2].clone();
+    let module_segments = &flat.prefix;
+    let module_name = module_segments.last()?.clone();
     if PathAnchor::from(module_name.as_str()).is_crate_relative() {
         return None;
     }
@@ -160,7 +162,6 @@ fn analyze_function_import(
         format!("use {module_path};")
     };
     let span = node.span();
-    let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
     let conditional_attributes = ConditionalAttributes::from_attributes(source, &node.attrs);
 
     Some(RawCandidate {
@@ -175,4 +176,53 @@ fn analyze_function_import(
         import_target,
         inline_scope: inline_scope.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn function_analysis_uses_the_required_leaf_and_module_prefix() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("lib.rs"), "mod util { pub fn run() {} }")?;
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let crate_sources = super::CrateSources {
+            source_root: dir.path(),
+            sources:     &sources,
+        };
+        let text = "use crate::util::run;";
+        let source = super::ImportSource::new(text);
+        let node = syn::parse_str(text)?;
+        let candidate = super::analyze_function_import(
+            crate_sources,
+            &source,
+            &[],
+            &[],
+            &std::collections::BTreeSet::new(),
+            &node,
+        )
+        .ok_or_else(|| anyhow::anyhow!("expected a function import"))?;
+        assert_eq!(candidate.function_name, "run");
+        assert_eq!(candidate.module_name, "util");
+        assert_eq!(candidate.absolute_module, ["util"]);
+        assert_eq!(candidate.replacement_use, "use crate::util;");
+        for text in [
+            "use run;",
+            "use crate::run;",
+            "use crate::util::run as execute;",
+        ] {
+            let source = super::ImportSource::new(text);
+            assert!(
+                super::analyze_function_import(
+                    crate_sources,
+                    &source,
+                    &[],
+                    &[],
+                    &std::collections::BTreeSet::new(),
+                    &syn::parse_str(text)?,
+                )
+                .is_none()
+            );
+        }
+        Ok(())
+    }
 }

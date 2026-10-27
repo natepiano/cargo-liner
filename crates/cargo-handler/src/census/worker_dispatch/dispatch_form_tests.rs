@@ -46,11 +46,9 @@ fn process(pid: u32, parent: u32, arguments: Vec<String>) -> ProcessEntry {
 }
 
 fn fixture(root: &str) -> TempDir {
-    let base = Path::new("/tmp/claude").join(root);
-    fs::create_dir_all(&base).expect("session root");
     tempfile::Builder::new()
-        .prefix("handler-forms-")
-        .tempdir_in(base)
+        .prefix(&format!("handler-forms-{root}-"))
+        .tempdir()
         .expect("isolated session")
 }
 

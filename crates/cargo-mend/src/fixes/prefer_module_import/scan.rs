@@ -27,6 +27,7 @@ use super::references::BareReference;
 use super::references::ReferenceCollector;
 use super::support;
 use super::support::CrateSources;
+use super::support::SourceSpan;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ConditionalAttributes;
@@ -47,14 +48,28 @@ pub(crate) struct PreferModuleImportScan {
     pub fixes:    ValidatedFixSet,
 }
 
+/// File text and its checked index are constructed together and shared by every scan pass.
 pub(super) struct ScanFileContext<'a> {
-    pub(super) analysis_root: &'a Path,
-    pub(super) path:          &'a Path,
-    pub(super) text:          &'a str,
-    pub(super) offsets:       &'a [usize],
+    analysis_root:   &'a Path,
+    pub(super) path: &'a Path,
+    text:            &'a str,
+    source:          ImportSource<'a>,
 }
 
-impl ScanFileContext<'_> {
+impl<'a> ScanFileContext<'a> {
+    pub(super) fn new(analysis_root: &'a Path, path: &'a Path, text: &'a str) -> Self {
+        Self {
+            analysis_root,
+            path,
+            text,
+            source: ImportSource::new(text),
+        }
+    }
+
+    pub(super) const fn source(&self) -> &ImportSource<'a> { &self.source }
+
+    pub(super) const fn text(&self) -> &'a str { self.text }
+
     pub(super) fn display_path(&self) -> String {
         self.path
             .strip_prefix(self.analysis_root)
@@ -77,14 +92,14 @@ pub(super) struct ScopedModuleImport {
 
 #[derive(Clone, Copy)]
 enum FunctionImportPolicy<'a> {
-    Parent { name: &'a str },
+    Parent,
     Module { name: &'a str },
 }
 
 impl<'a> From<(&'a str, ImportTarget)> for FunctionImportPolicy<'a> {
     fn from((name, target): (&'a str, ImportTarget)) -> Self {
         match target {
-            ImportTarget::ParentModule => Self::Parent { name },
+            ImportTarget::ParentModule => Self::Parent,
             ImportTarget::OtherModule => Self::Module { name },
         }
     }
@@ -93,7 +108,7 @@ impl<'a> From<(&'a str, ImportTarget)> for FunctionImportPolicy<'a> {
 impl FunctionImportPolicy<'_> {
     fn finding_text(self, function: &RawCandidate) -> (String, String) {
         match self {
-            Self::Parent { .. } => (
+            Self::Parent => (
                 format!(
                     "drop the import and call `super::{}` directly",
                     function.function_name
@@ -115,7 +130,7 @@ impl FunctionImportPolicy<'_> {
 
     fn reference(self, name: &str, inline_mod_depth: usize) -> String {
         match self {
-            Self::Parent { .. } => format!("{}{name}", "super::".repeat(inline_mod_depth + 1)),
+            Self::Parent => format!("{}{name}", "super::".repeat(inline_mod_depth + 1)),
             Self::Module { name: module } => format!("{module}::{name}"),
         }
     }
@@ -127,7 +142,7 @@ impl FunctionImportPolicy<'_> {
         rewritten: &mut BTreeSet<ScopedModuleImport>,
     ) -> ImportRewritePlan {
         match self {
-            Self::Parent { .. } => ImportRewritePlan::DeleteRedundant,
+            Self::Parent => ImportRewritePlan::DeleteRedundant,
             Self::Module { .. } => {
                 if existing.contains(&module) {
                     ImportRewritePlan::DeleteRedundant
@@ -147,14 +162,65 @@ enum ImportRewritePlan {
     DeleteDuplicate,
 }
 
-pub(super) struct ImportFindingInputs<'a> {
-    module_to_functions:     &'a BTreeMap<String, Vec<RawCandidate>>,
-    func_to_module:          &'a BTreeMap<&'a str, FunctionImportPolicy<'a>>,
-    references:              &'a [BareReference],
-    /// Modules the file already imports with a bare `use module;`, keyed by
-    /// scope. A function import whose target module is in this set at the same
-    /// scope is rewritten to nothing (deleted) instead of to `use module;`,
-    /// which would duplicate the existing import and fail to compile (E0252).
+/// A function import whose coordinates and diagnostic line belong to the scanned source.
+/// Missing lines cannot become empty diagnostic text.
+struct FunctionSourceLocation<'a> {
+    span: SourceSpan<'a>,
+}
+
+/// References stay attached to the candidate and import group that justify their edits.
+/// Edit construction cannot silently omit a reference or lose its group in a second lookup.
+struct RewriteBinding<'a> {
+    function:   &'a RawCandidate,
+    location:   FunctionSourceLocation<'a>,
+    group:      ImportGroup,
+    references: Vec<&'a BareReference>,
+}
+
+impl<'a> RewriteBinding<'a> {
+    fn collect(
+        source: &ImportSource<'a>,
+        candidates: &'a BTreeMap<String, Vec<RawCandidate>>,
+        references: &'a [BareReference],
+    ) -> Result<Vec<Self>> {
+        let mut bindings = Vec::new();
+        let mut by_name = BTreeMap::new();
+        for function in candidates.values().flatten() {
+            by_name.insert(function.function_name.as_str(), bindings.len());
+            bindings.push(Self {
+                function,
+                location: FunctionSourceLocation {
+                    span: support::SourceSpan::new(source, function.span_start, function.span_end)?,
+                },
+                group: ImportGroup {
+                    bare_name: function.module_name.clone(),
+                    full_path: function.absolute_module.join("::"),
+                },
+                references: Vec::new(),
+            });
+        }
+        for reference in references {
+            let index = by_name
+                .get(reference.name.as_str())
+                .context("reference has no function import candidate")?;
+            bindings[*index].references.push(reference);
+        }
+        Ok(bindings)
+    }
+
+    fn policy(&self) -> FunctionImportPolicy<'_> {
+        FunctionImportPolicy::from((
+            self.function.module_name.as_str(),
+            self.function.import_target,
+        ))
+    }
+}
+
+struct ImportFindingInputs<'a> {
+    bindings:                &'a [RewriteBinding<'a>],
+    /// Modules the file already imports with a bare `use module;`, keyed by scope.
+    /// Reuse at that same scope deletes the function import instead of introducing
+    /// a duplicate module import that would fail to compile (E0252).
     existing_module_imports: &'a BTreeSet<ScopedModuleImport>,
 }
 
@@ -240,17 +306,11 @@ fn scan_file(
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
-    let indexed = ImportSource::new(text);
-    let offsets = indexed.line_offsets();
-    let file_context = ScanFileContext {
-        analysis_root,
-        path,
-        text,
-        offsets,
-    };
+    let file_context = ScanFileContext::new(analysis_root, path, text);
+    let indexed = file_context.source();
 
     let (candidates, mut inline_candidates) =
-        detect_candidates(crate_sources, &indexed, &current_module_path, syntax);
+        detect_candidates(crate_sources, indexed, &current_module_path, syntax);
     if candidates.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -280,25 +340,16 @@ fn scan_file(
         .map(|candidate| candidate.function_name.clone())
         .collect();
 
-    let mut collector = ReferenceCollector::new(offsets, &imported_names);
+    let mut collector = ReferenceCollector::new(indexed, &imported_names);
     Visit::visit_file(&mut collector, syntax);
 
-    let mut func_to_module: BTreeMap<&str, FunctionImportPolicy<'_>> = BTreeMap::new();
-    for functions in module_to_functions.values() {
-        for function in functions {
-            func_to_module.insert(
-                function.function_name.as_str(),
-                FunctionImportPolicy::from((function.module_name.as_str(), function.import_target)),
-            );
-        }
-    }
+    let references = collector.references?;
+    let bindings = RewriteBinding::collect(indexed, &module_to_functions, &references)?;
 
     let (mut findings, mut fixes) = build_findings_and_fixes(
         &file_context,
         &ImportFindingInputs {
-            module_to_functions:     &module_to_functions,
-            func_to_module:          &func_to_module,
-            references:              &collector.references,
+            bindings:                &bindings,
             existing_module_imports: &existing_module_imports,
         },
     );
@@ -306,7 +357,7 @@ fn scan_file(
     if !inline_candidates.is_empty() {
         let will_import_modules =
             build_will_import_modules(&existing_module_imports, &module_to_functions);
-        let file_insertion = file_level_insertion(syntax, text, offsets);
+        let file_insertion = file_level_insertion(syntax, text, indexed)?;
         let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
             &file_context,
             &InlineCallFindingInputs {
@@ -314,7 +365,7 @@ fn scan_file(
                 will_import_modules: &will_import_modules,
                 file_insertion,
             },
-        );
+        )?;
         findings.extend(inline_findings);
         fixes.extend(inline_fixes);
     }
@@ -448,8 +499,7 @@ impl Visit<'_> for ExistingModuleImportCollector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(flat) = support::flatten_use_tree(&node.tree)
             && flat.rename.is_none()
-            && let Some(absolute) =
-                support::resolve_to_absolute(&flat.segments, &self.current_module_path)
+            && let Some(absolute) = flat.absolute_path(&self.current_module_path)
             && !absolute.is_empty()
             && support::leaf_is_module(self.crate_sources, &absolute)
         {
@@ -728,14 +778,18 @@ fn build_will_import_modules(
     will_import_modules
 }
 
-fn file_level_insertion(syntax: &File, text: &str, offsets: &[usize]) -> FileInsertion {
+fn file_level_insertion(
+    syntax: &File,
+    text: &str,
+    source: &ImportSource<'_>,
+) -> Result<FileInsertion> {
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {
-        let item_start = support::offset(offsets, item.span().start());
+        let item_start = support::offset(source, item.span().start())?.byte();
         first_item_start.get_or_insert(item_start);
         if let Item::Use(item_use) = item {
-            let end = support::offset(offsets, item_use.span().end());
+            let end = support::offset(source, item_use.span().end())?.byte();
             let end = if text.as_bytes().get(end) == Some(&b'\n') {
                 end + 1
             } else {
@@ -744,10 +798,10 @@ fn file_level_insertion(syntax: &File, text: &str, offsets: &[usize]) -> FileIns
             last_use_end = Some(end);
         }
     }
-    FileInsertion {
+    Ok(FileInsertion {
         offset:            last_use_end.or(first_item_start).unwrap_or(0),
         before_first_item: last_use_end.is_none(),
-    }
+    })
 }
 
 fn build_findings_and_fixes(
@@ -759,48 +813,40 @@ fn build_findings_and_fixes(
     let mut fixes = Vec::new();
     let mut rewritten_modules: BTreeSet<ScopedModuleImport> = BTreeSet::new();
 
-    for functions in import_inputs.module_to_functions.values() {
-        for function in functions {
-            let policy =
-                FunctionImportPolicy::from((function.module_name.as_str(), function.import_target));
-            findings.push(build_function_finding(
-                function,
-                &display_path,
-                file_context,
-                policy,
-            ));
-            fixes.push(build_function_use_fix(
-                function,
-                file_context,
-                import_inputs.existing_module_imports,
-                &mut rewritten_modules,
-                policy,
-            ));
-        }
+    for binding in import_inputs.bindings {
+        let policy = binding.policy();
+        findings.push(build_function_finding(binding, &display_path, policy));
+        fixes.push(build_function_use_fix(
+            binding,
+            file_context,
+            import_inputs.existing_module_imports,
+            &mut rewritten_modules,
+            policy,
+        ));
     }
-
-    fixes.extend(build_reference_fixes(file_context, import_inputs));
+    for binding in import_inputs.bindings {
+        fixes.extend(build_reference_fixes(file_context, binding));
+    }
 
     (findings, fixes)
 }
 
 fn build_function_finding(
-    function: &RawCandidate,
+    binding: &RewriteBinding<'_>,
     display_path: &str,
-    file_context: &ScanFileContext<'_>,
     policy: FunctionImportPolicy<'_>,
 ) -> Finding {
-    let source_line = file_context
-        .text
-        .lines()
-        .nth(function.span_start.line.saturating_sub(1))
-        .unwrap_or_default()
-        .to_string();
+    let function = binding.function;
+    let source_line = binding.location.span.start().source_line().to_string();
 
     let (message, suggestion) = policy.finding_text(function);
 
     Finding {
-        severity: Severity::Warning,
+        disposition: Finding::disposition(
+            DiagnosticCode::PreferModuleImport,
+            Severity::Warning,
+            FixSupport::PreferModuleImport,
+        ),
         diagnostic_code: DiagnosticCode::PreferModuleImport,
         path: display_path.to_string(),
         line: function.span_start.line,
@@ -810,30 +856,27 @@ fn build_function_finding(
         item: None,
         message,
         suggestion: Some(suggestion),
-        fix_support: FixSupport::PreferModuleImport,
         related: None,
         item_visibility: ItemVisibility::default(),
     }
 }
 
 fn build_function_use_fix(
-    function: &RawCandidate,
+    binding: &RewriteBinding<'_>,
     file_context: &ScanFileContext<'_>,
     existing_module_imports: &BTreeSet<ScopedModuleImport>,
     rewritten_modules: &mut BTreeSet<ScopedModuleImport>,
     policy: FunctionImportPolicy<'_>,
 ) -> UseFix {
-    let byte_start = support::offset(file_context.offsets, function.span_start);
-    let byte_end = support::offset(file_context.offsets, function.span_end);
+    let function = binding.function;
+    let byte_start = binding.location.span.start().byte();
+    let byte_end = binding.location.span.end();
     let byte_end_with_newline = if file_context.text.as_bytes().get(byte_end) == Some(&b'\n') {
         byte_end + 1
     } else {
         byte_end
     };
-    let group = Some(ImportGroup {
-        bare_name: function.module_name.clone(),
-        full_path: function.absolute_module.join("::"),
-    });
+    let group = Some(binding.group.clone());
     let scoped_module = ScopedModuleImport {
         inline_scope:    function.inline_scope.clone(),
         absolute_module: function.absolute_module.clone(),
@@ -870,41 +913,30 @@ fn replacement_use_with_conditional_attributes(function: &RawCandidate) -> Strin
 
 fn build_reference_fixes(
     file_context: &ScanFileContext<'_>,
-    import_inputs: &ImportFindingInputs<'_>,
+    binding: &RewriteBinding<'_>,
 ) -> Vec<UseFix> {
-    let mut fixes = Vec::new();
-    for reference in import_inputs.references {
-        if let Some(&policy) = import_inputs.func_to_module.get(reference.name.as_str()) {
-            let module_name = match policy {
-                FunctionImportPolicy::Parent { name } | FunctionImportPolicy::Module { name } => {
-                    name
-                },
-            };
-            let group = import_inputs
-                .module_to_functions
-                .values()
-                .flatten()
-                .find(|function| function.module_name == module_name)
-                .map(|function| ImportGroup {
-                    bare_name: function.module_name.clone(),
-                    full_path: function.absolute_module.join("::"),
-                });
-            let replacement = policy.reference(&reference.name, reference.inline_mod_depth);
-            fixes.push(UseFix {
-                path: file_context.path.to_path_buf(),
-                start: reference.byte_start,
-                end: reference.byte_end,
-                replacement,
-                import_group: group,
-            });
-        }
-    }
-    fixes
+    binding
+        .references
+        .iter()
+        .map(|reference| UseFix {
+            path:         file_context.path.to_path_buf(),
+            start:        reference.byte_start,
+            end:          reference.byte_end,
+            replacement:  binding
+                .policy()
+                .reference(&reference.name, reference.inline_mod_depth),
+            import_group: Some(binding.group.clone()),
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Reverse;
     use std::collections::BTreeSet;
+
+    use anyhow::Context;
+    use proc_macro2::LineColumn;
 
     use super::FunctionImportPolicy;
     use super::ImportRewritePlan;
@@ -959,6 +991,40 @@ mod tests {
     }
 
     #[test]
+    fn file_scan_keeps_module_import_through_ancestor_reexport() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("a/b"))?;
+        let path = dir.path().join("lib.rs");
+        let text = concat!(
+            "pub mod a;\nuse crate::a::b::c::ancestor::api;\n",
+            "fn f() { api::run(); }\n",
+        );
+        for (file, contents) in [
+            ("lib.rs", text),
+            ("a.rs", "pub mod b; pub mod api { pub fn run() {} }"),
+            ("a/b.rs", "pub mod c;"),
+            ("a/b/c.rs", "pub use super::super as ancestor;"),
+        ] {
+            std::fs::write(dir.path().join(file), contents)?;
+        }
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let (findings, fixes) = super::scan_file(
+            dir.path(),
+            super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            },
+            &path,
+            &module_map,
+        )?;
+        assert!(findings.is_empty());
+        assert!(fixes.is_empty());
+        assert_eq!(std::fs::read_to_string(path)?, text);
+        Ok(())
+    }
+
+    #[test]
     fn import_plans_preserve_scope_and_only_reserve_replacements() {
         let module = ScopedModuleImport {
             inline_scope:    Vec::new(),
@@ -969,7 +1035,7 @@ mod tests {
             ..module.clone()
         };
         let mut rewritten = BTreeSet::new();
-        let parent = FunctionImportPolicy::Parent { name: "tool" };
+        let parent = FunctionImportPolicy::Parent;
         let other = FunctionImportPolicy::Module { name: "tool" };
         assert!(matches!(
             parent.import_plan(module.clone(), &BTreeSet::new(), &mut rewritten),
@@ -1003,5 +1069,117 @@ mod tests {
         ));
         assert_eq!(parent.reference("run", 2), "super::super::super::run");
         assert_eq!(other.reference("run", 2), "tool::run");
+    }
+    #[test]
+    fn rewrite_bindings_keep_checked_lines_references_and_groups_together() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("lib.rs"), "mod util { pub fn run() {} }")?;
+        let sources = ParsedSources::default();
+        let text = "// é\nuse crate::util::run;\nfn f() { run(); }\n";
+        let source = ImportSource::new(text);
+        let syntax = syn::parse_file(text)?;
+        let (candidates, _) = super::detect_candidates(
+            super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            },
+            &source,
+            &[],
+            &syntax,
+        );
+        let mut grouped = super::group_candidates_by_module(candidates);
+        let names = BTreeSet::from(["run".to_string()]);
+        let mut collector = super::ReferenceCollector::new(&source, &names);
+        syn::visit::Visit::visit_file(&mut collector, &syntax);
+        let references = collector.references?;
+        let bindings = super::RewriteBinding::collect(&source, &grouped, &references)?;
+        assert_eq!(bindings.len(), 1);
+        let binding = &bindings[0];
+        assert_eq!(
+            binding.location.span.start().source_line(),
+            "use crate::util::run;"
+        );
+        assert_eq!(binding.references.len(), 1);
+        assert_eq!(binding.group.bare_name, "util");
+        assert_eq!(binding.group.full_path, "util");
+        let context = super::ScanFileContext::new(dir.path(), dir.path(), text);
+        let fixes = super::build_reference_fixes(&context, binding);
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].replacement, "util::run");
+        assert_eq!(
+            fixes[0].import_group.as_ref().map(|group| &group.full_path),
+            Some(&binding.group.full_path)
+        );
+        let unbound = [super::BareReference {
+            name:             "unbound".to_string(),
+            byte_start:       0,
+            byte_end:         0,
+            inline_mod_depth: 0,
+        }];
+        assert!(super::RewriteBinding::collect(&source, &grouped, &unbound).is_err());
+        for position in [
+            LineColumn {
+                line:   0,
+                column: 0,
+            },
+            LineColumn {
+                line:   8,
+                column: 0,
+            },
+            LineColumn {
+                line:   2,
+                column: 100,
+            },
+        ] {
+            grouped.get_mut("crate::util").context("missing module")?[0].span_start = position;
+            assert!(super::RewriteBinding::collect(&source, &grouped, &references).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn file_scan_preserves_diagnostic_lines_and_exact_rewrite_bytes() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let text = concat!(
+            "// é\nmod util { pub fn run() {} }\n",
+            "use crate::util::run;\n",
+            "fn f() { let α = (); run(); crate::util::run(); }\n",
+        );
+        std::fs::write(&path, text)?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let before = ImportSource::construction_count();
+        let (findings, mut fixes) = super::scan_file(
+            dir.path(),
+            super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            },
+            &path,
+            &module_map,
+        )?;
+        assert_eq!(ImportSource::construction_count() - before, 1);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].source_line, "use crate::util::run;");
+        assert_eq!(
+            findings[1].source_line,
+            "fn f() { let α = (); run(); crate::util::run(); }"
+        );
+        assert_eq!(findings[1].highlight_len, "crate::util::run".len());
+        fixes.sort_by_key(|fix| Reverse(fix.start));
+        let mut rewritten = text.to_string();
+        for fix in fixes {
+            rewritten.replace_range(fix.start..fix.end, &fix.replacement);
+        }
+        assert_eq!(
+            rewritten,
+            concat!(
+                "// é\nmod util { pub fn run() {} }\n",
+                "use crate::util;\n",
+                "fn f() { let α = (); util::run(); util::run(); }\n",
+            )
+        );
+        Ok(())
     }
 }

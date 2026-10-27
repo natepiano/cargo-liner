@@ -4347,6 +4347,160 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_local_merge_waits_for_the_pushed_integration_target() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let id = claim(&fixture.holder, "file:pushed.rs", FIRST_RUN);
+        commit(&fixture.holder, "pushed.rs", "work waiting for push\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+
+        let local = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&local, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{local}"
+        );
+        GIT.run(fixture.trunk(), ["push", "--quiet", "origin", "main"]);
+        let pushed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&pushed, &id)["lifecycle"]["stage"],
+            "released",
+            "{pushed}"
+        );
+        assert_eq!(
+            snapshot(&pushed, &id)["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+    }
+
+    #[test]
+    fn rolling_back_an_unpushed_merge_loses_no_integration_evidence() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let before = GIT.stdout(fixture.trunk(), ["rev-parse", "HEAD"]);
+        let id = claim(&fixture.holder, "file:rollback.rs", FIRST_RUN);
+        commit(&fixture.holder, "rollback.rs", "work waiting for push\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+        board(fixture.trunk());
+        GIT.run(fixture.trunk(), ["reset", "--quiet", "--hard", &before]);
+        let rolled_back = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&rolled_back, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{rolled_back}"
+        );
+        assert_eq!(
+            snapshot(&rolled_back, &id)["integration_evidence"]["status"]["status"],
+            "not_integrated"
+        );
+        assert!(
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| event["op"] == "release" && event["reservation_id"] == id)
+        );
+        assert!(
+            !rolled_back
+                .to_string()
+                .contains("lost_integration_evidence"),
+            "{rolled_back}"
+        );
+    }
+
+    #[test]
+    fn checkpoint_after_an_unpushed_merge_uses_the_pushed_tip() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let pushed_tip = GIT.stdout(fixture.trunk(), ["rev-parse", "origin/main"]);
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "not pushed\n");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+        let local = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&local, &id)["lifecycle"]["stage"],
+            "active",
+            "{local}"
+        );
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        let checkpoint = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+            .expect("checkpoint event");
+        assert_eq!(checkpoint["trunk_snapshot"], pushed_tip);
+        GIT.run(fixture.trunk(), ["reset", "--quiet", "--hard", &pushed_tip]);
+        let rolled_back = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&rolled_back, &id)["integration_evidence"]["status"]["status"],
+            "not_integrated",
+            "{rolled_back}"
+        );
+    }
+
+    #[test]
     fn integrated_checkpoint_settles_while_a_live_reservation_protects_later_work() {
         let fixture = Repository::new();
         let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
@@ -4397,6 +4551,132 @@ mod merge_extent {
             BTreeSet::from(["later.rs".to_owned()])
         );
         assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn kept_branch_work_releases_an_outstanding_hold_and_its_capacity() {
+        let fixture = Repository::new();
+        for root in [fixture.trunk(), &fixture.holder, &fixture.outsider] {
+            write(
+                root,
+                super::CONFIGURATION_PATH,
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            );
+        }
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "work for a later phase\n");
+        let tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        let checkpoint = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&checkpoint);
+        assert_eq!(json(&checkpoint)["status"], "outstanding");
+        assert_refused(&fixture.outsider, "file:branch.rs", SECOND_RUN, &id);
+        let release = berth(
+            &fixture.holder,
+            &[
+                "release",
+                &id,
+                "--keep-work",
+                "--why",
+                "continue in phase 40",
+                "--json",
+            ],
+            FIRST_RUN,
+        );
+        succeed(&release);
+        let released = json(&release);
+        assert_eq!(released["status"], "released");
+        assert_eq!(
+            released["payload"]["data"]["disposition"],
+            serde_json::json!({
+                "kind": "kept_on_branch", "evidence": "continue in phase 40"
+            })
+        );
+        assert_eq!(GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]), tip);
+        assert_eq!(
+            fs::read_to_string(fixture.holder.join("branch.rs")).expect("kept work"),
+            "work for a later phase\n"
+        );
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["disposition"],
+            released["payload"]["data"]["disposition"]
+        );
+        assert_allowed(&fixture.outsider, "file:branch.rs", SECOND_RUN);
+        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("discard derived projection");
+        let replayed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&replayed, &id)["lifecycle"],
+            snapshot(&observed, &id)["lifecycle"]
+        );
+    }
+
+    #[test]
+    fn active_kept_work_requires_a_nonempty_bounded_reason_without_a_checkpoint() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let oversized = "x".repeat(16_384);
+        for reason in [oversized.as_str(), "   "] {
+            let before = events(fixture.trunk());
+            let refused = berth(
+                &fixture.holder,
+                &["release", &id, "--keep-work", "--why", reason, "--json"],
+                FIRST_RUN,
+            );
+            assert!(!refused.status.success());
+            assert_eq!(json(&refused)["status"], "invalid_input");
+            assert!(
+                events(fixture.trunk())
+                    .iter()
+                    .all(|event| event["op"] != "release" || event["reservation_id"] != id)
+            );
+            assert!(events(fixture.trunk()).starts_with(&before));
+        }
+        let release = berth(
+            &fixture.holder,
+            &[
+                "release",
+                &id,
+                "--keep-work",
+                "--why",
+                "  next phase  ",
+                "--json",
+            ],
+            FIRST_RUN,
+        );
+        succeed(&release);
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["disposition"],
+            serde_json::json!({"kind":"kept_on_branch", "evidence":"next phase"})
+        );
+        assert!(
+            events(fixture.trunk())
+                .iter()
+                .all(|event| event["op"] != "checkpoint" || event["reservation_id"] != id)
+        );
+    }
+
+    #[test]
+    fn release_abandon_records_discarded_work() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let release = berth(
+            &fixture.holder,
+            &[
+                "release",
+                &id,
+                "--abandon",
+                "--why",
+                "discarded draft",
+                "--json",
+            ],
+            FIRST_RUN,
+        );
+        succeed(&release);
+        assert_eq!(
+            json(&release)["payload"]["data"]["disposition"],
+            serde_json::json!({"kind":"abandoned", "evidence":"discarded draft"})
+        );
     }
 
     #[test]

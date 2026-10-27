@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use anyhow::Context;
 use proc_macro2::LineColumn;
 use syn::Arm;
 use syn::Attribute;
@@ -77,10 +78,14 @@ impl ImportGate {
         }
     }
 
-    fn all_duplicates(self, scope: &Scope, bare_paths: &[(String, String)]) -> bool {
+    fn all_duplicates(self, scope: &ScopedUseFinder, bare_paths: &[NamedImport]) -> bool {
         match self {
             Self::Conditional => false,
-            Self::Unconditional => bare_paths.iter().all(|(bare, full)| {
+            Self::Unconditional => bare_paths.iter().all(|binding| {
+                let NamedImport {
+                    name: bare,
+                    path: full,
+                } = binding;
                 matches!(scope.existing.get(bare),
                     Some(ExistingBinding::Use { full: existing, gate: Self::Unconditional })
                         if existing == full)
@@ -89,7 +94,10 @@ impl ImportGate {
     }
 }
 
-struct Scope {
+/// An active module scope required by every import move and insertion.
+/// The file scan installs the root scope, and entering a module replaces it
+/// until that module's traversal finishes; emission never has an absent scope.
+struct ScopedUseFinder {
     /// Byte offset where new `use` lines insert at the top of the scope.
     /// Sits just after the last top-of-scope `use`, or at the first
     /// non-use item, or at the start of the scope when neither exists.
@@ -106,7 +114,7 @@ struct InBodyUseFinder<'a> {
     text:                   &'a str,
     path:                   &'a Path,
     display_path:           &'a str,
-    scope_stack:            Vec<Scope>,
+    scope:                  ScopedUseFinder,
     /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes on every enclosing
     /// construct the visitor is currently inside, outermost first. A nested
     /// `use` that moves to the module scope carries these attributes with it so
@@ -114,6 +122,7 @@ struct InBodyUseFinder<'a> {
     /// module (an inner `use` moves only to that module's top, which the
     /// module's own gate already wraps).
     conditional_attributes: ConditionalAttributes,
+    result:                 anyhow::Result<()>,
     findings:               Vec<Finding>,
     fixes:                  Vec<UseFix>,
 }
@@ -123,7 +132,7 @@ impl InBodyUseFinder<'_> {
         ConditionalAttributes::from_attributes(self.source, attributes)
     }
 
-    fn try_emit_fix(&mut self, use_item: &ItemUse) {
+    fn try_emit_fix(&mut self, use_item: &ItemUse) -> anyhow::Result<()> {
         // `InBodyUseFinder::try_emit_fix` leaves `use_item` in place when a non-`cfg`
         // attribute on the `use` itself (`#[allow(...)]`, a doc comment, …) can change
         // what the import means.
@@ -132,17 +141,17 @@ impl InBodyUseFinder<'_> {
             .iter()
             .any(|attribute| !imports::is_conditional(attribute))
         {
-            return;
+            return Ok(());
         }
 
-        let bare_paths = flatten_use_to_bare_paths(&use_item.tree);
+        let Ok(bare_paths) = flatten_use_to_bare_paths(&use_item.tree)
+            .map(ImportLeaf::into_named)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return Ok(());
+        };
         if bare_paths.is_empty() {
-            return;
-        }
-        // `try_emit_fix` leaves `bare_paths` containing `*` in place because globs may shadow
-        // arbitrary names.
-        if bare_paths.iter().any(|(bare, _)| bare == "*") {
-            return;
+            return Ok(());
         }
 
         // `conditional_attributes` combines every enclosing `#[cfg]` plus
@@ -152,9 +161,7 @@ impl InBodyUseFinder<'_> {
         conditional_attributes.extend(self.attributes(&use_item.attrs));
         let gate = ImportGate::from(&conditional_attributes);
 
-        let Some(scope) = self.scope_stack.last() else {
-            return;
-        };
+        let scope = &self.scope;
 
         // `blocked` rejects a gated `use` with any `scope.existing` binding of the
         // same name (even the same path double-imports when both are active),
@@ -162,9 +169,9 @@ impl InBodyUseFinder<'_> {
         // a real collision. Leaving it in place is safe on every target.
         let blocked = bare_paths
             .iter()
-            .any(|(bare, full)| gate.blocks(scope.existing.get(bare), full));
+            .any(|binding| gate.blocks(scope.existing.get(&binding.name), &binding.path));
         if blocked {
-            return;
+            return Ok(());
         }
 
         // `all_duplicates` means every bare name is already imported unconditionally with the
@@ -178,7 +185,7 @@ impl InBodyUseFinder<'_> {
             &conditional_attributes,
             gate,
             all_duplicates,
-        );
+        )
     }
 
     /// Push the finding and the insertion/deletion fixes for a movable `use`.
@@ -188,18 +195,19 @@ impl InBodyUseFinder<'_> {
     fn emit_move(
         &mut self,
         use_item: &ItemUse,
-        bare_paths: &[(String, String)],
+        bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
         gate: ImportGate,
         all_duplicates: bool,
-    ) {
+    ) -> anyhow::Result<()> {
         let use_span = use_item.span();
         // `use_span` includes the first attribute. Build the moved text from
         // `use_item.use_token` so `conditional_attributes` are emitted once.
-        let attr_start = offset(self.source.line_offsets(), use_span.start());
+        let attr_start = SourcePosition::new(self.source, use_span.start())?.offset;
         let use_kw = use_item.use_token.span().start();
-        let use_kw_start = offset(self.source.line_offsets(), use_kw);
-        let use_end = offset(self.source.line_offsets(), use_span.end());
+        let use_location = SourcePosition::new(self.source, use_kw)?;
+        let use_kw_start = use_location.offset;
+        let use_end = SourcePosition::new(self.source, use_span.end())?.offset;
         let use_end_with_nl = if self.text.as_bytes().get(use_end) == Some(&b'\n') {
             use_end + 1
         } else {
@@ -216,30 +224,27 @@ impl InBodyUseFinder<'_> {
             attr_start
         };
 
-        let group = bare_paths.first().map(|(bare, full)| ImportGroup {
-            bare_name: bare.clone(),
-            full_path: full.clone(),
+        let group = bare_paths.first().map(|binding| ImportGroup {
+            bare_name: binding.name.clone(),
+            full_path: binding.path.clone(),
         });
 
-        let source_line = self
-            .text
-            .lines()
-            .nth(use_kw.line.saturating_sub(1))
-            .unwrap_or_default()
-            .to_string();
         self.findings.push(Finding {
-            severity: Severity::Warning,
+            disposition:     Finding::disposition(
+                DiagnosticCode::ImportsAtTop,
+                Severity::Warning,
+                FixSupport::ImportsAtTop,
+            ),
             diagnostic_code: DiagnosticCode::ImportsAtTop,
-            path: self.display_path.to_string(),
-            line: use_kw.line,
-            column: use_kw.column + 1,
-            highlight_len: (use_end - use_kw_start).max(1),
-            source_line,
-            item: None,
-            message: IMPORTS_AT_TOP_MESSAGE.to_string(),
-            suggestion: Some(IMPORTS_AT_TOP_SUGGESTION.to_string()),
-            fix_support: FixSupport::ImportsAtTop,
-            related: None,
+            path:            self.display_path.to_string(),
+            line:            use_kw.line,
+            column:          use_kw.column + 1,
+            highlight_len:   (use_end - use_kw_start).max(1),
+            source_line:     use_location.source_line.to_string(),
+            item:            None,
+            message:         IMPORTS_AT_TOP_MESSAGE.to_string(),
+            suggestion:      Some(IMPORTS_AT_TOP_SUGGESTION.to_string()),
+            related:         None,
             item_visibility: ItemVisibility::default(),
         });
 
@@ -261,6 +266,7 @@ impl InBodyUseFinder<'_> {
             replacement:  String::new(),
             import_group: group,
         });
+        Ok(())
     }
 
     /// Insert the moved `use` (with its carried gate) at the scope top and
@@ -269,18 +275,15 @@ impl InBodyUseFinder<'_> {
     /// conditional move never dedups against an unconditional import of the same name.
     fn emit_insertion(
         &mut self,
-        bare_paths: &[(String, String)],
+        bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
         gate: ImportGate,
         use_kw_start: usize,
         use_end: usize,
         group: Option<&ImportGroup>,
     ) {
-        let Some(scope) = self.scope_stack.last() else {
-            return;
-        };
-        let indent = scope.indent.clone();
-        let insertion_offset = scope.insertion_offset;
+        let indent = self.scope.indent.clone();
+        let insertion_offset = self.scope.insertion_offset;
 
         let use_text = &self.text[use_kw_start..use_end];
         let mut insertion = conditional_attributes.render(&indent);
@@ -295,22 +298,23 @@ impl InBodyUseFinder<'_> {
             import_group: group.cloned(),
         });
 
-        if let Some(scope) = self.scope_stack.last_mut() {
-            for (bare, full) in bare_paths {
-                scope.existing.insert(
-                    bare.clone(),
-                    ExistingBinding::Use {
-                        full: full.clone(),
-                        gate,
-                    },
-                );
-            }
+        for binding in bare_paths {
+            self.scope.existing.insert(
+                binding.name.clone(),
+                ExistingBinding::Use {
+                    full: binding.path.clone(),
+                    gate,
+                },
+            );
         }
     }
 }
 
 impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
     fn visit_item(&mut self, node: &'ast Item) {
+        if self.result.is_err() {
+            return;
+        }
         let attributes = self.attributes(item_gate_attrs(node));
         let pushed = attributes.len();
         self.conditional_attributes.extend(attributes);
@@ -323,40 +327,33 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         let Some((brace, items)) = &node.content else {
             return;
         };
-        let parent_indent = self
-            .scope_stack
-            .last()
-            .map_or_else(String::new, |scope| scope.indent.clone());
-        let nested_default = format!("{parent_indent}    ");
-        let scope = compute_scope_for_items(
-            items,
-            self.text,
-            self.source.line_offsets(),
-            &nested_default,
-        );
-        // `visit_item_mod` handles empty `items` in `node.content`: the list contributed no
-        // insertion offset, so compute one from the position just after the opening
-        // brace.
-        let scope = if items.is_empty() {
-            let brace_start = offset(self.source.line_offsets(), brace.span.open().end());
-            Scope {
-                insertion_offset: brace_start,
-                indent:           nested_default,
-                existing:         BTreeMap::new(),
-            }
-        } else {
-            scope
+        let nested_default = format!("{}    ", self.scope.indent);
+        let scope = SourcePosition::new(self.source, brace.span.open().end()).and_then(|opening| {
+            compute_scope_for_items(
+                items,
+                self.text,
+                self.source,
+                &nested_default,
+                opening.offset,
+            )
+        });
+        let scope = match scope {
+            Ok(scope) => scope,
+            Err(error) => {
+                self.result = Err(error);
+                return;
+            },
         };
         // `visit_item_mod` clears `self.conditional_attributes` because `node` opens its own scope:
         // an inner `use` moves only to this module's top, which the module's own gate
         // already wraps, so gates from enclosing constructs no longer apply. Clear the
         // stack for the body and restore it afterward.
         let outer_attributes = std::mem::take(&mut self.conditional_attributes);
-        self.scope_stack.push(scope);
+        let parent_scope = std::mem::replace(&mut self.scope, scope);
         for item in items {
             self.visit_item(item);
         }
-        self.scope_stack.pop();
+        self.scope = parent_scope;
         self.conditional_attributes = outer_attributes;
     }
 
@@ -380,9 +377,19 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
 
     fn visit_block(&mut self, node: &'ast Block) {
         for stmt in &node.stmts {
+            if self.result.is_err() {
+                return;
+            }
             match stmt {
-                Stmt::Item(Item::Use(use_item)) => self.try_emit_fix(use_item),
-                _ => self.visit_stmt(stmt),
+                Stmt::Item(Item::Use(use_item)) => {
+                    if let Err(error) = self.try_emit_fix(use_item) {
+                        self.result = Err(error);
+                        return;
+                    }
+                },
+                Stmt::Item(_) | Stmt::Local(_) | Stmt::Expr(_, _) | Stmt::Macro(_) => {
+                    self.visit_stmt(stmt);
+                },
             }
         }
     }
@@ -393,57 +400,68 @@ pub(super) fn scan(
     text: &str,
     path: &Path,
     display_path: &str,
-) -> (Vec<Finding>, Vec<UseFix>) {
+) -> anyhow::Result<(Vec<Finding>, Vec<UseFix>)> {
     let indexed = ImportSource::new(text);
-    let offsets = indexed.line_offsets();
-    let root_scope = compute_scope_for_items(&syntax.items, text, offsets, "");
+    let root_scope = compute_scope_for_items(&syntax.items, text, &indexed, "", 0)?;
     let mut visitor = InBodyUseFinder {
         source: &indexed,
         text,
         path,
         display_path,
-        scope_stack: vec![root_scope],
+        scope: root_scope,
         conditional_attributes: ConditionalAttributes::default(),
+        result: Ok(()),
         findings: Vec::new(),
         fixes: Vec::new(),
     };
     for item in &syntax.items {
         visitor.visit_item(item);
     }
-    (visitor.findings, visitor.fixes)
+    visitor.result?;
+    Ok((visitor.findings, visitor.fixes))
 }
 
 fn compute_scope_for_items(
     items: &[Item],
     text: &str,
-    offsets: &[usize],
+    source: &ImportSource<'_>,
     default_indent: &str,
-) -> Scope {
+    empty_offset: usize,
+) -> anyhow::Result<ScopedUseFinder> {
     let mut existing: BTreeMap<String, ExistingBinding> = BTreeMap::new();
-    let mut last_use_end: Option<usize> = None;
-    let mut first_item_start: Option<usize> = None;
+    let mut insertion = ScopeInsertion::EmptyModule(empty_offset);
     let mut detected_indent: Option<String> = None;
 
     for item in items {
         let item_start_lc = item.span().start();
-        let item_start = offset(offsets, item_start_lc);
-        first_item_start.get_or_insert(item_start);
+        let item_start = SourcePosition::new(source, item_start_lc)?.offset;
+        if let ScopeInsertion::EmptyModule(_) = insertion {
+            insertion = ScopeInsertion::BeforeItem(item_start);
+        }
         if detected_indent.is_none() {
             detected_indent = Some(indent_for_offset(text, item_start));
         }
         match item {
             Item::Use(item_use) => {
                 let gate = ImportGate::from(item_use.attrs.as_slice());
-                for (bare, full) in flatten_use_to_bare_paths(&item_use.tree) {
-                    existing.insert(bare, ExistingBinding::Use { full, gate });
+                for leaf in flatten_use_to_bare_paths(&item_use.tree) {
+                    if let ImportLeaf::Named(binding) = leaf {
+                        existing.insert(
+                            binding.name,
+                            ExistingBinding::Use {
+                                full: binding.path,
+                                gate,
+                            },
+                        );
+                    }
                 }
-                let end = offset(offsets, item_use.span().end());
+                let end = SourcePosition::new(source, item_use.span().end())?.offset;
                 let end = if text.as_bytes().get(end) == Some(&b'\n') {
                     end + 1
                 } else {
                     end
                 };
-                last_use_end = Some(end);
+                insertion = ScopeInsertion::AfterUse(end);
             },
             other => {
                 for name in item_defined_names(other) {
@@ -453,13 +471,13 @@ fn compute_scope_for_items(
         }
     }
 
-    let insertion_offset = last_use_end.or(first_item_start).unwrap_or(0);
+    let insertion_offset = insertion.offset();
     let indent = detected_indent.unwrap_or_else(|| default_indent.to_string());
-    Scope {
+    Ok(ScopedUseFinder {
         insertion_offset,
         indent,
         existing,
-    }
+    })
 }
 
 /// Bare identifiers that an item introduces at its containing module's
@@ -505,16 +523,61 @@ fn line_start_offset(text: &str, offset: usize) -> usize {
         .map_or(0, |position| position + 1)
 }
 
-fn flatten_use_to_bare_paths(tree: &UseTree) -> Vec<(String, String)> {
+/// A named import that can participate in move and duplicate planning.
+#[derive(Debug, PartialEq)]
+struct NamedImport {
+    name: String,
+    path: String,
+}
+
+/// Globs may shadow arbitrary names, so only the named phase can be moved.
+#[derive(Debug, PartialEq)]
+enum ImportLeaf {
+    Named(NamedImport),
+    Glob { path: String },
+}
+
+impl ImportLeaf {
+    fn into_named(self) -> Result<NamedImport, String> {
+        match self {
+            Self::Named(binding) => Ok(binding),
+            Self::Glob { path } => Err(path),
+        }
+    }
+}
+
+/// An empty module inserts at its real opening position, supplied by the caller.
+/// It never starts at a placeholder zero that needs repair after scope collection.
+enum ScopeInsertion {
+    AfterUse(usize),
+    BeforeItem(usize),
+    EmptyModule(usize),
+}
+
+impl ScopeInsertion {
+    const fn offset(self) -> usize {
+        match self {
+            Self::AfterUse(offset) | Self::BeforeItem(offset) | Self::EmptyModule(offset) => offset,
+        }
+    }
+}
+
+fn flatten_use_to_bare_paths(tree: &UseTree) -> impl Iterator<Item = ImportLeaf> {
     imports::collect_use_bindings(tree)
         .into_iter()
         .map(|binding| {
             binding.name().map_or_else(
-                || ("*".to_string(), format!("{}::*", binding.path())),
-                |name| (name.to_string(), binding.path().to_string()),
+                || ImportLeaf::Glob {
+                    path: binding.path().to_string(),
+                },
+                |name| {
+                    ImportLeaf::Named(NamedImport {
+                        name: name.to_string(),
+                        path: binding.path().to_string(),
+                    })
+                },
             )
         })
-        .collect()
 }
 
 /// Whether an attribute is `#[cfg(...)]` or `#[cfg_attr(...)]` — the two
@@ -583,12 +646,25 @@ fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bo
     }
 }
 
-fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
-    line_offsets
-        .get(position.line.saturating_sub(1))
-        .copied()
-        .unwrap_or(0)
-        + position.column
+/// A source-bound character position checked before move or insertion planning.
+/// Invalid lines and columns are rejected instead of becoming byte zero; diagnostics
+/// carry the original source line rather than substituting empty text for a missing line.
+/// Character columns are converted to byte offsets against that same source.
+struct SourcePosition<'a> {
+    offset:      usize,
+    source_line: &'a str,
+}
+
+impl<'a> SourcePosition<'a> {
+    fn new(source: &ImportSource<'a>, position: LineColumn) -> anyhow::Result<Self> {
+        let location = source
+            .locate(position, position)
+            .with_context(|| format!("invalid import source position: {position:?}"))?;
+        Ok(Self {
+            offset:      location.start(),
+            source_line: location.source_line(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -598,12 +674,22 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use proc_macro2::LineColumn;
     use syn::File;
     use syn::Item;
     use syn::UseTree;
     use syn::parse_str;
 
+    use super::ImportLeaf;
+    use super::NamedImport;
     use super::flatten_use_to_bare_paths;
+
+    fn named(name: &str, path: &str) -> ImportLeaf {
+        ImportLeaf::Named(NamedImport {
+            name: name.to_string(),
+            path: path.to_string(),
+        })
+    }
 
     fn parse_tree(source: &str) -> UseTree {
         let file: File = parse_str(source).expect("parse");
@@ -619,7 +705,43 @@ mod tests {
     }
 
     #[test]
-    fn full_file_scan_uses_one_index_for_gated_and_ungated_nodes() -> syn::Result<()> {
+    fn checked_positions_reject_invalid_lines_and_columns_and_keep_source_text() {
+        let text = "// é\nfn f() { use crate::a::Thing; }\n";
+        let source = crate::fixes::imports::ImportSource::new(text);
+        let at = |line, column| LineColumn { line, column };
+        for position in [at(0, 0), at(4, 0), at(2, 99)] {
+            assert!(super::SourcePosition::new(&source, position).is_err());
+        }
+        let position = super::SourcePosition::new(&source, at(2, 9)).expect("use keyword");
+        assert_eq!(position.source_line, "fn f() { use crate::a::Thing; }");
+        assert_eq!(&text[position.offset..position.offset + 3], "use");
+        let end = super::SourcePosition::new(&source, at(3, 0)).expect("final empty line");
+        assert_eq!(end.offset, text.len());
+        assert_eq!(end.source_line, "");
+    }
+
+    #[test]
+    fn finder_rejects_mismatched_source_before_returning_edits() {
+        let syntax = syn::parse_file("fn f() { use crate::a::Thing; }").expect("fixture");
+        assert!(super::scan(&syntax, "", std::path::Path::new("lib.rs"), "lib.rs").is_err());
+    }
+
+    #[test]
+    fn moved_import_keeps_unicode_diagnostic_and_edit_bytes() -> anyhow::Result<()> {
+        let line = "fn f() { /* é */ use crate::a::Thing; }";
+        let text = format!("// é\n{line}\n");
+        let syntax = syn::parse_file(&text)?;
+        let (findings, fixes) =
+            super::scan(&syntax, &text, std::path::Path::new("lib.rs"), "lib.rs")?;
+        assert_eq!(findings[0].source_line, line);
+        assert_eq!(findings[0].line, 2);
+        assert_eq!(fixes[0].replacement, "use crate::a::Thing;\n");
+        assert_eq!(&text[fixes[1].start..fixes[1].end], "use crate::a::Thing;");
+        Ok(())
+    }
+
+    #[test]
+    fn full_file_scan_uses_one_index_for_gated_and_ungated_nodes() -> anyhow::Result<()> {
         for gate in ["", "#[cfg(any(unix, windows))]\n"] {
             let statements = "value();".repeat(128);
             let text =
@@ -631,7 +753,7 @@ mod tests {
                 &text,
                 std::path::Path::new("fixture.rs"),
                 "fixture.rs",
-            );
+            )?;
             assert_eq!(
                 crate::fixes::imports::ImportSource::construction_count() - before,
                 1
@@ -646,11 +768,45 @@ mod tests {
     }
 
     #[test]
+    fn scope_insertion_uses_the_actual_empty_module_position() {
+        let source = crate::fixes::imports::ImportSource::new("// head\nmod a {}");
+        let scope = super::compute_scope_for_items(&[], "// head\nmod a {}", &source, "    ", 15)
+            .expect("valid empty scope");
+        assert_eq!(scope.insertion_offset, 15);
+        assert_eq!(scope.indent, "    ");
+        assert_eq!(super::ScopeInsertion::AfterUse(7).offset(), 7);
+        assert_eq!(super::ScopeInsertion::BeforeItem(3).offset(), 3);
+    }
+
+    #[test]
+    fn scoped_moves_restore_the_parent_and_leave_globs_in_place() -> anyhow::Result<()> {
+        let source = concat!(
+            "mod a {\n    fn f() { use crate::a::A; }\n}\n",
+            "fn g() { use crate::b::B; }\n",
+            "fn h() { use crate::c::*; }\n",
+        );
+        let syntax = syn::parse_file(source)?;
+        let (findings, fixes) = super::scan(
+            &syntax,
+            source,
+            std::path::Path::new("fixture.rs"),
+            "fixture.rs",
+        )
+        .expect("valid source positions");
+        assert_eq!(findings.len(), 2);
+        assert_eq!(fixes.len(), 4);
+        assert!(fixes[0].replacement.starts_with("    use crate::a::A;"));
+        assert!(fixes[2].replacement.starts_with("use crate::b::B;"));
+        assert_eq!(fixes[2].start, 0);
+        Ok(())
+    }
+
+    #[test]
     fn flatten_simple_name() {
         let tree = parse_tree("use crate::foo::Bar;");
         assert_eq!(
-            flatten_use_to_bare_paths(&tree),
-            vec![("Bar".to_string(), "crate::foo::Bar".to_string())]
+            flatten_use_to_bare_paths(&tree).collect::<Vec<_>>(),
+            vec![named("Bar", "crate::foo::Bar")]
         );
     }
 
@@ -658,35 +814,37 @@ mod tests {
     fn flatten_rename_uses_rename_as_bare() {
         let tree = parse_tree("use crate::foo::Bar as Renamed;");
         assert_eq!(
-            flatten_use_to_bare_paths(&tree),
-            vec![("Renamed".to_string(), "crate::foo::Bar".to_string())]
+            flatten_use_to_bare_paths(&tree).collect::<Vec<_>>(),
+            vec![named("Renamed", "crate::foo::Bar")]
         );
     }
 
     #[test]
     fn flatten_group_expands_into_one_entry_per_leaf() {
         let tree = parse_tree("use crate::foo::{Bar, Baz};");
-        let result = flatten_use_to_bare_paths(&tree);
+        let result = flatten_use_to_bare_paths(&tree).collect::<Vec<_>>();
         assert!(
-            result.contains(&("Bar".to_string(), "crate::foo::Bar".to_string())),
+            result.contains(&named("Bar", "crate::foo::Bar")),
             "{result:?}"
         );
         assert!(
-            result.contains(&("Baz".to_string(), "crate::foo::Baz".to_string())),
+            result.contains(&named("Baz", "crate::foo::Baz")),
             "{result:?}"
         );
     }
 
     #[test]
-    fn flatten_glob_uses_sentinel_bare_name() {
+    fn flatten_glob_names_its_phase() {
         let tree = parse_tree("use crate::foo::*;");
         assert_eq!(
-            flatten_use_to_bare_paths(&tree),
-            vec![("*".to_string(), "crate::foo::*".to_string())]
+            flatten_use_to_bare_paths(&tree).collect::<Vec<_>>(),
+            vec![ImportLeaf::Glob {
+                path: "crate::foo".to_string(),
+            }]
         );
     }
     #[test]
-    fn moving_imports_preserves_gate_collisions_and_duplicate_deletion() {
+    fn moving_imports_preserves_gate_collisions_and_duplicate_deletion() -> anyhow::Result<()> {
         for (existing, nested, findings, fixes) in [
             ("use crate::a::Thing;", "use crate::a::Thing;", 1, 1),
             (
@@ -713,7 +871,7 @@ mod tests {
                 &source,
                 std::path::Path::new("fixture.rs"),
                 "fixture.rs",
-            );
+            )?;
             assert_eq!(
                 (actual_findings.len(), actual_fixes.len()),
                 (findings, fixes),
@@ -728,6 +886,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[test]
@@ -740,7 +899,8 @@ mod tests {
             source,
             std::path::Path::new("fixture.rs"),
             "fixture.rs",
-        );
+        )
+        .expect("valid source positions");
         assert_eq!(findings.len(), 1);
         assert_eq!(fixes.len(), 2);
         assert!(

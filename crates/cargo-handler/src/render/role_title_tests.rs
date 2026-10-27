@@ -687,7 +687,7 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
     };
     let fg = rgb(foreground);
     let bg = rgb(ground);
-    // Keep covered channels unrounded before luminance.
+    // Measure fractional and nearest-byte covered channels independently.
     let mixed =
         std::array::from_fn::<_, 3, _>(|i| f64::mul_add(bg[i], 47.0, fg[i] * 208.0) / 255.0);
     let luminance = |channels: [f64; 3]| {
@@ -701,9 +701,14 @@ fn session_glyph_contrast(foreground: Color, ground: Color) -> f64 {
         });
         0.0722f64.mul_add(b, 0.7152f64.mul_add(g, 0.2126 * r))
     };
-    let a = luminance(mixed);
     let b = luminance(bg);
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    [mixed, mixed.map(f64::round)]
+        .map(|channels| {
+            let a = luminance(channels);
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        })
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
 }
 
 #[derive(Clone, Copy)]

@@ -290,7 +290,7 @@ fn execute_inner(
         initial_reservations,
         initial_subjects,
         cache_path,
-        observation,
+        mut observation,
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
@@ -300,6 +300,11 @@ fn execute_inner(
         },
         PreparedDriftExecution::Observed(observed) => *observed,
     };
+    observation.changes.select_unit_writes(
+        repository,
+        repository_snapshot,
+        &initial_reservations,
+    )?;
     if !observation
         .changes
         .has_changes_for(initial_subjects.reporting.as_slice())

@@ -11,6 +11,7 @@ use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::edge::RepositoryReservationEvidence;
+use crate::exit::BerthExit;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -45,8 +46,10 @@ use crate::reconcile;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
+use crate::reservation::AbandonmentReason;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::KeptWorkReason;
 use crate::reservation::MergeExtent;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -55,16 +58,28 @@ use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationIntegrationJudgment;
+use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::session::SessionIdentityMappingPublication;
 
-/// A parsed request to checkpoint or revalidate one reservation.
-#[derive(Clone, Copy)]
+/// A parsed request to checkpoint or explicitly end one reservation.
 pub(crate) struct ReleaseRequest {
     /// The reservation named at the command line.
     pub(crate) reservation_id: ReservationId,
+    /// Whether the work landed, is kept for later, or is deliberately discarded.
+    pub(crate) selection:      ReleaseSelection,
+}
+
+/// The mutually exclusive meanings of a release request.
+pub(crate) enum ReleaseSelection {
+    /// Checkpoint the work and release only with verified integration evidence.
+    IntegrationCheckpoint,
+    /// End coordination while leaving unintegrated work on its branch.
+    KeepWork(KeptWorkReason),
+    /// End coordination because the caller deliberately discarded the work.
+    Abandon(AbandonmentReason),
 }
 
 #[derive(Clone, Copy)]
@@ -74,6 +89,7 @@ struct ReleaseTransactionContext<'context> {
     reservation_id:       ReservationId,
     invoking_worktree_id: WorktreeId,
     lifecycle_admission:  ReleaseLifecycleAdmission,
+    selection:            &'context ReleaseSelection,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -83,7 +99,7 @@ enum ReleaseLifecycleAdmission {
 }
 
 /// Execute the release lifecycle operation and map every failure to the public envelope.
-pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
+pub(crate) fn execute(release_request: &ReleaseRequest) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -110,7 +126,7 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
 
 /// Complete a release request using the settlements and evidence just revalidated.
 fn release_reconciled_request(
-    release_request: ReleaseRequest,
+    release_request: &ReleaseRequest,
     mut reconciliation_report: ReconciliationReport,
 ) -> OutputEnvelope {
     for settlement in &reconciliation_report.settlements {
@@ -126,6 +142,18 @@ fn release_reconciled_request(
             })
             .with_alerts(reconciliation_report.alerts);
         }
+    }
+    if !matches!(
+        release_request.selection,
+        ReleaseSelection::IntegrationCheckpoint
+    ) {
+        let output = explicit_release_output(release_request);
+        if output.exit_code == BerthExit::Clear {
+            reconciliation_report
+                .alerts
+                .retain(|alert| alert.reservation_id() != release_request.reservation_id);
+        }
+        return output.with_alerts(reconciliation_report.alerts);
     }
     let target = reconciliation_report
         .repository_snapshot
@@ -241,7 +269,7 @@ fn release_error_output(error: ReleaseError) -> OutputEnvelope {
 }
 
 fn execute_release(
-    release_request: ReleaseRequest,
+    release_request: &ReleaseRequest,
     lifecycle_admission: ReleaseLifecycleAdmission,
 ) -> Result<Enrollment<ReleasePayload>, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
@@ -290,6 +318,7 @@ fn execute_release(
                         reservation_id: release_request.reservation_id,
                         invoking_worktree_id: journal_mutation_actor.worktree_id,
                         lifecycle_admission,
+                        selection: &release_request.selection,
                     },
                 )
             },
@@ -401,17 +430,6 @@ fn validate_release_transaction(
         },
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
-    let Ok(target) = reservations.target_of(context.reservation_id, context.repository_trunk)
-    else {
-        return CommittedActionValidation::Reject(ReleaseRejection::UnknownReservation);
-    };
-    let judging_branch = match target.judging_branch(
-        context.repository.repository_root(),
-        context.repository_trunk,
-    ) {
-        Ok(judging_branch) => judging_branch,
-        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Git(error)),
-    };
     let marker_plan = marker_plan_for(
         reservations,
         reservation.actor().run,
@@ -419,23 +437,8 @@ fn validate_release_transaction(
         context.invoking_worktree_id,
         context.reservation_id,
     );
-    let evidence_state = match reservation.evidence_state() {
-        Ok(evidence_state) => evidence_state,
-        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
-    };
-    if context.lifecycle_admission == ReleaseLifecycleAdmission::ActiveCheckpointOnly
-        && !matches!(&evidence_state, ReservationEvidenceState::Active { .. })
-    {
-        return CommittedActionValidation::Reject(ReleaseRejection::RequiresReconcileFirst);
-    }
-    let release_append = match operation_for_state(
-        context.repository,
-        judging_branch.target().short_name(),
-        context.invoking_worktree_id,
-        reservation,
-        evidence_state,
-    ) {
-        Ok(release_append) => release_append,
+    let release_append = match release_operation_for_request(reservations, reservation, context) {
+        Ok(append) => append,
         Err(error) => return CommittedActionValidation::Reject(error),
     };
     let retention_deletions = match release_retention_deletions(
@@ -456,6 +459,73 @@ fn validate_release_transaction(
             marker_plan,
             retention_deletions,
         },
+    }
+}
+
+/// Explicit decisions end active or outstanding holds without asserting integration.
+fn release_operation_for_request(
+    reservations: &RetainedReservationSet,
+    reservation: &Reservation,
+    context: ReleaseTransactionContext<'_>,
+) -> Result<ReleaseAppend, ReleaseRejection> {
+    let disposition = match context.selection {
+        ReleaseSelection::KeepWork(reason) => ReleaseDisposition::KeptOnBranch(reason.clone()),
+        ReleaseSelection::Abandon(reason) => ReleaseDisposition::Abandoned(reason.clone()),
+        ReleaseSelection::IntegrationCheckpoint => {
+            let target = reservations
+                .target_of(context.reservation_id, context.repository_trunk)
+                .map_err(|_| ReleaseRejection::UnknownReservation)?;
+            let judging_branch = target
+                .judging_branch(
+                    context.repository.repository_root(),
+                    context.repository_trunk,
+                )
+                .map_err(ReleaseRejection::Git)?;
+            let evidence = reservation
+                .evidence_state()
+                .map_err(ReleaseRejection::Replay)?;
+            if context.lifecycle_admission == ReleaseLifecycleAdmission::ActiveCheckpointOnly
+                && !matches!(evidence, ReservationEvidenceState::Active { .. })
+            {
+                return Err(ReleaseRejection::RequiresReconcileFirst);
+            }
+            return operation_for_state(
+                context.repository,
+                judging_branch.target().short_name(),
+                context.invoking_worktree_id,
+                reservation,
+                evidence,
+            );
+        },
+    };
+    if matches!(
+        reservation.lifecycle(),
+        ReservationLifecycle::Released { .. }
+    ) {
+        return Err(ReleaseRejection::AlreadyReleased);
+    }
+    Ok(ReleaseAppend {
+        prerequisites:  Vec::new(),
+        operation:      JournalOperation::Release {
+            reservation_id: reservation.id(),
+            disposition:    disposition.clone(),
+            source:         Some(ReleaseSource::Command),
+        },
+        payload_seed:   ReleasePayloadSeed::Released {
+            reservation_id: reservation.id(),
+            disposition,
+        },
+        retention_plan: ReleaseRetentionPlan::Preserve,
+    })
+}
+
+fn explicit_release_output(request: &ReleaseRequest) -> OutputEnvelope {
+    match execute_release(request, ReleaseLifecycleAdmission::AnyRetainedLifecycle) {
+        Ok(Enrollment::Enrolled(payload)) => OutputEnvelope::released(payload),
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Release, &expected_configuration_path),
+        Err(error) => release_error_output(error),
     }
 }
 

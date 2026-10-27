@@ -59,7 +59,7 @@ impl IntegrationTarget {
     /// The complete local ref.
     pub(crate) const fn reference(&self) -> &FullRefName { &self.0 }
 
-    /// Read upstream authorship evidence without changing the local judging target.
+    /// Read upstream authorship evidence; the recorded target remains the local branch identity.
     pub(crate) fn local_upstream(
         &self,
         objects: &OperationObjectReader,
@@ -93,7 +93,7 @@ impl IntegrationTarget {
     }
 }
 
-/// The local branch whose tip currently judges a reservation's integration evidence.
+/// The local branch whose proof ref currently judges a reservation's integration evidence.
 #[derive(Clone, Copy)]
 pub(crate) enum ReservationJudgingBranch<'target> {
     RepositoryTrunk(&'target IntegrationTarget),

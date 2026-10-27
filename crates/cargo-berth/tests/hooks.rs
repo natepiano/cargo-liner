@@ -67,7 +67,11 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     ..GIT_REPOSITORY
 };
 
-/// Initialized main with its policy committed before a corpus or incursion scenario.
+/// A repository whose berth configuration is committed, so it never itself drifts.
+///
+/// Every corpus comparison below depends on this: an uncommitted `berth.toml` is a
+/// changed path like any other, and the auto-widen line it produces is text the corpus
+/// never froze.
 const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "configured",
     build: |root| {
@@ -101,6 +105,7 @@ use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::net::UdpSocket;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -210,7 +215,6 @@ const RESERVATION_LIMIT_SUMMARY: &str =
     "cargo-berth rejected this edit because it could not accept the request.";
 const RETIRED_MISSING_PRESENTATION_DIAGNOSTIC: &str =
     "the engine returned a blocking check answer without a presentation";
-const SCRATCH_ROOT: &str = "/tmp/claude";
 /// A coordination run other than the one holding the fixture repository.
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
@@ -260,7 +264,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[test]
 fn silent_allow_emits_nothing() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let output = run_pre_tool_use(
         repository.path(),
         &edit_payload(repository.path(), "silent.rs", Some("silent-session")),
@@ -271,7 +275,7 @@ fn silent_allow_emits_nothing() -> TestResult {
 
 #[test]
 fn pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let root = repository.path();
     let claimed = run_berth_with_claude_code_session(
         root,
@@ -314,7 +318,7 @@ fn pre_tool_use_allows_a_held_claude_edit_while_the_mutation_lock_is_held() -> T
 
 #[test]
 fn pre_tool_use_under_an_unmapped_session_joins_the_only_active_reservation() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let root = repository.path();
     let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
     require_success(&claimed, "the sole reservation")?;
@@ -350,7 +354,7 @@ fn pre_tool_use_under_an_unmapped_session_joins_the_only_active_reservation() ->
 
 #[test]
 fn allow_with_notice_emits_the_engine_presentation_object() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     fs::create_dir(repository.path().join(SESSION_MAPPING_PATH))?;
     let output = run_pre_tool_use(
         repository.path(),
@@ -378,7 +382,7 @@ fn allow_with_notice_emits_the_engine_presentation_object() -> TestResult {
 
 #[test]
 fn blocked_edit_emits_the_engine_refusal() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -434,7 +438,7 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
 #[test]
 fn pre_tool_use_names_only_the_outstanding_phases_pending_path_after_a_sibling_merges() -> TestResult
 {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let (_holder_directory, holder_root) = add_worktree(&repository, "parallel-holder")?;
     let first = run_berth_with_session(
         &holder_root,
@@ -511,7 +515,7 @@ fn pre_tool_use_names_only_the_outstanding_phases_pending_path_after_a_sibling_m
 /// become editable.
 #[test]
 fn a_second_coordination_run_is_refused_the_incumbents_paths() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let incumbent = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -559,7 +563,7 @@ fn a_second_coordination_run_is_refused_the_incumbents_paths() -> TestResult {
 
 #[test]
 fn a_rejected_request_states_the_engine_message() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     fs::write(
         repository.path().join(CONFIGURATION_PATH),
         "maximum_reservations = 0\n",
@@ -582,15 +586,20 @@ fn a_rejected_request_states_the_engine_message() -> TestResult {
 }
 
 #[test]
-fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> TestResult {
-    let repository = initialized_repository()?;
+fn hook_writers_and_reconciliation_use_a_bounded_number_of_lock_acquisitions() -> TestResult {
+    const WRITERS: usize = 2;
+    const PATHS_PER_WRITER: usize = 16;
+
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let mut worktrees = Vec::new();
-    for index in 0..8 {
+    for index in 0..WRITERS {
         let worktree = add_worktree(&repository, &format!("parallel-hook-{index}"))?;
-        fs::write(
-            worktree.1.join(format!("writer-{index}.rs")),
-            "actual hook write\n",
-        )?;
+        for path in 0..PATHS_PER_WRITER {
+            fs::write(
+                worktree.1.join(format!("writer-{index}-{path}.rs")),
+                "actual hook write\n",
+            )?;
+        }
         worktrees.push(worktree);
     }
     let holder = File::options()
@@ -598,7 +607,10 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
         .write(true)
         .open(repository.path().join(MUTATION_LOCK_PATH))?;
     holder.lock()?;
-    let signals = TempDir::new_in(SCRATCH_ROOT)?;
+    let signals = TempDir::new()?;
+    let ready = UdpSocket::bind("127.0.0.1:0")?;
+    let ready_address = ready.local_addr()?.to_string();
+    ready.set_read_timeout(Some(SCHEDULING_ALLOWANCE))?;
     let mut writers = Vec::new();
     for (index, (_, root)) in worktrees.iter().enumerate() {
         let payload = bash_payload(root, &format!("parallel-hook-session-{index}"));
@@ -611,6 +623,10 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
             .env(
                 MUTATION_LOCK_READY_ENVIRONMENT,
                 signals.path().join(index.to_string()),
+            )
+            .env(
+                "CARGO_BERTH_TEST_MUTATION_LOCK_READY_SOCKET",
+                &ready_address,
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -633,17 +649,17 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
             MUTATION_LOCK_READY_ENVIRONMENT,
             signals.path().join("reconcile"),
         )
+        .env(
+            "CARGO_BERTH_TEST_MUTATION_LOCK_READY_SOCKET",
+            &ready_address,
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let queued = Instant::now();
-    while ((0..8).any(|index| !signals.path().join(index.to_string()).is_file())
-        || !signals.path().join("reconcile").is_file())
-        && queued.elapsed() < Duration::from_millis(500)
-    {
-        thread::sleep(Duration::from_millis(1));
-    }
-    let ready = (0..8).all(|index| signals.path().join(index.to_string()).is_file())
+    // Receive one notification per process while the same ledger lock is still held.
+    // This timeout is a deadlock watchdog, never a performance assertion.
+    let queued = (0..=WRITERS).try_for_each(|_| ready.recv(&mut [0; 6]).map(|_| ()));
+    let all_queued = (0..WRITERS).all(|index| signals.path().join(index.to_string()).is_file())
         && signals.path().join("reconcile").is_file();
     holder.unlock()?;
     let mut writer_answers = Vec::new();
@@ -654,50 +670,53 @@ fn eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue() -> T
     }
     let output = reconcile.wait_with_output()?;
     require_success(&output, "concurrent reconciliation")?;
+    queued?;
     assert!(
-        ready,
+        all_queued,
         "every hook and reconciliation must enter the same held ledger queue"
     );
     let events = journal_events(repository.path())?;
-    for index in 0..8 {
-        assert_hook_writer_waits_under_two_seconds(signals.path(), index)?;
-        let path = format!("writer-{index}.rs");
-        assert!(
-            events.iter().any(|event| event["op"] == "claim"
-                && event["scopes"]
-                    .as_array()
-                    .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == path))),
-            "hook writer {index} must acquire its actual changed path; answers: {writer_answers:?}"
-        );
+    for index in 0..WRITERS {
+        assert_hook_writer_acquisitions_are_bounded(signals.path(), index)?;
+        for path in 0..PATHS_PER_WRITER {
+            let path = format!("writer-{index}-{path}.rs");
+            assert!(
+                events.iter().any(|event| event["op"] == "claim"
+                    && event["scopes"]
+                        .as_array()
+                        .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == path))),
+                "hook writer {index} must acquire its actual changed path; answers: {writer_answers:?}"
+            );
+        }
     }
     Ok(())
 }
 
-fn assert_hook_writer_waits_under_two_seconds(signals: &Path, index: usize) -> TestResult {
-    let waits = fs::read_to_string(signals.join(index.to_string()).with_extension("waits"))?;
+/// Marker sweeping, reconciliation and the batched claim each prepare one mutation. Each may
+/// acquire at most nine times: eight optimistic attempts and one serialized fallback.
+/// Sixteen changed paths must share these batches instead of building a per-path queue.
+fn assert_hook_writer_acquisitions_are_bounded(signals: &Path, index: usize) -> TestResult {
+    const MAXIMUM_ACQUISITIONS_PER_HOOK: usize = 3 * 9;
+    let acquisitions = fs::read_to_string(
+        signals
+            .join(index.to_string())
+            .with_extension("acquisitions"),
+    )?;
+    let count = acquisitions.lines().count();
     assert!(
-        !waits.is_empty(),
-        "writer {index} must report its held-lock wait"
+        count > 0,
+        "writer {index} must report its lock acquisitions"
     );
-    let mut total_wait_nanoseconds = 0;
-    for waited in waits.lines() {
-        let nanoseconds = waited.parse::<u128>()?;
-        total_wait_nanoseconds += nanoseconds;
-        assert!(
-            nanoseconds < Duration::from_secs(2).as_nanos(),
-            "writer {index} lock wait exceeds 2 s: {nanoseconds} ns"
-        );
-    }
     assert!(
-        total_wait_nanoseconds < Duration::from_secs(2).as_nanos(),
-        "writer {index} cumulative lock wait exceeds 2 s: {total_wait_nanoseconds} ns"
+        count <= MAXIMUM_ACQUISITIONS_PER_HOOK,
+        "writer {index} attempted to acquire the ledger lock {count} times; at most {MAXIMUM_ACQUISITIONS_PER_HOOK} are needed for three mutation batches"
     );
     Ok(())
 }
 
 #[test]
 fn a_contended_ledger_states_the_engine_message() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let competing_lock = File::options()
         .read(true)
         .write(true)
@@ -722,7 +741,7 @@ fn a_contended_ledger_states_the_engine_message() -> TestResult {
 
 #[test]
 fn pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let root = repository.path();
     let (_directory, foreign_root) = add_worktree(&repository, "busy-ledger-holder")?;
     let foreign = run_berth_with_session(
@@ -819,7 +838,7 @@ fn fail_open_notices_state_their_sentence_once() -> TestResult {
 
 #[test]
 fn a_payload_without_session_identity_ignores_the_ambient_variable() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let older = run_berth_with_session(
         repository.path(),
         &["claim", "tree:shared", "--json"],
@@ -857,7 +876,7 @@ fn a_payload_without_session_identity_ignores_the_ambient_variable() -> TestResu
 /// reservation to select, and it refuses the edit the claim was made for.
 #[test]
 fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let unmapped = run_berth(repository.path(), &["claim", "tree:shared", "--json"])?;
     require_success(&unmapped, "reservation claimed under no harness session")?;
     let claimed = run_berth_with_claude_code_session(
@@ -890,7 +909,7 @@ fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult
 /// take the command outside a `Bash(cargo-berth *)` permission rule.
 #[test]
 fn a_pre_edit_ambiguity_prints_a_plain_command_its_claude_code_session_runs() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let older = run_berth_with_claude_code_session(
         repository.path(),
         &["claim", "tree:shared", "--json"],
@@ -955,7 +974,7 @@ fn a_pre_edit_ambiguity_prints_a_plain_command_its_claude_code_session_runs() ->
 /// again. The files the first-touch reservation holds must stay editable after the claim.
 #[test]
 fn a_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth_with_session(
         repository.path(),
         &["claim", "file:shared.rs", "--json"],
@@ -1017,7 +1036,7 @@ fn a_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResu
 /// is shared work the answer never covered and the hook refuses it.
 #[test]
 fn a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth_with_session(
         repository.path(),
         &["claim", "file:shared.rs", "--json"],
@@ -1127,7 +1146,7 @@ const NORMALIZED_EDITS: [(&str, &str, &str, NormalizedEdit); 10] = [
 
 #[test]
 fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let paths = [
         "real/held.rs",
         "linked/held.rs",
@@ -1150,7 +1169,7 @@ fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestR
     for directory in ["real", "sub", "src"] {
         fs::create_dir(requester_root.join(directory))?;
     }
-    let outside = TempDir::new_in(SCRATCH_ROOT)?;
+    let outside = TempDir::new()?;
     let escaped_child = outside.path().join("nested");
     fs::create_dir(&escaped_child)?;
     std::os::unix::fs::symlink("real", requester_root.join("real-alias"))?;
@@ -1191,7 +1210,7 @@ fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestR
 
 #[test]
 fn a_relative_edit_target_is_refused_for_not_being_absolute() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let output = run_pre_tool_use(
         repository.path(),
         &serde_json::json!({
@@ -1239,7 +1258,7 @@ fn replay_failure_emits_a_fail_open_object() -> TestResult {
 
 #[test]
 fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     stale_marker_recovery_preserves_the_frozen_corpus_text(&repository)?;
     session_identity_recoveries_preserve_the_frozen_corpus_text(&repository)
 }
@@ -1349,7 +1368,7 @@ fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &Temp
 
 #[test]
 fn init_from_a_linked_worktree_writes_the_main_root_configuration() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
     let (_invoking_directory, invoking_root) =
         add_worktree_without_configuration(&repository, "initializing-worktree")?;
 
@@ -1390,7 +1409,7 @@ fn init_from_a_linked_worktree_writes_the_main_root_configuration() -> TestResul
 
 #[test]
 fn init_carries_a_linked_configuration_policy_to_the_main_root() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
     run_git(repository.path(), &["branch", "integration"])?;
     let linked_policy = "# Linked-worktree policy\ntrunk = \"integration\"\ngate_mode = \"enforce\"\nmaximum_reservations = 7\nmaximum_ordering_edges = 13\n";
     let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
@@ -1428,7 +1447,7 @@ fn init_carries_a_linked_configuration_policy_to_the_main_root() -> TestResult {
 
 #[test]
 fn init_keeps_a_present_main_root_configuration() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
     let main_policy = "# Keep this repository policy and its formatting.\ntrunk = \"main\"\ngate_mode = \"observe\"\nmaximum_reservations = 9\nmaximum_ordering_edges = 17\n";
     let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
     fs::create_dir_all(repository.path().join(".claude/config"))?;
@@ -1455,7 +1474,7 @@ fn init_keeps_a_present_main_root_configuration() -> TestResult {
 /// the main worktree's configuration now and refuses like any other requester.
 #[test]
 fn a_worktree_added_after_init_coordinates_without_its_own_configuration() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -1483,7 +1502,7 @@ fn a_worktree_added_after_init_coordinates_without_its_own_configuration() -> Te
 
 #[test]
 fn unconfigured_no_facts_allows_silently() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
     let output = run_pre_tool_use(
         repository.path(),
         &edit_payload(
@@ -1505,7 +1524,7 @@ fn unconfigured_no_facts_allows_silently() -> TestResult {
 /// someone who ran a verb and asked, so both halves are pinned here together.
 #[test]
 fn a_tool_call_outside_any_repository_states_nothing_to_the_hook() -> TestResult {
-    let outside = TempDir::new_in(SCRATCH_ROOT)?;
+    let outside = TempDir::new()?;
     let ceiling = outside
         .path()
         .parent()
@@ -1540,7 +1559,7 @@ fn a_tool_call_outside_any_repository_states_nothing_to_the_hook() -> TestResult
 
 #[test]
 fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth(
         repository.path(),
         &["claim", "file:shared.rs", "--run", FIRST_RUN, "--json"],
@@ -1640,7 +1659,7 @@ impl PausedHookCall {
         event: &str,
         observation: &str,
     ) -> TestResult<Self> {
-        let wrapper_directory = TempDir::new_in(SCRATCH_ROOT)?;
+        let wrapper_directory = TempDir::new()?;
         let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
         fs::write(&wrapper_path, paused_git_wrapper())?;
         let mut permissions = fs::metadata(&wrapper_path)?.permissions();
@@ -1756,7 +1775,7 @@ struct AmbiguityHookOutput {
 }
 
 fn ambiguous_first_touch_hook() -> TestResult<AmbiguityHookOutput> {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let older = run_berth_with_session(
         repository.path(),
         &["claim", "tree:shared", "--json"],
@@ -1832,7 +1851,7 @@ fn create_stale_session_mapping(repository: &TempDir, session_id: &str) -> TestR
 }
 
 fn typed_replay_failure_repository() -> TestResult<TempDir> {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let seed = run_berth(
         repository.path(),
         &["claim", "file:seed.rs", "--run", FIRST_RUN, "--json"],
@@ -1847,7 +1866,7 @@ fn typed_replay_failure_repository() -> TestResult<TempDir> {
 }
 
 fn unreadable_ledger_repository() -> TestResult<TempDir> {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let mut journal = OpenOptions::new()
         .append(true)
         .open(repository.path().join(JOURNAL_PATH))?;
@@ -2224,7 +2243,7 @@ fn run_pre_tool_use(repository_root: &Path, payload: &Value) -> TestResult<Outpu
 /// `CARGO_BERTH_BYPASS=1` allows the edit before any ledger access and is still audited.
 #[test]
 fn pre_tool_use_honors_the_environment_bypass_and_records_it() -> TestResult<()> {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let payload = edit_payload(repository.path(), "src/lib.rs", Some("bypass-session"));
     let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["hook", "pre-tool-use"])
@@ -2316,16 +2335,6 @@ fn dirty_source(root: &Path, path: &str) -> TestResult {
     Ok(())
 }
 
-fn initialized_repository() -> TestResult<TempDir> {
-    fs::create_dir_all(SCRATCH_ROOT)?;
-    Ok(INITIALIZED_REPOSITORY.instantiate())
-}
-
-fn git_repository() -> TestResult<TempDir> {
-    fs::create_dir_all(SCRATCH_ROOT)?;
-    Ok(GIT_REPOSITORY.instantiate())
-}
-
 fn build_initialized_repository(root: &Path) -> TestResult {
     build_git_repository(root)?;
     let initialized = run_berth(root, &["init", "--json"])?;
@@ -2374,7 +2383,7 @@ fn add_worktree_without_configuration(
     repository: &TempDir,
     name: &str,
 ) -> TestResult<(TempDir, PathBuf)> {
-    let directory = TempDir::new_in(SCRATCH_ROOT)?;
+    let directory = TempDir::new()?;
     let root = directory.path().join(name);
     GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     Ok((directory, root))
@@ -2668,16 +2677,6 @@ impl OrphanedReservations {
     }
 }
 
-/// A repository whose berth configuration is committed, so it never itself drifts.
-///
-/// Every corpus comparison below depends on this: an uncommitted `berth.toml` is a
-/// changed path like any other, and the auto-widen line it produces is text the corpus
-/// never froze.
-fn committed_configuration_repository() -> TestResult<TempDir> {
-    fs::create_dir_all(SCRATCH_ROOT)?;
-    Ok(CONFIGURED_REPOSITORY.instantiate())
-}
-
 fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
     let envelope = json_output(claimed)?;
     Ok(required_string(&envelope, "/payload/data/reservation_id", "claim")?.to_owned())
@@ -2685,8 +2684,8 @@ fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
 
 /// Drive one Bash call that enters `path_count` foreign reservations.
 fn incursion_after_bash(path_count: usize) -> TestResult<IncursionAfterBash> {
-    let repository = committed_configuration_repository()?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let worktrees = TempDir::new()?;
     for index in 0..path_count {
         let holder_root = worktrees.path().join(format!("holder-{index}"));
         add_named_worktree(&repository, &format!("holder-{index}"), &holder_root)?;
@@ -2780,8 +2779,8 @@ fn orphaned_reservations_with(
     count: usize,
     availability: OrphanedCommitAvailability,
 ) -> TestResult<OrphanedReservations> {
-    let repository = committed_configuration_repository()?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let worktrees = TempDir::new()?;
     let mut orphans = Vec::with_capacity(count);
     for index in 0..count {
         let branch = format!("orphan-{index}");
@@ -3359,7 +3358,7 @@ fn assert_post_tool_use_corpus_recovery(
 
 #[test]
 fn post_tool_use_with_nothing_to_report_emits_nothing() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let claimed = run_berth_with_session(
         repository.path(),
         &["claim", "file:seed.rs", "--json"],
@@ -3378,7 +3377,7 @@ fn post_tool_use_with_nothing_to_report_emits_nothing() -> TestResult {
 
 #[test]
 fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let claimed = run_berth_with_session(
         repository.path(),
         &["claim", "file:seed.rs", "--json"],
@@ -3409,7 +3408,7 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
 
 #[test]
 fn post_tool_use_under_an_unmapped_session_widens_the_only_active_reservation() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let root = repository.path();
     let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
     require_success(&claimed, "the sole reservation")?;
@@ -3448,7 +3447,7 @@ fn post_tool_use_under_an_unmapped_session_widens_the_only_active_reservation() 
 
 #[test]
 fn post_tool_use_under_an_unmapped_session_states_parallel_attribution_once() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let root = repository.path();
     let older = run_berth_with_session(root, &["claim", "file:a.rs", "--json"], "phase-15")?;
     require_success(&older, "phase 15 reservation")?;
@@ -3490,7 +3489,7 @@ fn post_tool_use_under_an_unmapped_session_states_parallel_attribution_once() ->
 
 #[test]
 fn post_tool_use_without_an_identified_run_does_not_widen_an_incumbent() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let root = repository.path();
     let claimed = run_berth_with_session(root, &["claim", "file:seed.rs", "--json"], "phase-15")?;
     require_success(&claimed, "the incumbent reservation")?;
@@ -3527,7 +3526,7 @@ fn post_tool_use_without_an_identified_run_does_not_widen_an_incumbent() -> Test
 /// new reservation, to the user and to the session alike.
 #[test]
 fn post_tool_use_names_the_paths_a_first_touch_reserved() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     fs::write(repository.path().join("first-touch.rs"), "// first touch\n")?;
 
     let output = run_post_tool_use(
@@ -3555,7 +3554,7 @@ fn post_tool_use_names_the_paths_a_first_touch_reserved() -> TestResult {
 
 #[test]
 fn session_start_reports_an_automatic_orphan_retirement_once() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let (_worktrees, holder) = add_worktree(&repository, "empty-orphan")?;
     let claimed = run_berth_with_session(
         &holder,
@@ -3601,7 +3600,7 @@ fn session_start_reports_an_automatic_orphan_retirement_once() -> TestResult {
 
 #[test]
 fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let claimed = run_berth_with_session(
         repository.path(),
         &["claim", "file:seed.rs", "--json"],
@@ -3615,7 +3614,7 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
         WIDENING_SESSION,
     )?;
     require_success(&primed, "clean fingerprint publication")?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let worktrees = TempDir::new()?;
     let (holder, foreign) = observed_merge_holder(&repository, worktrees.path())?;
     fs::rename(&holder, worktrees.path().join("moved-holder"))?;
 
@@ -3670,8 +3669,8 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
 /// `AlertRouting` delivers it to that worktree's `PostToolUse` notice.
 #[test]
 fn the_holders_post_tool_use_states_its_unavailable_merge_protection() -> TestResult {
-    let repository = committed_configuration_repository()?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let worktrees = TempDir::new()?;
     let (holder, reservation_id) = observed_merge_holder(&repository, worktrees.path())?;
     run_git(
         repository.path(),
@@ -3755,8 +3754,7 @@ fn post_tool_use_states_each_line_once_to_each_reader() -> TestResult {
 /// The hook only has to reach the mutation lock, so the repository needs no commit.
 #[test]
 fn post_tool_use_stays_silent_when_the_ledger_lock_is_held() -> TestResult {
-    fs::create_dir_all(SCRATCH_ROOT)?;
-    let repository = TempDir::new_in(SCRATCH_ROOT)?;
+    let repository = TempDir::new()?;
     run_git(
         repository.path(),
         &["init", "--quiet", "--initial-branch", TRUNK_BRANCH],
@@ -3873,7 +3871,7 @@ fn post_tool_use_states_the_replay_failure_route() -> TestResult {
 
 #[test]
 fn post_tool_use_states_its_coordination_identity_recovery() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     assert_post_tool_use_stale_session_recovery(&repository)?;
     assert_post_tool_use_marker_revalidation(&repository)?;
     assert_post_tool_use_foreign_session_recovery(&repository)
@@ -3993,7 +3991,7 @@ fn assert_post_tool_use_foreign_session_recovery(repository: &TempDir) -> TestRe
 /// test proves the payload session wins over the ambient one.
 #[test]
 fn post_tool_use_runs_drift_under_the_payload_session_not_the_ambient_one() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     create_stale_session_mapping(&repository, AMBIENT_STALE_SESSION)?;
 
     let control = run_berth_with_session(
@@ -4056,7 +4054,7 @@ fn post_tool_use_states_the_unreadable_ledger_message() -> TestResult {
 
 #[test]
 fn post_tool_use_on_an_unconfigured_repository_says_nothing() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
 
     let output = run_post_tool_use(
         repository.path(),
@@ -4076,7 +4074,7 @@ fn post_tool_use_on_an_unconfigured_repository_says_nothing() -> TestResult {
 /// differ.
 #[test]
 fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
 
     for payload in [
         b"this is not a PostToolUse payload".as_slice(),
@@ -4140,7 +4138,7 @@ fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
 #[test]
 fn session_start_publishes_the_engine_board_notices() -> TestResult {
     let orphans = orphaned_reservations(2)?;
-    let elsewhere = TempDir::new_in(SCRATCH_ROOT)?;
+    let elsewhere = TempDir::new()?;
     for working_directory in [orphans.repository.path(), elsewhere.path()] {
         let output = run_session_start(
             working_directory,
@@ -4187,7 +4185,7 @@ fn session_start_publishes_the_engine_board_notices() -> TestResult {
 
 #[test]
 fn session_start_on_a_quiet_board_emits_nothing() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
 
     let output = run_session_start(
         repository.path(),
@@ -4254,7 +4252,7 @@ fn session_start_states_the_unreadable_ledger_presentation() -> TestResult {
 /// A ledger another operation still holds is a second board condition with its own words.
 #[test]
 fn session_start_states_the_ledger_contention_presentation() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let competing_lock = File::options()
         .read(true)
         .write(true)
@@ -4287,7 +4285,7 @@ fn session_start_states_the_ledger_contention_presentation() -> TestResult {
 
 #[test]
 fn session_start_on_an_unconfigured_repository_says_nothing() -> TestResult {
-    let repository = git_repository()?;
+    let repository = GIT_REPOSITORY.instantiate();
 
     let output = run_session_start(
         repository.path(),
@@ -4300,7 +4298,7 @@ fn session_start_on_an_unconfigured_repository_says_nothing() -> TestResult {
 
 #[test]
 fn session_start_rejects_a_payload_it_cannot_read() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
 
     let malformed =
         run_session_start_stdin(repository.path(), b"this is not a SessionStart payload")?;
@@ -4357,7 +4355,7 @@ fn session_start_rejects_a_payload_it_cannot_read() -> TestResult {
 /// it can: the ambient value is live in this repository, and this response does not carry it.
 #[test]
 fn session_start_answers_the_same_with_and_without_an_ambient_session_identity() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     create_stale_session_mapping(&repository, AMBIENT_STALE_SESSION)?;
 
     let control = run_berth_with_session(
@@ -4412,7 +4410,7 @@ fn session_start_answers_the_same_with_and_without_an_ambient_session_identity()
 /// its notices and the integration order it may act on. A released reservation is neither.
 #[test]
 fn session_start_on_a_settled_board_emits_nothing() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let claimed = run_berth_with_session(
         repository.path(),
         &["claim", "file:settled.rs", "--json"],
@@ -4443,7 +4441,7 @@ fn session_start_on_a_settled_board_emits_nothing() -> TestResult {
 /// entry with its `sequence` instruction, the overlap, and the commands that read the rest.
 #[test]
 fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult {
-    let repository = initialized_repository()?;
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let holder = run_berth_with_session(
         repository.path(),
         &["claim", "file:shared.rs", "--json"],
@@ -4638,8 +4636,8 @@ struct PendingPeerOperation {
 
 impl PendingPeerOperation {
     fn new(setup: &PeerOperationSetup) -> TestResult<Self> {
-        let repository = initialized_repository()?;
-        let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+        let repository = INITIALIZED_REPOSITORY.instantiate();
+        let worktrees = TempDir::new()?;
         let peer_root = repository.path().to_path_buf();
         let subject_root = worktrees.path().join("operation-subject");
         // Keep the peer on its own branch without creating another linked
@@ -5112,8 +5110,8 @@ fn session_start_states_the_unavailable_orphan_recovery_actions() -> TestResult 
 fn released_work_trunk_cannot_prove(
     loss: &IntegrationProofLoss,
 ) -> TestResult<(LostIntegrationEvidence, ObservedTrunk, TempDir, TempDir)> {
-    let repository = committed_configuration_repository()?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let worktrees = TempDir::new()?;
     let (evidence, trunk) = lose_integration_evidence(&repository, worktrees.path(), loss)?;
     Ok((evidence, trunk, repository, worktrees))
 }
@@ -5126,7 +5124,7 @@ fn released_work_trunk_cannot_prove(
 /// parser still accepts is a route a later change can put back into service without deciding to.
 #[test]
 fn the_retired_post_tool_use_payload_flag_is_no_longer_a_command_line_argument() -> TestResult {
-    let repository = committed_configuration_repository()?;
+    let repository = CONFIGURED_REPOSITORY.instantiate();
 
     for verb in ["drift", "board"] {
         let refused = run_berth(

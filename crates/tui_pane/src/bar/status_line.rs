@@ -5,6 +5,10 @@
 //! keys, applies enabled / disabled styling, fills the line, and lays
 //! out nav, pane-action, and global regions.
 
+#[cfg(test)]
+#[path = "status_bar_contrast_tests.rs"]
+mod status_bar_contrast_tests;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;

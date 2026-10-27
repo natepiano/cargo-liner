@@ -169,6 +169,9 @@ impl CallerJournalInput<'_> {
 
 fn release_input(disposition: &ReleaseDisposition) -> CallerJournalInput<'_> {
     match disposition {
+        ReleaseDisposition::KeptOnBranch(reason) => CallerJournalInput::Release {
+            reason: reason.to_string(),
+        },
         ReleaseDisposition::Abandoned(reason) => CallerJournalInput::Release {
             reason: reason.to_string(),
         },

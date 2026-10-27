@@ -15,7 +15,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-use super::constants::GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT;
 use super::constants::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
 use super::constants::OVERLAY_RIGHT_PADDING_WIDTH;
 use super::constants::SHORTCUT_DESCRIPTION_WIDTH;
@@ -250,8 +249,6 @@ fn build_lines(
         lines.push(row_line(row, selection));
         line_targets.push(Some(selectable_index));
     }
-    lines.push(Line::from(""));
-    line_targets.push(None);
     (lines, line_targets)
 }
 
@@ -276,15 +273,16 @@ fn row_line<'a>(row: &GlobalShortcutRow, selection: PaneSelectionState) -> Line<
     let key_display = row.key.as_ref().map_or_else(String::new, |bind| {
         bind.platform_label(crate::AltModifierLabel::current())
     });
-    let marker = if selection == PaneSelectionState::Unselected {
-        "  "
-    } else {
-        "▸ "
+    let (marker, description_ink) = match selection {
+        PaneSelectionState::Unselected => ("  ", label_color()),
+        PaneSelectionState::Active
+        | PaneSelectionState::Hovered
+        | PaneSelectionState::Remembered => ("▸ ", text_default()),
     };
     Line::from(vec![
         Span::styled(
             format!("{SECTION_ITEM_INDENT}{marker}{padded_desc}"),
-            selection.patch(Style::default().fg(label_color())),
+            selection.patch(Style::default().fg(description_ink)),
         ),
         Span::styled(
             key_display,
@@ -296,9 +294,9 @@ fn row_line<'a>(row: &GlobalShortcutRow, selection: PaneSelectionState) -> Line<
 fn popup_height(row_count: usize, area_height: u16) -> u16 {
     let content_height = u16::try_from(row_count).unwrap_or(u16::MAX);
     content_height
-        .saturating_add(2)
+        // Prefer a blank row above the bottom border; drop it before content.
+        .saturating_add(3)
         .min(area_height.saturating_sub(2))
-        .min(GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT)
 }
 
 #[cfg(test)]

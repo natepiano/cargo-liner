@@ -21,11 +21,52 @@ use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax::PathAnchor;
 
+/// Resolution needs scopes before collision analysis has resolved every import path.
+/// It cannot process occurrences or pretend that an empty set is completed analysis.
+pub(super) struct OccurrenceResolutionContext<'a> {
+    pub(super) scopes: &'a [ScopeInfo],
+}
+
+/// Processing is available only after resolving paths and analyzing collision names.
+/// The private collision set prevents resolution from supplying provisional empty state.
 pub(super) struct OccurrenceContext<'a> {
-    pub(super) path:            &'a Path,
-    pub(super) display_path:    &'a str,
-    pub(super) scopes:          &'a [ScopeInfo],
-    pub(super) collision_names: &'a BTreeSet<String>,
+    path:            &'a Path,
+    display_path:    &'a str,
+    scopes:          &'a [ScopeInfo],
+    collision_names: BTreeSet<String>,
+}
+
+impl<'a> OccurrenceResolutionContext<'a> {
+    pub(super) fn analyze_collisions(
+        self,
+        path: &'a Path,
+        display_path: &'a str,
+        occurrences: &[InlinePathOccurrence],
+        resolved: &[ResolvedOccurrence<'_>],
+        bare_type_names: &BTreeSet<String>,
+    ) -> OccurrenceContext<'a> {
+        let resolved_import_paths = resolved
+            .iter()
+            .map(|item| item.import_path.clone())
+            .collect::<Vec<_>>();
+        let existing_imports = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.existing_imports.keys().cloned())
+            .collect();
+        let collision_names = find_collision_names(
+            occurrences,
+            &resolved_import_paths,
+            bare_type_names,
+            &existing_imports,
+        );
+        OccurrenceContext {
+            path,
+            display_path,
+            scopes: self.scopes,
+            collision_names,
+        }
+    }
 }
 
 type ImportKey = (usize, String);
@@ -66,7 +107,7 @@ pub(super) struct ResolvedOccurrence<'a> {
     occurrence:             &'a InlinePathOccurrence,
     location:               OccurrenceLocation<'a>,
     scope_id:               Option<usize>,
-    pub(super) import_path: String,
+    import_path:            String,
     conditional_attributes: ConditionalAttributes,
 }
 
@@ -209,7 +250,11 @@ fn record_occurrence(
     let import_path = &resolved.import_path;
 
     findings.push(Finding {
-        severity:        Severity::Warning,
+        disposition:     Finding::disposition(
+            DiagnosticCode::InlinePathQualifiedType,
+            Severity::Warning,
+            FixSupport::InlinePathQualifiedType,
+        ),
         diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
         path:            ctx.display_path.to_string(),
         line:            resolved.location.start.line,
@@ -222,7 +267,6 @@ fn record_occurrence(
             occ.import_name
         ),
         suggestion:      Some(format!("consider adding: `use {import_path};`")),
-        fix_support:     FixSupport::InlinePathQualifiedType,
         related:         None,
         item_visibility: ItemVisibility::default(),
     });
@@ -247,7 +291,7 @@ fn record_occurrence(
 
 pub(super) fn resolve_occurrence<'a>(
     occurrence: &'a InlinePathOccurrence,
-    ctx: &OccurrenceContext<'_>,
+    ctx: &OccurrenceResolutionContext<'_>,
     source: &ImportSource<'a>,
 ) -> Result<ResolvedOccurrence<'a>> {
     let location = OccurrenceLocation::new(source, occurrence.span_start, occurrence.span_end)?;
@@ -427,7 +471,7 @@ fn absolutize_import_path(
 /// writing the same `io::ErrorKind` can still resolve through different `io`
 /// bindings, and detecting that here keeps the findings out of the report
 /// instead of advertising fixes the combining layer would silently drop.
-pub(super) fn find_collision_names(
+fn find_collision_names(
     occurrences: &[InlinePathOccurrence],
     resolved_import_paths: &[String],
     bare_type_names: &BTreeSet<String>,
@@ -470,8 +514,8 @@ mod tests {
 
     use super::ImportAttributePlan;
     use super::ImportResolution;
-    use super::OccurrenceContext;
     use super::OccurrenceLocation;
+    use super::OccurrenceResolutionContext;
     use super::absolutize_import_path;
     use super::process_occurrence;
     use super::resolve_occurrence;
@@ -516,16 +560,38 @@ mod tests {
             },
             conditional_attributes: ConditionalAttributes::default(),
         };
-        let ctx = OccurrenceContext {
-            path:            Path::new("src/lib.rs"),
-            display_path:    "src/lib.rs",
-            scopes:          &[],
-            collision_names: &BTreeSet::new(),
-        };
+        let ctx = OccurrenceResolutionContext { scopes: &[] };
         let mut findings = Vec::new();
         let mut fixes = Vec::new();
         let source = ImportSource::new(text);
         let resolved = resolve_occurrence(&occurrence, &ctx, &source)?;
+        let blocked = OccurrenceResolutionContext { scopes: &[] }.analyze_collisions(
+            Path::new("src/lib.rs"),
+            "src/lib.rs",
+            std::slice::from_ref(&occurrence),
+            std::slice::from_ref(&resolved),
+            &BTreeSet::from(["Widget".to_string()]),
+        );
+        process_occurrence(
+            &resolved,
+            &blocked,
+            &ImportAttributePlan {
+                attributes: BTreeMap::new(),
+            },
+            &mut BTreeSet::new(),
+            &mut findings,
+            &mut fixes,
+        );
+        assert!(blocked.collision_names.contains("Widget"));
+        assert!(findings.is_empty());
+        assert!(fixes.is_empty());
+        let ctx = ctx.analyze_collisions(
+            Path::new("src/lib.rs"),
+            "src/lib.rs",
+            std::slice::from_ref(&occurrence),
+            std::slice::from_ref(&resolved),
+            &BTreeSet::new(),
+        );
         process_occurrence(
             &resolved,
             &ctx,

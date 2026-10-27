@@ -8,6 +8,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- Tile grids can reserve the summary’s measured rows before sharing the remaining rows among tiles.
+- `ThemeRegistry::from_dir_with_parser` lets applications validate their own theme families while sharing deterministic directory loading, failed-file reporting and built-in role inheritance.
+- `ThemeSource` names built-in-only and directory theme sources at the parser boundary.
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Fixed
