@@ -110,6 +110,7 @@ use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
 use tui_pane::KeyBind;
 use tui_pane::Keymap as FrameworkKeymap;
@@ -1098,9 +1099,11 @@ impl App {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
-        self.dispatch_framework_global_action(GlobalAction::OpenSettings);
+        if self.framework.overlay() != Some(FrameworkOverlayId::Settings) {
+            self.dispatch_framework_global_action(GlobalAction::OpenSettings);
+        }
         if let Some(idx) = settings::selection_index_for_setting(self, SettingOption::IncludeDirs) {
-            self.framework.settings_pane.viewport_mut().set_pos(idx);
+            self.framework.settings_pane.select_row(idx);
         }
         self.overlays
             .set_inline_error("Configure at least one include directory before continuing");
@@ -4374,8 +4377,7 @@ mod tests {
             open_framework_overlay(&mut app, FrameworkGlobalAction::OpenSettings);
             app.framework
                 .settings_pane
-                .viewport_mut()
-                .set_pos(SettingOption::CiRunCount as usize);
+                .select_row(SettingOption::CiRunCount as usize);
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
             app.inflight.example_output_mut().push("line".to_string());
 

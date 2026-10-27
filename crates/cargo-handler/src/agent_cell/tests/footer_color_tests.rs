@@ -45,7 +45,12 @@ fn rendered_with_colors(
 fn assert_color(buffer: &Buffer, text: &str, expected: Color) {
     let (x, y) = find(buffer, text).expect("the label is drawn");
     for offset in 0..summary::cell_width(text) {
-        assert_eq!(buffer[(x + offset, y)].fg, expected, "{text} at {offset}");
+        let actual = buffer[(x + offset, y)].fg;
+        assert_eq!(
+            tui_pane::blend_color(actual, actual, 0),
+            tui_pane::blend_color(expected, expected, 0),
+            "{text} at {offset}"
+        );
     }
 }
 
@@ -110,7 +115,7 @@ fn footer_role_colors_reach_each_agent_role_in_the_tree() {
             machine:        "natedev",
             location:       SessionLocation::SameMachine,
             row:            &member,
-            hue:            RainbowHue::Red,
+            hue:            SessionHue::First,
             rails:          Vec::new(),
             branch:         Branch::Last,
             subject:        LineSubject::Agent(role),
@@ -147,7 +152,7 @@ fn footer_account_colors_reach_the_tree_and_header_without_recoloring_tiers() {
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
         row:            &member,
-        hue:            RainbowHue::Red,
+        hue:            SessionHue::First,
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
@@ -217,7 +222,7 @@ fn managed_thread_roles_and_accounts_take_footer_colors_independently_of_status(
             machine:        "natedev",
             location:       SessionLocation::SameMachine,
             row:            &root,
-            hue:            RainbowHue::Red,
+            hue:            SessionHue::First,
             rails:          Vec::new(),
             branch:         Branch::Last,
             subject:        LineSubject::ManagedThread(&worker, role),
@@ -295,7 +300,7 @@ fn codex_worker_and_thread_status_cells_show_activity_with_tier_after_account() 
                 machine:        "natedev",
                 location:       SessionLocation::SameMachine,
                 row:            &root,
-                hue:            RainbowHue::Red,
+                hue:            SessionHue::First,
                 rails:          Vec::new(),
                 branch:         Branch::Last,
                 subject:        LineSubject::ManagedThread(&worker, role),
@@ -407,7 +412,7 @@ fn absent_footer_colors_preserve_the_existing_tile_styles() {
     assert_color(
         &buffer,
         "worker task",
-        Role::Rainbow(RainbowHue::Red)
+        Role::Session(SessionHue::First)
             .style()
             .fg
             .expect("parent hue"),
@@ -425,7 +430,13 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         directory: "/fixture/color-check".repeat(4),
         children: vec![
             child(0, ChildKind::Thread, None, "unroled task", MINUTE),
-            child(0, ChildKind::Shell, Some(11), "shell task", MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(11),
+                "shell task",
+                MINUTE,
+            ),
             child(
                 0,
                 ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
@@ -459,7 +470,7 @@ fn unroled_workers_inherit_parent_hues_while_shells_and_subagents_stay_plain() {
         assert_color(
             &buffer,
             "unroled task",
-            Role::Rainbow(cell.hue).style().fg.expect("parent hue"),
+            Role::Session(cell.hue).style().fg.expect("parent hue"),
         );
         assert_color(&buffer, "shell task", text_default());
         assert_color(&buffer, "subagent task", text_default());

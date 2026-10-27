@@ -70,7 +70,7 @@ fn with_agents(mut app: App) -> App {
 }
 
 fn header_point(buffer: &Buffer, column: AccountsColumn) -> CellPoint {
-    let row = accounts_gradient_tests::locate(buffer, "weekly left").row;
+    let row = accounts_gradient_tests::locate(buffer, "left").row;
     let line: String = (buffer.area.x..buffer.area.right())
         .map(|x| buffer[(x, row)].symbol())
         .collect();
@@ -291,6 +291,53 @@ fn numeric_account_cells_align_their_right_edges_with_their_headers() {
             .expect("numeric account value");
             let value_right = left + super::cell_width(&line[..index]) + super::cell_width(value);
             assert_eq!(value_right, right, "{label} {column:?}: {line}");
+        }
+    }
+}
+
+#[test]
+fn new_account_headers_toggle_and_keep_blank_read_and_credit_states_last() {
+    let table=crate::census::accounts::AccountsReading::parse(&serde_json::to_vec(&serde_json::json!({"accounts":[
+        {"label":"older","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":true,"credits_in_use":false,"read_ok":true,"read_at":"2026-10-16T00:00:00Z","resets_at":null},
+        {"label":"newer","roles":[],"weekly_left_percent":50,"credits":null,"use_credits":false,"credits_in_use":true,"read_ok":true,"read_at":"2026-10-17T00:00:00Z","resets_at":null},
+        {"label":"blank","roles":[],"weekly_left_percent":null,"credits":null,"use_credits":false,"credits_in_use":false,"read_at":null,"resets_at":null}
+    ],"problems":[]})).expect("wire JSON")).expect("reading");
+    for (header, first, second) in [
+        (
+            "enabled",
+            ["older", "newer", "blank"],
+            ["older", "newer", "blank"],
+        ),
+        (
+            "in use",
+            ["newer", "older", "blank"],
+            ["newer", "older", "blank"],
+        ),
+        (
+            "read",
+            ["newer", "older", "blank"],
+            ["older", "newer", "blank"],
+        ),
+    ] {
+        let mut app = accounts_gradient_tests::app_with_accounts(table.accounts.clone());
+        for (marker, order) in [("▲", first), ("▼", second)] {
+            let before = accounts_gradient_tests::drawn(&app);
+            let point = accounts_gradient_tests::locate(&before, header);
+            render::cell_clicked(
+                &mut app,
+                CellClick {
+                    index:   0,
+                    content: TileContent::Summary,
+                    area:    before.area,
+                    point:   CellPoint {
+                        column: point.column - before.area.x,
+                        row:    point.row - before.area.y,
+                    },
+                },
+            );
+            let after = accounts_gradient_tests::drawn(&app);
+            assert_order(&after, &order);
+            accounts_gradient_tests::locate(&after, &format!("{header} {marker}"));
         }
     }
 }

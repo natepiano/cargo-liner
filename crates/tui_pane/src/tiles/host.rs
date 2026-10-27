@@ -18,6 +18,7 @@ use crate::Hittable;
 use crate::InputContext;
 use crate::Mode;
 use crate::Pane;
+use crate::ScrollDirection;
 use crate::dispatch_hit_test;
 
 /// A terminal cell position relative to a tile's content origin.
@@ -57,6 +58,9 @@ pub trait TileGridHost: AppContext + 'static {
 
     /// The app's grid, to focus and steer.
     fn tile_grid_mut(&mut self) -> &mut TileGrid<Self::TileId>;
+
+    /// Handle a wheel step inside a cell without moving tile focus.
+    fn cell_scrolled(&mut self, _cell: CellClick<Self::TileId>, _direction: ScrollDirection) {}
 
     /// Handle a left press inside a focused cell's content, after focus moves.
     fn cell_clicked(&mut self, _click: CellClick<Self::TileId>) {}
@@ -152,6 +156,29 @@ where
             select_framework_overlay_row(app.framework_mut(), id, row);
         },
         None => (),
+    }
+}
+
+/// Forward a wheel step to the cell under the pointer, respecting modal hits.
+pub fn handle_tile_scroll<A>(app: &mut A, position: Position, direction: ScrollDirection)
+where
+    A: TileGridHost + InputContext<Target = TilePick>,
+{
+    if let Some(TilePick::Cell(_)) = dispatch_hit_test(app, position)
+        && let Some((index, content, area)) = app.tile_grid_mut().cell_content_at(position)
+    {
+        app.cell_scrolled(
+            CellClick {
+                index,
+                content,
+                area,
+                point: CellPoint {
+                    column: position.x - area.x,
+                    row:    position.y - area.y,
+                },
+            },
+            direction,
+        );
     }
 }
 

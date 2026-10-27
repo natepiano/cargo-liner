@@ -7,7 +7,17 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::NavAction;
 use crate::PaneFrameLabel;
+
+/// Direction of one mouse wheel step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollDirection {
+    /// Move toward the first row.
+    Up,
+    /// Move toward the last row.
+    Down,
+}
 
 /// Scroll overflow facts for a rendered viewport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +100,30 @@ impl Viewport {
             content_area:   Rect::ZERO,
             scroll_offset:  0,
             visible_rows:   0,
+        }
+    }
+
+    /// Apply the shared list-navigation action without wrapping.
+    pub fn navigate(&mut self, action: crate::NavAction) {
+        match action {
+            NavAction::Up | NavAction::Left => self.up(),
+            NavAction::Down | NavAction::Right => self.down(),
+            NavAction::Home => self.home(),
+            NavAction::End => self.end(),
+            NavAction::PageUp => self.page_up(),
+            NavAction::PageDown => self.page_down(),
+            NavAction::HalfPageUp => self.half_page_up(),
+            NavAction::HalfPageDown => self.half_page_down(),
+        }
+    }
+
+    /// Move one row only when the pointer lies in this viewport.
+    pub const fn scroll_if_contains(&mut self, position: Position, direction: ScrollDirection) {
+        if self.content_area.contains(position) {
+            match direction {
+                ScrollDirection::Up => self.up(),
+                ScrollDirection::Down => self.down(),
+            }
         }
     }
 
@@ -287,6 +321,21 @@ impl Viewport {
             return None;
         }
         Some(row)
+    }
+}
+
+/// Resolve a table row below its single header, including its scroll offset.
+#[must_use]
+pub const fn table_row_at(viewport: &Viewport, position: Position) -> Option<usize> {
+    let inner = viewport.content_area();
+    if inner.is_empty() || !inner.contains(position) || position.y < inner.y.saturating_add(1) {
+        return None;
+    }
+    let row = viewport.scroll_offset() + (position.y - inner.y - 1) as usize;
+    if row < viewport.len() {
+        Some(row)
+    } else {
+        None
     }
 }
 
@@ -499,3 +548,7 @@ mod tests {
         assert_eq!(viewport.hovered(), None);
     }
 }
+
+#[cfg(test)]
+#[path = "navigation_tests.rs"]
+mod navigation_tests;

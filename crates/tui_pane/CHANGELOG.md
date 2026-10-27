@@ -7,7 +7,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Added
+- Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
+
 ### Fixed
+- Settings: a row change ends an open edit, so Enter cannot save the text into another row. Navigation before the first draw reaches every row.
 - Config rewrites preserve unknown keys and comments.
 - A cell holding hundreds of rows no longer stalls the grid; each cell's content is measured at most once per height in a frame.
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
@@ -25,6 +29,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- `SettingsPane::viewport_mut` is removed, so callers cannot change the selected row past edit cancellation. Use `set_content_area`, `set_scroll_offset` and `set_hovered` for layout and hover; use `select_row` to change the selection. `SettingsHost` gains the required `settings_row_count`.
 - Config writes remove the app’s declared retired keys while preserving unknown keys, comments and unchanged files.
 - Removed the `auto` tile view because it drew the same as `cells`; a saved `auto` view loads as `cells`.
 - `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.

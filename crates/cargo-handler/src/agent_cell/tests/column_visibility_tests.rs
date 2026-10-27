@@ -8,6 +8,9 @@ use tui_pane::TerminalApp;
 
 use super::*;
 use crate::app::App;
+use crate::census::Activity;
+use crate::census::AgentActivity;
+use crate::census::ShellTimerObservation;
 use crate::render;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -180,13 +183,17 @@ fn different_tile_columns_fit_independently_and_click_the_drawn_headers() {
 #[test]
 fn equal_tile_column_sets_share_drawn_header_positions() {
     let mut short = agent(10, "short-owner", HOUR, None);
-    short
-        .children
-        .push(child(0, ChildKind::Shell, Some(11), "build", MINUTE));
+    short.children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(11),
+        "build",
+        MINUTE,
+    ));
     let mut long = agent(20, "long-owner", HOUR, None);
     long.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "run-the-long-project-build",
         MINUTE,
@@ -210,7 +217,7 @@ fn shared_age_slots_keep_all_headers_aligned_at_the_right_edge() {
     let mut older = agent(10, "older-owner", HOUR, None);
     older.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(11),
         "build",
         6 * 24 * HOUR + 17 * HOUR,
@@ -218,7 +225,7 @@ fn shared_age_slots_keep_all_headers_aligned_at_the_right_edge() {
     let mut younger = agent(20, "younger-owner", HOUR, None);
     younger.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "run-the-long-project-build",
         24 * HOUR + 5 * HOUR,
@@ -312,13 +319,17 @@ fn hidden_accounts_do_not_split_shared_drawn_column_positions() {
         "home": "~/.claude1", "label": "claude1"
     }))
     .expect("recorded account");
-    short
-        .children
-        .push(child(0, ChildKind::Shell, Some(11), "build", MINUTE));
+    short.children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(11),
+        "build",
+        MINUTE,
+    ));
     let mut long = agent(20, "long-owner", HOUR, None);
     long.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "run-the-long-project-build",
         MINUTE,
@@ -398,6 +409,62 @@ fn allocation_text(buffer: &Buffer, area: Rect) -> Vec<String> {
                 .collect()
         })
         .collect()
+}
+
+#[test]
+fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
+    let recorded_account = |label| {
+        serde_json::from_value(serde_json::json!({
+            "home": format!("~/.{label}"), "label": label
+        }))
+        .expect("recorded fixture account")
+    };
+    let mut owner = agent(10, "status-owner", HOUR, None);
+    owner.account = recorded_account("claude1");
+    owner.children = [
+        ("visible-running", Activity::Running, 600),
+        ("visible-waiting", Activity::Waiting, 500),
+        ("another-running", Activity::Running, 400),
+        ("later-waiting", Activity::Waiting, 300),
+        ("last-running", Activity::Running, 200),
+        ("offscreen-thinking", Activity::Thinking, 60),
+    ]
+    .into_iter()
+    .map(|(name, activity, age)| ChildRow {
+        activity: AgentActivity::Active(activity),
+        ..child(
+            0,
+            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            None,
+            name,
+            age,
+        )
+    })
+    .collect();
+    let other = AgentRow {
+        account: recorded_account("claude2"),
+        ..agent(20, "other-account", HOUR, None)
+    };
+    let rect = Rect::new(0, 0, 130, 6);
+    let buffer = allocated_tiles(vec![owner, other], &[(10, rect)]);
+    let rows = allocation_text(&buffer, rect);
+    let header = rows
+        .iter()
+        .find(|line| line.contains("status") && line.contains("account"))
+        .expect("drawn status and account headers");
+    let status_x = summary::cell_width(&header[..header.find("status").expect("status column")]);
+    let account_x = summary::cell_width(&header[..header.find("account").expect("account column")]);
+    assert!(rows.iter().any(|line| line.contains("running")), "{rows:?}");
+    assert!(rows.iter().any(|line| line.contains("waiting")), "{rows:?}");
+    assert!(
+        !rows.iter().any(|line| line.contains("offscreen-thinking")),
+        "{rows:?}"
+    );
+    assert_eq!(
+        account_x - status_x,
+        9,
+        "seven-cell status plus two-cell gap: {rows:?}"
+    );
 }
 
 #[test]
@@ -499,7 +566,7 @@ fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
     let mut first = agent(10, "first-owner", HOUR, None);
     first.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(11),
         "build",
         14 * 24 * HOUR,
@@ -507,7 +574,7 @@ fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
     let mut second = agent(20, "second-owner", HOUR, None);
     second.children.push(child(
         0,
-        ChildKind::Shell,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
         Some(21),
         "run-the-project-build",
         2 * MINUTE + 49,

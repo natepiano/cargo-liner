@@ -28,6 +28,8 @@ use crate::census::CodexThreadId;
 use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::ShellTimerObservation;
+use crate::census::WorkIdentity;
 use crate::census::classify::ProcessEntry;
 use crate::census::probe;
 use crate::census::worker_dispatch::WorkerDispatch;
@@ -391,13 +393,16 @@ fn child_row(kind: ChildKind, account: Account) -> ChildRow {
         pid: None,
         name: "child-account".to_string(),
         started: 102,
-        timer: None,
+        work_id: WorkIdentity::Legacy,
     }
 }
 
 #[test]
 fn an_unrecorded_child_omits_its_account_on_the_wire() {
-    let child = child_row(ChildKind::Shell, Account::Unrecorded);
+    let child = child_row(
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Account::Unrecorded,
+    );
     let wire = serde_json::to_value(&child).expect("child serializes");
 
     assert!(

@@ -32,8 +32,8 @@ use crate::census::scan;
 use crate::footer_colors::FooterColors;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
-use crate::theme::RainbowHue;
 use crate::theme::Role;
+use crate::theme::SessionHue;
 
 const JOB: &str = "fix the slow saved-scene handover";
 const SEAT: &str = "cargo-liner-handler-enh-impl7";
@@ -1054,7 +1054,7 @@ fn folded_roles_draw_like_managed_workers_and_unroled_seats_show_worker() {
                 "{short} managed={managed}"
             );
             assert_eq!(buffer[(role_x, y)].fg, tui_pane::text_default());
-            let name_color = Role::Rainbow(RainbowHue::Red)
+            let name_color = Role::Session(SessionHue::First)
                 .style()
                 .fg
                 .expect("parent hue");

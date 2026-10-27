@@ -7,7 +7,6 @@ use ratatui::layout::Rect;
 use tui_pane::CellPoint;
 
 use crate::agent_cell::TreeColumn;
-use crate::constants::ACCOUNTS_HEADERS;
 use crate::constants::SUMMARY_HEADERS;
 
 /// Alphabetical session order, with original spelling breaking case-insensitive ties.
@@ -176,31 +175,45 @@ pub(crate) enum AccountsColumn {
     WeeklyLeft,
     Resets,
     Credits,
+    Enabled,
+    InUse,
+    Read,
 }
 
 impl AccountsColumn {
-    /// Every account header, in drawing order.
-    pub(crate) const ALL: [Self; 5] = [
+    /// Every labelled account column, in drawing order; the status dot has no header.
+    pub(crate) const ALL: [Self; 8] = [
         Self::Account,
         Self::Roles,
         Self::WeeklyLeft,
         Self::Resets,
         Self::Credits,
+        Self::Enabled,
+        Self::InUse,
+        Self::Read,
     ];
 
     /// Position in the measured account row.
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::Account => 0,
             Self::Roles => 1,
             Self::WeeklyLeft => 2,
             Self::Resets => 3,
             Self::Credits => 4,
+            Self::Enabled => 5,
+            Self::InUse => 6,
+            Self::Read => 7,
         }
     }
 
     /// The label before a sort is selected.
-    pub(crate) const fn header(self) -> &'static str { ACCOUNTS_HEADERS[self.index()] }
+    pub(crate) const fn header(self) -> &'static str {
+        const HEADERS: [&str; AccountsColumn::ALL.len()] = [
+            "account", "role", "left", "resets", "credits", "enabled", "in use", "read",
+        ];
+        HEADERS[self.index()]
+    }
 }
 
 impl SortColumn for AccountsColumn {

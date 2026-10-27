@@ -23,7 +23,7 @@ use crate::render;
 use crate::sort::AccountsSort;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
-use crate::theme::RainbowHue;
+use crate::theme::SessionHue;
 use crate::tiles::TileContent;
 use crate::tiles::TileKey;
 
@@ -350,15 +350,15 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
     }));
     assert_eq!(
         buffer[label_position(&buffer, "director")].fg,
-        Role::Rainbow(RainbowHue::Red)
+        Role::Session(SessionHue::First)
             .style()
             .fg
             .expect("director hue")
     );
     for (name, hue) in [
-        ("ups", RainbowHue::Green),
-        ("postmaster", RainbowHue::Cyan),
-        ("remote-session", RainbowHue::Blue),
+        ("ups", SessionHue::Second),
+        ("postmaster", SessionHue::Third),
+        ("remote-session", SessionHue::Fourth),
     ] {
         assert!(
             (0..AREA.height).all(|y| {
@@ -370,7 +370,7 @@ fn unassigned_grouping_keeps_individual_summary_rows_counts_and_default_name_hue
         assert_pool_matches_summary(
             &tiles,
             name,
-            Role::Rainbow(hue).style().fg.expect("name hue"),
+            Role::Session(hue).style().fg.expect("name hue"),
         );
     }
     let pool = tiles
