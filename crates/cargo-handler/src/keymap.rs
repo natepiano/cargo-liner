@@ -186,15 +186,15 @@ mod tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED_OVERLAY_ROWS: [&str; 89] = [
+    const EXPECTED_OVERLAY_ROWS: [&str; 95] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
         "[Global Shortcuts] global",
         "global.add_tile = +",
         "global.dismiss = x",
-        "global.focus_up = up",
-        "global.focus_down = down",
+        "global.focus_up = ",
+        "global.focus_down = ",
         "global.focus_left = left",
         "global.focus_right = right",
         "global.open_favorites = ctrl-o",
@@ -205,6 +205,12 @@ mod tests {
         "global.remove_tile = -",
         "global.restart = R",
         "global.save_favorite = ctrl-s",
+        "global.row_page_up = pageup",
+        "global.row_page_down = pagedown",
+        "global.row_home = home",
+        "global.row_end = end",
+        "global.row_down = down",
+        "global.row_up = up",
         "global.random_favorite = m",
         "global.open_global_shortcuts = ?",
         "global.attract = a",

@@ -234,6 +234,10 @@ impl<S: Copy> SettingsRows<S> {
     #[must_use]
     pub fn rows(&self) -> &[SettingsRow] { &self.rows }
 
+    /// Number of selectable rows, without copying or measuring the rendered rows.
+    #[must_use]
+    pub const fn selectable_count(&self) -> usize { self.targets.len() }
+
     /// What the pane's `selection`th selectable row edits; `None` past
     /// the last one.
     #[must_use]

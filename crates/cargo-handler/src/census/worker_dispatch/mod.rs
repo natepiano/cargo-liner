@@ -317,6 +317,9 @@ impl From<ProbedWorkerDispatch> for ResolvedWorkerDispatch {
 }
 
 impl ResolvedWorkerDispatch {
+    /// The roster seat survives replacement of its current worker process or thread.
+    pub(crate) fn seat(&self) -> &str { &self.seat }
+
     /// The worker row's display name, on one line however the job was written.
     pub(crate) fn label(&self) -> String { self.job.label(&self.short_seat) }
     pub(super) const fn fallback(&self) -> super::RoleFallback {

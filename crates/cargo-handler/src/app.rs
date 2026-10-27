@@ -1,6 +1,7 @@
 //! `App`: the state the framework borrows itself back through, per
 //! [`AppContext`].
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,6 +28,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
@@ -53,6 +55,7 @@ use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::footer_colors::FooterColorFile;
 use crate::globals::AppGlobalAction;
+use crate::interaction::Selections;
 use crate::keymap;
 use crate::render;
 use crate::settings;
@@ -61,6 +64,7 @@ use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::startup_log;
 use crate::startup_log::StartupProbe;
+use crate::summary::PaintedSummary;
 #[cfg(test)]
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
@@ -114,8 +118,12 @@ pub(crate) struct App {
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
     /// Per-root preferences, discarded when that root leaves the census.
+    pub(crate) selection_area:    Rect,
+    pub(crate) selections:        Selections,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
+    /// The summary allocation retained for header clicks until the next paint.
+    pub(crate) painted_summary:   RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
     pub(crate) summary_sort:      SummarySort,
     /// Account ordering is independent of the machine-group agent ordering.
@@ -199,8 +207,11 @@ impl App {
             loaded_config,
             startup_note,
             tiles: TileGrid::new(),
+            selections: crate::interaction::Selections::default(),
+            selection_area: Rect::ZERO,
             tree_sorts: HashMap::new(),
             tree_layouts: HashMap::new(),
+            painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
             inline_error: None,
@@ -250,6 +261,8 @@ impl AppContext for App {
 }
 
 impl SettingsHost for App {
+    fn settings_row_count(&self) -> usize { settings::rows(self).selectable_count() }
+
     fn step_setting(&mut self, step: SettingStep) { settings::cycle(self, step); }
 
     fn setting_text(&self) -> Option<String> { settings::selected_text(self) }
@@ -294,6 +307,10 @@ impl TerminalApp for App {
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
         render::draw(frame, self, keymap);
+    }
+
+    fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        tui_pane::handle_tile_scroll(self, position, direction);
     }
 
     fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
@@ -353,6 +370,10 @@ impl TileGridHost for App {
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
+
+    fn cell_scrolled(&mut self, cell: CellClick<TileKey>, direction: ScrollDirection) {
+        render::cell_scrolled(self, &cell, direction);
+    }
 
     fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
 }

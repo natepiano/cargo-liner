@@ -381,13 +381,27 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
 fn shell_state_buffer(width: u16) -> Buffer {
     let root = AgentRow {
         children: vec![
-            child(0, ChildKind::Shell, Some(21), "compile-project", MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "compile-project",
+                MINUTE,
+            ),
             ChildRow {
-                timer: Some(Timer {
-                    started:  NOW - 92,
-                    deadline: NOW + 228,
-                }),
-                ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+                kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                    Timer {
+                        started:  NOW - 92,
+                        deadline: NOW + 228,
+                    },
+                )),
+                ..child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(22),
+                    "progress-clock",
+                    92,
+                )
             },
         ],
         ..agent(10, "shell-owner", HOUR, None)
@@ -439,13 +453,27 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
     };
     let owner = AgentRow {
         children: vec![
-            child(0, ChildKind::Shell, Some(21), "compile-project", MINUTE),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "compile-project",
+                MINUTE,
+            ),
             ChildRow {
-                timer: Some(Timer {
-                    started:  NOW - 92,
-                    deadline: NOW + 228,
-                }),
-                ..child(0, ChildKind::Shell, Some(22), "progress-clock", 92)
+                kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                    Timer {
+                        started:  NOW - 92,
+                        deadline: NOW + 228,
+                    },
+                )),
+                ..child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(22),
+                    "progress-clock",
+                    92,
+                )
             },
         ],
         ..agent(10, "shell-owner", HOUR, None)
@@ -456,7 +484,7 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
         row:            &running,
-        hue:            RainbowHue::Red,
+        hue:            SessionHue::First,
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
@@ -479,20 +507,42 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
 fn spent_shell_timers_draw_running_in_busy_ink_at_the_deadline_and_later() {
     let mut owner = agent(10, "timer-owner", HOUR, None);
     owner.children = vec![
-        child(0, ChildKind::Shell, Some(21), "ordinary-build", MINUTE),
+        child(
+            0,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(21),
+            "ordinary-build",
+            MINUTE,
+        ),
         ChildRow {
-            timer: Some(Timer {
-                started:  NOW - MINUTE,
-                deadline: NOW,
-            }),
-            ..child(0, ChildKind::Shell, Some(22), "deadline-build", MINUTE)
+            kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                Timer {
+                    started:  NOW - MINUTE,
+                    deadline: NOW,
+                },
+            )),
+            ..child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(22),
+                "deadline-build",
+                MINUTE,
+            )
         },
         ChildRow {
-            timer: Some(Timer {
-                started:  NOW - MINUTE,
-                deadline: NOW + 600,
-            }),
-            ..child(0, ChildKind::Shell, Some(23), "live-countdown", MINUTE)
+            kind: ChildKind::Shell(crate::census::ShellTimerObservation::ObservedCountdown(
+                Timer {
+                    started:  NOW - MINUTE,
+                    deadline: NOW + 600,
+                },
+            )),
+            ..child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(23),
+                "live-countdown",
+                MINUTE,
+            )
         },
     ];
     let entry = entry(&owner, None);

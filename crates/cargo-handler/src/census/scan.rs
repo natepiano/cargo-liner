@@ -918,7 +918,7 @@ fn worker_dispatches(
 /// Move a live Claude seat's launcher work into that session's own row.
 fn fold_claude_dispatches(rows: &mut [AgentRow]) {
     let matches: Vec<_> = rows.iter().flat_map(|row| row.children.iter()).filter_map(|child| {
-        if child.kind != ChildKind::Shell { return None; }
+        if !matches!(child.kind, ChildKind::Shell(_)) { return None; }
         let WorkerDispatch::Worker(dispatch) = &child.dispatch else { return None; };
         let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else { return None; };
         rows.iter().position(|row| matches!(&row.session_id, super::SessionIdentity::Claude(session) if session == id))
@@ -932,7 +932,7 @@ fn fold_claude_dispatches(rows: &mut [AgentRow]) {
             if let Some(index) = row
                 .children
                 .iter()
-                .position(|child| child.kind == ChildKind::Shell && child.pid == pid)
+                .position(|child| matches!(child.kind, ChildKind::Shell(_)) && child.pid == pid)
             {
                 let depth = row.children[index].depth;
                 let end = row.children[index + 1..]

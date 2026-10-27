@@ -195,6 +195,8 @@ impl AppContext for TestApp {
 }
 
 impl SettingsHost for TestApp {
+    fn settings_row_count(&self) -> usize { 0 }
+
     fn step_setting(&mut self, _step: SettingStep) {}
 }
 

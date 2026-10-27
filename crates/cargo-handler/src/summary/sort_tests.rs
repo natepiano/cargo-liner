@@ -21,7 +21,7 @@ use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
-use crate::theme::RainbowHue;
+use crate::theme::SessionHue;
 
 const NOW: u64 = 1_000_000;
 const COLUMNS: [SummaryColumn; 7] = [
@@ -169,13 +169,13 @@ fn default_summary_sort_keeps_phase_one_machine_order_rows_and_colors() {
     }
 
     for (name, hue) in [
-        ("zeta", RainbowHue::Red),
-        ("alpha", RainbowHue::Orange),
-        ("other-machine", RainbowHue::Green),
+        ("zeta", SessionHue::First),
+        ("alpha", SessionHue::Second),
+        ("other-machine", SessionHue::Third),
     ] {
         assert_eq!(
             buffer[find_label(&buffer, name)].fg,
-            Role::Rainbow(hue).style().fg.expect("hue foreground")
+            Role::Session(hue).style().fg.expect("hue foreground")
         );
     }
 }
@@ -206,7 +206,12 @@ fn every_summary_column_sorts_both_directions_inside_its_machine_group() {
                 ("a-account", Color::Indexed(208)),
                 ("z-account", Color::Indexed(141)),
             ] {
-                assert_eq!(buffer[find_label(&buffer, account)].fg, color);
+                let actual = buffer[find_label(&buffer, account)].fg;
+                assert_eq!(
+                    tui_pane::blend_color(actual, actual, 0),
+                    tui_pane::blend_color(color, color, 0),
+                    "{account} {column:?} {direction:?}"
+                );
             }
         }
     }

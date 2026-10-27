@@ -19,6 +19,7 @@ use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Keymap;
 use crate::KeymapEditContext;
+use crate::ScrollDirection;
 use crate::SettingsHost;
 #[cfg(feature = "backdrop")]
 use crate::attract::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
@@ -47,9 +48,12 @@ pub trait TerminalApp: KeymapEditContext + SettingsHost + 'static {
     /// Draw one frame.
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>);
 
-    /// A left press at `position`. Every other mouse event only records
+    /// A left press at `position`. Other non-wheel mouse events only record
     /// where the pointer is.
     fn click(&mut self, position: Position);
+
+    /// A wheel step at the pointer, separate from a focus-changing click.
+    fn scroll(&mut self, _position: Position, _direction: ScrollDirection) {}
 
     /// The file a panic is appended to, read once as the terminal is
     /// taken: the time, where the panic was raised, its message and a

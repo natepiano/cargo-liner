@@ -233,7 +233,7 @@ impl<'a> AgentPlacement<'a> {
             machine.state.rows().iter().flat_map(|row| row.children.iter()).filter_map(|child| {
                 let WorkerDispatch::Worker(dispatch) = &child.dispatch else { return None; };
                 let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else { return None; };
-                if child.kind != ChildKind::Shell { return None; }
+                if !matches!(child.kind, ChildKind::Shell(_)) { return None; }
                 placement.rows.iter().find(|row| row.identity.machine == machine.name
                     && matches!(&row.row.session_id, SessionIdentity::Claude(session) if session == id))
                     .map(|row| ClaudeDispatchFold { shell: child, worker: row.identity, dispatch })
@@ -595,7 +595,7 @@ impl<'a> AgentPlacement<'a> {
                 row.row.children.iter().any(|child| {
                     matches!(
                         child.kind,
-                        ChildKind::Shell | ChildKind::Subagent(_) | ChildKind::Thread
+                        ChildKind::Shell(_) | ChildKind::Subagent(_) | ChildKind::Thread
                     ) && !self.hides_thread(child)
                         && !self.folds_dispatch(child)
                         && !self.threads.iter().any(|thread| {

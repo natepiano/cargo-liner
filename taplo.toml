@@ -15,3 +15,11 @@ include = [".cargo/config.toml", "bacon.toml"]
 
 [rule.formatting]
 reorder_arrays = false
+
+# `session_hues` is an ordered list: entry i is session i's color, so sorting
+# the array changes which session gets which color.
+[[rule]]
+include = ["crates/cargo-handler/themes/*.toml"]
+
+[rule.formatting]
+reorder_arrays = false

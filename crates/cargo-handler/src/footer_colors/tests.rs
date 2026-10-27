@@ -407,7 +407,7 @@ fn measured_channels(color: Color) -> (u8, u8, u8) {
 /// Model the production stem coverage independently of its channel blending.
 /// Arbitrary font fringes can have coverage approaching zero.
 pub(crate) fn covered_role_contrast(foreground: Color, background: Color) -> f64 {
-    let ground_share = u32::from(255 - ANTIALIASED_GLYPH_COVERAGE);
+    let ground_share = 47u32;
     let foreground = <[u8; 3]>::from(measured_channels(foreground));
     let ground = <[u8; 3]>::from(measured_channels(background));
     let mixed: [u8; 3] = std::array::from_fn(|index| {
@@ -785,3 +785,39 @@ fn footer_file_rereads_only_after_the_modification_time_changes() {
         FooterTint::Footer(FooterColor::Blue)
     );
 }
+
+/// Measure terminal output with the production color conversion.
+pub(crate) fn oklch_ink(color: Color) -> super::Oklch { super::Oklch::from_color(color) }
+
+pub(crate) fn hue_gap(first: Color, second: Color) -> f64 {
+    let gap = (oklch_ink(first).hue - oklch_ink(second).hue).abs();
+    gap.min(360.0 - gap)
+}
+
+/// Keep both limiting pairs: the nearest perceptual pair need not have the nearest hue.
+pub(crate) fn palette_pair_report(class: &str, pairs: &[(String, Color, String, Color)]) -> String {
+    let nearest_distance = pairs
+        .iter()
+        .min_by(|a, b| perceptual_distance(a.1, a.3).total_cmp(&perceptual_distance(b.1, b.3)))
+        .expect("nonempty palette class");
+    let nearest_hue = pairs
+        .iter()
+        .min_by(|a, b| hue_gap(a.1, a.3).total_cmp(&hue_gap(b.1, b.3)))
+        .expect("nonempty palette class");
+    format!(
+        "{class}: min dE={:.9} {} {:?} / {} {:?}; min hue={:.9}deg {} {:?} / {} {:?}\n",
+        perceptual_distance(nearest_distance.1, nearest_distance.3),
+        nearest_distance.0,
+        nearest_distance.1,
+        nearest_distance.2,
+        nearest_distance.3,
+        hue_gap(nearest_hue.1, nearest_hue.3),
+        nearest_hue.0,
+        nearest_hue.1,
+        nearest_hue.2,
+        nearest_hue.3
+    )
+}
+
+/// Normalize named and indexed terminal inks for comparison with measurement artifacts.
+pub(crate) fn terminal_rgb(color: Color) -> [u8; 3] { measured_channels(color).into() }
