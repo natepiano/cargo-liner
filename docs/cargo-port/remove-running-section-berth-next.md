@@ -848,3 +848,13 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - cargo-handler: session discovery takes its roots as input (showrunner-approved production change). `SessionRoots` (`pub(super)`, `census/worker_dispatch/mod.rs`) owns the root directories; `SessionRoots::production()` is the one conversion of `SESSION_ROOTS`, built once in `LocalScanner::new`. `WorkerNames::session_dirs`, `resolve` and `name` take `&SessionRoots`. Production roots, session-id parsing and order are unchanged.
 - Every fixture in `worker_dispatch/{tests,dispatch_form_tests,naming_tests,prompt_opening_tests}.rs` and `census/scan/activity_scan_tests.rs` lives in a `TempDir`. New test `session_discovery_uses_only_supplied_roots_and_preserves_id_boundaries_and_order`.
 - Proof: cargo-port 1082/1082, cargo-handler 683/683, tui_pane 1140/1140, cargo-berth 1298/1298. No new entry in the three shared roots after the suites.
+
+### Phase 36 — A background launch or a git operation in progress is not a write  · status: done
+
+#### As-built
+
+- Why: on 2026-10-27 names-unit ran `git fetch …; git merge --ff-only origin/style/main` as one background Bash call. Claude Code runs the PostToolUse hook when a background command is launched, so cargo-berth read the tree while git was still checking out `69982ccb`: three changed files were on disk while HEAD and the index still named `38bad718`. It opened a first-touch reservation on them; `git status` was clean right after. A replay of the finished fast-forward on a private ledger copy opened no claim, so the race was the cause.
+- `BashLaunch::{Foreground(ObservedBashCall), Background}` (`src/hook/post_tool_use.rs`): a launch is background when `tool_input.run_in_background` is true or `tool_response.backgroundTaskId` is a non-empty string. Only `Foreground` can build a drift request; a background launch records nothing. The next hook observes its writes.
+- `WorktreeSettlement::{Settled, GitOperationInProgress}` (`src/git/worktree_operation.rs`): `index.lock` in the worktree's own git dir means git is still writing. The hook and shared drift preparation record nothing then; the next hook reads the settled tree. `MERGE_HEAD` trial-merge handling is unchanged.
+- No journal, disposition, output contract or replay change.
+- Proof: `post_tool_use_defers_a_background_bash_launch` and `post_tool_use_defers_a_worktrees_index_lock` (`tests/hooks.rs`) failed before (each opened a first-touch reservation). Guard: `an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write` (`tests/drift.rs`). 1303/1303.

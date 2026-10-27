@@ -3553,6 +3553,104 @@ fn post_tool_use_names_the_paths_a_first_touch_reserved() -> TestResult {
 }
 
 #[test]
+fn post_tool_use_defers_a_background_bash_launch() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    fs::write(repository.path().join("README.md"), "still being written\n")?;
+    let before = journal_events(repository.path())?;
+    let mut payload = bash_payload(repository.path(), WIDENING_SESSION);
+    payload["tool_input"]["run_in_background"] = Value::Bool(true);
+    let output = run_post_tool_use(repository.path(), &payload)?;
+    require_success(&output, "background launch")?;
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(journal_events(repository.path())?, before);
+
+    payload["tool_input"]["run_in_background"] = Value::Bool(false);
+    payload["tool_response"] = serde_json::json!({"backgroundTaskId": "bash-task"});
+    let output = run_post_tool_use(repository.path(), &payload)?;
+    require_success(&output, "automatically backgrounded launch")?;
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(journal_events(repository.path())?, before);
+
+    payload["tool_response"] = serde_json::json!({"backgroundTaskId": null});
+    let output = run_post_tool_use(repository.path(), &payload)?;
+    require_success(&output, "foreground write")?;
+    assert!(
+        journal_events(repository.path())?[before.len()..]
+            .iter()
+            .any(|event| {
+                event["op"] == "claim"
+                    && event["scopes"] == serde_json::json!([{"kind": "file", "path": "README.md"}])
+            })
+    );
+    Ok(())
+}
+
+#[test]
+fn post_tool_use_defers_a_worktrees_index_lock() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let (_worktrees, holder) = add_worktree(&repository, "index-writer")?;
+    assert_index_lock_defers_first_touch(repository.path(), &holder)
+}
+
+#[test]
+fn post_tool_use_defers_a_main_worktrees_index_lock() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    assert_index_lock_defers_first_touch(repository.path(), repository.path())
+}
+
+/// An unrelated checkout's index lock cannot defer this linked worktree's actual write.
+#[test]
+fn post_tool_use_ignores_another_worktrees_index_lock() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    let (_worktrees, holder) = add_worktree(&repository, "independent-writer")?;
+    fs::write(holder.join("README.md"), "independent edit\n")?;
+    fs::write(repository.path().join(".git/index.lock"), "")?;
+    let before = journal_events(repository.path())?;
+    let output = run_post_tool_use(&holder, &bash_payload(&holder, WIDENING_SESSION))?;
+    require_success(&output, "independent worktree write")?;
+    assert!(
+        journal_events(repository.path())?[before.len()..]
+            .iter()
+            .any(|event| {
+                event["op"] == "claim"
+                    && event["scopes"] == serde_json::json!([{"kind": "file", "path": "README.md"}])
+            })
+    );
+    Ok(())
+}
+
+fn assert_index_lock_defers_first_touch(repository: &Path, holder: &Path) -> TestResult {
+    fs::write(holder.join("README.md"), "still being written\n")?;
+    let git_directory = git_command(BERTH_EXECUTABLE)
+        .current_dir(holder)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()?;
+    require_success(&git_directory, "linked worktree git directory")?;
+    let index_lock =
+        PathBuf::from(String::from_utf8(git_directory.stdout)?.trim()).join("index.lock");
+    fs::write(&index_lock, "")?;
+    let before = journal_events(repository)?;
+    let payload = bash_payload(holder, WIDENING_SESSION);
+    let output = run_post_tool_use(holder, &payload)?;
+    require_success(&output, "unsettled index")?;
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(journal_events(repository)?, before);
+
+    fs::remove_file(index_lock)?;
+    let output = run_post_tool_use(holder, &payload)?;
+    require_success(&output, "settled write")?;
+    assert!(
+        journal_events(repository)?[before.len()..]
+            .iter()
+            .any(|event| {
+                event["op"] == "claim"
+                    && event["scopes"] == serde_json::json!([{"kind": "file", "path": "README.md"}])
+            })
+    );
+    Ok(())
+}
+
+#[test]
 fn session_start_reports_an_automatic_orphan_retirement_once() -> TestResult {
     let repository = CONFIGURED_REPOSITORY.instantiate();
     let (_worktrees, holder) = add_worktree(&repository, "empty-orphan")?;

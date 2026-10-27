@@ -17,7 +17,6 @@ use super::boundary;
 use super::boundary::ModuleContext;
 use super::boundary::ModuleSourceMap;
 use super::boundary::ParentBoundary;
-use super::exports::ParentFacadeExports;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::ExtractedPaths;
@@ -124,10 +123,9 @@ pub(super) fn scan_facade_usage(
     tcx: TyCtxt<'_>,
     module_sources: &ModuleSourceMap,
     parent_boundary: &ParentBoundary,
-    exported_names: &ParentFacadeExports,
+    exported_names: &[String],
 ) -> Result<ParentFacadeUsageByName> {
     let mut usage_by_name = exported_names
-        .explicit
         .iter()
         .map(|name| {
             (
@@ -136,7 +134,7 @@ pub(super) fn scan_facade_usage(
             )
         })
         .collect::<ParentFacadeUsageByName>();
-    let explicit_names = ExportNameIndex::new(&exported_names.explicit);
+    let explicit_names = ExportNameIndex::new(exported_names);
 
     for source_path in source_cache.source_files() {
         if file_mentions_no_export(source_cache, source_path, &explicit_names) {
@@ -176,7 +174,7 @@ pub(super) fn scan_facade_usage(
         tcx,
         module_sources,
         &parent_boundary.module_path,
-        &exported_names.explicit,
+        exported_names,
     )?;
     for (name, literal_usage) in literal_usage_by_name {
         merge_usage_for_name(&mut usage_by_name, &name, literal_usage);
