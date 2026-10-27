@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use tempfile::TempDir;
 
 use super::*;
 use crate::agent_cell;
@@ -33,22 +34,20 @@ enum NamingPath {
 }
 
 fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
-    let base = Path::new("/tmp/claude/unit");
-    fs::create_dir_all(base).expect("fixture session root");
-    let session = tempfile::Builder::new()
-        .prefix("handler-opening-")
-        .tempdir_in(base)
-        .expect("isolated session");
+    let root = TempDir::new().expect("isolated session root");
+    let roots = SessionRoots::new([root.path().to_path_buf()]);
+    let session = root.path().join("session");
+    fs::create_dir(&session).expect("isolated session");
     let seat = format!("fixture-{}", role.text());
     fs::write(
-        session.path().join(ROSTER_FILE),
+        session.as_path().join(ROSTER_FILE),
         serde_json::json!({seat.clone():{"thread_id":THREAD,"role":role.text(),"launcher_pid":42}})
             .to_string(),
     )
     .expect("roster writes");
     let prompt = format!(
         "{prompt}\nSummary: {}/phases/5/summary.txt",
-        session.path().display()
+        session.as_path().display()
     );
     let dispatch = match path {
         NamingPath::RoleFallback => WorkerDispatch::Plain,
@@ -56,6 +55,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
+            &roots,
         ),
         NamingPath::LiveDispatch => {
             let argv = [
@@ -63,7 +63,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
                 "/fixture/.claude/scripts/delegate/implement.sh",
                 "--to",
                 &seat,
-                session.path().to_str().expect("fixture path"),
+                session.as_path().to_str().expect("fixture path"),
                 "/work/fixture",
                 "/fixture/prompt.md",
                 "impl",
@@ -76,7 +76,7 @@ fn drawn_worker(prompt: &str, role: HierarchyRole, path: NamingPath) -> String {
             .map(String::from);
             ParsedDispatch::from_arguments(&argv)
                 .expect("live dispatch argv")
-                .resolve(&WorkerRoster::read(session.path()), 42)
+                .resolve(&WorkerRoster::read(session.as_path()), 42)
         },
     };
     let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
