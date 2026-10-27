@@ -834,7 +834,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - Change-review line: under a full tile, a live command with no cell is in the summary.
 - Change-review line: a new cell fades in from its first frame, and no live cell leaves the tile when another cell grows.
 
-### Phase 24a — One invocation, one place  · status: todo
+### Phase 24a — One invocation, one place  · status: not landed
 
 **Depends on:** Phase 24 (its round 3 tree, its Outcome and its state model)
 
@@ -871,6 +871,30 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green.
 - The paired live capture against main meets the landing rule.
 - Change-review line: no invocation is in the summary and in a cell in the same frame, and no invocation has two cells.
+
+#### Outcome
+
+Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tree is commit `d22c672b` and is the base of the next lifecycle phase.
+- Round 1 capture (shots43, against main `c9142b19`): every job got a cell (64 of 64 against 25 of 64), the d80 census max was 0.50 s and no job showed in the summary and a cell at once. The two-pass frame draw made the layout flip every frame (d80, 181 frames), the tile ran past the screen, ended jobs showed in two cells, and the alias parent kept its own cell.
+- Round 3 capture (shots44, against main `595145da`): those faults are gone, d80 and d40 have 0 on every rule count, the d80 census max is 0.39 s, and never-drawn is 0 (main 4). Still worse than main: the rows-cut mark with free rows (0.4-1.4 s per pair), a closing ended cell puts its job back in the summary for 1 frame and the cells below move (16 times), t80 admission 7 against 10 (an uncut 30-row foreign cell takes a column), CPU per drawn cell (t80 28.80 against 15.68, d40 18.95 against 15.69), and frame draw 2-4x slower in t40 and t80.
+
+### Phase 24c — Reader and named slow tests hold under load  · status: todo
+
+**Depends on:** Phase 24a's tree (commit `d22c672b`, merged with main `595145da`).
+
+#### Work Order
+
+Every `reader_scenarios` test passes under load or finishes fast; none fails on its timing (showrunner, 2026-10-26: the cargo-liner-style merge gate rolled back two merges on these). Each test named below is timed alone on a quiet machine (`build_hold.py quiet`), and a test of 1 s or more alone is fixed, never given a longer limit. A test whose wall-clock budget fails only under full-suite load is changed so that its check does not depend on wall time, or so that its work fits the budget with the suite running.
+
+Tests (time seen, where):
+- `reader_scenarios`: `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.31 s full, 0.955 s alone, compile CPU 0 at load ~52; 11-15 s in the cargo-liner-style Mac gate; this also closes Phase 25 item 5), `reader_excludes_a_live_command_without_sweeping_its_capture` (8.2 s, 11-15 s), `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` (failed once), `reader_keeps_parent_family_across_its_only_childs_source_switch` (1.117-1.829 s), `reader_keeps_one_direct_row_for_quiet_json` (1.194 s). Log: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-style/294cac84-fe49-4a1b-952d-70ffd6ce8aee/scratchpad/merge_08f9a40_test.log`.
+- cargo-tile: `foreign_load::a_full_tile_under_foreign_load_draws_every_job_at_40_columns` and `_at_80_columns` (fixture cap 1 s: 1.13 / 2.11 s in the full Mac suite, 0.25 / 0.48 s alone), `wire::json_arguments_preserve_both_quiet_spellings_after_separator` (1.029 s), `render::tests::scanned_commands_fill_free_rows_beside_a_tall_summary` (1.243 s), `render::tests::rule_a_ended_cell_is_offered_more_rows` (1.318 s).
+- tui_pane: `tiles::grid::tests::a_key_whose_new_widths_change_demands_still_moves_once` (1.067-3.490 s), `a_removal_whose_new_widths_change_demands_still_moves_once` (1.180-3.333 s), `tiles::draw::tests::a_turn_that_grows_content_and_height_draws_no_blank_row` (1.447-3.196 s), `startup_cells_leave_no_line_before_their_first_row` (1.393-2.157 s), `a_cell_lends_no_row_it_must_take_back_within_one_key` (1.478-2.991 s), `a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row` (1.568-1.679 s), `a_content_change_mid_motion_leaves_no_blank_row`, `a_content_change_keeps_the_motion_clock_with_a_key_waiting`, `grid::tests::arriving_and_leaving_pieces_snap_without_a_floor`, `motion_rules::every_frame_of_a_key_keeps_the_motion_rules`, `a_shrinking_piece_skips_the_height_that_leaves_a_row_unused`, `a_large_height_shrink_moves_one_way`, `an_every_other_height_shrink_moves_one_way`, `runner::lifecycle::tests::a_panic_report_holds_its_message_location_and_backtrace` (1.0-3.1 s in loaded full runs).
+
+**Acceptance gate:**
+- Each named test takes under 1 s alone on a quiet machine; the time of each, before and after, is in the Outcome.
+- Two full Mac `verify.sh test cargo-tile` runs and one under natedev load pass with no timing failure.
+- `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green; lint green.
 
 ### Phase 24b — Ended cells leave whole  · status: todo
 
