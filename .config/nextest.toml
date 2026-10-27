@@ -1,6 +1,13 @@
 nextest-version = { required = "0.9.138" }
 
-experimental = ["setup-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+[scripts.wrapper.cargo-berth-scratch]
+command = { command-line = "crates/cargo-berth/tests/check-test-scratch.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter      = 'package(cargo-berth) | package(cargo-berth-test-support)'
+run-wrapper = 'cargo-berth-scratch'
 
 [scripts.setup.cargo-berth-templates]
 command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh", relative-to = "workspace-root" }
