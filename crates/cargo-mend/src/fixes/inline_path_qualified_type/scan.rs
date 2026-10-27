@@ -7,7 +7,7 @@ use anyhow::Result;
 use walkdir::WalkDir;
 
 use super::process;
-use super::process::OccurrenceContext;
+use super::process::OccurrenceResolutionContext;
 use super::scope;
 use super::scope::ScopeCollectionContext;
 use super::scope::ScopeSpan;
@@ -86,11 +86,9 @@ fn scan_file(
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
     let indexed = ImportSource::new(text);
-    let offsets = indexed.line_offsets();
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {
         text,
-        offsets,
         scopes: &mut scopes,
     };
     scope::collect_scopes(
@@ -99,7 +97,7 @@ fn scan_file(
         &base_module_path,
         &mut scope_collection_context,
         &indexed,
-    );
+    )?;
 
     let mut visitor = InlinePathVisitor {
         occurrences:            Vec::new(),
@@ -120,43 +118,23 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    // `process::find_collision_names` needs every occurrence's resolved import path,
-    // and `process::resolve_occurrence` never consults the collision set, so resolve
-    // once against `resolve_ctx`, which has no collisions recorded yet.
-    let no_collision_names = BTreeSet::new();
-    let resolve_ctx = OccurrenceContext {
-        path,
-        display_path: &display_path,
-        scopes: &scopes,
-        collision_names: &no_collision_names,
-    };
+    let resolve_ctx = OccurrenceResolutionContext { scopes: &scopes };
     let resolved = visitor
         .occurrences
         .iter()
         .map(|occurrence| process::resolve_occurrence(occurrence, &resolve_ctx, &indexed))
         .collect::<Result<Vec<_>>>()?;
-    let resolved_import_paths = resolved
-        .iter()
-        .map(|item| item.import_path.clone())
-        .collect::<Vec<_>>();
-    let collision_names = process::find_collision_names(
-        &visitor.occurrences,
-        &resolved_import_paths,
-        &visitor.bare_type_names,
-        &scopes
-            .iter()
-            .flat_map(|scope| scope.existing_imports.keys().cloned())
-            .collect(),
-    );
-
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
 
-    let ctx = OccurrenceContext {
-        collision_names: &collision_names,
-        ..resolve_ctx
-    };
+    let ctx = resolve_ctx.analyze_collisions(
+        path,
+        &display_path,
+        &visitor.occurrences,
+        &resolved,
+        &visitor.bare_type_names,
+    );
     let import_attribute_plan = process::plan_import_attributes(&resolved);
 
     for resolved in &resolved {
@@ -177,6 +155,27 @@ fn scan_file(
 mod tests {
     use crate::fixes::imports::ImportSource;
     use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn completed_scan_rejects_ambiguous_and_already_bare_names() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        for text in [
+            "fn f() { a::Widget; b::Widget; }",
+            "fn f() { a::Widget; Widget; }",
+        ] {
+            std::fs::write(&path, text)?;
+            let sources = ParsedSources::default();
+            let module_map = sources.module_map(dir.path());
+            let before = ImportSource::construction_count();
+            let (findings, fixes) =
+                super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+            assert_eq!(ImportSource::construction_count() - before, 1);
+            assert!(findings.is_empty());
+            assert!(fixes.is_empty());
+        }
+        Ok(())
+    }
 
     #[test]
     fn full_file_scan_shares_one_index_across_scopes_and_paths() -> anyhow::Result<()> {

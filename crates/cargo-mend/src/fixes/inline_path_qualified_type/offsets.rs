@@ -1,18 +1,38 @@
+use anyhow::Context;
+use anyhow::Result;
 use proc_macro2::LineColumn;
 
-pub(super) fn offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usize {
-    let line_start = line_offsets
-        .get(position.line.saturating_sub(1))
-        .copied()
-        .unwrap_or(0);
-    // `proc_macro2::LineColumn::column` is a 0-based count of UTF-8 *characters*
-    // from the start of the line, not bytes. Walk char_indices to convert to a
-    // byte offset so multi-byte characters (em-dashes, accented letters, etc.)
-    // earlier on the same line don't shift the replacement window.
-    let line_text = text.get(line_start..).unwrap_or("");
-    let byte_in_line = line_text
-        .char_indices()
-        .nth(position.column)
-        .map_or(line_text.len(), |(byte_idx, _)| byte_idx);
-    line_start + byte_in_line
+use crate::fixes::imports::ImportSource;
+
+/// Validate an external position against the file's existing source owner.
+/// Character columns are converted to bytes by the checked location constructor,
+/// so multibyte characters do not shift replacement windows. Missing lines and
+/// columns are rejected instead of becoming byte zero or the end of the source.
+pub(super) fn offset(source: &ImportSource<'_>, position: LineColumn) -> Result<usize> {
+    source
+        .locate(position, position)
+        .map(|location| location.start())
+        .context("invalid scope source position")
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::LineColumn;
+
+    use crate::fixes::imports::ImportSource;
+
+    #[test]
+    fn checked_offsets_reject_missing_coordinates_and_preserve_unicode() -> anyhow::Result<()> {
+        let source = ImportSource::new("// é\nuse α::Thing;\n");
+        let at = |line, column| LineColumn { line, column };
+        for position in [at(0, 0), at(4, 0), at(1, 5), at(2, 14)] {
+            assert!(super::offset(&source, position).is_err());
+        }
+        assert_eq!(super::offset(&source, at(2, 7))?, "// é\nuse α::".len());
+        assert_eq!(
+            super::offset(&source, at(3, 0))?,
+            "// é\nuse α::Thing;\n".len()
+        );
+        Ok(())
+    }
 }
