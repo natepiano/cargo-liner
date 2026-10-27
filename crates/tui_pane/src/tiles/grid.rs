@@ -70,6 +70,7 @@ use super::constants::TABLE_CELL;
 use super::draw;
 use super::growth::TileGrowth;
 use super::settings::CellRowDemand;
+use super::settings::SummaryRowAllocation;
 use super::settings::TileSettings;
 use crate::CycleDirection;
 use crate::PaneAxisSize;
@@ -186,12 +187,34 @@ pub(super) enum PieceName {
 
 /// One visible piece and the name role its placed geometry gives it.
 pub(super) struct TilePiece<Id> {
+    /// Stable cell identity carried through movement and removal.
+    identity:               CellIdentity<Id>,
     /// What and where the piece draws.
     pub(super) placement:   TilePlacement<Id>,
     /// Whether this piece draws the cell's name.
     pub(super) name:        PieceName,
     /// How this piece participates in motion-height probing.
     pub(super) height_snap: PieceHeightSnap,
+}
+
+#[cfg(test)]
+impl<Id: Clone> TilePiece<Id> {
+    /// A hand-built paint fixture, with the same identity as its content.
+    pub(super) fn for_test(content: TileContent<Id>, frame: PaneFrame, name: PieceName) -> Self {
+        let identity = match &content {
+            TileContent::Summary => CellIdentity::Summary,
+            TileContent::Group(id) => CellIdentity::Slot(Slot::Group(id.clone())),
+            TileContent::Empty(index) => {
+                CellIdentity::Slot(Slot::Empty(u64::try_from(*index).unwrap_or(u64::MAX)))
+            },
+        };
+        Self {
+            identity,
+            placement: TilePlacement { content, frame },
+            name,
+            height_snap: PieceHeightSnap::Settled,
+        }
+    }
 }
 
 /// How one visible piece participates in this frame's height search.
@@ -968,10 +991,41 @@ enum Direction {
 /// A cell's content and focus appearance, apart from its geometry.
 #[derive(Clone)]
 struct CellAppearance<Id> {
+    /// The cell whose contents this piece paints, independent of its number.
+    identity: CellIdentity<Id>,
     /// What the cell draws.
-    content: TileContent<Id>,
+    content:  TileContent<Id>,
     /// Whether the cell holds focus, which is what lights its border.
-    focused: bool,
+    focused:  bool,
+}
+
+/// A painted cell's identity, including empty cells whose numbers can change.
+#[derive(Clone)]
+enum CellIdentity<Id> {
+    Summary,
+    Slot(Slot<Id>),
+}
+
+/// Click geometry from the most recent grid paint, before any focus change.
+enum PaintedCells<Id> {
+    Undrawn,
+    Drawn(Vec<PaintedCell<Id>>),
+}
+
+struct PaintedCell<Id> {
+    identity: CellIdentity<Id>,
+    frame:    PaneFrame,
+}
+
+/// Whether the painted cell still owns a slot that can receive input.
+pub(super) enum CellHit<Id> {
+    Missed,
+    Retired,
+    Current {
+        index:   usize,
+        content: TileContent<Id>,
+        frame:   PaneFrame,
+    },
 }
 
 impl<Id: Clone> CellAppearance<Id> {
@@ -1231,6 +1285,8 @@ pub struct TileGrid<Id> {
     settings:               TileSettings,
     /// Summary clip rectangles painted by the last grid draw.
     painted_summary_frames: Vec<Rect>,
+    /// Stable identities and geometry retained from the frame input refers to.
+    painted_cells:          PaintedCells<Id>,
     /// Content-row usage at every size inspected during the current frame.
     frame_row_usage:        Vec<FrameCellRowUsage<Id>>,
     /// Cell geometry drawn by the last settled frame.
@@ -1268,6 +1324,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             focus:                  Focus::Summary,
             settings:               TileSettings::default(),
             painted_summary_frames: Vec::new(),
+            painted_cells:          PaintedCells::Undrawn,
             frame_row_usage:        Vec::new(),
             last_settled_geometry:  LastSettledCellGeometry::default(),
             motion_heights:         MotionHeightPath::default(),
@@ -1298,6 +1355,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Sets the shortest height a tile may occupy, including its frame.
     pub fn set_min_tile_height(&mut self, height: u16) {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
+    }
+
+    /// Choose whether the summary keeps its measured rows before the tiles.
+    pub const fn set_summary_row_allocation(&mut self, allocation: SummaryRowAllocation) {
+        self.settings.summary_row_allocation = allocation;
     }
 
     /// Probe destination row steps, then nearby heights this moving frame may use.
@@ -2996,6 +3058,70 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.painted_summary_frames = frames;
     }
 
+    /// Retain exactly the pieces that the grid painted, in paint order.
+    pub(super) fn record_painted_cells(&mut self, pieces: &[TilePiece<Id>]) {
+        self.painted_cells = PaintedCells::Drawn(
+            pieces
+                .iter()
+                .filter(|piece| draw::has_visible_body_row(piece.placement.frame))
+                .map(|piece| PaintedCell {
+                    identity: piece.identity.clone(),
+                    frame:    piece.placement.frame,
+                })
+                .collect(),
+        );
+    }
+
+    /// Resolve the topmost painted piece before letting input change focus.
+    pub(super) fn cell_hit(&self, pos: Position) -> CellHit<Id> {
+        let PaintedCells::Drawn(pieces) = &self.painted_cells else {
+            return self
+                .cell_at(pos)
+                .and_then(|index| {
+                    let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
+                    let frame = PaneFrame::new(if self.display() == GridDisplay::SummaryAlone {
+                        self.area
+                    } else {
+                        grid.cell(index)?
+                    });
+                    let content = cells(&self.slots)
+                        .into_iter()
+                        .find_map(|(content, cell)| (cell == index).then_some(content))?;
+                    Some(CellHit::Current {
+                        index,
+                        content,
+                        frame,
+                    })
+                })
+                .unwrap_or(CellHit::Missed);
+        };
+        let Some(piece) = pieces
+            .iter()
+            .rev()
+            .find(|piece| piece.frame.clip().contains(pos))
+        else {
+            return CellHit::Missed;
+        };
+        let index = match &piece.identity {
+            CellIdentity::Summary => TABLE_CELL,
+            CellIdentity::Slot(slot) => {
+                let Some(index) = cell_of(&self.slots, slot) else {
+                    return CellHit::Retired;
+                };
+                index
+            },
+        };
+        let content = match &piece.identity {
+            CellIdentity::Summary => TileContent::Summary,
+            CellIdentity::Slot(slot) => content_of(slot, index),
+        };
+        CellHit::Current {
+            index,
+            content,
+            frame: piece.frame,
+        }
+    }
+
     /// Every piece and column frame to draw at one reading of the
     /// transition clock.
     pub(super) fn drawing(&self, area: Rect, growth: TileGrowth) -> TileDrawing<Id> {
@@ -3006,6 +3132,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn summary_alone_drawing(area: Rect) -> TileDrawing<Id> {
         TileDrawing {
             pieces:       vec![TilePiece {
+                identity:    CellIdentity::Summary,
                 placement:   TilePlacement {
                     content: TileContent::Summary,
                     frame:   PaneFrame::new(area).with_focus(true),
@@ -3024,6 +3151,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .into_iter()
             .filter_map(|(content, index)| {
                 Some(TilePiece {
+                    identity:    if index == TABLE_CELL {
+                        CellIdentity::Summary
+                    } else {
+                        CellIdentity::Slot(self.slots[index - TABLE_CELL - 1].clone())
+                    },
                     placement:   TilePlacement {
                         content,
                         frame: PaneFrame::new(settled.cell(index)?)
@@ -3139,8 +3271,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             },
             eased(turns.summary(raw)),
             CellAppearance {
-                content: TileContent::Summary,
-                focused: self.focus == Focus::Summary,
+                identity: CellIdentity::Summary,
+                content:  TileContent::Summary,
+                focused:  self.focus == Focus::Summary,
             },
             &mut pieces,
         );
@@ -3197,6 +3330,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 transition,
                 piece_progress,
                 CellAppearance {
+                    identity: CellIdentity::Slot(slot.clone()),
                     content,
                     focused: self.focus == Focus::Cell(slot),
                 },
@@ -3224,28 +3358,6 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             TileAction::FocusUp => self.focus_step(Direction::Up, growth),
             TileAction::FocusDown => self.focus_step(Direction::Down, growth),
         }
-    }
-
-    /// The settled cell content under a press, excluding its frame and readout.
-    pub(super) fn cell_content_at(&self, pos: Position) -> Option<(usize, TileContent<Id>, Rect)> {
-        let (index, area) = if self.display() == GridDisplay::SummaryAlone {
-            (TABLE_CELL, self.area)
-        } else {
-            let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
-            let pane = grid
-                .resolved
-                .panes
-                .iter()
-                .find(|pane| pane.area.contains(pos))?;
-            (pane.pane, pane.area)
-        };
-        let area = draw::content_area(frame_inner(area));
-        if !area.contains(pos) {
-            return None;
-        }
-        cells(&self.slots)
-            .into_iter()
-            .find_map(|(content, cell)| (cell == index).then_some((index, content, area)))
     }
 }
 
@@ -3435,7 +3547,7 @@ impl GridRowReadings<'_> {
         head: ColumnHead,
         focused: ColumnFocus,
     ) -> Vec<PaneAxisSize> {
-        match self {
+        let shared = match self {
             #[cfg(test)]
             Self::Intrinsic => shares(
                 wants,
@@ -3461,6 +3573,19 @@ impl GridRowReadings<'_> {
                     &mut unused_rows,
                 )
             },
+        };
+        if probe.settings.summary_row_allocation == SummaryRowAllocation::BeforeTiles
+            && matches!(head, ColumnHead::Summary(_))
+            && !wants.is_empty()
+        {
+            summary_before_tiles(
+                wants,
+                probe.band.height,
+                probe.settings.min_tile_height,
+                shared,
+            )
+        } else {
+            shared
         }
     }
 }
@@ -3834,6 +3959,39 @@ fn shares(
             ),
         },
     )
+}
+
+/// Keep the shared allocation unless the summary needs more rows than its share.
+fn summary_before_tiles(
+    wants: &[CellRowDemand],
+    height: u16,
+    floor: u16,
+    shared: Vec<PaneAxisSize>,
+) -> Vec<PaneAxisSize> {
+    let exact = disjoint_demands(
+        wants.iter().map(|demand| demand.exact_framed()),
+        height,
+        floor,
+    );
+    if shared
+        .first()
+        .is_some_and(|share| matches!(share, PaneAxisSize::Fixed(rows) if *rows >= exact[0]))
+    {
+        return shared;
+    }
+    let reserved = exact[0].min(height);
+    let mut rows = vec![PaneAxisSize::Fixed(reserved)];
+    if wants.len() > 1 {
+        let remaining = height.saturating_sub(reserved);
+        rows.extend(shares(
+            &wants[1..],
+            remaining,
+            ColumnHead::Cell,
+            ColumnFocus::Outside,
+            floor,
+        ));
+    }
+    rows
 }
 
 /// Row-use readings available to a column's shared allocation solver.
@@ -4921,6 +5079,7 @@ fn place_band_pieces<Id: Clone + Eq>(
         .zip(names)
         .zip(height_snaps)
         .map(|(((piece, frame), name), height_snap)| TilePiece {
+            identity: piece.drawn.identity.clone(),
             placement: piece.drawn.at(frame),
             name,
             height_snap,
@@ -8043,8 +8202,9 @@ mod tests {
     /// depends on what it holds.
     fn drawn() -> CellAppearance<u32> {
         CellAppearance {
-            content: TileContent::Summary,
-            focused: false,
+            identity: CellIdentity::Summary,
+            content:  TileContent::Summary,
+            focused:  false,
         }
     }
 
@@ -9463,6 +9623,10 @@ mod tests {
             },
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
+                identity: match &content {
+                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    _ => CellIdentity::Summary,
+                },
                 content,
                 focused: false,
             },
@@ -9501,8 +9665,9 @@ mod tests {
                 },
                 progress: 0,
                 drawn:    CellAppearance {
-                    content: TileContent::Group(index),
-                    focused: false,
+                    identity: CellIdentity::Slot(Slot::Group(index)),
+                    content:  TileContent::Group(index),
+                    focused:  false,
                 },
             })
             .collect();
@@ -9593,6 +9758,10 @@ mod tests {
             },
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
+                identity: match &content {
+                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    _ => CellIdentity::Summary,
+                },
                 content,
                 focused: false,
             },
@@ -9624,6 +9793,10 @@ mod tests {
             },
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
+                identity: match &content {
+                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    _ => CellIdentity::Summary,
+                },
                 content,
                 focused: false,
             },
@@ -9654,6 +9827,10 @@ mod tests {
             },
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
+                identity: match &content {
+                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    _ => CellIdentity::Summary,
+                },
                 content,
                 focused: false,
             },
@@ -11716,8 +11893,9 @@ mod tests {
                     },
                     progress,
                     CellAppearance {
-                        content: TileContent::Empty(2),
-                        focused: false,
+                        identity: CellIdentity::Slot(Slot::Empty(2)),
+                        content:  TileContent::Empty(2),
+                        focused:  false,
                     },
                     &mut pieces,
                 );

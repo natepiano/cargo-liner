@@ -39,7 +39,7 @@ const STACKED_ACCOUNTS_WIDTH: u16 = 18;
 // The final account and its heading must fit the five-row viewport together.
 const COMPLETE_STACKED_ACCOUNT_WIDTH: u16 = 26;
 
-fn locate(buffer: &Buffer, label: &str) -> CellPoint {
+pub(super) fn locate(buffer: &Buffer, label: &str) -> CellPoint {
     for y in buffer.area.y..buffer.area.bottom() {
         let line: String = (buffer.area.x..buffer.area.right())
             .map(|x| buffer[(x, y)].symbol())
@@ -109,6 +109,7 @@ fn draw_grid(app: &mut App) -> Buffer {
         }
     }
     *app.painted_summary.borrow_mut() = cells.painted_summary.into_inner();
+    app.selections = cells.selections.into_inner();
     content
 }
 
@@ -245,7 +246,7 @@ fn failed_accounts_without_agents_keep_the_summary_visible() {
     );
 }
 
-fn interactive_accounts() -> App {
+pub(super) fn interactive_accounts() -> App {
     let mut app = App::new_for_test().expect("test app");
     app.loaded_config.config.tiles.initial_rows =
         serde_json::from_value(serde_json::json!(8)).expect("one screen column");
@@ -276,7 +277,7 @@ fn interactive_accounts() -> App {
     app
 }
 
-fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) -> Buffer {
+pub(super) fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("test terminal");
     let keymap = app.keymap();
@@ -304,7 +305,7 @@ fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) -> Buffer {
     summary
 }
 
-fn account_line(buffer: &Buffer, y: u16) -> String {
+pub(super) fn account_line(buffer: &Buffer, y: u16) -> String {
     (buffer.area.x..buffer.area.right())
         .map(|x| buffer[(x, y)].symbol())
         .collect::<String>()
@@ -312,7 +313,7 @@ fn account_line(buffer: &Buffer, y: u16) -> String {
         .to_owned()
 }
 
-fn account_key(app: &mut App, code: KeyCode) {
+pub(super) fn account_key(app: &mut App, code: KeyCode) {
     tui_pane::dispatch_key(app, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
@@ -573,12 +574,13 @@ fn clipped_stacked_account_selection_bands_cover_facts_without_the_heading() {
     assert!(facts.len() >= usize::from(short.area.height));
     account_key(&mut app, KeyCode::End);
     let end = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 6);
-    for y in end.area.y..end.area.bottom() {
+    assert_eq!(account_line(&end, end.area.y).trim(), "accounts");
+    for y in end.area.y + 1..end.area.bottom() {
         let line = account_line(&end, y);
         assert!(facts.contains(&line), "visible account fact: {line:?}");
         assert!(!line.contains("account-5"), "heading is scrolled off");
     }
-    assert_account_band(&end, end.area.y..end.area.bottom());
+    assert_account_band(&end, end.area.y + 1..end.area.bottom());
 }
 
 fn first_account_glyph(buffer: &Buffer, y: u16) -> u16 {
@@ -616,4 +618,192 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
             "account-{index} continuation starts under its name"
         );
     }
+}
+
+const COMPACT_ACCOUNT_ERROR: &str = "claude1: scratch reading failed";
+
+fn account_text(buffer: &Buffer) -> Vec<String> {
+    (buffer.area.y..buffer.area.bottom())
+        .map(|y| account_line(buffer, y))
+        .collect()
+}
+
+const LIVE_ACCOUNT_LABELS: [&str; 7] = [
+    "claude1", "claude2", "claude3", "claude4", "claude5", "codex1", "codex2",
+];
+
+fn live_accounts_grid(stacked: bool) -> crate::app::App {
+    let mut app = crate::app::App::new_for_test().expect("live account app");
+    app.loaded_config.config.tiles.initial_rows =
+        serde_json::from_value(serde_json::json!(8)).expect("six tiles in one grid column");
+    app.loaded_config.config.tiles.widen_summary = false;
+    let rows = (1..=10)
+        .map(|pid| {
+            // Busy agent tiles compete for rows with the complete summary.
+            let commands = (0..8)
+                .map(|index| {
+                    serde_json::json!({
+                        "depth":0, "kind":"shell", "pid":1000+pid*10+index,
+                        "name":format!("command-{index}"), "started":100
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::from_value(serde_json::json!({
+                "agent":"claude", "pid":pid, "name":format!("session-{pid}"),
+                "session_id":format!("session-{pid}"), "started":100,
+                "directory":"/fixture", "children":commands
+            }))
+            .expect("live session")
+        })
+        .collect();
+    let hierarchy = (1..=9)
+        .step_by(2)
+        .map(|pid| {
+            serde_json::json!({
+                "manager":format!("session-{pid}"),
+                "member":format!("session-{}", pid+1), "role":"unit"
+            })
+        })
+        .collect::<Vec<_>>();
+    app.census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: HierarchyEdges(
+            serde_json::from_value(serde_json::json!(hierarchy)).expect("five managed trees"),
+        )
+        .into(),
+        stage: ScanStage::Completed,
+    });
+    let rows = LIVE_ACCOUNT_LABELS.map(|label| {
+        let account_label = if stacked { format!("{label}-long-account-label") } else { label.to_owned() };
+        let mut row = serde_json::json!({"label":account_label,"tool":if label.starts_with("codex") {"codex"} else {"claude"},"weekly_left_percent":60,"credits":13_446,"use_credits":true,"read_ok":true,"read_at":"2026-10-16T15:57:53Z"});
+        row["roles"] = if label == "claude1" {
+            serde_json::json!(["showrunners", "units"])
+        } else {
+            serde_json::json!(["workers"])
+        };
+        row["resets_at"] = serde_json::json!("2026-12-01T10:00:00Z");
+        row
+    });
+    app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "accounts":rows, "problems":[COMPACT_ACCOUNT_ERROR]
+            }))
+            .expect("live account JSON"),
+        )
+        .expect("live account wire"),
+    );
+    app
+}
+
+fn settled_live_summary(app: &mut crate::app::App, width: u16) -> (Buffer, Rect, usize) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 50))
+        .expect("live terminal");
+    let keymap = app.keymap.clone();
+    terminal
+        .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
+        .expect("live first draw");
+    app.tiles.settle_for_test();
+    terminal
+        .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
+        .expect("live settled draw");
+    let placements = app
+        .tiles
+        .placements(app.selection_area, app.loaded_config.config.tiles.growth());
+    let summary = placements
+        .iter()
+        .find(|tile| matches!(tile.content, crate::tiles::TileContent::Summary))
+        .expect("live summary")
+        .frame
+        .inner();
+    let needed = match &*app.painted_summary.borrow() {
+        PaintedSummary::Drawn(layout) => layout.height(),
+        PaintedSummary::NotDrawn => panic!("live summary was not painted"),
+    };
+    // The summary takes priority even when some of the five busy tiles must wait.
+    let buffer = terminal.backend().buffer();
+    let mut content = Buffer::empty(summary);
+    for y in summary.y..summary.bottom() {
+        for x in summary.x..summary.right() {
+            content[(x, y)] = buffer[(x, y)].clone();
+        }
+    }
+    (content, summary, needed)
+}
+
+fn assert_live_accounts_visible(buffer: &Buffer) -> Vec<usize> {
+    let lines = account_text(buffer);
+    let rows = LIVE_ACCOUNT_LABELS.map(|label| {
+        lines
+            .iter()
+            .position(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("missing {label}, area={:?}: {lines:#?}", buffer.area))
+    });
+    assert!(
+        lines.join("\n").contains(COMPACT_ACCOUNT_ERROR),
+        "lost error: {lines:#?}"
+    );
+    rows.into()
+}
+
+#[test]
+fn accounts_summary_first_at_34_columns_keeps_every_wrapped_row() {
+    let mut app = live_accounts_grid(false);
+    // Thirty-two content cells fit the tree core, but not the kept account row
+    // even after its roles column reaches the six-cell floor.
+    let (buffer, area, needed) = settled_live_summary(&mut app, 34);
+    assert!(
+        usize::from(area.height) >= needed,
+        "complete wrapped summary before busy tiles: {area:?}, needed={needed}: {:?}",
+        account_text(&buffer)
+    );
+    let lines = account_text(&buffer);
+    let rows = assert_live_accounts_visible(&buffer);
+    assert!(
+        rows.windows(2).all(|pair| pair[1] > pair[0] + 1),
+        "wrapped accounts below floor: {lines:#?}"
+    );
+    assert!(
+        usize::from(area.height) >= needed,
+        "all measured lines fit: {area:?}, needed={needed}: {lines:#?}"
+    );
+}
+
+fn assert_summary_before_tiles(width: u16) {
+    let mut app = live_accounts_grid(false);
+    app.tiles.set_min_tile_width(width);
+    let (buffer, area, needed) = settled_live_summary(&mut app, width);
+    assert!(
+        usize::from(area.height) >= needed,
+        "summary receives its measured rows before busy tiles: {area:?}, needed={needed}: {:?}",
+        account_text(&buffer)
+    );
+    assert_live_accounts_visible(&buffer);
+}
+
+#[test]
+fn accounts_summary_first_at_40_columns_with_a_grid_minimum() { assert_summary_before_tiles(40); }
+
+#[test]
+fn accounts_summary_first_at_50_columns_with_a_grid_minimum() { assert_summary_before_tiles(50); }
+
+#[test]
+fn accounts_summary_first_in_full_layout() { assert_summary_before_tiles(200); }
+
+#[test]
+fn accounts_summary_first_in_stacked_layout() {
+    // Longer account names force Stacked while retaining room for the whole error.
+    let mut app = live_accounts_grid(true);
+    app.tiles.set_min_tile_width(34);
+    let (buffer, area, needed) = settled_live_summary(&mut app, 34);
+    assert!(
+        usize::from(area.height) >= needed,
+        "stacked summary: {area:?}, needed={needed}: {:?}",
+        account_text(&buffer)
+    );
+    let rows = assert_live_accounts_visible(&buffer);
+    assert!(
+        rows.windows(2).all(|pair| pair[1] > pair[0] + 2),
+        "stacked facts stay with every account"
+    );
 }
