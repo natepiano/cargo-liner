@@ -786,3 +786,29 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Binds later work:** A size check on journal input takes `CallerJournalInput`. Derived evidence never counts against the caller's limit.
 
+
+### Phase 31 — A reservation whose work stays on its branch for a later phase is released as kept  · status: todo
+
+**Why:** tile had to release reservation `01a16327` for work that did not land but stays on its branch for a later phase. `release` refused it (outstanding at the protected tip). `--abandon` records the work as discarded, which is false. `resolve --retire-orphan` is scoped to an orphan, and this reservation was live. Showrunner, 2026-10-26: add one correct form for this case.
+
+**Work Order:**
+1. `cargo-berth release <id> --keep-work --why <reason>` releases a live reservation whose work is not integrated and stays on its branch. It records a new `ReleaseDisposition` variant (for example `Deferred(reason)`). The reservation stops blocking, like the other dispositions.
+2. The board and JSON output show it as work kept on its branch, never as integrated or discarded. The help texts of `release`, `--abandon` and `--retire-orphan` name which form fits which case.
+3. The new variant reaches a live ledger only from a build that also reads it. Both machines install it together.
+
+**Verification:** `cargo-berth` suite passes, each test under 1 s. A test releases a live reservation with `--keep-work`, then proves it does not block and reads back as kept. Existing ledgers replay unchanged.
+
+### Phase 32 — A reservation with no change left against its target is released by itself  · status: done
+
+#### As-built
+
+- Why: the hana ledger reached its limit of 128 live reservations. Every holder worktree existed and had a live session, but 17 reservations had no scope path that differed from their target. Owners had to find and release each one by hand.
+- Rule: reconcile releases a reservation by itself when it is stale (no activity for `STALE_AFTER`, 24 h) and no path in its scopes differs between the holder worktree and its target. Commits since the merge base, staged, unstaged and untracked paths (both sides of a rename) count. A failed Git read keeps the reservation. A fresh claim before its first edit stays live.
+- `src/reservation/unchanged.rs`: `HolderScopeChanges` reads one holder's changed paths once per holder, target and head. Only a successful read builds `UnchangedScopesEvidence`, which carries the target commit.
+- New `ReleaseDisposition::UnchangedScopes` (`unchanged_scopes` on the wire). It cancels outgoing ordering constraints and does not claim integration. No new journal operation; the existing `Release` record carries it. Output contract regenerated.
+- Where the scan runs: on `cargo-berth board`, and when a claim or first-touch claim reaches `maximum_reservations`. Then the scan runs first, its releases are appended, and the claim retries once; the count is checked again inside the transaction. Ordinary hooks below the limit do not scan. Board, claim and hook output name each automatic release once.
+- Removed worktree: the existing derived orphan retirement covers it when the recorded merge extent proves nothing outstanding. A removed holder with unmerged work stays protected.
+- Cost on a copy of the hana ledger: the shared status read is 230 ms and the added diffs 19 ms per pass, at a load of 34–80 of 32 (untrusted). On that copy the scan released 6 reservations (125 → 119).
+- Proof: `tests/lifecycle.rs` (stale release and readback, fresh kept, committed/staged/unstaged/untracked kept, removed worktree retired, release at the limit, refusal at the limit with nothing stale), `tests/hooks.rs` (notice once). 1288/1288.
+
+**Binds later work:** a binary that writes `unchanged_scopes` goes live only when the readers on both machines also read it. Phase 31's `Deferred` form is a separate disposition.

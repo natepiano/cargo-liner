@@ -92,6 +92,7 @@ use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
 use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
+use crate::reconcile::ReconciledSettlement;
 use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationTrunkSnapshot;
@@ -376,28 +377,31 @@ fn closed_value_selector_object_schema(
 pub(crate) struct OutputEnvelope {
     /// Deferred read maintenance retained for installed-hook rendering.
     #[serde(skip)]
-    maintenance_notice:      MaintenanceNotice,
+    maintenance_notice:        MaintenanceNotice,
+    /// Releases committed by this invocation, rendered once rather than as durable alerts.
+    #[serde(skip)]
+    automatic_release_notices: Vec<String>,
     /// The generated output contract generation that produced this response.
-    output_contract_version: u32,
+    output_contract_version:   u32,
     /// The verb that produced this response.
-    verb:                    CommandVerb,
+    verb:                      CommandVerb,
     /// The response's lifecycle status.
-    status:                  OutputStatus,
+    status:                    OutputStatus,
     /// The process exit status for this response.
     #[schemars(with = "u8")]
-    pub(crate) exit_code:    BerthExit,
+    pub(crate) exit_code:      BerthExit,
     /// Reservations relevant to this response.
     #[schemars(with = "Vec<String>")]
-    reservations:            Vec<ReservationId>,
+    reservations:              Vec<ReservationId>,
     /// Reservations that block this response.
     #[schemars(with = "Vec<String>")]
-    blocked_by:              Vec<ReservationId>,
+    blocked_by:                Vec<ReservationId>,
     /// A human-readable explanation of this response.
-    message:                 String,
+    message:                   String,
     /// Render-ready output supplied by the engine that decided this response.
-    presentation:            EnvelopePresentation,
+    presentation:              EnvelopePresentation,
     /// The verb-keyed facts consumers need without parsing prose.
-    payload:                 OutputPayload,
+    payload:                   OutputPayload,
 }
 
 // `OutputEnvelope::serialize` preserves the wire contract and derives maintenance prose through
@@ -1720,9 +1724,9 @@ const fn release_disposition_status(disposition: &ReleaseDisposition) -> OutputS
         ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
             OutputStatus::Integrated
         },
-        ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
-            OutputStatus::Released
-        },
+        ReleaseDisposition::Abandoned(_)
+        | ReleaseDisposition::RetiredOrphan(_)
+        | ReleaseDisposition::UnchangedScopes(_) => OutputStatus::Released,
     }
 }
 
@@ -1761,16 +1765,17 @@ impl OutputEnvelope {
     #[cfg(test)]
     fn unimplemented(command_verb: CommandVerb) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    command_verb,
-            status:                  OutputStatus::Unimplemented,
-            exit_code:               BerthExit::Clear,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 UNIMPLEMENTED_MESSAGE.to_owned(),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::pending(command_verb),
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      command_verb,
+            status:                    OutputStatus::Unimplemented,
+            exit_code:                 BerthExit::Clear,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   UNIMPLEMENTED_MESSAGE.to_owned(),
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::pending(command_verb),
         }
     }
 
@@ -1785,6 +1790,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Board,
             status: OutputStatus::BoardReady,
             exit_code: BerthExit::Clear,
@@ -1803,6 +1809,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Board,
             status: OutputStatus::BoardReady,
             exit_code: BerthExit::Clear,
@@ -1822,16 +1829,17 @@ impl OutputEnvelope {
     ) -> Self {
         let reservation_id = rejection.reservation_id();
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Board,
-            status:                  OutputStatus::InvalidInput,
-            exit_code:               BerthExit::UsageError,
-            reservations:            vec![reservation_id],
-            blocked_by:              Vec::new(),
-            message:                 format!("Reservation {reservation_id} does not exist."),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::Reservation(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Board,
+            status:                    OutputStatus::InvalidInput,
+            exit_code:                 BerthExit::UsageError,
+            reservations:              vec![reservation_id],
+            blocked_by:                Vec::new(),
+            message:                   format!("Reservation {reservation_id} does not exist."),
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::Reservation(
                 ReservationLifecycleQueryPayload::Rejected(rejection),
             )),
         }
@@ -1858,18 +1866,19 @@ impl OutputEnvelope {
     /// Build an internal-failure response after the terminal board was visible.
     pub(crate) fn terminal_view_failed_after_board_opened(diagnostic: &str) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Board,
-            status:                  OutputStatus::TerminalViewFailed,
-            exit_code:               BerthExit::TerminalViewFailed,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Board,
+            status:                    OutputStatus::TerminalViewFailed,
+            exit_code:                 BerthExit::TerminalViewFailed,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   format!(
                 "The terminal view failed after it opened: {diagnostic}. Run `cargo-berth board --json` instead."
             ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1888,6 +1897,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Init,
             status: OutputStatus::Initialized,
             exit_code: BerthExit::Clear,
@@ -1911,16 +1921,17 @@ impl OutputEnvelope {
     /// Build the successful response for an explicit projection-only repair.
     pub(crate) fn projection_repaired() -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Init,
-            status:                  OutputStatus::ProjectionRepaired,
-            exit_code:               BerthExit::Clear,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 PROJECTION_REPAIRED_MESSAGE.to_owned(),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::ProjectionRepair(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Init,
+            status:                    OutputStatus::ProjectionRepaired,
+            exit_code:                 BerthExit::Clear,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   PROJECTION_REPAIRED_MESSAGE.to_owned(),
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::ProjectionRepair(
                 ProjectionRepairPayload {
                     projection: RepairedProjection::ReservationsJsonRebuilt,
                     journal:    ProjectionRepairJournalEffect::Unchanged,
@@ -1972,6 +1983,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Init,
             status: OutputStatus::Clear,
             exit_code: BerthExit::Clear,
@@ -2010,6 +2022,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Init,
             status: OutputStatus::JournalCompacted,
             exit_code: BerthExit::Clear,
@@ -2048,6 +2061,7 @@ impl OutputEnvelope {
                 return Self {
                     output_contract_version: OUTPUT_CONTRACT_VERSION,
                     maintenance_notice: MaintenanceNotice::None,
+                    automatic_release_notices: Vec::new(),
                     verb: CommandVerb::Integrate,
                     status: OutputStatus::Integrated,
                     exit_code: BerthExit::Clear,
@@ -2065,6 +2079,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Integrate,
             status: OutputStatus::Integrated,
             exit_code: BerthExit::Clear,
@@ -2095,6 +2110,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Integrate,
             status: OutputStatus::BlockedByOrdering,
             exit_code: BerthExit::BlockedByOrdering,
@@ -2120,18 +2136,19 @@ impl OutputEnvelope {
         pending_environment_bypasses: u64,
     ) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Init,
-            status:                  OutputStatus::Reinitialized,
-            exit_code:               BerthExit::Clear,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Init,
+            status:                    OutputStatus::Reinitialized,
+            exit_code:                 BerthExit::Clear,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   format!(
                 "Reinitialized cargo-berth after confirmed order review; discarded {discarded_bytes} journal bytes across {discarded_complete_records} complete record(s). {pending_environment_bypasses} environment bypass marker(s) remain reportable."
             ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::Reinitialize(
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::Reinitialize(
                 ReinitializationPayload {
                     discarded_bytes,
                     discarded_complete_records,
@@ -2171,6 +2188,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: command_verb,
             status: OutputStatus::LedgerUnreadable,
             exit_code: BerthExit::LedgerUnreadable,
@@ -2188,18 +2206,19 @@ impl OutputEnvelope {
         error: &ReservationReplayError,
     ) -> Self {
         let mut output_envelope = Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    command_verb,
-            status:                  OutputStatus::LedgerUnreadable,
-            exit_code:               BerthExit::LedgerUnreadable,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      command_verb,
+            status:                    OutputStatus::LedgerUnreadable,
+            exit_code:                 BerthExit::LedgerUnreadable,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   format!(
                 "The reservation ledger could not be replayed: {error}"
             ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::ReplayFailure(
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::ReplayFailure(
                 ReplayFailurePayload::from(error),
             )),
         };
@@ -2212,18 +2231,19 @@ impl OutputEnvelope {
         error: &ForcedIntegrationPermitReplayError,
     ) -> Self {
         let mut output_envelope = Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Integrate,
-            status:                  OutputStatus::LedgerUnreadable,
-            exit_code:               BerthExit::LedgerUnreadable,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Integrate,
+            status:                    OutputStatus::LedgerUnreadable,
+            exit_code:                 BerthExit::LedgerUnreadable,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   format!(
                 "The forced-integration permit journal could not be replayed: {error}"
             ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::ReplayFailure(
+            presentation:              EnvelopePresentation::NotProvided,
+            payload:                   OutputPayload::from_facts(OutputFacts::ReplayFailure(
                 ReplayFailurePayload::from(error),
             )),
         };
@@ -2242,6 +2262,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: command_verb,
             status: OutputStatus::Unconfigured,
             exit_code: BerthExit::LedgerUnreadable,
@@ -2295,6 +2316,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: if answer_only {
                 OutputStatus::Answered
@@ -2390,6 +2412,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::Claimed,
             exit_code: BerthExit::Clear,
@@ -2448,6 +2471,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::Answered,
             exit_code: BerthExit::Clear,
@@ -2538,6 +2562,7 @@ impl OutputEnvelope {
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Drift,
             status,
             exit_code,
@@ -2559,6 +2584,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::ReservationLimitReached,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2614,6 +2640,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::ContradictsLiveOrdering,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2636,6 +2663,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::OrderingEdgeLimitReached,
             exit_code: BerthExit::BlockedByOrdering,
@@ -2660,6 +2688,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Sequence,
             status: OutputStatus::Sequenced,
             exit_code: BerthExit::Clear,
@@ -2712,6 +2741,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Sequence,
             status,
             exit_code,
@@ -2738,6 +2768,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Integrate,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -2761,6 +2792,7 @@ impl OutputEnvelope {
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: command_verb,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -2796,6 +2828,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Identity,
             status,
             exit_code,
@@ -2822,6 +2855,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Claim,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2922,6 +2956,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Check,
             status: OutputStatus::Clear,
             exit_code: BerthExit::Clear,
@@ -2961,6 +2996,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: command_verb,
             status: OutputStatus::AmbiguousActiveRunReservations,
             exit_code: BerthExit::BlockedByOverlap,
@@ -2992,6 +3028,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Check,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
@@ -3010,19 +3047,20 @@ impl OutputEnvelope {
     /// Build a caller-correctable request rejection.
     pub(crate) fn invalid_input(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    command_verb,
-            status:                  OutputStatus::InvalidInput,
-            exit_code:               BerthExit::UsageError,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 diagnostic.to_owned(),
-            presentation:            hook_facing_presentation(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      command_verb,
+            status:                    OutputStatus::InvalidInput,
+            exit_code:                 BerthExit::UsageError,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   diagnostic.to_owned(),
+            presentation:              hook_facing_presentation(
                 command_verb,
                 &HookFacingCondition::InvalidInput { diagnostic },
             ),
-            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
+            payload:                   OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -3091,19 +3129,20 @@ impl OutputEnvelope {
     /// Build a bounded lock-contention result with retry guidance.
     pub(crate) fn contention(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    command_verb,
-            status:                  OutputStatus::Contention,
-            exit_code:               BerthExit::BlockedByContention,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 diagnostic.to_owned(),
-            presentation:            hook_facing_presentation(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      command_verb,
+            status:                    OutputStatus::Contention,
+            exit_code:                 BerthExit::BlockedByContention,
+            reservations:              Vec::new(),
+            blocked_by:                Vec::new(),
+            message:                   diagnostic.to_owned(),
+            presentation:              hook_facing_presentation(
                 command_verb,
                 &HookFacingCondition::Contention { diagnostic },
             ),
-            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
+            payload:                   OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -3117,6 +3156,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Release,
             status,
             exit_code: BerthExit::Clear,
@@ -3207,6 +3247,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Resolve,
             status,
             exit_code: BerthExit::Clear,
@@ -3237,6 +3278,7 @@ impl OutputEnvelope {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
             verb: CommandVerb::Resolve,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
@@ -3260,37 +3302,41 @@ impl OutputEnvelope {
     /// Build a successful activity-renewal response.
     pub(crate) fn renewed(reservation_id: ReservationId) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Renew,
-            status:                  OutputStatus::Renewed,
-            exit_code:               BerthExit::Clear,
-            reservations:            vec![reservation_id],
-            blocked_by:              Vec::new(),
-            message:                 format!("Reservation {reservation_id} activity was renewed."),
-            presentation:            EnvelopePresentation::nothing_to_show(),
-            payload:                 OutputPayload::from_facts(OutputFacts::Renew(RenewPayload {
-                reservation_id,
-            })),
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Renew,
+            status:                    OutputStatus::Renewed,
+            exit_code:                 BerthExit::Clear,
+            reservations:              vec![reservation_id],
+            blocked_by:                Vec::new(),
+            message:                   format!(
+                "Reservation {reservation_id} activity was renewed."
+            ),
+            presentation:              EnvelopePresentation::nothing_to_show(),
+            payload:                   OutputPayload::from_facts(OutputFacts::Renew(
+                RenewPayload { reservation_id },
+            )),
         }
     }
 
     /// Build the successful response for an integration-target replacement.
     pub(crate) fn retargeted(reservation_id: ReservationId, target: TargetView) -> Self {
         Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            maintenance_notice:      MaintenanceNotice::None,
-            verb:                    CommandVerb::Retarget,
-            status:                  OutputStatus::Retargeted,
-            exit_code:               BerthExit::Clear,
-            reservations:            vec![reservation_id],
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            output_contract_version:   OUTPUT_CONTRACT_VERSION,
+            maintenance_notice:        MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb:                      CommandVerb::Retarget,
+            status:                    OutputStatus::Retargeted,
+            exit_code:                 BerthExit::Clear,
+            reservations:              vec![reservation_id],
+            blocked_by:                Vec::new(),
+            message:                   format!(
                 "Reservation {reservation_id} now targets {}.",
                 target.short_name
             ),
-            presentation:            EnvelopePresentation::nothing_to_show(),
-            payload:                 OutputPayload::from_facts(OutputFacts::Retarget(
+            presentation:              EnvelopePresentation::nothing_to_show(),
+            payload:                   OutputPayload::from_facts(OutputFacts::Retarget(
                 RetargetPayload {
                     reservation_id,
                     target,
@@ -3313,27 +3359,48 @@ impl OutputEnvelope {
         self
     }
 
+    /// Publish only releases appended by this reconciliation, never replayed history.
+    pub(crate) fn with_automatic_releases(mut self, settlements: &[ReconciledSettlement]) -> Self {
+        self.automatic_release_notices
+            .extend(automatic_release_notices(settlements));
+        self
+    }
+
     fn published_message(&self) -> String {
-        match &self.maintenance_notice {
+        let message = match &self.maintenance_notice {
             MaintenanceNotice::None => self.message.clone(),
             MaintenanceNotice::Deferred(lock) => {
                 format!("{}\n{}", self.message, lock.maintenance_notice())
             },
-        }
+        };
+        std::iter::once(message)
+            .chain(self.automatic_release_notices.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn published_presentation(&self) -> EnvelopePresentation {
-        let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice else {
+        if matches!(self.maintenance_notice, MaintenanceNotice::None)
+            && self.automatic_release_notices.is_empty()
+        {
             return self.presentation.clone();
-        };
+        }
         let mut blocks = match &self.presentation {
             EnvelopePresentation::RenderedBlocks { blocks } => blocks.as_slice().to_vec(),
             EnvelopePresentation::NotProvided | EnvelopePresentation::NothingToShow => Vec::new(),
         };
-        blocks.push(presentation::engine_message_block(
-            RETENTION_MAINTENANCE_DEFERRED_SUMMARY,
-            &lock.maintenance_notice(),
-        ));
+        if let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice {
+            blocks.push(presentation::engine_message_block(
+                RETENTION_MAINTENANCE_DEFERRED_SUMMARY,
+                &lock.maintenance_notice(),
+            ));
+        }
+        for notice in &self.automatic_release_notices {
+            blocks.push(presentation::engine_message_block(
+                "cargo-berth released a reservation automatically.",
+                notice,
+            ));
+        }
         rendered_blocks_presentation(blocks)
     }
 
@@ -3515,13 +3582,21 @@ impl OutputEnvelope {
     }
 
     fn with_maintenance_rendering(&self, rendering: PostToolUseRendering) -> PostToolUseRendering {
-        let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice else {
+        let mut notices = self.automatic_release_notices.clone();
+        if let MaintenanceNotice::Deferred(lock) = &self.maintenance_notice {
+            notices.push(lock.maintenance_notice());
+        }
+        if notices.is_empty() {
             return rendering;
-        };
-        let notice = lock.maintenance_notice();
+        }
+        let notice = notices.join("\n");
         match rendering {
             PostToolUseRendering::NoFeedback => PostToolUseRendering::Feedback {
-                summary: RETENTION_MAINTENANCE_DEFERRED_SUMMARY.to_owned(),
+                summary: if self.automatic_release_notices.is_empty() {
+                    RETENTION_MAINTENANCE_DEFERRED_SUMMARY.to_owned()
+                } else {
+                    "cargo-berth released a reservation automatically.".to_owned()
+                },
                 detail:  notice,
             },
             PostToolUseRendering::Feedback { summary, detail } => PostToolUseRendering::Feedback {
@@ -3650,8 +3725,12 @@ impl OutputEnvelope {
             &self.payload.alerts,
         );
         match self.maintenance_notice {
-            MaintenanceNotice::None => live_board.with_maintenance_rendering(rendering),
-            MaintenanceNotice::Deferred(_) => self.with_maintenance_rendering(rendering),
+            MaintenanceNotice::None if self.automatic_release_notices.is_empty() => {
+                live_board.with_maintenance_rendering(rendering)
+            },
+            MaintenanceNotice::None | MaintenanceNotice::Deferred(_) => {
+                self.with_maintenance_rendering(rendering)
+            },
         }
     }
 
@@ -3917,6 +3996,28 @@ fn claimed_presentation(
         ),
     };
     presentation::engine_message_block(&summary, &detail).into()
+}
+
+/// Notices for automatic releases appended in this invocation, shared by terminal and hook output.
+pub(crate) fn automatic_release_notices(settlements: &[ReconciledSettlement]) -> Vec<String> {
+    let mut notices = Vec::new();
+    for settlement in settlements {
+        let reason = match &settlement.disposition {
+            ReleaseDisposition::UnchangedScopes(evidence) => format!(
+                "no scope path differed against target {}; no owner activity for 24 hours",
+                evidence.target_commit(),
+            ),
+            ReleaseDisposition::RetiredOrphan(reason) => reason.to_string(),
+            ReleaseDisposition::Integrated
+            | ReleaseDisposition::RewrittenIntegration(_)
+            | ReleaseDisposition::Abandoned(_) => continue,
+        };
+        notices.push(format!(
+            "Automatically released reservation {}: {reason}.",
+            settlement.reservation_id,
+        ));
+    }
+    notices
 }
 
 /// The occasion an engine response is produced on, for the text that names it.

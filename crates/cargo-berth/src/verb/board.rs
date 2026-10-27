@@ -18,11 +18,13 @@ use crate::git::RetentionMaintenance;
 use crate::ids::ReservationId;
 use crate::ledger::JournalPosition;
 use crate::ledger::Ledger;
+use crate::output;
 use crate::output::CommandVerb;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::output::ReservationLifecycleQueryRejection;
 use crate::reconcile;
+use crate::reconcile::ReconciledSettlement;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationReplayError;
@@ -32,6 +34,7 @@ struct ReconciledBoardSource {
     invocation_directory: PathBuf,
     ledger:               Ledger,
     maintenance:          TerminalMaintenance,
+    automatic_releases:   Vec<ReconciledSettlement>,
 }
 
 /// Refreshes remember a deferral silently; restoration consumes its single notice.
@@ -59,7 +62,7 @@ impl BoardModelSource for ReconciledBoardSource {
     }
 
     fn rebuild(&mut self) -> Result<BoardModel, BoardRefreshFailure> {
-        let report = match reconcile::reconcile(
+        let report = match reconcile::reconcile_for_board(
             &self.invocation_directory,
             RecoveredBypassReporting::Report,
         )
@@ -75,6 +78,8 @@ impl BoardModelSource for ReconciledBoardSource {
             },
         };
         self.maintenance.remember(&report.retention_maintenance);
+        self.automatic_releases
+            .extend(report.settlements.iter().cloned());
         BoardModel::build(&self.invocation_directory, &report).map_err(BoardRefreshFailure::Model)
     }
 }
@@ -116,8 +121,10 @@ pub(crate) fn execute(
             ));
         },
     };
-    let report = match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Report)
-    {
+    let report = match reconcile::reconcile_for_board(
+        &invocation_directory,
+        RecoveredBypassReporting::Report,
+    ) {
         Ok(Enrollment::Enrolled(report)) => report,
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -141,19 +148,27 @@ pub(crate) fn execute(
     };
     match outcome {
         BoardDisplayOutcome::HeadlessResponse(output) => BoardDisplayOutcome::HeadlessResponse(
-            output.with_retention_maintenance(&report.retention_maintenance),
+            output
+                .with_retention_maintenance(&report.retention_maintenance)
+                .with_automatic_releases(&report.settlements),
         ),
         BoardDisplayOutcome::TerminalDidNotOpen(output) => BoardDisplayOutcome::TerminalDidNotOpen(
-            output.with_retention_maintenance(&report.retention_maintenance),
+            output
+                .with_retention_maintenance(&report.retention_maintenance)
+                .with_automatic_releases(&report.settlements),
         ),
         BoardDisplayOutcome::TerminalFailedAfterOpening(output) => {
             BoardDisplayOutcome::TerminalFailedAfterOpening(
-                output.with_retention_maintenance(&report.retention_maintenance),
+                output
+                    .with_retention_maintenance(&report.retention_maintenance)
+                    .with_automatic_releases(&report.settlements),
             )
         },
         BoardDisplayOutcome::TerminalRestored => BoardDisplayOutcome::TerminalRestored,
         BoardDisplayOutcome::FactsUnavailable(output) => BoardDisplayOutcome::FactsUnavailable(
-            output.with_retention_maintenance(&report.retention_maintenance),
+            output
+                .with_retention_maintenance(&report.retention_maintenance)
+                .with_automatic_releases(&report.settlements),
         ),
     }
 }
@@ -198,6 +213,7 @@ fn execute_complete_board(
                 let mut source = ReconciledBoardSource {
                     invocation_directory: invocation_directory.to_path_buf(),
                     ledger,
+                    automatic_releases: Vec::new(),
                     maintenance: TerminalMaintenance {
                         pending: report.retention_maintenance.clone(),
                     },
@@ -205,6 +221,14 @@ fn execute_complete_board(
                 match tui::run(&mut source, &board) {
                     Ok(()) => {
                         source.maintenance.report_after_restore();
+                        for notice in output::automatic_release_notices(&report.settlements)
+                            .into_iter()
+                            .chain(output::automatic_release_notices(
+                                &source.automatic_releases,
+                            ))
+                        {
+                            eprintln!("{notice}");
+                        }
                         BoardDisplayOutcome::TerminalRestored
                     },
                     Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
@@ -222,7 +246,8 @@ fn execute_complete_board(
                             OutputEnvelope::terminal_view_failed_after_board_opened(
                                 &failure.to_string(),
                             )
-                            .with_retention_maintenance(&source.maintenance.pending),
+                            .with_retention_maintenance(&source.maintenance.pending)
+                            .with_automatic_releases(&source.automatic_releases),
                         )
                     },
                 }

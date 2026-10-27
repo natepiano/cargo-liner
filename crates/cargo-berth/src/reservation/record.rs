@@ -486,7 +486,9 @@ impl Reservation {
                 RetainedProtectedTip::NotCheckpointed
                     if matches!(
                         disposition,
-                        ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_)
+                        ReleaseDisposition::Abandoned(_)
+                            | ReleaseDisposition::RetiredOrphan(_)
+                            | ReleaseDisposition::UnchangedScopes(_)
                     ) =>
                 {
                     Ok(ReservationEvidenceState::ReleasedWithoutCheckpoint {

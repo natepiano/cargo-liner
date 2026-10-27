@@ -3554,6 +3554,52 @@ fn post_tool_use_names_the_paths_a_first_touch_reserved() -> TestResult {
 }
 
 #[test]
+fn session_start_reports_an_automatic_orphan_retirement_once() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let (_worktrees, holder) = add_worktree(&repository, "empty-orphan")?;
+    let claimed = run_berth_with_session(
+        &holder,
+        &["claim", "file:never-edited.rs", "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&claimed, "empty holder claim")?;
+    let id = claimed_reservation_id(&claimed)?;
+    require_success(
+        &run_berth(repository.path(), &["board", "--json"])?,
+        "empty holder observation",
+    )?;
+    run_git(
+        repository.path(),
+        &["worktree", "remove", &holder.to_string_lossy()],
+    )?;
+
+    let payload = session_start_payload(repository.path(), Some(BOARD_SESSION));
+    let output = run_session_start(repository.path(), &payload, &AmbientHarnessSession::Absent)?;
+    let feedback = hook_feedback(
+        &output,
+        HookResponseEvent::SessionStart,
+        "orphan retirement",
+    )?;
+    let notice = format!("Automatically released reservation {id}:");
+    assert_eq!(
+        feedback.additional_context.matches(&notice).count(),
+        1,
+        "{feedback:?}"
+    );
+    assert!(
+        feedback.additional_context.contains("orphan"),
+        "{feedback:?}"
+    );
+
+    let repeated = run_session_start(repository.path(), &payload, &AmbientHarnessSession::Absent)?;
+    assert!(
+        !String::from_utf8_lossy(&repeated.stdout).contains(&notice),
+        "{repeated:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> TestResult {
     let repository = committed_configuration_repository()?;
     let claimed = run_berth_with_session(
