@@ -3081,7 +3081,7 @@ fn unappendable_decoded_marker_stays_visible_as_a_timed_alert() {
     let reservation = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     assert!(reservation.status.success());
     let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
-    let bypassed_merge = "x".repeat(17_000);
+    let bypassed_merge = "x".repeat(4 * 1_024 * 1_024);
     fs::write(
         &marker_path,
         serde_json::to_vec(&serde_json::json!({
@@ -7773,7 +7773,7 @@ fn run_berth_with_git_wrapper(
     arguments: &[&str],
     wrapper: &str,
 ) -> TracedBoard {
-    let directory = tempdir().expect("git wrapper directory should exist");
+    let directory = cargo_berth_test_support::fixture_tempdir("board-wrapper-");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
     DirectorySnapshot::write_shared_shell_script(&wrapper_path, wrapper);

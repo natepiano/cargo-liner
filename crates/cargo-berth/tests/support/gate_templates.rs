@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::CrossTargetOrdering;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -338,7 +339,7 @@ fn run_berth(root: &Path, args: &[&str]) -> Output {
         .env_remove("CARGO_BERTH_BYPASS")
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
-        .output()
+        .bounded_output()
         .expect("enrollment command should run")
 }
 fn run_berth_with_session(root: &Path, args: &[&str], session: &str) -> Output {
@@ -348,6 +349,6 @@ fn run_berth_with_session(root: &Path, args: &[&str], session: &str) -> Output {
         .env_remove("CARGO_BERTH_BYPASS")
         .env_remove("CARGO_BERTH_RUN")
         .env("CARGO_BERTH_SESSION_ID", session)
-        .output()
+        .bounded_output()
         .expect("enrollment session command should run")
 }

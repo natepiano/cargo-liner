@@ -30,16 +30,16 @@ pub(super) const JOURNAL_COMPACTION_THRESHOLD_BYTES: u64 = 16 * 1_024 * 1_024;
 pub(super) const HISTORY_COMPACTION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 // journal limits
-/// Maximum record bytes for a fact whose size a caller chose and can reduce.
+/// Maximum encoded caller-input bytes, excluding the evidence accompanying a declaration.
 ///
 /// Exceeding this is reported as [`CorrectableTransactionInput`], so the limit may only bind
-/// content the caller supplied: a declared scope set, an explicit widen. A record the engine
-/// derived from the repository has no caller to correct it, and belongs under
+/// content the caller supplied: scopes, provenance, purpose and new explanations. The complete
+/// record, including its engine-derived evidence and envelope, belongs under
 /// [`MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES`] instead.
 ///
 /// [`CorrectableTransactionInput`]: super::error::CorrectableTransactionInput
 pub(super) const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 16 * 1_024;
-/// Maximum record bytes for a fact the engine derived from repository shape.
+/// Maximum complete journal record bytes, including engine-derived evidence.
 ///
 /// A branch's unmerged surface and the paths drift observed both grow with the repository, not
 /// with anything a caller declared, so no reader can shorten them. Holding such a record to the
@@ -125,6 +125,8 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::MUTATING_VERB_CONTENTION_TOLERANCE;
     use super::MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
     use super::shortened_by_environment;
@@ -190,7 +192,7 @@ mod tests {
             };
             let output = command
                 .env(EXPECTED_MILLISECONDS, expected.as_millis().to_string())
-                .output()?;
+                .bounded_output()?;
             assert!(output.status.success(), "{output:?}");
         }
         Ok(())

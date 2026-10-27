@@ -54,6 +54,26 @@ pub(super) fn leaf_is_module(
     resolves_to_module(crate_sources, absolute_segments, &mut visited)
 }
 
+enum ModuleSegmentSource {
+    File(PathBuf),
+    DirectoryModule(PathBuf),
+    InlineOrReexport,
+}
+
+impl ModuleSegmentSource {
+    fn for_segment(dir: &Path, segment: &str) -> Self {
+        let file = dir.join(format!("{segment}.rs"));
+        let directory_module = dir.join(segment).join("mod.rs");
+        if file.is_file() {
+            Self::File(file)
+        } else if directory_module.is_file() {
+            Self::DirectoryModule(directory_module)
+        } else {
+            Self::InlineOrReexport
+        }
+    }
+}
+
 /// Walks `absolute_segments` from the crate root through file-backed modules,
 /// then through inline `mod` blocks and `use` re-exports inside the last
 /// file-backed module. `visited` holds the paths already under resolution, so a
@@ -71,26 +91,23 @@ fn resolves_to_module(
     let mut module_file = crate_root_file(crate_sources.source_root);
     let mut module_path: Vec<String> = Vec::new();
     for (index, segment) in absolute_segments.iter().enumerate() {
-        let file = dir.join(format!("{segment}.rs"));
-        let dir_mod = dir.join(segment).join("mod.rs");
-        if file.is_file() {
-            module_file = Some(file);
-        } else if dir_mod.is_file() {
-            module_file = Some(dir_mod);
-        } else {
-            // `resolves_to_module` calls `declares_module` when no file backs this segment, so the
-            // remaining path can only exist as inline `mod` blocks or a `use` re-export
-            // inside the last file-backed module.
-            let remainder = &absolute_segments[index..];
-            return module_file.is_some_and(|module_file| {
-                declares_module(
-                    crate_sources,
-                    &module_file,
-                    &module_path,
-                    remainder,
-                    visited,
-                )
-            });
+        match ModuleSegmentSource::for_segment(&dir, segment) {
+            ModuleSegmentSource::File(file) | ModuleSegmentSource::DirectoryModule(file) => {
+                module_file = Some(file);
+            },
+            ModuleSegmentSource::InlineOrReexport => {
+                // Without a backing file, resolve the remainder inside the last file-backed module.
+                let remainder = &absolute_segments[index..];
+                return module_file.is_some_and(|module_file| {
+                    declares_module(
+                        crate_sources,
+                        &module_file,
+                        &module_path,
+                        remainder,
+                        visited,
+                    )
+                });
+            },
         }
         module_path.push(segment.clone());
         dir.push(segment);
@@ -298,16 +315,6 @@ pub(super) fn is_snake_case_function_name(name: &str) -> bool {
 
 pub(super) fn is_snake_case_module_name(name: &str) -> bool { is_snake_case_function_name(name) }
 
-pub(super) fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (index, character) in text.char_indices() {
-        if character == '\n' {
-            offsets.push(index + 1);
-        }
-    }
-    offsets
-}
-
 pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     line_offsets
         .get(position.line.saturating_sub(1))
@@ -320,6 +327,32 @@ pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 mod tests {
     use super::is_snake_case_function_name;
     use super::shorten_module_path;
+
+    #[test]
+    fn module_resolution_prefers_files_then_directory_modules_then_inline() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("child"))?;
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "mod child; mod inline { pub mod leaf {} }",
+        )?;
+        std::fs::write(dir.path().join("child.rs"), "")?;
+        std::fs::write(dir.path().join("child/mod.rs"), "pub mod leaf {}")?;
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let crate_sources = super::CrateSources {
+            source_root: dir.path(),
+            sources:     &sources,
+        };
+        let child = ["child".to_string(), "leaf".to_string()];
+        assert!(!super::leaf_is_module(crate_sources, &child));
+        std::fs::remove_file(dir.path().join("child.rs"))?;
+        assert!(super::leaf_is_module(crate_sources, &child));
+        assert!(super::leaf_is_module(
+            crate_sources,
+            &["inline".to_string(), "leaf".to_string()]
+        ));
+        Ok(())
+    }
 
     #[test]
     fn shorten_super_returns_for_sibling() {

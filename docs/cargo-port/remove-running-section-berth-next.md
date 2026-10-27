@@ -677,9 +677,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `TestProcessGroup` drops a duplicate cleanup shell. It keeps the whole-group kill, the drain of both pipes and the bounded reap.
 - The process-start pin went from 46,393 to 38,741 starts, from a complete Mac capture with no unresolved product start. `lock_diagnostic` (macOS `lsof` on a lock refusal) is its own origin, with 18 starts in 15 tests and ceiling 18. `berth` stays at 3,262 starts, above the original 3,174 but below the 3,281 that phase 22 accepted.
 - A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
-- Spec 8, partial (229 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.7, reconcile 51.1, claim 31.7, post-tool-use 46.8, release 50.6, gate 41.0 ms), against before medians of 3.0–8.8 s. Full table: `docs/cargo-berth/as-built/check-under-load.md`.
+- Spec 8 (240 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.5, reconcile 33.5, claim 27.5, post-tool-use 29.4, release 49.2, gate 35.0 ms), against before medians of 2.9–8.7 s. The full table is in `docs/cargo-berth/as-built/check-under-load.md`.
 
-**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the last 11 lock-hold samples, the cold Mac timing compared with 88.730 s and 114.970 s, and the cold Mac run with every test under 1 s. hana's tests kept the Mac above load 10. The `mac` seat runs them when the Mac is quiet and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
+**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the cold Mac timing on `bf27c025` compared with 88.730 s and 114.970 s, and the cold Mac run on `fde451aa` with every test under 1 s. The first attempt found a phase 22 drift test hung for four days (the cause phase 24 fixed; phase 27 bounds the wait). The `mac` seat runs both when the Mac is free and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
 
 **Files:**
 - `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/support/` — shared seeds and recorded histories
@@ -719,3 +719,70 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Ruled out:**
 - Allowing `--defer` beside a widening answer: a defer takes no paths, so one claim cannot both defer and widen.
+
+### Phase 26 — The cargo-berth test-support suite passes when `/tmp` is on another filesystem  · status: done
+
+#### As-built
+
+- Main CI failed from 2026-10-23 because `ubuntu-latest` 26.04 puts `/tmp` on a filesystem other than `target`. There the shared script installer copies instead of hard-linking, by design, but its test asserted a hard link.
+- `fixture_tempdir` (`crates/cargo-berth-test-support/src/fixture_directory.rs`) gives a private `TempDir` beside `fixture_cache_root`, so cached executables hard-link on every host. The failing test, the repository templates, the Git seed copies, the prepared integration pairs and the wrapper-script roots in `board`, `drift`, `edges`, `gate` and the reanchoring fixtures use it. No fixture copies a cached executable for each test.
+- The cross-filesystem copy keeps its own test on `/dev/shm`. With `TMPDIR` on `/dev/shm` the old test fails (inode mismatch) and the new one passes with 3 hard links and 0 copies. Checkpoint `3ffeb199`, merged as `10a7caef`.
+
+**Binds later work:** A test root that receives a hard link from the fixture cache comes from `fixture_tempdir`, never from `tempfile::tempdir`.
+
+### Phase 27 — A cargo-berth wait on a child process fails fast with a clear message  · status: done
+
+#### As-built
+
+- Cause: a phase 22 drift test hung for 5 days on the Mac. `gix`'s installation-config probe waited for EOF while a concurrent `cat-file` child held an inherited copy of its pipe writer. Phase 24 removed that cause; this phase bounds every wait, so the next cause fails with a message.
+- `src/git/child.rs` is one shared child runtime: process-group ownership, output and exit collection with a deadline, and a named timeout error that kills the process group (`rustix::process::kill_process_group`, no unsafe code) and reaps the child. `cargo-berth-test-support` uses the same runtime (`command_deadline.rs`, `TestProcessGroup`).
+- `src/git/protocol.rs` bounds the persistent request and reply exchanges (`cat-file`, retention transactions). `src/git/installation.rs` runs the installation-config discovery as a bounded child and passes the path to `gix`, so `gix` starts no probe of its own. The phase 24 spawn lock stays.
+- Deadlines: `GIT_COMMAND_DEADLINE` 30 s for Git commands and object reads (slow Git under load still passes); `CONTROL_REPLY_DEADLINE` 750 ms for config discovery, control replies and the macOS `lsof` scan; `PIPE_EOF_DEADLINE` and `REAP_DEADLINE` 250 ms after the child exits.
+- `.config/nextest.toml` ends a hung `cargo-berth` or `cargo-berth-test-support` test after 40 s (5 s × 8) and names it.
+- `inherited_child_pipe_returns_a_named_timeout` fails on the old tree and passes in 0.27 s. Checkpoints `e0466d16` and `1dc9c3f7`, merged with main as `11a4771f`, integrated as `c889a5e6`.
+
+**Binds later work:** A new wait on a child process goes through `git/child.rs` with a named deadline. A persistent Git exchange goes through `git/protocol.rs`. No product code calls `Command::output` or `wait` on a child directly.
+
+**Gotchas:**
+- At natedev load 50–80, `eight_hook_writers_and_reconciliation_finish_without_a_long_lock_queue` once waited 2.24 s against its 2 s bound; alone it passed.
+
+### Phase 28 — A lost phase reservation record is restored from berth's ledger, never by hand  · status: done
+
+#### As-built
+
+- `phase_reservation.py repair --session-dir S --phase P --repo R` writes the phase record only from berth's ledger. It reads berth's session map for the phase session, confirms on the board that the reservation is active, and writes `Active`. The caller cannot name a reservation. Each repair appends one line to `phases/<P>/reservation_repairs.log`.
+- With no live reservation it writes nothing, exits 2 and prints the commands that open the phase again.
+- The edit hook (`hooks/pre-tool-use-berth.py`) names the repair command when it refuses an edit for a phase with no record. A finished phase, the checkpoint window and a final-gate phase do not count as a lost record, and an unreadable recorder state does not crash the hook.
+- `OpenPhase.phase` changed meaning; `review_tree.py` and `guilds/roles.py` were updated with it.
+- Built in `~/.claude` by natedev's builds unit from this unit's patch, with 3 review fixes: `644ef5d6`, merged as `fa8a7bb5`.
+
+**Gotchas:**
+- A change to what a shared type or field means in `~/.claude/scripts` needs a search of every user first; the first patch broke two callers outside its file set.
+
+### Phase 29 — A cargo-berth test that leaves a folder behind fails with its own name  · status: done
+
+#### As-built
+
+- Every `cargo-berth` and `cargo-berth-test-support` test runs under `crates/cargo-berth/tests/check-test-scratch.sh`, a POSIX `sh` nextest wrapper script (`.config/nextest.toml`, `wrapper-scripts`). It makes a private 0700 root under the fixture cache's `private` directory and exports `TMPDIR`, `TMP`, `TEMP`, `CARGO_BERTH_TEST_SCRATCH_ROOT` and `GIT_CEILING_DIRECTORIES`. After the test process exits, a root that is not empty fails the test with its name and each path left. An empty root is removed. The test's own exit status and signals are kept.
+- `fixture_tempdir` makes its `TempDir` under that root, so both places a test makes folders are checked, and hard links from the cache still work.
+- `GIT_CEILING_DIRECTORIES` stops Git discovery at the root's parent. Without it, a test that ran Git in its scratch root found this worktree's repository.
+- The proof is `scratch_wrapper_names_leaks_and_preserves_clean_panics` in `tests/temporary_directories.rs`. It runs the wrapper itself around subprocesses that leak through `TMPDIR` or `fixture_tempdir`, unwind cleanly, or exit with status 7.
+- Cost: 17.9 ms per test added (500 runs, load 56–114). The first Python version added 39.6 ms.
+- No current leak was found. The 423 old natedev folders date from before phase 23 and are left to the builds unit's sweep.
+
+**Binds later work:** A cargo-berth test that leaves a folder in its scratch root fails. A new fixture folder is a `TempDir` under `TMPDIR` or `fixture_tempdir`.
+
+**Gotchas:** A test killed by nextest's `terminate-after` also kills the wrapper, so nothing checks that test's root.
+
+### Phase 30 — A claim on a `tree:` scope is not refused for its size in a crate with many holders  · status: done
+
+#### As-built
+
+- Cause: a claim on a `tree:` scope records a `JournalOperation::Answer` whose authorizations repeat holder ids, overlap scopes, scope revisions and an explanation for each holder. The old check measured the whole event against the 16384-byte limit for caller input. On the report's snapshot the record was 39 KB; the caller's part is 315 bytes.
+- `src/ledger/record_size.rs`: `CallerJournalInput` is the only type that `validate` (16384 bytes) accepts. An exhaustive conversion from each operation keeps only what the caller supplied: scopes, provenance, purpose, new reasons, explicit widenings, forced-integration reasons, release explanations and the retarget branch name. `DerivedJournalRecord` encodes the complete event under the 4 MiB derived limit. `JournalOperation::record_ceiling` is removed, so a new operation variant must choose its caller projection at compile time.
+- Records, schema and replay are unchanged; only the check at append time changed. Neither limit was raised.
+- Proof: `a_tree_claim_records_many_holder_answers_without_a_size_refusal` (`tests/overlap.rs`, 124 holders, refused at 66,667 bytes before the fix) and two journal tests in `ledger/journal.rs`.
+- The report's claim succeeds on a copy of the snapshot. Phase 29's scratch root made three fixtures depend on not finding an enclosing repository, and they were repaired: `tests/board.rs` marker, `gate/permit.rs` shell marker and `git/object.rs` failed repository.
+
+**Binds later work:** A size check on journal input takes `CallerJournalInput`. Derived evidence never counts against the caller's limit.
+

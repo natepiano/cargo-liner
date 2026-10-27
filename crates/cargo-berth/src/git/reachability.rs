@@ -1219,6 +1219,8 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 mod tests {
     use std::collections::HashMap;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::ProtectedTipSuccessorHeadClassification;
@@ -1788,7 +1790,7 @@ mod tests {
         let output = cargo_berth_test_support::fixture_git_command()
             .args(["merge-base", "--all", &trunk.to_string(), &head.to_string()])
             .current_dir(fixture.root())
-            .output()?;
+            .bounded_output()?;
         assert!(
             output.status.success(),
             "git merge-base --all should succeed"

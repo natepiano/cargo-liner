@@ -1725,6 +1725,7 @@ mod tests {
     use std::thread;
     use std::thread::JoinHandle;
 
+    use cargo_berth_test_support::ChildDeadlineExt as _;
     use serde_json::Value;
 
     use super::CommittedActionValidation;
@@ -1741,15 +1742,11 @@ mod tests {
     use super::TransactionValidation;
     use crate::drift::WorkingTreeFingerprint;
     use crate::ids::CoordinationRunId;
-    use crate::ids::ForcedIntegrationPermitId;
     use crate::ids::GitObjectId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
-    use crate::ledger::BypassCause;
-    use crate::ledger::BypassOccurrenceTime;
-    use crate::ledger::BypassRecording;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
     use crate::ledger::ObservedReservation;
@@ -1757,6 +1754,7 @@ mod tests {
     use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
     use crate::ledger::journal;
+    use crate::ledger::journal::SkippedIntegrationHoldSet;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
     use crate::reservation::HolderMergeExtentCoverage;
@@ -1805,7 +1803,7 @@ mod tests {
         }
         let prepared_while_locked = repository.path().join("prepared").is_file();
         holder.unlock()?;
-        let output = child.wait_with_output()?;
+        let output = child.bounded_wait_with_output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(ready.exists(), "child must reach the acquire signal");
         assert!(
@@ -1878,7 +1876,7 @@ mod tests {
                 .spawn()?;
             while !ready.exists() {
                 if child.try_wait()?.is_some() {
-                    let output = child.wait_with_output()?;
+                    let output = child.bounded_wait_with_output()?;
                     panic!("{mode} exited before signaling preparation: {output:?}");
                 }
                 thread::sleep(std::time::Duration::from_millis(1));
@@ -1887,7 +1885,7 @@ mod tests {
             // Publishing the already prepared change must preserve the unrelated mapping.
             fs::write(&index, b"unreadable disposable index")?;
             lock.unlock()?;
-            let output = child.wait_with_output()?;
+            let output = child.bounded_wait_with_output()?;
             assert!(output.status.success(), "{mode}: {output:?}");
             let actual: Value = serde_json::from_slice(&fs::read(&index)?)?;
             assert_eq!(
@@ -2685,18 +2683,22 @@ mod tests {
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-            TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                action:          BypassedAction::Editing,
-                cause:           BypassCause::ForcedIntegration {
-                    permit_id: ForcedIntegrationPermitId::new(),
-                    reason:    "x"
+            TransactionValidation::<()>::Append(Box::new(
+                JournalOperation::ForcedIntegrationPermit {
+                    permit_id:      crate::ids::ForcedIntegrationPermitId::new(),
+                    reservation_id: ReservationId::new(),
+                    reason:         "x"
                         .repeat(MAXIMUM_JOURNAL_RECORD_BYTES)
                         .parse::<ForcedIntegrationReason>()
                         .expect("oversized reason should remain non-empty"),
+                    skipped_holds:  SkippedIntegrationHoldSet::OrderingEdges {
+                        edges: vec![super::super::journal::SkippedOrderingEdge {
+                            edge_id:     crate::ids::EdgeId::new(),
+                            predecessor: ReservationId::new(),
+                        }],
+                    },
                 },
-                occurrence_time: BypassOccurrenceTime::EventRecordedAt,
-                recording:       BypassRecording::Direct,
-            }))
+            ))
         });
 
         assert!(matches!(

@@ -38,7 +38,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::Backdrop;
-use super::cell_pixels;
 use super::constants::BAND_BEHIND_FADE;
 use super::constants::BAND_EDGE_FALLOFF_CELLS;
 use super::constants::CHURN_CELLS_PER_FRAME;
@@ -60,6 +59,7 @@ use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
 use super::random;
 use super::random::Xorshift;
+use super::support;
 use crate::theme;
 
 /// Which way a [`TravelingBand`] crosses the grid.
@@ -917,7 +917,7 @@ impl TravelingBand {
     /// A terminal that will not say leaves the last answer standing, so
     /// a single refusal does not undo a size already learned.
     fn read_cell_pixels(&mut self) {
-        if let Some(measured) = cell_pixels() {
+        if let Some(measured) = support::cell_pixels() {
             self.cell_pixels = measured;
         }
     }

@@ -266,6 +266,9 @@ mod tests {
     use crate::config::DiagnosticCode;
     use crate::config::DiagnosticStatus;
     use crate::config::PreludePubMod;
+    use crate::config::constants::DIAGNOSTICS_TABLE_KEY;
+    use crate::config::constants::GLOBAL_CONFIG_FILE;
+    use crate::config::constants::VISIBILITY_TABLE_KEY;
 
     #[test]
     fn default_global_config_toml_parses_correctly() {
@@ -286,11 +289,14 @@ mod tests {
 
     #[test]
     fn partial_toml_uses_defaults_for_missing_fields() {
-        let toml_str = r"
-[diagnostics]
-prefer_module_import = false
-";
-        let global_config_file: GlobalConfigFile = from_str(toml_str).unwrap();
+        let diagnostic_key = DiagnosticCode::PreferModuleImport.as_str();
+        let toml_str = format!(
+            "
+[{DIAGNOSTICS_TABLE_KEY}]
+{diagnostic_key} = false
+"
+        );
+        let global_config_file: GlobalConfigFile = from_str(&toml_str).unwrap();
         assert!(matches!(
             global_config_file
                 .diagnostics_config
@@ -311,7 +317,7 @@ prefer_module_import = false
     #[test]
     fn reconcile_creates_canonical_default_when_missing() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join(GLOBAL_CONFIG_FILE);
         reconcile_global_config(&path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         let file: GlobalConfigFile = from_str(&contents).unwrap();
@@ -325,14 +331,15 @@ prefer_module_import = false
     #[test]
     fn reconcile_preserves_comments_and_explicit_values_when_complete() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join(GLOBAL_CONFIG_FILE);
         std::fs::write(&path, default_global_config_toml()).unwrap();
         // `original` changes `prefer_module_import` and adds a user comment before
         // `std::fs::write` writes the complete file.
         let mut original = std::fs::read_to_string(&path).unwrap();
+        let diagnostic_key = DiagnosticCode::PreferModuleImport.as_str();
         original = original.replace(
-            "prefer_module_import = true",
-            "# my note\nprefer_module_import = false",
+            &format!("{diagnostic_key} = true"),
+            &format!("# my note\n{diagnostic_key} = false"),
         );
         std::fs::write(&path, &original).unwrap();
 
@@ -347,7 +354,7 @@ prefer_module_import = false
     fn reconcile_migrates_legacy_overbroad_pub_crate_key() {
         let current_key = DiagnosticCode::OverbroadPubCrate.as_str();
         let original = format!(
-            "{CONFIG_VERSION_KEY} = {CONFIG_VERSION}\n[diagnostics]\n# keep this setting\n{LEGACY_OVERBROAD_PUB_CRATE_KEY} = false\n"
+            "{CONFIG_VERSION_KEY} = {CONFIG_VERSION}\n[{DIAGNOSTICS_TABLE_KEY}]\n# keep this setting\n{LEGACY_OVERBROAD_PUB_CRATE_KEY} = false\n"
         );
 
         let after = reconciled(&original);
@@ -368,12 +375,13 @@ prefer_module_import = false
     #[test]
     fn reconcile_inserts_missing_keys_and_keeps_comments() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join(GLOBAL_CONFIG_FILE);
         // `std::fs::write` creates an old-style `config.toml`: diagnostics only,
         // no [visibility], with a user comment.
+        let diagnostic_key = DiagnosticCode::ReviewPubMod.as_str();
         std::fs::write(
             &path,
-            "# user header\n[diagnostics]\nreview_pub_mod = false\n",
+            format!("# user header\n[{DIAGNOSTICS_TABLE_KEY}]\n{diagnostic_key} = false\n"),
         )
         .unwrap();
 
@@ -382,7 +390,7 @@ prefer_module_import = false
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("# user header"), "user comment preserved");
         assert!(
-            after.contains("review_pub_mod = false"),
+            after.contains(&format!("{diagnostic_key} = false")),
             "explicit value preserved"
         );
         assert!(after.contains(PRELUDE_KEY), "prelude key inserted");
@@ -407,7 +415,7 @@ prefer_module_import = false
     #[test]
     fn reconcile_inserts_pub_in_path_without_disturbing_existing_visibility_content() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join(GLOBAL_CONFIG_FILE);
         let pub_in_path_line = format!(
             "{PUB_IN_PATH_COMMENT}{PUB_IN_PATH_KEY} = \"{}\"\n",
             PubInPath::Required.config_value()
@@ -425,7 +433,7 @@ prefer_module_import = false
     /// afterwards.
     fn reconciled(contents: &str) -> String {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.toml");
+        let path = temp.path().join(GLOBAL_CONFIG_FILE);
         std::fs::write(&path, contents).unwrap();
         reconcile_global_config(&path).unwrap();
         std::fs::read_to_string(&path).unwrap()
@@ -433,7 +441,7 @@ prefer_module_import = false
 
     fn visibility_table(pub_in_path: PubInPath) -> String {
         format!(
-            "[visibility]\n{PUB_IN_PATH_KEY} = \"{}\"\n",
+            "[{VISIBILITY_TABLE_KEY}]\n{PUB_IN_PATH_KEY} = \"{}\"\n",
             pub_in_path.config_value()
         )
     }
@@ -480,7 +488,10 @@ prefer_module_import = false
 
     #[test]
     fn unversioned_config_without_visibility_table_lands_on_the_default() {
-        let after = reconciled("[diagnostics]\nreview_pub_mod = false\n");
+        let diagnostic_key = DiagnosticCode::ReviewPubMod.as_str();
+        let after = reconciled(&format!(
+            "[{DIAGNOSTICS_TABLE_KEY}]\n{diagnostic_key} = false\n"
+        ));
 
         assert_eq!(resolved_pub_in_path(&after), PubInPath::Required);
         assert!(after.contains(CONFIG_VERSION_KEY), "version stamp added");

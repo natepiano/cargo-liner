@@ -23,6 +23,7 @@ pub(super) use import_scan::ImportScan;
 pub(super) use import_scan::TaggedFix;
 pub(super) use import_scan::UseFix;
 pub(super) use import_scan::ValidatedFixSet;
+pub(super) use path::ImportSource;
 pub(super) use scan::scan_selection;
 use syn::UseTree;
 pub(super) use use_binding::UseBinding;

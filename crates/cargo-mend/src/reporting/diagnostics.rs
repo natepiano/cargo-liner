@@ -689,30 +689,52 @@ pub(super) fn fixability_note(finding: &Finding) -> Option<&'static str> {
     effective_fixability(finding).note(effective_severity(finding))
 }
 
-pub(super) fn finding_headline(finding: &Finding) -> String {
-    match diagnostic_spec(finding.diagnostic_code).headline {
-        HeadlineSource::Static(headline) => headline.to_string(),
-        HeadlineSource::FindingMessage { fallback } => {
-            if finding.message.is_empty() {
-                fallback.to_string()
-            } else {
-                finding.message.clone()
-            }
-        },
+enum FindingPresentation<'a> {
+    Static {
+        headline: &'static str,
+        detail:   Option<&'a str>,
+    },
+    Message(&'a str),
+    Fallback(&'static str),
+}
+
+impl<'a> From<&'a Finding> for FindingPresentation<'a> {
+    fn from(finding: &'a Finding) -> Self {
+        let message = (!finding.message.is_empty()).then_some(finding.message.as_str());
+        match diagnostic_spec(finding.diagnostic_code).headline {
+            HeadlineSource::Static(headline) => Self::Static {
+                headline,
+                detail: message,
+            },
+            HeadlineSource::FindingMessage { fallback } => {
+                message.map_or(Self::Fallback(fallback), Self::Message)
+            },
+        }
     }
 }
 
-pub(super) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str> {
-    if finding.message.is_empty()
-        || matches!(
-            diagnostic_spec(finding.diagnostic_code).headline,
-            HeadlineSource::FindingMessage { .. }
-        )
-    {
-        None
-    } else {
-        Some(&finding.message)
+impl<'a> FindingPresentation<'a> {
+    const fn headline(&self) -> &str {
+        match self {
+            Self::Static { headline, .. } | Self::Fallback(headline) => headline,
+            Self::Message(message) => message,
+        }
     }
+
+    const fn detail(self) -> Option<&'a str> {
+        match self {
+            Self::Static { detail, .. } => detail,
+            Self::Message(_) | Self::Fallback(_) => None,
+        }
+    }
+}
+
+pub(super) fn finding_headline(finding: &Finding) -> String {
+    FindingPresentation::from(finding).headline().to_string()
+}
+
+pub(super) fn finding_message_not_in_headline(finding: &Finding) -> Option<&str> {
+    FindingPresentation::from(finding).detail()
 }
 
 pub(super) fn detail_reasons(finding: &Finding) -> Vec<String> {
@@ -754,29 +776,37 @@ pub(super) fn finding_help_url(finding: &Finding) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::FORBIDDEN_PUB_IN_CRATE;
     use super::Finding;
     use super::FixSupport;
+    use super::HeadlineSource;
+    use super::INTERNAL_PARENT_PUB_USE_FACADE;
     use super::ItemVisibility;
+    use super::OVERBROAD_PUB_CRATE;
     use super::Severity;
     use super::finding_headline;
     use crate::config::DiagnosticCode;
 
     #[test]
     fn finding_message_headlines_use_messages_with_static_fallbacks() {
-        for (diagnostic_code, fallback) in [
+        for (diagnostic_code, headline) in [
             (
                 DiagnosticCode::OverbroadPubCrate,
-                "`pub(crate)` is broader than required",
+                OVERBROAD_PUB_CRATE.headline,
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,
-                "use of `pub(in crate::...)` is forbidden by policy",
+                FORBIDDEN_PUB_IN_CRATE.headline,
             ),
             (
                 DiagnosticCode::InternalParentPubUseFacade,
-                "parent module re-export is acting as an internal facade",
+                INTERNAL_PARENT_PUB_USE_FACADE.headline,
             ),
         ] {
+            let fallback = match headline {
+                HeadlineSource::FindingMessage { fallback } => fallback,
+                HeadlineSource::Static(headline) => headline,
+            };
             let mut finding = Finding {
                 severity: Severity::Error,
                 diagnostic_code,
@@ -854,5 +884,42 @@ mod tests {
 
             assert_eq!(finding_headline(&finding), message);
         }
+    }
+    #[test]
+    fn presentation_keeps_static_details_and_suppresses_message_headline_duplicates() {
+        let mut finding = Finding {
+            severity:        Severity::Warning,
+            diagnostic_code: DiagnosticCode::SuspiciousPub,
+            path:            "src/lib.rs".to_string(),
+            line:            1,
+            column:          1,
+            highlight_len:   3,
+            source_line:     "pub struct Example;".to_string(),
+            item:            None,
+            message:         "caller needs the parent boundary".to_string(),
+            suggestion:      None,
+            fix_support:     FixSupport::None,
+            related:         None,
+            item_visibility: ItemVisibility::default(),
+        };
+        assert_eq!(
+            finding_headline(&finding),
+            "`pub` is broader than this nested module boundary"
+        );
+        assert_eq!(
+            super::finding_message_not_in_headline(&finding),
+            Some(finding.message.as_str())
+        );
+        finding.message.clear();
+        assert_eq!(super::finding_message_not_in_headline(&finding), None);
+        finding.diagnostic_code = DiagnosticCode::ForbiddenPubInCrate;
+        assert_eq!(
+            finding_headline(&finding),
+            "use of `pub(in crate::...)` is forbidden by policy"
+        );
+        assert_eq!(super::finding_message_not_in_headline(&finding), None);
+        finding.message = "resolved boundary".to_string();
+        assert_eq!(finding_headline(&finding), "resolved boundary");
+        assert_eq!(super::finding_message_not_in_headline(&finding), None);
     }
 }

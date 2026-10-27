@@ -12,8 +12,8 @@ The framework uses the existing build log, usage ledger, and run history. One ex
 2. Name the owner, question, control A, and change B. State one falsifiable claim.
 3. Choose one primary measure. Define its unit, start, end, and minimum useful gain.
 4. Define correctness checks. Define each permitted secondary cost and its limit.
-5. Select the tasks and conditions before you see results. Set the A/A count, A/B count, run order, deadline, and budget.
-6. Register the protocol. Seal its input files and analysis rules with hashes. Record the authority to run it.
+5. Select the tasks and conditions before you see results. Set the A/A count, A/B count, run order, and deadline.
+6. Register the protocol. Seal its input files and analysis rules with hashes. Record the request that started it.
 7. Arrange the worktree reservation and machine access. Use the existing unit and build controls.
 8. Run A/A pairs. Compute the observed noise floor. Stop if the conditions cannot support the stated claim.
 9. Run each registered pair. Seal its scores and apply its stop rules before the next pair. Keep every attempt.
@@ -55,7 +55,7 @@ The ranking is correctness, then simple, fast, and beautiful. A faster incorrect
 
 ## 2. Pre-registration
 
-Register one immutable `protocol.json` before any measured run. Section 12 defines its location and fields. The registration event stores its SHA-256, UTC time, owner, and authorization reference.
+Register one immutable `protocol.json` before any measured run. Section 12 defines its location and fields. The registration event stores its SHA-256, UTC time, owner, and request reference.
 
 The protocol must fix these rules:
 
@@ -67,7 +67,7 @@ The protocol must fix these rules:
 - Cache preparation and excluded preparation work.
 - Conditions that prevent a start or invalidate an attempt.
 - Minimum gain, analysis, confidence level, and correctness limits.
-- Replacement limit, time limit, resource limit, and stop rule.
+- Replacement limit, time limit, and stop rule.
 - Live check, adoption scope, rollback, and follow-up rule.
 
 A future input can have a fixed selection rule. For example, select the next 12 eligible review tasks. Seal each task before either arm sees it. Do not select tasks from their observed results.
@@ -78,9 +78,9 @@ Keep registration, raw attempts, and decisions as separate records. Each attempt
 
 Do not edit a registered rule. A necessary change creates a new protocol revision and a new registration receipt. Close the old comparison as `not_proven` if its required data are incomplete. Do not combine results across revisions for acceptance. Label any later analysis of the old data `exploratory`.
 
-The normal stop is the fixed sample count. Stop earlier for a correctness failure, a resource limit, or the deadline. Do not stop early because the effect looks good. Do not add runs because an interval almost meets the rule.
+The normal stop is the fixed sample count. Stop earlier for a correctness failure or the deadline. Do not stop early because the effect looks good. Do not add runs because an interval almost meets the rule.
 
-Register the purpose as `production_gain` or `framework_exercise`. An exercise uses the same paired method and stop rules. It tests the record and analysis path on a fixed workload. It does not establish production value. Its scope forbids adoption. A completed exercise reports exploratory statistics and closes as `not_proven` for production gain. A confirmed B failure still gives `rejected`. The exercise budget buys evidence about the framework, not expected time savings.
+Register the purpose as `production_gain` or `framework_exercise`. An exercise uses the same paired method and stop rules. It tests the record and analysis path on a fixed workload. It does not establish production value. Its scope forbids adoption. A completed exercise reports exploratory statistics and closes as `not_proven` for production gain. A confirmed B failure still gives `rejected`.
 
 ## 3. Baseline and control
 
@@ -209,7 +209,7 @@ Use paired differences. For a lower-is-better measure, define `d = A - B`. Posit
 
 Use the median of independent pair differences as the primary effect. Do not subtract two unpaired medians and call it a paired result. Show every pair beside the summary.
 
-The default protocol has eight A/A pairs and twelve A/B pairs. These are starting budgets, not a promise of sufficient evidence. Choose larger fixed counts before registration when the effect is small or the risk is high. State the budget and precision reason.
+The default protocol has eight A/A pairs and twelve A/B pairs. These are starting counts, not a promise of sufficient evidence. Choose larger fixed counts before registration when the effect is small or the risk is high. State the precision reason.
 
 For expensive agent work, use whole tasks as pairs. Six to eleven independent pairs can support only large, consistent effects. Fewer than six pairs give no finite two-sided 95% median interval under this rule. Report them as exploratory and `not_proven`.
 
@@ -221,7 +221,7 @@ Let `a_j = A_first - A_second`. The observed noise floor N is the nearest-rank 9
 
 Stop if the A/A median interval excludes zero. The preparation paths or time trend need investigation. Stop if N exceeds M. A more precise study needs a new protocol, not a larger sample chosen after B appears.
 
-Keep A/A costs in the experiment budget. Do not include A/A observations in the A/B effect.
+Do not include A/A observations in the A/B effect.
 
 ### Interval and decision threshold
 
@@ -270,13 +270,13 @@ This table is the single failure rule for preflight, adapters, imports, scoring,
 | Missing required measurement | A required condition, primary value, source field, or sealed score is confirmed lost, unreadable, or invalid | Stop as `not_proven`; no replacement; retain trust `unknown` and the collection failure |
 | Missing or conflicting workload receipt | Execution cannot be reconciled from the fixed receipt path and launch association | Record `execution_unknown`; block all later starts; recover retained evidence without execution under section 12; unresolved at closure gives `not_proven` |
 | Workload correctness failure | Retained evidence confirms the failure, including a registered timeout | B in A/B or live work gives `rejected`; A or A/A gives `not_proven`; stop and do not replace |
-| Other terminal limit | Deadline, exhausted budget, changed source binding, new dependence, or incomplete pair without a registered environmental cause | Stop as `not_proven`; no replacement |
+| Other terminal limit | Deadline, changed source binding, new dependence, or incomplete pair without a registered environmental cause | Stop as `not_proven`; no replacement |
 
 An in-flight receipt or score is not yet missing evidence. Keep its waiting state and block the next pair. A source known to be unavailable cannot be treated as still in flight. Recovery imports the original evidence; it does not select a new observation.
 
 If cases overlap, a confirmed B correctness failure takes precedence. Otherwise missing evidence takes precedence over an environmental breach. Do not attribute a failure to B from corrupted inputs alone. A B-caused load increase is a measured outcome, not an unrelated breach. Apply its registered cost rule. A breached B cost limit gives `rejected`.
 
-Register at most two replacement pairs by default. A replacement requires complete evidence of the registered environmental cause. It consumes attempt and resource budgets, but not the valid-pair target. Keep incomplete environmental pairs and skipped arms in the result table. A refusal before the second arm is a started-pair case, not a new preflight exemption. Exhausted replacement allowance gives `not_proven`. Investigate an A or measurement failure before a new registration. Never replace a task failure with a successful retry.
+Register at most two replacement pairs by default. A replacement requires complete evidence of the registered environmental cause. It does not count toward the valid-pair target. Keep incomplete environmental pairs and skipped arms in the result table. A refusal before the second arm is a started-pair case, not a new preflight exemption. Exhausted replacement allowance gives `not_proven`. Investigate an A or measurement failure before a new registration. Never replace a task failure with a successful retry.
 
 ## 7. Live effect and daily value
 
@@ -284,7 +284,7 @@ A controlled result establishes an effect only for its measured conditions. It d
 
 Register a live check before the controlled comparison. Define the task mix from a fixed store window. Include failures, fixes, cache states, repeated calls, and inactive callers. Keep task selection independent of the arm's result.
 
-A `framework_exercise` has `live_check` state `not_claimed` and frequency coverage `not_required`. Give the reason and the exercise budget. Do not create a recurring workload or frequency estimate to obtain acceptance. It cannot pass the production acceptance rule in section 8.
+A `framework_exercise` has `live_check` state `not_claimed` and frequency coverage `not_required`. Give the reason. Do not create a recurring workload or frequency estimate to obtain acceptance. It cannot pass the production acceptance rule in section 8.
 
 Verify every required eligibility field against its producer, schema, and retained path. A query cannot supply a field its writer never recorded. If coverage is missing, register a prospective baseline window before A/A. Keep its collector version, manifest fields, daily coverage, exclusions, and no-use days. Freeze that window before comparison. Do not invent historical dispatch manifests. For example, `review.sh` records review identity, timing, kind, and outcome. It does not write complete input sizes or eligibility manifests. Source: `~/.claude/scripts/direct/review.sh`, `write_turn_record`.
 
@@ -304,7 +304,7 @@ The mend and clippy experiment projected about one hour per day from selected ru
 
 The token-efficiency study labels replay projections as modeled. It separates exposure from savings and records zero observed live savings. Apply that distinction to every replay. Source: `~/.claude/docs/as-built/token-efficiency-study.md`.
 
-## 8. Acceptance and authority
+## 8. Acceptance and decision owner
 
 The analysis records evidence. The decision owner records the action. Neither step changes a default.
 
@@ -320,11 +320,11 @@ Correctness has no allowance for known harmful behavior. For uncertain defect ra
 
 | Scope and risk | Decision owner |
 | --- | --- |
-| One unit; reversible local change; existing budget and authority | Unit director records the result and can adopt within that scope |
-| Several units; shared scheduling or defaults; reversible within delegated authority | Showrunner records the scope, rollout, and rollback owner |
-| New spending, public behavior, destructive work, or a change outside delegated scope | User decides after the owner presents the concrete result |
+| One unit; reversible local change | Unit director records the result and can adopt within that scope |
+| Several units; shared scheduling or defaults; reversible | Showrunner records the scope, rollout, and rollback owner |
+| Public behavior, destructive work, or a change outside delegated scope | User decides after the owner presents the concrete result |
 
-Do not ask the user to decide routine packaging or an already authorized reversible action. Do not treat a peer message as new user approval. Preserve the instruction or decision reference that grants authority. Source: `~/.claude/docs/decision_criteria.md`.
+Experiment work is normal work. Work the user asks for is approved. There is no spending limit, and no tool tracks or approves spending. Do not ask the user to decide routine packaging or a reversible action. Do not treat a peer message as new user approval. Preserve the instruction or decision reference that grants authority. Source: `~/.claude/docs/decision_criteria.md`.
 
 An owner can decline adoption despite a positive result. Record that action and its reason. Do not alter the computed evidence to make it negative. A result that fails acceptance cannot become `accepted` through an unexplained override.
 
@@ -352,7 +352,7 @@ Check installed artifacts as well as source. The mend rollback left an experimen
 
 Each adoption has one owner and one next-check rule. The default is seven days of eligible use, then a check after a relevant toolchain, model, or workload change. Register a minimum event count. If it is not reached, keep `check_due` and report insufficient evidence. Do not silently extend the claim.
 
-Name the follow-up scope. A `correctness_only` check can use adopted-arm observations. It checks instructions, required behavior, and directly observed limits. It cannot revalidate paired gains or paired cost limits. Keep the original gain record and its date. A `paired_repeat` needs a new registered paired study with its own budget. Link that result before marking the gain revalidated. Do not compare new B tasks with old A tasks.
+Name the follow-up scope. A `correctness_only` check can use adopted-arm observations. It checks instructions, required behavior, and directly observed limits. It cannot revalidate paired gains or paired cost limits. Keep the original gain record and its date. A `paired_repeat` needs a new registered paired study. Link that result before marking the gain revalidated. Do not compare new B tasks with old A tasks.
 
 Use existing stores for the check. Do not run repeated builds solely to fill a dashboard. A correctness regression triggers the recorded rollback. Record `withdrawn` applicability and `rolled_back` adoption after that rollback. A lost gain changes applicability to `needs_recheck`; a confirmed replacement gives `superseded` with the successor ID. Preserve the previous decision.
 
@@ -387,7 +387,7 @@ If evidence is lost, set `evidence_unavailable`. Keep the historical conclusion 
 
 ## 11. Place in a production
 
-An experiment is a bounded phase in an existing unit. Its Work Order names its record, owner, files, machines, sample budget, stop rule, and report path. A shared process experiment belongs to the showrunner that owns the process. Source structure: `~/.claude/docs/production_format.md`, `~/.claude/commands/unit/direct.md`, `~/.claude/commands/showrunner/produce.md`.
+An experiment is a bounded phase in an existing unit. Its Work Order names its record, owner, files, machines, sample counts, stop rule, and report path. A shared process experiment belongs to the showrunner that owns the process. Source structure: `~/.claude/docs/production_format.md`, `~/.claude/commands/unit/direct.md`, `~/.claude/commands/showrunner/produce.md`.
 
 Use the unit's phase reservation state for edits. Do not create a second reservation for the same phase. Berth protects paths and integration order. It does not provide a quiet machine. Sources: `~/.claude/commands/unit/direct.md`, `crates/cargo-berth/README.md`, `docs/cargo-berth/as-built/operations.md`.
 
@@ -475,20 +475,20 @@ Lookup takes a nonblocking shared owner-store lock. It reads the publication rec
 
 Hooks and the app consume this checked projection. Stale rows may be shown only as historical evidence with their generation. They cannot supply defaults or establish that no prior result exists. Mac mirrors are historical snapshots: their timestamps and hashes do not prove current owner state. A fresh owner lookup through the launcher supplies a dated answer for that action. Offline hooks must label the mirror `stale`. Do not add a database or a second writable index.
 
-Back up the authoritative root with the owner's durable data. Before adoption, archive the sealed protocol, final report, and evidence manifest in the owning repository's `docs/experiments/results/<id>/`. This is a fixed export, not a second writable record. Its hashes must match the owner record. Keep raw evidence for the life of an adopted result. Record a retention decision before removing any other evidence.
+Back up the authoritative root with the owner's durable data. Before adoption, archive the sealed protocol, final report, and evidence manifest in the owning repository's `docs/experiments/results/<id>/`. This is a fixed export, not a second writable record. Its hashes must match the owner record. Keep raw evidence for the life of an adopted result. Keep the raw evidence of a result that is not adopted for 90 days after closure, then remove it. The journal, protocol, report, and evidence manifest stay.
 
 ### Protocol fields
 
 | Field | Required content |
 | --- | --- |
 | `identity` | ID, title, owner, repository identity, path and process subjects |
-| `authority` | Scope, budget, and source of authorization |
+| `authority` | Scope and the request that started the experiment |
 | `purpose` | `production_gain`, or `framework_exercise` with its learning goal and adoption prohibition |
 | `claim` | Question, mechanism, population, A, B, primary measure, M |
 | `inputs` | Sealed inputs or a fixed future selection rule |
 | `execution` | Argument arrays, working directory rules, preparation, collection, and completion adapter |
 | `conditions` | Machine rules, load rules, holds, caches, model, account, and tools |
-| `sampling` | Independent pair unit, group selection, counts, order, replacement limit, deadline, and resource budgets |
+| `sampling` | Independent pair unit, group selection, counts, order, replacement limit, and deadline |
 | `analysis` | Supported paired gain method, direction, formula, interval rule, noise rule, and limits |
 | `correctness` | Required checks, scorer rubric, concealed label commitment, observation window, and arm-specific stop conditions |
 | `live_check` | `required` with workload window, producer, fields, coverage, allocation, measures, and scope; or `not_claimed` with the exercise reason |
@@ -689,8 +689,8 @@ Use `loading`, `current`, `stale`, and `unavailable` display states. Take freshn
 
 SDLC must confirm the binary name and the owner of the shared index. These are process assignments.
 
-## Open questions for the user
+## Decisions from the user
 
-1. Which first live study should run after approval? The history proposal in `worked-examples.md` exercises the framework only. It permits 1,800 command wall seconds and 60 operator minutes within 28 days. It claims no recurring savings and cannot authorize adoption. This design has not verified a recurring workload for that protocol. The retained-context review study is unsupported in the first tool version.
-2. What recurring spending limit may a showrunner approve without a separate user decision?
-3. How long should non-adopted raw evidence remain after closure? This design retains it until an explicit retention decision.
+- First live study (2026-10-25): the history-command trial in `worked-examples.md` §6, with and without `python3 -S`, runs first. It exercises the framework only. It claims no recurring savings and cannot authorize adoption. It starts after the user's design review is complete.
+- Spending (2026-10-25): experiment work is normal work. Work the user asks for is approved. There is no spending limit (section 8).
+- Evidence retention (2026-10-25): the raw evidence of a result that is not adopted stays for 90 days after closure (section 12).

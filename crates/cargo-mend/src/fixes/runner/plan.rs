@@ -15,17 +15,55 @@ use crate::fixes::unused_pub;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
 
+#[derive(Clone, Copy)]
+enum PubUseActivation {
+    Enabled,
+    Disabled,
+}
+
+impl From<bool> for PubUseActivation {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+enum PassOutputPolicy {
+    Json,
+    PubUseText,
+    FullText,
+}
+
+impl PassOutputPolicy {
+    const fn for_pass(format: OutputFormat, pub_use: PubUseActivation) -> Self {
+        match (format, pub_use) {
+            (OutputFormat::Json, _) => Self::Json,
+            (OutputFormat::Human, PubUseActivation::Enabled) => Self::PubUseText,
+            (OutputFormat::Human, PubUseActivation::Disabled) => Self::FullText,
+        }
+    }
+}
+
+impl From<PassOutputPolicy> for BuildOutputMode {
+    fn from(policy: PassOutputPolicy) -> Self {
+        match policy {
+            PassOutputPolicy::Json => Self::Json,
+            PassOutputPolicy::PubUseText => Self::SuppressUnusedImportWarnings,
+            PassOutputPolicy::FullText => Self::Full,
+        }
+    }
+}
+
 impl MendRunner<'_> {
     pub(super) fn plan(&self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
-        let output_mode = if self.output_format == OutputFormat::Json {
-            BuildOutputMode::Json
-        } else if operation_mode.fixes.contains(FixKind::PubUse) {
-            BuildOutputMode::SuppressUnusedImportWarnings
-        } else {
-            BuildOutputMode::Full
-        };
+        let pub_use = PubUseActivation::from(operation_mode.fixes.contains(FixKind::PubUse));
+        let output_mode =
+            BuildOutputMode::from(PassOutputPolicy::for_pass(self.output_format, pub_use));
         let checked = self.build_selection(output_mode)?;
-        self.scan_fixes(operation_mode, checked)
+        self.scan_fixes(operation_mode, checked, pub_use)
     }
 
     /// Runs every fixer `operation_mode` enables against the checked
@@ -34,6 +72,7 @@ impl MendRunner<'_> {
         &self,
         operation_mode: OperationMode,
         checked: CheckedSelection,
+        pub_use: PubUseActivation,
     ) -> Result<RunPlan, MendFailure> {
         let CheckedSelection {
             result: selection_result,
@@ -100,12 +139,13 @@ impl MendRunner<'_> {
         let imports_at_top_scan = scans
             .imports_at_top
             .filter(|_| enabled(FixKind::ImportsAtTop, &[DiagnosticCode::ImportsAtTop]));
-        let pub_use_scan = operation_mode
-            .fixes
-            .contains(FixKind::PubUse)
-            .then(|| pub_use_fixes::scan_selection(self.selection, &report, &sources))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
+        let pub_use_scan = match pub_use {
+            PubUseActivation::Enabled => Some(
+                pub_use_fixes::scan_selection(self.selection, &report, &sources)
+                    .map_err(MendFailure::Unexpected)?,
+            ),
+            PubUseActivation::Disabled => None,
+        };
         let subtree_reexport_scan = enabled(
             FixKind::PubUseOutsideSubtree,
             &[DiagnosticCode::PubUseOutsideSubtree],
@@ -145,5 +185,37 @@ impl MendRunner<'_> {
             && codes.iter().any(|&code| {
                 self.loaded_config.diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PassOutputPolicy;
+    use super::PubUseActivation;
+    use crate::compiler::BuildOutputMode;
+    use crate::reporting::OutputFormat;
+
+    #[test]
+    fn json_output_wins_over_pub_use_warning_suppression() {
+        for activation in [PubUseActivation::Enabled, PubUseActivation::Disabled] {
+            assert!(matches!(
+                BuildOutputMode::from(PassOutputPolicy::for_pass(OutputFormat::Json, activation)),
+                BuildOutputMode::Json
+            ));
+        }
+        assert!(matches!(
+            BuildOutputMode::from(PassOutputPolicy::for_pass(
+                OutputFormat::Human,
+                PubUseActivation::Enabled
+            )),
+            BuildOutputMode::SuppressUnusedImportWarnings
+        ));
+        assert!(matches!(
+            BuildOutputMode::from(PassOutputPolicy::for_pass(
+                OutputFormat::Human,
+                PubUseActivation::Disabled
+            )),
+            BuildOutputMode::Full
+        ));
     }
 }

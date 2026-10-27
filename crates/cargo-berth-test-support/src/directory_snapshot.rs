@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 
+use crate::CommandDeadlineExt as _;
 use crate::repository_template;
 
 /// The files and directories under one root, with each file's permissions.
@@ -191,7 +192,7 @@ impl ImmutableShellExecutable {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
+                .bounded_status()
                 .expect("shared executable should prepare");
             assert!(warmed.success(), "shared executable preparation failed");
             File::create(ready).expect("executable preparation should record");
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn shared_script_replacement_keeps_its_other_copy_and_mutable_files_private() {
-        let root = tempfile::tempdir().expect("script test directory should exist");
+        let root = crate::fixture_tempdir("shared-script-");
         let first = root.path().join("first");
         let second = root.path().join("second");
         let script = "#!/bin/sh\nprintf '%s' original\n";
@@ -259,14 +260,14 @@ mod tests {
         );
         assert_eq!(
             Command::new(&first)
-                .output()
+                .bounded_output()
                 .expect("replacement should run")
                 .stdout,
             b"replacement"
         );
         assert_eq!(
             Command::new(&second)
-                .output()
+                .bounded_output()
                 .expect("original should run")
                 .stdout,
             b"original"

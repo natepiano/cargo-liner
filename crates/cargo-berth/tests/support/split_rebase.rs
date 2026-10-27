@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
 
 use super::BERTH_EXECUTABLE;
@@ -21,7 +22,7 @@ pub(super) fn stop_with_editor(holder: &Path, editor: &Path, revisions: &[&str])
         .args(revisions)
         .env("GIT_SEQUENCE_EDITOR", editor)
         .current_dir(holder)
-        .output()
+        .bounded_output()
         .expect("interactive rebase should stop for splitting");
     assert!(
         stopped.status.success(),
@@ -43,7 +44,7 @@ pub(super) fn continue_rebase(holder: &Path) {
         .args(["rebase", "--continue"])
         .env("GIT_EDITOR", "true")
         .current_dir(holder)
-        .output()
+        .bounded_output()
         .expect("split rebase should continue");
     assert!(
         continued.status.success(),

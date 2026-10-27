@@ -15,8 +15,36 @@ use crate::fixes::facade_redirect::RedirectTarget;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax::ParsedSources;
 
+/// A parent module file whose export boundary has an enclosing directory.
+/// Subtree rewriting needs that directory to find the callers of the re-export;
+/// a boundary without one cannot support a validated pub-use plan.
+pub(super) struct ParentModuleFile {
+    boundary:  ParentBoundaryKey,
+    directory: PathBuf,
+}
+
+impl ParentModuleFile {
+    pub(super) fn new(boundary: ParentBoundaryKey) -> Result<Self> {
+        let directory = boundary
+            .parent_module
+            .parent()
+            .context("candidate parent boundary had no parent directory")?
+            .to_path_buf();
+        Ok(Self {
+            boundary,
+            directory,
+        })
+    }
+
+    pub(super) const fn boundary(&self) -> &ParentBoundaryKey { &self.boundary }
+
+    fn path(&self) -> &Path { &self.boundary.parent_module }
+
+    fn directory(&self) -> &Path { &self.directory }
+}
+
 pub(super) struct ValidatedPubUsePlan {
-    pub(super) parent_boundary:    ParentBoundaryKey,
+    pub(super) parent_boundary:    ParentModuleFile,
     pub(super) child_file:         PathBuf,
     pub(super) child_module:       String,
     pub(super) exported_name:      String,
@@ -29,20 +57,20 @@ pub(super) fn rewrite_subtree_imports_for_plans(
     plans: &[ValidatedPubUsePlan],
     sources: &ParsedSources,
 ) -> Result<Vec<UseFix>> {
-    let mut plan_groups: BTreeMap<PathBuf, Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
+    let mut plan_groups: BTreeMap<(&Path, &Path), Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
     for plan in plans {
         plan_groups
-            .entry(plan.parent_boundary.parent_module.clone())
+            .entry((
+                plan.parent_boundary.path(),
+                plan.parent_boundary.directory(),
+            ))
             .or_default()
             .push(plan);
     }
 
     let mut fixes = Vec::new();
-    for (parent_module, parent_plans) in plan_groups {
-        let parent_dir = parent_module
-            .parent()
-            .context("candidate parent boundary had no parent directory")?;
-        let source_root = facade_redirect::find_source_root(&parent_module).with_context(|| {
+    for ((parent_module, parent_dir), parent_plans) in plan_groups {
+        let source_root = facade_redirect::find_source_root(parent_module).with_context(|| {
             format!(
                 "failed to determine src root for parent boundary {}",
                 parent_module.display()
@@ -99,17 +127,87 @@ fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+enum SourceEntryKind {
+    Directory,
+    RustFile,
+    Other,
+}
+
+impl From<&Path> for SourceEntryKind {
+    fn from(path: &Path) -> Self {
+        if path.is_dir() {
+            Self::Directory
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
+            Self::RustFile
+        } else {
+            Self::Other
+        }
+    }
+}
+
 fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)
         .with_context(|| format!("failed to read source directory {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
-            files.push(path);
+        match SourceEntryKind::from(path.as_path()) {
+            SourceEntryKind::Directory => collect_rust_source_files(&path, files)?,
+            SourceEntryKind::RustFile => files.push(path),
+            SourceEntryKind::Other => {},
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use super::ParentModuleFile;
+    use crate::fixes::pub_use_fixes::parent_boundary::ParentBoundaryKey;
+
+    #[test]
+    fn parent_module_files_require_an_enclosing_directory() -> anyhow::Result<()> {
+        for path in [Path::new(""), Path::new("/")] {
+            let result = ParentModuleFile::new(ParentBoundaryKey {
+                parent_module: path.to_path_buf(),
+                item_start:    3,
+                item_end:      17,
+            });
+            assert_eq!(
+                result.err().map(|error| error.to_string()).as_deref(),
+                Some("candidate parent boundary had no parent directory")
+            );
+        }
+        for (path, directory) in [("src/lib.rs", "src"), ("lib.rs", "")] {
+            let boundary = ParentBoundaryKey {
+                parent_module: PathBuf::from(path),
+                item_start:    3,
+                item_end:      17,
+            };
+            let parent = ParentModuleFile::new(boundary.clone())?;
+            assert_eq!(parent.boundary(), &boundary);
+            assert_eq!(parent.path(), Path::new(path));
+            assert_eq!(parent.directory(), Path::new(directory));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_collection_recurses_through_directories_with_rust_extensions() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("nested.rs");
+        std::fs::create_dir(&nested)?;
+        std::fs::write(nested.join("child.rs"), "")?;
+        std::fs::write(dir.path().join("root.rs"), "")?;
+        std::fs::write(dir.path().join("notes.txt"), "")?;
+        let mut files = super::rust_source_files(dir.path())?;
+        files.sort();
+        let mut expected = vec![nested.join("child.rs"), dir.path().join("root.rs")];
+        expected.sort();
+        assert_eq!(files, expected);
+        Ok(())
+    }
 }

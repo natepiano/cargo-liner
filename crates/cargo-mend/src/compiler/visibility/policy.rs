@@ -1282,12 +1282,18 @@ mod tests {
     fn crate_kind_for_root_treats_nested_example_root_as_binary() {
         let package_root = Path::new("/tmp/pkg");
         assert_eq!(
-            crate_kind_for_root(&package_root.join("examples/demo/main.rs"), package_root),
+            crate_kind_for_root(
+                &package_root.join(SOURCE_DIR_EXAMPLES).join("demo/main.rs"),
+                package_root
+            ),
             CrateKind::Binary,
             "a nested examples/<name>/main.rs root is unambiguous and behaves like a binary",
         );
         assert_eq!(
-            crate_kind_for_root(&package_root.join("tests/foo/main.rs"), package_root),
+            crate_kind_for_root(
+                &package_root.join(SOURCE_DIR_TESTS).join("foo/main.rs"),
+                package_root
+            ),
             CrateKind::Binary,
             "a nested tests/<name>/main.rs root is unambiguous and behaves like a binary",
         );
@@ -1341,7 +1347,7 @@ mod tests {
                 item_def_path: String::from("a::b::c::Thing"),
                 repair:        NoFacadeVisibilityRepair::RemoveAnnotation,
             },),
-            "consider removing the visibility",
+            NoFacadeVisibilityRepair::REMOVE_ANNOTATION_SUGGESTION,
         );
         assert_eq!(
             overbroad_pub_crate_suggestion(OverbroadPubCrateSuggestionReason::NoFacadeRepair {

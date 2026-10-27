@@ -50,12 +50,20 @@ impl DisplayFilter {
         let mut library_target_selection = LibraryTargetSelection::Omitted;
         for package in packages {
             package_root.clone_from(&package.root);
-            for target in &package.targets {
+            let targets: Vec<_> = package
+                .targets
+                .iter()
+                .map(|target| (target, TargetRole::from(target)))
+                .collect();
+            for (target, role) in &targets {
                 let dir = target_directory(target);
                 if cli_includes_target(cli, target) {
                     allowed.push(dir.clone());
-                    if target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
-                        library_target_selection = LibraryTargetSelection::Included;
+                    match role {
+                        TargetRole::Library => {
+                            library_target_selection = LibraryTargetSelection::Included;
+                        },
+                        TargetRole::NonLibrary => {},
                     }
                 }
             }
@@ -63,12 +71,15 @@ impl DisplayFilter {
             // other target directory under `package.root` via `excluded_dirs`, so
             // `src/bin/foo.rs` and similar files stay out of the library's allow set.
             if matches!(library_target_selection, LibraryTargetSelection::Included) {
-                for target in &package.targets {
-                    if !target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
-                        let dir = target_directory(target);
-                        if dir.starts_with(&package.root) {
-                            excluded_dirs.push(dir);
-                        }
+                for (target, role) in &targets {
+                    match role {
+                        TargetRole::Library => {},
+                        TargetRole::NonLibrary => {
+                            let dir = target_directory(target);
+                            if dir.starts_with(&package.root) {
+                                excluded_dirs.push(dir);
+                            }
+                        },
                     }
                 }
             }
@@ -131,6 +142,22 @@ impl DisplayFilter {
             .findings
             .retain(|finding| self.allows(Path::new(&finding.path)));
         report.refresh_summary();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetRole {
+    Library,
+    NonLibrary,
+}
+
+impl From<&TargetMetadata> for TargetRole {
+    fn from(target: &TargetMetadata) -> Self {
+        if target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_LIB) {
+            Self::Library
+        } else {
+            Self::NonLibrary
+        }
     }
 }
 
@@ -276,5 +303,26 @@ mod tests {
         let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
         assert!(filter.allows(Path::new("/proj/examples/demo/helper.rs")));
         assert!(!filter.allows(Path::new("/proj/src/anywhere.rs")));
+    }
+    #[test]
+    fn library_role_uses_every_kind_and_preserves_explicit_binary_selection() {
+        let mut library = target(CARGO_TARGET_KIND_BIN, "pkg", "/proj/src/lib.rs");
+        library.kind.push(CARGO_TARGET_KIND_LIB.to_string());
+        let mut package = package_with_lib_and_example();
+        package.targets = vec![
+            library,
+            target(CARGO_TARGET_KIND_BIN, "tool", "/proj/src/bin/tool.rs"),
+        ];
+        let mut cli = CargoCheckCli {
+            target_selections: BTreeSet::from([TargetSelection::Binaries]),
+            ..CargoCheckCli::default()
+        };
+        let filter = DisplayFilter::from_cli(&cli, &[package.clone()]);
+        assert!(filter.allows(Path::new("src/helper.rs")));
+        assert!(filter.allows(Path::new("src/bin/tool.rs")));
+        cli.target_selections = BTreeSet::from([TargetSelection::Library]);
+        let filter = DisplayFilter::from_cli(&cli, &[package]);
+        assert!(!filter.allows(Path::new("src/helper.rs")));
+        assert!(!filter.allows(Path::new("src/bin/tool.rs")));
     }
 }

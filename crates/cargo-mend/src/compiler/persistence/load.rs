@@ -264,8 +264,8 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
                 finding.item.as_deref().map(|item| PubUseNarrowingSite {
                     path:      finding.path.clone(),
                     line:      finding.line,
-                    // `StoredFinding::item` is a rendering; the fact stores the
-                    // bare name, so recover it the sanctioned way.
+                    // `StoredFinding::item` is a rendering; `PubUseNarrowingSite::item_name`
+                    // stores the bare name, so recover it with `StoredFinding::item_name`.
                     item_name: StoredFinding::item_name(item).to_string(),
                 })
             })
@@ -547,6 +547,8 @@ mod tests {
     use super::drop_conflicting_subtree_reexport_fix_facts;
     use super::load_report;
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
+    use crate::compiler::constants::REPORT_FILE_EXTENSION;
+    use crate::compiler::constants::SOURCE_DIR_SRC;
     use crate::compiler::persistence::StoredAncestorReexport;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredModuleMountFact;
@@ -581,7 +583,7 @@ mod tests {
         fn new() -> Self {
             let temp = tempdir().expect("create persistence fixture");
             let package_root = temp.path().join("package");
-            let source_dir = package_root.join("src");
+            let source_dir = package_root.join(SOURCE_DIR_SRC);
             fs::create_dir_all(&source_dir).expect("create package src dir");
             let crate_root = source_dir.join("lib.rs");
             fs::write(&crate_root, "pub fn item() {}\n").expect("write crate root");
@@ -661,8 +663,8 @@ mod tests {
         let mut report = fixture.report_with_findings(vec![finding]);
         report.all_features_coverage = AllFeaturesCoverage::Superset;
         let report_paths = [
-            fixture.write_malformed_json("broken.mend.json"),
-            fixture.write_report("valid.mend.json", &report),
+            fixture.write_malformed_json(&format!("broken.{REPORT_FILE_EXTENSION}")),
+            fixture.write_report(&format!("valid.{REPORT_FILE_EXTENSION}"), &report),
         ];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
@@ -677,9 +679,9 @@ mod tests {
     #[test]
     fn a_missing_report_is_not_a_clean_crate() {
         let fixture = PersistenceFixture::new();
-        let report_paths = [fixture
-            .reports_dir
-            .join("libabsent-0000000000000000.mend.json")];
+        let report_paths = [fixture.reports_dir.join(format!(
+            "libabsent-0000000000000000.{REPORT_FILE_EXTENSION}"
+        ))];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -711,8 +713,14 @@ mod tests {
             "sibling",
             2,
         )]);
-        let report_paths = [fixture.write_report("liblisted-0000000000000001.mend.json", &listed)];
-        fixture.write_report("liblisted-0000000000000002.mend.json", &sibling);
+        let report_paths = [fixture.write_report(
+            &format!("liblisted-0000000000000001.{REPORT_FILE_EXTENSION}"),
+            &listed,
+        )];
+        fixture.write_report(
+            &format!("liblisted-0000000000000002.{REPORT_FILE_EXTENSION}"),
+            &sibling,
+        );
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -753,9 +761,12 @@ mod tests {
         )]);
         wrong_config.config_fingerprint = "old-config".to_string();
         let report_paths = [
-            fixture.write_report("schema.mend.json", &wrong_schema),
-            fixture.write_report("analysis.mend.json", &wrong_analysis),
-            fixture.write_report("config.mend.json", &wrong_config),
+            fixture.write_report(&format!("schema.{REPORT_FILE_EXTENSION}"), &wrong_schema),
+            fixture.write_report(
+                &format!("analysis.{REPORT_FILE_EXTENSION}"),
+                &wrong_analysis,
+            ),
+            fixture.write_report(&format!("config.{REPORT_FILE_EXTENSION}"), &wrong_config),
         ];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
@@ -783,8 +794,9 @@ mod tests {
             1,
         );
         let mut report = fixture.report_with_findings(vec![finding]);
-        report.crate_root_file = "src/missing.rs".to_string();
-        let report_paths = [fixture.write_report("missing-root.mend.json", &report)];
+        report.crate_root_file = format!("{SOURCE_DIR_SRC}/missing.rs");
+        let report_paths =
+            [fixture.write_report(&format!("missing-root.{REPORT_FILE_EXTENSION}"), &report)];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -802,8 +814,9 @@ mod tests {
             1,
         );
         let report = fixture.report_with_findings(vec![finding]);
-        let report_paths = [fixture.write_report("canonical-root.mend.json", &report)];
-        let selected_root = fixture.package_root.join("src").join("..");
+        let report_paths =
+            [fixture.write_report(&format!("canonical-root.{REPORT_FILE_EXTENSION}"), &report)];
+        let selected_root = fixture.package_root.join(SOURCE_DIR_SRC).join("..");
         let selection = fixture.selection_with_roots(vec![selected_root]);
 
         let loaded = load_report(&report_paths, &selection, CONFIG_FINGERPRINT);
@@ -823,7 +836,8 @@ mod tests {
         let mut report = fixture.report_with_findings(vec![finding]);
         report.package_root.clear();
         report.crate_root_file.clear();
-        let report_paths = [fixture.write_report("legacy-root.mend.json", &report)];
+        let report_paths =
+            [fixture.write_report(&format!("legacy-root.{REPORT_FILE_EXTENSION}"), &report)];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -852,7 +866,8 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths = [fixture.write_report("driver-report.mend.json", &report)];
+        let report_paths =
+            [fixture.write_report(&format!("driver-report.{REPORT_FILE_EXTENSION}"), &report)];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
         let facts = loaded
@@ -864,9 +879,12 @@ mod tests {
 
         assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Present);
         assert_eq!(loaded.report.findings.len(), 1);
-        assert_eq!(loaded.report.findings[0].path, "src/lib.rs");
+        assert_eq!(
+            loaded.report.findings[0].path,
+            format!("{SOURCE_DIR_SRC}/lib.rs")
+        );
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].child_path, "src/lib.rs");
+        assert_eq!(facts[0].child_path, format!("{SOURCE_DIR_SRC}/lib.rs"));
     }
 
     #[test]
@@ -892,7 +910,8 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths = [fixture.write_report("suppressed.mend.json", &report)];
+        let report_paths =
+            [fixture.write_report(&format!("suppressed.{REPORT_FILE_EXTENSION}"), &report)];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -933,7 +952,8 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        let report_paths = [fixture.write_report("surviving.mend.json", &report)];
+        let report_paths =
+            [fixture.write_report(&format!("surviving.{REPORT_FILE_EXTENSION}"), &report)];
 
         let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
@@ -1011,7 +1031,7 @@ mod tests {
                 reexport_visibility: ReexportVisibility::Crate,
                 relative_path:       "child::N".to_string(),
                 cfg_attributes:      Vec::new(),
-                file:                "src/lib.rs".to_string(),
+                file:                format!("{SOURCE_DIR_SRC}/lib.rs"),
                 offset:              0,
                 indent:              String::new(),
             }),
@@ -1068,7 +1088,7 @@ mod tests {
         ancestor_reexport: AncestorReexport,
     ) -> SubtreeReexportFixFact {
         SubtreeReexportFixFact {
-            use_path: "src/owner.rs".to_string(),
+            use_path: format!("{SOURCE_DIR_SRC}/owner.rs"),
             use_line,
             use_column: 1,
             exported_name: "N".to_string(),
@@ -1078,7 +1098,7 @@ mod tests {
             source_module: vec!["sibling".to_string()],
             target_scope: Vec::new(),
             common_ancestor: Vec::new(),
-            crate_root_file: "src/lib.rs".to_string(),
+            crate_root_file: format!("{SOURCE_DIR_SRC}/lib.rs"),
             ancestor_reexport,
         }
     }

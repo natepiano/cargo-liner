@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
@@ -74,7 +75,7 @@ impl RewriteFixture {
         let checkout = RewriteRepository::at_root(repository.path());
         Self {
             repository,
-            worktrees: tempdir().expect("linked checkout parent should exist"),
+            worktrees: cargo_berth_test_support::fixture_tempdir("rewrite-worktrees-"),
             checkout,
         }
     }
@@ -260,7 +261,7 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
     let continued = observed_apply_command(&fixture, observation.path())
         .args(["rebase", "--continue"])
         .env("GIT_EDITOR", "true")
-        .output()
+        .bounded_output()
         .expect("apply rebase should continue");
     assert!(
         continued.status.success(),
@@ -324,7 +325,7 @@ fn create_side_branch_during_stopped_apply(
 ) {
     let rebased = observed_apply_command(fixture, observation)
         .args(["rebase", "--apply", "main"])
-        .output()
+        .bounded_output()
         .expect("apply rebase should run");
     assert!(!rebased.status.success(), "the second commit must conflict");
     assert_eq!(
@@ -355,7 +356,7 @@ fn create_side_branch_during_stopped_apply(
     fs::write(observation.join("hooks"), "").expect("branch observation should start empty");
     let created = observed_apply_command(fixture, observation)
         .args(["branch", "side"])
-        .output()
+        .bounded_output()
         .expect("side branch creation should run");
     assert!(
         created.status.success(),
@@ -503,7 +504,7 @@ fn complete_observed_apply_rebase(
 ) {
     let rebased = observed_apply_command(fixture, observation)
         .args(["rebase", "--apply", "main"])
-        .output()
+        .bounded_output()
         .expect("apply rebase should run");
     match progress {
         ApplyRebaseProgress::Uninterrupted => assert!(
@@ -532,7 +533,7 @@ fn complete_observed_apply_rebase(
             let continued = observed_apply_command(fixture, observation)
                 .args(["rebase", "--continue"])
                 .env("GIT_EDITOR", "true")
-                .output()
+                .bounded_output()
                 .expect("apply rebase should continue");
             assert!(
                 continued.status.success(),
@@ -1044,7 +1045,7 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         .args(["rebase", "-i", &expected_start])
         .env("GIT_SEQUENCE_EDITOR", &editor)
         .current_dir(&fixture.holder)
-        .output()
+        .bounded_output()
         .expect("second rebase should run");
     assert!(
         dropped.status.success(),
@@ -1264,7 +1265,7 @@ fn assert_dropping_split_preserves_checkpoint(
         .args(["rebase", "-i", trunk])
         .env("GIT_SEQUENCE_EDITOR", editor)
         .current_dir(&fixture.holder)
-        .output()
+        .bounded_output()
         .expect("later rebase should drop the first split commit");
     assert!(
         dropped.status.success(),
@@ -1414,7 +1415,7 @@ fn assert_capture_read_failure_writes_no_marker(failure: CaptureReadFailure) {
     .env("CARGO_BERTH_TEST_REWRITE_FAILURE_LOG", &failure_log)
     .env("CARGO_BERTH_TEST_CAPTURE_FAILURE", failing_read)
     .env("CARGO_BERTH_TEST_REBASE_ONTO", &onto)
-    .output()
+    .bounded_output()
     .expect("rebase continuation with failing capture should run");
     assert!(
         failure_log.is_file(),
@@ -1574,7 +1575,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
         .env_remove("CARGO_BERTH_BYPASS")
-        .output()
+        .bounded_output()
         .expect("board with failed rewrite read should run");
     assert!(
         failure_log.is_file(),

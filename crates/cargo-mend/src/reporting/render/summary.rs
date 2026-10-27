@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::num::NonZeroUsize;
 
 use super::ColorMode;
 use super::CompilerStats;
@@ -27,14 +28,60 @@ struct SummaryFixable {
     command: &'static str,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
+enum FixableCategory {
+    Unavailable,
+    Available {
+        count:   NonZeroUsize,
+        command: &'static str,
+    },
+}
+
+impl FixableCategory {
+    const fn for_command(count: usize, command: &'static str) -> Self {
+        match NonZeroUsize::new(count) {
+            Some(count) => Self::Available { count, command },
+            None => Self::Unavailable,
+        }
+    }
+
+    const fn count(self) -> usize {
+        match self {
+            Self::Unavailable => 0,
+            Self::Available { count, .. } => count.get(),
+        }
+    }
+
+    fn append_row_entry(self, entries: &mut Vec<SummaryFixable>) {
+        match self {
+            Self::Unavailable => {},
+            Self::Available { count, command } => {
+                entries.push(SummaryFixable {
+                    count: count.get(),
+                    command,
+                });
+            },
+        }
+    }
+
+    fn append_error_detail(self, details: &mut Vec<String>) {
+        match self {
+            Self::Unavailable => {},
+            Self::Available { count, command } => {
+                details.push(format!("{count} fixable with `{command}`"));
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct MendFixableCounts {
-    standard: usize,
-    pub_use:  usize,
+    standard: FixableCategory,
+    pub_use:  FixableCategory,
 }
 
 impl MendFixableCounts {
-    const fn total(self) -> usize { self.standard + self.pub_use }
+    const fn total(self) -> usize { self.standard.count() + self.pub_use.count() }
 }
 
 const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
@@ -56,18 +103,8 @@ pub(super) fn errors_block(report: &Report, color_mode: ColorMode) -> Option<Str
     }
 
     let mut details = Vec::new();
-    if fixables.standard > 0 {
-        details.push(format!(
-            "{} fixable with `{CARGO_MEND_FIX}`",
-            fixables.standard
-        ));
-    }
-    if fixables.pub_use > 0 {
-        details.push(format!(
-            "{} fixable with `{CARGO_MEND_FIX_PUB_USE}`",
-            fixables.pub_use
-        ));
-    }
+    fixables.standard.append_error_detail(&mut details);
+    fixables.pub_use.append_error_detail(&mut details);
     let manual = n.saturating_sub(fixables.total());
     if manual == 1 {
         details.push("1 requires a manual fix".to_string());
@@ -82,37 +119,34 @@ pub(super) fn errors_block(report: &Report, color_mode: ColorMode) -> Option<Str
 }
 
 fn mend_fixable_counts(report: &Report, severity: Severity) -> MendFixableCounts {
-    let mut counts = MendFixableCounts::default();
+    let mut standard = 0;
+    let mut pub_use = 0;
     for finding in report
         .findings
         .iter()
         .filter(|finding| diagnostics::effective_severity(finding) == severity)
     {
         match diagnostics::effective_fixability(finding).summary_bucket() {
-            Some(FixSummaryBucket::Standard) => counts.standard += 1,
-            Some(FixSummaryBucket::PubUse) => counts.pub_use += 1,
+            Some(FixSummaryBucket::Standard) => standard += 1,
+            Some(FixSummaryBucket::PubUse) => pub_use += 1,
             None => {},
         }
     }
-    counts
+    MendFixableCounts {
+        standard: FixableCategory::for_command(standard, CARGO_MEND_FIX),
+        pub_use:  FixableCategory::for_command(pub_use, CARGO_MEND_FIX_PUB_USE),
+    }
 }
 
 /// How many fix categories have at least one fixable item.
-const fn fixable_category_count(
-    mend_fixables: MendFixableCounts,
-    compiler_stats: &CompilerStats,
-) -> usize {
-    let mut n = 0;
-    if mend_fixables.standard > 0 {
-        n += 1;
-    }
-    if mend_fixables.pub_use > 0 {
-        n += 1;
-    }
-    if compiler_stats.fixable > 0 {
-        n += 1;
-    }
-    n
+fn fixable_category_count(categories: [FixableCategory; 3]) -> usize {
+    categories
+        .into_iter()
+        .map(|category| match category {
+            FixableCategory::Unavailable => 0,
+            FixableCategory::Available { .. } => 1,
+        })
+        .sum()
 }
 
 /// The roll-up printed under the findings, or `None` when there is nothing to
@@ -129,18 +163,19 @@ pub(super) fn summary_line(
 ) -> Option<String> {
     let mut rows = Vec::new();
     let mend_fixables = mend_fixable_counts(report, Severity::Warning);
-    let categories = fixable_category_count(mend_fixables, compiler_stats);
-    let total_fixable = mend_fixables.total() + compiler_stats.fixable;
+    let compiler_fixables =
+        FixableCategory::for_command(compiler_stats.fixable, CARGO_MEND_FIX_COMPILER);
+    let categories = fixable_category_count([
+        mend_fixables.standard,
+        mend_fixables.pub_use,
+        compiler_fixables,
+    ]);
+    let total_fixable = mend_fixables.total() + compiler_fixables.count();
 
     if compiler_stats.warnings > 0 {
         let n = compiler_stats.warnings;
         let mut fixables = Vec::new();
-        if compiler_stats.fixable > 0 {
-            fixables.push(SummaryFixable {
-                count:   compiler_stats.fixable,
-                command: CARGO_MEND_FIX_COMPILER,
-            });
-        }
+        compiler_fixables.append_row_entry(&mut fixables);
         rows.push(SummaryRow {
             count: n,
             description: pluralize(n, "compiler warning", "compiler warnings").to_string(),
@@ -150,18 +185,8 @@ pub(super) fn summary_line(
     if report.summary.warnings > 0 {
         let n = report.summary.warnings;
         let mut fixables = Vec::new();
-        if mend_fixables.standard > 0 {
-            fixables.push(SummaryFixable {
-                count:   mend_fixables.standard,
-                command: CARGO_MEND_FIX,
-            });
-        }
-        if mend_fixables.pub_use > 0 {
-            fixables.push(SummaryFixable {
-                count:   mend_fixables.pub_use,
-                command: CARGO_MEND_FIX_PUB_USE,
-            });
-        }
+        mend_fixables.standard.append_row_entry(&mut fixables);
+        mend_fixables.pub_use.append_row_entry(&mut fixables);
         rows.push(SummaryRow {
             count: n,
             description: pluralize(n, "mend warning", "mend warnings").to_string(),
@@ -253,6 +278,7 @@ fn digit_count(n: usize) -> usize { n.to_string().len() }
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
     use crate::config::DiagnosticCode;
     use crate::reporting;
     use crate::reporting::ColorMode;
@@ -262,6 +288,7 @@ mod tests {
     use crate::reporting::constants::CARGO_MEND_FIX_ALL;
     use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
     use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
+    use crate::reporting::constants::HINT_WARNING_FIXABLE_WITH_FIX;
     use crate::reporting::constants::SUMMARY_LABEL;
     use crate::reporting::diagnostics::Finding;
     use crate::reporting::diagnostics::FixSupport;
@@ -320,7 +347,7 @@ mod tests {
         );
 
         assert!(output.contains(&format!("{SUMMARY_LABEL} 3 compiler warnings")));
-        assert!(!output.contains("warning:"));
+        assert!(!output.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX));
     }
 
     #[test]
@@ -331,7 +358,7 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains("warning:"));
+        assert!(output.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX));
         assert!(output.contains(&format!("{SUMMARY_LABEL} 1 mend warning")));
         assert!(!output.contains("compiler warning"));
     }
@@ -494,7 +521,17 @@ mod tests {
             reporting::render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
 
         assert!(
-            !output.contains("--fix --fix-pub-use"),
+            !output.contains(&format!(
+                "{} {}",
+                CARGO_MEND_FIX
+                    .rsplit_once(' ')
+                    .expect("fix command has a flag")
+                    .1,
+                CARGO_MEND_FIX_PUB_USE
+                    .rsplit_once(' ')
+                    .expect("pub-use command has a flag")
+                    .1,
+            )),
             "combined flag string must never appear:\n{output}"
         );
         assert!(
@@ -556,7 +593,14 @@ mod tests {
 
         assert!(output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")));
         // `output` has a single fixable category, so it must omit `CARGO_MEND_FIX_ALL`.
-        assert!(!output.contains("--fix-all"));
+        assert!(
+            !output.contains(
+                CARGO_MEND_FIX_ALL
+                    .rsplit_once(' ')
+                    .expect("fix-all command has a flag")
+                    .1
+            )
+        );
     }
 
     #[test]
@@ -644,7 +688,7 @@ mod tests {
         );
 
         assert!(
-            output.contains("this warning is auto-fixable with `cargo mend --fix`"),
+            output.contains(HINT_WARNING_FIXABLE_WITH_FIX),
             "a fixable finding must advertise its command as a warning:\n{output}"
         );
         assert!(
@@ -676,7 +720,7 @@ mod tests {
             "a fixable finding recorded as an error still reports as a warning:\n{output}"
         );
         assert!(
-            warning_row.contains("2 fixable with `cargo mend --fix`"),
+            warning_row.contains(&format!("2 fixable with `{CARGO_MEND_FIX}`")),
             "both fixable findings belong in the warning row's fixable count:\n{output}"
         );
     }
@@ -690,5 +734,44 @@ mod tests {
         );
 
         assert!(!output.contains("errors:"));
+    }
+    #[test]
+    fn all_category_combinations_preserve_commands_and_aggregate_counts() {
+        for bits in 0_u8..8 {
+            let mut report = Report::default();
+            if bits & 1 != 0 {
+                report.findings.extend(mend_warning_report().findings);
+            }
+            if bits & 2 != 0 {
+                report.findings.extend(pub_use_warning_report().findings);
+            }
+            report.refresh_summary();
+            let compiler = usize::from(bits & 4 != 0);
+            let output = super::summary_line(
+                &report,
+                &compiler_stats(compiler, compiler),
+                ColorMode::Disabled,
+            )
+            .expect("summary is present for warnings or clean output");
+            for (mask, command) in [
+                (1, CARGO_MEND_FIX),
+                (2, CARGO_MEND_FIX_PUB_USE),
+                (4, CARGO_MEND_FIX_COMPILER),
+            ] {
+                assert_eq!(
+                    output.contains(&format!("`{command}`")),
+                    bits & mask != 0,
+                    "category mask {bits}: {output}"
+                );
+            }
+            let count = bits.count_ones();
+            assert_eq!(output.contains(CARGO_MEND_FIX_ALL), count > 1, "{output}");
+            if count > 1 {
+                assert!(
+                    output.contains(&format!("{count} fixable with `{CARGO_MEND_FIX_ALL}`")),
+                    "{output}"
+                );
+            }
+        }
     }
 }

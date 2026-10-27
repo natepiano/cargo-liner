@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
 use syn::ExprPath;
+use syn::File;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
@@ -20,6 +21,7 @@ use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
 use crate::fixes::imports::GateTracking;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
@@ -47,8 +49,6 @@ pub(super) struct InlineCallCandidate {
 
 pub(super) struct InlineCallDetector<'a> {
     pub(super) crate_sources:          CrateSources<'a>,
-    pub(super) text:                   &'a str,
-    pub(super) offsets:                &'a [usize],
     pub(super) current_module_path:    &'a [String],
     pub(super) declared_modules:       &'a BTreeSet<String>,
     pub(super) candidates:             Vec<InlineCallCandidate>,
@@ -56,46 +56,78 @@ pub(super) struct InlineCallDetector<'a> {
     pub(super) conditional_attributes: ConditionalAttributes,
 }
 
-impl GateTracking for InlineCallDetector<'_> {
-    fn gate_source(&self) -> GateSource<'_> {
+impl GateTracking for GatedInlineCalls<'_, '_> {
+    fn gate_source(&self) -> GateSource<'_, '_> {
         GateSource {
-            text:         self.text,
-            line_offsets: self.offsets,
+            indexed: self.source,
         }
     }
 
     fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes {
-        &mut self.conditional_attributes
+        &mut self.visitor.conditional_attributes
     }
 }
 
-impl Visit<'_> for InlineCallDetector<'_> {
+/// A traversal borrowing the file scan's checked index for all gate extraction.
+struct GatedInlineCalls<'visit, 'source> {
+    visitor: &'visit mut InlineCallDetector<'source>,
+    source:  &'visit ImportSource<'source>,
+}
+
+impl<'source> InlineCallDetector<'source> {
+    pub(super) fn visit_file(&mut self, node: &File, source: &ImportSource<'source>) {
+        GatedInlineCalls {
+            visitor: self,
+            source,
+        }
+        .visit_file(node);
+    }
+}
+
+impl Visit<'_> for GatedInlineCalls<'_, '_> {
     imports::gate_tracking_visit!();
 
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
-            self.inline_mod_depth += 1;
+            self.visitor.inline_mod_depth += 1;
             visit::visit_item_mod(self, node);
-            self.inline_mod_depth -= 1;
+            self.visitor.inline_mod_depth -= 1;
         } else {
             visit::visit_item_mod(self, node);
         }
     }
 
     fn visit_expr_path(&mut self, node: &ExprPath) {
-        if self.inline_mod_depth > 0 || node.qself.is_some() {
+        if self.visitor.inline_mod_depth > 0 || node.qself.is_some() {
             return;
         }
         if let Some(candidate) = analyze_inline_call(
-            self.crate_sources,
-            self.current_module_path,
-            self.declared_modules,
+            self.visitor.crate_sources,
+            self.visitor.current_module_path,
+            self.visitor.declared_modules,
             node,
-            self.conditional_attributes.clone(),
+            self.visitor.conditional_attributes.clone(),
         ) {
-            self.candidates.push(candidate);
+            self.visitor.candidates.push(candidate);
+        }
+    }
+}
+
+enum InlineCallRewrite<'a> {
+    Parent,
+    Module {
+        attributes: &'a ConditionalAttributes,
+        prefix:     String,
+    },
+}
+
+impl InlineCallRewrite<'_> {
+    fn prefix(&self) -> &str {
+        match self {
+            Self::Parent => "super::",
+            Self::Module { prefix, .. } => prefix,
         }
     }
 }
@@ -119,12 +151,13 @@ pub(super) fn build_inline_call_findings_and_fixes(
         // disagree share no such import — those stay fully qualified, and
         // reporting a finding without an applicable fix would only invite the
         // rewrite that breaks the build.
-        let import_attributes = match candidate.import_target {
-            // `ImportTarget::ParentModule` makes the call `super::function(...)`; no import is
-            // inserted, so the call site's gates do not constrain anything.
-            ImportTarget::ParentModule => None,
+        let rewrite = match candidate.import_target {
+            ImportTarget::ParentModule => InlineCallRewrite::Parent,
             ImportTarget::OtherModule => match covering_gates.get(&candidate.absolute_module) {
-                Some(attributes) => Some(attributes),
+                Some(attributes) => InlineCallRewrite::Module {
+                    attributes,
+                    prefix: format!("{}::", candidate.module_name),
+                },
                 None => continue,
             },
         };
@@ -147,7 +180,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             .unwrap_or_default()
             .to_string();
 
-        let (message, suggestion) = inline_call_text(candidate);
+        let (message, suggestion) = inline_call_text(candidate, &rewrite);
 
         findings.push(Finding {
             severity: Severity::Warning,
@@ -159,7 +192,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             source_line,
             item: None,
             message,
-            suggestion,
+            suggestion: Some(suggestion),
             fix_support: FixSupport::PreferModuleImport,
             related: None,
             item_visibility: ItemVisibility::default(),
@@ -170,11 +203,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             full_path: candidate.absolute_module.join("::"),
         });
 
-        let call_prefix = if candidate.import_target == ImportTarget::ParentModule {
-            "super::".to_string()
-        } else {
-            format!("{}::", candidate.module_name)
-        };
+        let call_prefix = rewrite.prefix().to_string();
         fixes.push(UseFix {
             path:         file_context.path.to_path_buf(),
             start:        prefix_start_byte,
@@ -183,8 +212,9 @@ pub(super) fn build_inline_call_findings_and_fixes(
             import_group: group.clone(),
         });
 
-        let Some(import_attributes) = import_attributes else {
-            continue;
+        let import_attributes = match rewrite {
+            InlineCallRewrite::Parent => continue,
+            InlineCallRewrite::Module { attributes, .. } => attributes,
         };
         if inline_inputs
             .will_import_modules
@@ -224,29 +254,28 @@ pub(super) fn build_inline_call_findings_and_fixes(
     (findings, fixes)
 }
 
-fn inline_call_text(candidate: &InlineCallCandidate) -> (String, Option<String>) {
-    if candidate.import_target == ImportTarget::ParentModule {
-        (
+fn inline_call_text(
+    candidate: &InlineCallCandidate,
+    rewrite: &InlineCallRewrite<'_>,
+) -> (String, String) {
+    match rewrite {
+        InlineCallRewrite::Parent => (
             format!(
                 "use `super::{}` instead of the fully-qualified path",
                 candidate.function_name
             ),
-            Some(format!(
-                "rewrite the call as `super::{}`",
-                candidate.function_name
-            )),
-        )
-    } else {
-        (
+            format!("rewrite the call as `super::{}`", candidate.function_name),
+        ),
+        InlineCallRewrite::Module { .. } => (
             format!(
                 "import the module `{}` instead of using the fully-qualified path for `{}`",
                 candidate.module_name, candidate.function_name
             ),
-            Some(format!(
+            format!(
                 "add `use {};` and call `{}::{}`",
                 candidate.module_path, candidate.module_name, candidate.function_name
-            )),
-        )
+            ),
+        ),
     }
 }
 
@@ -350,4 +379,89 @@ fn analyze_inline_call(
         import_target,
         conditional_attributes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use proc_macro2::LineColumn;
+
+    use super::InlineCallCandidate;
+    use super::build_inline_call_findings_and_fixes;
+    use crate::fixes::imports::ConditionalAttributes;
+    use crate::fixes::prefer_module_import::function_imports::ImportTarget;
+    use crate::fixes::prefer_module_import::scan::FileInsertion;
+    use crate::fixes::prefer_module_import::scan::InlineCallFindingInputs;
+    use crate::fixes::prefer_module_import::scan::ScanFileContext;
+
+    #[test]
+    fn parent_calls_insert_no_import_and_module_calls_reuse_planned_imports() {
+        let text = "crate::outer::run(); crate::util::run();";
+        let candidates = [
+            ("outer", ImportTarget::ParentModule, 0, 14, 17),
+            ("util", ImportTarget::OtherModule, 21, 34, 37),
+        ]
+        .map(|(name, target, start, leaf, end)| InlineCallCandidate {
+            function_name:          "run".to_string(),
+            module_name:            name.to_string(),
+            module_path:            format!("crate::{name}"),
+            absolute_module:        vec![name.to_string()],
+            prefix_start:           LineColumn {
+                line:   1,
+                column: start,
+            },
+            leaf_start:             LineColumn {
+                line:   1,
+                column: leaf,
+            },
+            full_span_start:        LineColumn {
+                line:   1,
+                column: start,
+            },
+            full_span_end:          LineColumn {
+                line:   1,
+                column: end,
+            },
+            import_target:          target,
+            conditional_attributes: ConditionalAttributes::default(),
+        });
+        let context = ScanFileContext {
+            analysis_root: Path::new("."),
+            path: Path::new("src/lib.rs"),
+            text,
+            offsets: &[0],
+        };
+        for (planned, expected) in [
+            (
+                BTreeSet::new(),
+                vec!["super::", "util::", "use crate::util;\n\n"],
+            ),
+            (
+                BTreeSet::from([vec!["util".to_string()]]),
+                vec!["super::", "util::"],
+            ),
+        ] {
+            let (findings, fixes) = build_inline_call_findings_and_fixes(
+                &context,
+                &InlineCallFindingInputs {
+                    candidates:          &candidates,
+                    will_import_modules: &planned,
+                    file_insertion:      FileInsertion {
+                        offset:            0,
+                        before_first_item: true,
+                    },
+                },
+            );
+            assert_eq!(findings.len(), 2);
+            assert_eq!(
+                fixes
+                    .iter()
+                    .map(|fix| fix.replacement.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
 }

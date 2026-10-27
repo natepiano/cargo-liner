@@ -1,6 +1,13 @@
 nextest-version = { required = "0.9.138" }
 
-experimental = ["setup-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+[scripts.wrapper.cargo-berth-scratch]
+command = { command-line = "crates/cargo-berth/tests/check-test-scratch.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter      = 'package(cargo-berth) | package(cargo-berth-test-support)'
+run-wrapper = 'cargo-berth-scratch'
 
 [profile.default]
 slow-timeout = { period = "15s", terminate-after = 2 }
@@ -57,3 +64,9 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 [[profile.default.overrides]]
 filter       = 'binary_id(cargo-tile::unit_tests) & test(/^shim_registration::reader_scenarios::/)'
 slow-timeout = { period = "20s", terminate-after = 2 }
+
+# Loaded natedev tests reached 2.3s. Allow the 30s child deadline and cleanup
+# to run before terminating a test that cannot report its own stalled wait.
+[[profile.default.overrides]]
+filter       = 'package(cargo-berth) | package(cargo-berth-test-support)'
+slow-timeout = { period = "5s", terminate-after = 8 }

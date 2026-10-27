@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 
+use crate::CommandDeadlineExt as _;
 use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
@@ -183,7 +184,7 @@ impl GitDriver {
     #[must_use]
     pub fn succeeds(self, repository_root: &Path, arguments: &[&str]) -> bool {
         let (mut command, _) = self.prepare(repository_root, arguments);
-        command.status().expect("git should run").success()
+        command.bounded_status().expect("git should run").success()
     }
 
     /// Run git without running any hook, and assert it succeeded.
@@ -364,7 +365,7 @@ fn fixture_object_name(value: &str) -> Option<String> {
         .then(|| value.to_owned())
 }
 
-fn capture(command: &mut Command) -> Output { command.output().expect("git should run") }
+fn capture(command: &mut Command) -> Output { command.bounded_output().expect("git should run") }
 
 fn assert_success(output: &Output, arguments: &[OsString]) {
     assert!(
@@ -382,6 +383,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::fixture_git_command;
+    use crate::CommandDeadlineExt as _;
 
     /// A fixture git command that ignores this machine's global and system configuration, so
     /// a developer's own `maintenance.auto=false` cannot hide a missing setting.
@@ -434,7 +436,7 @@ mod tests {
                 ])
                 .args(arguments)
                 .current_dir(root)
-                .output()
+                .bounded_output()
                 .expect("fixture Git should run");
             assert!(
                 output.status.success(),
@@ -468,7 +470,7 @@ mod tests {
                 .env("CARGO_BERTH_FIXTURE_MAIN", &main)
                 .env("CARGO_BERTH_FIXTURE_INTEGRATION", &integration)
                 .env("PATH", empty_path.path())
-                .output()
+                .bounded_output()
                 .expect("reference probe should run");
             assert!(
                 output.status.success(),
@@ -496,7 +498,7 @@ mod tests {
         let initialized = machine_independent_git()
             .args(["init", "--quiet"])
             .current_dir(repository.path())
-            .status()
+            .bounded_status()
             .expect("git init should run");
         assert!(initialized.success(), "git init should succeed");
 
@@ -514,7 +516,7 @@ mod tests {
             ])
             .env("GIT_TRACE2", &trace)
             .current_dir(repository.path())
-            .status()
+            .bounded_status()
             .expect("git commit should run");
         assert!(committed.success(), "git commit should succeed");
 

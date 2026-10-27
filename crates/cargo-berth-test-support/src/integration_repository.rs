@@ -17,14 +17,14 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use serde_json::Value;
-use tempfile::Builder;
 use tempfile::TempDir;
-use tempfile::tempdir;
 
+use crate::CommandDeadlineExt as _;
 use crate::DirectorySnapshot;
 use crate::LedgerTemplate;
 use crate::RepositoryTemplate;
 use crate::berth_command;
+use crate::fixture_tempdir;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
 use crate::repository_template;
@@ -174,7 +174,7 @@ impl IntegrationRepository {
             .current_dir(root)
             .env_remove("CARGO_BERTH_RUN")
             .env_remove("CARGO_BERTH_SESSION_ID")
-            .output()
+            .bounded_output()
             .expect("cargo-berth init should run");
         assert_success(&initialized);
         git.run(root, ["add", "--force", ".claude/config/berth.toml"]);
@@ -214,7 +214,7 @@ impl IntegrationRepository {
             .env("CARGO_BERTH_RUN", "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b")
             .env_remove("CARGO_BERTH_SESSION_ID")
             .env_remove("CARGO_BERTH_BYPASS")
-            .output()
+            .bounded_output()
             .expect("fixture init should run");
         assert_success(&initialized);
         let mut contents =
@@ -326,7 +326,7 @@ impl IntegrationRepository {
                 .current_dir(checkout)
                 .env_remove("CARGO_BERTH_RUN")
                 .env_remove("CARGO_BERTH_SESSION_ID")
-                .output()
+                .bounded_output()
                 .expect("pair command should run");
             assert_success(&output);
             output
@@ -704,7 +704,7 @@ impl IntegrationRepository {
             .current_dir(checkout)
             .env_remove("CARGO_BERTH_RUN")
             .env_remove("CARGO_BERTH_SESSION_ID")
-            .output()
+            .bounded_output()
             .expect("cargo-berth runs")
     }
 
@@ -1077,7 +1077,7 @@ pub fn copy_git_repository_seed<E: std::fmt::Debug>(
     prepare_fixture_build(&builds, &[&source], || {
         build(&source).expect("plain Git seed should build");
     });
-    let repository = tempdir().expect("seed destination should exist");
+    let repository = fixture_tempdir("git-seed-");
     let destination = fs::canonicalize(repository.path()).expect("seed destination should resolve");
     let mut snapshot = DirectorySnapshot::capture(&source);
     drop(snapshot.replace_text(&source.to_string_lossy(), &destination.to_string_lossy()));
@@ -1100,11 +1100,8 @@ impl PreparedIntegrationPair {
         build_main: impl FnOnce(&Path),
     ) -> IntegrationRepository {
         let prepared = Self::prepare(executable, name, build_main);
-        let repository = Builder::new()
-            .prefix(prefix)
-            .tempdir()
-            .expect("repository parent");
-        let worktrees = tempdir().expect("worktree parent");
+        let repository = fixture_tempdir(prefix);
+        let worktrees = fixture_tempdir("worktrees-");
         let repository_root =
             fs::canonicalize(repository.path()).expect("repository should resolve");
         let worktree_root = fs::canonicalize(worktrees.path()).expect("worktrees should resolve");

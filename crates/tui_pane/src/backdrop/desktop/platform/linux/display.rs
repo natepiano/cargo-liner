@@ -16,7 +16,6 @@ use zbus::blocking::Proxy;
 use zbus::message::Type;
 use zbus::zvariant::OwnedValue;
 
-use super::SessionBus;
 use super::constants::DBUS_OWNER_CHANGED_SIGNAL;
 use super::constants::DBUS_SERVICE;
 use super::constants::DESKTOP_RETRY_INTERVAL;
@@ -30,8 +29,9 @@ use super::constants::KSCREEN_REQUEST_BACKEND;
 use super::constants::KSCREEN_SERVICE;
 use super::constants::TOPOLOGY_READ_DEADLINE;
 use super::constants::TOPOLOGY_SIGNAL_CAPACITY;
-use super::read_desktop_command;
+use super::desktop_subprocess;
 use super::session_connection;
+use super::session_connection::SessionBus;
 use crate::backdrop::desktop::Frame;
 
 /// One enabled `KScreen` output.
@@ -185,7 +185,7 @@ fn retry_topology_watch(
 
 /// Hold filtered layout and service-owner streams until either subscription is interrupted.
 fn watch_connected_topology() -> Result<(), String> {
-    let connection = match session_connection() {
+    let connection = match session_connection::session_connection() {
         SessionBus::Connected(connection) => connection,
         SessionBus::Unavailable(failure) => return Err(failure.to_string()),
     };
@@ -314,7 +314,7 @@ fn refresh_topology(
 
 /// Read a layout once; failures are distinct from a successfully decoded empty layout.
 fn read_outputs() -> TopologyRead {
-    read_desktop_command(
+    desktop_subprocess::read_desktop_command(
         Command::new(KSCREEN_COMMAND).arg(KSCREEN_JSON_ARGUMENT),
         TOPOLOGY_READ_DEADLINE,
     )

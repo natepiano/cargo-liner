@@ -8,7 +8,6 @@ use anyhow::Context;
 use anyhow::Result;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
-use syn::Attribute;
 use syn::Expr;
 use syn::Item;
 use syn::ItemMod;
@@ -42,6 +41,86 @@ pub(crate) enum FileModulePath {
 pub(crate) struct ModuleDirectories {
     file:   PathBuf,
     module: PathBuf,
+}
+
+enum ModulePathAttribute {
+    Direct(String),
+    Conditional(Vec<Self>),
+    Ignored,
+}
+
+impl From<&Meta> for ModulePathAttribute {
+    fn from(meta: &Meta) -> Self {
+        match meta {
+            Meta::NameValue(value) => {
+                if value.path.is_ident("path") {
+                    path_from_meta(meta).map_or(Self::Ignored, Self::Direct)
+                } else {
+                    Self::Ignored
+                }
+            },
+            Meta::List(list) => {
+                if list.path.is_ident("cfg_attr") {
+                    parse_meta_list(list).map_or(Self::Ignored, |metas| {
+                        Self::Conditional(metas.iter().skip(1).map(Self::from).collect())
+                    })
+                } else {
+                    Self::Ignored
+                }
+            },
+            Meta::Path(_) => Self::Ignored,
+        }
+    }
+}
+
+impl ModulePathAttribute {
+    fn collect_paths(self, paths: &mut Vec<String>) {
+        match self {
+            Self::Direct(path) => paths.push(path),
+            Self::Conditional(attributes) => {
+                for attribute in attributes {
+                    attribute.collect_paths(paths);
+                }
+            },
+            Self::Ignored => {},
+        }
+    }
+}
+
+enum ModuleMountPaths {
+    Default {
+        conditional: Vec<String>,
+    },
+    Explicit {
+        direct:      Vec<String>,
+        conditional: Vec<String>,
+    },
+}
+
+impl From<&ItemMod> for ModuleMountPaths {
+    fn from(declaration: &ItemMod) -> Self {
+        let mut direct = Vec::new();
+        let mut conditional = Vec::new();
+        for attribute in &declaration.attrs {
+            match ModulePathAttribute::from(&attribute.meta) {
+                ModulePathAttribute::Direct(path) => direct.push(path),
+                ModulePathAttribute::Conditional(attributes) => {
+                    for attribute in attributes {
+                        attribute.collect_paths(&mut conditional);
+                    }
+                },
+                ModulePathAttribute::Ignored => {},
+            }
+        }
+        if direct.is_empty() {
+            Self::Default { conditional }
+        } else {
+            Self::Explicit {
+                direct,
+                conditional,
+            }
+        }
+    }
 }
 
 impl ModuleDirectories {
@@ -81,22 +160,26 @@ impl ModuleDirectories {
     /// An inline module's own `#[path]` replaces its directory. Conditional
     /// paths retain every candidate because this walk does not evaluate cfg.
     pub(crate) fn inside_inline_module(&self, declaration: &ItemMod) -> Vec<Self> {
-        let direct = declaration.attrs.iter().filter_map(direct_path_attribute);
-        let mut directories = direct
-            .map(|path| self.inline_path(&path))
-            .collect::<Vec<_>>();
-        if directories.is_empty() {
-            let module = self.module.join(declaration.ident.unraw().to_string());
-            directories.push(Self {
-                file: module.clone(),
-                module,
-            });
-        }
-        for path in declaration
-            .attrs
-            .iter()
-            .flat_map(conditional_path_attributes)
-        {
+        let (mut directories, conditional) = match ModuleMountPaths::from(declaration) {
+            ModuleMountPaths::Default { conditional } => {
+                let module = self.module.join(declaration.ident.unraw().to_string());
+                (
+                    vec![Self {
+                        file: module.clone(),
+                        module,
+                    }],
+                    conditional,
+                )
+            },
+            ModuleMountPaths::Explicit {
+                direct,
+                conditional,
+            } => (
+                direct.iter().map(|path| self.inline_path(path)).collect(),
+                conditional,
+            ),
+        };
+        for path in conditional {
             let directory = self.inline_path(&path);
             if !directories.contains(&directory) {
                 directories.push(directory);
@@ -120,25 +203,23 @@ impl ModuleDirectories {
     /// `cfg` predicates. Candidates that do not exist are the caller's to drop.
     pub(crate) fn declared_module_files(&self, declaration: &ItemMod) -> Vec<PathBuf> {
         let module_name = declaration.ident.unraw().to_string();
-        let direct = declaration
-            .attrs
-            .iter()
-            .filter_map(direct_path_attribute)
-            .map(|path| self.file.join(path))
-            .collect::<Vec<_>>();
-        let mut candidates = if direct.is_empty() {
-            vec![
-                self.module.join(format!("{module_name}.rs")),
-                self.module.join(module_name).join("mod.rs"),
-            ]
-        } else {
-            direct
+        let (mut candidates, conditional) = match ModuleMountPaths::from(declaration) {
+            ModuleMountPaths::Default { conditional } => (
+                vec![
+                    self.module.join(format!("{module_name}.rs")),
+                    self.module.join(module_name).join("mod.rs"),
+                ],
+                conditional,
+            ),
+            ModuleMountPaths::Explicit {
+                direct,
+                conditional,
+            } => (
+                direct.iter().map(|path| self.file.join(path)).collect(),
+                conditional,
+            ),
         };
-        for path in declaration
-            .attrs
-            .iter()
-            .flat_map(conditional_path_attributes)
-        {
+        for path in conditional {
             let candidate = self.file.join(path);
             if !candidates.contains(&candidate) {
                 candidates.push(candidate);
@@ -406,52 +487,6 @@ pub(super) fn lexically_normalized(path: &Path) -> PathBuf {
         })
 }
 
-fn direct_path_attribute(attribute: &Attribute) -> Option<String> {
-    attribute
-        .path()
-        .is_ident("path")
-        .then(|| path_from_meta(&attribute.meta))
-        .flatten()
-}
-
-fn conditional_path_attributes(attribute: &Attribute) -> Vec<String> {
-    if !attribute.path().is_ident("cfg_attr") {
-        return Vec::new();
-    }
-    let Meta::List(list) = &attribute.meta else {
-        return Vec::new();
-    };
-    let Ok(metas) = parse_meta_list(list) else {
-        return Vec::new();
-    };
-    let mut paths = Vec::new();
-    for meta in metas.iter().skip(1) {
-        collect_conditional_paths(meta, &mut paths);
-    }
-    paths
-}
-
-fn collect_conditional_paths(meta: &Meta, paths: &mut Vec<String>) {
-    if meta.path().is_ident("path") {
-        if let Some(path) = path_from_meta(meta) {
-            paths.push(path);
-        }
-        return;
-    }
-    if !meta.path().is_ident("cfg_attr") {
-        return;
-    }
-    let Meta::List(list) = meta else {
-        return;
-    };
-    let Ok(metas) = parse_meta_list(list) else {
-        return;
-    };
-    for nested in metas.iter().skip(1) {
-        collect_conditional_paths(nested, paths);
-    }
-}
-
 fn path_from_meta(meta: &Meta) -> Option<String> {
     let Meta::NameValue(name_value) = meta else {
         return None;
@@ -481,6 +516,65 @@ mod tests {
     use super::ModuleDirectories;
     use super::ModuleMap;
     use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn module_mounts_preserve_explicit_precedence_and_nested_conditional_order() {
+        let declaration = syn::parse_str(concat!(
+            "#[cfg_attr(unix, path = \"conditional.rs\", ",
+            "cfg_attr(test, path = \"nested.rs\"))] ",
+            "#[path = \"direct.rs\"] ",
+            "#[cfg_attr(windows, path = \"direct.rs\", path = \"conditional.rs\")] ",
+            "mod r#type;",
+        ))
+        .expect("parse mixed mounts");
+        let directories = ModuleDirectories::for_file(Path::new("/repo/src/owner.rs"));
+        let expected = ["direct.rs", "conditional.rs", "nested.rs"]
+            .map(|name| Path::new("/repo/src").join(name));
+        assert_eq!(directories.declared_module_files(&declaration), expected);
+        let inline = directories.inside_inline_module(&declaration);
+        assert_eq!(
+            inline
+                .iter()
+                .map(|directory| &directory.file)
+                .collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        assert!(
+            inline
+                .iter()
+                .all(|directory| directory.file == directory.module)
+        );
+    }
+
+    #[test]
+    fn malformed_mounts_keep_defaults_and_valid_conditional_paths() {
+        let declaration = syn::parse_str(concat!(
+            "#[path] #[cfg_attr] ",
+            "#[path = 7] #[cfg_attr(unix, path = 8, cfg_attr(test, path = \"test.rs\"))] ",
+            "#[cfg_attr(unix, path =)] #[other(path = \"ignored.rs\")] mod r#type;",
+        ))
+        .expect("parse malformed mount payloads");
+        let directories = ModuleDirectories::for_file(Path::new("/repo/src/owner.rs"));
+        assert_eq!(
+            directories.declared_module_files(&declaration),
+            vec![
+                Path::new("/repo/src/owner/type.rs").to_path_buf(),
+                Path::new("/repo/src/owner/type/mod.rs").to_path_buf(),
+                Path::new("/repo/src/test.rs").to_path_buf(),
+            ]
+        );
+        let inline = directories.inside_inline_module(&declaration);
+        assert_eq!(
+            inline
+                .iter()
+                .map(|directory| directory.file.as_path())
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("/repo/src/owner/type"),
+                Path::new("/repo/src/test.rs")
+            ]
+        );
+    }
 
     /// A `#[path]` written at the top level of a non-`mod.rs` file resolves
     /// against that file's directory, while a plain `mod name;` in the same file

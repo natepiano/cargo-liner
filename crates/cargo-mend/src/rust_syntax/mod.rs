@@ -40,10 +40,6 @@ impl PathAnchor {
     pub(crate) const fn is_crate_relative(self) -> bool {
         matches!(self, Self::Crate | Self::Super)
     }
-
-    pub(crate) const fn is_explicit_self(self) -> bool {
-        matches!(self, Self::SelfMod | Self::SelfType)
-    }
 }
 
 impl From<&str> for PathAnchor {
@@ -58,9 +54,37 @@ impl From<&str> for PathAnchor {
     }
 }
 
-enum BoundaryModuleName<'a> {
+enum ModuleFileKind<'a> {
     Root,
-    Named(&'a str),
+    DirectoryModule(&'a Path),
+    NamedModule(&'a Path),
+}
+
+impl<'a> From<&'a Path> for ModuleFileKind<'a> {
+    fn from(path: &'a Path) -> Self {
+        match path.file_name().and_then(OsStr::to_str) {
+            Some("lib.rs" | "main.rs") => Self::Root,
+            Some("mod.rs") => Self::DirectoryModule(path),
+            _ => Self::NamedModule(path),
+        }
+    }
+}
+
+impl<'a> ModuleFileKind<'a> {
+    fn child_boundary_name(self) -> Option<&'a str> {
+        match self {
+            Self::Root => None,
+            Self::DirectoryModule(path) => path.parent()?.file_name()?.to_str(),
+            Self::NamedModule(path) => path.file_stem()?.to_str(),
+        }
+    }
+
+    fn file_module_name(self) -> Option<&'a str> {
+        match self {
+            Self::Root | Self::DirectoryModule(_) => None,
+            Self::NamedModule(path) => path.file_stem()?.to_str(),
+        }
+    }
 }
 
 /// The comma-separated `Meta` items inside an attribute list such as
@@ -110,35 +134,41 @@ fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
 }
 
 pub(crate) fn module_name_for_child_boundary_file(child_file: &Path) -> Option<&str> {
-    match module_name_for_boundary_file(child_file)? {
-        BoundaryModuleName::Named(name) => Some(name),
-        BoundaryModuleName::Root => None,
-    }
-}
-
-fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> {
-    match path.file_name().and_then(OsStr::to_str) {
-        Some("mod.rs") => Some(BoundaryModuleName::Named(
-            path.parent()?.file_name()?.to_str()?,
-        )),
-        Some(name) if name == "lib.rs" || name == "main.rs" => Some(BoundaryModuleName::Root),
-        _ => Some(BoundaryModuleName::Named(path.file_stem()?.to_str()?)),
-    }
+    ModuleFileKind::from(child_file).child_boundary_name()
 }
 
 fn module_name_for_file_module_path(path: &Path) -> Option<&str> {
-    match path.file_name().and_then(OsStr::to_str) {
-        Some(name) if name == "mod.rs" || name == "lib.rs" || name == "main.rs" => None,
-        _ => path.file_stem()?.to_str(),
-    }
+    ModuleFileKind::from(path).file_module_name()
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
+    use super::ModuleFileKind;
     use super::file_module_path;
     use super::module_name_for_child_boundary_file;
+
+    #[test]
+    fn module_file_kinds_preserve_boundary_and_module_path_names() {
+        for (path, boundary, module) in [
+            ("/repo/src/main.rs", None, None),
+            ("/repo/src/lib.rs", None, None),
+            ("/repo/src/child/mod.rs", Some("child"), None),
+            ("/repo/src/child.rs", Some("child"), Some("child")),
+            ("mod.rs", None, None),
+            ("", None, None),
+        ] {
+            assert_eq!(
+                ModuleFileKind::from(Path::new(path)).child_boundary_name(),
+                boundary
+            );
+            assert_eq!(
+                ModuleFileKind::from(Path::new(path)).file_module_name(),
+                module
+            );
+        }
+    }
 
     #[test]
     fn file_module_path_includes_leaf_file_name() {

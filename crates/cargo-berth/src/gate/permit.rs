@@ -693,6 +693,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
     use tempfile::tempdir;
 
     use super::BYPASS_ENVIRONMENT;
@@ -992,13 +993,20 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&script_path, permissions).expect("managed hook should be executable");
 
+        let transaction_path = common_git_directory.join("transaction");
+        fs::write(
+            &transaction_path,
+            "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/main\n",
+        )
+        .expect("trunk move should write");
         let output = Command::new(script_path)
             .arg("prepared")
+            .stdin(fs::File::open(transaction_path).expect("trunk move should read"))
             .current_dir(policy_worktree)
             .env(BYPASS_ENVIRONMENT, BYPASS_ENVIRONMENT_ENABLED_VALUE)
             .env(EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
             .env("PATH", path)
-            .output()
+            .bounded_output()
             .expect("managed hook should run");
         assert!(output.status.success());
     }

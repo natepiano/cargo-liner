@@ -458,17 +458,18 @@ mod tests {
     use super::BareReference;
     use super::ReferenceCollector;
     use super::collect_bare_refs_from_tokens;
-    use super::support;
+    use crate::fixes::imports::ImportSource;
 
     #[test]
     fn collect_bare_refs_finds_ident_in_macro_tokens() {
         let src = r"matches!(do_thing(x), MyEnum::Variant)";
-        let offsets = support::line_offsets(src);
+        let source = ImportSource::new(src);
+        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
         assert_eq!(&src[refs[0].byte_start..refs[0].byte_end], "do_thing");
@@ -477,24 +478,26 @@ mod tests {
     #[test]
     fn collect_bare_refs_skips_qualified_ident_in_macro_tokens() {
         let src = r"matches!(module::do_thing(x), MyEnum::Variant)";
-        let offsets = support::line_offsets(src);
+        let source = ImportSource::new(src);
+        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
         assert!(refs.is_empty(), "qualified path should not match");
     }
 
     #[test]
     fn collect_bare_refs_finds_nested_in_group() {
         let src = r"assert!(do_thing(foo(bar())))";
-        let offsets = support::line_offsets(src);
+        let source = ImportSource::new(src);
+        let offsets = source.line_offsets();
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
         let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
-        collect_bare_refs_from_tokens(&tokens, &offsets, &names, 0, &mut refs);
+        collect_bare_refs_from_tokens(&tokens, offsets, &names, 0, &mut refs);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "do_thing");
     }
@@ -509,9 +512,10 @@ fn inspect(value: i32) {
 }
 ";
         let syntax = syn::parse_file(source).expect("parse fixture");
-        let offsets = support::line_offsets(source);
+        let indexed = ImportSource::new(source);
+        let offsets = indexed.line_offsets();
         let imported_names = BTreeSet::from(["helper".to_string(), "threshold".to_string()]);
-        let mut collector = ReferenceCollector::new(&offsets, &imported_names);
+        let mut collector = ReferenceCollector::new(offsets, &imported_names);
 
         collector.visit_file(&syntax);
 
