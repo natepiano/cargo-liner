@@ -7360,6 +7360,39 @@ mod tests {
     }
 
     #[test]
+    fn a_late_cpu_scan_keeps_the_configured_smoothing_window() {
+        let pid = Pid::from_u32(100);
+        let mut census = census_of(&[(pid.as_u32(), ROOT_PROCESS_PID)]);
+        census.cargo.push(pid);
+        census.lifetimes.insert(
+            pid,
+            LifetimeEvidence::Available(ProcessLifetime::for_test(100)),
+        );
+        census.identities.insert(pid, InvocationId::for_test(100));
+        census.accumulated.insert(pid, Duration::ZERO);
+        census.cpu.insert(pid, Measurement::Reading(0.0));
+        let mut accounting = InvocationCpuAccounting::new(CensusCadence::for_test());
+        let now = Instant::now();
+        for (elapsed, accumulated) in [(0, 0), (50, 50), (1050, 110)] {
+            let measured = census.attribute_with(
+                &ProcessObservations::default(),
+                &mut accounting,
+                now + Duration::from_millis(elapsed),
+                |_| Measurement::Reading(Duration::from_millis(accumulated)),
+            );
+            if elapsed == 1050 {
+                let Measurement::Reading(cpu) = measured.cpu[&pid] else {
+                    panic!("the same live process has three CPU counter samples");
+                };
+                assert!(
+                    (cpu - 6.0).abs() < 0.01,
+                    "one second exceeds ten test smoothing windows: {cpu}%"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn non_cargo_argv_does_not_hide_a_detached_compiler_beneath_a_cargo_name() {
         let root = tempdir().expect("compiler metadata fixture");
         let [requester, server, worker, compiler] = [100, 101, 102, 103].map(Pid::from_u32);
