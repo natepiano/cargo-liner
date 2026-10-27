@@ -42,6 +42,10 @@ use super::command_text;
 use super::command_text::CommandText;
 use super::command_text::RowAbsence;
 use super::command_text::ScannerHome;
+#[cfg(test)]
+use super::cpu_observation;
+#[cfg(test)]
+use super::cpu_observation::CpuScanPublication;
 use super::direct_capture::DirectAssociation;
 use super::direct_capture::DirectCapture;
 use super::direct_capture::NearestRegistration;
@@ -673,6 +677,8 @@ fn scan(
     let groups = census.groups(&observations, &attributed, home, &capture);
     census.associate_status(&mut capture, &groups);
     Scan {
+        #[cfg(test)]
+        cpu_scan_publication: attributed.cpu_scan_publication,
         sccache: census.sccache(),
         groups,
         root_status: capture.root_status,
@@ -1234,8 +1240,14 @@ impl Census {
         let reported = smoothing.settle(&sampled, &identities, now);
         let reported_memory = smoothing.report_memory(&memory_sampled, &identities, memory_report);
         InvocationMeasurements {
-            compilers: self.attribute_compilers(),
-            cpu:       self
+            #[cfg(test)]
+            cpu_scan_publication:              smoothing.observe_cpu(
+                &sampled,
+                &self.identities,
+                now,
+            ),
+            compilers:                         self.attribute_compilers(),
+            cpu:                               self
                 .cargo
                 .iter()
                 .filter_map(|pid| {
@@ -1245,7 +1257,7 @@ impl Census {
                         .map(|cpu| (*pid, *cpu))
                 })
                 .collect(),
-            memory:    self
+            memory:                            self
                 .cargo
                 .iter()
                 .filter_map(|pid| {
@@ -1315,6 +1327,8 @@ impl Census {
                     .get(&pid)
                     .copied()
                     .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven));
+                #[cfg(test)]
+                cpu_observation::work(pid, identity, &work, evidence);
                 let sample = smoothing
                     .invocations
                     .entry(identity.clone())
@@ -3126,6 +3140,7 @@ impl CensusSequence {
         census.registration_rows.clone_from(&self.registration_rows);
         census.prepare(records, capture, excluded);
         let attributed = InvocationMeasurements {
+            cpu_scan_publication: CpuScanPublication::Unobserved,
             compilers: census.attribute_compilers(),
             cpu,
             memory: census.attribute_memory(&HashMap::new()),
@@ -3184,9 +3199,10 @@ impl CensusSequence {
         census.groups(
             records,
             &InvocationMeasurements {
-                cpu:       HashMap::new(),
-                memory:    HashMap::new(),
-                compilers: HashMap::new(),
+                cpu_scan_publication: CpuScanPublication::Unobserved,
+                cpu:                  HashMap::new(),
+                memory:               HashMap::new(),
+                compilers:            HashMap::new(),
             },
             ScannerHome::Known(Path::new("/writer")),
             capture,
@@ -3229,6 +3245,7 @@ mod tests {
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
+    use crate::census::cpu_observation::CpuScanPublication;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::COMPILER_COLUMN;
@@ -3291,9 +3308,10 @@ mod tests {
     /// Measurements are supplied explicitly by tests that need process evidence.
     fn no_measurements() -> InvocationMeasurements {
         InvocationMeasurements {
-            compilers: HashMap::new(),
-            cpu:       HashMap::new(),
-            memory:    HashMap::new(),
+            cpu_scan_publication: CpuScanPublication::Unobserved,
+            compilers:            HashMap::new(),
+            cpu:                  HashMap::new(),
+            memory:               HashMap::new(),
         }
     }
 

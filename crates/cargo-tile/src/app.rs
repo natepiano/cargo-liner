@@ -36,6 +36,8 @@ use tui_pane::VisualDeadline;
 use crate::app_global_action::AppGlobalAction;
 use crate::census::ExcludedCommands;
 use crate::census::InvocationId;
+#[cfg(test)]
+use crate::census::cpu_observation;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CONFIG_DIRNAME;
@@ -308,6 +310,8 @@ impl TerminalApp for App {
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
         render::draw(frame, self, keymap);
+        #[cfg(test)]
+        cpu_observation::publish_frame();
     }
 
     fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }

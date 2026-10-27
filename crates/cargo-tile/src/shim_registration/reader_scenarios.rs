@@ -30,6 +30,7 @@ use tui_pane::TerminalApp;
 use crate::app::App;
 use crate::census::CensusCadence;
 use crate::census::CensusScope;
+use crate::census::cpu_observation;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::READER_TIMESTAMPS_ENV;
 use crate::render;
@@ -54,6 +55,7 @@ fn reader_child() -> std::io::Result<()> {
     if let Some(scenario) = std::env::var_os("CARGO_TILE_TEST_READER") {
         let root = std::env::current_dir()?;
         if scenario == "cpu-cache-server" {
+            cpu_observation::start()?;
             let mut ready = [0];
             File::open(root.join("reader-start"))?.read_exact(&mut ready)?;
             assert_eq!(ready, [b'R']);
@@ -99,6 +101,36 @@ fn reader_snapshots_publish_only_completed_terminal_frames() {
 #[test]
 fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
     reader_regression("cpu-cache-server");
+}
+
+/// Native changes inside a smoothing window use the held table reading.
+#[test]
+fn reader_cpu_oracle_applies_smoothing_and_publication_to_changing_load() {
+    run_reader_script("--cpu-changing-load-self-check");
+}
+
+/// Buffered terminal reads preserve the scan and time of each published frame.
+#[test]
+fn reader_cpu_oracle_keeps_publication_times_when_frames_are_drained_late() {
+    run_reader_script("--cpu-delayed-drain-self-check");
+}
+
+/// One compiler lifetime contributes once across all accounting groups.
+#[test]
+fn reader_cpu_oracle_rejects_a_compiler_counter_charged_twice() {
+    run_reader_script("--cpu-duplicate-self-check");
+}
+
+/// An independent kernel counter rejects different units and another process.
+#[test]
+fn reader_cpu_oracle_checks_the_compiler_counter_against_the_kernel() {
+    run_reader_script("--cpu-kernel-self-check");
+}
+
+/// Exact report deadlines remain exact at 0, 50, 100, and 150 milliseconds.
+#[test]
+fn reader_cpu_oracle_publishes_at_each_exact_report_deadline() {
+    run_reader_script("--cpu-boundary-self-check");
 }
 
 /// Samples drawn close together cannot end CPU observation before its report windows pass.

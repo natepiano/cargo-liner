@@ -910,7 +910,7 @@ Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tr
 - Grid destination reuse in `tui_pane` — no test shows it equal to a fresh resolve after the row measurements.
 - A longer time limit for a slow test.
 
-### Phase 27 — The CPU a row shows is the CPU its processes used  · status: todo
+### Phase 27 — The CPU a row shows is the CPU its processes used  · status: done
 
 **Depends on:** Phase 26 (its landing on main: the reader readiness, the elapsed-time CPU smoothing, and main's CPU assertion with a `>= 1` floor).
 
