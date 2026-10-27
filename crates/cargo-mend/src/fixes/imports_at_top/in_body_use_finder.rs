@@ -230,7 +230,11 @@ impl InBodyUseFinder<'_> {
         });
 
         self.findings.push(Finding {
-            severity:        Severity::Warning,
+            disposition:     Finding::disposition(
+                DiagnosticCode::ImportsAtTop,
+                Severity::Warning,
+                FixSupport::ImportsAtTop,
+            ),
             diagnostic_code: DiagnosticCode::ImportsAtTop,
             path:            self.display_path.to_string(),
             line:            use_kw.line,
@@ -240,7 +244,6 @@ impl InBodyUseFinder<'_> {
             item:            None,
             message:         IMPORTS_AT_TOP_MESSAGE.to_string(),
             suggestion:      Some(IMPORTS_AT_TOP_SUGGESTION.to_string()),
-            fix_support:     FixSupport::ImportsAtTop,
             related:         None,
             item_visibility: ItemVisibility::default(),
         });

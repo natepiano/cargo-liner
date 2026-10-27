@@ -12,6 +12,7 @@ use crate::reporting::constants::RUSTC_LEVEL_NOTE;
 use crate::reporting::diagnostics;
 use crate::reporting::diagnostics::Finding;
 use crate::reporting::diagnostics::Severity;
+use crate::reporting::diagnostics::SourceMarkerColor;
 
 enum FindingAnnotations<'a> {
     LinkOnly,
@@ -93,7 +94,7 @@ fn render_reasons(
 }
 
 pub(super) fn render_finding(output: &mut String, finding: &Finding, color_mode: ColorMode) {
-    let severity = severity_label(diagnostics::effective_severity(finding), color_mode);
+    let severity = severity_label(finding.severity(), color_mode);
     let headline = diagnostics::finding_headline(finding);
     let line_label = finding.line.to_string();
     let gutter_width = line_label.len();
@@ -121,8 +122,8 @@ pub(super) fn render_finding(output: &mut String, finding: &Finding, color_mode:
         output,
         "{gutter_pad}{} {}",
         color::blue_bold("|", color_mode),
-        severity_marker(
-            finding.severity,
+        source_marker(
+            finding.source_marker_color(),
             finding.column,
             finding.highlight_len,
             color_mode
@@ -151,17 +152,17 @@ fn severity_label(severity: Severity, color_mode: ColorMode) -> String {
     }
 }
 
-fn severity_marker(
-    severity: Severity,
+fn source_marker(
+    marker_color: SourceMarkerColor,
     column: usize,
     highlight_len: usize,
     color_mode: ColorMode,
 ) -> String {
     let indent = " ".repeat(column.saturating_sub(1));
     let carets = "^".repeat(highlight_len.max(1));
-    let code = match severity {
-        Severity::Error => ANSI_BOLD_RED,
-        Severity::Warning => ANSI_BOLD_YELLOW,
+    let code = match marker_color {
+        SourceMarkerColor::Red => ANSI_BOLD_RED,
+        SourceMarkerColor::Yellow => ANSI_BOLD_YELLOW,
     };
     format!("{indent}{}", color::paint(&carets, code, color_mode))
 }
@@ -180,6 +181,26 @@ fn diagnostic_label(kind: &str, color_mode: ColorMode) -> String {
 mod tests {
     use super::FindingAnnotations;
     use crate::reporting::render::ColorMode;
+
+    #[test]
+    fn automatic_headlines_keep_their_origin_marker_color() -> anyhow::Result<()> {
+        for (origin, marker) in [
+            ("error", "\x1b[1;31m^^^\x1b[0m"),
+            ("warning", "\x1b[1;33m^^^\x1b[0m"),
+        ] {
+            let finding = serde_json::from_value(serde_json::json!({
+                "severity": origin, "diagnostic_code": "suspicious_pub",
+                "fixability": "restricted_annotation", "path": "src/lib.rs",
+                "line": 1, "column": 1, "highlight_len": 3,
+                "source_line": "pub fn item() {}", "message": "message",
+            }))?;
+            let mut output = String::new();
+            super::render_finding(&mut output, &finding, ColorMode::Enabled);
+            assert!(output.starts_with("\x1b[1;33mwarning:"));
+            assert!(output.contains(marker));
+        }
+        Ok(())
+    }
 
     #[test]
     fn annotations_preserve_separators_for_all_four_layouts() {
