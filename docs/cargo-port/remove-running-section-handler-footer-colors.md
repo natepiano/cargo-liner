@@ -580,7 +580,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** measuring role width from complete rows (it counts rows no presentation paints).
 
-### Phase 18 — The shortcuts overlay pages only when it must  · status: todo
+### Phase 18 — The shortcuts overlay pages only when it must  · status: done
 
 **Depends on:** Phase 17
 

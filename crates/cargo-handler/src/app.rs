@@ -65,6 +65,7 @@ use crate::sort::TreeSort;
 use crate::startup_log;
 use crate::startup_log::StartupProbe;
 use crate::summary::PaintedSummary;
+use crate::theme::StartupThemeNotes;
 #[cfg(test)]
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
@@ -111,9 +112,8 @@ pub(crate) struct App {
     /// Parsed `config.toml` and any parse error, surfaced in the
     /// settings overlay.
     pub(crate) loaded_config:     LoadedConfig,
-    /// Theme-resolution note from startup (a configured theme id that
-    /// no file or built-in supplies), surfaced in the settings overlay.
-    pub(crate) startup_note:      Option<String>,
+    /// Installation failures and the latest appearance diagnostic, shown in settings.
+    pub(crate) startup_note:      StartupThemeNotes,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
@@ -165,7 +165,7 @@ impl App {
     /// Build the app with the grid focused and the keymap loaded.
     pub(crate) fn new(
         loaded_config: LoadedConfig,
-        startup_note: Option<String>,
+        startup_note: StartupThemeNotes,
     ) -> Result<Self, KeymapError> {
         let census = Census::new(census::local_machine_name());
         let mut app = Self::new_with_keymap_path(
@@ -180,15 +180,16 @@ impl App {
 
     /// Apply a system appearance reported by the background watcher.
     pub(crate) fn apply_system_appearance(&mut self, appearance: Appearance) {
-        self.startup_note =
-            tui_pane::apply_system_appearance(appearance, &self.loaded_config.config.appearance);
+        self.startup_note.appearance =
+            tui_pane::apply_system_appearance(appearance, &self.loaded_config.config.appearance)
+                .into();
     }
 
     /// Build the app with the keymap read from `keymap_path`, or from
     /// the defaults alone when there is none, starting from `census`.
     fn new_with_keymap_path(
         loaded_config: LoadedConfig,
-        startup_note: Option<String>,
+        startup_note: StartupThemeNotes,
         keymap_path: Option<PathBuf>,
         census: Census,
     ) -> Result<Self, KeymapError> {
@@ -231,23 +232,30 @@ impl App {
     /// scanned and holding no agents, with no remotes.
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(
+        Self::new_for_test_with_startup(
             LoadedConfig {
                 config: crate::config::Config::default(),
                 error:  None,
             },
-            None,
-            None,
-            {
-                let mut census = Census::new("natedev".to_string());
-                census.apply(CensusUpdate::Local {
-                    rows:      Vec::new(),
-                    hierarchy: HierarchyEdges::default().into(),
-                    stage:     ScanStage::Classified,
-                });
-                census
-            },
+            StartupThemeNotes::default(),
         )
+    }
+
+    /// Use production startup notes without reading the live footer or keymap.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_startup(
+        loaded_config: LoadedConfig,
+        startup_note: StartupThemeNotes,
+    ) -> Result<Self, KeymapError> {
+        Self::new_with_keymap_path(loaded_config, startup_note, None, {
+            let mut census = Census::new("natedev".to_string());
+            census.apply(CensusUpdate::Local {
+                rows:      Vec::new(),
+                hierarchy: HierarchyEdges::default().into(),
+                stage:     ScanStage::Classified,
+            });
+            census
+        })
     }
 }
 
@@ -513,7 +521,7 @@ mod tests {
                 config,
                 error: None,
             },
-            None,
+            StartupThemeNotes::default(),
             None,
             Census::new("natedev".to_string()),
         )

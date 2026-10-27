@@ -24,12 +24,12 @@ inactive_border = "DarkGray"
 inactive_title  = "White"
 
 [variants.focus]
-active     = { r = 125, g = 125, b = 125 }
+active     = { r = 86, g = 86, b = 86 }
 hover      = { r = 80, g = 80, b = 80 }
 remembered = { r = 40, g = 40, b = 40 }
 
 [variants.semantic]
-accent       = "Cyan"
+accent       = { r = 0, g = 213, b = 213 }
 error        = "Red"
 inline_error = "Yellow"
 label        = { r = 150, g = 190, b = 180 }
@@ -47,7 +47,7 @@ secondary = "Gray"
 [variants.roles]
 
 [variants.status]
-bar = "DarkGray"
+bar = { r = 60, g = 60, b = 60 }
 
 [variants.finder]
 match_bg = { r = 0, g = 90, b = 100 }

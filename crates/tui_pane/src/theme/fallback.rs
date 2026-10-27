@@ -49,12 +49,12 @@ const fn fallback_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::Gray),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(125, 125, 125)),
+            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
             hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
             remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Cyan),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 213, 213)),
             error:        StyleSpec::from_color(Color::Red),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
@@ -70,7 +70,7 @@ const fn fallback_dark() -> Theme {
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::DarkGray),
+            bar: StyleSpec::from_color(Color::Rgb(60, 60, 60)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(0, 90, 100)),
@@ -99,7 +99,7 @@ const fn fallback_light() -> Theme {
             remembered: StyleSpec::from_color(Color::Rgb(235, 235, 235)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 77, 110)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
@@ -109,7 +109,7 @@ const fn fallback_light() -> Theme {
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),
-            secondary: StyleSpec::from_color(Color::Rgb(70, 70, 70)),
+            secondary: StyleSpec::from_color(Color::Rgb(69, 69, 69)),
             dim:       StyleSpec::from_color(Color::Rgb(130, 130, 130)),
             bright:    StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             bg_focus:  StyleSpec::from_color(Color::White),

@@ -53,6 +53,7 @@ pub use self::accessors::warning_color;
 pub use self::blend::blend_color;
 pub use self::blend::color_distance;
 pub use self::fallback::fallback_theme;
+pub use self::loader::ThemeSource;
 pub use self::poller::spawn_appearance_poller;
 pub use self::poller::spawn_appearance_watcher;
 pub use self::registry::RegisterOutcome;
