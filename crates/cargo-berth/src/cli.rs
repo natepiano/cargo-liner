@@ -103,6 +103,7 @@ use crate::recovery::ReservationRecoveryDecision;
 use crate::recovery::ResolveDecision;
 use crate::recovery::ResolveRequest;
 use crate::reservation::AbandonmentReason;
+use crate::reservation::KeptWorkReason;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
@@ -127,6 +128,7 @@ use crate::verb::integrate;
 use crate::verb::integrate::IntegrateRequest;
 use crate::verb::release;
 use crate::verb::release::ReleaseRequest;
+use crate::verb::release::ReleaseSelection;
 use crate::verb::retarget;
 use crate::verb::sequence;
 use crate::verb::sequence::SequenceRequest;
@@ -183,13 +185,16 @@ const TARGET_OID_VALUE_NAME: &str = "TARGET_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
 
-const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
+const ABANDON_LONG_ABOUT: &str = "Release work that the caller deliberately discarded; --why is required. Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
+const RELEASE_LONG_ABOUT: &str = "Checkpoint work for release when merged into its target; use --abandon for discarded work, or --keep-work for work kept on its branch for a later phase.";
+const KEEP_WORK_LONG_ABOUT: &str =
+    "Release work kept on its branch for a later phase; --why is required.";
 const BOARD_LONG_ABOUT: &str = "Inspect current reservations and integration constraints. With both standard input and standard output attached to terminals, bare board opens the full-screen view; otherwise it prints a pointer to board --json. Use --json to emit board facts.";
 const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. When the paths are clear, this command acquires them for this session; use cargo-berth board to read who holds a path without acquiring it. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
 const CLAIM_LONG_ABOUT: &str = "Reserve repository paths for a reservation. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants. This is the spelling check reports against, so a path that reads clear from check reserves the same extent here.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached its integration target through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied integration target commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
-const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded, or when a released reservation's integration evidence is lost because its work landed where git cannot match it, such as a reworked squash or a branch other than the integration target. It records a distinct orphan-retirement disposition, replacing the released one in the second case, and requires --why so later readers can audit that decision.";
+const RETIRE_ORPHAN_LONG_ABOUT: &str = "Retire a reservation whose holder is gone; --why is required. Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded, or when a released reservation's integration evidence is lost because its work landed where git cannot match it, such as a reworked squash or a branch other than the integration target. It records a distinct orphan-retirement disposition, replacing the released one in the second case, and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
 const EVERY_INCURSION_LONG_ABOUT: &str = "Answer every incursion incident outstanding for this reservation in one disposition. A backlog reports one notice per incident, and answering a single member leaves the rest standing, so the notice keeps firing until the set is empty.";
 const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TARGET_OID> when work reached its integration target in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
@@ -231,8 +236,9 @@ enum Command {
     Claim(ClaimArguments),
     /// Compare observed worktree changes with an active reservation.
     Drift(DriftArguments),
-    /// Release a reservation at a checkpoint.
-    Release(ReservationArguments),
+    /// Checkpoint work for release when merged into its target.
+    #[command(long_about = RELEASE_LONG_ABOUT)]
+    Release(ReleaseArguments),
     /// Record an ordering relationship between reservations.
     Sequence(SequenceArguments),
     /// Integrate a reservation into trunk.
@@ -642,6 +648,22 @@ struct ReservationArguments {
     json_output:    JsonOutput,
 }
 
+/// A release chooses exactly one meaning, with a reason for each explicit decision.
+#[derive(Debug, Args)]
+struct ReleaseArguments {
+    #[command(flatten)]
+    reservation: ReservationArguments,
+    /// Release work kept on its branch for a later phase.
+    #[arg(long, group = "release-disposition", requires = "why", long_help = KEEP_WORK_LONG_ABOUT)]
+    keep_work:   bool,
+    /// Release work the caller deliberately discarded.
+    #[arg(long, group = "release-disposition", requires = "why", long_help = ABANDON_LONG_ABOUT)]
+    abandon:     bool,
+    /// Explain why the work is kept on its branch or discarded.
+    #[arg(long, requires = "release-disposition", value_name = WHY_VALUE_NAME)]
+    why:         Option<String>,
+}
+
 /// A replacement integration branch for one live reservation.
 #[derive(Debug, Args)]
 struct RetargetArguments {
@@ -884,8 +906,9 @@ impl Command {
             Self::Drift(drift_arguments) => {
                 drift::execute(drift_arguments.into_drift_request(), recovery_command_line)
             },
-            Self::Release(reservation_arguments) => {
-                release::execute(reservation_arguments.into_release_request())
+            Self::Release(arguments) => match arguments.into_release_request() {
+                Ok(request) => release::execute(&request),
+                Err(error) => OutputEnvelope::invalid_input(CommandVerb::Release, &error),
             },
             Self::Sequence(sequence_arguments) => {
                 match sequence_arguments.into_sequence_request() {
@@ -937,9 +960,8 @@ impl Command {
             Self::Hook(_) => CliOutputFormat::Text,
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
-            Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
-                reservation_arguments.json_output.output_format()
-            },
+            Self::Release(arguments) => arguments.reservation.json_output.output_format(),
+            Self::Renew(reservation_arguments) => reservation_arguments.json_output.output_format(),
             Self::Retarget(arguments) => arguments.json_output.output_format(),
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
@@ -1434,13 +1456,30 @@ fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthoriz
     }))
 }
 
-impl ReservationArguments {
-    const fn into_release_request(self) -> ReleaseRequest {
-        ReleaseRequest {
-            reservation_id: self.reservation_id,
-        }
+impl ReleaseArguments {
+    fn into_release_request(self) -> Result<ReleaseRequest, String> {
+        let selection = match (self.keep_work, self.abandon, self.why) {
+            (true, false, Some(reason)) => ReleaseSelection::KeepWork(
+                reason
+                    .parse::<KeptWorkReason>()
+                    .map_err(|error| error.to_string())?,
+            ),
+            (false, true, Some(reason)) => ReleaseSelection::Abandon(
+                reason
+                    .parse::<AbandonmentReason>()
+                    .map_err(|error| error.to_string())?,
+            ),
+            (false, false, None) => ReleaseSelection::IntegrationCheckpoint,
+            _ => return Err("choose --keep-work or --abandon with --why".to_owned()),
+        };
+        Ok(ReleaseRequest {
+            reservation_id: self.reservation.reservation_id,
+            selection,
+        })
     }
+}
 
+impl ReservationArguments {
     const fn into_renew_request(self) -> RenewRequest {
         RenewRequest {
             reservation_id: self.reservation_id,
@@ -2912,6 +2951,55 @@ mod tests {
     }
 
     #[test]
+    fn keep_work_requires_a_reason_and_excludes_other_dispositions() -> Result<(), String> {
+        for arguments in [
+            vec![
+                BINARY_NAME,
+                "release",
+                RESERVATION_ID,
+                "--keep-work",
+                "--json",
+            ],
+            vec![
+                BINARY_NAME,
+                "release",
+                RESERVATION_ID,
+                "--keep-work",
+                "--abandon",
+                "--why",
+                "later phase",
+                "--json",
+            ],
+            vec![
+                BINARY_NAME,
+                "release",
+                RESERVATION_ID,
+                "--why",
+                "later phase",
+                "--json",
+            ],
+        ] {
+            let error = parsed_verb(&arguments)
+                .err()
+                .ok_or("invalid release must fail")?;
+            assert_eq!(exit_for_parser_error(&error), BerthExit::UsageError);
+        }
+        assert!(
+            parsed_verb(&[
+                BINARY_NAME,
+                "release",
+                RESERVATION_ID,
+                "--keep-work",
+                "--why",
+                "later phase",
+                "--json"
+            ])
+            .is_ok()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn retire_orphan_requires_a_reason_and_excludes_other_dispositions() -> Result<(), String> {
         for (arguments, required_diagnostics) in [
             (
@@ -2969,6 +3057,20 @@ mod tests {
             assert!(resolve_help.contains(required_text));
         }
         assert!(renew_help.contains("changes neither its scopes nor any ordering edge"));
+        let release_help = help_for("release");
+        for phrase in [
+            "when merged",
+            "discarded",
+            "kept on its branch",
+            "--keep-work",
+            "--why",
+        ] {
+            assert!(
+                release_help.contains(phrase),
+                "missing {phrase}: {release_help}"
+            );
+        }
+        assert!(resolve_help.contains("holder is gone"));
     }
 
     #[test]

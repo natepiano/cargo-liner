@@ -1726,6 +1726,7 @@ const fn release_disposition_status(disposition: &ReleaseDisposition) -> OutputS
         },
         ReleaseDisposition::Abandoned(_)
         | ReleaseDisposition::RetiredOrphan(_)
+        | ReleaseDisposition::KeptOnBranch(_)
         | ReleaseDisposition::UnchangedScopes(_) => OutputStatus::Released,
     }
 }
@@ -3237,7 +3238,18 @@ impl OutputEnvelope {
                 *reservation_id,
                 release_disposition_status(disposition),
                 message_with_session_mapping_publication(
-                    format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+                    match disposition {
+                        ReleaseDisposition::KeptOnBranch(reason) => format!(
+                            "Reservation {reservation_id} released with work kept on its branch: {reason}."
+                        ),
+                        ReleaseDisposition::Integrated
+                        | ReleaseDisposition::RewrittenIntegration(_)
+                        | ReleaseDisposition::Abandoned(_)
+                        | ReleaseDisposition::RetiredOrphan(_)
+                        | ReleaseDisposition::UnchangedScopes(_) => format!(
+                            "Reservation {reservation_id} recorded disposition {disposition:?}."
+                        ),
+                    },
                     session_mapping_publication,
                 ),
             ),
@@ -4010,7 +4022,8 @@ pub(crate) fn automatic_release_notices(settlements: &[ReconciledSettlement]) ->
             ReleaseDisposition::RetiredOrphan(reason) => reason.to_string(),
             ReleaseDisposition::Integrated
             | ReleaseDisposition::RewrittenIntegration(_)
-            | ReleaseDisposition::Abandoned(_) => continue,
+            | ReleaseDisposition::Abandoned(_)
+            | ReleaseDisposition::KeptOnBranch(_) => continue,
         };
         notices.push(format!(
             "Automatically released reservation {}: {reason}.",

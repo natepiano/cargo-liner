@@ -787,16 +787,19 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Binds later work:** A size check on journal input takes `CallerJournalInput`. Derived evidence never counts against the caller's limit.
 
 
-### Phase 31 — A reservation whose work stays on its branch for a later phase is released as kept  · status: todo
+### Phase 31 — A reservation whose work stays on its branch for a later phase is released as kept  · status: done
 
-**Why:** tile had to release reservation `01a16327` for work that did not land but stays on its branch for a later phase. `release` refused it (outstanding at the protected tip). `--abandon` records the work as discarded, which is false. `resolve --retire-orphan` is scoped to an orphan, and this reservation was live. Showrunner, 2026-10-26: add one correct form for this case.
+#### As-built
 
-**Work Order:**
-1. `cargo-berth release <id> --keep-work --why <reason>` releases a live reservation whose work is not integrated and stays on its branch. It records a new `ReleaseDisposition` variant (for example `Deferred(reason)`). The reservation stops blocking, like the other dispositions.
-2. The board and JSON output show it as work kept on its branch, never as integrated or discarded. The help texts of `release`, `--abandon` and `--retire-orphan` name which form fits which case.
-3. The new variant reaches a live ledger only from a build that also reads it. Both machines install it together.
+- Why: tile had to release a live reservation for work that stays on its branch for a later phase. `release` refused it as outstanding, `--abandon` says the work was discarded, and `resolve --retire-orphan` is for a gone holder. hana owners met the same case on 2026-10-26.
+- `cargo-berth release <id> --keep-work --why <reason>` records the new `ReleaseDisposition::KeptOnBranch(KeptWorkReason)` (`kept_on_branch` on the wire). The reason is trimmed, non-empty and caller input under the 16384-byte check. It works on an active or an outstanding reservation and leaves the branch and files unchanged.
+- `release` also takes `--abandon --why` now. Clap puts `--keep-work` and `--abandon` in one group that requires `--why`. The CLI turns them into one `ReleaseSelection` enum (`IntegrationCheckpoint`, `KeepWork`, `Abandon`) at the boundary.
+- A kept release stops blocking and stops counting toward `maximum_reservations`. Its ordering constraints are cancelled, not fulfilled (`src/edge/mod.rs`). Output says the work is kept on its branch, with the reason. It is never shown as integrated or discarded, and never as an automatic release.
+- Help texts: `release` = merged work; `--abandon` = discarded work; `--keep-work` = work kept on its branch; `resolve --retire-orphan` = holder gone.
+- No journal operation changed; the existing `Release` record carries the new disposition. Output contract regenerated (seven `kept_on_branch` alternatives only).
+- Proof: `kept_branch_work_releases_an_outstanding_hold_and_its_capacity` (`tests/lifecycle.rs`) failed before the change (`--keep-work` unknown). Also tested: reason validation, abandon stays distinct, both edge directions, frozen replay and compaction. 1292/1292.
 
-**Verification:** `cargo-berth` suite passes, each test under 1 s. A test releases a live reservation with `--keep-work`, then proves it does not block and reads back as kept. Existing ledgers replay unchanged.
+**Binds later work:** like `unchanged_scopes`, a binary that writes `kept_on_branch` goes live only when the readers on both machines also read it.
 
 ### Phase 32 — A reservation with no change left against its target is released by itself  · status: done
 
