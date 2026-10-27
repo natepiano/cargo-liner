@@ -1,7 +1,10 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::iter::Skip;
+use std::vec::IntoIter;
 
+use anyhow::Result;
 use syn::Item;
 use syn::ItemUse;
 use syn::Visibility;
@@ -84,9 +87,8 @@ impl ScopeSpan {
 }
 
 pub(super) struct ScopeCollectionContext<'a> {
-    pub(super) text:    &'a str,
-    pub(super) offsets: &'a [usize],
-    pub(super) scopes:  &'a mut Vec<ScopeInfo>,
+    pub(super) text:   &'a str,
+    pub(super) scopes: &'a mut Vec<ScopeInfo>,
 }
 
 #[derive(Default)]
@@ -138,28 +140,20 @@ pub(super) fn collect_scopes(
     module_path: &[String],
     scope_collection_context: &mut ScopeCollectionContext<'_>,
     source: &ImportSource<'_>,
-) {
+) -> Result<()> {
     let mut scope_imports = ScopeImports::default();
     let mut last_use_start = None;
     let mut last_use_end = None;
     let mut first_item_start = None;
 
     for item in items {
-        let item_start = offsets::offset(
-            scope_collection_context.text,
-            scope_collection_context.offsets,
-            item.span().start(),
-        );
+        let item_start = offsets::offset(source, item.span().start())?;
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
             scope_imports.record(source, item_use);
             last_use_start = Some(item_start);
-            let item_end = offsets::offset(
-                scope_collection_context.text,
-                scope_collection_context.offsets,
-                item_use.span().end(),
-            );
+            let item_end = offsets::offset(source, item_use.span().end())?;
             last_use_end = Some(
                 if scope_collection_context.text.as_bytes().get(item_end) == Some(&b'\n') {
                     item_end + 1
@@ -194,23 +188,16 @@ pub(super) fn collect_scopes(
             collect_scopes(
                 child_items,
                 ScopeSpan::new(
-                    offsets::offset(
-                        scope_collection_context.text,
-                        scope_collection_context.offsets,
-                        item_mod.span().start(),
-                    ),
-                    offsets::offset(
-                        scope_collection_context.text,
-                        scope_collection_context.offsets,
-                        item_mod.span().end(),
-                    ),
+                    offsets::offset(source, item_mod.span().start())?,
+                    offsets::offset(source, item_mod.span().end())?,
                 ),
                 &child_module_path,
                 scope_collection_context,
                 source,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usize> {
@@ -276,27 +263,133 @@ fn indentation_at(text: &str, byte_offset: usize) -> String {
         .collect()
 }
 
-pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
-    let segments: Vec<&str> = full_path.split("::").collect();
-    let super_count = segments
-        .iter()
-        .take_while(|segment| PathAnchor::from(**segment) == PathAnchor::Super)
-        .count();
-    if super_count < 2 || super_count > scope.module_path.len() {
-        return full_path.to_string();
+/// Classification of a relative import at the module-depth boundary.
+/// One-level paths keep their spelling; paths escaping the available ancestry
+/// cannot be converted to an absolute crate path and also keep their spelling.
+enum LocalImportRelation<'a> {
+    AsWritten(&'a str),
+    OutsideAncestry(&'a str),
+    Ancestor {
+        module_prefix: &'a [String],
+        suffix:        Skip<IntoIter<&'a str>>,
+    },
+}
+
+impl<'a> LocalImportRelation<'a> {
+    fn new(scope: &'a ScopeInfo, full_path: &'a str) -> Self {
+        let segments: Vec<&str> = full_path.split("::").collect();
+        let super_count = segments
+            .iter()
+            .take_while(|segment| PathAnchor::from(**segment) == PathAnchor::Super)
+            .count();
+        if super_count < 2 {
+            return Self::AsWritten(full_path);
+        }
+        let Some(prefix_len) = scope.module_path.len().checked_sub(super_count) else {
+            return Self::OutsideAncestry(full_path);
+        };
+        Self::Ancestor {
+            module_prefix: &scope.module_path[..prefix_len],
+            suffix:        segments.into_iter().skip(super_count),
+        }
     }
 
-    let mut absolute_segments = Vec::with_capacity(1 + scope.module_path.len() + segments.len());
-    absolute_segments.push("crate".to_string());
-    absolute_segments.extend(
-        scope.module_path[..scope.module_path.len() - super_count]
-            .iter()
-            .cloned(),
-    );
-    absolute_segments.extend(
-        segments[super_count..]
-            .iter()
-            .map(|segment| (*segment).to_string()),
-    );
-    absolute_segments.join("::")
+    fn render(self) -> String {
+        match self {
+            Self::AsWritten(path) | Self::OutsideAncestry(path) => path.to_string(),
+            Self::Ancestor {
+                module_prefix,
+                suffix,
+            } => {
+                let mut absolute_segments =
+                    Vec::with_capacity(1 + module_prefix.len() + suffix.len());
+                absolute_segments.push("crate".to_string());
+                absolute_segments.extend(module_prefix.iter().cloned());
+                absolute_segments.extend(suffix.map(str::to_string));
+                absolute_segments.join("::")
+            },
+        }
+    }
+}
+
+pub(super) fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
+    LocalImportRelation::new(scope, full_path).render()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fixes::imports::ImportSource;
+
+    fn scopes(text: &str) -> anyhow::Result<Vec<super::ScopeInfo>> {
+        let syntax = syn::parse_file(text)?;
+        let source = ImportSource::new(text);
+        let mut scopes = Vec::new();
+        let mut context = super::ScopeCollectionContext {
+            text,
+            scopes: &mut scopes,
+        };
+        super::collect_scopes(
+            &syntax.items,
+            super::ScopeSpan::new(0, text.len()),
+            &[],
+            &mut context,
+            &source,
+        )?;
+        Ok(scopes)
+    }
+
+    #[test]
+    fn import_relations_name_unchanged_valid_and_escaping_paths() -> anyhow::Result<()> {
+        let scopes = scopes("mod a { mod b { mod c {} } }")?;
+        let deepest = &scopes[3];
+        assert!(matches!(
+            super::LocalImportRelation::new(deepest, "super::Thing"),
+            super::LocalImportRelation::AsWritten("super::Thing")
+        ));
+        assert!(matches!(
+            super::LocalImportRelation::new(deepest, "super::super::Thing"),
+            super::LocalImportRelation::Ancestor { .. }
+        ));
+        assert!(matches!(
+            super::LocalImportRelation::new(deepest, "super::super::super::super::Thing"),
+            super::LocalImportRelation::OutsideAncestry(_)
+        ));
+        for (input, expected) in [
+            ("super::Thing", "super::Thing"),
+            ("super::super::Thing", "crate::a::Thing"),
+            ("super::super::super::Thing", "crate::Thing"),
+            (
+                "super::super::super::super::Thing",
+                "super::super::super::super::Thing",
+            ),
+        ] {
+            assert_eq!(
+                super::canonicalize_inserted_use_path(deepest, input),
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collection_rejects_syntax_from_a_different_source() -> anyhow::Result<()> {
+        let syntax = syn::parse_file("\nmod a {}")?;
+        let source = ImportSource::new("");
+        let mut scopes = Vec::new();
+        let mut context = super::ScopeCollectionContext {
+            text:   "",
+            scopes: &mut scopes,
+        };
+        assert!(
+            super::collect_scopes(
+                &syntax.items,
+                super::ScopeSpan::new(0, 0),
+                &[],
+                &mut context,
+                &source,
+            )
+            .is_err()
+        );
+        Ok(())
+    }
 }
