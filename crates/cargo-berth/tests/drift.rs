@@ -1895,6 +1895,36 @@ fn an_integrated_fast_forward_is_not_a_post_write() {
 }
 
 #[test]
+fn an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write() {
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let lane = repo.lane("unreserved-receiver", "integration");
+    assert_success(&repo.run(&lane, &["board", "--json"]));
+    let contributor = repo.lane("integrated-contributor", "integration");
+    commit_entering_path(&contributor, "integration.txt", "contributor change\n");
+    commit_entering_path(&contributor, "added.txt", "contributor addition\n");
+    commit_entering_path(&repo.integration, "target.txt", "target change\n");
+    repo.git_without_hooks(
+        &repo.integration,
+        &["merge", "--no-ff", "--no-commit", "integrated-contributor"],
+    );
+    fs::write(repo.integration.join("integration.txt"), "merged content\n")
+        .expect("merge resolution should write");
+    repo.git_without_hooks(&repo.integration, &["add", "integration.txt"]);
+    repo.git_without_hooks(
+        &repo.integration,
+        &["commit", "--quiet", "-m", "integration merge"],
+    );
+    assert!(!repo.journal().iter().any(|event| event["op"] == "claim"));
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    assert_eq!(git_stdout(&lane, &["status", "--porcelain"]), "");
+
+    let observed = post_commit_drift(&lane, &[]);
+    assert_success(&observed);
+    assert_eq!(json(&observed)["status"], "clear", "{}", json(&observed));
+    assert!(!repo.journal().iter().any(|event| event["op"] == "claim"));
+}
+
+#[test]
 fn a_merge_keeps_the_units_own_committed_paths() {
     let (repo, lane, _) = integrated_merge_fixture();
     assert_success(&repo.claim(&repo.integration, "file:unit.txt", FIRST_RUN, None));
