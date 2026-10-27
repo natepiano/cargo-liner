@@ -9,10 +9,8 @@ use super::FavoritesHost;
 use super::FavoritesOverlay;
 use super::constants::FAVORITES_SCOPE;
 use super::constants::FAVORITES_SECTION;
-use super::globals::push_scheduled_toast;
-use super::globals::report_closed_overlay_adjustment;
-use super::notice::deletion_refusal_message;
-use super::notice::favorite_adjustment_message;
+use super::globals;
+use super::notice;
 use crate::AppContext;
 use crate::AttractSettings;
 use crate::Bindings;
@@ -131,8 +129,8 @@ pub(super) fn close_overlay_with<A: AppContext>(
     let close_commit = overlay.begin_close();
     for removal_target in close_commit.removal_targets {
         if let Err(error) = remove(removal_target) {
-            let message = deletion_refusal_message(&close_commit.retry, &error);
-            push_scheduled_toast(app, "Favorite not deleted", &message, ToastStyle::Error);
+            let message = notice::deletion_refusal_message(&close_commit.retry, &error);
+            globals::push_scheduled_toast(app, "Favorite not deleted", &message, ToastStyle::Error);
         }
     }
     overlay.finish_close();
@@ -144,7 +142,7 @@ fn report_application_outcome<A: AppContext>(
     outcome: SettingsApplicationOutcome,
 ) {
     if !overlay.is_open() {
-        report_closed_overlay_adjustment(app, outcome);
+        globals::report_closed_overlay_adjustment(app, outcome);
         return;
     }
     let SettingsApplicationOutcome::AppliedWithAdjustments {
@@ -154,7 +152,7 @@ fn report_application_outcome<A: AppContext>(
     else {
         return;
     };
-    let message = favorite_adjustment_message(requested, effective);
+    let message = notice::favorite_adjustment_message(requested, effective);
     overlay.set_adjustment_notice(message);
 }
 

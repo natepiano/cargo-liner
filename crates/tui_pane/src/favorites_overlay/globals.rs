@@ -4,7 +4,7 @@
 
 use super::FavoritesHost;
 use super::bindings;
-use super::notice::favorite_adjustment_message;
+use super::notice;
 use crate::AppContext;
 use crate::AttractSettings;
 use crate::FavoriteRows;
@@ -139,7 +139,7 @@ pub(super) fn report_closed_overlay_adjustment<A: AppContext>(
     else {
         return;
     };
-    let message = favorite_adjustment_message(requested, effective);
+    let message = notice::favorite_adjustment_message(requested, effective);
     push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
 }
 
