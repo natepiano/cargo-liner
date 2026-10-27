@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
+use serde::ser::SerializeStruct;
 
 use super::constants::HINT_ERROR_FIXABLE_WITH_FIX;
 use super::constants::HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE;
@@ -338,9 +339,231 @@ pub(crate) struct ItemVisibility {
     pub narrower_scope: NarrowerScope,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A settled decision about who can fix a finding.
+///
+/// Compiler errors initially mean a person must decide something. Cross-crate
+/// reconciliation can later resolve an exact boundary and supply an automatic
+/// fix without updating the stored severity. Classification happens at that
+/// input boundary: automatic fixes are always warnings, while manual findings
+/// retain their severity. No reporting consumer repairs a stale severity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FindingDisposition {
+    Manual {
+        severity: Severity,
+        support:  ManualFixSupport,
+    },
+    AutomaticallyFixable {
+        support: AutomaticFixSupport,
+    },
+}
+
+/// Nonautomatic support metadata, checked when a disposition is constructed.
+/// The serialized spelling is retained even when the diagnostic supplies its default.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ManualFixSupport {
+    specified: FixSupport,
+    resolved:  FixSupport,
+}
+
+/// An automatic route has no nonfixable variant. Compiler input metadata is
+/// retained solely for stable ordering, source-marker color and the report's
+/// existing serde format; it never supplies the finding's reported severity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AutomaticFixSupport {
+    route:     AutomaticFixRoute,
+    specified: FixSupport,
+    origin:    AutomaticFindingOrigin,
+}
+
+/// Reconciliation may turn a compiler error into an automatic warning. Keep
+/// that history without allowing the automatic phase to carry an error severity.
+#[derive(Debug, Clone, Copy)]
+enum AutomaticFindingOrigin {
+    ReconciledCompilerError,
+    WarningInput,
+}
+
+/// Stable input ordering and deduplication distinguish compiler errors from
+/// warning inputs even after reconciliation makes both findings automatic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum FindingInputOrder {
+    CompilerErrorFirst,
+    WarningAfterErrors,
+}
+
+/// The source marker retains its input color even when the headline becomes a warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceMarkerColor {
+    Red,
+    Yellow,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AutomaticFixRoute {
+    RestrictedAnnotation,
+    PubUse,
+    UnusedPub,
+    PreferModuleImport,
+    InlinePathQualifiedType,
+    ShortenImport,
+    NarrowToPubCrate,
+    FieldVisibility,
+    ImportsAtTop,
+    PubUseOutsideSubtree,
+}
+
+impl AutomaticFixRoute {
+    const fn support(self) -> FixSupport {
+        match self {
+            Self::RestrictedAnnotation => FixSupport::RestrictedAnnotation,
+            Self::PubUse => FixSupport::PubUse,
+            Self::UnusedPub => FixSupport::UnusedPub,
+            Self::PreferModuleImport => FixSupport::PreferModuleImport,
+            Self::InlinePathQualifiedType => FixSupport::InlinePathQualifiedType,
+            Self::ShortenImport => FixSupport::ShortenImport,
+            Self::NarrowToPubCrate => FixSupport::NarrowToPubCrate,
+            Self::FieldVisibility => FixSupport::FieldVisibility,
+            Self::ImportsAtTop => FixSupport::ImportsAtTop,
+            Self::PubUseOutsideSubtree => FixSupport::PubUseOutsideSubtree,
+        }
+    }
+}
+
+impl Finding {
+    /// Converts compiler or syntax-pass input into the settled reporting state.
+    /// Missing explicit support inherits the diagnostic's existing default once.
+    pub(crate) fn disposition(
+        code: DiagnosticCode,
+        severity: Severity,
+        specified: FixSupport,
+    ) -> FindingDisposition {
+        let resolved = match specified {
+            FixSupport::None => diagnostic_spec(code).fix_support,
+            FixSupport::RestrictedAnnotation
+            | FixSupport::PubUse
+            | FixSupport::NeedsManualPubUseCleanup
+            | FixSupport::BlockedByPrivateImport
+            | FixSupport::UnusedPub
+            | FixSupport::PreferModuleImport
+            | FixSupport::InlinePathQualifiedType
+            | FixSupport::ShortenImport
+            | FixSupport::InternalParentFacade
+            | FixSupport::NarrowToPubCrate
+            | FixSupport::FieldVisibility
+            | FixSupport::ImportsAtTop
+            | FixSupport::PubUseOutsideSubtree => specified,
+        };
+        let route = match resolved {
+            FixSupport::None
+            | FixSupport::NeedsManualPubUseCleanup
+            | FixSupport::BlockedByPrivateImport
+            | FixSupport::InternalParentFacade => {
+                return FindingDisposition::Manual {
+                    severity,
+                    support: ManualFixSupport {
+                        specified,
+                        resolved,
+                    },
+                };
+            },
+            FixSupport::RestrictedAnnotation => AutomaticFixRoute::RestrictedAnnotation,
+            FixSupport::PubUse => AutomaticFixRoute::PubUse,
+            FixSupport::UnusedPub => AutomaticFixRoute::UnusedPub,
+            FixSupport::PreferModuleImport => AutomaticFixRoute::PreferModuleImport,
+            FixSupport::InlinePathQualifiedType => AutomaticFixRoute::InlinePathQualifiedType,
+            FixSupport::ShortenImport => AutomaticFixRoute::ShortenImport,
+            FixSupport::NarrowToPubCrate => AutomaticFixRoute::NarrowToPubCrate,
+            FixSupport::FieldVisibility => AutomaticFixRoute::FieldVisibility,
+            FixSupport::ImportsAtTop => AutomaticFixRoute::ImportsAtTop,
+            FixSupport::PubUseOutsideSubtree => AutomaticFixRoute::PubUseOutsideSubtree,
+        };
+        FindingDisposition::AutomaticallyFixable {
+            support: AutomaticFixSupport {
+                route,
+                specified,
+                origin: match severity {
+                    Severity::Error => AutomaticFindingOrigin::ReconciledCompilerError,
+                    Severity::Warning => AutomaticFindingOrigin::WarningInput,
+                },
+            },
+        }
+    }
+
+    pub(super) const fn severity(&self) -> Severity {
+        match self.disposition {
+            FindingDisposition::Manual { severity, .. } => severity,
+            FindingDisposition::AutomaticallyFixable { .. } => Severity::Warning,
+        }
+    }
+
+    pub(crate) const fn input_order(&self) -> FindingInputOrder {
+        match self.disposition {
+            FindingDisposition::Manual {
+                severity: Severity::Error,
+                ..
+            } => FindingInputOrder::CompilerErrorFirst,
+            FindingDisposition::Manual {
+                severity: Severity::Warning,
+                ..
+            } => FindingInputOrder::WarningAfterErrors,
+            FindingDisposition::AutomaticallyFixable { support } => match support.origin {
+                AutomaticFindingOrigin::ReconciledCompilerError => {
+                    FindingInputOrder::CompilerErrorFirst
+                },
+                AutomaticFindingOrigin::WarningInput => FindingInputOrder::WarningAfterErrors,
+            },
+        }
+    }
+
+    pub(super) const fn source_marker_color(&self) -> SourceMarkerColor {
+        match self.disposition {
+            FindingDisposition::Manual {
+                severity: Severity::Error,
+                ..
+            } => SourceMarkerColor::Red,
+            FindingDisposition::Manual {
+                severity: Severity::Warning,
+                ..
+            } => SourceMarkerColor::Yellow,
+            FindingDisposition::AutomaticallyFixable { support } => match support.origin {
+                AutomaticFindingOrigin::ReconciledCompilerError => SourceMarkerColor::Red,
+                AutomaticFindingOrigin::WarningInput => SourceMarkerColor::Yellow,
+            },
+        }
+    }
+
+    pub(crate) const fn fix_support(&self) -> FixSupport {
+        match self.disposition {
+            FindingDisposition::Manual { support, .. } => support.specified,
+            FindingDisposition::AutomaticallyFixable { support } => support.specified,
+        }
+    }
+
+    pub(super) const fn fixability(&self) -> FixSupport {
+        match self.disposition {
+            FindingDisposition::Manual { support, .. } => support.resolved,
+            FindingDisposition::AutomaticallyFixable { support } => support.route.support(),
+        }
+    }
+
+    /// The shared declaration still needs only one annotation rewrite. Additional
+    /// diagnostics at that site remain visible but must not advertise extra fixes.
+    pub(crate) fn withdraw_restricted_annotation_fix(&mut self) {
+        let severity = match self.disposition {
+            FindingDisposition::Manual { severity, .. } => severity,
+            FindingDisposition::AutomaticallyFixable { support } => match support.origin {
+                AutomaticFindingOrigin::ReconciledCompilerError => Severity::Error,
+                AutomaticFindingOrigin::WarningInput => Severity::Warning,
+            },
+        };
+        self.disposition = Self::disposition(self.diagnostic_code, severity, FixSupport::None);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "FindingInput")]
 pub(crate) struct Finding {
-    pub severity:        Severity,
+    pub disposition:     FindingDisposition,
     pub diagnostic_code: DiagnosticCode,
     pub path:            String,
     pub line:            usize,
@@ -350,15 +573,92 @@ pub(crate) struct Finding {
     pub item:            Option<String>,
     pub message:         String,
     pub suggestion:      Option<String>,
-    #[serde(default, rename = "fixability")]
-    pub fix_support:     FixSupport,
-    #[serde(default)]
     pub related:         Option<String>,
     /// Skipped by serde on purpose: the fixers need this in-process and nothing
     /// outside cargo-mend reads it, so publishing it would create a JSON
     /// contract with no consumer.
-    #[serde(skip)]
     pub item_visibility: ItemVisibility,
+}
+
+/// Compatibility input for the existing report serialization format.
+#[derive(Deserialize)]
+struct FindingInput {
+    severity:        Severity,
+    diagnostic_code: DiagnosticCode,
+    path:            String,
+    line:            usize,
+    column:          usize,
+    highlight_len:   usize,
+    source_line:     String,
+    item:            Option<String>,
+    message:         String,
+    suggestion:      Option<String>,
+    #[serde(default, rename = "fixability")]
+    fix_support:     FixSupport,
+    #[serde(default)]
+    related:         Option<String>,
+    /// Skipped by serde on purpose: the fixers need this in-process and nothing
+    /// outside cargo-mend reads it, so publishing it would create a JSON
+    /// contract with no consumer.
+    #[serde(skip)]
+    item_visibility: ItemVisibility,
+}
+
+impl From<FindingInput> for Finding {
+    fn from(input: FindingInput) -> Self {
+        Self {
+            disposition:     Self::disposition(
+                input.diagnostic_code,
+                input.severity,
+                input.fix_support,
+            ),
+            diagnostic_code: input.diagnostic_code,
+            path:            input.path,
+            line:            input.line,
+            column:          input.column,
+            highlight_len:   input.highlight_len,
+            source_line:     input.source_line,
+            item:            input.item,
+            message:         input.message,
+            suggestion:      input.suggestion,
+            related:         input.related,
+            item_visibility: input.item_visibility,
+        }
+    }
+}
+
+impl Serialize for Finding {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_struct("Finding", 12)?;
+        // Only the legacy wire encoder spells automatic provenance as a severity.
+        let wire_severity = match self.disposition {
+            FindingDisposition::Manual {
+                severity: Severity::Error,
+                ..
+            } => "error",
+            FindingDisposition::Manual {
+                severity: Severity::Warning,
+                ..
+            } => "warning",
+            FindingDisposition::AutomaticallyFixable { support } => match support.origin {
+                AutomaticFindingOrigin::ReconciledCompilerError => "error",
+                AutomaticFindingOrigin::WarningInput => "warning",
+            },
+        };
+        output.serialize_field("severity", wire_severity)?;
+        output.serialize_field("diagnostic_code", &self.diagnostic_code)?;
+        output.serialize_field("path", &self.path)?;
+        output.serialize_field("line", &self.line)?;
+        output.serialize_field("column", &self.column)?;
+        output.serialize_field("highlight_len", &self.highlight_len)?;
+        output.serialize_field("source_line", &self.source_line)?;
+        output.serialize_field("item", &self.item)?;
+        output.serialize_field("message", &self.message)?;
+        output.serialize_field("suggestion", &self.suggestion)?;
+        output.serialize_field("fixability", &self.fix_support())?;
+        output.serialize_field("related", &self.related)?;
+        output.end()
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -616,26 +916,22 @@ impl Report {
             errors:                   self
                 .findings
                 .iter()
-                .filter(|f| effective_severity(f) == Severity::Error)
+                .filter(|f| f.severity() == Severity::Error)
                 .count(),
             warnings:                 self
                 .findings
                 .iter()
-                .filter(|f| effective_severity(f) == Severity::Warning)
+                .filter(|f| f.severity() == Severity::Warning)
                 .count(),
             fixable_with_fix:         self
                 .findings
                 .iter()
-                .filter(|f| {
-                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::Standard)
-                })
+                .filter(|f| f.fixability().summary_bucket() == Some(FixSummaryBucket::Standard))
                 .count(),
             fixable_with_fix_pub_use: self
                 .findings
                 .iter()
-                .filter(|f| {
-                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::PubUse)
-                })
+                .filter(|f| f.fixability().summary_bucket() == Some(FixSummaryBucket::PubUse))
                 .count(),
         };
     }
@@ -661,32 +957,8 @@ fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     }
 }
 
-pub(super) fn effective_fixability(finding: &Finding) -> FixSupport {
-    if matches!(finding.fix_support, FixSupport::None) {
-        diagnostic_spec(finding.diagnostic_code).fix_support
-    } else {
-        finding.fix_support
-    }
-}
-
-/// The severity to report for `finding`.
-///
-/// `Severity::Error` is written at the two sites whose findings need a person to
-/// decide something — `forbidden_pub_in_crate` and `review_pub_mod`. The
-/// cross-crate pass in `persistence::visibility_constraint` can later resolve one
-/// of those to an exact boundary and mark it fixable, and the stored severity
-/// does not follow. Deriving it here keeps one rule: anything mend can fix on its
-/// own is a warning, and an error is work only a person can do.
-pub(super) fn effective_severity(finding: &Finding) -> Severity {
-    if effective_fixability(finding).summary_bucket().is_some() {
-        Severity::Warning
-    } else {
-        finding.severity
-    }
-}
-
-pub(super) fn fixability_note(finding: &Finding) -> Option<&'static str> {
-    effective_fixability(finding).note(effective_severity(finding))
+pub(super) const fn fixability_note(finding: &Finding) -> Option<&'static str> {
+    finding.fixability().note(finding.severity())
 }
 
 enum FindingPresentation<'a> {
@@ -808,7 +1080,11 @@ mod tests {
                 HeadlineSource::Static(headline) => headline,
             };
             let mut finding = Finding {
-                severity: Severity::Error,
+                disposition: Finding::disposition(
+                    diagnostic_code,
+                    Severity::Error,
+                    FixSupport::None,
+                ),
                 diagnostic_code,
                 path: "src/lib.rs".to_string(),
                 line: 1,
@@ -818,7 +1094,6 @@ mod tests {
                 item: Some("Example".to_string()),
                 message: "custom forbidden visibility outcome".to_string(),
                 suggestion: None,
-                fix_support: FixSupport::None,
                 related: None,
                 item_visibility: ItemVisibility::default(),
             };
@@ -867,7 +1142,11 @@ mod tests {
             ),
         ] {
             let finding = Finding {
-                severity: Severity::Error,
+                disposition: Finding::disposition(
+                    diagnostic_code,
+                    Severity::Error,
+                    FixSupport::None,
+                ),
                 diagnostic_code,
                 path: "src/lib.rs".to_string(),
                 line: 1,
@@ -877,7 +1156,6 @@ mod tests {
                 item: Some("Example".to_string()),
                 message: message.to_string(),
                 suggestion: None,
-                fix_support: FixSupport::None,
                 related: None,
                 item_visibility: ItemVisibility::default(),
             };
@@ -888,7 +1166,11 @@ mod tests {
     #[test]
     fn presentation_keeps_static_details_and_suppresses_message_headline_duplicates() {
         let mut finding = Finding {
-            severity:        Severity::Warning,
+            disposition:     Finding::disposition(
+                DiagnosticCode::SuspiciousPub,
+                Severity::Warning,
+                FixSupport::None,
+            ),
             diagnostic_code: DiagnosticCode::SuspiciousPub,
             path:            "src/lib.rs".to_string(),
             line:            1,
@@ -898,7 +1180,6 @@ mod tests {
             item:            None,
             message:         "caller needs the parent boundary".to_string(),
             suggestion:      None,
-            fix_support:     FixSupport::None,
             related:         None,
             item_visibility: ItemVisibility::default(),
         };
@@ -921,5 +1202,240 @@ mod tests {
         finding.message = "resolved boundary".to_string();
         assert_eq!(finding_headline(&finding), "resolved boundary");
         assert_eq!(super::finding_message_not_in_headline(&finding), None);
+    }
+    fn classified_finding(
+        code: DiagnosticCode,
+        severity: Severity,
+        fix_support: FixSupport,
+    ) -> Finding {
+        super::FindingInput {
+            severity,
+            diagnostic_code: code,
+            path: "src/lib.rs".to_string(),
+            line: 1,
+            column: 1,
+            highlight_len: 3,
+            source_line: "pub fn item() {}".to_string(),
+            item: Some("item".to_string()),
+            message: "message".to_string(),
+            suggestion: None,
+            fix_support,
+            related: None,
+            item_visibility: ItemVisibility::default(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn every_automatic_route_is_a_warning_and_manual_states_keep_their_severity() {
+        for severity in [Severity::Error, Severity::Warning] {
+            for support in [
+                FixSupport::RestrictedAnnotation,
+                FixSupport::PubUse,
+                FixSupport::UnusedPub,
+                FixSupport::PreferModuleImport,
+                FixSupport::InlinePathQualifiedType,
+                FixSupport::ShortenImport,
+                FixSupport::NarrowToPubCrate,
+                FixSupport::FieldVisibility,
+                FixSupport::ImportsAtTop,
+                FixSupport::PubUseOutsideSubtree,
+            ] {
+                let finding = classified_finding(DiagnosticCode::SuspiciousPub, severity, support);
+                assert!(matches!(
+                    finding.disposition,
+                    super::FindingDisposition::AutomaticallyFixable { .. }
+                ));
+                assert_eq!(finding.severity(), Severity::Warning);
+                let (order, color) = match severity {
+                    Severity::Error => (
+                        super::FindingInputOrder::CompilerErrorFirst,
+                        super::SourceMarkerColor::Red,
+                    ),
+                    Severity::Warning => (
+                        super::FindingInputOrder::WarningAfterErrors,
+                        super::SourceMarkerColor::Yellow,
+                    ),
+                };
+                assert_eq!(finding.input_order(), order);
+                assert_eq!(finding.source_marker_color(), color);
+                assert_eq!(finding.fixability(), support);
+                assert_eq!(finding.fix_support(), support);
+            }
+            for support in [
+                FixSupport::None,
+                FixSupport::NeedsManualPubUseCleanup,
+                FixSupport::BlockedByPrivateImport,
+                FixSupport::InternalParentFacade,
+            ] {
+                let finding = classified_finding(DiagnosticCode::SuspiciousPub, severity, support);
+                assert!(matches!(
+                    finding.disposition,
+                    super::FindingDisposition::Manual { .. }
+                ));
+                assert_eq!(finding.severity(), severity);
+                assert_eq!(finding.fixability(), support);
+                assert_eq!(super::fixability_note(&finding), None);
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_defaults_are_resolved_once_and_manual_overrides_remain_manual() {
+        for (code, expected) in [
+            (DiagnosticCode::UnusedPub, FixSupport::UnusedPub),
+            (
+                DiagnosticCode::PreferModuleImport,
+                FixSupport::PreferModuleImport,
+            ),
+            (
+                DiagnosticCode::InlinePathQualifiedType,
+                FixSupport::InlinePathQualifiedType,
+            ),
+            (
+                DiagnosticCode::ShortenLocalCrateImport,
+                FixSupport::ShortenImport,
+            ),
+            (
+                DiagnosticCode::ReplaceDeepSuperImport,
+                FixSupport::ShortenImport,
+            ),
+            (
+                DiagnosticCode::NarrowToPubCrate,
+                FixSupport::NarrowToPubCrate,
+            ),
+            (
+                DiagnosticCode::FieldVisibilityWiderThanType,
+                FixSupport::FieldVisibility,
+            ),
+            (DiagnosticCode::ImportsAtTop, FixSupport::ImportsAtTop),
+        ] {
+            let finding = classified_finding(code, Severity::Error, FixSupport::None);
+            assert_eq!(finding.severity(), Severity::Warning);
+            assert_eq!(finding.fixability(), expected);
+            assert_eq!(finding.fix_support(), FixSupport::None);
+            let blocked =
+                classified_finding(code, Severity::Error, FixSupport::BlockedByPrivateImport);
+            assert_eq!(blocked.severity(), Severity::Error);
+            assert_eq!(blocked.fixability(), FixSupport::BlockedByPrivateImport);
+        }
+    }
+
+    #[test]
+    fn disposition_keeps_wire_fields_and_classifies_on_input() -> anyhow::Result<()> {
+        for severity in [Severity::Error, Severity::Warning] {
+            for support in [
+                FixSupport::None,
+                FixSupport::PubUse,
+                FixSupport::NeedsManualPubUseCleanup,
+            ] {
+                let finding = classified_finding(DiagnosticCode::SuspiciousPub, severity, support);
+                let expected = serde_json::json!({
+                    "severity": severity,
+                    "diagnostic_code": DiagnosticCode::SuspiciousPub,
+                    "path": "src/lib.rs", "line": 1, "column": 1, "highlight_len": 3,
+                    "source_line": "pub fn item() {}", "item": "item", "message": "message",
+                    "suggestion": null, "fixability": support, "related": null,
+                });
+                assert_eq!(serde_json::to_value(&finding)?, expected);
+                let restored: Finding = serde_json::from_value(expected)?;
+                assert_eq!(restored.severity(), finding.severity());
+                assert_eq!(restored.input_order(), finding.input_order());
+                assert_eq!(
+                    restored.source_marker_color(),
+                    finding.source_marker_color()
+                );
+                assert_eq!(restored.fix_support(), support);
+            }
+        }
+        let defaulted =
+            classified_finding(DiagnosticCode::UnusedPub, Severity::Error, FixSupport::None);
+        let mut wire = serde_json::to_value(&defaulted)?;
+        wire.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("finding is an object"))?
+            .remove("fixability");
+        let restored: Finding = serde_json::from_value(wire)?;
+        assert_eq!(restored.severity(), Severity::Warning);
+        assert_eq!(restored.fixability(), FixSupport::UnusedPub);
+        Ok(())
+    }
+
+    #[test]
+    fn disposition_preserves_exact_legacy_wire_bytes() -> anyhow::Result<()> {
+        let automatic = classified_finding(
+            DiagnosticCode::SuspiciousPub,
+            Severity::Error,
+            FixSupport::RestrictedAnnotation,
+        );
+        let manual = classified_finding(
+            DiagnosticCode::SuspiciousPub,
+            Severity::Error,
+            FixSupport::None,
+        );
+        let prefix = concat!(
+            "{\"severity\":\"error\",\"diagnostic_code\":\"suspicious_pub\",",
+            "\"path\":\"src/lib.rs\",\"line\":1,\"column\":1,\"highlight_len\":3,",
+            "\"source_line\":\"pub fn item() {}\",\"item\":\"item\",\"message\":\"message\",",
+            "\"suggestion\":null,",
+        );
+        assert_eq!(
+            serde_json::to_string(&automatic)?,
+            format!("{prefix}\"fixability\":\"restricted_annotation\",\"related\":null}}")
+        );
+        assert_eq!(
+            serde_json::to_string(&manual)?,
+            format!("{prefix}\"fixability\":\"none\",\"related\":null}}")
+        );
+        let defaulted_wire = concat!(
+            "{\"severity\":\"error\",\"diagnostic_code\":\"unused_pub\",",
+            "\"path\":\"src/lib.rs\",\"line\":1,\"column\":1,\"highlight_len\":3,",
+            "\"source_line\":\"pub fn item() {}\",\"item\":\"item\",\"message\":\"message\",",
+            "\"suggestion\":null,\"related\":null}",
+        );
+        let defaulted: Finding = serde_json::from_str(defaulted_wire)?;
+        assert_eq!(defaulted.severity(), Severity::Warning);
+        assert_eq!(defaulted.fixability(), FixSupport::UnusedPub);
+        assert_eq!(
+            serde_json::to_string(&defaulted)?,
+            concat!(
+                "{\"severity\":\"error\",\"diagnostic_code\":\"unused_pub\",",
+                "\"path\":\"src/lib.rs\",\"line\":1,\"column\":1,\"highlight_len\":3,",
+                "\"source_line\":\"pub fn item() {}\",\"item\":\"item\",\"message\":\"message\",",
+                "\"suggestion\":null,\"fixability\":\"none\",\"related\":null}",
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn settled_dispositions_preserve_summary_counts_and_duplicate_fix_withdrawal() {
+        let code = DiagnosticCode::SuspiciousPub;
+        let mut report = super::Report {
+            findings: vec![
+                classified_finding(code, Severity::Error, FixSupport::None),
+                classified_finding(code, Severity::Warning, FixSupport::BlockedByPrivateImport),
+                classified_finding(code, Severity::Error, FixSupport::RestrictedAnnotation),
+                classified_finding(code, Severity::Warning, FixSupport::PubUse),
+            ],
+            ..super::Report::default()
+        };
+        report.refresh_summary();
+        assert_eq!(report.summary.errors, 1);
+        assert_eq!(report.summary.warnings, 3);
+        assert_eq!(report.summary.fixable_with_fix, 1);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        report.findings[2].withdraw_restricted_annotation_fix();
+        report.refresh_summary();
+        assert!(matches!(
+            report.findings[2].disposition,
+            super::FindingDisposition::Manual {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+        assert_eq!(report.summary.errors, 2);
+        assert_eq!(report.summary.warnings, 2);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
     }
 }

@@ -281,7 +281,7 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
 fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
     findings.sort_by(|a, b| {
         (
-            a.severity,
+            a.input_order(),
             &a.path,
             a.line,
             a.column,
@@ -290,7 +290,7 @@ fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
             &a.message,
         )
             .cmp(&(
-                b.severity,
+                b.input_order(),
                 &b.path,
                 b.line,
                 b.column,
@@ -300,7 +300,7 @@ fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
             ))
     });
     findings.dedup_by(|a, b| {
-        a.severity == b.severity
+        a.input_order() == b.input_order()
             && a.diagnostic_code == b.diagnostic_code
             && a.path == b.path
             && a.line == b.line
@@ -325,9 +325,9 @@ fn retain_one_restricted_annotation_fix_per_site(findings: &mut [Finding]) {
         findings.chunk_by_mut(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
     for site in sites {
         site.iter_mut()
-            .filter(|finding| finding.fix_support == FixSupport::RestrictedAnnotation)
+            .filter(|finding| finding.fix_support() == FixSupport::RestrictedAnnotation)
             .skip(1)
-            .for_each(|finding| finding.fix_support = FixSupport::None);
+            .for_each(Finding::withdraw_restricted_annotation_fix);
     }
 }
 
@@ -437,7 +437,11 @@ fn extend_report_from_stored(
 ) {
     for finding in stored.findings {
         findings.push(Finding {
-            severity:        finding.severity,
+            disposition:     Finding::disposition(
+                finding.diagnostic_code,
+                finding.severity,
+                finding.fix_support,
+            ),
             diagnostic_code: finding.diagnostic_code,
             path:            relativize_path(&finding.path, analysis_root),
             line:            finding.line,
@@ -447,7 +451,6 @@ fn extend_report_from_stored(
             item:            finding.item,
             message:         finding.message,
             suggestion:      finding.suggestion,
-            fix_support:     finding.fix_support,
             related:         finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
@@ -534,6 +537,7 @@ fn relativize_path(path: &str, analysis_root: &Path) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
@@ -562,6 +566,7 @@ mod tests {
     use crate::reporting::AncestorReexportInsertion;
     use crate::reporting::CompilerWarningFacts;
     use crate::reporting::ExactBoundarySpelling;
+    use crate::reporting::Finding;
     use crate::reporting::FixSupport;
     use crate::reporting::ModuleForm;
     use crate::reporting::ReexportVisibility;
@@ -569,6 +574,72 @@ mod tests {
     use crate::reporting::SubtreeReexportFixFact;
     use crate::selection::Selection;
     use crate::selection::SelectionScope;
+
+    #[test]
+    fn input_order_and_dedup_preserve_origins_and_shared_annotation_sites() -> anyhow::Result<()> {
+        let error = ordering_finding(Severity::Error, FixSupport::PubUse, "origin")?;
+        let warning = ordering_finding(Severity::Warning, FixSupport::PubUse, "origin")?;
+        let manual = ordering_finding(Severity::Error, FixSupport::None, "manual")?;
+        let first = ordering_finding(Severity::Error, FixSupport::RestrictedAnnotation, "site-a")?;
+        let second = ordering_finding(
+            Severity::Warning,
+            FixSupport::RestrictedAnnotation,
+            "site-b",
+        )?;
+        let mut findings = vec![
+            warning.clone(),
+            second,
+            error.clone(),
+            first,
+            manual,
+            error,
+            warning,
+        ];
+        super::sort_and_dedup_findings(&mut findings);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.message.as_str())
+                .collect::<Vec<_>>(),
+            ["manual", "origin", "site-a", "origin", "site-b"]
+        );
+        let wires = findings
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            wires
+                .iter()
+                .map(|wire| wire["severity"].as_str())
+                .collect::<Vec<_>>(),
+            [
+                Some("error"),
+                Some("error"),
+                Some("error"),
+                Some("warning"),
+                Some("warning")
+            ]
+        );
+        assert_eq!(findings[2].fix_support(), FixSupport::RestrictedAnnotation);
+        assert_eq!(findings[4].fix_support(), FixSupport::None);
+        // Persistence alone withdraws the second shared-site fix, preserving its origin.
+        assert_eq!(wires[4]["fixability"], "none");
+        assert_eq!(findings[4].input_order(), findings[3].input_order());
+        Ok(())
+    }
+
+    fn ordering_finding(
+        severity: Severity,
+        support: FixSupport,
+        message: &str,
+    ) -> anyhow::Result<Finding> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "severity": severity, "fixability": support,
+            "diagnostic_code": "suspicious_pub", "path": "src/lib.rs",
+            "line": 1, "column": 1, "highlight_len": 3,
+            "source_line": "pub fn item() {}", "item": "item", "message": message,
+        }))?)
+    }
 
     const CONFIG_FINGERPRINT: &str = "config-fingerprint";
 

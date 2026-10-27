@@ -213,7 +213,11 @@ pub(super) fn build_inline_call_findings_and_fixes(
         let (message, suggestion) = inline_call_text(candidate, &rewrite);
 
         findings.push(Finding {
-            severity: Severity::Warning,
+            disposition: Finding::disposition(
+                DiagnosticCode::PreferModuleImport,
+                Severity::Warning,
+                FixSupport::PreferModuleImport,
+            ),
             diagnostic_code: DiagnosticCode::PreferModuleImport,
             path: display_path.clone(),
             line: candidate.full_span_start.line,
@@ -223,7 +227,6 @@ pub(super) fn build_inline_call_findings_and_fixes(
             item: None,
             message,
             suggestion: Some(suggestion),
-            fix_support: FixSupport::PreferModuleImport,
             related: None,
             item_visibility: ItemVisibility::default(),
         });

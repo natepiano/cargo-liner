@@ -10,7 +10,6 @@ use crate::reporting::constants::CARGO_MEND_FIX_ALL;
 use crate::reporting::constants::CARGO_MEND_FIX_COMPILER;
 use crate::reporting::constants::CARGO_MEND_FIX_PUB_USE;
 use crate::reporting::constants::SUMMARY_LABEL;
-use crate::reporting::diagnostics;
 use crate::reporting::diagnostics::FixSummaryBucket;
 use crate::reporting::diagnostics::Report;
 use crate::reporting::diagnostics::Severity;
@@ -124,9 +123,9 @@ fn mend_fixable_counts(report: &Report, severity: Severity) -> MendFixableCounts
     for finding in report
         .findings
         .iter()
-        .filter(|finding| diagnostics::effective_severity(finding) == severity)
+        .filter(|finding| finding.severity() == severity)
     {
-        match diagnostics::effective_fixability(finding).summary_bucket() {
+        match finding.fixability().summary_bucket() {
             Some(FixSummaryBucket::Standard) => standard += 1,
             Some(FixSummaryBucket::PubUse) => pub_use += 1,
             None => {},
@@ -309,7 +308,11 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:        Severity::Warning,
+                disposition:     Finding::disposition(
+                    DiagnosticCode::NarrowToPubCrate,
+                    Severity::Warning,
+                    FixSupport::NarrowToPubCrate,
+                ),
                 diagnostic_code: DiagnosticCode::NarrowToPubCrate,
                 path:            "src/lib.rs".to_string(),
                 line:            1,
@@ -319,7 +322,6 @@ mod tests {
                 item:            Some("example".to_string()),
                 message:         "example warning".to_string(),
                 suggestion:      Some("pub(crate) fn example() {}".to_string()),
-                fix_support:     FixSupport::NarrowToPubCrate,
                 related:         None,
                 item_visibility: ItemVisibility::default(),
             }],
@@ -430,7 +432,11 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:        Severity::Warning,
+                disposition:     Finding::disposition(
+                    DiagnosticCode::InternalParentPubUseFacade,
+                    Severity::Warning,
+                    FixSupport::PubUse,
+                ),
                 diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
                 path:            "src/lib.rs".to_string(),
                 line:            1,
@@ -440,7 +446,6 @@ mod tests {
                 item:            None,
                 message:         "example".to_string(),
                 suggestion:      None,
-                fix_support:     FixSupport::PubUse,
                 related:         None,
                 item_visibility: ItemVisibility::default(),
             }],
@@ -456,7 +461,11 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:        Severity::Error,
+                disposition:     Finding::disposition(
+                    DiagnosticCode::ForbiddenPubInCrate,
+                    Severity::Error,
+                    FixSupport::None,
+                ),
                 diagnostic_code: DiagnosticCode::ForbiddenPubInCrate,
                 path:            "src/lib.rs".to_string(),
                 line:            1,
@@ -466,7 +475,6 @@ mod tests {
                 item:            Some("x".to_string()),
                 message:         "forbidden".to_string(),
                 suggestion:      None,
-                fix_support:     FixSupport::None,
                 related:         None,
                 item_visibility: ItemVisibility::default(),
             }],
@@ -478,7 +486,11 @@ mod tests {
         let mut report = Report {
             root: ".".to_string(),
             findings: vec![Finding {
-                severity:        Severity::Error,
+                disposition:     Finding::disposition(
+                    DiagnosticCode::ForbiddenPubInCrate,
+                    Severity::Error,
+                    FixSupport::RestrictedAnnotation,
+                ),
                 diagnostic_code: DiagnosticCode::ForbiddenPubInCrate,
                 path:            "src/lib.rs".to_string(),
                 line:            1,
@@ -489,7 +501,6 @@ mod tests {
                 message:         "restricted visibility does not match the required boundary"
                     .to_string(),
                 suggestion:      Some("consider using: `pub(in crate::panel)`".to_string()),
-                fix_support:     FixSupport::RestrictedAnnotation,
                 related:         None,
                 item_visibility: ItemVisibility::default(),
             }],
