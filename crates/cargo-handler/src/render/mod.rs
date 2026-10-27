@@ -1964,3 +1964,6 @@ mod moving_role_tests;
 mod selected_ink_tests;
 #[cfg(test)]
 mod selection_tests;
+
+#[cfg(test)]
+mod status_bar_contrast_tests;

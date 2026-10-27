@@ -18763,3 +18763,7 @@ mod tests {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "render/status_bar_contrast_tests.rs"]
+mod status_bar_contrast_tests;

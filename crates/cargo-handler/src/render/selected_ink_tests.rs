@@ -84,9 +84,9 @@ fn covered_contrast(ink: Color, ground: Color) -> f64 {
             other => panic!("unresolved drawn color {other:?}"),
         }
     }
-    fn luminance(rgb: [u8; 3]) -> f64 {
+    fn luminance(rgb: [f64; 3]) -> f64 {
         let linear = rgb.map(|channel| {
-            let value = f64::from(channel) / 255.0;
+            let value = channel / 255.0;
             if value <= 0.04045 {
                 value / 12.92
             } else {
@@ -99,14 +99,18 @@ fn covered_contrast(ink: Color, ground: Color) -> f64 {
             f64::mul_add(linear[1], 0.7152, linear[0] * 0.2126),
         )
     }
-    let ink = rgb(ink);
-    let ground = rgb(ground);
-    let covered = std::array::from_fn(|index| {
-        u8::try_from((u32::from(ink[index]) * 208 + u32::from(ground[index]) * 47) / 255)
-            .expect("weighted byte")
-    });
-    let (first, second) = (luminance(covered), luminance(ground));
-    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+    let ink = rgb(ink).map(f64::from);
+    let ground = rgb(ground).map(f64::from);
+    let covered =
+        std::array::from_fn(|index| f64::mul_add(ground[index], 47.0, ink[index] * 208.0) / 255.0);
+    let second = luminance(ground);
+    [covered, covered.map(f64::round)]
+        .map(|channels| {
+            let first = luminance(channels);
+            (first.max(second) + 0.05) / (first.min(second) + 0.05)
+        })
+        .into_iter()
+        .fold(f64::INFINITY, f64::min)
 }
 
 fn fixture() -> Vec<AgentRow> {
@@ -180,8 +184,9 @@ fn check_theme(theme_name: &str) {
             .into(),
             stage:     ScanStage::Completed,
         });
-        // Selection and the timer words change ink, not this fixture's row positions.
-        let layout = frame(&mut app, CLOCK);
+        // Selection and timer words keep the settled row positions fixed.
+        let mut renderer = SelectedRowRenderer::new(&mut app, 48);
+        let layout = renderer.terminal.backend().buffer().clone();
         for (label, now, word) in [
             ("colored-session", CLOCK, "thinking"),
             ("timed-shell", CLOCK - 1, "0:01"),
@@ -194,7 +199,7 @@ fn check_theme(theme_name: &str) {
                 if !focused {
                     app.click(position(&layout, "other-ground"));
                 }
-                let drawn = frame(&mut app, now);
+                let drawn = renderer.paint(&mut app, now);
                 let point = position(&drawn, label);
                 let expected = if focused {
                     tui_pane::active_focus_color()
@@ -376,6 +381,8 @@ fn check_selected_hues(theme_name: &str, tint: bool) {
     tui_pane::set_focused_pane_tint(tint);
     let mut app = selection_application(&directory.path().join("statusline.conf"));
     let mut renderer = SelectedRowRenderer::new(&mut app, 48);
+    // Only styles and timer words change; clicks use settled row positions.
+    let layout = renderer.terminal.backend().buffer().clone();
     for (label, now) in [
         ("colored-session", CLOCK),
         ("timed-shell", CLOCK - 1),
@@ -389,17 +396,14 @@ fn check_selected_hues(theme_name: &str, tint: bool) {
             "untimed-shell"
         };
         for focused in [true, false] {
-            let before = renderer.paint(&mut app, now);
-            app.click(position(&before, alternative));
+            app.click(position(&layout, alternative));
             if !focused {
-                let current = renderer.paint(&mut app, now);
-                app.click(position(&current, "other-ground"));
+                app.click(position(&layout, "other-ground"));
             }
             let unselected = renderer.paint(&mut app, now);
             app.click(position(&unselected, label));
             if !focused {
-                let current = renderer.paint(&mut app, now);
-                app.click(position(&current, "other-ground"));
+                app.click(position(&layout, "other-ground"));
             }
             let selected = renderer.paint(&mut app, now);
             let old = position(&unselected, label);
@@ -467,7 +471,7 @@ fn selected_rows_keep_the_unselected_hue_in_tinted_high_contrast_light() {
     check_selected_hues("High Contrast Light", true);
 }
 
-// Fixed inks stay frozen across session palette changes. The session name uses
+// Fixed inks meet both fractional and nearest-byte 208/255 coverage floors. The session name uses
 // the first descendant entry, independent of the root ordinal.
 // Fixed ink order: Busy, Shell, unit role, claude1 account, plain text.
 #[test]
@@ -479,14 +483,14 @@ fn unselected_rows_keep_main_inks_in_default_dark() {
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(129, 129, 255),
-                Color::Rgb(176, 136, 96),
+                Color::Rgb(175, 135, 95),
                 Color::Rgb(255, 255, 255),
             ],
             [
                 Color::Rgb(100, 220, 100),
                 Color::Rgb(140, 230, 240),
                 Color::Rgb(165, 165, 255),
-                Color::Rgb(197, 169, 140),
+                Color::Rgb(197, 168, 138),
                 Color::Rgb(255, 255, 255),
             ],
         ],
@@ -499,17 +503,17 @@ fn unselected_rows_keep_main_inks_in_default_light() {
         "Default Light",
         [
             [
-                Color::Rgb(0, 109, 0),
-                Color::Rgb(0, 104, 87),
-                Color::Rgb(62, 62, 255),
-                Color::Rgb(111, 83, 56),
+                Color::Rgb(0, 108, 0),
+                Color::Rgb(0, 103, 86),
+                Color::Rgb(61, 61, 255),
+                Color::Rgb(110, 82, 55),
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(0, 90, 0),
-                Color::Rgb(0, 86, 72),
-                Color::Rgb(37, 37, 255),
-                Color::Rgb(91, 69, 46),
+                Color::Rgb(0, 89, 0),
+                Color::Rgb(0, 85, 71),
+                Color::Rgb(35, 35, 255),
+                Color::Rgb(90, 68, 45),
                 Color::Rgb(0, 0, 0),
             ],
         ],
@@ -525,14 +529,14 @@ fn unselected_rows_keep_main_inks_in_high_contrast_dark() {
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(129, 129, 255),
-                Color::Rgb(176, 136, 96),
+                Color::Rgb(175, 135, 95),
                 Color::Rgb(255, 255, 255),
             ],
             [
                 Color::Rgb(0, 255, 0),
                 Color::Rgb(0, 255, 255),
                 Color::Rgb(165, 165, 255),
-                Color::Rgb(197, 169, 140),
+                Color::Rgb(197, 168, 138),
                 Color::Rgb(255, 255, 255),
             ],
         ],
@@ -547,15 +551,15 @@ fn unselected_rows_keep_main_inks_in_high_contrast_light() {
             [
                 Color::Rgb(0, 100, 0),
                 Color::Rgb(0, 80, 65),
-                Color::Rgb(62, 62, 255),
-                Color::Rgb(111, 83, 56),
+                Color::Rgb(61, 61, 255),
+                Color::Rgb(110, 82, 55),
                 Color::Rgb(0, 0, 0),
             ],
             [
-                Color::Rgb(0, 90, 0),
+                Color::Rgb(0, 89, 0),
                 Color::Rgb(0, 80, 65),
-                Color::Rgb(37, 37, 255),
-                Color::Rgb(91, 69, 46),
+                Color::Rgb(35, 35, 255),
+                Color::Rgb(90, 68, 45),
                 Color::Rgb(0, 0, 0),
             ],
         ],
@@ -589,12 +593,12 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
             text,
         ];
         let mut app = selection_application(&directory.path().join("footer.conf"));
+        let mut renderer = SelectedRowRenderer::new(&mut app, 48);
+        let layout = renderer.terminal.backend().buffer().clone();
         for focused in [true, false] {
-            let before = frame(&mut app, CLOCK - 1);
-            app.click(position(&before, "untimed-shell"));
+            app.click(position(&layout, "untimed-shell"));
             if !focused {
-                let current = frame(&mut app, CLOCK - 1);
-                app.click(position(&current, "other-ground"));
+                app.click(position(&layout, "other-ground"));
             }
             for (now, label, words) in [
                 (
@@ -623,7 +627,7 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
                     vec![("running", 1), ("shell", 5), ("claude1", 4)],
                 ),
             ] {
-                let buffer = frame(&mut app, now);
+                let buffer = renderer.paint(&mut app, now);
                 let point = position(&buffer, label);
                 assert_ne!(
                     buffer[(point.x, point.y)].bg,
@@ -636,6 +640,12 @@ fn check_main_inks(theme_name: &str, expected: [[Color; 5]; 2]) {
                 );
                 for (word, index) in words {
                     let actual = row_ink(&buffer, label, word);
+                    let ratio = covered_contrast(actual, buffer[(point.x, point.y)].bg);
+                    if ratio < 4.5 {
+                        failures.push(format!(
+                            "{theme_name} tint={tint} focused={focused} {label} {word}: covered208={ratio:.9}"
+                        ));
+                    }
                     if tui_pane::blend_color(actual, actual, 0) != colors[index] {
                         failures.push(format!("{theme_name} tint={tint} focused={focused} {label} {word}: {actual:?} != {:?}", colors[index]));
                     }
@@ -873,20 +883,20 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
         stage: ScanStage::Completed,
     });
     let mut renderer = SelectedRowRenderer::new(&mut app, 80);
+    // The fixture keeps all row positions fixed while selection changes.
+    let layout = renderer.terminal.backend().buffer().clone();
     let mut measurements = Vec::new();
     let mut failures = Vec::new();
     for (index, (label, word)) in targets.iter().enumerate() {
-        let current = renderer.paint(&mut app, CLOCK);
         let alternate = &targets[(index + 1) % targets.len()].0;
-        app.click(position(&current, alternate));
+        app.click(position(&layout, alternate));
         let original = renderer.paint(&mut app, CLOCK);
         let original_ink = row_ink(&original, label, word);
         app.click(position(&original, label));
-        let mut selected = renderer.paint(&mut app, CLOCK);
         if !active {
-            app.click(position(&selected, "palette-focus-away"));
-            selected = renderer.paint(&mut app, CLOCK);
+            app.click(position(&layout, "palette-focus-away"));
         }
+        let selected = renderer.paint(&mut app, CLOCK);
         let point = position(&selected, label);
         let ground = selected[(point.x, point.y)].bg;
         let expected_ground = if active {

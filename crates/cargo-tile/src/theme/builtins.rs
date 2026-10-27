@@ -109,12 +109,12 @@ fn default_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(125, 125, 125)),
+            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
             hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
             remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Cyan),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 210, 210)),
             error:        StyleSpec::from_color(Color::Rgb(255, 115, 115)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
@@ -154,7 +154,7 @@ fn default_light() -> Theme {
             // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-            active_title:    StyleSpec::bold(Color::Rgb(137, 86, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(101, 63, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -163,7 +163,7 @@ fn default_light() -> Theme {
             remembered: StyleSpec::from_color(Color::Rgb(235, 235, 235)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 77, 110)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
@@ -173,7 +173,7 @@ fn default_light() -> Theme {
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),
-            secondary: StyleSpec::from_color(Color::Rgb(70, 70, 70)),
+            secondary: StyleSpec::from_color(Color::Rgb(69, 69, 69)),
             dim:       StyleSpec::from_color(Color::Rgb(130, 130, 130)),
             bright:    StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             bg_focus:  StyleSpec::from_color(Color::White),
@@ -259,7 +259,7 @@ fn high_contrast_light() -> Theme {
             // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Black),
-            active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(112, 48, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -468,6 +468,28 @@ mod tests {
         (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
     }
 
+    fn covered_contrast_ratio(foreground: Color, background: Color) -> f64 {
+        let ink = <[u8; 3]>::from(xterm_rgb(foreground)).map(f64::from);
+        let ground = <[u8; 3]>::from(xterm_rgb(background)).map(f64::from);
+        let covered = std::array::from_fn(|index| {
+            f64::mul_add(ground[index], 47.0 / 255.0, ink[index] * (208.0 / 255.0))
+        });
+        let luminance = |channels: [f64; 3]| {
+            let [red, green, blue] = channels.map(|channel| {
+                let channel = channel / 255.0;
+                if channel <= 0.04045 {
+                    channel / 12.92
+                } else {
+                    ((channel + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            0.2126f64.mul_add(red, 0.7152f64.mul_add(green, 0.0722 * blue))
+        };
+        let foreground = luminance(covered);
+        let background = luminance(ground);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
     fn for_each_pane_ground(theme: &Theme, mut check: impl FnMut(bool, bool, Color)) {
         let previous_theme = tui_pane::theme();
         let previous_transparency = tui_pane::transparent_background();
@@ -557,13 +579,35 @@ mod tests {
                 ("status disabled key and label", theme.text.secondary.color),
             ];
             for (name, ink) in inks {
-                let contrast = contrast_ratio(ink, background);
+                let contrast = covered_contrast_ratio(ink, background);
                 assert!(
                     contrast >= MIN_STATUS_LINE_TEXT_CONTRAST,
-                    "{} {name} contrast is {contrast:.2}:1",
+                    "{} {name} covered contrast is {contrast:.2}:1",
                     variant.id.as_str()
                 );
             }
         }
+    }
+
+    #[test]
+    fn selected_overlay_text_meets_covered_contrast_in_every_built_in_theme() {
+        let mut failures = Vec::new();
+        for variant in builtins() {
+            let theme = &variant.theme;
+            for (name, ground) in [
+                ("active", theme.focus.active.color),
+                ("hover", theme.focus.hover.color),
+            ] {
+                let ink = theme.text.default.color;
+                let ratio = covered_contrast_ratio(ink, ground);
+                if ratio < 4.5 {
+                    failures.push(format!(
+                        "{} {name}: {ink:?} on {ground:?}: {ratio:.9}:1",
+                        variant.id.as_str()
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

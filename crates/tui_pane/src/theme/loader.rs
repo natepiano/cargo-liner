@@ -20,6 +20,15 @@ use super::ThemeLoadError;
 use super::ThemeRegistry;
 use super::ThemeVariant;
 
+/// The application-owned source of user theme families.
+#[derive(Clone, Copy, Debug)]
+pub enum ThemeSource<'a> {
+    /// Install only the application's compiled-in themes.
+    BuiltinsOnly,
+    /// Extend the built-ins with theme files from this directory.
+    Directory(&'a Path),
+}
+
 struct FailedFile {
     path:  PathBuf,
     error: ThemeLoadError,
@@ -48,7 +57,8 @@ impl ThemeRegistry {
     /// [`Theme::roles`]: super::Theme::roles
     #[must_use]
     pub fn from_dir_with_builtins(dir: Option<&Path>, builtins: Vec<ThemeVariant>) -> Self {
-        Self::from_dir_with_parser(dir, builtins, |contents| toml::from_str(contents))
+        let source = dir.map_or(ThemeSource::BuiltinsOnly, ThemeSource::Directory);
+        Self::from_dir_with_parser(source, builtins, |contents| toml::from_str(contents))
     }
 
     /// Load app theme families with `parse`, retaining sorted file precedence,
@@ -58,13 +68,13 @@ impl ThemeRegistry {
     /// shared family. Parser errors are recorded beside file read errors.
     #[must_use]
     pub fn from_dir_with_parser<E: std::fmt::Display>(
-        dir: Option<&Path>,
+        source: ThemeSource<'_>,
         builtins: Vec<ThemeVariant>,
         parse: impl Fn(&str) -> Result<ThemeFamily, E>,
     ) -> Self {
         let builtin_roles: Vec<BuiltinRoles> = builtins.iter().map(BuiltinRoles::of).collect();
         let mut registry = Self::new_with_builtins(builtins);
-        let Some(dir) = dir else {
+        let ThemeSource::Directory(dir) = source else {
             return registry;
         };
         let (loaded, failed) = scan_themes_dir(dir, parse);
@@ -294,7 +304,7 @@ mod tests {
         write_file(&dir.path().join("good.toml"), "app-specific family");
         write_file(&dir.path().join("bad.toml"), "invalid app family");
         let registry = ThemeRegistry::from_dir_with_parser(
-            Some(dir.path()),
+            ThemeSource::Directory(dir.path()),
             builtins_with_roles(),
             |contents| -> Result<ThemeFamily, String> {
                 if contents == "app-specific family" {

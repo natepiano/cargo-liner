@@ -73,12 +73,12 @@ const fn default_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(125, 125, 125)),
+            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
             hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
             remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Cyan),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 213, 213)),
             error:        StyleSpec::from_color(Color::Red),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Yellow),
@@ -94,7 +94,7 @@ const fn default_dark() -> Theme {
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::DarkGray),
+            bar: StyleSpec::from_color(Color::Rgb(60, 60, 60)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(0, 90, 100)),
@@ -116,7 +116,7 @@ const fn default_light() -> Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::from_color(Color::Rgb(180, 120, 0))),
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-            active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(101, 63, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -125,7 +125,7 @@ const fn default_light() -> Theme {
             remembered: StyleSpec::from_color(Color::Rgb(235, 235, 235)),
         },
         semantic:    SemanticTheme {
-            accent:       StyleSpec::from_color(Color::Rgb(0, 95, 135)),
+            accent:       StyleSpec::from_color(Color::Rgb(0, 77, 110)),
             error:        StyleSpec::from_color(Color::Rgb(170, 0, 0)),
             on_error:     StyleSpec::from_color(Color::White),
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
@@ -135,7 +135,7 @@ const fn default_light() -> Theme {
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),
-            secondary: StyleSpec::from_color(Color::Rgb(70, 70, 70)),
+            secondary: StyleSpec::from_color(Color::Rgb(69, 69, 69)),
             dim:       StyleSpec::from_color(Color::Rgb(130, 130, 130)),
             bright:    StyleSpec::from_color(Color::Rgb(0, 95, 135)),
             bg_focus:  StyleSpec::from_color(Color::White),
@@ -217,7 +217,7 @@ const fn high_contrast_light() -> Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   Some(StyleSpec::bold(Color::Rgb(140, 60, 0))),
             inactive_border: StyleSpec::from_color(Color::Black),
-            active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(112, 48, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -324,5 +324,109 @@ mod tests {
                 DEFAULT_HC_LIGHT_THEME,
             ]
         );
+    }
+
+    const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+
+    fn selection_rgb(color: Color) -> (u8, u8, u8) {
+        let named = match color {
+            Color::Black | Color::Reset => 0,
+            Color::Red => 1,
+            Color::Green => 2,
+            Color::Yellow => 3,
+            Color::Blue => 4,
+            Color::Magenta => 5,
+            Color::Cyan => 6,
+            Color::Gray => 7,
+            Color::DarkGray => 8,
+            Color::LightRed => 9,
+            Color::LightGreen => 10,
+            Color::LightYellow => 11,
+            Color::LightBlue => 12,
+            Color::LightMagenta => 13,
+            Color::LightCyan => 14,
+            Color::White => 15,
+            Color::Rgb(red, green, blue) => return (red, green, blue),
+            Color::Indexed(index) => return xterm_indexed_rgb(index),
+        };
+        XTERM_ANSI_COLORS[named]
+    }
+
+    fn xterm_indexed_rgb(index: u8) -> (u8, u8, u8) {
+        if let Some(rgb) = XTERM_ANSI_COLORS.get(usize::from(index)) {
+            return *rgb;
+        }
+        if index < 232 {
+            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let offset = index - 16;
+            return (
+                LEVELS[usize::from(offset / 36)],
+                LEVELS[usize::from((offset % 36) / 6)],
+                LEVELS[usize::from(offset % 6)],
+            );
+        }
+        let gray = 8 + 10 * (index - 232);
+        (gray, gray, gray)
+    }
+
+    fn covered_contrast_ratio(foreground: Color, background: Color) -> f64 {
+        let ink = <[u8; 3]>::from(selection_rgb(foreground)).map(f64::from);
+        let ground = <[u8; 3]>::from(selection_rgb(background)).map(f64::from);
+        let covered = std::array::from_fn(|index| {
+            f64::mul_add(ground[index], 47.0 / 255.0, ink[index] * (208.0 / 255.0))
+        });
+        let luminance = |channels: [f64; 3]| {
+            let [red, green, blue] = channels.map(|channel| {
+                let channel = channel / 255.0;
+                if channel <= 0.04045 {
+                    channel / 12.92
+                } else {
+                    ((channel + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            0.2126f64.mul_add(red, 0.7152f64.mul_add(green, 0.0722 * blue))
+        };
+        let foreground = luminance(covered);
+        let background = luminance(ground);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    #[test]
+    fn selected_overlay_text_meets_covered_contrast_in_every_built_in_theme() {
+        let mut failures = Vec::new();
+        for variant in builtins() {
+            let theme = &variant.theme;
+            for (name, ground) in [
+                ("active", theme.focus.active.color),
+                ("hover", theme.focus.hover.color),
+            ] {
+                let ink = theme.text.default.color;
+                let ratio = covered_contrast_ratio(ink, ground);
+                if ratio < 4.5 {
+                    failures.push(format!(
+                        "{} {name}: {ink:?} on {ground:?}: {ratio:.9}:1",
+                        variant.id.as_str()
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

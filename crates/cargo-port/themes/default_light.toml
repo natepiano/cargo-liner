@@ -19,7 +19,7 @@ name       = "Default Light"
 
 [variants.pane_chrome]
 active_border   = { r = 180, g = 120, b = 0 }
-active_title    = { color = { r = 160, g = 100, b = 0 }, bold = true }
+active_title    = { color = { r = 101, g = 63, b = 0 }, bold = true }
 inactive_border = { r = 140, g = 140, b = 140 }
 inactive_title  = "Black"
 
@@ -29,7 +29,7 @@ hover      = { r = 220, g = 220, b = 220 }
 remembered = { r = 235, g = 235, b = 235 }
 
 [variants.semantic]
-accent       = { r = 0, g = 95, b = 135 }
+accent       = { r = 0, g = 77, b = 110 }
 error        = { r = 170, g = 0, b = 0 }
 inline_error = { r = 180, g = 95, b = 0 }
 label        = { r = 60, g = 100, b = 90 }
@@ -42,7 +42,7 @@ bg_focus  = "White"
 bright    = { r = 0, g = 95, b = 135 }
 default   = "Black"
 dim       = { r = 130, g = 130, b = 130 }
-secondary = { r = 70, g = 70, b = 70 }
+secondary = { r = 69, g = 69, b = 69 }
 
 [variants.roles]
 
