@@ -49,3 +49,7 @@ pub use host::TileGridPane;
 pub use host::TilePick;
 pub use host::handle_tile_click;
 pub use host::handle_tile_scroll;
+pub use settings::SummaryRowAllocation;
+
+#[cfg(test)]
+mod summary_allocation_tests;

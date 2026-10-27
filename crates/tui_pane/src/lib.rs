@@ -507,6 +507,7 @@ pub use tiles::CellReadoutFade;
 pub use tiles::FocusLocation;
 pub use tiles::MIN_INITIAL_ROWS;
 pub use tiles::SummaryFoot;
+pub use tiles::SummaryRowAllocation;
 pub use tiles::TABLE_CELL;
 pub use tiles::TILE_ROWS_CONTENT_LABEL;
 pub use tiles::TileAction;

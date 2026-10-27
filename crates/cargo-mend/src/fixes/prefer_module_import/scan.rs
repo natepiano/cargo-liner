@@ -842,7 +842,11 @@ fn build_function_finding(
     let (message, suggestion) = policy.finding_text(function);
 
     Finding {
-        severity: Severity::Warning,
+        disposition: Finding::disposition(
+            DiagnosticCode::PreferModuleImport,
+            Severity::Warning,
+            FixSupport::PreferModuleImport,
+        ),
         diagnostic_code: DiagnosticCode::PreferModuleImport,
         path: display_path.to_string(),
         line: function.span_start.line,
@@ -852,7 +856,6 @@ fn build_function_finding(
         item: None,
         message,
         suggestion: Some(suggestion),
-        fix_support: FixSupport::PreferModuleImport,
         related: None,
         item_visibility: ItemVisibility::default(),
     }
