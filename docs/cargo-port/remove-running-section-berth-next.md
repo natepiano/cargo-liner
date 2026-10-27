@@ -836,3 +836,15 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - A checkout of an integration branch keeps the per-holder cover checks. Missing or unreadable ancestry keeps the old conservative observation. Integration targets come from the ledger's recorded targets, not branch-name guesses.
 - No journal, disposition, output contract or replay change.
 - Proof: `an_integrated_fast_forward_is_not_a_post_write` (`tests/drift.rs`) failed before (incursion on a held path, widening onto received paths). Companion tests: the unit's own committed foreign-scope path still incurs after a merge; a dirty edit after the fast-forward still incurs. 1298/1298.
+
+### Phase 35 — Tests leave no paths behind in shared temp roots  · status: done
+
+#### As-built
+
+- Why: builds-unit found test leftovers in `/tmp/cache`, `/tmp/claude` and the live `/tmp/claude/unit`, where the census scans. Showrunner, 2026-10-27.
+- cargo-port `supervisor.rs`: both `/tmp/cache` `cache_root` values come from a test-owned `TempDir`.
+- cargo-berth `tests/hooks.rs`: `SCRATCH_ROOT` is gone; every fixture uses a default `TempDir`. Three wrappers that could no longer fail were removed; callers use the template constants directly.
+- tui_pane `app_config/loaded.rs`: the test `Scratch` owns a `TempDir`, not a fixed `tui_pane-<test>-<pid>` path.
+- cargo-handler: session discovery takes its roots as input (showrunner-approved production change). `SessionRoots` (`pub(super)`, `census/worker_dispatch/mod.rs`) owns the root directories; `SessionRoots::production()` is the one conversion of `SESSION_ROOTS`, built once in `LocalScanner::new`. `WorkerNames::session_dirs`, `resolve` and `name` take `&SessionRoots`. Production roots, session-id parsing and order are unchanged.
+- Every fixture in `worker_dispatch/{tests,dispatch_form_tests,naming_tests,prompt_opening_tests}.rs` and `census/scan/activity_scan_tests.rs` lives in a `TempDir`. New test `session_discovery_uses_only_supplied_roots_and_preserves_id_boundaries_and_order`.
+- Proof: cargo-port 1082/1082, cargo-handler 683/683, tui_pane 1140/1140, cargo-berth 1298/1298. No new entry in the three shared roots after the suites.

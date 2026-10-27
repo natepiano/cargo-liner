@@ -408,6 +408,23 @@ struct SeatClaim {
     worker: String,
 }
 
+/// The directories under which task prompts can identify worker sessions.
+#[derive(Debug)]
+pub(super) struct SessionRoots {
+    directories: Vec<PathBuf>,
+}
+
+impl SessionRoots {
+    pub(super) fn new(directories: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            directories: directories.into_iter().collect(),
+        }
+    }
+
+    /// Production discovery keeps the configured unit and delegate roots in order.
+    pub(super) fn production() -> Self { Self::new(SESSION_ROOTS.map(PathBuf::from)) }
+}
+
 /// A roster cached by its file modification time, never searched globally.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
@@ -510,18 +527,19 @@ impl WorkerNames {
         }
     }
 
-    /// Session paths mentioned by the first task prompt, in either supported root.
-    pub(super) fn session_dirs(prompt: &str) -> Vec<PathBuf> {
+    /// Session paths mentioned by the first task prompt under the supplied roots.
+    pub(super) fn session_dirs(prompt: &str, roots: &SessionRoots) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        for root in SESSION_ROOTS {
-            for (index, _) in prompt.match_indices(root) {
+        for directory in &roots.directories {
+            let root = format!("{}/", directory.display().to_string().trim_end_matches('/'));
+            for (index, _) in prompt.match_indices(&root) {
                 let suffix = &prompt[index + root.len()..];
                 let id: String = suffix
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
                     .collect();
                 if !id.is_empty() {
-                    paths.push(PathBuf::from(format!("{root}{id}")));
+                    paths.push(directory.join(id));
                 }
             }
         }
@@ -557,9 +575,10 @@ impl WorkerNames {
         thread_id: &str,
         prompt: &str,
         worktree: &ThreadWorktree,
+        roots: &SessionRoots,
     ) -> WorkerDispatch {
         let mut selected = None;
-        for directory in Self::session_dirs(prompt) {
+        for directory in Self::session_dirs(prompt, roots) {
             let (modified, roster) = self.roster_snapshot(&directory);
             let modified = *modified;
             for (seat, worker) in &roster.seats {
@@ -601,8 +620,9 @@ impl WorkerNames {
         prompt: &str,
         worktree: &ThreadWorktree,
         role: WorkerRoleSource,
+        roots: &SessionRoots,
     ) -> String {
-        match self.resolve(thread_id, prompt, worktree) {
+        match self.resolve(thread_id, prompt, worktree, roots) {
             WorkerDispatch::Worker(dispatch) => dispatch.label(),
             WorkerDispatch::Plain => {
                 JobText::parse(prompt, JobSource::FirstTaskPrompt).label(role.text())
