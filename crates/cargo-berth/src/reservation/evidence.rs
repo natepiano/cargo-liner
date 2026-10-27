@@ -117,12 +117,12 @@ pub(crate) enum ScopedPatchComparisonObservation {
     Deferred,
 }
 
-/// Read the full commit currently named by the configured trunk branch.
+/// Read the configured branch's integration proof: upstream when configured, local otherwise.
 pub(crate) fn current_trunk(
     objects: &OperationObjectReader,
     trunk_branch: &str,
 ) -> Result<GitObjectId, GitError> {
-    git::branch_object_id(objects, trunk_branch)
+    git::IntegrationProofRef::resolve(objects, trunk_branch)?.commit(objects)
 }
 
 /// Integration of the complete reservation, including its current uncommitted work.

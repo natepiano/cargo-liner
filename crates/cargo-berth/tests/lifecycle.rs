@@ -4347,6 +4347,160 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_local_merge_waits_for_the_pushed_integration_target() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let id = claim(&fixture.holder, "file:pushed.rs", FIRST_RUN);
+        commit(&fixture.holder, "pushed.rs", "work waiting for push\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+
+        let local = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&local, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{local}"
+        );
+        GIT.run(fixture.trunk(), ["push", "--quiet", "origin", "main"]);
+        let pushed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&pushed, &id)["lifecycle"]["stage"],
+            "released",
+            "{pushed}"
+        );
+        assert_eq!(
+            snapshot(&pushed, &id)["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+    }
+
+    #[test]
+    fn rolling_back_an_unpushed_merge_loses_no_integration_evidence() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let before = GIT.stdout(fixture.trunk(), ["rev-parse", "HEAD"]);
+        let id = claim(&fixture.holder, "file:rollback.rs", FIRST_RUN);
+        commit(&fixture.holder, "rollback.rs", "work waiting for push\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+        board(fixture.trunk());
+        GIT.run(fixture.trunk(), ["reset", "--quiet", "--hard", &before]);
+        let rolled_back = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&rolled_back, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{rolled_back}"
+        );
+        assert_eq!(
+            snapshot(&rolled_back, &id)["integration_evidence"]["status"]["status"],
+            "not_integrated"
+        );
+        assert!(
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| event["op"] == "release" && event["reservation_id"] == id)
+        );
+        assert!(
+            !rolled_back
+                .to_string()
+                .contains("lost_integration_evidence"),
+            "{rolled_back}"
+        );
+    }
+
+    #[test]
+    fn checkpoint_after_an_unpushed_merge_uses_the_pushed_tip() {
+        let fixture = Repository::with_trunk_requester();
+        let origin = tempdir().expect("origin directory");
+        GIT.run(origin.path(), ["init", "--quiet", "--bare"]);
+        GIT.run(
+            fixture.trunk(),
+            [
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_str().expect("origin path"),
+            ],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        let pushed_tip = GIT.stdout(fixture.trunk(), ["rev-parse", "origin/main"]);
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "not pushed\n");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "-m", "local merge", "holder"],
+        );
+        let local = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&local, &id)["lifecycle"]["stage"],
+            "active",
+            "{local}"
+        );
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        let checkpoint = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+            .expect("checkpoint event");
+        assert_eq!(checkpoint["trunk_snapshot"], pushed_tip);
+        GIT.run(fixture.trunk(), ["reset", "--quiet", "--hard", &pushed_tip]);
+        let rolled_back = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&rolled_back, &id)["integration_evidence"]["status"]["status"],
+            "not_integrated",
+            "{rolled_back}"
+        );
+    }
+
+    #[test]
     fn integrated_checkpoint_settles_while_a_live_reservation_protects_later_work() {
         let fixture = Repository::new();
         let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);

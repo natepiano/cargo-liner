@@ -69,6 +69,7 @@ pub(crate) use reachability::reservation_checkpoint_commits;
 pub(crate) use reachability::unmerged_branch_path_queries;
 pub(crate) use reachability::unmerged_branch_paths;
 pub(crate) use refs::HeadAttachment;
+pub(crate) use refs::IntegrationProofRef;
 pub(crate) use refs::LocalBranchRenameTargetResolution;
 pub(crate) use refs::LocalTargetUpstream;
 pub(crate) use refs::PreparedRetentionRefTransaction;
