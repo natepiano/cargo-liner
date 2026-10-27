@@ -1868,6 +1868,93 @@ fn merged_trunk_commits_do_not_raise_an_incursion() {
 }
 
 #[test]
+fn an_integrated_fast_forward_is_not_a_post_write() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    let claims_before = repo
+        .journal()
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .count();
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    let observed = post_commit_drift(&lane, &[]);
+    assert_success(&observed);
+    assert_eq!(json(&observed)["status"], "clear", "{}", json(&observed));
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        claims_before
+    );
+    assert!(
+        !repo
+            .journal()
+            .iter()
+            .any(|event| { event["op"] == "widen" || event["op"] == "incursion" })
+    );
+}
+
+#[test]
+fn a_merge_keeps_the_units_own_committed_paths() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    assert_success(&repo.claim(&repo.integration, "file:unit.txt", FIRST_RUN, None));
+    fs::write(repo.integration.join("unit.txt"), "holder work\n").expect("holder edit");
+    let own_commit = commit_entering_path(&lane, "unit.txt", "unit work\n");
+    repo.git_without_hooks(&lane, &["merge", "--no-ff", "--no-edit", "integration"]);
+    let observed = post_commit_drift(&lane, &[]);
+    let response = json(&observed);
+    assert_eq!(response["status"], "incursion", "{response}");
+    let effects = incursion_effects(&response);
+    let own_entry = incursion_for(&effects, "unit.txt");
+    assert_eq!(own_entry["commits"][0]["commit"], own_commit, "{response}");
+    assert_eq!(own_entry["paths"], serde_json::json!(["unit.txt"]));
+    assert_eq!(effects.len(), 1, "{response}");
+    assert!(!repo.journal().iter().any(|event| event["op"] == "widen"));
+}
+
+#[test]
+fn a_working_tree_edit_after_an_integrated_fast_forward_still_counts() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    fs::write(lane.join("held.txt"), "unit entered the held path\n").expect("edit");
+    let observed = post_commit_drift(&lane, &[]);
+    assert_eq!(
+        json(&observed)["status"],
+        "incursion",
+        "{}",
+        json(&observed)
+    );
+    assert_ne!(
+        incursion_effects(&json(&observed)),
+        [] as [serde_json::Value; 0]
+    );
+}
+
+fn integrated_merge_fixture() -> (IntegrationRepository, PathBuf, String) {
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let lane = repo.main_lane("receiving-unit");
+    // A recorded child target identifies integration as a trunk even for a lane
+    // whose own target remains main.
+    let child = repo.lane("child-unit", "integration");
+    assert_success(&repo.claim(&child, "file:child.txt", THIRD_RUN, None));
+    let claim = repo.claim(&lane, "file:own.txt", SECOND_RUN, None);
+    assert_success(&claim);
+    let id = json(&claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    assert_success(&repo.claim(&repo.integration, "file:held.txt", FIRST_RUN, None));
+    commit_entering_path(&repo.integration, "held.txt", "integrated held content\n");
+    commit_entering_path(
+        &repo.integration,
+        "received.txt",
+        "integrated free content\n",
+    );
+    fs::write(repo.integration.join("held.txt"), "holder still working\n").expect("holder edit");
+    (repo, lane, id)
+}
+
+#[test]
 fn merged_integration_target_commits_are_not_attributed_to_the_lane() {
     let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("target-drift-lane", "integration");
