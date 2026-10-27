@@ -406,25 +406,12 @@ fn navigate_project_list(app: &mut App, action: NavAction) {
 
 fn navigate_detail(app: &mut App, action: NavAction) {
     let pane = active_detail_pane(app);
-    navigate_viewport(pane, action);
-}
-
-fn navigate_viewport(pane: &mut Viewport, action: NavAction) {
-    match action {
-        NavAction::Up | NavAction::Left => pane.up(),
-        NavAction::Down | NavAction::Right => pane.down(),
-        NavAction::Home => pane.home(),
-        NavAction::End => pane.end(),
-        NavAction::PageUp => pane.page_up(),
-        NavAction::PageDown => pane.page_down(),
-        NavAction::HalfPageUp => pane.half_page_up(),
-        NavAction::HalfPageDown => pane.half_page_down(),
-    }
+    pane.navigate(action);
 }
 
 pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
     let Some(package) = app.panes.package.content() else {
-        navigate_viewport(&mut app.panes.package.viewport, action);
+        app.panes.package.viewport.navigate(action);
         return;
     };
 
@@ -531,7 +518,7 @@ fn navigate_output(app: &mut App, action: NavAction) {
     let borrows = app.split_output_for_navigation();
     let live = borrows.output_presentation.captured_lines();
     borrows.output.navigate(live, |viewport| {
-        navigate_viewport(viewport, action);
+        viewport.navigate(action);
     });
 }
 

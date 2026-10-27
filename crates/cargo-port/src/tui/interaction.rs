@@ -177,12 +177,12 @@ impl InputContext for App {
 /// to whichever owner holds the target viewport. `ProjectList`'s
 /// cursor lives on `Selection.cursor`; callers route through
 /// `app.project_list.set_cursor(row)`, not this fn.
-pub(super) const fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
+pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     match id {
         PaneId::ProjectList => {},
         PaneId::Toasts => app.framework.toasts.viewport.set_pos(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
-        PaneId::Settings => app.framework.settings_pane.viewport_mut().set_pos(row),
+        PaneId::Settings => app.framework.settings_pane.select_row(row),
         PaneId::Sccache => app.overlays.sccache_pane.viewport_mut().set_pos(row),
         _ => {
             if let Some(viewport) = viewport_mut_for(app, id) {
@@ -215,7 +215,7 @@ const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
     match pane {
         PaneId::Toasts => app.framework.toasts.viewport.set_hovered(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_hovered(row),
-        PaneId::Settings => app.framework.settings_pane.viewport_mut().set_hovered(row),
+        PaneId::Settings => app.framework.settings_pane.set_hovered(row),
         PaneId::Sccache => app.overlays.sccache_pane.viewport_mut().set_hovered(row),
         _ => {
             if let Some(viewport) = viewport_mut_for(app, pane) {

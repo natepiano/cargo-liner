@@ -35,6 +35,7 @@ mod tests {
     use serde::Serialize;
 
     use super::PubInPath;
+    use crate::config::constants::PUB_IN_PATH_KEY;
 
     #[derive(Deserialize, Serialize)]
     struct Config {
@@ -49,16 +50,17 @@ mod tests {
     #[test]
     fn string_values_round_trip_through_serde() {
         for (value, pub_in_path) in [
-            ("forbidden", PubInPath::Forbidden),
-            ("permitted", PubInPath::Permitted),
-            ("required", PubInPath::Required),
+            (PubInPath::Forbidden.config_value(), PubInPath::Forbidden),
+            (PubInPath::Permitted.config_value(), PubInPath::Permitted),
+            (PubInPath::Required.config_value(), PubInPath::Required),
         ] {
-            let parsed: Config = toml::from_str(&format!("pub_in_path = \"{value}\"\n")).unwrap();
+            let parsed: Config =
+                toml::from_str(&format!("{PUB_IN_PATH_KEY} = \"{value}\"\n")).unwrap();
 
             assert_eq!(parsed.pub_in_path, pub_in_path);
             assert_eq!(
                 toml::to_string(&parsed).unwrap(),
-                format!("pub_in_path = \"{value}\"\n")
+                format!("{PUB_IN_PATH_KEY} = \"{value}\"\n")
             );
         }
     }

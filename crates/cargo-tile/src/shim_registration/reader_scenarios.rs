@@ -142,6 +142,17 @@ fn run_reader_script(scenario: &str) {
 
 fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+    let executable = std::env::current_exe().expect("integration reader executable");
+    // Foundation reads the executable directory when it first reads system
+    // appearance. Keep that read inside the fixture, away from build artifacts.
+    #[cfg(target_os = "macos")]
+    let executable = {
+        let staged = directory
+            .path()
+            .join(executable.file_name().expect("reader executable file name"));
+        fs::copy(&executable, &staged).expect("stage isolated reader executable");
+        staged
+    };
     let stdout_path = directory.path().join("scenario.stdout");
     let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
@@ -151,7 +162,7 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
         .arg("-S")
         .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
-        .arg(std::env::current_exe().expect("integration reader executable"))
+        .arg(executable)
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/cargo-capture-shim.sh"

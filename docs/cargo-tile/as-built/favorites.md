@@ -188,7 +188,7 @@ draws one recognized row uniformly through `draw_recognized_settings(rows, seed)
 usable favorite — missing, unreadable, unparseable, unresolvable location, loaded-but-empty,
 or loaded with no recognized row — instead opens the overlay at the matching diagnostic
 through `FavoritesOverlay::open_file_state`, rather than doing nothing. An adjusted
-application is reported through `favorites_overlay::report_closed_overlay_adjustment(&mut App,
+application is reported through `favorites_overlay::globals::report_closed_overlay_adjustment(&mut App,
 SettingsApplicationOutcome)`: silent on `AppliedExactly`, a scheduled lowercase warning toast
 otherwise. The clamp lands in the running attract state only and never rewrites the saved
 file.

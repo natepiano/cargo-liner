@@ -24,13 +24,12 @@ use syn::TraitItem;
 
 use super::ConditionalAttributes;
 
-/// The file text a visitor reads gate source from. `ConditionalAttributes`
-/// reproduces a gate verbatim from the original bytes rather than re-rendering
-/// the parsed `Meta`, so it needs the text and the line offsets that map a
-/// span back into it.
-pub(in crate::fixes) struct GateSource<'a> {
-    pub(in crate::fixes) text:         &'a str,
-    pub(in crate::fixes) line_offsets: &'a [usize],
+/// A borrowed checked source owner. Gate extraction shares the traversal's
+/// index rather than rebuilding it or trusting an independent offsets slice.
+/// `ConditionalAttributes` reads the original gate bytes rather than re-rendering
+/// `Meta`, so moved imports keep the predicates as written.
+pub(in crate::fixes) struct GateSource<'a, 'source> {
+    pub(in crate::fixes) indexed: &'a super::ImportSource<'source>,
 }
 
 /// A `syn::Visit` implementor that accumulates the `#[cfg]` gates enclosing the
@@ -38,16 +37,19 @@ pub(in crate::fixes) struct GateSource<'a> {
 /// push/restore pair from the defaults and the traversal from
 /// [`gate_tracking_visit`].
 pub(in crate::fixes) trait GateTracking {
-    fn gate_source(&self) -> GateSource<'_>;
+    fn gate_source(&self) -> GateSource<'_, '_>;
 
     fn conditional_attributes_mut(&mut self) -> &mut ConditionalAttributes;
 
     /// Add `attributes`' gates to the enclosing set and return the length to
     /// hand back to [`Self::restore_gates`] once the subtree is visited.
     fn push_gates(&mut self, attributes: &[Attribute]) -> usize {
+        if attributes.is_empty() {
+            return self.conditional_attributes_mut().len();
+        }
         let gates = {
             let source = self.gate_source();
-            ConditionalAttributes::from_attributes(source.text, source.line_offsets, attributes)
+            ConditionalAttributes::from_attributes(source.indexed, attributes)
         };
         let conditional_attributes = self.conditional_attributes_mut();
         let previous_len = conditional_attributes.len();

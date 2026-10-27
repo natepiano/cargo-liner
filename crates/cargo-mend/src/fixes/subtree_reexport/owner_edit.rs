@@ -105,7 +105,7 @@ fn edit_owner_source(
     let mut located = Vec::new();
     let mut unmatched = Vec::new();
     for fact in facts {
-        match locate(source, &lines, &syntax.items, fact) {
+        match locate(source, &lines, &syntax.items, fact)? {
             Some(found) => located.push(found),
             None => unmatched.push(fact.index),
         }
@@ -120,7 +120,12 @@ fn edit_owner_source(
     for found in located {
         let key = found
             .enclosing
-            .map(|item_mod| lines.offset(item_mod.span().start()));
+            .map(|item_mod| {
+                lines
+                    .position(item_mod.span().start())
+                    .map(SourceLines::offset)
+            })
+            .transpose()?;
         regions.entry(key).or_default().push(found);
     }
     let mut fixes = Vec::new();
@@ -153,8 +158,8 @@ fn edit_region(
             let Some((brace, items)) = &item_mod.content else {
                 return Ok(Vec::new());
             };
-            let start = lines.offset(brace.span.open().end());
-            let end = lines.offset(brace.span.close().start());
+            let (start, end) =
+                lines.span_range(brace.span.open().end(), brace.span.close().start())?;
             (start..end, items.as_slice())
         },
         None => (0..source.len(), file_items),
@@ -163,7 +168,7 @@ fn edit_region(
     // `items` groups the facts by the `use` item holding them, keyed by its start.
     let mut items: BTreeMap<usize, Vec<&Located<'_, '_>>> = BTreeMap::new();
     for found in region {
-        let (start, _) = facade_redirect::item_use_byte_range(lines, found.item_use);
+        let (start, _) = facade_redirect::item_use_byte_range(lines, found.item_use)?;
         items.entry(start).or_default().push(found);
     }
 
@@ -172,15 +177,15 @@ fn edit_region(
     // to blank before looking for local uses.
     let mut excluded = vec![0..region_range.start, region_range.end..source.len()];
     for group in items.values() {
-        let (start, end) = facade_redirect::item_use_byte_range(lines, group[0].item_use);
+        let (start, end) = facade_redirect::item_use_byte_range(lines, group[0].item_use)?;
         excluded.push(start..end);
     }
     for item in region_items {
         if let Item::Mod(item_mod) = item
             && item_mod.content.is_some()
         {
-            excluded
-                .push(lines.offset(item_mod.span().start())..lines.offset(item_mod.span().end()));
+            let (start, end) = lines.span_range(item_mod.span().start(), item_mod.span().end())?;
+            excluded.push(start..end);
         }
     }
 
@@ -195,7 +200,7 @@ fn edit_region(
                     LocalUse::Always
                 } else {
                     let reach = GlobReach { owner, name };
-                    let inline = reach.items_reach(source, lines, region_items, owner);
+                    let inline = reach.items_reach(source, lines, region_items, owner)?;
                     if inline == LocalUse::Always {
                         inline
                     } else {
@@ -209,7 +214,7 @@ fn edit_region(
                 });
             }
         }
-        rewrites.push(rewrite_item(source, lines, group, &used_leaves));
+        rewrites.push(rewrite_item(source, lines, group, &used_leaves)?);
     }
 
     let delete_module = emptied == EmptiedOwner::Delete
@@ -218,7 +223,8 @@ fn edit_region(
             .iter()
             .all(|rewrite| matches!(rewrite, ItemRewrite::Delete { .. }));
     if let Some(item_mod) = enclosing.filter(|_| delete_module) {
-        let range = lines.offset(item_mod.span().start())..lines.offset(item_mod.span().end());
+        let (start, end) = lines.span_range(item_mod.span().start(), item_mod.span().end())?;
+        let range = start..end;
         return Ok(vec![facade_redirect::line_deletion(file, source, range)]);
     }
     Ok(rewrites
@@ -252,9 +258,9 @@ fn rewrite_item(
     lines: &SourceLines<'_>,
     group: &[&Located<'_, '_>],
     used_leaves: &[UsedLeaf<'_>],
-) -> ItemRewrite {
+) -> Result<ItemRewrite> {
     let item_use = group[0].item_use;
-    let (start, end) = facade_redirect::item_use_byte_range(lines, item_use);
+    let (start, end) = facade_redirect::item_use_byte_range(lines, item_use)?;
     let removed = group
         .iter()
         .map(|found| written_segments(&found.fact.fact.written_path))
@@ -262,11 +268,13 @@ fn rewrite_item(
     let kept = facade_redirect::remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, ident| {
         removed.contains(&leaf_segments(prefix, ident))
     });
-    let tree_start = lines.offset(item_use.tree.span().start());
-    let attributes_end = match &item_use.vis {
-        Visibility::Inherited => lines.offset(item_use.use_token.span.start()),
-        visibility => lines.offset(visibility.span().start()),
+    let tree_start = SourceLines::offset(lines.position(item_use.tree.span().start())?);
+    let attributes_position = match &item_use.vis {
+        Visibility::Inherited => item_use.use_token.span.start(),
+        Visibility::Public(visibility) => visibility.span().start(),
+        Visibility::Restricted(visibility) => visibility.span().start(),
     };
+    let attributes_end = SourceLines::offset(lines.position(attributes_position)?);
     let attributes = &source[start..attributes_end];
     let mut pieces = Vec::new();
     if let Some(kept) = kept {
@@ -290,7 +298,7 @@ fn rewrite_item(
         pieces.push(format!("{attributes}{gate}use {};", leaf.written_path));
     }
     let mut pieces = pieces.into_iter();
-    pieces
+    Ok(pieces
         .next()
         .map_or(ItemRewrite::Delete { range: start..end }, |first| {
             ItemRewrite::Replace {
@@ -298,7 +306,7 @@ fn rewrite_item(
                 first,
                 rest: pieces.collect(),
             }
-        })
+        }))
 }
 
 /// Finds the `use` item whose byte range holds the fact's position, and checks
@@ -308,27 +316,36 @@ fn locate<'s, 'f>(
     lines: &SourceLines<'_>,
     items: &'s [Item],
     fact: &'f OwnerFact<'f>,
-) -> Option<Located<'s, 'f>> {
-    let line_start = visibility_annotation_site::line_byte_offset(source, fact.fact.use_line)?;
+) -> Result<Option<Located<'s, 'f>>> {
+    let Some(line_start) = visibility_annotation_site::line_byte_offset(source, fact.fact.use_line)
+    else {
+        return Ok(None);
+    };
     let line_end = source[line_start..]
         .find('\n')
         .map_or(source.len(), |index| line_start + index);
-    let position = line_start
-        + visibility_annotation_site::byte_offset_of_display_column(
-            &source[line_start..line_end],
-            fact.fact.use_column,
-        )?;
-    let (item_use, enclosing) = find_item_use(lines, items, None, position)?;
+    let Some(column) = visibility_annotation_site::byte_offset_of_display_column(
+        &source[line_start..line_end],
+        fact.fact.use_column,
+    ) else {
+        return Ok(None);
+    };
+    let position = line_start + column;
+    let Some((item_use, enclosing)) = find_item_use(lines, items, None, position)? else {
+        return Ok(None);
+    };
     let form_matches = match fact.fact.owner_module_form {
         ModuleForm::File => enclosing.is_none(),
         ModuleForm::Inline => enclosing.is_some(),
     };
     let leaf = written_segments(&fact.fact.written_path);
-    (form_matches && has_name_leaf(Vec::new(), &item_use.tree, &leaf)).then_some(Located {
-        fact,
-        item_use,
-        enclosing,
-    })
+    Ok(
+        (form_matches && has_name_leaf(Vec::new(), &item_use.tree, &leaf)).then_some(Located {
+            fact,
+            item_use,
+            enclosing,
+        }),
+    )
 }
 
 fn find_item_use<'s>(
@@ -336,18 +353,22 @@ fn find_item_use<'s>(
     items: &'s [Item],
     enclosing: Option<&'s ItemMod>,
     position: usize,
-) -> Option<(&'s ItemUse, Option<&'s ItemMod>)> {
-    items.iter().find_map(|item| match item {
-        Item::Use(item_use) => {
-            let (start, end) = facade_redirect::item_use_byte_range(lines, item_use);
-            (start <= position && position < end).then_some((item_use, enclosing))
-        },
-        Item::Mod(item_mod) => {
-            let (_, content) = item_mod.content.as_ref()?;
-            find_item_use(lines, content, Some(item_mod), position)
-        },
-        _ => None,
-    })
+) -> Result<Option<(&'s ItemUse, Option<&'s ItemMod>)>> {
+    for item in items {
+        if let Item::Use(item_use) = item {
+            let (start, end) = facade_redirect::item_use_byte_range(lines, item_use)?;
+            if start <= position && position < end {
+                return Ok(Some((item_use, enclosing)));
+            }
+        }
+        if let Item::Mod(item_mod) = item
+            && let Some((_, content)) = &item_mod.content
+            && let Some(found) = find_item_use(lines, content, Some(item_mod), position)?
+        {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
 }
 
 fn has_name_leaf(prefix: Vec<String>, tree: &UseTree, leaf: &[String]) -> bool {
@@ -469,6 +490,26 @@ mod tests {
             text.replace_range(fix.start..fix.end, &fix.replacement);
         }
         text
+    }
+
+    #[test]
+    fn inline_owner_edit_keeps_multibyte_prefix_and_surrounding_code() {
+        let source = concat!(
+            "mod panel { /* é */ pub use crate::source::Widget;",
+            " fn f(_: Widget) {} }\n",
+        );
+        let start = source.find("pub use").expect("re-export");
+        let column = source[..start].chars().count() + 1;
+        assert_eq!(
+            edited(
+                source,
+                &[fact(1, column, "Widget", "panel", ModuleForm::Inline)]
+            ),
+            concat!(
+                "mod panel { /* é */ use crate::source::Widget;",
+                " fn f(_: Widget) {} }\n",
+            )
+        );
     }
 
     #[test]

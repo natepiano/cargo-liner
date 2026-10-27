@@ -50,7 +50,13 @@ fn sorting_forest() -> MachineState {
         activity: AgentActivity::from(Some("thinking")),
         branch: Some("a-branch".into()),
         directory: "/a-directory".into(),
-        children: vec![child(0, ChildKind::Shell, Some(41), "a-shell", 2 * HOUR)],
+        children: vec![child(
+            0,
+            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+            Some(41),
+            "a-shell",
+            2 * HOUR,
+        )],
         ..agent(30, "alpha", 4 * HOUR, Some(10))
     };
     let nested = AgentRow {
@@ -159,13 +165,13 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     }
 
     for (name, hue) in [
-        ("zeta", RainbowHue::Orange),
-        ("nested", RainbowHue::Green),
-        ("alpha", RainbowHue::Cyan),
+        ("zeta", SessionHue::First),
+        ("nested", SessionHue::Second),
+        ("alpha", SessionHue::Third),
     ] {
         assert_eq!(
             name_color(&buffer, name),
-            Role::Rainbow(hue).style().fg.expect("rainbow color"),
+            Role::Session(hue).style().fg.expect("session color"),
             "{name}"
         );
     }
@@ -408,9 +414,21 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
                 2 * HOUR,
             ),
             older,
-            child(2, ChildKind::Shell, Some(51), "z-descendant", 45 * MINUTE),
+            child(
+                2,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(51),
+                "z-descendant",
+                45 * MINUTE,
+            ),
             younger,
-            child(2, ChildKind::Shell, Some(52), "a-descendant", 20 * MINUTE),
+            child(
+                2,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(52),
+                "a-descendant",
+                20 * MINUTE,
+            ),
         ],
         ..agent(10, "root", 10 * HOUR, None)
     };
@@ -515,9 +533,10 @@ fn sorting_preserves_the_footer_role_and_account_foregrounds() {
             ("a-account", Color::Indexed(208)),
             ("z-account", Color::Indexed(141)),
         ] {
+            let actual = buffer[find(&buffer, label).expect("account label")].fg;
             assert_eq!(
-                buffer[find(&buffer, label).expect("account label")].fg,
-                color
+                tui_pane::blend_color(actual, actual, 0),
+                tui_pane::blend_color(color, color, 0)
             );
         }
         let role_x = find(&buffer, "role").expect("role header").0;
@@ -585,7 +604,7 @@ fn independent_sort_forest() -> MachineState {
             directory: directory.into(),
             children: vec![child(
                 0,
-                ChildKind::Shell,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
                 Some(pid + 1),
                 &format!("under-{name}"),
                 MINUTE,

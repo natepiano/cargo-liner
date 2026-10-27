@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use proc_macro2::LineColumn;
 use proc_macro2::Span;
 use syn::Attribute;
 use syn::Expr;
@@ -10,6 +9,8 @@ use syn::Token;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
+use super::path::ImportSource;
+
 #[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::fixes) struct ConditionalAttributes {
     source: Vec<String>,
@@ -17,13 +18,15 @@ pub(in crate::fixes) struct ConditionalAttributes {
 
 impl ConditionalAttributes {
     pub(in crate::fixes) fn from_attributes(
-        text: &str,
-        line_offsets: &[usize],
+        indexed: &ImportSource<'_>,
         attributes: &[Attribute],
     ) -> Self {
+        if attributes.is_empty() {
+            return Self::default();
+        }
         let source = attributes
             .iter()
-            .filter_map(|attribute| conditional_attribute_source(text, line_offsets, attribute))
+            .filter_map(|attribute| conditional_attribute_source(indexed, attribute))
             .collect();
         Self { source }
     }
@@ -165,7 +168,7 @@ enum ConditionalMeta {
         predicate: Span,
         nested:    Vec<Self>,
     },
-    Other,
+    Ignored,
 }
 
 impl From<&Meta> for ConditionalMeta {
@@ -176,17 +179,18 @@ impl From<&Meta> for ConditionalMeta {
             };
         }
         if !meta.path().is_ident("cfg_attr") {
-            return Self::Other;
+            return Self::Ignored;
         }
-        let Meta::List(list) = meta else {
-            return Self::Other;
+        let list = match meta {
+            Meta::List(list) => list,
+            Meta::NameValue(_) | Meta::Path(_) => return Self::Ignored,
         };
         let Ok(metas) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
         else {
-            return Self::Other;
+            return Self::Ignored;
         };
         let Some(predicate) = metas.first() else {
-            return Self::Other;
+            return Self::Ignored;
         };
         Self::CfgAttr {
             predicate: predicate.span(),
@@ -200,61 +204,47 @@ impl ConditionalMeta {
         match self {
             Self::Cfg { .. } => true,
             Self::CfgAttr { nested, .. } => nested.iter().any(Self::applies_cfg),
-            Self::Other => false,
+            Self::Ignored => false,
         }
     }
 
-    fn gating_source(&self, text: &str, line_offsets: &[usize]) -> Option<String> {
+    fn gating_source(&self, indexed: &ImportSource<'_>) -> Option<String> {
         match self {
-            Self::Cfg { source } => Some(source_for_span(text, line_offsets, *source).to_string()),
+            Self::Cfg { source } => Some(source_for_span(indexed, *source)?.to_string()),
             Self::CfgAttr { predicate, nested } => {
                 let gating_attributes = nested
                     .iter()
-                    .filter_map(|nested| nested.gating_source(text, line_offsets))
+                    .filter_map(|nested| nested.gating_source(indexed))
                     .collect::<Vec<_>>();
                 if gating_attributes.is_empty() {
                     return None;
                 }
                 Some(format!(
                     "cfg_attr({}, {})",
-                    source_for_span(text, line_offsets, *predicate),
+                    source_for_span(indexed, *predicate)?,
                     gating_attributes.join(", ")
                 ))
             },
-            Self::Other => None,
+            Self::Ignored => None,
         }
     }
 }
 
 fn conditional_attribute_source(
-    text: &str,
-    line_offsets: &[usize],
+    source: &ImportSource<'_>,
     attribute: &Attribute,
 ) -> Option<String> {
     let conditional = ConditionalMeta::from(&attribute.meta);
     match conditional {
-        ConditionalMeta::Cfg { .. } => {
-            Some(source_for_span(text, line_offsets, attribute.span()).to_string())
-        },
-        ConditionalMeta::CfgAttr { .. } | ConditionalMeta::Other => conditional
-            .gating_source(text, line_offsets)
+        ConditionalMeta::Cfg { .. } => Some(source_for_span(source, attribute.span())?.to_string()),
+        ConditionalMeta::CfgAttr { .. } | ConditionalMeta::Ignored => conditional
+            .gating_source(source)
             .map(|meta| format!("#[{meta}]")),
     }
 }
 
-fn source_for_span<'a>(text: &'a str, line_offsets: &[usize], span: Span) -> &'a str {
-    let start = byte_offset(text, line_offsets, span.start());
-    let end = byte_offset(text, line_offsets, span.end());
-    &text[start..end]
-}
-
-fn byte_offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usize {
-    line_offsets
-        .get(position.line.saturating_sub(1))
-        .copied()
-        .unwrap_or(text.len())
-        .saturating_add(position.column)
-        .min(text.len())
+fn source_for_span<'a>(source: &ImportSource<'a>, span: Span) -> Option<&'a str> {
+    Some(source.locate(span.start(), span.end())?.text())
 }
 
 #[cfg(test)]
@@ -269,10 +259,10 @@ mod tests {
 
     fn gates(source: &str) -> (bool, String) {
         let item: ItemFn = syn::parse_str(source).expect("parse attributed function");
-        let offsets = crate::fixes::imports::path::line_offsets(source);
+        let indexed = super::ImportSource::new(source);
         (
             ConditionalAttributes::contains(&item.attrs),
-            ConditionalAttributes::from_attributes(source, &offsets, &item.attrs).render(""),
+            ConditionalAttributes::from_attributes(&indexed, &item.attrs).render(""),
         )
     }
 
@@ -295,8 +285,15 @@ mod tests {
     }
 
     #[test]
+    fn unicode_before_a_gate_preserves_its_source() {
+        let source = "#[doc = \"é\"] #[cfg(unix)] fn f() {}";
+        assert_eq!(gates(source), (true, "#[cfg(unix)]\n".to_string()));
+    }
+
+    #[test]
     fn malformed_or_nongating_meta_does_not_create_an_import_gate() {
         for attribute in [
+            "#[cfg_attr]",
             "#[cfg_attr()]",
             "#[cfg_attr(test)]",
             "#[cfg_attr = \"test\"]",

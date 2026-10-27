@@ -386,7 +386,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     pub const fn clear_hover(&mut self) {
         self.toasts.viewport.set_hovered(None);
         self.keymap_pane.viewport_mut().set_hovered(None);
-        self.settings_pane.viewport_mut().set_hovered(None);
+        self.settings_pane.set_hovered(None);
         self.global_shortcuts_pane.viewport_mut().set_hovered(None);
     }
 

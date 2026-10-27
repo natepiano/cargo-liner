@@ -116,12 +116,13 @@ mod tests {
     use clap::FromArgMatches;
 
     use super::RawCli;
+    use crate::compiler::CARGO_SUBCOMMAND_MEND;
     use crate::config::cli::Cli;
     use crate::config::cli::FixExecution;
     use crate::config::cli::FixRequest;
 
     fn parse(cli_args: &[&str]) -> Cli {
-        let full_argv = iter::once("mend").chain(cli_args.iter().copied());
+        let full_argv = iter::once(CARGO_SUBCOMMAND_MEND).chain(cli_args.iter().copied());
         let matches = RawCli::command().get_matches_from(full_argv);
         Cli::from(RawCli::from_arg_matches(&matches).expect("test argv must parse"))
     }

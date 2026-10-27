@@ -22,6 +22,7 @@ use crate::fixes::constants::IMPORTS_AT_TOP_SUGGESTION;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
@@ -101,8 +102,8 @@ struct Scope {
 }
 
 struct InBodyUseFinder<'a> {
+    source:                 &'a ImportSource<'a>,
     text:                   &'a str,
-    offsets:                &'a [usize],
     path:                   &'a Path,
     display_path:           &'a str,
     scope_stack:            Vec<Scope>,
@@ -119,7 +120,7 @@ struct InBodyUseFinder<'a> {
 
 impl InBodyUseFinder<'_> {
     fn attributes(&self, attributes: &[Attribute]) -> ConditionalAttributes {
-        ConditionalAttributes::from_attributes(self.text, self.offsets, attributes)
+        ConditionalAttributes::from_attributes(self.source, attributes)
     }
 
     fn try_emit_fix(&mut self, use_item: &ItemUse) {
@@ -195,10 +196,10 @@ impl InBodyUseFinder<'_> {
         let use_span = use_item.span();
         // `use_span` includes the first attribute. Build the moved text from
         // `use_item.use_token` so `conditional_attributes` are emitted once.
-        let attr_start = offset(self.offsets, use_span.start());
+        let attr_start = offset(self.source.line_offsets(), use_span.start());
         let use_kw = use_item.use_token.span().start();
-        let use_kw_start = offset(self.offsets, use_kw);
-        let use_end = offset(self.offsets, use_span.end());
+        let use_kw_start = offset(self.source.line_offsets(), use_kw);
+        let use_end = offset(self.source.line_offsets(), use_span.end());
         let use_end_with_nl = if self.text.as_bytes().get(use_end) == Some(&b'\n') {
             use_end + 1
         } else {
@@ -327,12 +328,17 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
             .last()
             .map_or_else(String::new, |scope| scope.indent.clone());
         let nested_default = format!("{parent_indent}    ");
-        let scope = compute_scope_for_items(items, self.text, self.offsets, &nested_default);
+        let scope = compute_scope_for_items(
+            items,
+            self.text,
+            self.source.line_offsets(),
+            &nested_default,
+        );
         // `visit_item_mod` handles empty `items` in `node.content`: the list contributed no
         // insertion offset, so compute one from the position just after the opening
         // brace.
         let scope = if items.is_empty() {
-            let brace_start = offset(self.offsets, brace.span.open().end());
+            let brace_start = offset(self.source.line_offsets(), brace.span.open().end());
             Scope {
                 insertion_offset: brace_start,
                 indent:           nested_default,
@@ -388,11 +394,12 @@ pub(super) fn scan(
     path: &Path,
     display_path: &str,
 ) -> (Vec<Finding>, Vec<UseFix>) {
-    let offsets = line_offsets(text);
-    let root_scope = compute_scope_for_items(&syntax.items, text, &offsets, "");
+    let indexed = ImportSource::new(text);
+    let offsets = indexed.line_offsets();
+    let root_scope = compute_scope_for_items(&syntax.items, text, offsets, "");
     let mut visitor = InBodyUseFinder {
+        source: &indexed,
         text,
-        offsets: &offsets,
         path,
         display_path,
         scope_stack: vec![root_scope],
@@ -576,16 +583,6 @@ fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bo
     }
 }
 
-fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (index, character) in text.char_indices() {
-        if character == '\n' {
-            offsets.push(index + 1);
-        }
-    }
-    offsets
-}
-
 fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     line_offsets
         .get(position.line.saturating_sub(1))
@@ -619,6 +616,33 @@ mod tests {
             panic!("expected use item")
         };
         item_use.tree
+    }
+
+    #[test]
+    fn full_file_scan_uses_one_index_for_gated_and_ungated_nodes() -> syn::Result<()> {
+        for gate in ["", "#[cfg(any(unix, windows))]\n"] {
+            let statements = "value();".repeat(128);
+            let text =
+                format!("mod nested {{ {gate}fn f() {{ use crate::a::Thing; {statements} }} }}");
+            let syntax = syn::parse_file(&text)?;
+            let before = crate::fixes::imports::ImportSource::construction_count();
+            let (findings, fixes) = super::scan(
+                &syntax,
+                &text,
+                std::path::Path::new("fixture.rs"),
+                "fixture.rs",
+            );
+            assert_eq!(
+                crate::fixes::imports::ImportSource::construction_count() - before,
+                1
+            );
+            assert_eq!(findings.len(), 1);
+            assert!(fixes.iter().any(|fix| {
+                fix.replacement
+                    .contains(&format!("{gate}use crate::a::Thing;"))
+            }));
+        }
+        Ok(())
     }
 
     #[test]

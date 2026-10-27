@@ -277,8 +277,8 @@ edition = "2024"
 fn exact_crate_rooted_boundary_is_accepted_when_enabled() {
     for (pub_in_path, expected_codes) in [
         ("forbidden", vec![DiagnosticCode::ForbiddenPubInCrate]),
-        ("permitted", Vec::new()),
-        ("required", Vec::new()),
+        (PubInPath::Permitted.config_value(), Vec::new()),
+        (PubInPath::Required.config_value(), Vec::new()),
     ] {
         let temp = tempdir().expect("create temp fixture dir");
         write_sources(
@@ -327,8 +327,8 @@ edition = "2024"
 fn exact_crate_rooted_boundary_on_a_use_item_is_accepted_when_enabled() {
     for (pub_in_path, expected_codes) in [
         ("forbidden", vec![DiagnosticCode::ForbiddenPubInCrate]),
-        ("permitted", Vec::new()),
-        ("required", Vec::new()),
+        (PubInPath::Permitted.config_value(), Vec::new()),
+        (PubInPath::Required.config_value(), Vec::new()),
     ] {
         let temp = tempdir().expect("create temp fixture dir");
         write_sources(
@@ -432,8 +432,11 @@ edition = "2024"
 fn required_setting_reviews_bare_pub_behind_restricted_facade() {
     for (pub_in_path, expected_codes) in [
         ("forbidden", Vec::new()),
-        ("permitted", Vec::new()),
-        ("required", vec![DiagnosticCode::SuspiciousPub]),
+        (PubInPath::Permitted.config_value(), Vec::new()),
+        (
+            PubInPath::Required.config_value(),
+            vec![DiagnosticCode::SuspiciousPub],
+        ),
     ] {
         let temp = tempdir().expect("create required-path fixture dir");
         write_sources(
@@ -460,7 +463,7 @@ edition = "2024"
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
         assert_codes(&report, "src/a/b/c.rs", &expected_codes);
-        if pub_in_path == "required" {
+        if pub_in_path == PubInPath::Required.config_value() {
             assert_headline_and_help(
                 &report,
                 "src/a/b/c.rs",
@@ -590,8 +593,8 @@ impl VisibilityPolicy {
     const fn spelling(self) -> &'static str {
         match self {
             Self::Forbidden => "forbidden",
-            Self::Permitted => "permitted",
-            Self::Required => "required",
+            Self::Permitted => PubInPath::Permitted.config_value(),
+            Self::Required => PubInPath::Required.config_value(),
         }
     }
 
@@ -1724,7 +1727,8 @@ edition = "2024"
         assert!(
             report.findings.iter().any(|finding| finding.path == suffix
                 && finding.code == DiagnosticCode::ForbiddenPubInCrate),
-            "expected a forbidden_pub_in_crate finding for {suffix}: {report:#?}"
+            "expected a {} finding for {suffix}: {report:#?}",
+            DiagnosticCode::ForbiddenPubInCrate.as_str()
         );
     }
 
@@ -1825,7 +1829,8 @@ edition = "2024"
         assert!(
             report.findings.iter().any(|finding| finding.path == suffix
                 && finding.code == DiagnosticCode::ForbiddenPubInCrate),
-            "expected a forbidden_pub_in_crate finding for {suffix}: {report:#?}"
+            "expected a {} finding for {suffix}: {report:#?}",
+            DiagnosticCode::ForbiddenPubInCrate.as_str()
         );
     }
 
@@ -2062,7 +2067,10 @@ fn widening_past_a_trait_impl_interface_is_reported_without_a_fix() {
             finding.code == DiagnosticCode::ForbiddenPubInCrate && finding.path.ends_with("pose.rs")
         })
         .unwrap_or_else(|| {
-            panic!("missing forbidden_pub_in_crate finding for `Thing`: {report:#?}")
+            panic!(
+                "missing {} finding for `Thing`: {report:#?}",
+                DiagnosticCode::ForbiddenPubInCrate.as_str()
+            )
         });
 
     assert!(

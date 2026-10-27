@@ -238,30 +238,23 @@ pub(in crate::compiler) fn parent_facade_export_status(
             unique_export,
         ),
     };
-    if usage_by_name.get().is_none() {
+    let usage_by_name = initialized_facade_usage(usage_by_name, || {
         #[cfg(feature = "test-counters")]
         record_facade_usage_scan(use_def_id);
-        let computed_usage_by_name = reference::scan_facade_usage(
+        reference::scan_facade_usage(
             source_cache,
             settings,
             tcx,
             module_sources,
             &parent_boundary,
             &exported_names,
-        )?;
-        let _ = usage_by_name.set(computed_usage_by_name);
-    }
+        )
+    })?;
     let usage = usage_by_name
-        .get()
-        .and_then(|usage_by_name| {
-            usage_by_name
-                .get(reference::normalized_export_name(item_name))
-                .or_else(|| match export_names {
-                    [export_name] => {
-                        usage_by_name.get(reference::normalized_export_name(export_name))
-                    },
-                    _ => None,
-                })
+        .get(reference::normalized_export_name(item_name))
+        .or_else(|| match export_names {
+            [export_name] => usage_by_name.get(reference::normalized_export_name(export_name)),
+            _ => None,
         })
         .copied()
         .unwrap_or(ParentFacadeUsage::Unused);
@@ -275,6 +268,17 @@ pub(in crate::compiler) fn parent_facade_export_status(
         parent_line,
         boundary_def_path: tcx.def_path_str(owner_module.to_def_id()),
     }))
+}
+
+fn initialized_facade_usage(
+    usage_by_name: &OnceCell<ParentFacadeUsageByName>,
+    initialize: impl FnOnce() -> Result<ParentFacadeUsageByName>,
+) -> Result<&ParentFacadeUsageByName> {
+    if let Some(usage_by_name) = usage_by_name.get() {
+        return Ok(usage_by_name);
+    }
+    let computed_usage_by_name = initialize()?;
+    Ok(usage_by_name.get_or_init(|| computed_usage_by_name))
 }
 
 fn parent_facade_fix_support(
@@ -416,11 +420,55 @@ fn pub_use_is_fix_supported_with_prefix(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::cell::Cell;
+    use std::cell::OnceCell;
+
+    use anyhow::anyhow;
     use syn::parse_file;
 
     use super::ParentFacadeExports;
     use super::ParentFacadeFixSupport;
+    use super::ParentFacadeUsage;
+    use super::ParentFacadeUsageByName;
     use super::exported_names_from_parent_boundary;
+    use super::initialized_facade_usage;
+
+    #[test]
+    fn initialized_facade_usage_scans_once_and_preserves_export_usage() {
+        let cache = OnceCell::new();
+        let scans = Cell::new(0);
+        let initialize = || {
+            scans.set(scans.get() + 1);
+            Ok(ParentFacadeUsageByName::from_iter([(
+                "Thing".to_string(),
+                ParentFacadeUsage::UsedOutsideSubtree,
+            )]))
+        };
+        let first = initialized_facade_usage(&cache, initialize).unwrap();
+        let second = initialized_facade_usage(&cache, initialize).unwrap();
+
+        assert_eq!(scans.get(), 1);
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(
+            first.get("Thing"),
+            Some(&ParentFacadeUsage::UsedOutsideSubtree)
+        );
+        assert_eq!(first.get("Missing"), None);
+    }
+
+    #[test]
+    fn initialized_facade_usage_propagates_failure_and_retries() {
+        let cache = OnceCell::new();
+        let failure = initialized_facade_usage(&cache, || Err(anyhow!("usage scan failed")));
+
+        assert_eq!(failure.unwrap_err().to_string(), "usage scan failed");
+        assert!(cache.get().is_none());
+
+        let ready =
+            initialized_facade_usage(&cache, || Ok(ParentFacadeUsageByName::default())).unwrap();
+        assert!(ready.is_empty());
+        assert!(std::ptr::eq(cache.get().unwrap(), ready));
+    }
 
     #[test]
     fn grouped_parent_pub_use_is_fix_supported() {

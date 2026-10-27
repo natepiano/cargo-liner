@@ -29,7 +29,9 @@ use super::ChildRow;
 use super::CodexThreadId;
 use super::RowIdentity;
 use super::ServiceTier;
+use super::ShellTimerObservation;
 use super::Timer;
+use super::WorkIdentity;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -191,6 +193,7 @@ struct Node {
     dispatch:     WorkerDispatch,
     /// What the row is.
     kind:         ChildKind,
+    work_id:      WorkIdentity,
     /// The tier a Codex thread or process asked for.
     service_tier: ServiceTier,
     /// The account of an app-server thread; unrecorded for other nodes.
@@ -201,8 +204,6 @@ struct Node {
     name:         String,
     /// When it started, in unix seconds.
     started:      u64,
-    /// The `sleep` a shell is waiting out, where that is all it runs.
-    timer:        Option<Timer>,
     /// The rows it started.
     children:     Vec<Self>,
 }
@@ -244,6 +245,7 @@ pub(super) fn attach_children(
                 .map(|process| walker.agent_nodes(process, 0, &mut visited))
                 .unwrap_or_default();
             nodes.extend(sessions.iter().map(|session| Node {
+                work_id:      WorkIdentity::Legacy,
                 activity:     AgentActivity::Idle,
                 thread_id:    CodexThreadId::Unrecorded,
                 dispatch:     WorkerDispatch::Plain,
@@ -253,8 +255,8 @@ pub(super) fn attach_children(
                 pid:          Some(session.pid),
                 name:         session.name.clone(),
                 started:      session.started,
-                timer:        None,
-                children:     Vec::new(),
+
+                children: Vec::new(),
             }));
             // An app server a mesh moved out from under the agent names it
             // in `CLAUDE_PID`, and started after the agent's process did.
@@ -322,7 +324,7 @@ fn retain_dispatched_threads(nodes: &mut Vec<Node>, sources: &TreeSources<'_>) {
             ChildKind::Direct(_) | ChildKind::Detached(_) | ChildKind::UnderShell(_) => {
                 !node.children.is_empty()
             },
-            ChildKind::Shell | ChildKind::Subagent(_) | ChildKind::Session(_) => true,
+            ChildKind::Shell(_) | ChildKind::Subagent(_) | ChildKind::Session(_) => true,
         }
     });
 }
@@ -344,7 +346,7 @@ pub(super) fn join_dispatches<'a>(
 ) -> Vec<DispatchFold<'a>> {
     children.iter().filter_map(|(tile, shell)| {
         let WorkerDispatch::Worker(dispatch) = &shell.dispatch else { return None; };
-        if shell.kind != ChildKind::Shell { return None; }
+        if !matches!(shell.kind, ChildKind::Shell(_)) { return None; }
         let (_, thread) = children.iter().find(|(thread_tile, child)| {
             thread_tile == tile && child.kind == ChildKind::Thread
                 && matches!(&child.thread_id, CodexThreadId::Recorded(id) if dispatch.identity == super::worker_dispatch::WorkerIdentity::CodexThread(id.clone()))
@@ -381,6 +383,7 @@ impl Walker<'_> {
                 .into_iter()
                 .flatten()
                 .map(|thread| Node {
+                    work_id:      WorkIdentity::Legacy,
                     activity:     thread.activity,
                     thread_id:    thread.thread_id.clone(),
                     dispatch:     WorkerDispatch::Plain,
@@ -390,8 +393,8 @@ impl Walker<'_> {
                     pid:          None,
                     name:         thread.name.clone(),
                     started:      thread.started,
-                    timer:        None,
-                    children:     Vec::new(),
+
+                    children: Vec::new(),
                 })
                 .collect();
         }
@@ -414,6 +417,7 @@ impl Walker<'_> {
                             .join(" ")
                     });
                 let shell = Node {
+                    work_id: WorkIdentity::Legacy,
                     activity: AgentActivity::Idle,
                     thread_id: CodexThreadId::Unrecorded,
                     dispatch: self
@@ -422,13 +426,16 @@ impl Walker<'_> {
                         .get(&child.pid)
                         .cloned()
                         .unwrap_or_default(),
-                    kind: ChildKind::Shell,
+                    kind: ChildKind::Shell(self.timer(child).map_or(
+                        ShellTimerObservation::Untimed,
+                        ShellTimerObservation::ObservedCountdown,
+                    )),
                     service_tier: ServiceTier::Unrecorded,
                     account: Account::Unrecorded,
                     pid: Some(child.pid),
                     name,
                     started: child.started,
-                    timer: self.timer(child),
+
                     children: self.agents_below(child, level, visited),
                 };
                 match call.and_then(|call| call.subagent.clone()) {
@@ -560,6 +567,7 @@ impl Walker<'_> {
             )
         };
         Node {
+            work_id: WorkIdentity::Legacy,
             activity: AgentActivity::Idle,
             thread_id: CodexThreadId::Unrecorded,
             dispatch: WorkerDispatch::Plain,
@@ -574,7 +582,7 @@ impl Walker<'_> {
             pid: Some(process.pid),
             name,
             started: process.started,
-            timer: None,
+
             children: self.agent_nodes(process, level, visited),
         }
     }
@@ -661,6 +669,7 @@ fn subagent_node(
         );
     }
     Node {
+        work_id: WorkIdentity::Recorded(agent.id.clone()),
         activity: agent.activity,
         thread_id: CodexThreadId::Unrecorded,
         dispatch: WorkerDispatch::Plain,
@@ -670,7 +679,7 @@ fn subagent_node(
         pid: None,
         name: agent.description.clone(),
         started: agent.started,
-        timer: None,
+
         children,
     }
 }
@@ -740,7 +749,7 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
             pid: node.pid,
             name: node.name,
             started: node.started,
-            timer: node.timer,
+            work_id: node.work_id,
         });
         flatten(node.children, depth.saturating_add(1), rows);
     }
@@ -760,6 +769,7 @@ mod tests {
     use crate::census::MachineState;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::ShellTimerObservation;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
 
@@ -1205,6 +1215,7 @@ mod tests {
 
         attach_children(&mut rows, &processes, &sources);
 
+        let shell = ChildKind::Shell(ShellTimerObservation::Untimed);
         let session = ChildKind::Session(Agent::Claude);
         let claude = ChildKind::UnderShell(Agent::Claude);
         let codex = ChildKind::UnderShell(Agent::Codex);
@@ -1219,17 +1230,11 @@ mod tests {
                     "tool-based-ui-geometry-material",
                     700
                 ),
-                (
-                    0,
-                    ChildKind::Shell,
-                    Some(3_800_000),
-                    "Ask for a summary",
-                    705
-                ),
+                (0, shell.clone(), Some(3_800_000), "Ask for a summary", 705),
                 (1, claude.clone(), Some(3_800_010), "plan summary", 706),
                 (
                     2,
-                    ChildKind::Shell,
+                    shell.clone(),
                     Some(3_800_020),
                     "cd ~/rust/handler cargo nextest run",
                     710,
@@ -1247,7 +1252,7 @@ mod tests {
                     "mcp-server",
                     702
                 ),
-                (0, ChildKind::Shell, Some(3_900_000), "Run phase 1", 800),
+                (0, shell.clone(), Some(3_900_000), "Run phase 1", 800),
                 (1, codex, Some(3_900_030), "app-server", 802),
                 (2, ChildKind::Thread, None, "phase 1 impl", 803),
                 (2, ChildKind::Thread, None, "phase 1 review", 804),
@@ -1266,8 +1271,8 @@ mod tests {
                     "Explore the tests",
                     950
                 ),
-                (2, ChildKind::Shell, Some(3_950_000), "List the tests", 960),
-                (0, ChildKind::Shell, Some(3_960_000), "Build it", 970),
+                (2, shell.clone(), Some(3_950_000), "List the tests", 960),
+                (0, shell, Some(3_960_000), "Build it", 970),
             ]
         );
         assert_eq!(
@@ -1457,7 +1462,10 @@ mod tests {
 
         let [shell] = <&[ChildRow; 1]>::try_from(rows[0].children.as_slice())
             .expect("the agent should run one shell");
-        shell.timer
+        match shell.kind {
+            ChildKind::Shell(ShellTimerObservation::ObservedCountdown(timer)) => Some(timer),
+            _ => None,
+        }
     }
 
     /// A `sleep` started under the timer tests' script with `arguments`.

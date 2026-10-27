@@ -12,9 +12,7 @@ pub(crate) struct CargoCheckCli {
 
     pub exclude: Vec<String>,
 
-    pub manifest_path: Option<PathBuf>,
-
-    pub positional_manifest_path: Option<PathBuf>,
+    pub manifest_selection: ManifestSelection,
 
     pub target_selections: BTreeSet<TargetSelection>,
 
@@ -34,6 +32,15 @@ pub(crate) enum WorkspaceSelection {
     All,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum ManifestSelection {
+    #[default]
+    Automatic,
+    Explicit {
+        path: PathBuf,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TargetSelection {
     All,
@@ -46,9 +53,10 @@ pub(crate) enum TargetSelection {
 
 impl CargoCheckCli {
     pub(crate) fn explicit_manifest_path(&self) -> Option<&Path> {
-        self.manifest_path
-            .as_deref()
-            .or(self.positional_manifest_path.as_deref())
+        match &self.manifest_selection {
+            ManifestSelection::Automatic => None,
+            ManifestSelection::Explicit { path } => Some(path),
+        }
     }
 }
 
@@ -183,13 +191,79 @@ impl From<RawCargoCheckCli> for CargoCheckCli {
             },
             package: raw.package,
             exclude: raw.exclude,
-            manifest_path: raw.manifest_path,
-            positional_manifest_path: raw.positional_manifest_path,
+            manifest_selection: raw
+                .manifest_path
+                .or(raw.positional_manifest_path)
+                .map_or(ManifestSelection::Automatic, |path| {
+                    ManifestSelection::Explicit { path }
+                }),
             target_selections,
             bin: raw.bin,
             example: raw.example,
             test: raw.test,
             bench: raw.bench,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use clap::Args;
+    use clap::Command;
+    use clap::Error;
+    use clap::FromArgMatches;
+    use clap::error::ErrorKind;
+
+    use super::CargoCheckCli;
+    use super::ManifestSelection;
+    use super::RawCargoCheckCli;
+
+    #[test]
+    fn manifest_aliases_normalize_to_one_selection() -> Result<(), Error> {
+        for (arguments, expected) in [
+            (vec!["mend"], ManifestSelection::Automatic),
+            (
+                vec!["mend", "--manifest-path", "project/Cargo.toml"],
+                ManifestSelection::Explicit {
+                    path: PathBuf::from("project/Cargo.toml"),
+                },
+            ),
+            (
+                vec!["mend", "project"],
+                ManifestSelection::Explicit {
+                    path: PathBuf::from("project"),
+                },
+            ),
+        ] {
+            let matches = RawCargoCheckCli::augment_args(Command::new("mend"))
+                .try_get_matches_from(arguments)?;
+            let cli = CargoCheckCli::from(RawCargoCheckCli::from_arg_matches(&matches)?);
+            assert_eq!(cli.manifest_selection, expected);
+            let expected_path = match &expected {
+                ManifestSelection::Automatic => None,
+                ManifestSelection::Explicit { path } => Some(path.as_path()),
+            };
+            assert_eq!(cli.explicit_manifest_path(), expected_path);
+        }
+        assert_eq!(
+            CargoCheckCli::default().explicit_manifest_path(),
+            None::<&Path>
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_aliases_still_conflict_in_both_orders() {
+        for arguments in [
+            ["mend", "--manifest-path", "named", "positional"],
+            ["mend", "positional", "--manifest-path", "named"],
+        ] {
+            let result = RawCargoCheckCli::augment_args(Command::new("mend"))
+                .try_get_matches_from(arguments);
+            assert!(matches!(result, Err(error) if error.kind() == ErrorKind::ArgumentConflict));
         }
     }
 }

@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -260,8 +261,26 @@ impl SettingsPane {
     #[must_use]
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
-    /// Mutably borrow the framework-owned viewport state.
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+    /// Set the drawn content area and its visible row count without changing selection.
+    pub fn set_content_area(&mut self, area: Rect) {
+        self.viewport.set_content_area(area);
+        self.viewport.set_viewport_rows(usize::from(area.height));
+    }
+
+    /// Set the live scroll offset without changing the selected row or the last drawn offset.
+    pub const fn set_scroll_offset(&mut self, offset: usize) {
+        self.viewport.set_scroll_offset(offset);
+    }
+
+    /// Update the hovered row without changing the selected row.
+    pub const fn set_hovered(&mut self, row: Option<usize>) { self.viewport.set_hovered(row); }
+
+    /// Register selectable rows before navigation, including before the first draw.
+    /// The last painted line map and click offset remain valid until repaint.
+    pub fn set_row_count(&mut self, count: usize) {
+        self.change_selection(|viewport| viewport.set_len(count));
+        self.viewport.set_content_height(self.line_targets.len());
+    }
 
     /// Store rendered-line to setting-row targets for hit testing.
     pub fn set_line_targets(&mut self, targets: Vec<SettingsLineTarget>) {
@@ -351,11 +370,17 @@ impl SettingsPane {
     /// text belongs to the row it was opened on, and committing it
     /// would write it into whichever row is selected at the time.
     pub fn select_row(&mut self, row: usize) {
-        if self.viewport.pos() != row {
+        self.change_selection(|viewport| viewport.set_pos(row));
+        self.update_scroll();
+    }
+
+    /// Keep an edit attached to its row across every selection change.
+    fn change_selection(&mut self, change: impl FnOnce(&mut Viewport)) {
+        let previous = self.viewport.pos();
+        change(&mut self.viewport);
+        if self.viewport.pos() != previous {
             self.enter_browse();
         }
-        self.viewport.set_pos(row);
-        self.update_scroll();
     }
 
     /// Navigate rows, exposing hidden continuation lines before leaving a row.
@@ -374,11 +399,11 @@ impl SettingsPane {
                 NavAction::Up | NavAction::PageUp | NavAction::HalfPageUp => self.up(),
                 NavAction::Down | NavAction::PageDown | NavAction::HalfPageDown => self.down(),
                 NavAction::Home => {
-                    self.viewport.home();
+                    self.change_selection(Viewport::home);
                     self.viewport.set_scroll_offset(0);
                 },
                 NavAction::End => {
-                    self.viewport.end();
+                    self.change_selection(Viewport::end);
                     self.viewport
                         .set_scroll_offset(self.line_targets.len().saturating_sub(height));
                 },
@@ -396,7 +421,7 @@ impl SettingsPane {
         {
             self.viewport.set_scroll_offset(offset.saturating_sub(1));
         } else {
-            self.viewport.up();
+            self.change_selection(Viewport::up);
         }
     }
 
@@ -409,7 +434,7 @@ impl SettingsPane {
         {
             self.viewport.set_scroll_offset(offset.saturating_add(1));
         } else {
-            self.viewport.down();
+            self.change_selection(Viewport::down);
         }
     }
 
@@ -430,7 +455,7 @@ impl SettingsPane {
             .fold((0, 0), |(max_label, count), row| {
                 (max_label.max(row.label.len()), count + 1)
             });
-        self.viewport.set_len(selectable_count);
+        self.set_row_count(selectable_count);
         let mut lines = Vec::new();
         let mut line_targets = Vec::new();
         let mut selection_index = 0;
@@ -945,6 +970,10 @@ fn render_editor_text(buf: &str, cursor: usize) -> String {
 }
 
 #[cfg(test)]
+#[path = "settings_scroll_tests.rs"]
+mod settings_scroll_tests;
+
+#[cfg(test)]
 mod tests {
     use crossterm::event::KeyCode;
     use ratatui::style::Color;
@@ -1050,7 +1079,7 @@ mod tests {
     #[test]
     fn selecting_another_row_drops_an_edit_but_the_same_row_keeps_it() {
         let mut pane = SettingsPane::new();
-        pane.viewport_mut().set_len(2);
+        pane.set_row_count(2);
         pane.begin_editing("hana".to_string());
         pane.select_row(0);
         assert!(pane.is_editing());

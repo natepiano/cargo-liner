@@ -776,29 +776,37 @@ pub(super) fn finding_help_url(finding: &Finding) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::FORBIDDEN_PUB_IN_CRATE;
     use super::Finding;
     use super::FixSupport;
+    use super::HeadlineSource;
+    use super::INTERNAL_PARENT_PUB_USE_FACADE;
     use super::ItemVisibility;
+    use super::OVERBROAD_PUB_CRATE;
     use super::Severity;
     use super::finding_headline;
     use crate::config::DiagnosticCode;
 
     #[test]
     fn finding_message_headlines_use_messages_with_static_fallbacks() {
-        for (diagnostic_code, fallback) in [
+        for (diagnostic_code, headline) in [
             (
                 DiagnosticCode::OverbroadPubCrate,
-                "`pub(crate)` is broader than required",
+                OVERBROAD_PUB_CRATE.headline,
             ),
             (
                 DiagnosticCode::ForbiddenPubInCrate,
-                "use of `pub(in crate::...)` is forbidden by policy",
+                FORBIDDEN_PUB_IN_CRATE.headline,
             ),
             (
                 DiagnosticCode::InternalParentPubUseFacade,
-                "parent module re-export is acting as an internal facade",
+                INTERNAL_PARENT_PUB_USE_FACADE.headline,
             ),
         ] {
+            let fallback = match headline {
+                HeadlineSource::FindingMessage { fallback } => fallback,
+                HeadlineSource::Static(headline) => headline,
+            };
             let mut finding = Finding {
                 severity: Severity::Error,
                 diagnostic_code,

@@ -25,6 +25,8 @@ use crate::census::HierarchyEdges;
 use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
+use crate::census::ShellTimerObservation;
+use crate::census::WorkIdentity;
 use crate::census::account::AccountLabels;
 use crate::census::account::ConfigHome;
 use crate::census::worker_dispatch::WorkerDispatch;
@@ -38,13 +40,13 @@ fn staged_child() -> ChildRow {
         dispatch:     WorkerDispatch::Plain,
         activity:     AgentActivity::Idle,
         depth:        0,
-        kind:         ChildKind::Shell,
+        kind:         ChildKind::Shell(ShellTimerObservation::Untimed),
         service_tier: ServiceTier::Unrecorded,
         account:      Account::Unrecorded,
         pid:          Some(428_045),
         name:         "build.sh".to_string(),
         started:      110,
-        timer:        None,
+        work_id:      WorkIdentity::Legacy,
     }
 }
 

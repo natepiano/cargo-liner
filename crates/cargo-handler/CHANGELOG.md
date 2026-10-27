@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
+
 ### Changed
+- The accounts table drops optional columns before it wraps, keeps account and error lines in view, and marks cut summary titles with “…”.
+- Reset shades follow time order: the soonest reset takes the nearest shade. On dark themes the shades go from yellow-green (soonest) to sea green (latest). On light themes a brighter violet means a sooner reset.
+- Light reset times use new ramp ends: violet to deep violet in Default Light and violet to indigo in High Contrast Light. No reset shade now matches the darkest violet session color.
+- The accounts table matches the accounts board: nine columns with lower-case headers, a separate `read` age, `enabled` and `in use` credit columns, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
+- Reset times use their own green (dark) or violet-to-indigo (light) ramp, never error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files can set the ramp ends with `reset_nearest` and `reset_farthest`.
+- Selected rows keep their text hues and adjust lightness for readability, reducing chroma only at the color gamut boundary; unselected rows retain their theme inks.
 - Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
 - Role columns fit the roles visible in their tile group. Short tiles keep the branch column when it fits. Fitted column sets share widths and age slots after optional columns drop; the summary also omits columns without values. A shell still running after its timer expires reads `running` in the Busy ink.
 - Tiles omit columns with no recorded values. Tiles with the same columns share their positions within a screen column; other tiles fit independently. Shell timers show the remaining time as digits, avoiding undersized pie glyphs. `thinking` and `running` draw in one green in every theme.
@@ -30,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 
 ### Fixed
+- Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hierarchy refresh commands run on their own workers. Remote probes and settled local rows continue while a follow-up answer is pending; linked rows wait together, and checked session ids stay checked across catch-up answers.
 - The first hierarchy wait is bounded to one second; Claude sessions and Codex thread carriers stay held when the answer is late, so a unit or worker cannot flash under the wrong owner. A late answer publishes during detail reads. Each new session missing from a hierarchy answer gets one extra check. Known links survive a PID change or a failed command.
 - On startup, agents appear before their details are read. A refresh never drops details, a resumed session keeps its cell, and remote probes no longer wait for the local scan.

@@ -31,6 +31,7 @@ use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
@@ -239,16 +240,17 @@ fn scan_file(
         .syntax()
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let text = source.text();
-    let offsets = support::line_offsets(text);
+    let indexed = ImportSource::new(text);
+    let offsets = indexed.line_offsets();
     let file_context = ScanFileContext {
         analysis_root,
         path,
         text,
-        offsets: &offsets,
+        offsets,
     };
 
     let (candidates, mut inline_candidates) =
-        detect_candidates(crate_sources, &file_context, &current_module_path, syntax);
+        detect_candidates(crate_sources, &indexed, &current_module_path, syntax);
     if candidates.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -278,7 +280,7 @@ fn scan_file(
         .map(|candidate| candidate.function_name.clone())
         .collect();
 
-    let mut collector = ReferenceCollector::new(&offsets, &imported_names);
+    let mut collector = ReferenceCollector::new(offsets, &imported_names);
     Visit::visit_file(&mut collector, syntax);
 
     let mut func_to_module: BTreeMap<&str, FunctionImportPolicy<'_>> = BTreeMap::new();
@@ -304,7 +306,7 @@ fn scan_file(
     if !inline_candidates.is_empty() {
         let will_import_modules =
             build_will_import_modules(&existing_module_imports, &module_to_functions);
-        let file_insertion = file_level_insertion(syntax, text, &offsets);
+        let file_insertion = file_level_insertion(syntax, text, offsets);
         let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
             &file_context,
             &InlineCallFindingInputs {
@@ -324,32 +326,28 @@ fn scan_file(
 /// `syntax`.
 fn detect_candidates<'a>(
     crate_sources: CrateSources<'a>,
-    file_context: &ScanFileContext<'a>,
+    source: &ImportSource<'a>,
     current_module_path: &'a [String],
     syntax: &File,
 ) -> (Vec<RawCandidate>, Vec<InlineCallCandidate>) {
     let declared_modules = collect_declared_modules(syntax);
     let mut detector = ImportDetector {
         crate_sources,
-        text: file_context.text,
-        offsets: file_context.offsets,
         current_module_path: current_module_path.to_vec(),
         inline_scope: Vec::new(),
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };
-    Visit::visit_file(&mut detector, syntax);
+    detector.visit_file(syntax, source);
     let mut inline_detector = InlineCallDetector {
         crate_sources,
-        text: file_context.text,
-        offsets: file_context.offsets,
         current_module_path,
         declared_modules: &declared_modules,
         candidates: Vec::new(),
         inline_mod_depth: 0,
         conditional_attributes: ConditionalAttributes::default(),
     };
-    Visit::visit_file(&mut inline_detector, syntax);
+    inline_detector.visit_file(syntax, source);
     (detector.candidates, inline_detector.candidates)
 }
 
@@ -911,6 +909,54 @@ mod tests {
     use super::FunctionImportPolicy;
     use super::ImportRewritePlan;
     use super::ScopedModuleImport;
+    use crate::fixes::imports::ImportSource;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn full_file_scan_shares_one_index_across_both_detectors() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let calls = "crate::util::run();".repeat(128);
+        for gate in ["", "#[cfg(any(unix, windows))]\n"] {
+            let text = format!(
+                "mod util {{ pub fn run() {{}} }} {gate}use crate::util::run; \
+                 {gate}fn f() {{ run(); {calls} }} \
+                 mod nested {{ {gate}use crate::util::run; {gate}fn g() {{ run(); }} }}"
+            );
+            std::fs::write(&path, &text)?;
+            let sources = ParsedSources::default();
+            let module_map = sources.module_map(dir.path());
+            let crate_sources = super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            };
+            let parsed = sources.source(&path)?;
+            let before = ImportSource::construction_count();
+            let source = ImportSource::new(parsed.text());
+            let (imports, calls) =
+                super::detect_candidates(crate_sources, &source, &[], parsed.syntax()?);
+            assert_eq!(ImportSource::construction_count() - before, 1);
+            assert_eq!(imports.len(), 2);
+            assert_eq!(calls.len(), 128);
+            assert!(
+                imports
+                    .iter()
+                    .all(|site| site.conditional_attributes.render("") == gate)
+            );
+            assert!(
+                calls
+                    .iter()
+                    .all(|site| site.conditional_attributes.render("") == gate)
+            );
+            let before = ImportSource::construction_count();
+            let (findings, fixes) =
+                super::scan_file(dir.path(), crate_sources, &path, &module_map)?;
+            assert_eq!(ImportSource::construction_count() - before, 1);
+            assert!(!findings.is_empty());
+            assert!(!fixes.is_empty());
+        }
+        Ok(())
+    }
 
     #[test]
     fn import_plans_preserve_scope_and_only_reserve_replacements() {

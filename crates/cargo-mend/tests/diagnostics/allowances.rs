@@ -1022,7 +1022,10 @@ edition = "2024"
             .iter()
             .map(|finding| finding.code.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+        assert_eq!(
+            codes,
+            BTreeSet::from([DiagnosticCode::SuspiciousPub.as_str()])
+        );
     }
 }
 
@@ -1073,7 +1076,10 @@ edition = "2024"
             .iter()
             .map(|finding| finding.code.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+        assert_eq!(
+            codes,
+            BTreeSet::from([DiagnosticCode::InternalParentPubUseFacade.as_str()])
+        );
     }
 }
 
@@ -1127,7 +1133,10 @@ edition = "2024"
             .iter()
             .map(|finding| finding.code.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+        assert_eq!(
+            codes,
+            BTreeSet::from([DiagnosticCode::InternalParentPubUseFacade.as_str()])
+        );
     }
 }
 
@@ -1379,8 +1388,8 @@ edition = "2024"
         assert_eq!(
             codes,
             BTreeSet::from([
-                "internal_parent_pub_use_facade",
-                "shorten_local_crate_import"
+                DiagnosticCode::InternalParentPubUseFacade.as_str(),
+                DiagnosticCode::ShortenLocalCrateImport.as_str()
             ])
         );
     }
@@ -1687,7 +1696,10 @@ edition = "2024"
             .iter()
             .map(|finding| finding.code.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+        assert_eq!(
+            codes,
+            BTreeSet::from([DiagnosticCode::SuspiciousPub.as_str()])
+        );
     }
 }
 
@@ -1728,7 +1740,7 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert!(codes.contains("wildcard_parent_pub_use"));
+    assert!(codes.contains(DiagnosticCode::WildcardParentPubUse.as_str()));
 }
 
 #[test]
@@ -2009,15 +2021,15 @@ fn restricted_signature_exposure_accepts_its_exact_facade_boundary() {
         "equal exposure advice must name its signature boundary: {report:#?}",
     );
     assert!(
-        signature_only_finding
-            .help
-            .iter()
-            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`"),
+        signature_only_finding.help.iter().any(|line| line
+            == FixSupport::RestrictedAnnotation
+                .note()
+                .expect("restricted annotation fix has a note")),
         "the signature-boundary refinement must be auto-fixable: {report:#?}",
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_in_crate",
+        DiagnosticCode::ForbiddenPubInCrate.as_str(),
         "src/video_plane/plane/camera_panel.rs",
         2,
         ForbiddenVisibilityPersistenceExpectation::AcceptedRestricted {
@@ -2074,7 +2086,7 @@ bench = false
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "overbroad_pub_crate",
+        DiagnosticCode::OverbroadPubCrate.as_str(),
         "src/a.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::AcceptedCrate {
@@ -3198,7 +3210,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_in_crate",
+        DiagnosticCode::ForbiddenPubInCrate.as_str(),
         "src/a/b/exported/target.rs",
         2,
         ForbiddenVisibilityPersistenceExpectation::Public {
@@ -3301,7 +3313,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "overbroad_pub_crate",
+        DiagnosticCode::OverbroadPubCrate.as_str(),
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::ResolvedFacadeRestricted {
@@ -3330,7 +3342,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "overbroad_pub_crate",
+        DiagnosticCode::OverbroadPubCrate.as_str(),
         "src/a/b/c.rs",
         3,
         ForbiddenVisibilityPersistenceExpectation::ResolvedFacadeRestricted {
@@ -3403,7 +3415,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "overbroad_pub_crate",
+        DiagnosticCode::OverbroadPubCrate.as_str(),
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::Public {
@@ -3451,7 +3463,7 @@ edition = "2024"
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "overbroad_pub_crate",
+        DiagnosticCode::OverbroadPubCrate.as_str(),
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::AcceptedCrate {
@@ -3585,10 +3597,12 @@ edition = "2024"
         "the second expose method must retain its crate::a reach: {report:#?}",
     );
     assert!(
-        target_findings.iter().all(|finding| finding
-            .help
+        target_findings
             .iter()
-            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`")),
+            .all(|finding| finding.help.iter().any(|line| line
+                == FixSupport::RestrictedAnnotation
+                    .note()
+                    .expect("restricted annotation fix has a note"))),
         "same-line target findings must be directly fixable: {report:#?}",
     );
 }
@@ -3639,7 +3653,7 @@ fn assert_canonical_pub_in_spelling_respects_signature_reach(
     );
     assert_stored_forbidden_visibility_advice(
         &temp,
-        "forbidden_pub_in_crate",
+        DiagnosticCode::ForbiddenPubInCrate.as_str(),
         "src/a/b/c.rs",
         1,
         ForbiddenVisibilityPersistenceExpectation::Restricted {
@@ -3718,7 +3732,11 @@ edition = "2024"
         }),
         "the wider signature must replace pub(super) fixer advice: {report:#?}",
     );
-    assert_stored_finding_has_no_refinement_metadata(&temp, "suspicious_pub", "src/a/b/c.rs");
+    assert_stored_finding_has_no_refinement_metadata(
+        &temp,
+        DiagnosticCode::SuspiciousPub.as_str(),
+        "src/a/b/c.rs",
+    );
     assert_no_stored_pub_use_fix_facts(&temp);
 }
 
@@ -3877,7 +3895,11 @@ edition = "2024"
         }),
         "the retained outer facade must replace pub(super) fixer advice: {report:#?}",
     );
-    assert_stored_finding_has_no_refinement_metadata(&temp, "suspicious_pub", "src/a/b/c/d.rs");
+    assert_stored_finding_has_no_refinement_metadata(
+        &temp,
+        DiagnosticCode::SuspiciousPub.as_str(),
+        "src/a/b/c/d.rs",
+    );
     assert_no_stored_pub_use_fix_facts(&temp);
 }
 
@@ -4076,7 +4098,11 @@ fn stale_facade_in_unresolvable_chain_requires_structure() {
             .any(|line| line == "consider using: `pub(super)`"),
         "unresolvable stale facade advice must not recommend pub(super): {report:#?}",
     );
-    assert_stored_finding_has_no_refinement_metadata(&temp, "suspicious_pub", "src/a/b/child.rs");
+    assert_stored_finding_has_no_refinement_metadata(
+        &temp,
+        DiagnosticCode::SuspiciousPub.as_str(),
+        "src/a/b/child.rs",
+    );
     assert_no_stored_pub_use_fix_facts(&temp);
 }
 
@@ -4129,10 +4155,10 @@ edition = "2024"
         "no-facade advice must preserve the signature floor at crate::a: {report:#?}",
     );
     assert!(
-        target_finding
-            .help
-            .iter()
-            .any(|line| line == "this warning is auto-fixable with `cargo mend --fix`"),
+        target_finding.help.iter().any(|line| line
+            == FixSupport::RestrictedAnnotation
+                .note()
+                .expect("restricted annotation fix has a note")),
         "the signature-floor refinement must be auto-fixable: {report:#?}",
     );
 }

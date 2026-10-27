@@ -575,6 +575,10 @@ fn path_failure(failure: &PathFailure) -> String {
 }
 
 #[cfg(test)]
+#[path = "settings_scroll_tests.rs"]
+mod settings_scroll_tests;
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::panic,

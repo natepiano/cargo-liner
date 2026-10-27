@@ -48,12 +48,26 @@ impl ThemeRegistry {
     /// [`Theme::roles`]: super::Theme::roles
     #[must_use]
     pub fn from_dir_with_builtins(dir: Option<&Path>, builtins: Vec<ThemeVariant>) -> Self {
+        Self::from_dir_with_parser(dir, builtins, |contents| toml::from_str(contents))
+    }
+
+    /// Load app theme families with `parse`, retaining sorted file precedence,
+    /// failed-file reporting and built-in role inheritance.
+    ///
+    /// An app parser can validate its own required fields before returning the
+    /// shared family. Parser errors are recorded beside file read errors.
+    #[must_use]
+    pub fn from_dir_with_parser<E: std::fmt::Display>(
+        dir: Option<&Path>,
+        builtins: Vec<ThemeVariant>,
+        parse: impl Fn(&str) -> Result<ThemeFamily, E>,
+    ) -> Self {
         let builtin_roles: Vec<BuiltinRoles> = builtins.iter().map(BuiltinRoles::of).collect();
         let mut registry = Self::new_with_builtins(builtins);
         let Some(dir) = dir else {
             return registry;
         };
-        let (loaded, failed) = scan_themes_dir(dir);
+        let (loaded, failed) = scan_themes_dir(dir, parse);
         for family in loaded {
             for variant_file in family.variants {
                 let id = ThemeId::new(variant_file.name.clone());
@@ -124,7 +138,10 @@ fn inherit_roles(
 /// tie-break deterministic across runs. Returns the parsed families
 /// alongside any files that failed to parse; neither is fatal, and the
 /// caller decides whether to toast or just log.
-fn scan_themes_dir(dir: &Path) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
+fn scan_themes_dir<E: std::fmt::Display>(
+    dir: &Path,
+    parse: impl Fn(&str) -> Result<ThemeFamily, E>,
+) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return (Vec::new(), Vec::new());
     };
@@ -142,7 +159,7 @@ fn scan_themes_dir(dir: &Path) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
     let mut failed = Vec::new();
     for path in paths {
         match fs::read_to_string(&path) {
-            Ok(contents) => match toml::from_str::<ThemeFamily>(&contents) {
+            Ok(contents) => match parse(&contents) {
                 Ok(family) => loaded.push(family),
                 Err(err) => failed.push(FailedFile {
                     path,
@@ -269,6 +286,42 @@ mod tests {
                 Color::White
             );
         }
+    }
+
+    #[test]
+    fn app_family_parser_loads_custom_syntax_and_records_its_errors() {
+        let dir = TempDir::new().expect("create app themes directory");
+        write_file(&dir.path().join("good.toml"), "app-specific family");
+        write_file(&dir.path().join("bad.toml"), "invalid app family");
+        let registry = ThemeRegistry::from_dir_with_parser(
+            Some(dir.path()),
+            builtins_with_roles(),
+            |contents| -> Result<ThemeFamily, String> {
+                if contents == "app-specific family" {
+                    toml::from_str(&family_with_roles(CUSTOM_DARK_NAME, "own = \"Cyan\""))
+                        .map_err(|error| error.to_string())
+                } else {
+                    Err("app schema rejected this family".to_owned())
+                }
+            },
+        );
+        assert_eq!(
+            roles_in(&registry, CUSTOM_DARK_NAME),
+            roles_of(&[
+                (OWN_ROLE, Color::Cyan),
+                (SHARED_ROLE, Color::Red),
+                (FIRST_DARK_ROLE, Color::Green),
+            ])
+        );
+        let failed = &registry.status().failed_files;
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].0.ends_with("bad.toml"));
+        assert!(
+            failed[0]
+                .1
+                .message()
+                .contains("app schema rejected this family")
+        );
     }
 
     #[test]

@@ -146,7 +146,12 @@ fn assert_color(buffer: &Buffer, text: &str, expected: Color) {
     let x = u16::try_from(line[..start].chars().count()).expect("fixture column");
     let y = u16::try_from(y).expect("fixture row");
     for offset in 0..cell_width(text) {
-        assert_eq!(buffer[(x + offset, y)].fg, expected, "{text} at {offset}");
+        let actual = buffer[(x + offset, y)].fg;
+        assert_eq!(
+            tui_pane::blend_color(actual, actual, 0),
+            tui_pane::blend_color(expected, expected, 0),
+            "{text} at {offset}"
+        );
     }
 }
 

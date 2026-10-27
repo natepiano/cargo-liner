@@ -1,5 +1,5 @@
 //! `draw_unassigned` renders `UnassignedEntry` values with nested `ChildRow`
-//! lines and each session's `RainbowHue` preserved.
+//! lines and each session's `SessionHue` preserved.
 
 #![expect(
     clippy::panic,
@@ -29,7 +29,13 @@ fn unassigned_forest() -> MachineState {
     let ups = AgentRow {
         role_fallback: RoleFallback::None,
         children: vec![
-            child(0, ChildKind::Shell, Some(21), "ups-shell", 2 * HOUR),
+            child(
+                0,
+                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                Some(21),
+                "ups-shell",
+                2 * HOUR,
+            ),
             child(1, ChildKind::Thread, None, "ups-codex", HOUR),
         ],
         ..agent(20, "ups", 8 * HOUR, None)
@@ -253,13 +259,13 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let tiles = tile_order_sorted(&placement, &sorts, NOW);
         let buffer = draw_pool(pool(&tiles, "natedev"), 220);
         for (name, hue) in [
-            ("ups", RainbowHue::Green),
-            ("opened-session", RainbowHue::Cyan),
-            ("postmaster", RainbowHue::Blue),
+            ("ups", SessionHue::Second),
+            ("opened-session", SessionHue::Third),
+            ("postmaster", SessionHue::Fourth),
         ] {
             assert_eq!(
                 buffer[find(&buffer, name).expect("name drawn")].fg,
-                Role::Rainbow(hue).style().fg.expect("rainbow color"),
+                Role::Session(hue).style().fg.expect("session color"),
                 "{name}"
             );
         }
@@ -269,7 +275,7 @@ fn unassigned_grouping_and_sorting_keep_each_sessions_default_hue() {
         let work = work_buffer("ups");
         assert_eq!(
             work[find(&work, "ups-codex").expect("ups worker")].fg,
-            Role::Rainbow(RainbowHue::Green)
+            Role::Session(SessionHue::Second)
                 .style()
                 .fg
                 .expect("owner hue")

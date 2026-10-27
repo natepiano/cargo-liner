@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import codecs
+import ctypes
 from collections.abc import Callable
 import errno
 import faulthandler
@@ -627,12 +628,64 @@ def assert_cpu_observation_waits_for_reporting_windows() -> None:
     assert cpu_observation_is_complete([(elapsed, 0) for elapsed, _ in readings]), \
         'observation wait depends on CPU values instead of timestamp coverage'
 
+def native_cpu_seconds(pid: int) -> float:
+    # Read the same cumulative user and system counters as the production census.
+    if sys.platform == 'linux':
+        fields = Path(f'/proc/{pid}/stat').read_bytes().rsplit(b') ', 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+    class ProcessUsage(ctypes.Structure):
+        # Darwin rusage_info_v0, from sys/resource.h.
+        _fields_ = [('uuid', ctypes.c_ubyte * 16),
+                    ('user_time', ctypes.c_uint64), ('system_time', ctypes.c_uint64),
+                    ('pkg_idle_wkups', ctypes.c_uint64), ('interrupt_wkups', ctypes.c_uint64),
+                    ('pageins', ctypes.c_uint64), ('wired_size', ctypes.c_uint64),
+                    ('resident_size', ctypes.c_uint64), ('phys_footprint', ctypes.c_uint64),
+                    ('proc_start_abstime', ctypes.c_uint64), ('proc_exit_abstime', ctypes.c_uint64)]
+    usage = ProcessUsage()
+    libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    read_usage = libproc.proc_pid_rusage
+    read_usage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    read_usage.restype = ctypes.c_int
+    assert read_usage(pid, 0, ctypes.byref(usage)) == 0, ctypes.get_errno()
+    class MachTimebase(ctypes.Structure):
+        _fields_ = [('numerator', ctypes.c_uint32), ('denominator', ctypes.c_uint32)]
+    timebase = MachTimebase()
+    system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    assert system.mach_timebase_info(ctypes.byref(timebase)) == 0
+    # Darwin task counters use the machine's absolute-time units.
+    return ((usage.user_time + usage.system_time) * timebase.numerator
+            / timebase.denominator / 1_000_000_000)
+
+
+def assert_cpu_attribution(readings: list[tuple[float, int]],
+                           native: list[tuple[float, float]],
+                           other_readings: list[int]) -> None:
+    # The table rounds to integer percent. Allow one percentage point plus
+    # 25% for smoothing and the offset between kernel and terminal samples.
+    sustained = [(elapsed, cpu) for elapsed, cpu in readings if elapsed >= smoothing_window]
+    counters = [(elapsed, counter) for elapsed, counter in native if elapsed >= smoothing_window]
+    assert len(sustained) >= 3 and len(counters) == len(sustained), (readings, native)
+    duration = counters[-1][0] - counters[0][0]
+    expected = 100 * (counters[-1][1] - counters[0][1]) / duration
+    charged = sum((end - start) * (before + after) / 2
+                  for (start, before), (end, after) in zip(sustained, sustained[1:])) / duration
+    tolerance = 1 + expected * 0.25
+    record_timestamp(f'CPU attribution native={expected:.3f}% charged={charged:.3f}% tolerance={tolerance:.3f}%')
+    assert expected > 0 and charged > 0 and abs(charged - expected) <= tolerance, (
+        'compiler CPU must be charged to its requesting invocation',
+        {'native': expected, 'charged': charged, 'tolerance': tolerance}, readings, native)
+    assert max(other_readings) < min(cpu for _, cpu in sustained) / 2, (readings, other_readings)
+
+
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendered: str) -> str:
     writers = (writer, unrelated)
     if not cpu_rows_are_ready(rendered, writers):
         rendered = wait_for_cpu_rows(writers)
     record_timestamp('CPU rows')
+    compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
+    initial_counter = native_cpu_seconds(compiler_pid)
     started = time.monotonic()
+    native = [(0.0, initial_counter)]
     initial = cpu_readings_in_frame(rendered, writers)
     assert len(initial) == len(writers), rendered
     readings = [(0.0, next(cpu for observed, cpu in initial if observed[1] == writer[1]))]
@@ -649,10 +702,12 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
         terminal_snapshot()
         for frame in terminal_frames.take_completed():
             rendered = frame
+            counter = native_cpu_seconds(compiler_pid)
             elapsed = time.monotonic() - started
             for observed, cpu in cpu_readings_in_frame(frame, writers):
                 if observed[1] == writer[1]:
                     readings.append((elapsed, cpu))
+                    native.append((elapsed, counter))
                 else:
                     other_readings.append(cpu)
         return cpu_observation_is_complete(readings)
@@ -660,10 +715,7 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
              lambda: f': need {observation_window:g}s of samples and three sustained readings; '
                      f'collected {readings!r}', pause=0, deadline=deadline)
     record_timestamp('CPU observation')
-    sustained = [cpu for elapsed, cpu in readings if elapsed >= smoothing_window]
-    assert len(sustained) >= 3 and min(sustained) >= 10, (
-        'compile CPU must remain charged across reporting windows', readings)
-    assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
+    assert_cpu_attribution(readings, native, other_readings)
     return rendered
 
 
@@ -1077,12 +1129,32 @@ def assert_settings_scroll() -> None:
     wait_for(settings_are_visible, 'small settings popup does not open', popup_diagnostics,
              pause=0)
 
+def invocation_table_headers(lines: list[str]) -> list[int]:
+    return [index for index, line in enumerate(lines)
+            if re.search(r'\bpid\b', line) and re.search(r'\bcommand\b', line)]
+
+
+def native_invocation_is_ready(marker: str, cargo_pid: str, rendered: str) -> bool:
+    # The summary is the first table. The next table starts the command cells;
+    # a parent column is absent when its values are empty.
+    return len(invocation_table_headers(rendered.splitlines())) >= 2 and any(
+        re.match(r'^\s*│\s*' + cargo_pid + r'\s', line) and marker in line
+        for line in invocation_cell_lines(rendered))
+
+
+def invocation_cell_lines(rendered: str) -> list[str]:
+    lines = rendered.splitlines()
+    headers = invocation_table_headers(lines)
+    assert len(headers) >= 2, 'reader has no command cell\n' + rendered
+    return lines[headers[1] + 1:]
+
+
 def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path,
                             rendered: str) -> str:
     markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
     for marker, command in zip(markers, ('check', 'test')):
         assert nested_directory.name in rendered, rendered
-        rows = [line for line in rendered.splitlines() if marker in line]
+        rows = [line for line in invocation_cell_lines(rendered) if marker in line]
         assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
         assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
         nested_pid = (enclosing[1] / command / 'cargo-pid').read_text()
@@ -1121,6 +1193,13 @@ def assert_blocked_invocation_readiness() -> None:
     assert not all(blocked_invocation_in_rendered(name, nested) for name in markers), nested
     nested = nested.replace('1891 --', '1891 blocked')
     assert all(blocked_invocation_in_rendered(name, nested) for name in markers), nested
+    # A command cell can omit the parent column when its values are empty.
+    summary = 'summary\n│ pid start dur state command\n│ 1890 blocked cargo check ' + marker
+    celled = summary + '\n┌ 1 ─────────────┐\n│ pid start dur cpu mem state command\n│ 1891 0% 0.0G blocked cargo check ' + marker
+    assert not native_invocation_is_ready(marker, '1891', summary), summary
+    assert native_invocation_is_ready(marker, '1891', celled), celled
+    assert not native_invocation_is_ready(marker, '1890', celled), celled
+
 
 def assert_completed_terminal_frames() -> None:
     global terminal_rows, terminal_columns
@@ -1385,11 +1464,20 @@ try:
                   if scenario == 'excluded' else first[1].name)
         marker_is_ready = marker in rendered
         if scenario == 'excluded':
-            marker_is_ready = all(blocked_invocation_in_rendered(
-                'probe-nested-' + root.name + '-' + command, rendered)
+            enclosing_writer = required(enclosing, 'excluded setup does not assign enclosing')
+            marker_is_ready = all(
+                blocked_invocation_in_rendered(
+                    'probe-nested-' + root.name + '-' + command, rendered)
+                and native_invocation_is_ready(
+                    'probe-nested-' + root.name + '-' + command,
+                    (enclosing_writer[1] / command / 'cargo-pid').read_text().strip(), rendered)
                 for command in ('check', 'test'))
         elif scenario in ('locale', 'quiet-json-long'):
             marker_is_ready = blocked_invocation_in_rendered(marker, rendered)
+            if scenario == 'quiet-json-long':
+                cargo_pid = (first[1] / 'cargo-pid').read_text().strip()
+                marker_is_ready = marker_is_ready and native_invocation_is_ready(
+                    marker, cargo_pid, rendered)
         elif scenario == 'child-source-switch':
             marker_is_ready = carrier_source_in_rendered(
                 required(carrier, 'child-source-switch setup does not assign carrier'),
@@ -1409,7 +1497,7 @@ try:
     if scenario == 'quiet-json-long':
         quiet_writer = required(quiet_writer, 'quiet-json-long setup does not assign quiet_writer')
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
-        rows = [line for line in rendered.splitlines() if quiet_writer[1].name in line]
+        rows = [line for line in invocation_cell_lines(rendered) if quiet_writer[1].name in line]
         assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
         assert re.match(r'^\s*│\s*' + cargo_pid + r'\s', rows[0]), rendered

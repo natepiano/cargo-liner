@@ -18,7 +18,6 @@ use zbus::blocking::Proxy;
 use zbus::zvariant::OwnedValue;
 use zbus::zvariant::Structure;
 
-use super::SessionBus;
 use super::constants::ASPECT_RATIO_DISTANCE_WEIGHT;
 use super::constants::DARK_PALETTE_THRESHOLD;
 use super::constants::DEFAULT_LOOK_AND_FEEL_PACKAGE;
@@ -40,6 +39,7 @@ use super::constants::XDG_CONFIG_DEFAULT;
 use super::constants::XDG_DATA_DEFAULT;
 use super::constants::XDG_DATA_DIRS_DEFAULT;
 use super::session_connection;
+use super::session_connection::SessionBus;
 
 /// Wallpaper state that affects pixels rendered for one output.
 #[derive(Clone, Eq, PartialEq)]
@@ -182,7 +182,7 @@ impl TryFrom<i32> for FillMode {
 
 /// Read the wallpaper currently assigned to one Plasma screen.
 pub(super) fn snapshot(screen_index: u32, output: (u32, u32)) -> Option<WallpaperSnapshot> {
-    let connection = match session_connection() {
+    let connection = match session_connection::session_connection() {
         SessionBus::Connected(connection) => connection,
         SessionBus::Unavailable(failure) => {
             tracing::debug!(%failure, "desktop query has no session bus");

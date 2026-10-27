@@ -4,13 +4,16 @@
 
 use super::FavoritesHost;
 use super::bindings;
-use super::report_closed_overlay_adjustment;
+use super::notice;
+use crate::AppContext;
 use crate::AttractSettings;
 use crate::FavoriteRows;
 use crate::FavoriteSaveOutcome;
 use crate::FavoritesFileState;
 use crate::FavoritesMutation;
 use crate::FavoritesRetryInstruction;
+use crate::SettingsApplicationOutcome;
+use crate::ToastStyle;
 use crate::attract;
 use crate::attract::EmptyIndexDomain;
 use crate::attract::NOTICE_TOAST_MIN_INTERIOR_LINES;
@@ -122,6 +125,37 @@ fn draw_recognized_settings(
         .nth(index)
         .map(|favorite| favorite.settings)
         .ok_or(EmptyIndexDomain)
+}
+
+/// Report an adjusted favorite after its modal has closed.
+pub(super) fn report_closed_overlay_adjustment<A: AppContext>(
+    app: &mut A,
+    outcome: SettingsApplicationOutcome,
+) {
+    let SettingsApplicationOutcome::AppliedWithAdjustments {
+        requested,
+        effective,
+    } = outcome
+    else {
+        return;
+    };
+    let message = notice::favorite_adjustment_message(requested, effective);
+    push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
+}
+
+pub(super) fn push_scheduled_toast<A: AppContext>(
+    app: &mut A,
+    title: &str,
+    body: &str,
+    style: ToastStyle,
+) {
+    app.framework_mut().toasts.push_timed_styled(
+        title,
+        body,
+        NOTICE_TOAST_VISIBLE,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
+        style,
+    );
 }
 
 #[cfg(test)]

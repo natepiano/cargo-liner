@@ -7,15 +7,19 @@
 //!
 //! The summary's own colors are theme roles: [`Role`] names each one,
 //! and every built-in variant carries a value for each. Among them is
-//! the rainbow the agent cells take in turn, one [`RainbowHue`] a cell,
+//! the session palette the agent cells take in turn, one [`SessionHue`] a cell,
 //! which draws both the cell's title and its agent's name in the
 //! summary.
 //!
-//! [`builtins`] is what startup hands to [`tui_pane::install_theme`];
+//! [`builtins`] is what startup hands to [`install_theme`];
 //! user `themes/*.toml` variants layer on top, replacing a built-in
 //! when the names match. The `cargo-handler/themes/*.toml` templates
 //! mirror these constructors as copyable documentation, locked against
 //! drift by the tests at the bottom of this file.
+
+mod files;
+#[cfg(test)]
+mod files_tests;
 
 use std::collections::BTreeMap;
 
@@ -34,6 +38,7 @@ use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeVariant;
 
+pub(crate) use self::files::install_theme;
 use crate::constants::BUSY_ROLE;
 use crate::constants::CLAUDE_ROLE;
 use crate::constants::CODEX_ROLE;
@@ -42,14 +47,60 @@ use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::IDLE_ROLE;
-use crate::constants::RAINBOW_BLUE_ROLE;
-use crate::constants::RAINBOW_CYAN_ROLE;
-use crate::constants::RAINBOW_GREEN_ROLE;
-use crate::constants::RAINBOW_ORANGE_ROLE;
-use crate::constants::RAINBOW_RED_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 use crate::footer_colors;
+use crate::footer_colors::FooterColor;
+
+/// A fixed foreground drawn beside a session name in a tree, summary or launcher row.
+/// Quota, reset and failure-dot inks belong to separate accounts rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionRowInk {
+    Text,
+    LauncherLabel,
+    Claude,
+    Codex,
+    Busy,
+    Shell,
+    Idle,
+    Account(FooterColor),
+    Management(FooterColor),
+}
+
+impl SessionRowInk {
+    /// Fixed row fields, before the footer supplies its configured account and role inks.
+    #[cfg(test)]
+    pub(crate) fn fixed_fields() -> impl Iterator<Item = Self> {
+        std::iter::successors(Some(Self::Text), |field| match field {
+            Self::Text => Some(Self::LauncherLabel),
+            Self::LauncherLabel => Some(Self::Claude),
+            Self::Claude => Some(Self::Codex),
+            Self::Codex => Some(Self::Busy),
+            Self::Busy => Some(Self::Shell),
+            Self::Shell => Some(Self::Idle),
+            Self::Idle | Self::Account(_) | Self::Management(_) => None,
+        })
+    }
+
+    /// Resolve the same foreground used by the corresponding production row field.
+    pub(crate) fn style(self) -> Style {
+        let role = match self {
+            Self::Text => return Style::default().fg(tui_pane::text_default()),
+            Self::LauncherLabel => return Style::default().fg(tui_pane::label_color()),
+            Self::Account(color) => return color.account_style(),
+            Self::Management(color) => return color.management_style(),
+            Self::Claude => Role::Claude,
+            Self::Codex => Role::Codex,
+            Self::Busy => Role::Busy,
+            Self::Shell => Role::Shell,
+            Self::Idle => Role::Idle,
+        };
+        footer_colors::readable_status_style(tui_pane::role_style(
+            role.key(),
+            DEFAULT_DARK_ROLES.spec(role),
+        ))
+    }
+}
 
 /// A chronological rank constructed only within its set of distinct reset times.
 pub(crate) struct ResetRank {
@@ -66,22 +117,24 @@ impl ResetRank {
         })
     }
 
-    /// Blend in the active theme's color space, retaining exact endpoints.
+    /// Blend the reset-only theme roles, retaining exact endpoints.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "positions constructs ranks at most last, so the rounded alpha is at most 255"
     )]
     pub(crate) fn color(self) -> Color {
+        let nearest = tui_pane::role_color("reset_nearest", DEFAULT_DARK_ROLES.reset_nearest);
+        let farthest = tui_pane::role_color("reset_farthest", DEFAULT_DARK_ROLES.reset_farthest);
         if self.position == 0 {
-            return tui_pane::success_color();
+            return nearest;
         }
         if self.position == self.last {
-            return tui_pane::error_color();
+            return farthest;
         }
         let intervals = self.last as u128;
         let alpha =
             ((self.position as u128 * u128::from(u8::MAX) + intervals / 2) / intervals) as u8;
-        tui_pane::blend_color(tui_pane::success_color(), tui_pane::error_color(), alpha)
+        tui_pane::blend_color(nearest, farthest, alpha)
     }
 }
 
@@ -103,7 +156,7 @@ pub(crate) enum Role {
     /// Why a remote machine gave no answer.
     Unreachable,
     /// An agent cell's title and its agent's name in the summary.
-    Rainbow(RainbowHue),
+    Session(SessionHue),
 }
 
 impl Role {
@@ -115,11 +168,11 @@ impl Role {
         Self::Shell,
         Self::Idle,
         Self::Unreachable,
-        Self::Rainbow(RainbowHue::Red),
-        Self::Rainbow(RainbowHue::Orange),
-        Self::Rainbow(RainbowHue::Green),
-        Self::Rainbow(RainbowHue::Cyan),
-        Self::Rainbow(RainbowHue::Blue),
+        Self::Session(SessionHue::First),
+        Self::Session(SessionHue::Second),
+        Self::Session(SessionHue::Third),
+        Self::Session(SessionHue::Fourth),
+        Self::Session(SessionHue::Fifth),
     ];
 
     /// The role's key in `[variants.roles]`.
@@ -131,86 +184,81 @@ impl Role {
             Self::Shell => SHELL_ROLE,
             Self::Idle => IDLE_ROLE,
             Self::Unreachable => UNREACHABLE_ROLE,
-            Self::Rainbow(hue) => hue.key(),
+            Self::Session(hue) => hue.key(),
         }
     }
 
     /// The role's style in the active variant. A variant without the
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
-        let style = tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self));
         match self {
-            Self::Rainbow(_) => footer_colors::readable_session_style(style),
-            Self::Claude
-            | Self::Codex
-            | Self::Busy
-            | Self::Shell
-            | Self::Idle
-            | Self::Unreachable => footer_colors::readable_status_style(style),
+            Self::Claude => SessionRowInk::Claude.style(),
+            Self::Codex => SessionRowInk::Codex.style(),
+            Self::Busy => SessionRowInk::Busy.style(),
+            Self::Shell => SessionRowInk::Shell.style(),
+            Self::Idle => SessionRowInk::Idle.style(),
+            Self::Session(_) => footer_colors::readable_session_style(tui_pane::role_style(
+                self.key(),
+                DEFAULT_DARK_ROLES.spec(self),
+            )),
+            Self::Unreachable => footer_colors::readable_status_style(tui_pane::role_style(
+                self.key(),
+                DEFAULT_DARK_ROLES.spec(self),
+            )),
         }
     }
 }
 
-/// One color of the rainbow the agent cells take in turn, in cell
+/// One color of the session palette the agent cells take in turn, in cell
 /// order: a cell's title and its agent's name in the summary are drawn
 /// in its hue, so the two can be paired at a glance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RainbowHue {
+pub(crate) enum SessionHue {
     /// The first cell's hue.
-    Red,
+    First,
     /// The second cell's hue.
-    Orange,
+    Second,
     /// The third cell's hue.
-    Green,
+    Third,
     /// The fourth cell's hue.
-    Cyan,
+    Fourth,
     /// The fifth cell's hue.
-    Blue,
+    Fifth,
 }
 
-impl RainbowHue {
+impl SessionHue {
     /// Every hue, in the order the cells take them.
-    const ALL: [Self; 5] = [Self::Red, Self::Orange, Self::Green, Self::Cyan, Self::Blue];
+    const ALL: [Self; 5] = [
+        Self::First,
+        Self::Second,
+        Self::Third,
+        Self::Fourth,
+        Self::Fifth,
+    ];
 
     /// The hue of the agent at `position` in cell order, counted from
-    /// zero and starting over after blue.
+    /// zero and starting over after the fifth entry.
     pub(crate) const fn of_agent(position: usize) -> Self { Self::ALL[position % Self::ALL.len()] }
 
-    /// The hue's key in `[variants.roles]`.
-    const fn key(self) -> &'static str {
+    /// The ordinal's position in the theme's five-color array.
+    const fn index(self) -> usize {
         match self {
-            Self::Red => RAINBOW_RED_ROLE,
-            Self::Orange => RAINBOW_ORANGE_ROLE,
-            Self::Green => RAINBOW_GREEN_ROLE,
-            Self::Cyan => RAINBOW_CYAN_ROLE,
-            Self::Blue => RAINBOW_BLUE_ROLE,
+            Self::First => 0,
+            Self::Second => 1,
+            Self::Third => 2,
+            Self::Fourth => 3,
+            Self::Fifth => 4,
         }
     }
-}
 
-/// One built-in variant's value for each [`RainbowHue`].
-struct RainbowPalette {
-    /// [`RainbowHue::Red`].
-    red:    StyleSpec,
-    /// [`RainbowHue::Orange`].
-    orange: StyleSpec,
-    /// [`RainbowHue::Green`].
-    green:  StyleSpec,
-    /// [`RainbowHue::Cyan`].
-    cyan:   StyleSpec,
-    /// [`RainbowHue::Blue`].
-    blue:   StyleSpec,
-}
-
-impl RainbowPalette {
-    /// The value for `hue`.
-    const fn spec(&self, hue: RainbowHue) -> StyleSpec {
-        match hue {
-            RainbowHue::Red => self.red,
-            RainbowHue::Orange => self.orange,
-            RainbowHue::Green => self.green,
-            RainbowHue::Cyan => self.cyan,
-            RainbowHue::Blue => self.blue,
+    /// Private renderer keys; theme files expose only the five-entry list.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::First => "session_1",
+            Self::Second => "session_2",
+            Self::Third => "session_3",
+            Self::Fourth => "session_4",
+            Self::Fifth => "session_5",
         }
     }
 }
@@ -218,19 +266,22 @@ impl RainbowPalette {
 /// One built-in variant's value for each [`Role`].
 struct RolePalette {
     /// [`Role::Claude`].
-    claude:      StyleSpec,
+    claude:         StyleSpec,
     /// [`Role::Codex`].
-    codex:       StyleSpec,
+    codex:          StyleSpec,
     /// [`Role::Busy`].
-    busy:        StyleSpec,
+    busy:           StyleSpec,
     /// [`Role::Shell`].
-    shell:       StyleSpec,
+    shell:          StyleSpec,
     /// [`Role::Idle`].
-    idle:        StyleSpec,
+    idle:           StyleSpec,
     /// [`Role::Unreachable`].
-    unreachable: StyleSpec,
-    /// [`Role::Rainbow`], one value per hue.
-    rainbow:     RainbowPalette,
+    unreachable:    StyleSpec,
+    /// [`Role::Session`], one value per hue.
+    session_hues:   [Color; SessionHue::ALL.len()],
+    /// Nearest and farthest reset ranks, independent of success and failure.
+    reset_nearest:  StyleSpec,
+    reset_farthest: StyleSpec,
 }
 
 impl RolePalette {
@@ -243,7 +294,7 @@ impl RolePalette {
             Role::Shell => self.shell,
             Role::Idle => self.idle,
             Role::Unreachable => self.unreachable,
-            Role::Rainbow(hue) => self.rainbow.spec(hue),
+            Role::Session(hue) => StyleSpec::from_color(self.session_hues[hue.index()]),
         }
     }
 
@@ -252,6 +303,10 @@ impl RolePalette {
         Role::ALL
             .into_iter()
             .map(|role| (role.key().to_string(), self.spec(role)))
+            .chain([
+                ("reset_nearest".to_owned(), self.reset_nearest),
+                ("reset_farthest".to_owned(), self.reset_farthest),
+            ])
             .collect()
     }
 }
@@ -259,75 +314,83 @@ impl RolePalette {
 /// [`default_dark`]'s roles, and the value a variant without a role
 /// falls back to.
 const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
-    claude:      StyleSpec::from_color(Color::Rgb(217, 119, 87)),
-    codex:       StyleSpec::from_color(Color::Rgb(175, 140, 255)),
-    busy:        StyleSpec::from_color(Color::Rgb(100, 220, 100)),
+    claude:         StyleSpec::from_color(Color::Rgb(217, 119, 87)),
+    codex:          StyleSpec::from_color(Color::Rgb(175, 140, 255)),
+    busy:           StyleSpec::from_color(Color::Rgb(100, 220, 100)),
     // Pale cyan stays apart from the account teal after focused-ground solving.
-    shell:       StyleSpec::from_color(Color::Rgb(140, 230, 240)),
-    idle:        StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-    unreachable: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
-    rainbow:     RainbowPalette {
-        red:    StyleSpec::from_color(Color::Rgb(255, 95, 95)),
-        orange: StyleSpec::from_color(Color::Rgb(255, 165, 70)),
-        green:  StyleSpec::from_color(Color::Rgb(110, 220, 110)),
-        cyan:   StyleSpec::from_color(Color::Rgb(80, 210, 230)),
-        blue:   StyleSpec::from_color(Color::Rgb(100, 150, 255)),
-    },
+    shell:          StyleSpec::from_color(Color::Rgb(140, 230, 240)),
+    idle:           StyleSpec::from_color(Color::Rgb(140, 140, 140)),
+    unreachable:    StyleSpec::from_color(Color::Rgb(255, 100, 100)),
+    session_hues:   [
+        Color::Rgb(245, 186, 38),
+        Color::Rgb(218, 251, 142),
+        Color::Rgb(73, 249, 195),
+        Color::Rgb(41, 189, 172),
+        Color::Rgb(249, 193, 253),
+    ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(125, 191, 110)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(69, 196, 153)),
 };
 
 /// [`default_light`]'s roles: the same hues, darker, for a white
 /// background.
 const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
-    claude:      StyleSpec::from_color(Color::Rgb(190, 85, 50)),
-    codex:       StyleSpec::from_color(Color::Rgb(110, 60, 200)),
-    busy:        StyleSpec::from_color(Color::Rgb(0, 130, 0)),
+    claude:         StyleSpec::from_color(Color::Rgb(190, 85, 50)),
+    codex:          StyleSpec::from_color(Color::Rgb(110, 60, 200)),
+    busy:           StyleSpec::from_color(Color::Rgb(0, 130, 0)),
     // Green teal keeps the covered timer ink distinct from the account teal.
-    shell:       StyleSpec::from_color(Color::Rgb(0, 120, 100)),
-    idle:        StyleSpec::from_color(Color::Rgb(110, 110, 110)),
-    unreachable: StyleSpec::from_color(Color::Rgb(190, 0, 0)),
-    rainbow:     RainbowPalette {
-        red:    StyleSpec::from_color(Color::Rgb(200, 30, 30)),
-        orange: StyleSpec::from_color(Color::Rgb(180, 85, 0)),
-        green:  StyleSpec::from_color(Color::Rgb(0, 135, 0)),
-        cyan:   StyleSpec::from_color(Color::Rgb(0, 120, 140)),
-        blue:   StyleSpec::from_color(Color::Rgb(30, 80, 210)),
-    },
+    shell:          StyleSpec::from_color(Color::Rgb(0, 120, 100)),
+    idle:           StyleSpec::from_color(Color::Rgb(110, 110, 110)),
+    unreachable:    StyleSpec::from_color(Color::Rgb(190, 0, 0)),
+    session_hues:   [
+        Color::Rgb(70, 1, 2),
+        Color::Rgb(87, 39, 90),
+        Color::Rgb(0, 35, 86),
+        Color::Rgb(110, 6, 54),
+        Color::Rgb(33, 0, 69),
+    ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(115, 0, 235)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(73, 0, 158)),
 };
 
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
-    claude:      StyleSpec::bold(Color::Rgb(255, 150, 90)),
-    codex:       StyleSpec::bold(Color::LightMagenta),
-    busy:        StyleSpec::bold(Color::LightGreen),
-    shell:       StyleSpec::bold(Color::LightCyan),
-    idle:        StyleSpec::from_color(Color::Gray),
-    unreachable: StyleSpec::bold(Color::LightRed),
-    rainbow:     RainbowPalette {
-        red:    StyleSpec::bold(Color::LightRed),
-        orange: StyleSpec::bold(Color::Rgb(255, 170, 60)),
-        green:  StyleSpec::bold(Color::LightGreen),
-        cyan:   StyleSpec::bold(Color::LightCyan),
-        blue:   StyleSpec::bold(Color::Rgb(100, 150, 255)),
-    },
+    claude:         StyleSpec::bold(Color::Rgb(255, 150, 90)),
+    codex:          StyleSpec::bold(Color::LightMagenta),
+    busy:           StyleSpec::bold(Color::LightGreen),
+    shell:          StyleSpec::bold(Color::LightCyan),
+    idle:           StyleSpec::from_color(Color::Gray),
+    unreachable:    StyleSpec::bold(Color::LightRed),
+    session_hues:   [
+        Color::Rgb(245, 186, 38),
+        Color::Rgb(205, 246, 140),
+        Color::Rgb(85, 185, 69),
+        Color::Rgb(7, 229, 182),
+        Color::Rgb(249, 193, 253),
+    ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(125, 191, 110)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(69, 196, 153)),
 };
 
 /// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
-    claude:      StyleSpec::bold(Color::Rgb(160, 60, 0)),
-    codex:       StyleSpec::bold(Color::Rgb(100, 0, 160)),
-    busy:        StyleSpec::bold(Color::Rgb(0, 100, 0)),
-    shell:       StyleSpec::bold(Color::Rgb(0, 80, 65)),
-    idle:        StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-    unreachable: StyleSpec::bold(Color::Rgb(180, 0, 0)),
-    rainbow:     RainbowPalette {
-        red:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
-        orange: StyleSpec::bold(Color::Rgb(150, 60, 0)),
-        green:  StyleSpec::bold(Color::Rgb(0, 100, 0)),
-        cyan:   StyleSpec::bold(Color::Rgb(0, 95, 115)),
-        blue:   StyleSpec::bold(Color::Rgb(0, 0, 170)),
-    },
+    claude:         StyleSpec::bold(Color::Rgb(160, 60, 0)),
+    codex:          StyleSpec::bold(Color::Rgb(100, 0, 160)),
+    busy:           StyleSpec::bold(Color::Rgb(0, 100, 0)),
+    shell:          StyleSpec::bold(Color::Rgb(0, 80, 65)),
+    idle:           StyleSpec::from_color(Color::Rgb(80, 80, 80)),
+    unreachable:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
+    session_hues:   [
+        Color::Rgb(0, 35, 86),
+        Color::Rgb(68, 0, 29),
+        Color::Rgb(37, 0, 67),
+        Color::Rgb(81, 12, 0),
+        Color::Rgb(92, 40, 87),
+    ],
+    reset_nearest:  StyleSpec::from_color(Color::Rgb(115, 0, 235)),
+    reset_farthest: StyleSpec::from_color(Color::Rgb(82, 55, 154)),
 };
 
 /// The variants cargo-handler compiles in, in the order the settings
@@ -375,9 +438,9 @@ fn default_dark() -> Theme {
             inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
-            active:     StyleSpec::from_color(Color::Rgb(125, 125, 125)),
+            active:     StyleSpec::from_color(Color::Rgb(86, 86, 86)),
             hover:      StyleSpec::from_color(Color::Rgb(80, 80, 80)),
-            remembered: StyleSpec::from_color(Color::Rgb(40, 40, 40)),
+            remembered: StyleSpec::from_color(Color::Rgb(46, 46, 46)),
         },
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Cyan),
@@ -575,10 +638,10 @@ mod tests {
 
     use super::*;
 
-    const DARK_TEMPLATE: &str = include_str!("../themes/default_dark.toml");
-    const HC_TEMPLATE: &str = include_str!("../themes/high_contrast.toml");
-    const LIGHT_TEMPLATE: &str = include_str!("../themes/default_light.toml");
-    const STARTER_TEMPLATE: &str = include_str!("../themes/starter.toml");
+    const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
+    const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
+    const LIGHT_TEMPLATE: &str = include_str!("../../themes/default_light.toml");
+    const STARTER_TEMPLATE: &str = include_str!("../../themes/starter.toml");
 
     const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
         (0, 0, 0),
@@ -602,7 +665,7 @@ mod tests {
     /// Parse one template and return its variants, asserting the schema
     /// version and the expected variant count.
     fn variants(template: &str, expected: usize) -> Vec<ThemeVariantFile> {
-        let family: ThemeFamily = toml::from_str(template).expect("template should parse");
+        let family: ThemeFamily = files::parse_family(template).expect("template should parse");
         assert_eq!(family.schema, 1);
         assert_eq!(family.variants.len(), expected);
         family.variants
@@ -652,28 +715,28 @@ mod tests {
         );
     }
 
-    /// The five session hues repeat after blue without using role hues.
+    /// The five session hues repeat after the fifth entry without using role hues.
     #[test]
-    fn agents_take_the_rainbow_in_order_and_start_over_past_blue() {
-        let hues: Vec<RainbowHue> = (0..9).map(RainbowHue::of_agent).collect();
+    fn agents_take_session_entries_in_order_and_cycle_after_the_last() {
+        let hues: Vec<SessionHue> = (0..9).map(SessionHue::of_agent).collect();
         assert_eq!(
             hues,
             [
-                RainbowHue::Red,
-                RainbowHue::Orange,
-                RainbowHue::Green,
-                RainbowHue::Cyan,
-                RainbowHue::Blue,
-                RainbowHue::Red,
-                RainbowHue::Orange,
-                RainbowHue::Green,
-                RainbowHue::Cyan,
+                SessionHue::First,
+                SessionHue::Second,
+                SessionHue::Third,
+                SessionHue::Fourth,
+                SessionHue::Fifth,
+                SessionHue::First,
+                SessionHue::Second,
+                SessionHue::Third,
+                SessionHue::Fourth,
             ]
         );
     }
 
     /// Every built-in variant gives each hue a color of its own, so no
-    /// two cells within one turn of the rainbow share a color.
+    /// two cells within one turn of the session palette share a color.
     #[test]
     fn every_builtin_draws_each_hue_in_its_own_color() {
         for palette in [
@@ -682,9 +745,9 @@ mod tests {
             &HIGH_CONTRAST_DARK_ROLES,
             &HIGH_CONTRAST_LIGHT_ROLES,
         ] {
-            let colors: Vec<Color> = RainbowHue::ALL
+            let colors: Vec<Color> = SessionHue::ALL
                 .into_iter()
-                .map(|hue| palette.rainbow.spec(hue).color)
+                .map(|hue| palette.session_hues[hue.index()])
                 .collect();
             for (index, color) in colors.iter().enumerate() {
                 assert!(

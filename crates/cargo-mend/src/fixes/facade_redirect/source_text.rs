@@ -1,5 +1,10 @@
 use std::collections::BTreeSet;
+use std::error::Error;
 use std::ffi::OsStr;
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
@@ -23,6 +28,56 @@ pub(in crate::fixes) struct SourceLines<'a> {
     line_starts: Vec<usize>,
 }
 
+/// A source line whose index cannot underflow; membership in this source is
+/// still checked by line lookup.
+#[derive(Clone, Copy)]
+struct OneBasedLine(NonZeroUsize);
+
+impl OneBasedLine {
+    fn new(line: usize) -> Option<Self> { NonZeroUsize::new(line).map(Self) }
+}
+
+/// An addressable character position in one source, represented by its borrowed
+/// prefix. Only `SourceLines::position` constructs it; conversion cannot apply
+/// its coordinates to a different source.
+#[derive(Clone, Copy)]
+pub(in crate::fixes) struct SourcePosition<'a> {
+    prefix: &'a str,
+}
+
+/// Why an external span cannot address this source. Invalid coordinates never
+/// become edits at byte zero or EOF, or continue into a later physical line.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::fixes) enum SourcePositionError {
+    LineZero,
+    UnknownLine { line: usize },
+    ColumnPastLineEnd { line: usize, column: usize },
+    ReversedSpan { start: usize, end: usize },
+}
+
+impl Display for SourcePositionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LineZero => formatter.write_str("source line must be one-based"),
+            Self::UnknownLine { line } => write!(formatter, "source line {line} does not exist"),
+            Self::ColumnPastLineEnd { line, column } => {
+                write!(
+                    formatter,
+                    "source column {column} is past the end of line {line}"
+                )
+            },
+            Self::ReversedSpan { start, end } => {
+                write!(
+                    formatter,
+                    "source span ends at {end} before its start at {start}"
+                )
+            },
+        }
+    }
+}
+
+impl Error for SourcePositionError {}
+
 impl<'a> SourceLines<'a> {
     pub(in crate::fixes) fn new(source: &'a str) -> Self {
         let mut line_starts = vec![0];
@@ -37,23 +92,64 @@ impl<'a> SourceLines<'a> {
         }
     }
 
-    /// The byte offset of a span position. `LineColumn` counts characters, so
-    /// the column is walked through the line rather than added as bytes.
-    pub(in crate::fixes) fn offset(&self, position: LineColumn) -> usize {
-        let line_start = self
-            .line_starts
-            .get(position.line.saturating_sub(1))
-            .copied()
-            .unwrap_or(0);
-        self.source[line_start..]
+    /// Checks an external span position against this source's physical line.
+    /// `LineColumn` counts characters, so columns are walked rather than added
+    /// as bytes. The line-end position is valid, including an empty final line.
+    pub(in crate::fixes) fn position(
+        &self,
+        position: LineColumn,
+    ) -> Result<SourcePosition<'a>, SourcePositionError> {
+        let line = OneBasedLine::new(position.line).ok_or(SourcePositionError::LineZero)?;
+        let start =
+            *self
+                .line_starts
+                .get(line.0.get() - 1)
+                .ok_or(SourcePositionError::UnknownLine {
+                    line: position.line,
+                })?;
+        let rest = &self.source[start..];
+        let physical_line = rest.split_once('\n').map_or(rest, |(line, _)| line);
+        let column = physical_line
             .char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(physical_line.len()))
             .nth(position.column)
-            .map_or(self.source.len(), |(index, _)| line_start + index)
+            .ok_or(SourcePositionError::ColumnPastLineEnd {
+                line:   position.line,
+                column: position.column,
+            })?;
+        Ok(SourcePosition {
+            prefix: &self.source[..start + column],
+        })
+    }
+
+    /// Converts a checked position from its own source into an edit offset.
+    pub(in crate::fixes) const fn offset(position: SourcePosition<'_>) -> usize {
+        position.prefix.len()
+    }
+
+    /// Validates both external endpoints before constructing an ordered range.
+    pub(in crate::fixes) fn span_range(
+        &self,
+        start: LineColumn,
+        end: LineColumn,
+    ) -> Result<(usize, usize), SourcePositionError> {
+        let start = Self::offset(self.position(start)?);
+        let end = Self::offset(self.position(end)?);
+        if start > end {
+            return Err(SourcePositionError::ReversedSpan { start, end });
+        }
+        Ok((start, end))
     }
 
     /// The byte range of 1-based `line`, trailing newline included.
     pub(in crate::fixes) fn line_span(&self, line: usize) -> Option<(usize, usize)> {
-        let start = *self.line_starts.get(line.checked_sub(1)?)?;
+        self.checked_line_span(OneBasedLine::new(line)?)
+    }
+
+    fn checked_line_span(&self, line: OneBasedLine) -> Option<(usize, usize)> {
+        let line = line.0.get();
+        let start = *self.line_starts.get(line - 1)?;
         let end = self
             .line_starts
             .get(line)
@@ -81,11 +177,8 @@ impl<'a> SourceLines<'a> {
 pub(in crate::fixes) fn item_use_byte_range(
     lines: &SourceLines<'_>,
     item_use: &ItemUse,
-) -> (usize, usize) {
-    (
-        lines.offset(item_use.span().start()),
-        lines.offset(item_use.semi_token.span.end()),
-    )
+) -> Result<(usize, usize), SourcePositionError> {
+    lines.span_range(item_use.span().start(), item_use.semi_token.span.end())
 }
 
 /// A fix removing `range`, widened to whole lines when nothing else shares them.
@@ -217,6 +310,7 @@ mod tests {
     use syn::parse_file;
 
     use super::SourceLines;
+    use super::SourcePositionError;
     use super::item_use_byte_range;
     use super::line_deletion;
     use super::word_occurs_outside;
@@ -227,6 +321,48 @@ mod tests {
         let start = source.find(target).expect("target in source");
         let fix = line_deletion(Path::new("lib.rs"), source, start..start + target.len());
         format!("{}{}", &source[..fix.start], &source[fix.end..])
+    }
+
+    #[test]
+    fn external_positions_reject_invalid_lines_and_columns() {
+        let lines = SourceLines::new("é\nx\n");
+        let at = |line, column| LineColumn { line, column };
+        for (raw, error) in [
+            (at(0, 0), SourcePositionError::LineZero),
+            (at(4, 0), SourcePositionError::UnknownLine { line: 4 }),
+            (
+                at(1, 2),
+                SourcePositionError::ColumnPastLineEnd {
+                    line:   1,
+                    column: 2,
+                },
+            ),
+            (
+                at(2, 2),
+                SourcePositionError::ColumnPastLineEnd {
+                    line:   2,
+                    column: 2,
+                },
+            ),
+        ] {
+            assert_eq!(lines.position(raw).map(SourceLines::offset), Err(error));
+        }
+        assert_eq!(lines.position(at(1, 1)).map(SourceLines::offset), Ok(2));
+        assert_eq!(lines.position(at(3, 0)).map(SourceLines::offset), Ok(5));
+        assert_eq!(
+            lines.span_range(at(2, 0), at(1, 0)),
+            Err(SourcePositionError::ReversedSpan { start: 3, end: 0 })
+        );
+    }
+
+    #[test]
+    fn line_spans_reject_zero_and_unknown_lines() {
+        let lines = SourceLines::new("a\nb\n");
+        assert_eq!(lines.line_span(0), None);
+        assert_eq!(lines.line_span(1), Some((0, 2)));
+        assert_eq!(lines.line_span(2), Some((2, 4)));
+        assert_eq!(lines.line_span(3), Some((4, 4)));
+        assert_eq!(lines.line_span(4), None);
     }
 
     #[test]
@@ -265,10 +401,13 @@ mod tests {
     fn a_column_past_a_multibyte_character_lands_on_the_right_byte() {
         let source = "// é\nlet é = x;\n";
         let lines = SourceLines::new(source);
-        let offset = lines.offset(LineColumn {
-            line:   2,
-            column: 8,
-        });
+        let position = lines
+            .position(LineColumn {
+                line:   2,
+                column: 8,
+            })
+            .expect("valid column");
+        let offset = SourceLines::offset(position);
         assert_eq!(&source[offset..], "x;\n");
     }
 
@@ -284,7 +423,7 @@ mod tests {
                 _ => None,
             })
             .expect("use item");
-        let (start, end) = item_use_byte_range(&SourceLines::new(source), item_use);
+        let (start, end) = item_use_byte_range(&SourceLines::new(source), item_use).expect("range");
         assert_eq!(
             &source[start..end],
             "#[doc = \"a; b\"]\npub use crate::x::Y;"
