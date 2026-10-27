@@ -704,3 +704,14 @@ fn symmetric_difference(
     ordering::normalize_paths(&mut paths);
     paths
 }
+
+/// All dirty paths, including configuration, for a scope-emptiness proof.
+pub(crate) fn working_tree_changed_paths(
+    porcelain: &[u8],
+) -> Result<Vec<ReservationScopePath>, String> {
+    let status =
+        git_output::parse_working_tree_status(porcelain).map_err(|error| error.to_string())?;
+    let mut paths = status.tracked();
+    paths.extend(status.untracked);
+    Ok(paths)
+}

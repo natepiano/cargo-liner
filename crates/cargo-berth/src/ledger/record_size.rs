@@ -175,9 +175,9 @@ fn release_input(disposition: &ReleaseDisposition) -> CallerJournalInput<'_> {
         ReleaseDisposition::RetiredOrphan(reason) => CallerJournalInput::Release {
             reason: reason.to_string(),
         },
-        ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
-            CallerJournalInput::None
-        },
+        ReleaseDisposition::Integrated
+        | ReleaseDisposition::RewrittenIntegration(_)
+        | ReleaseDisposition::UnchangedScopes(_) => CallerJournalInput::None,
     }
 }
 
