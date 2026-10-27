@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::ops::Range;
 use std::path::Path;
 
@@ -12,6 +13,7 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 use syn::spanned::Spanned;
+use syn::token::Brace;
 
 use super::crate_files::OwnerCrate;
 use super::local_use::GlobReach;
@@ -47,18 +49,64 @@ pub(super) enum EmptiedOwner {
     Keep,
 }
 
-/// A fact placed in the owner file: the `use` item holding its leaf and the
-/// inline module around that item, if any.
+/// The source region that holds an owner fact. Inline regions carry their
+/// brace and items: an out-of-line module cannot enter inline editing.
+#[derive(Clone, Copy)]
+enum OwnerRegion<'s> {
+    File,
+    Inline {
+        module: &'s ItemMod,
+        brace:  &'s Brace,
+        items:  &'s [Item],
+    },
+}
+
+/// A fact placed in its use item and its actual source region.
 struct Located<'s, 'f> {
-    fact:      &'f OwnerFact<'f>,
-    item_use:  &'s ItemUse,
-    enclosing: Option<&'s ItemMod>,
+    fact:     &'f OwnerFact<'f>,
+    item_use: &'s ItemUse,
+    region:   OwnerRegion<'s>,
+}
+
+/// Editing requires a first fact; an empty group cannot fall back to file
+/// editing or reach an indexed first-element access.
+struct NonEmptyOwnerRegion<'s, 'f> {
+    first: Located<'s, 'f>,
+    rest:  Vec<Located<'s, 'f>>,
+}
+
+impl<'s, 'f> NonEmptyOwnerRegion<'s, 'f> {
+    fn iter(&self) -> impl Iterator<Item = &Located<'s, 'f>> {
+        std::iter::once(&self.first).chain(&self.rest)
+    }
+}
+
+/// The use item and its nonempty associated facts, joined while grouping by
+/// that item's source start. Rewriting never chooses an item from an empty
+/// group or accepts facts carrying their own, possibly different item.
+struct ItemRewriteGroup<'s, 'f> {
+    item_use: &'s ItemUse,
+    first:    &'f OwnerFact<'f>,
+    rest:     Vec<&'f OwnerFact<'f>>,
+}
+
+impl<'f> ItemRewriteGroup<'_, 'f> {
+    fn facts(&self) -> impl Iterator<Item = &'f OwnerFact<'f>> + '_ {
+        std::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+}
+
+/// Only required leaves reach rewriting; an unused leaf cannot accidentally
+/// become an unconditional private import.
+enum RequiredLocalUse {
+    TestOnly,
+    Always,
 }
 
 /// A removed leaf the owner module still needs, and how.
 struct UsedLeaf<'a> {
     written_path: &'a str,
-    local_use:    LocalUse,
+    local_use:    RequiredLocalUse,
 }
 
 /// What one edited `use` item becomes.
@@ -116,17 +164,23 @@ fn edit_owner_source(
 
     // `regions` keeps two copies of one inline module under different `#[cfg]`s
     // separate: they are two regions of the same module path.
-    let mut regions: BTreeMap<Option<usize>, Vec<Located<'_, '_>>> = BTreeMap::new();
+    let mut regions: BTreeMap<Option<usize>, NonEmptyOwnerRegion<'_, '_>> = BTreeMap::new();
     for found in located {
-        let key = found
-            .enclosing
-            .map(|item_mod| {
-                lines
-                    .position(item_mod.span().start())
-                    .map(SourceLines::offset)
-            })
-            .transpose()?;
-        regions.entry(key).or_default().push(found);
+        let key = match found.region {
+            OwnerRegion::File => None,
+            OwnerRegion::Inline { module, .. } => {
+                Some(SourceLines::offset(lines.position(module.span().start())?))
+            },
+        };
+        match regions.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(NonEmptyOwnerRegion {
+                    first: found,
+                    rest:  Vec::new(),
+                });
+            },
+            Entry::Occupied(mut entry) => entry.get_mut().rest.push(found),
+        }
     }
     let mut fixes = Vec::new();
     for region in regions.into_values() {
@@ -148,28 +202,33 @@ fn edit_region(
     source: &str,
     lines: &SourceLines<'_>,
     file_items: &[Item],
-    region: &[Located<'_, '_>],
+    region: &NonEmptyOwnerRegion<'_, '_>,
     owner_crate: OwnerCrate<'_>,
     emptied: EmptiedOwner,
 ) -> Result<Vec<UseFix>> {
-    let enclosing = region.first().and_then(|found| found.enclosing);
-    let (region_range, region_items) = match enclosing {
-        Some(item_mod) => {
-            let Some((brace, items)) = &item_mod.content else {
-                return Ok(Vec::new());
-            };
+    let (region_range, region_items) = match region.first.region {
+        OwnerRegion::Inline { brace, items, .. } => {
             let (start, end) =
                 lines.span_range(brace.span.open().end(), brace.span.close().start())?;
-            (start..end, items.as_slice())
+            (start..end, items)
         },
-        None => (0..source.len(), file_items),
+        OwnerRegion::File => (0..source.len(), file_items),
     };
 
-    // `items` groups the facts by the `use` item holding them, keyed by its start.
-    let mut items: BTreeMap<usize, Vec<&Located<'_, '_>>> = BTreeMap::new();
-    for found in region {
+    // `items` groups facts with the use item holding them, keyed by its start.
+    let mut items: BTreeMap<usize, ItemRewriteGroup<'_, '_>> = BTreeMap::new();
+    for found in region.iter() {
         let (start, _) = facade_redirect::item_use_byte_range(lines, found.item_use)?;
-        items.entry(start).or_default().push(found);
+        match items.entry(start) {
+            Entry::Vacant(entry) => {
+                entry.insert(ItemRewriteGroup {
+                    item_use: found.item_use,
+                    first:    found.fact,
+                    rest:     Vec::new(),
+                });
+            },
+            Entry::Occupied(mut entry) => entry.get_mut().rest.push(found.fact),
+        }
     }
 
     // `excluded` identifies the region's edited items, its nested inline modules,
@@ -177,7 +236,7 @@ fn edit_region(
     // to blank before looking for local uses.
     let mut excluded = vec![0..region_range.start, region_range.end..source.len()];
     for group in items.values() {
-        let (start, end) = facade_redirect::item_use_byte_range(lines, group[0].item_use)?;
+        let (start, end) = facade_redirect::item_use_byte_range(lines, group.item_use)?;
         excluded.push(start..end);
     }
     for item in region_items {
@@ -189,12 +248,12 @@ fn edit_region(
         }
     }
 
-    let owner = &region[0].fact.fact.owner_module;
+    let owner = &region.first.fact.fact.owner_module;
     let mut rewrites = Vec::new();
     for group in items.values() {
         let mut used_leaves = Vec::new();
-        for found in group {
-            let name = &found.fact.fact.exported_name;
+        for found in group.facts() {
+            let name = &found.fact.exported_name;
             let local_use =
                 if facade_redirect::word_occurs_outside(source, excluded.iter().cloned(), name) {
                     LocalUse::Always
@@ -207,12 +266,15 @@ fn edit_region(
                         inline.max(reach.files_reach(owner_crate, file)?)
                     }
                 };
-            if local_use != LocalUse::Unused {
-                used_leaves.push(UsedLeaf {
-                    written_path: found.fact.fact.written_path.as_str(),
-                    local_use,
-                });
-            }
+            let local_use = match local_use {
+                LocalUse::Unused => continue,
+                LocalUse::TestOnly => RequiredLocalUse::TestOnly,
+                LocalUse::Always => RequiredLocalUse::Always,
+            };
+            used_leaves.push(UsedLeaf {
+                written_path: found.fact.written_path.as_str(),
+                local_use,
+            });
         }
         rewrites.push(rewrite_item(source, lines, group, &used_leaves)?);
     }
@@ -222,7 +284,11 @@ fn edit_region(
         && rewrites
             .iter()
             .all(|rewrite| matches!(rewrite, ItemRewrite::Delete { .. }));
-    if let Some(item_mod) = enclosing.filter(|_| delete_module) {
+    if let OwnerRegion::Inline {
+        module: item_mod, ..
+    } = region.first.region
+        && delete_module
+    {
         let (start, end) = lines.span_range(item_mod.span().start(), item_mod.span().end())?;
         let range = start..end;
         return Ok(vec![facade_redirect::line_deletion(file, source, range)]);
@@ -256,14 +322,14 @@ fn edit_region(
 fn rewrite_item(
     source: &str,
     lines: &SourceLines<'_>,
-    group: &[&Located<'_, '_>],
+    group: &ItemRewriteGroup<'_, '_>,
     used_leaves: &[UsedLeaf<'_>],
 ) -> Result<ItemRewrite> {
-    let item_use = group[0].item_use;
+    let item_use = group.item_use;
     let (start, end) = facade_redirect::item_use_byte_range(lines, item_use)?;
     let removed = group
-        .iter()
-        .map(|found| written_segments(&found.fact.fact.written_path))
+        .facts()
+        .map(|found| written_segments(&found.fact.written_path))
         .collect::<Vec<_>>();
     let kept = facade_redirect::remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, ident| {
         removed.contains(&leaf_segments(prefix, ident))
@@ -290,10 +356,9 @@ fn rewrite_item(
         format!("{CFG_TEST_ATTRIBUTE}\n{}", lines.indent_before(start))
     };
     for leaf in used_leaves {
-        let gate = if leaf.local_use == LocalUse::TestOnly {
-            test_gate.as_str()
-        } else {
-            ""
+        let gate = match leaf.local_use {
+            RequiredLocalUse::TestOnly => test_gate.as_str(),
+            RequiredLocalUse::Always => "",
         };
         pieces.push(format!("{attributes}{gate}use {};", leaf.written_path));
     }
@@ -331,19 +396,19 @@ fn locate<'s, 'f>(
         return Ok(None);
     };
     let position = line_start + column;
-    let Some((item_use, enclosing)) = find_item_use(lines, items, None, position)? else {
+    let Some((item_use, region)) = find_item_use(lines, items, OwnerRegion::File, position)? else {
         return Ok(None);
     };
-    let form_matches = match fact.fact.owner_module_form {
-        ModuleForm::File => enclosing.is_none(),
-        ModuleForm::Inline => enclosing.is_some(),
-    };
+    let form_matches = matches!(
+        (fact.fact.owner_module_form, region),
+        (ModuleForm::File, OwnerRegion::File) | (ModuleForm::Inline, OwnerRegion::Inline { .. })
+    );
     let leaf = written_segments(&fact.fact.written_path);
     Ok(
         (form_matches && has_name_leaf(Vec::new(), &item_use.tree, &leaf)).then_some(Located {
             fact,
             item_use,
-            enclosing,
+            region,
         }),
     )
 }
@@ -351,19 +416,28 @@ fn locate<'s, 'f>(
 fn find_item_use<'s>(
     lines: &SourceLines<'_>,
     items: &'s [Item],
-    enclosing: Option<&'s ItemMod>,
+    region: OwnerRegion<'s>,
     position: usize,
-) -> Result<Option<(&'s ItemUse, Option<&'s ItemMod>)>> {
+) -> Result<Option<(&'s ItemUse, OwnerRegion<'s>)>> {
     for item in items {
         if let Item::Use(item_use) = item {
             let (start, end) = facade_redirect::item_use_byte_range(lines, item_use)?;
             if start <= position && position < end {
-                return Ok(Some((item_use, enclosing)));
+                return Ok(Some((item_use, region)));
             }
         }
         if let Item::Mod(item_mod) = item
-            && let Some((_, content)) = &item_mod.content
-            && let Some(found) = find_item_use(lines, content, Some(item_mod), position)?
+            && let Some((brace, content)) = &item_mod.content
+            && let Some(found) = find_item_use(
+                lines,
+                content,
+                OwnerRegion::Inline {
+                    module: item_mod,
+                    brace,
+                    items: content,
+                },
+                position,
+            )?
         {
             return Ok(Some(found));
         }
@@ -490,6 +564,52 @@ mod tests {
             text.replace_range(fix.start..fix.end, &fix.replacement);
         }
         text
+    }
+
+    #[test]
+    fn inline_regions_require_content_and_match_the_fact_form() {
+        let source = "mod external;\npub use crate::source::Widget;\n";
+        assert!(matches!(
+            edit(source, &[fact(2, 1, "Widget", "external", ModuleForm::Inline)],
+                EmptiedOwner::Delete),
+            RegionEdit::Unmatched(indexes) if indexes == [0]
+        ));
+        assert_eq!(edited(source, &[file_fact(2, "Widget")]), "mod external;\n");
+    }
+
+    #[test]
+    fn separate_inline_definitions_keep_their_own_nonempty_regions() {
+        let source = concat!(
+            "#[cfg(unix)]\nmod owner { pub use crate::source::Widget; }\n",
+            "#[cfg(windows)]\nmod owner { pub use crate::source::Widget; }\n",
+            "fn keep() {}\n",
+        );
+        assert_eq!(
+            edited(
+                source,
+                &[
+                    fact(2, 13, "Widget", "owner", ModuleForm::Inline),
+                    fact(4, 13, "Widget", "owner", ModuleForm::Inline),
+                ]
+            ),
+            "fn keep() {}\n"
+        );
+    }
+
+    #[test]
+    fn different_use_items_rewrite_only_their_own_nonempty_fact_groups() {
+        let source = concat!(
+            "pub use crate::source::{Widget, Keep};\n",
+            "pub use crate::source::{Gadget, Stay};\n",
+            "fn f(_: Widget) {}\n",
+        );
+        assert_eq!(
+            edited(source, &[file_fact(1, "Widget"), file_fact(2, "Gadget")]),
+            concat!(
+                "pub use crate::source::Keep;\nuse crate::source::Widget;\n",
+                "pub use crate::source::Stay;\nfn f(_: Widget) {}\n",
+            )
+        );
     }
 
     #[test]
