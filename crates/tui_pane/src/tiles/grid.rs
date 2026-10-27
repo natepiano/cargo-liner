@@ -1374,6 +1374,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             } else {
                 LastSettledCellGeometry::NoCellsFrame
             };
+            self.motion_heights = MotionHeightPath::default();
+            return;
         }
         if self.held_display != GridDisplay::Cells || !matches!(self.motion, GridMotion::Moving(_))
         {
@@ -3016,7 +3018,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// The grid's pieces after its current arrangement has settled.
-    fn settled_drawing(&self, settled: Grid) -> TileDrawing<Id> {
+    fn settled_drawing(&self, settled: &Grid) -> TileDrawing<Id> {
         let focused = self.focused_cell();
         let pieces = cells(&self.slots)
             .into_iter()
@@ -3034,8 +3036,43 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect();
         TileDrawing {
             pieces,
-            column_bands: settled.columns,
+            column_bands: settled.columns.clone(),
         }
+    }
+
+    /// Both sides of each change to a fixed provider's integer geometry inputs.
+    #[cfg(test)]
+    pub(in crate::tiles) fn distinct_motion_steps_for_test(
+        &self,
+        area: Rect,
+        growth: TileGrowth,
+    ) -> Vec<u32> {
+        let destination = self.resolved_grid(area, &self.drawn_held(), growth);
+        let mut previous = None;
+        let mut steps = vec![0, PROGRESS_SCALE];
+        for raw in 0..=PROGRESS_SCALE {
+            let drawing = self.drawing_from_destination(area, raw, &HeightSnap::Off, &destination);
+            let geometry = drawing
+                .pieces
+                .iter()
+                .map(|piece| {
+                    let placement = &piece.placement;
+                    (
+                        placement.content.clone(),
+                        placement.frame.rect(),
+                        placement.frame.clip(),
+                        placement.frame.shift(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if previous.as_ref() != Some(&geometry) {
+                steps.extend([raw.saturating_sub(1), raw]);
+                previous = Some(geometry);
+            }
+        }
+        steps.sort_unstable();
+        steps.dedup();
+        steps
     }
 
     /// Every piece and column frame at an exact point in the transition.
@@ -3068,23 +3105,34 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return Self::summary_alone_drawing(area);
         }
         let settled = self.resolved_grid(area, &self.drawn_held(), growth);
+        self.drawing_from_destination(area, raw, height_snap, &settled)
+    }
+
+    /// Use the destination already resolved with this measurement pass's rows.
+    fn drawing_from_destination(
+        &self,
+        area: Rect,
+        raw: u32,
+        height_snap: &HeightSnap<'_, Id>,
+        destination: &Grid,
+    ) -> TileDrawing<Id> {
         let GridMotion::Moving(transition) = &self.motion else {
-            return self.settled_drawing(settled);
+            return self.settled_drawing(destination);
         };
         let before = transition.source.as_ref();
         if before.area != area {
-            return self.settled_drawing(settled);
+            return self.settled_drawing(destination);
         }
 
         let progress = eased(raw);
-        let column_bands = column_bands(before, &settled, progress);
-        let turns = Turns::of(before, &settled);
+        let column_bands = column_bands(before, destination, progress);
+        let turns = Turns::of(before, destination);
         let mut pieces = Vec::new();
         // The summary keeps cell one throughout, but the grid around it
         // resizes, so it still has somewhere to travel.
         moving_cell(
             before,
-            &settled,
+            destination,
             CellTransition::PresentAtBothEnds {
                 before_cell: TABLE_CELL,
                 after_cell:  TABLE_CELL,
@@ -3138,14 +3186,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 (None, None) => continue,
             };
             let content = content_of(&slot, new.or(old).unwrap_or(TABLE_CELL));
-            let piece_progress = if turns.covers(before, &settled, transition) {
+            let piece_progress = if turns.covers(before, destination, transition) {
                 eased(turns.covered(raw))
             } else {
                 progress
             };
             moving_cell(
                 before,
-                &settled,
+                destination,
                 transition,
                 piece_progress,
                 CellAppearance {
@@ -3155,7 +3203,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 &mut pieces,
             );
         }
-        let pieces = place_band_pieces(before, &settled, &column_bands, pieces, height_snap);
+        let pieces = place_band_pieces(before, destination, &column_bands, pieces, height_snap);
         TileDrawing {
             pieces,
             column_bands,
@@ -8405,7 +8453,7 @@ mod tests {
 
         let contents = [TileContent::Summary, TileContent::Group(1)];
         let mut paths = vec![Vec::new(); contents.len()];
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in grid.distinct_motion_steps_for_test(area, growth) {
             grid.measure_row_steps(
                 area,
                 growth,
@@ -8812,7 +8860,7 @@ mod tests {
     fn assert_piece_heights_move_one_way(before: &[u16], after: &[u16]) {
         let (mut grid, area, growth) = exact_height_motion(before, after);
         let mut heights = vec![Vec::new(); before.len()];
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in single_column_height_steps(&grid.drawing_at(area, growth, 0)) {
             let drawing = filled_height_drawing(&mut grid, area, growth, raw);
             for (piece, heights) in drawing.placements().zip(&mut heights) {
                 heights.push(piece.frame.clip().height);
@@ -8868,7 +8916,7 @@ mod tests {
     ) {
         let (mut grid, area, growth) = exact_height_motion(before, after);
         let mut piece_heights = vec![Vec::new(); before.len()];
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in single_column_height_steps(&grid.drawing_at(area, growth, 0)) {
             grid.measure_row_steps(
                 area,
                 growth,
@@ -9201,7 +9249,7 @@ mod tests {
 
         let (mut grid, area, growth) = exact_height_motion(&[11, 11, 11, 13], &[15, 7, 15, 9]);
         let mut heights = Vec::new();
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in single_column_height_steps(&grid.drawing_at(area, growth, 0)) {
             grid.measure_row_steps(
                 area,
                 growth,
@@ -9897,7 +9945,7 @@ mod tests {
         let (mut arriving, area, growth) = stepped_height_motion();
         let mut calls = 0;
         let mut arrival_below_floor = false;
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in arriving.distinct_motion_steps_for_test(area, growth) {
             let drawing = stepped_height_drawing(&mut arriving, area, growth, raw, &mut calls);
             let rect = drawing
                 .placements()
@@ -9924,7 +9972,7 @@ mod tests {
         leaving.collapse_queued_changes_for_test();
         leaving.sync(&tall_demands(&[1]), growth);
         let mut departure_below_floor = false;
-        for raw in 0..=PROGRESS_SCALE {
+        for raw in leaving.distinct_motion_steps_for_test(area, growth) {
             let drawing = stepped_height_drawing(&mut leaving, area, growth, raw, &mut calls);
             let rect = drawing
                 .placements()

@@ -366,6 +366,7 @@ impl OrderingEdge {
                 return Ok(match disposition {
                     ReleaseDisposition::Abandoned(_)
                     | ReleaseDisposition::RetiredOrphan(_)
+                    | ReleaseDisposition::KeptOnBranch(_)
                     | ReleaseDisposition::UnchangedScopes(_) => EdgeReadiness::Cancelled,
                     ReleaseDisposition::Integrated
                     | ReleaseDisposition::RewrittenIntegration(_) => EdgeReadiness::Fulfilled,
@@ -383,6 +384,7 @@ impl OrderingEdge {
                     disposition,
                     ReleaseDisposition::Abandoned(_)
                         | ReleaseDisposition::RetiredOrphan(_)
+                        | ReleaseDisposition::KeptOnBranch(_)
                         | ReleaseDisposition::UnchangedScopes(_)
                 ) =>
             {
@@ -712,6 +714,18 @@ mod tests {
         ))?;
         assert_eq!(abandoned_readiness, EdgeReadiness::Cancelled);
         assert!(!abandoned_readiness.holds_successor());
+        let kept = snapshot_with_predecessor_evidence(
+            RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                disposition: ReleaseDisposition::KeptOnBranch("later phase".parse()?),
+            },
+        );
+        assert_eq!(edge.readiness(&kept)?, EdgeReadiness::Cancelled);
+        let reversed = OrderingEdge {
+            before: successor,
+            after: predecessor,
+            ..edge
+        };
+        assert_eq!(reversed.readiness(&kept)?, EdgeReadiness::Cancelled);
         Ok(())
     }
 

@@ -488,6 +488,7 @@ impl Reservation {
                         disposition,
                         ReleaseDisposition::Abandoned(_)
                             | ReleaseDisposition::RetiredOrphan(_)
+                            | ReleaseDisposition::KeptOnBranch(_)
                             | ReleaseDisposition::UnchangedScopes(_)
                     ) =>
                 {
