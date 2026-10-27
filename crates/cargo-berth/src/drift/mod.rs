@@ -13,6 +13,7 @@ mod provenance;
 mod report;
 mod selection;
 mod widening;
+mod writes;
 
 pub(crate) use execution::execute;
 pub(crate) use fingerprint::WorkingTreeFingerprint;

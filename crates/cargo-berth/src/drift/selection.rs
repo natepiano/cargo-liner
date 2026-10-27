@@ -1,5 +1,6 @@
 //! The parsed drift request and the reservations one invocation acts on.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
@@ -11,12 +12,27 @@ use super::identity::DriftSessionReservation;
 use super::report::DriftAttributionCandidateSet;
 use super::report::DriftComparisonMode;
 use crate::ids::CoordinationRunId;
+use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::ReservationScopePath;
 use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
+
+/// Which committed paths remain writes after excluding integration-branch history.
+pub(super) enum CommittedWriteSelection {
+    /// No complete ancestry comparison is available; retain the observed paths.
+    Unclassified,
+    /// Every integration tip already precedes each phase start; nothing was received.
+    NoReceivedCommits,
+    /// Only these phase paths and head paths have commits outside integration history.
+    UnitWrites {
+        by_phase_start: HashMap<GitObjectId, Vec<ReservationScopePath>>,
+        head_paths:     Vec<ReservationScopePath>,
+    },
+}
 
 /// Which working-tree comparison the caller requested.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
